@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import json
+import threading
+from datetime import UTC, datetime
+from pathlib import Path
+
+from hermes_arg_connector.config import ConnectorConfig
+from hermes_arg_connector.queries import QueryCatalog
+from hermes_arg_connector.service import IngestionService, _merge_changes
+from hermes_arg_connector.source import AzureResourceGraphSource
+
+FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
+
+
+class FakeSource:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls: list[tuple[str, ...]] = []
+        self.query_batches = []
+
+    def list_subscriptions(self) -> list[dict]:
+        return [{"subscriptionId": "sub-1", "tenantId": "tenant-1"}]
+
+    def fetch(self, specs, subscription_ids):
+        self.calls.append(tuple(subscription_ids))
+        self.query_batches.append(list(specs))
+        return {spec.name: list(self.payload[spec.name]) for spec in specs}
+
+
+def test_end_to_end_mock_ingestion_tracks_incremental_state(tmp_path: Path) -> None:
+    payload = json.loads(FIXTURE.read_text())
+    source = FakeSource(payload)
+    config = ConnectorConfig(output_dir=tmp_path, subscriptions=("sub-1",))
+    clock_values = iter([
+        datetime(2026, 8, 17, 1, tzinfo=UTC),
+        datetime(2026, 8, 17, 2, tzinfo=UTC),
+    ])
+    service = IngestionService(config, source=source, clock=lambda: next(clock_values))
+
+    first = service.run()
+    second = service.run()
+
+    state = json.loads((tmp_path / "state/state.json").read_text())
+    assert first["status"] == "completed"
+    assert second["changedDatasets"] == []
+    assert state["lastSuccessfulRun"] == "2026-08-17T02:00:00Z"
+    assert state["resourceChangesWatermark"] == "2026-08-17T00:30:00Z"
+    assert state["watermarkVersion"] == 2
+    assert source.calls == [("sub-1",), ("sub-1",)]
+    second_change_query = next(
+        spec.query for spec in source.query_batches[1] if spec.name == "resource_changes"
+    )
+    assert "datetime(2026-08-17T00:20:00Z)" in second_change_query
+
+    vm = json.loads((tmp_path / "current/entities/VirtualMachine.jsonl").read_text())
+    assert vm["createdTimestamp"] == "2026-08-17T01:00:00Z"
+    assert vm["lastObservedTimestamp"] == "2026-08-17T02:00:00Z"
+
+
+def test_incremental_run_preserves_prior_resource_change_history(tmp_path: Path) -> None:
+    payload = json.loads(FIXTURE.read_text())
+
+    class DeltaSource(FakeSource):
+        def fetch(self, specs, subscription_ids):
+            result = super().fetch(specs, subscription_ids)
+            if len(self.calls) == 2:
+                result["resource_changes"] = []
+            return result
+
+    source = DeltaSource(payload)
+    config = ConnectorConfig(output_dir=tmp_path, subscriptions=("sub-1",))
+    times = iter([
+        datetime(2026, 8, 17, 1, tzinfo=UTC),
+        datetime(2026, 8, 17, 2, tzinfo=UTC),
+    ])
+    service = IngestionService(config, source=source, clock=lambda: next(times))
+
+    service.run()
+    service.run()
+
+    changes = (tmp_path / "current/changes/resource_changes.jsonl").read_text().splitlines()
+    assert len(changes) == 1
+
+
+def test_source_fetches_independent_arg_queries_in_parallel() -> None:
+    barrier = threading.Barrier(6)
+
+    class ParallelArg:
+        def query(self, spec, subscription_ids):
+            barrier.wait(timeout=2)
+            return [{"query": spec.name}]
+
+    source = AzureResourceGraphSource(mcp=None, arg=ParallelArg(), max_workers=6)
+    specs = QueryCatalog().build(None)
+
+    result = source.fetch(specs, ["sub-1"])
+
+    assert set(result) == {spec.name for spec in specs}
+
+
+def test_service_repairs_legacy_overadvanced_watermark(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "state.json").write_text(
+        json.dumps({"resourceChangesWatermark": "2026-08-17T02:00:00Z"})
+    )
+    source = FakeSource(json.loads(FIXTURE.read_text()))
+    service = IngestionService(
+        ConnectorConfig(output_dir=tmp_path, subscriptions=("sub-1",)),
+        source=source,
+        clock=lambda: datetime(2026, 8, 17, 3, tzinfo=UTC),
+    )
+
+    service.run()
+
+    change_query = next(spec.query for spec in source.query_batches[0] if spec.name == "resource_changes")
+    state = json.loads((state_dir / "state.json").read_text())
+    assert "ago(7d)" in change_query
+    assert state["resourceChangesWatermark"] == "2026-08-17T00:30:00Z"
+    assert state["watermarkVersion"] == 2
+
+
+def test_change_merge_uses_case_insensitive_azure_ids() -> None:
+    previous = [
+        {"id": "/SUBSCRIPTIONS/SUB-1/CHANGES/ABC", "changedAt": "2026-08-17T00:30:00Z"}
+    ]
+    current = [
+        {"id": "/subscriptions/sub-1/changes/abc", "changedAt": "2026-08-17T00:30:00Z"}
+    ]
+
+    merged = _merge_changes(previous, current)
+
+    assert len(merged) == 1

@@ -1,0 +1,41 @@
+{
+  "knowledgeVersion": "source-run-1",
+  "freshness": "2026-08-17T00:00:00Z",
+  "scenarios": [
+    {
+      "name": "critical production VM with patch and security risk",
+      "subject": "vm-payments",
+      "facts": {
+        "application": "Payments",
+        "businessService": "Retail",
+        "service": "Checkout",
+        "environment": "Production",
+        "owner": "ops@example.com",
+        "supportTeam": "SRE",
+        "criticality": "Critical",
+        "patchStatus": "failed",
+        "advisorFindingCount": 1,
+        "securityFindingCount": 1
+      },
+      "expectedRiskLevel": "Critical"
+    },
+    {
+      "name": "identity outage blast radius",
+      "subject": "vm-identity",
+      "facts": {
+        "application": "Identity",
+        "downstreamApplications": ["Payments"],
+        "businessServices": ["Retail", "Shared Platform"]
+      },
+      "expectedApplicationCount": 2
+    }
+  ],
+  "queries": [
+    "What owns this VM?",
+    "What applications are impacted by this outage?",
+    "What services are at operational risk?",
+    "Which production workloads failed patching?",
+    "What is the blast radius of this failure?",
+    "Show all applications owned by SRE"
+  ]
+}

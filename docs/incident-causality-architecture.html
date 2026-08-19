@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Incident Correlation and Operational Causality Architecture</title>
+<style>
+  body{margin:0;background:#020617;color:#e2e8f0;font:14px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .wrap{max-width:1240px;margin:auto;padding:28px}.sub{color:#94a3b8}.card,.info{background:#0f172a;border:1px solid #334155;border-radius:12px;padding:16px}
+  svg{width:100%;height:auto}.box{fill:#0f172a;stroke-width:1.5}.t{fill:#e2e8f0;font-size:12px;text-anchor:middle}.s{fill:#94a3b8;font-size:9px;text-anchor:middle}
+  .arrow{stroke:#64748b;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke:#fb7185;stroke-dasharray:5 4}.boundary{fill:none;stroke:#475569;stroke-dasharray:8 4}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}.info b{color:#67e8f9}.safe{color:#34d399}
+</style>
+</head>
+<body><div class="wrap">
+<h1>Incident Correlation &amp; Operational Causality Engine</h1>
+<p class="sub">Read-only operational reasoning over governed Fabric, Semantic Knowledge, and Ontology projections</p>
+<div class="card"><svg viewBox="0 0 1180 650" role="img" aria-label="Incident causality architecture">
+<defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width=".5"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0 0L8 3L0 6Z" fill="#64748b"/></marker></defs>
+<rect width="1180" height="650" fill="url(#grid)"/><rect class="boundary" x="20" y="30" width="1140" height="575" rx="12"/><text x="40" y="55" fill="#94a3b8" font-size="11">GOVERNED READ-ONLY ANALYSIS BOUNDARY</text>
+<!-- arrows render behind boxes -->
+<path class="arrow" d="M225 155H300"/><path class="arrow" d="M480 155H555"/><path class="arrow" d="M735 155H810"/><path class="arrow" d="M905 205V260"/><path class="arrow" d="M810 325H735"/><path class="arrow" d="M555 325H480"/><path class="arrow" d="M385 380V440"/><path class="arrow" d="M640 380V440"/><path class="arrow" d="M895 380V440"/><path class="arrow" d="M480 500H555"/><path class="arrow" d="M735 500H810"/><path class="arrow dash" d="M905 540V580"/>
+<!-- source layer -->
+<rect class="box" x="45" y="95" width="180" height="120" rx="6" stroke="#fbbf24"/><text class="t" x="135" y="125">Governed Operational Facts</text><text class="s" x="135" y="148">Incidents • Alerts • Advisor</text><text class="s" x="135" y="166">ResourceChanges • Patch</text><text class="s" x="135" y="184">Lifecycle • Ownership</text>
+<rect class="box" x="300" y="95" width="180" height="120" rx="6" stroke="#a78bfa"/><text class="t" x="390" y="125">OneLake / Fabric</text><text class="s" x="390" y="148">Bounded snapshots</text><text class="s" x="390" y="166">Lineage + freshness</text><text class="s" x="390" y="184">Canonical resource identity</text>
+<rect class="box" x="555" y="95" width="180" height="120" rx="6" stroke="#22d3ee"/><text class="t" x="645" y="125">Semantic + Ontology</text><text class="s" x="645" y="148">Dependencies • Applications</text><text class="s" x="645" y="166">Business services • Owners</text><text class="s" x="645" y="184">Teams • Criticality</text>
+<rect class="box" x="810" y="95" width="190" height="120" rx="6" stroke="#34d399"/><text class="t" x="905" y="125">Incident Engine</text><text class="s" x="905" y="148">Normalize + correlate</text><text class="s" x="905" y="166">Evidence-backed reasoning</text><text class="s" x="905" y="184">No direct Azure access</text>
+<!-- reasoning engines -->
+<rect class="box" x="810" y="260" width="190" height="120" rx="6" stroke="#34d399"/><text class="t" x="905" y="290">Root Cause Engine</text><text class="s" x="905" y="313">Target + time + severity</text><text class="s" x="905" y="331">Confidence capped at 0.95</text><text class="s" x="905" y="349">confirmed_cause = false</text>
+<rect class="box" x="555" y="260" width="180" height="120" rx="6" stroke="#34d399"/><text class="t" x="645" y="290">Event Timeline</text><text class="s" x="645" y="313">Chronological event chains</text><text class="s" x="645" y="331">Pre/post incident context</text><text class="s" x="645" y="349">Deterministic ordering</text>
+<rect class="box" x="300" y="260" width="180" height="120" rx="6" stroke="#34d399"/><text class="t" x="390" y="290">Blast Radius</text><text class="s" x="390" y="313">Apps • Services • Functions</text><text class="s" x="390" y="331">Owners • Teams</text><text class="s" x="390" y="349">Dependency tree</text>
+<!-- outputs -->
+<rect class="box" x="300" y="440" width="180" height="120" rx="6" stroke="#a78bfa"/><text class="t" x="390" y="470">Causality Graph</text><text class="s" x="390" y="493">Incident • Event • Cause</text><text class="s" x="390" y="511">Pattern • Blast • Chain</text><text class="s" x="390" y="529">Referential validation</text>
+<rect class="box" x="555" y="440" width="180" height="120" rx="6" stroke="#fb923c"/><text class="t" x="645" y="470">Patterns + Summaries</text><text class="s" x="645" y="493">Recurring operational risks</text><text class="s" x="645" y="511">Engineer → CIO views</text><text class="s" x="645" y="529">Evidence included</text>
+<rect class="box" x="810" y="440" width="190" height="120" rx="6" stroke="#22d3ee"/><text class="t" x="905" y="470">Operations Agent</text><text class="s" x="905" y="493">8 closed commands</text><text class="s" x="905" y="511">Bounded sanitized output</text><text class="s" x="905" y="529">Advisory investigation only</text>
+<text x="905" y="595" fill="#fb7185" font-size="10" text-anchor="middle">NO REMEDIATION • NO INFRASTRUCTURE WRITES • NO AUTOMATED ACTIONS</text>
+</svg></div>
+<div class="grid"><div class="info"><b>Reasoning</b><p>Probable causes are ranked hypotheses supported by canonical identity, preceding time, severity, and source relevance.</p></div><div class="info"><b>Explainability</b><p>Every result includes evidence, related events, timeline, dependencies, confidence, and reasoning chain.</p></div><div class="info"><b>Safety</b><p class="safe">Read-only, bounded, privacy-sanitized, auditable, and evidence-preserving.</p></div></div>
+</div></body></html>

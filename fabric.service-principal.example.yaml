@@ -1,0 +1,32 @@
+fabric:
+  auth:
+    mode: service_principal
+    tenant_id: "00000000-0000-0000-0000-000000000000"
+    client_id: "00000000-0000-0000-0000-000000000000"
+    # The secret itself belongs in the environment, never this file.
+    client_secret_env: "FABRIC_CLIENT_SECRET"
+
+  workspace_id: "00000000-0000-0000-0000-000000000000"
+  workspace_name: ""
+  lakehouse_id: "00000000-0000-0000-0000-000000000000"
+  lakehouse_name: ""
+  create_lakehouse_if_missing: false
+  table_schema: ""
+  ontology:
+    enabled: true
+    ontology_id: ""
+    ontology_name: "Operational_Context_Graph"
+  source_data_root: "./live-data"
+  registration_attempts: 20
+  patch_policies:
+    - name: "Production baseline"
+      environment: "Production"
+      max_patch_age_days: 30
+      minimum_compliance_score: 90
+  lifecycle:
+    enabled: true
+    catalog_path: ""
+    approaching_months: 24
+    near_months: 12
+    critical_months: 6
+  shortcuts: []

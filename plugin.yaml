@@ -1,0 +1,25 @@
+manifest_version: 2
+api_version: 1
+name: azure-operational-context
+version: 0.1.0
+description: "Read-only Operations Agent over Fabric Ontology and the Semantic Knowledge Layer."
+author: Hermes Operations Graph
+license: MIT
+kind: standalone
+platforms: [linux, macos, windows]
+tags: [azure, resource-graph, fabric, ontology, semantic-layer, operations-agent]
+provides_tools:
+  - operations_analysis
+python_dependencies:
+  - "azure-identity>=1.19,<2"
+  - "azure-storage-file-datalake>=12.18,<13"
+  - "deltalake>=1.0,<2"
+  - "httpx>=0.27,<1"
+  - "opentelemetry-api>=1.29,<2"
+  - "pyarrow>=23.0.1,<24"
+  - "PyYAML>=6,<7"
+external_dependencies:
+  - name: azmcp
+    description: "Preinstalled, pinned Azure MCP executable used for subscription discovery."
+  - name: az
+    description: "Runs arbitrary Azure Resource Graph queries not exposed by Azure MCP."

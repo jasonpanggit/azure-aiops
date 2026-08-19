@@ -1,0 +1,72 @@
+{
+  "freshness": "2026-08-18T13:00:00Z",
+  "resources": [
+    {
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "name": "vm-payments",
+      "entity_type": "VirtualMachine",
+      "application": "Payments",
+      "business_service": "Retail Checkout",
+      "owner": "ops@example.com",
+      "support_team": "Payments SRE",
+      "environment": "Production",
+      "business_criticality": "Critical",
+      "patch_risk_score": 82,
+      "patch_debt": 14,
+      "lifecycle_risk_score": 68,
+      "incident_count_30d": 4,
+      "incident_count_90d": 8,
+      "change_risk_score": 88,
+      "configuration_drift_count": 5,
+      "security_finding_count": 3,
+      "ownership_coverage": true
+    },
+    {
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-identity",
+      "name": "vm-identity",
+      "entity_type": "VirtualMachine",
+      "application": "Identity",
+      "business_service": "Shared Identity",
+      "owner": "identity@example.com",
+      "support_team": "Identity SRE",
+      "environment": "Production",
+      "business_criticality": "High",
+      "patch_risk_score": 20,
+      "patch_debt": 1,
+      "lifecycle_risk_score": 10,
+      "incident_count_30d": 0,
+      "incident_count_90d": 1,
+      "change_risk_score": 25,
+      "configuration_drift_count": 0,
+      "security_finding_count": 0,
+      "ownership_coverage": true
+    },
+    {
+      "resource_key": "/subscriptions/sub-2/resourcegroups/rg-legacy/providers/microsoft.hybridcompute/machines/arc-payroll",
+      "name": "arc-payroll",
+      "entity_type": "ArcServer",
+      "application": "Payroll",
+      "business_service": "Finance Operations",
+      "owner": "Unknown",
+      "support_team": "Unknown",
+      "environment": "Production",
+      "business_criticality": "Critical",
+      "patch_risk_score": 65,
+      "patch_debt": 10,
+      "lifecycle_risk_score": 92,
+      "incident_count_30d": 1,
+      "incident_count_90d": 3,
+      "change_risk_score": 45,
+      "configuration_drift_count": 2,
+      "security_finding_count": 1,
+      "ownership_coverage": false
+    }
+  ],
+  "history": [
+    {"resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments", "observed_at": "2026-06-01T00:00:00Z", "patch_debt": 5, "lifecycle_risk_score": 45, "incident_count_30d": 1, "configuration_drift_count": 1, "risk_score": 48},
+    {"resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments", "observed_at": "2026-07-15T00:00:00Z", "patch_debt": 9, "lifecycle_risk_score": 55, "incident_count_30d": 2, "configuration_drift_count": 3, "risk_score": 67},
+    {"resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments", "observed_at": "2026-08-18T12:00:00Z", "patch_debt": 14, "lifecycle_risk_score": 68, "incident_count_30d": 4, "configuration_drift_count": 5, "risk_score": 86},
+    {"resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-identity", "observed_at": "2026-07-15T00:00:00Z", "patch_debt": 1, "lifecycle_risk_score": 10, "incident_count_30d": 0, "configuration_drift_count": 0, "risk_score": 18},
+    {"resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-identity", "observed_at": "2026-08-18T12:00:00Z", "patch_debt": 1, "lifecycle_risk_score": 10, "incident_count_30d": 0, "configuration_drift_count": 0, "risk_score": 20}
+  ]
+}

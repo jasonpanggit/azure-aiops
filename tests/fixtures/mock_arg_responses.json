@@ -1,0 +1,139 @@
+{
+  "resource_containers": [
+    {
+      "id": "/subscriptions/sub-1",
+      "name": "Contoso Production",
+      "type": "microsoft.resources/subscriptions",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "properties": {"state": "Enabled"},
+      "tags": {"CostCentre": "CC-100"}
+    },
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-prod",
+      "name": "rg-prod",
+      "type": "microsoft.resources/subscriptions/resourcegroups",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "resourceGroup": "rg-prod",
+      "location": "eastus",
+      "tags": {"owner": "platform-team"}
+    }
+  ],
+  "resources": [
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-prod-01",
+      "name": "vm-prod-01",
+      "type": "microsoft.compute/virtualmachines",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "resourceGroup": "rg-prod",
+      "location": "eastus",
+      "tags": {"environment": "prod"},
+      "properties": {"hardwareProfile": {"vmSize": "Standard_D2s_v5"}, "storageProfile": {"osDisk": {"osType": "Linux"}}}
+    },
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.HybridCompute/machines/arc-legacy-01",
+      "name": "arc-legacy-01",
+      "type": "microsoft.hybridcompute/machines",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "resourceGroup": "rg-prod",
+      "location": "eastus",
+      "tags": {"environment": "prod"},
+      "properties": {"status": "Connected", "osName": "Ubuntu 20.04", "osVersion": "20.04"}
+    },
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Storage/storageAccounts/stprod01",
+      "name": "stprod01",
+      "type": "microsoft.storage/storageaccounts",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "resourceGroup": "rg-prod",
+      "location": "eastus",
+      "tags": {},
+      "properties": {"supportsHttpsTrafficOnly": true}
+    }
+  ],
+  "resource_changes": [
+    {
+      "id": "change-1",
+      "name": "change-1",
+      "type": "microsoft.resources/changes",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "properties": {
+        "targetResourceId": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-prod-01",
+        "changeType": "Update",
+        "changeAttributes": {"timestamp": "2026-08-17T00:30:00Z"}
+      }
+    }
+  ],
+  "patch_assessments": [
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-prod-01/patchAssessmentResults/latest",
+      "name": "latest",
+      "type": "microsoft.compute/virtualmachines/patchassessmentresults",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "resourceGroup": "rg-prod",
+      "properties": {
+        "resourceId": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-prod-01",
+        "status": "NonCompliant",
+        "availablePatchCountByClassification": {"security": 2},
+        "lastModifiedDateTime": "2026-08-16T23:00:00Z"
+      }
+    },
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.HybridCompute/machines/arc-legacy-01/patchAssessmentResults/latest",
+      "name": "latest",
+      "type": "microsoft.hybridcompute/machines/patchassessmentresults",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "resourceGroup": "rg-prod",
+      "properties": {
+        "resourceId": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.HybridCompute/machines/arc-legacy-01",
+        "status": "Failed",
+        "errorDetails": [{"code": "AssessmentFailed", "message": "Package manager unavailable"}],
+        "lastModifiedDateTime": "2026-08-16T23:10:00Z"
+      }
+    }
+  ],
+  "patch_installations": [
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-prod-01/patchInstallationResults/run-1/softwarePatches/KB-CRIT-001",
+      "name": "KB-CRIT-001",
+      "type": "microsoft.compute/virtualmachines/patchinstallationresults/softwarepatches",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "resourceGroup": "rg-prod",
+      "properties": {
+        "resourceId": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-prod-01",
+        "patchName": "Critical RCE fix",
+        "classifications": ["Critical", "Security"],
+        "kbId": "KB-CRIT-001",
+        "installationState": "Failed",
+        "publishedDateTime": "2026-06-01T00:00:00Z",
+        "lastModifiedDateTime": "2026-08-16T23:30:00Z",
+        "errorDetails": [{"code": "0x80240022"}]
+      }
+    }
+  ],
+  "advisor_recommendations": [
+    {
+      "id": "/subscriptions/sub-1/providers/Microsoft.Advisor/recommendations/rec-eol-1",
+      "name": "rec-eol-1",
+      "type": "microsoft.advisor/recommendations",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "properties": {
+        "category": "HighAvailability",
+        "impact": "High",
+        "impactedField": "Microsoft.HybridCompute/machines",
+        "impactedValue": "arc-legacy-01",
+        "resourceMetadata": {"resourceId": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.HybridCompute/machines/arc-legacy-01"},
+        "shortDescription": {"problem": "Ubuntu 20.04 is approaching end of support", "solution": "Upgrade to a supported operating system"}
+      }
+    }
+  ]
+}

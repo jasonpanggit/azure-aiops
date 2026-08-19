@@ -1,0 +1,26 @@
+[
+  {
+    "name": "risky patched workload",
+    "command": "Analyze VM",
+    "subject": "vm-payments",
+    "subject_type": "",
+    "expected_subject": "vm-payments",
+    "expected_risk": "Critical"
+  },
+  {
+    "name": "application executive summary",
+    "command": "Generate Executive Summary",
+    "subject": "Payments",
+    "subject_type": "Application",
+    "expected_subject": "Payments",
+    "expected_risk": "Critical"
+  },
+  {
+    "name": "business service health",
+    "command": "Show Health Summary",
+    "subject": "Retail",
+    "subject_type": "BusinessService",
+    "expected_subject": "Retail",
+    "expected_risk": "Critical"
+  }
+]

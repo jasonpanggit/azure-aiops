@@ -1,0 +1,95 @@
+{
+  "freshness": "2026-08-18T13:00:00Z",
+  "resources": [
+    {
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "name": "vm-payments",
+      "entity_type": "VirtualMachine",
+      "application": "Payments",
+      "business_service": "Retail Checkout",
+      "owner": "ops@example.com",
+      "support_team": "Payments SRE",
+      "environment": "Production",
+      "business_criticality": "Critical",
+      "expected_configuration": {"publicNetworkAccess": "Disabled", "encryption": "Enabled", "sku": "Standard_D2s_v5"},
+      "observed_configuration": {"publicNetworkAccess": "Enabled", "encryption": "Enabled", "sku": "Standard_D4s_v5"}
+    }
+  ],
+  "resource_changes": [
+    {
+      "change_id": "CHG-100",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "changed_at": "2026-08-18T12:00:00Z",
+      "change_type": "Update",
+      "category": "Configuration",
+      "changed_by": "platform.engineer@example.com",
+      "source": "Azure Resource Manager",
+      "changed_fields": ["publicNetworkAccess", "sku"],
+      "summary": "Public access and VM size changed"
+    }
+  ],
+  "policy_deviations": [
+    {
+      "deviation_id": "POL-100",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "observed_at": "2026-08-18T12:05:00Z",
+      "severity": "High",
+      "control": "Public network access must be disabled",
+      "status": "NonCompliant"
+    }
+  ],
+  "security_deviations": [
+    {
+      "deviation_id": "SEC-100",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "observed_at": "2026-08-18T12:06:00Z",
+      "severity": "Critical",
+      "control": "Internet exposure baseline",
+      "status": "Deviated"
+    }
+  ],
+  "network_changes": [
+    {
+      "change_id": "NET-100",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "changed_at": "2026-08-18T12:01:00Z",
+      "severity": "High",
+      "changed_by": "network.engineer@example.com",
+      "summary": "Inbound access rule changed"
+    }
+  ],
+  "identity_changes": [
+    {
+      "change_id": "ID-100",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "changed_at": "2026-08-18T11:30:00Z",
+      "severity": "Medium",
+      "changed_by": "identity.admin@example.com",
+      "summary": "Managed identity role assignment changed"
+    }
+  ],
+  "iac_changes": [
+    {
+      "change_id": "IAC-100",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "changed_at": "2026-08-18T11:50:00Z",
+      "severity": "High",
+      "changed_by": "pipeline:prod-deploy",
+      "source": "Terraform",
+      "summary": "Terraform deployment changed VM configuration"
+    }
+  ],
+  "incidents": [
+    {
+      "incident_id": "INC-100",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "started_at": "2026-08-18T12:30:00Z",
+      "severity": "Critical",
+      "title": "Checkout unavailable"
+    }
+  ],
+  "history": [
+    {"resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments", "observed_at": "2026-07-20T00:00:00Z", "risk_score": 35, "compliance_score": 85},
+    {"resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments", "observed_at": "2026-08-18T12:30:00Z", "risk_score": 92, "compliance_score": 40}
+  ]
+}

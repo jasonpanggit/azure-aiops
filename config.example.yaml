@@ -1,0 +1,21 @@
+azure:
+  # Empty means use every subscription returned by Azure MCP subscription list.
+  subscriptions: []
+  # Required for tenant-scope Management Group discovery via ARG.
+  management_groups: []
+  tenant_id: ""
+  # Preinstall and verify this executable during deployment. Do not download
+  # npm packages from a scheduled production run.
+  mcp_command: ["azmcp"]
+  page_size: 1000
+  max_pages: 1000
+  command_timeout_seconds: 60
+  # Six current independent queries: resources, containers, changes,
+  # assessments, installations, and Advisor recommendations.
+  max_query_workers: 6
+  change_overlap_minutes: 10
+
+storage:
+  output_dir: "./data"
+  # Raw query projections may contain sensitive Azure properties.
+  retain_raw_queries: false

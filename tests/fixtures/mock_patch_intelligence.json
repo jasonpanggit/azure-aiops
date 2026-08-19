@@ -1,0 +1,123 @@
+{
+  "freshness": "2026-08-18T00:00:00Z",
+  "resources": [
+    {
+      "name": "vm-payroll-01",
+      "entity_type": "VirtualMachine",
+      "subscription": "sub-finance",
+      "application": "Payroll",
+      "business_service": "HR Services",
+      "owner": "hr-platform@example.com",
+      "support_team": "HR Operations",
+      "environment": "Production",
+      "business_criticality": "Critical",
+      "application_impact": "High",
+      "ownership_coverage": true
+    },
+    {
+      "name": "vm-store-01",
+      "entity_type": "VirtualMachine",
+      "subscription": "sub-retail",
+      "application": "Storefront",
+      "business_service": "Digital Commerce",
+      "owner": "commerce@example.com",
+      "support_team": "Commerce SRE",
+      "environment": "Production",
+      "business_criticality": "High",
+      "application_impact": "High",
+      "ownership_coverage": true
+    },
+    {
+      "name": "arc-dev-01",
+      "entity_type": "ArcServer",
+      "subscription": "sub-retail",
+      "application": "Catalog Dev",
+      "business_service": "Digital Commerce",
+      "owner": "",
+      "support_team": "",
+      "environment": "Development",
+      "business_criticality": "Low",
+      "application_impact": "Low",
+      "ownership_coverage": false
+    }
+  ],
+  "assessments": [
+    {
+      "resource": "vm-payroll-01",
+      "assessed_at": "2026-08-17T00:00:00Z",
+      "status": "noncompliant",
+      "available_updates": 5,
+      "missing_critical_updates": 2,
+      "missing_security_updates": 2
+    },
+    {
+      "resource": "vm-store-01",
+      "assessed_at": "2026-08-17T00:00:00Z",
+      "status": "noncompliant",
+      "available_updates": 2,
+      "missing_critical_updates": 0,
+      "missing_security_updates": 1
+    },
+    {
+      "resource": "arc-dev-01",
+      "assessed_at": "2026-08-17T00:00:00Z",
+      "status": "compliant",
+      "available_updates": 0,
+      "missing_critical_updates": 0,
+      "missing_security_updates": 0
+    }
+  ],
+  "installations": [
+    {
+      "resource": "vm-payroll-01",
+      "update_id": "KB-CRIT-001",
+      "update_name": "Critical RCE fix",
+      "category": "Critical",
+      "severity": "Critical",
+      "published_at": "2026-06-01T00:00:00Z",
+      "installed_at": "2026-08-16T00:00:00Z",
+      "status": "failed",
+      "error": "0x80240022"
+    },
+    {
+      "resource": "vm-payroll-01",
+      "update_id": "KB-SEC-002",
+      "update_name": "Security elevation fix",
+      "category": "Security",
+      "severity": "High",
+      "published_at": "2026-07-01T00:00:00Z",
+      "installed_at": "2026-08-16T00:00:00Z",
+      "status": "failed",
+      "error": "reboot required"
+    },
+    {
+      "resource": "vm-store-01",
+      "update_id": "KB-SEC-003",
+      "update_name": "Security hardening",
+      "category": "Security",
+      "severity": "Medium",
+      "published_at": "2026-08-01T00:00:00Z",
+      "installed_at": "2026-08-16T00:00:00Z",
+      "status": "succeeded",
+      "error": ""
+    }
+  ],
+  "history": [
+    {"resource": "vm-payroll-01", "observed_at": "2026-05-20T00:00:00Z", "status": "noncompliant", "risk_score": 70},
+    {"resource": "vm-payroll-01", "observed_at": "2026-07-20T00:00:00Z", "status": "noncompliant", "risk_score": 78},
+    {"resource": "vm-payroll-01", "observed_at": "2026-08-12T00:00:00Z", "status": "noncompliant", "risk_score": 85},
+    {"resource": "vm-store-01", "observed_at": "2026-08-12T00:00:00Z", "status": "compliant", "risk_score": 20},
+    {"resource": "vm-store-01", "observed_at": "2026-08-17T00:00:00Z", "status": "noncompliant", "risk_score": 40}
+  ],
+  "security_findings": [
+    {"resource": "vm-payroll-01", "severity": "Critical", "title": "Internet-exposed RCE path"},
+    {"resource": "vm-store-01", "severity": "Medium", "title": "Missing security update"}
+  ],
+  "advisor_recommendations": [
+    {"resource": "vm-payroll-01", "impact": "High", "title": "Resolve patch installation failures"}
+  ],
+  "policies": [
+    {"name": "Production baseline", "environment": "Production", "max_patch_age_days": 30, "minimum_compliance_score": 90},
+    {"name": "Development baseline", "environment": "Development", "max_patch_age_days": 60, "minimum_compliance_score": 80}
+  ]
+}

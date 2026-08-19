@@ -1,0 +1,28 @@
+fabric:
+  # Authentication is not contacted when local_onelake_root is set.
+  auth:
+    mode: managed_identity
+  workspace_id: "local-workspace"
+  lakehouse_id: "local-lakehouse"
+  source_data_root: "./sample-data"
+  local_onelake_root: "./mock-fabric-lakehouse"
+  create_lakehouse_if_missing: false
+  table_schema: ""
+  # Local mode builds/query-tests ontology Delta projections but cannot publish a Fabric item.
+  ontology:
+    enabled: true
+    ontology_id: ""
+    ontology_name: "Operational_Context_Graph"
+  registration_attempts: 1
+  patch_policies:
+    - name: "Production baseline"
+      environment: "Production"
+      max_patch_age_days: 30
+      minimum_compliance_score: 90
+  lifecycle:
+    enabled: true
+    catalog_path: ""
+    approaching_months: 24
+    near_months: 12
+    critical_months: 6
+  shortcuts: []

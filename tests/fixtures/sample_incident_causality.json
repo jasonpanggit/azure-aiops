@@ -1,0 +1,106 @@
+{
+  "freshness": "2026-08-18T13:00:00Z",
+  "resources": [
+    {
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "name": "vm-payments",
+      "entity_type": "VirtualMachine",
+      "application": "Payments",
+      "business_service": "Retail Checkout",
+      "owner": "ops@example.com",
+      "support_team": "Payments SRE",
+      "environment": "Production",
+      "business_criticality": "Critical",
+      "impacted_applications": ["Payments", "Order Processing"],
+      "impacted_services": ["Checkout API"],
+      "impacted_business_services": ["Retail Checkout"]
+    },
+    {
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-identity",
+      "name": "vm-identity",
+      "entity_type": "VirtualMachine",
+      "application": "Identity",
+      "business_service": "Shared Identity",
+      "owner": "identity@example.com",
+      "support_team": "Identity SRE",
+      "environment": "Production",
+      "business_criticality": "High",
+      "impacted_applications": ["Identity", "Payments"],
+      "impacted_services": ["Authentication"],
+      "impacted_business_services": ["Shared Identity", "Retail Checkout"]
+    }
+  ],
+  "incidents": [
+    {
+      "incident_id": "INC-100",
+      "title": "Checkout unavailable",
+      "status": "Active",
+      "severity": "Critical",
+      "started_at": "2026-08-18T12:00:00Z",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments"
+    },
+    {
+      "incident_id": "INC-090",
+      "title": "Checkout latency",
+      "status": "Resolved",
+      "severity": "High",
+      "started_at": "2026-08-11T12:00:00Z",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments"
+    }
+  ],
+  "alerts": [
+    {
+      "alert_id": "ALT-100",
+      "title": "VM availability below threshold",
+      "severity": "Critical",
+      "fired_at": "2026-08-18T11:55:00Z",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "signal": "availability"
+    },
+    {
+      "alert_id": "ALT-090",
+      "title": "VM availability below threshold",
+      "severity": "High",
+      "fired_at": "2026-08-11T11:55:00Z",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "signal": "availability"
+    }
+  ],
+  "resource_changes": [
+    {
+      "change_id": "CHG-100",
+      "change_type": "Update",
+      "changed_at": "2026-08-18T11:40:00Z",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "summary": "VM configuration changed"
+    },
+    {
+      "change_id": "CHG-090",
+      "change_type": "Update",
+      "changed_at": "2026-08-11T11:40:00Z",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "summary": "VM configuration changed"
+    }
+  ],
+  "patch_findings": [
+    {
+      "finding_id": "PATCH-100",
+      "status": "Failed",
+      "severity": "Critical",
+      "observed_at": "2026-08-18T10:00:00Z",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "summary": "Critical security update installation failed"
+    }
+  ],
+  "lifecycle_findings": [
+    {
+      "finding_id": "EOL-100",
+      "status": "Near EOL",
+      "risk_score": 68,
+      "observed_at": "2026-08-18T09:00:00Z",
+      "resource_key": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
+      "summary": "Operating system is within twelve months of support end"
+    }
+  ],
+  "history": []
+}

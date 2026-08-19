@@ -1,0 +1,13 @@
+# Runtime and generated data
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+uv.lock
+config.yaml
+fabric.config.yaml
+fabric.local.yaml
+data/
+live-data/
+sample-data/
+mock-fabric-lakehouse/

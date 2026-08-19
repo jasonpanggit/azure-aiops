@@ -1,0 +1,86 @@
+fabric:
+  semantic:
+    max_results: 50
+    max_traversal_nodes: 500
+    max_traversal_depth: 32
+    max_source_rows: 50000
+    max_serialized_bytes: 1000000
+  operations_agent:
+    max_output_items: 100
+    max_serialized_bytes: 1000000
+  patch_intelligence:
+    enabled: true
+    max_resources: 5000
+    max_evidence_rows: 50000
+    max_output_items: 100
+    max_serialized_bytes: 1000000
+  auth:
+    mode: managed_identity
+    # Set only for a user-assigned managed identity.
+    managed_identity_client_id: ""
+
+  # Select by immutable IDs in production. Names are supported for bootstrap.
+  workspace_id: "00000000-0000-0000-0000-000000000000"
+  workspace_name: ""
+  lakehouse_id: "00000000-0000-0000-0000-000000000000"
+  lakehouse_name: ""
+  create_lakehouse_if_missing: false
+  # Set to dbo (or another schema) for a schema-enabled Lakehouse.
+  table_schema: ""
+  ontology:
+    enabled: true
+    ontology_id: "" # Optional immutable ID; otherwise resolved/created by name.
+    ontology_name: "Operational_Context_Graph"
+
+  source_data_root: "./live-data"
+  registration_attempts: 20
+  patch_policies:
+    - name: "Production baseline"
+      environment: "Production"
+      max_patch_age_days: 30
+      minimum_compliance_score: 90
+    - name: "Development baseline"
+      environment: "Development"
+      max_patch_age_days: 60
+      minimum_compliance_score: 80
+  lifecycle:
+    enabled: true
+    # Empty uses the packaged, vendor-sourced catalog. Set a governed JSON
+    # catalog path to update entries without changing code.
+    catalog_path: ""
+    approaching_months: 24
+    near_months: 12
+    critical_months: 6
+    max_output_items: 100
+    max_serialized_bytes: 1000000
+  incident_causality:
+    enabled: true
+    # Correlation is temporal and probabilistic; no action is executed.
+    lookback_hours: 168
+    max_incidents: 10000
+    max_evidence_rows: 50000
+  change_intelligence:
+    enabled: true
+    max_changes: 50000
+    max_output_items: 100
+  predictive:
+    enabled: true
+    max_history_rows: 50000
+    max_output_items: 100
+  remediation:
+    enabled: true
+    max_resources: 5000
+    max_plans: 1000
+    max_output_items: 100
+    max_dependencies: 100
+
+  # Optional idempotent OneLake shortcuts registered after successful writes.
+  shortcuts: []
+  # - path: "Files/external"
+  #   name: "shared_inventory"
+  #   conflict_policy: "CreateOrOverwrite"
+  #   target:
+  #     oneLake:
+  #       workspaceId: "target-workspace-id"
+  #       itemId: "target-lakehouse-id"
+  #       path: "Tables/bronze_resources"
