@@ -179,6 +179,18 @@ class EntraJwtAuthenticator:
         ]
         grants = tuple(self.grants_resolver(subject, roles))
         if not subject or not grants:
+            # Deliberately no token contents logged. subject/roles are the
+            # asserted app-role claim and the resolved subject only -- useful
+            # to distinguish "no roles claim" (app role not defined/assigned,
+            # or a stale cached token issued before assignment) from
+            # "roles present but no matching HERMES_API_GATEWAY_GRANTS entry"
+            # (subject/casefold mismatch, or a role not listed for that
+            # subject) without ever exposing token secrets.
+            print(
+                "entra_grant_denied "
+                f"subject={subject!r} roles={roles!r} oid={claims.get('oid')!r} "
+                f"has_grants_resolver={self.grants_resolver is not None}"
+            )
             raise ApiError(
                 ErrorCode.UNAUTHENTICATED,
                 "Entra principal has no configured Hermes grants",

@@ -80,3 +80,31 @@ export async function getAccessToken(): Promise<string | null> {
     return null;
   }
 }
+
+/**
+ * Forces MSAL to bypass its cached access token and request a fresh one from
+ * Entra, still silently (no interactive prompt). A cached token issued
+ * before an app-role assignment change can otherwise be served from
+ * sessionStorage indefinitely, missing the `roles` claim the API requires to
+ * resolve Hermes grants. Call this once after an "Entra principal has no
+ * configured Hermes grants" 401 to pick up a newly-assigned role without
+ * requiring the user to fully sign out.
+ */
+export async function refreshAccessToken(): Promise<string | null> {
+  if (!isMsalConfigured) return getAccessToken();
+
+  const instance = getMsalInstance();
+  const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
+  if (!account) return null;
+
+  try {
+    const result = await instance.acquireTokenSilent({
+      ...apiLoginRequest,
+      account,
+      forceRefresh: true,
+    });
+    return result.accessToken;
+  } catch {
+    return null;
+  }
+}

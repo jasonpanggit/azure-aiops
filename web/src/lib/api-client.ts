@@ -1,4 +1,4 @@
-import { getAccessToken } from "./auth";
+import { getAccessToken, refreshAccessToken } from "./auth";
 import { ApiError, type ApiErrorBody, type Envelope } from "./types";
 
 /**
@@ -91,30 +91,61 @@ function buildQuery(query: RequestOptions["query"]): string {
  */
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<Envelope<T>> {
   const correlationId = generateCorrelationId();
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "X-Correlation-ID": correlationId,
-  };
-
-  if (!options.anonymous) {
-    const token = await getAccessToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
-  }
 
   const prefix = options.rawPath ? "" : API_PREFIX;
   const baseUrl = await resolveApiBaseUrl();
   const url = `${baseUrl}${prefix}${path}${buildQuery(options.query)}`;
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
+  const doFetch = async (token: string | null): Promise<Response> => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "X-Correlation-ID": correlationId,
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return fetch(url, {
       method: options.method ?? "GET",
       headers,
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
       signal: options.signal,
     });
+  };
+
+  let token: string | null = null;
+  if (!options.anonymous) {
+    token = await getAccessToken();
+  }
+
+  let response: Response;
+  try {
+    response = await doFetch(token);
   } catch (cause) {
     throw new ApiError(0, "unknown", "Network request failed", { cause: String(cause) }, correlationId);
+  }
+
+  // A cached MSAL access token predating an Entra app-role assignment can be
+  // silently reused by acquireTokenSilent and still pass signature/expiry
+  // checks while carrying no `roles` claim. Retry once with a forced token
+  // refresh before surfacing the failure, so a role granted moments ago
+  // takes effect without requiring the user to fully sign out.
+  if (!options.anonymous && response.status === 401) {
+    let code: string | undefined;
+    try {
+      const cloned = response.clone();
+      const body = (await cloned.json()) as ApiErrorBody;
+      code = body?.error?.code;
+    } catch {
+      // ignore
+    }
+    if (code === "unauthenticated") {
+      const freshToken = await refreshAccessToken();
+      if (freshToken && freshToken !== token) {
+        try {
+          response = await doFetch(freshToken);
+        } catch (cause) {
+          throw new ApiError(0, "unknown", "Network request failed", { cause: String(cause) }, correlationId);
+        }
+      }
+    }
   }
 
   const responseCorrelationId = response.headers.get("X-Correlation-ID") ?? correlationId;
