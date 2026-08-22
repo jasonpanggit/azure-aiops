@@ -191,8 +191,12 @@ class IncidentIntelligence:
             entity_type = str(row.get("entity_type") or "Resource")
             if not resource_key or not name:
                 continue
-            context = semantic_engine.get_resource_context(resource_key, subject_type=entity_type)
-            impact = semantic_engine.get_impact_context(resource_key, subject_type=entity_type)
+            try:
+                context = semantic_engine.get_resource_context(resource_key, subject_type=entity_type)
+                impact = semantic_engine.get_impact_context(resource_key, subject_type=entity_type)
+                public = semantic_engine.indexes.public(resource_key)
+            except LookupError:
+                continue
             sections = context.get("sections") or {}
             classification = sections.get("operational_classification") or {}
             resources.append(
@@ -208,6 +212,17 @@ class IncidentIntelligence:
                     "business_criticality": str(classification.get("criticality") or "Unknown"),
                     "subscription_alias": str(
                         classification.get("subscription_alias") or "Unknown"
+                    ),
+                    "subscription_id": str(
+                        public.get("subscription_id")
+                        or row.get("subscription_id")
+                        or ""
+                    ),
+                    "subscription_connection": str(
+                        public.get("subscription_connection")
+                        or row.get("subscription_connection")
+                        or row.get("connection_id")
+                        or ""
                     ),
                     "impacted_applications": cls._names(impact.get("impacted_applications")),
                     "impacted_services": cls._names(impact.get("impacted_services")),

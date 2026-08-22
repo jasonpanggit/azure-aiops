@@ -9,7 +9,6 @@ BANNED_PUBLIC_FIELDS = {
     "lineage_json",
     "semantic_metadata_json",
     "tenant_id",
-    "subscription_id",
     "ingestion_run_id",
 }
 

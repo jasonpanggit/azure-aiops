@@ -1,0 +1,176 @@
+"""Incident and remediation routes.
+
+These front the existing intelligence engines. The engines are constructed per
+request from the current knowledge snapshot via provider callables on the API
+context, so a refreshed snapshot is observed without a restart. When no
+provider is registered the route reports the capability as unavailable rather
+than returning an empty result that the UI would render as "all clear".
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter
+
+from ..dependencies import Context, Page, ReadScope
+from ..errors import ApiError, ErrorCode
+from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
+from ..scope import Scope, scope_attributes
+
+router = APIRouter(prefix="/api/v1", tags=["operations"])
+
+
+def _require(context: Context, attribute: str, capability: str) -> Any:
+    return context.resolve_provider(capability)
+
+
+_HIDDEN = object()
+
+
+def _filter_scoped(value: Any, scope: Scope) -> Any:
+    if scope.is_unrestricted():
+        return value
+    if isinstance(value, dict):
+        attributes = scope_attributes(value)
+        if attributes and not scope.matches(attributes):
+            return _HIDDEN
+        return {
+            key: filtered
+            for key, child in value.items()
+            if (filtered := _filter_scoped(child, scope)) is not _HIDDEN
+        }
+    if isinstance(value, list):
+        return [
+            filtered
+            for child in value
+            if (filtered := _filter_scoped(child, scope)) is not _HIDDEN
+        ]
+    return value
+
+
+def _filter_rows(rows: Any, scope: Scope) -> Any:
+    filtered = _filter_scoped(rows, scope)
+    return [] if filtered is _HIDDEN else filtered
+
+
+@router.get("/incidents", summary="Correlated incidents")
+def list_incidents(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+    engine = _require(context, "incident_provider", "incidents")
+    report = engine.report()
+    incidents = _filter_rows(report.get("incidents"), scope)
+    visible = incidents[page.offset : page.offset + page.limit]
+    public_report = {**report, "incidents": visible}
+    if not scope.is_unrestricted():
+        public_report.pop("audience_summaries", None)
+        public_report.pop("operational_patterns", None)
+        public_report["scope_limited"] = True
+    return envelope(
+        public_report,
+        evidence=Evidence(
+            source_engine="intelligence.IncidentEngine",
+            source_table="incident_projection",
+            timestamp=str(report.get("generated_at") or report.get("freshness") or ""),
+            # Incidents are correlated from signals, not observed directly.
+            confidence=CONFIDENCE_MEDIUM,
+        ),
+        scope=scope.to_dict(),
+        pagination=page.to_dict(len(incidents)),
+    )
+
+
+@router.get("/incidents/{incident_id}", summary="Incident detail and timeline")
+def incident_detail(
+    incident_id: str, context: Context, scope: ReadScope
+) -> dict[str, Any]:
+    engine = _require(context, "incident_provider", "incidents")
+    detail = engine.incident(incident_id)
+    if not detail:
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "Incident not found",
+            details={"incident_id": incident_id},
+        )
+    original_had_finding = isinstance(detail, dict) and "finding" in detail
+    detail = _filter_scoped(detail, scope)
+    if detail is _HIDDEN or (
+        original_had_finding and isinstance(detail, dict) and "finding" not in detail
+    ):
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "Incident not found",
+            details={"incident_id": incident_id},
+        )
+    return envelope(
+        detail,
+        evidence=Evidence(
+            source_engine="intelligence.IncidentEngine",
+            source_table="incident_projection",
+            timestamp=str(detail.get("detected_at") or ""),
+            resource_id=incident_id,
+            confidence=CONFIDENCE_MEDIUM,
+        ),
+        scope=scope.to_dict(),
+    )
+
+
+@router.get("/remediation-plans", summary="Remediation plans")
+def remediation_plans(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+    planner = _require(context, "remediation_provider", "remediation")
+    plans = planner.generate_plans()
+    visible = _filter_rows(plans.get("plans"), scope)
+    if not isinstance(visible, list):
+        visible = []
+    public = {**plans, "plans": visible[page.offset : page.offset + page.limit]}
+    if not scope.is_unrestricted():
+        public = {
+            "plans": public["plans"],
+            "generated_at": plans.get("generated_at", ""),
+            "read_only": plans.get("read_only", True),
+            "execution_performed": plans.get("execution_performed", False),
+            "scope_limited": True,
+        }
+    return envelope(
+        public,
+        evidence=Evidence(
+            source_engine="intelligence.RemediationPlanner",
+            source_table="remediation_plans",
+            timestamp=str(plans.get("generated_at") or ""),
+            confidence=CONFIDENCE_MEDIUM,
+        ),
+        scope=scope.to_dict(),
+        pagination=page.to_dict(len(visible)),
+    )
+
+
+@router.get("/remediation-opportunities", summary="Remediation opportunities")
+def remediation_opportunities(
+    context: Context, scope: ReadScope, page: Page
+) -> dict[str, Any]:
+    planner = _require(context, "remediation_provider", "remediation")
+    result = planner.identify_opportunities()
+    opportunities = _filter_rows(result.get("opportunities"), scope)
+    if not isinstance(opportunities, list):
+        opportunities = []
+    public = {
+        **result,
+        "opportunities": opportunities[page.offset : page.offset + page.limit],
+    }
+    if not scope.is_unrestricted():
+        public = {
+            "opportunities": public["opportunities"],
+            "generated_at": result.get("generated_at", ""),
+            "read_only": result.get("read_only", True),
+            "scope_limited": True,
+        }
+    return envelope(
+        public,
+        evidence=Evidence(
+            source_engine="intelligence.RemediationPlanner",
+            source_table="remediation_opportunities",
+            timestamp=str(result.get("generated_at") or ""),
+            confidence=CONFIDENCE_MEDIUM,
+        ),
+        scope=scope.to_dict(),
+        pagination=page.to_dict(len(opportunities)),
+    )

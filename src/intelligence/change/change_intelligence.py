@@ -109,7 +109,10 @@ class ChangeIntelligence:
             name, entity_type = str(row.get("name") or ""), str(row.get("entity_type") or "Resource")
             if not key or not name:
                 continue
-            context = semantic_engine.get_resource_context(key, subject_type=entity_type)
+            try:
+                context = semantic_engine.get_resource_context(key, subject_type=entity_type)
+            except LookupError:
+                continue
             sections = context.get("sections") or {}
             classification = sections.get("operational_classification") or {}
             resources.append({

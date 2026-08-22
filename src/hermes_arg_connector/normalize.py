@@ -1,10 +1,29 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from .network_normalize import NETWORK_ENTITY_TYPES as _NETWORK_ENTITY_TYPES
+from .network_normalize import (
+    normalize_firewall,
+    normalize_firewall_policy,
+    normalize_gateway,
+    normalize_load_balancer,
+    normalize_nic,
+    normalize_nsg,
+    normalize_private_dns_zone,
+    normalize_private_endpoint,
+    normalize_route_table,
+    normalize_vnet,
+    private_dns_link_target,
+)
+
+#: Gateway and load-balancer families share one entity bucket each; the
+#: specific kind (VpnGateway, Bastion, ApplicationGateway, ...) is carried on
+#: the ``entityType`` field of the row.
 ENTITY_TYPES = (
     "ManagementGroup",
     "Subscription",
@@ -13,8 +32,10 @@ ENTITY_TYPES = (
     "VirtualMachine",
     "ArcServer",
     "PatchAssessment",
+    "PatchAssessmentDetail",
     "PatchInstallation",
     "AdvisorRecommendation",
+    *_NETWORK_ENTITY_TYPES,
 )
 
 
@@ -26,8 +47,23 @@ class NormalizedGraph:
 
 
 class Normalizer:
+    """Normalizes raw ARG payloads into canonical entity/relationship rows.
+
+    ``connection_context`` carries subscription-connection identity (for example
+    ``connection_id`` and ``connection_name``) onto every emitted entity so the
+    ontology layer can attribute ingested data to the connection that produced it.
+    """
+
+    def __init__(self, connection_context: Mapping[str, str] | None = None) -> None:
+        self.connection_context = {
+            str(key): str(value)
+            for key, value in dict(connection_context or {}).items()
+            if str(value or "").strip()
+        }
+
     def normalize(self, payload: dict[str, list[dict]], observed_at: datetime) -> NormalizedGraph:
         observed = _iso(observed_at)
+        context = self.connection_context
         graph = NormalizedGraph()
         entity_index: dict[str, dict[str, dict]] = {name: {} for name in ENTITY_TYPES}
         edge_index: dict[str, dict] = {}
@@ -66,6 +102,21 @@ class Normalizer:
             if target:
                 _add_edge(edge_index, target, "assessedBy", entity["id"], "arg:PatchAssessmentResources", observed, 0.98)
 
+        for row in payload.get("patch_assessment_details", []):
+            entity = _patch_assessment_detail(row, observed)
+            entity_index["PatchAssessmentDetail"][entity["id"]] = entity
+            target = entity.get("targetResourceId", "")
+            if target:
+                _add_edge(
+                    edge_index,
+                    target,
+                    "hasMissingPatch",
+                    entity["id"],
+                    "arg:PatchAssessmentResources",
+                    observed,
+                    0.98,
+                )
+
         for row in payload.get("patch_installations", []):
             entity = _patch_installation(row, observed)
             entity_index["PatchInstallation"][entity["id"]] = entity
@@ -89,6 +140,13 @@ class Normalizer:
                 _add_edge(edge_index, entity["id"], "impacts", target, "arg:AdvisorResources", observed, 0.98)
 
         graph.changes = [_change(row, observed) for row in payload.get("resource_changes", [])]
+        self._normalize_network(payload, observed, entity_index, edge_index)
+        if context:
+            for entity_type in ENTITY_TYPES:
+                for entity in entity_index[entity_type].values():
+                    entity.update(context)
+            for change in graph.changes:
+                change.update(context)
         for entity_type in ENTITY_TYPES:
             graph.entities[entity_type] = sorted(entity_index[entity_type].values(), key=lambda item: item["id"])
         known_entity_ids = {
@@ -105,6 +163,176 @@ class Normalizer:
             key=lambda item: item["relationshipId"],
         )
         return graph
+
+
+    def _normalize_network(
+        self,
+        payload: dict[str, list[dict]],
+        observed: str,
+        entity_index: dict[str, dict[str, dict]],
+        edge_index: dict[str, dict],
+    ) -> None:
+        """Flattens network payloads into entities plus topology edges.
+
+        Sub-resources (subnets, rules, routes, peerings) become first-class
+        entities because ``_add_edge`` drops any edge whose endpoints are not
+        emitted, and topology analysis needs to address them individually.
+        """
+        source = "arg:Resources"
+
+        def record(entity_type: str, entity: dict) -> None:
+            entity_index[entity_type][entity["id"]] = entity
+
+        def link(subject: str, predicate: str, obj: str, confidence: float = 1.0) -> None:
+            _add_edge(edge_index, subject, predicate, obj, source, observed, confidence)
+
+        def containment(row: dict, entity: dict) -> None:
+            """Anchors an entity to its resource group / subscription."""
+            parent = _resource_group_key(row) or _subscription_key(row)
+            link(entity["id"], "belongsTo", parent)
+
+        for row in payload.get("network_vnets", []):
+            base = _base(row, observed, source)
+            base["resourceType"] = _lower(row.get("type"))
+            base["tags"] = row.get("tags") or {}
+            vnet, subnets, peerings = normalize_vnet(base, row, observed)
+            record("VNet", vnet)
+            containment(row, vnet)
+            for subnet in subnets:
+                record("Subnet", subnet)
+                link(vnet["id"], "contains", subnet["id"])
+                if subnet.get("nsgId"):
+                    link(subnet["id"], "protectedBy", subnet["nsgId"], 0.99)
+                if subnet.get("routeTableId"):
+                    link(subnet["id"], "routedBy", subnet["routeTableId"], 0.99)
+                if subnet.get("natGatewayId"):
+                    link(subnet["id"], "egressesVia", subnet["natGatewayId"], 0.99)
+            for peering in peerings:
+                record("VNetPeering", peering)
+                link(vnet["id"], "hasPeering", peering["id"])
+                if peering.get("remoteVnetId"):
+                    link(peering["id"], "peersWith", peering["remoteVnetId"], 0.99)
+
+        for row in payload.get("network_security_groups", []):
+            base = _base(row, observed, source)
+            base["resourceType"] = _lower(row.get("type"))
+            base["tags"] = row.get("tags") or {}
+            nsg, rules = normalize_nsg(base, row, observed)
+            record("NetworkSecurityGroup", nsg)
+            containment(row, nsg)
+            for rule in rules:
+                record("NetworkSecurityRule", rule)
+                link(nsg["id"], "hasRule", rule["id"])
+
+        for row in payload.get("network_route_tables", []):
+            base = _base(row, observed, source)
+            base["resourceType"] = _lower(row.get("type"))
+            base["tags"] = row.get("tags") or {}
+            table, routes = normalize_route_table(base, row, observed)
+            record("RouteTable", table)
+            containment(row, table)
+            for route in routes:
+                record("Route", route)
+                link(table["id"], "hasRoute", route["id"])
+
+        for row in payload.get("network_interfaces", []):
+            base = _base(row, observed, source)
+            base["resourceType"] = _lower(row.get("type"))
+            base["tags"] = row.get("tags") or {}
+            nic = normalize_nic(base, row, observed)
+            record("NetworkInterface", nic)
+            containment(row, nic)
+            if nic.get("subnetId"):
+                link(nic["id"], "attachedTo", nic["subnetId"], 0.99)
+            if nic.get("nsgId"):
+                link(nic["id"], "protectedBy", nic["nsgId"], 0.99)
+            if nic.get("attachedResourceId"):
+                link(nic["attachedResourceId"], "hasNetworkInterface", nic["id"], 0.99)
+
+        for row in payload.get("network_firewalls", []):
+            base = _base(row, observed, source)
+            base["resourceType"] = _lower(row.get("type"))
+            base["tags"] = row.get("tags") or {}
+            firewall = normalize_firewall(base, row, observed)
+            record("AzureFirewall", firewall)
+            containment(row, firewall)
+            if firewall.get("subnetId"):
+                link(firewall["id"], "attachedTo", firewall["subnetId"], 0.99)
+            if firewall.get("policyId"):
+                link(firewall["id"], "enforcesPolicy", firewall["policyId"], 0.99)
+
+        for row in payload.get("network_firewall_policies", []):
+            base = _base(row, observed, source)
+            base["resourceType"] = _lower(row.get("type"))
+            base["tags"] = row.get("tags") or {}
+            policy, collections, rules = normalize_firewall_policy(base, row, observed)
+            if policy is not None:
+                record("FirewallPolicy", policy)
+                containment(row, policy)
+            for collection in collections:
+                record("FirewallRuleCollection", collection)
+                link(collection["policyId"], "hasRuleCollection", collection["id"], 0.99)
+            for rule in rules:
+                record("FirewallRule", rule)
+                link(rule["collectionId"], "hasRule", rule["id"])
+
+        for row in payload.get("network_private_endpoints", []):
+            base = _base(row, observed, source)
+            base["resourceType"] = _lower(row.get("type"))
+            base["tags"] = row.get("tags") or {}
+            endpoint = normalize_private_endpoint(base, row, observed)
+            record("PrivateEndpoint", endpoint)
+            containment(row, endpoint)
+            if endpoint.get("subnetId"):
+                link(endpoint["id"], "attachedTo", endpoint["subnetId"], 0.99)
+            if endpoint.get("targetResourceId"):
+                link(endpoint["id"], "exposesPrivately", endpoint["targetResourceId"], 0.98)
+
+        dns_zones: dict[str, dict] = {}
+        dns_links: list[tuple[str, str]] = []
+        for row in payload.get("network_private_dns_zones", []):
+            base = _base(row, observed, source)
+            base["resourceType"] = _lower(row.get("type"))
+            base["tags"] = row.get("tags") or {}
+            zone = normalize_private_dns_zone(base, row, observed)
+            if zone is None:
+                zone_id, vnet_id = private_dns_link_target(row)
+                if zone_id and vnet_id:
+                    dns_links.append((zone_id, vnet_id))
+                continue
+            dns_zones[zone["id"]] = zone
+            containment(row, zone)
+        for zone_id, vnet_id in dns_links:
+            zone = dns_zones.get(zone_id)
+            if zone is not None and vnet_id not in zone["linkedVnetIds"]:
+                zone["linkedVnetIds"].append(vnet_id)
+            link(zone_id, "resolvesFor", vnet_id, 0.98)
+        for zone in dns_zones.values():
+            record("PrivateDnsZone", zone)
+
+        for row in payload.get("network_gateways", []):
+            base = _base(row, observed, source)
+            base["resourceType"] = _lower(row.get("type"))
+            base["tags"] = row.get("tags") or {}
+            gateway = normalize_gateway(base, row, observed)
+            record("NetworkGateway", gateway)
+            containment(row, gateway)
+            if gateway.get("subnetId"):
+                link(gateway["id"], "attachedTo", gateway["subnetId"], 0.99)
+            elif gateway.get("vnetId"):
+                link(gateway["id"], "attachedTo", gateway["vnetId"], 0.95)
+
+        for row in payload.get("network_load_balancers", []):
+            base = _base(row, observed, source)
+            base["resourceType"] = _lower(row.get("type"))
+            base["tags"] = row.get("tags") or {}
+            balancer = normalize_load_balancer(base, row, observed)
+            record("LoadBalancer", balancer)
+            containment(row, balancer)
+            if balancer.get("subnetId"):
+                link(balancer["id"], "attachedTo", balancer["subnetId"], 0.99)
+            for backend in balancer.get("backendResourceIds", []):
+                link(balancer["id"], "loadBalances", backend, 0.9)
 
 
 def _base(row: dict, observed: str, source: str) -> dict:
@@ -182,6 +410,37 @@ def _patch_assessment(row: dict, observed: str) -> dict:
         "lastModifiedDateTime": str(props.get("lastModifiedDateTime") or ""),
         "properties": props,
     })
+    return entity
+
+
+def _patch_assessment_detail(row: dict, observed: str) -> dict:
+    """Per-KB pending/missing patch detail (the ``/softwarepatches`` sub-type
+    of ``patchassessmentresources``). This is the row shape that actually
+    carries a KB id, MSRC severity, and classification per outstanding
+    update -- the aggregate ``PatchAssessment`` entity only has counts."""
+    entity = _base(row, observed, "arg:PatchAssessmentResources")
+    props = row.get("properties") or {}
+    classifications = props.get("classifications") or []
+    target = _lower(
+        props.get("resourceId")
+        or props.get("machineId")
+        or _target_from_assessment_id(row.get("id"))
+    )
+    entity.update(
+        {
+            "targetResourceId": target,
+            "updateName": str(props.get("patchName") or row.get("name") or ""),
+            "kbId": str(props.get("kbId") or row.get("name") or ""),
+            "classifications": classifications
+            if isinstance(classifications, list)
+            else [str(classifications)],
+            "msrcSeverity": str(props.get("msrcSeverity") or ""),
+            "rebootBehavior": str(props.get("rebootBehavior") or ""),
+            "publishedDateTime": str(props.get("publishedDateTime") or ""),
+            "lastModifiedDateTime": str(props.get("lastModifiedDateTime") or ""),
+            "properties": props,
+        }
+    )
     return entity
 
 

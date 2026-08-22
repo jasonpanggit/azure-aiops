@@ -16,6 +16,16 @@ def test_relative_output_dir_resolves_from_config_directory(tmp_path: Path) -> N
     assert loaded.output_dir == (config_dir / "datasets").resolve()
 
 
+def test_remote_output_dir_is_preserved_as_uri(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    root = "abfss://hermes@account.dfs.core.windows.net/discovery"
+    config.write_text(f"storage:\n  output_dir: {root}\n")
+
+    loaded = ConnectorConfig.load(config)
+
+    assert loaded.output_dir == root
+
+
 def test_production_defaults_use_preinstalled_mcp_and_bounded_runtime(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text("storage:\n  output_dir: ./data\n")

@@ -60,6 +60,14 @@ class QueryCatalog:
                 False,
             ),
             QuerySpec(
+                "patch_assessment_details",
+                "PatchAssessmentResources",
+                "patchassessmentresources "
+                "| where type endswith '/softwarepatches' "
+                f"| {projection}",
+                False,
+            ),
+            QuerySpec(
                 "patch_installations",
                 "PatchInstallationResources",
                 "patchinstallationresources "
@@ -75,6 +83,7 @@ class QueryCatalog:
                 f"| {projection}",
                 False,
             ),
+            *_network_specs(projection),
         ]
         if include_management_groups:
             specs.insert(
@@ -90,3 +99,58 @@ class QueryCatalog:
                 ),
             )
         return specs
+
+
+#: ARM resource types fetched for network topology, grouped by payload key.
+#: Each key becomes a ``NormalizedGraph`` entity family in ``normalize.py``.
+NETWORK_RESOURCE_TYPES: dict[str, tuple[str, ...]] = {
+    "network_vnets": ("microsoft.network/virtualnetworks",),
+    "network_security_groups": ("microsoft.network/networksecuritygroups",),
+    "network_route_tables": ("microsoft.network/routetables",),
+    "network_interfaces": ("microsoft.network/networkinterfaces",),
+    "network_firewalls": ("microsoft.network/azurefirewalls",),
+    "network_firewall_policies": (
+        "microsoft.network/firewallpolicies",
+        "microsoft.network/firewallpolicies/rulecollectiongroups",
+    ),
+    "network_private_endpoints": ("microsoft.network/privateendpoints",),
+    "network_private_dns_zones": (
+        "microsoft.network/privatednszones",
+        "microsoft.network/privatednszones/virtualnetworklinks",
+    ),
+    "network_gateways": (
+        "microsoft.network/virtualnetworkgateways",
+        "microsoft.network/expressroutegateways",
+        "microsoft.network/expressroutecircuits",
+        "microsoft.network/natgateways",
+        "microsoft.network/bastionhosts",
+        "microsoft.network/dnsresolvers",
+        "microsoft.network/vpngateways",
+    ),
+    "network_load_balancers": (
+        "microsoft.network/loadbalancers",
+        "microsoft.network/applicationgateways",
+    ),
+}
+
+
+def _network_specs(projection: str) -> list[QuerySpec]:
+    """One ARG query per network family.
+
+    Split by family rather than issued as a single broad query so that a
+    failure or throttle on one resource type does not blank the entire
+    topology — a partially observed estate is reported as partial, never as
+    an estate with no firewall.
+    """
+    specs: list[QuerySpec] = []
+    for name, resource_types in NETWORK_RESOURCE_TYPES.items():
+        types = ", ".join(f"'{value}'" for value in resource_types)
+        specs.append(
+            QuerySpec(
+                name,
+                "Resources",
+                f"Resources | where type in~ ({types}) | {projection}",
+                False,
+            )
+        )
+    return specs

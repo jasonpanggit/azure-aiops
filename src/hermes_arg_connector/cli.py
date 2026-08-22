@@ -31,6 +31,19 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     sample.add_argument("--fixture", default="tests/fixtures/mock_arg_responses.json")
     sample.add_argument("--output-dir", default="./sample-data")
 
+    local = actions.add_parser("local", help="Seed offline local API data from a fixture")
+    local.add_argument("--fixture", default="tests/fixtures/mock_arg_responses.json")
+    local.add_argument("--home", default=".hermes-local")
+    local.add_argument("--connection-id", default="local-demo")
+
+    local_spn = actions.add_parser(
+        "local-spn", help="Register a local SPN connection from AZURE_* env vars"
+    )
+    local_spn.add_argument("--home", default=".hermes-local")
+    local_spn.add_argument("--connection-id", default="local-spn")
+    local_spn.add_argument("--name", default="Local SPN Subscription")
+    local_spn.add_argument("--sync", action="store_true", help="Run discovery after injecting the connection")
+
     fabric = actions.add_parser("fabric", help="Run a Microsoft Fabric inventory command")
     fabric.add_argument("command")
     fabric.add_argument("--config", default="fabric.config.yaml")
@@ -54,7 +67,92 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     operations.add_argument("--subject-type", default="")
     operations.add_argument("--config", default="fabric.config.yaml")
 
+    activate = actions.add_parser(
+        "activate",
+        help="Validate subscriptions, discover, publish to Fabric, and activate ontology",
+    )
+    activate.add_argument("--config", default="config.yaml")
+    activate.add_argument("--fabric-config", default="fabric.config.yaml")
+    activate.add_argument(
+        "--connection-id",
+        action="append",
+        default=[],
+        help="Connection to activate; repeat for hub and spoke. Defaults to all active.",
+    )
+
+    subscriptions = actions.add_parser(
+        "subscriptions", help="Onboard and operate Azure subscription connections"
+    )
+    register_subscription_cli(subscriptions)
+
     parser.set_defaults(func=cli_command)
+
+
+def register_subscription_cli(parser: argparse.ArgumentParser) -> None:
+    commands = parser.add_subparsers(dest="subscriptions_command")
+
+    def with_config(sub: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        sub.add_argument("--config", default="config.yaml")
+        return sub
+
+    add = with_config(commands.add_parser("add", help="Onboard a subscription using a dedicated SPN"))
+    add.add_argument("connection_id")
+    add.add_argument("--name", default="")
+    add.add_argument("--tenant-id", required=True)
+    add.add_argument("--subscription-id", required=True)
+    add.add_argument("--client-id", required=True)
+    add.add_argument(
+        "--secret-ref",
+        required=True,
+        help="Secret pointer, e.g. keyvault://<vault>/secrets/<name> or env://VAR",
+    )
+    add.add_argument("--credential-id", default="")
+    _add_metadata_arguments(add)
+
+    listing = with_config(commands.add_parser("list", help="List registered subscription connections"))
+    listing.add_argument("--active-only", action="store_true")
+
+    detail = with_config(commands.add_parser("detail", help="Show one connection in full"))
+    detail.add_argument("connection_id")
+
+    update = with_config(commands.add_parser("update", help="Update connection name or credential"))
+    update.add_argument("connection_id")
+    update.add_argument("--name", default="")
+    update.add_argument("--client-id", default="")
+    update.add_argument("--secret-ref", default="")
+    update.add_argument("--credential-id", default="")
+
+    validate = with_config(commands.add_parser("validate", help="Validate SPN access for a connection"))
+    validate.add_argument("connection_id")
+    validate.add_argument("--check", action="append", default=[])
+
+    sync = with_config(commands.add_parser("sync", help="Run a connection-scoped ingestion sync"))
+    sync.add_argument("connection_id")
+    sync.add_argument("--mode", default="initial", choices=("initial", "scheduled", "manual"))
+
+    health = with_config(commands.add_parser("health", help="Show connection health and freshness"))
+    health.add_argument("connection_id", nargs="?", default="")
+
+    mapping = with_config(commands.add_parser("map", help="Assign business metadata to a connection"))
+    mapping.add_argument("connection_id")
+    _add_metadata_arguments(mapping)
+
+    disable = with_config(commands.add_parser("disable", help="Disable a connection"))
+    disable.add_argument("connection_id")
+
+    enable = with_config(commands.add_parser("enable", help="Re-enable a disabled connection"))
+    enable.add_argument("connection_id")
+
+
+def _add_metadata_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--business-service", default="")
+    parser.add_argument("--application", default="")
+    parser.add_argument("--environment", default="")
+    parser.add_argument("--project-owner", default="")
+    parser.add_argument("--support-team", default="")
+    parser.add_argument("--criticality", default="")
+    parser.add_argument("--region", default="")
+    parser.add_argument("--cost-center", default="")
 
 
 def cli_command(args: argparse.Namespace) -> int:
@@ -82,6 +180,27 @@ def cli_command(args: argparse.Namespace) -> int:
             {"runId": "sample", "status": "completed", "queryVersion": "1.0.0"},
         )
         print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
+    if action == "local":
+        from .local import seed_local_environment
+
+        result = seed_local_environment(
+            root=args.home,
+            fixture=args.fixture,
+            connection_id=args.connection_id,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if action == "local-spn":
+        from .local import inject_local_spn_connection
+
+        result = inject_local_spn_connection(
+            root=args.home,
+            connection_id=args.connection_id,
+            name=args.name,
+            sync=args.sync,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     if action == "fabric":
         from fabric.commands import FabricCommandService
@@ -123,11 +242,126 @@ def cli_command(args: argparse.Namespace) -> int:
         )
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return 0
+    if action == "activate":
+        from onboarding.activation import activate_runtime
+        from onboarding.runtime import build_onboarding_service
+
+        try:
+            result = activate_runtime(
+                build_onboarding_service(ConnectorConfig.load(args.config)),
+                fabric_config=args.fabric_config,
+                connection_ids=args.connection_id or None,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            print(
+                json.dumps(
+                    {"status": "error", "message": str(exc)},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 1
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        return 0
+    if action == "subscriptions":
+        return subscriptions_command(args)
     print(
         "Usage: hermes azure-graph "
-        "{sync|query|schedule|sample|fabric|ontology|semantic|operations}"
+        "{sync|query|schedule|sample|local|local-spn|fabric|ontology|semantic|operations|activate|subscriptions}"
     )
     return 2
+
+
+def subscriptions_command(args: argparse.Namespace) -> int:
+    from onboarding.metadata import BusinessMetadata
+    from onboarding.registry import (
+        ConnectionNotFoundError,
+        DuplicateConnectionError,
+        RegistryConflictError,
+    )
+    from onboarding.runtime import build_onboarding_service
+    from onboarding.service import OnboardingError
+
+    command = getattr(args, "subscriptions_command", None)
+    if not command:
+        print(
+            "Usage: hermes-arg subscriptions "
+            "{add|list|detail|update|validate|sync|health|map|disable|enable}"
+        )
+        return 2
+
+    service = build_onboarding_service(ConnectorConfig.load(args.config))
+    try:
+        result = _dispatch_subscriptions(service, command, args, BusinessMetadata)
+    except (
+        ConnectionNotFoundError,
+        DuplicateConnectionError,
+        RegistryConflictError,
+        OnboardingError,
+        ValueError,
+    ) as exc:
+        print(json.dumps({"status": "error", "message": str(exc)}, indent=2, sort_keys=True))
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    if command == "validate" and not result.get("passed"):
+        return 1
+    if command == "sync" and result.get("status") != "succeeded":
+        return 1
+    return 0
+
+
+def _dispatch_subscriptions(service, command: str, args: argparse.Namespace, metadata_cls):
+    if command == "add":
+        return service.add(
+            connection_id=args.connection_id,
+            name=args.name or None,
+            tenant_id=args.tenant_id,
+            subscription_id=args.subscription_id,
+            client_id=args.client_id,
+            secret_ref=args.secret_ref,
+            credential_id=args.credential_id or None,
+            metadata=_metadata_from_args(args, metadata_cls),
+        )
+    if command == "list":
+        return service.list(include_disabled=not args.active_only)
+    if command == "detail":
+        return service.detail(args.connection_id)
+    if command == "update":
+        return service.update(
+            args.connection_id,
+            name=args.name or None,
+            client_id=args.client_id or None,
+            secret_ref=args.secret_ref or None,
+            credential_id=args.credential_id or None,
+        )
+    if command == "validate":
+        return service.validate(
+            args.connection_id, checks=tuple(args.check) if args.check else None
+        )
+    if command == "sync":
+        return service.sync(args.connection_id, mode=args.mode)
+    if command == "health":
+        return service.health_report(args.connection_id or None)
+    if command == "map":
+        return service.map_metadata(args.connection_id, _metadata_from_args(args, metadata_cls))
+    if command == "disable":
+        return service.disable(args.connection_id)
+    if command == "enable":
+        return service.enable(args.connection_id)
+    raise ValueError(f"Unknown subscriptions command: {command}")
+
+
+def _metadata_from_args(args: argparse.Namespace, metadata_cls):
+    return metadata_cls(
+        business_service=getattr(args, "business_service", "") or None,
+        application=getattr(args, "application", "") or None,
+        environment=getattr(args, "environment", "") or None,
+        project_owner=getattr(args, "project_owner", "") or None,
+        support_team=getattr(args, "support_team", "") or None,
+        criticality=getattr(args, "criticality", "") or None,
+        region=getattr(args, "region", "") or None,
+        cost_center=getattr(args, "cost_center", "") or None,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

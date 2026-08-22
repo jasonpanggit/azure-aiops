@@ -212,9 +212,12 @@ class LifecycleIntelligence:
             if not resource_key or not name:
                 raise ValueError("Lifecycle inventory rows require resource identity and name")
             impact_started = semantic_clock()
-            context = semantic_engine.get_resource_context(
-                resource_key, subject_type=entity_type
-            )
+            try:
+                context = semantic_engine.get_resource_context(
+                    resource_key, subject_type=entity_type
+                )
+            except LookupError:
+                continue
             semantic_telemetry.business_impact_latency.record(
                 semantic_clock() - impact_started
             )

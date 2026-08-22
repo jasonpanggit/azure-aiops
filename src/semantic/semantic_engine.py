@@ -243,6 +243,26 @@ class SemanticEngine:
             lambda: self._build_environment_context(environment),
         )
 
+    def get_subscription_connection_context(self, connection: str) -> dict[str, Any]:
+        return self._cached_context(
+            "subscription_connection",
+            connection,
+            lambda: self._build_subscription_connection_context(connection),
+        )
+
+    def get_network_context(self, vnet: str) -> dict[str, Any]:
+        return self._cached_context(
+            "network",
+            vnet,
+            lambda: self._build_network_context(vnet),
+        )
+
+    def public_subject(
+        self, subject: str, *, types: set[str] | None = None
+    ) -> dict[str, str]:
+        """Resolve a subject to its safe, scope-bearing public projection."""
+        return self.indexes.public(self.indexes.resolve(subject, types=types))
+
     def application_context(self, application: str) -> dict[str, Any]:
         return self.get_application_context(application)
 
@@ -258,6 +278,12 @@ class SemanticEngine:
 
     def subscription_context(self, subscription: str) -> dict[str, Any]:
         return self.get_subscription_context(subscription)
+
+    def subscription_connection_context(self, connection: str) -> dict[str, Any]:
+        return self.get_subscription_connection_context(connection)
+
+    def network_context(self, vnet: str) -> dict[str, Any]:
+        return self.get_network_context(vnet)
 
     def risk_context(
         self, subject: str, *, subject_type: str = ""
@@ -446,7 +472,15 @@ class SemanticEngine:
             return cached
         started = self.clock()
         normalized = " ".join(query.strip().rstrip(".?!").casefold().split())
-        if "production applications" in normalized:
+        if (
+            ("virtual machine" in normalized or "virtual machines" in normalized or "vms" in normalized)
+            and any(
+                marker in normalized
+                for marker in ("show", "list", "all", "which", "what")
+            )
+        ):
+            ids = set(self.indexes.by_type.get("VirtualMachine", []))
+        elif "production applications" in normalized:
             ids = {
                 application_id
                 for application_id in self.indexes.by_type.get("Application", [])
@@ -542,7 +576,7 @@ class SemanticEngine:
             }
         else:
             raise ValueError(
-                "Supported semantic searches: production applications; applications owned by; "
+                "Supported semantic searches: show list of VMs; production applications; applications owned by; "
                 "servers with failed patches; resources missing ownership; applications missing ownership; resources related "
                 "to Business Service; critical infrastructure"
             )
@@ -573,6 +607,8 @@ class SemanticEngine:
             result = self.get_resource_context(query.subject)
         elif query.intent is SemanticIntent.SUBSCRIPTION_CONTEXT:
             result = self.get_subscription_context(query.subject)
+        elif query.intent is SemanticIntent.NETWORK_CONTEXT:
+            result = self.get_network_context(query.subject)
         elif query.intent is SemanticIntent.ORPHAN_RESOURCES:
             contextual_predicates = {"member_of", "owned_by", "belongs_to", "provides"}
             ids = {
@@ -917,6 +953,17 @@ class SemanticEngine:
             },
         )
 
+    def _resolve_subscription(self, subscription_id: str) -> str:
+        """Resolve a bare subscription GUID (as stored on connection rows) to its
+        canonical Subscription entity id. ``SemanticIndexes.resolve`` only matches
+        display names or exact entity keys, but subscription entities are keyed as
+        ``/subscriptions/{id}`` while connection rows store the bare GUID.
+        """
+        canonical = f"/subscriptions/{subscription_id}".casefold()
+        if canonical in self.indexes.entities:
+            return canonical
+        return self.indexes.resolve(subscription_id, types={"Subscription"})
+
     def _build_subscription_context(self, subscription: str) -> dict[str, Any]:
         subscription_id = self.indexes.resolve(subscription, types={"Subscription"})
         source = self.indexes.entities[subscription_id]
@@ -1013,6 +1060,168 @@ class SemanticEngine:
             },
         )
 
+    def _build_network_context(self, vnet: str) -> dict[str, Any]:
+        """Network context for one VNet, traversed through the ontology.
+
+        This is the read path the Operations API uses. It never touches ARG or
+        the network engine's own snapshot -- everything is derived from the
+        semantic graph, so the Semantic Knowledge Layer stays the single source
+        of truth for callers.
+        """
+        vnet_id = self.indexes.resolve(vnet, types={"VNet"})
+        subnets = self.indexes.subnets_for_vnet(vnet_id)
+        peerings = self.indexes.peerings_for_vnet(vnet_id)
+        peers = self.indexes.peered_vnets(vnet_id)
+
+        security_groups: set[str] = set()
+        security_rules: set[str] = set()
+        route_tables: set[str] = set()
+        routes: set[str] = set()
+        resources: set[str] = set()
+        for subnet_id in subnets:
+            for nsg_id in self.indexes.nsg_for_subnet(subnet_id):
+                security_groups.add(nsg_id)
+                security_rules.update(self.indexes.rules_for_nsg(nsg_id))
+            for table_id in self.indexes.route_table_for_subnet(subnet_id):
+                route_tables.add(table_id)
+                routes.update(self.indexes.routes_for_table(table_id))
+            resources.update(self.indexes.resources_for_subnet(subnet_id))
+
+        firewalls: set[str] = set()
+        firewall_rule_collections: set[str] = set()
+        firewall_rules: set[str] = set()
+        private_endpoints: set[str] = set()
+        for subnet_id in subnets:
+            firewalls.update(
+                self.indexes.related(
+                    subnet_id, "attachedTo", direction="in", types={"AzureFirewall"}
+                )
+            )
+            private_endpoints.update(
+                self.indexes.related(
+                    subnet_id, "attachedTo", direction="in", types={"PrivateEndpoint"}
+                )
+            )
+        for firewall_id in firewalls:
+            for policy_id in self.indexes.policies_for_firewall(firewall_id):
+                firewall_rule_collections.update(
+                    self.indexes.related(
+                        policy_id,
+                        "hasRuleCollection",
+                        types={"FirewallRuleCollection"},
+                    )
+                )
+                firewall_rules.update(
+                    self.indexes.firewall_rules_for_policy(policy_id)
+                )
+            firewall_rule_collections.update(
+                self.indexes.related(
+                    firewall_id,
+                    "hasRuleCollection",
+                    types={"FirewallRuleCollection"},
+                )
+            )
+        for collection_id in set(firewall_rule_collections):
+            firewall_rules.update(
+                self.indexes.related(collection_id, "hasRule", types={"FirewallRule"})
+            )
+
+        dns_zones = self.indexes.related(
+            vnet_id, "resolvesFor", direction="in", types={"PrivateDnsZone"}
+        )
+
+        sections = {
+            "vnets": self._public_rows(peers),
+            "subnets": self._public_rows(subnets),
+            "peerings": self._public_rows(peerings),
+            "security_groups": self._public_rows(security_groups),
+            "security_rules": self._public_rows(security_rules),
+            "route_tables": self._public_rows(route_tables),
+            "routes": self._public_rows(routes),
+            "firewalls": self._public_rows(firewalls),
+            "firewall_rule_collections": self._public_rows(firewall_rule_collections),
+            "firewall_rules": self._public_rows(firewall_rules),
+            "private_endpoints": self._public_rows(private_endpoints),
+            "dns_zones": self._public_rows(dns_zones),
+            "topology": {
+                "subnet_count": len(subnets),
+                "peer_count": len(peers),
+                "traverses_firewall": bool(firewalls),
+                "has_private_dns": bool(dns_zones),
+            },
+        }
+        return self._context(
+            "network",
+            vnet_id,
+            sections,
+            self._aggregate_risk(resources),
+            section_totals={
+                "vnets": len(peers),
+                "subnets": len(subnets),
+                "peerings": len(peerings),
+                "security_groups": len(security_groups),
+                "security_rules": len(security_rules),
+                "route_tables": len(route_tables),
+                "routes": len(routes),
+                "firewalls": len(firewalls),
+                "firewall_rule_collections": len(firewall_rule_collections),
+                "firewall_rules": len(firewall_rules),
+                "private_endpoints": len(private_endpoints),
+                "dns_zones": len(dns_zones),
+            },
+        )
+
+    def _build_subscription_connection_context(self, connection: str) -> dict[str, Any]:
+        connection_id = self.indexes.resolve(connection, types={"SubscriptionConnection"})
+        row = self.indexes.entities[connection_id]
+        subscription_id = str(row.get("subscription_id") or "")
+        resources = {
+            resource_id
+            for resource_id in self.indexes.inventory
+            if subscription_id and f"/subscriptions/{subscription_id.casefold()}/" in resource_id.casefold()
+            and resource_id in self.indexes.entities
+        }
+        sections = {
+            "subscription": self.indexes.public(
+                self._resolve_subscription(subscription_id)
+            ) if subscription_id else {},
+            "health": {
+                "status": "unknown",
+                "connections": self.indexes.health_for_connection(connection),
+            },
+            "environment_mappings": [
+                {"environment": self.indexes.public(environment_id) if environment_id else {}}
+                for environment_id in self.indexes.related(
+                    connection_id, "mapped_to", types={"Environment"}
+                )
+            ],
+            "application_mappings": [
+                {"application": self.indexes.public(application_id)}
+                for application_id in self.indexes.related(
+                    connection_id, "runs", types={"Application"}
+                )
+            ],
+            "business_service_linkages": [
+                {"business_service": self.indexes.public(service_id)}
+                for service_id in self.indexes.related(
+                    connection_id, "supports", types={"BusinessService"}
+                )
+            ],
+            "resources": self._public_rows(resources),
+        }
+        return self._context(
+            "subscription_connection",
+            connection_id,
+            sections,
+            self._aggregate_risk(resources),
+            section_totals={
+                "resources": len(resources),
+                "environment_mappings": len(sections["environment_mappings"]),
+                "application_mappings": len(sections["application_mappings"]),
+                "business_service_linkages": len(sections["business_service_linkages"]),
+            },
+        )
+
     def _context(
         self,
         context_type: str,
@@ -1033,6 +1242,8 @@ class SemanticEngine:
             "resource": "Infrastructure",
             "subscription": "Infrastructure",
             "environment": "Infrastructure",
+            "subscription_connection": "Infrastructure",
+            "network": "Network",
         }[context_type]
         model = self.registry.build(model_name, subject, sections)
         context = SemanticContext(
@@ -1387,12 +1598,130 @@ class SemanticEngine:
             unique.values(), key=lambda row: (row["severity"], row["title"])
         )
 
-    def _public_rows(self, ids: set[str]) -> list[dict[str, str]]:
+    def _public_rows(self, ids: set[str]) -> list[dict[str, Any]]:
         rows = sorted(
-            (self.indexes.public(entity_id) for entity_id in ids if entity_id in self.indexes.entities),
+            (self._public_row(entity_id) for entity_id in ids if entity_id in self.indexes.entities),
             key=lambda row: (row["entity_type"], row["name"]),
         )
         return rows[: self.max_results]
+
+    def _public_row(self, entity_id: str) -> dict[str, Any]:
+        row = self.indexes.public(entity_id)
+        details = self._network_public_details(entity_id)
+        if details:
+            row["details"] = details
+        return row
+
+    def _network_public_details(self, entity_id: str) -> dict[str, Any]:
+        entity = self.indexes.entities.get(entity_id)
+        if not entity:
+            return {}
+        entity_type = str(entity.get("entity_type") or "")
+        payload = _entity_payload(entity)
+        if entity_type == "NetworkSecurityGroup":
+            return {
+                "rules": [
+                    self._network_public_details(rule_id)
+                    | {"id": rule_id, "name": self.indexes.entities[rule_id].get("name", "")}
+                    for rule_id in self.indexes.rules_for_nsg(entity_id)
+                ],
+                "rule_count": len(self.indexes.rules_for_nsg(entity_id)),
+            }
+        if entity_type == "NetworkSecurityRule":
+            return _pick(
+                payload,
+                "priority",
+                "direction",
+                "access",
+                "protocol",
+                "sourceAddress",
+                "source_address",
+                "destinationAddress",
+                "destination_address",
+                "sourcePort",
+                "source_port",
+                "destinationPort",
+                "destination_port",
+                "description",
+                "isDefault",
+                "is_default",
+            )
+        if entity_type == "RouteTable":
+            routes = self.indexes.routes_for_table(entity_id)
+            return {
+                "routes": [
+                    self._network_public_details(route_id)
+                    | {"id": route_id, "name": self.indexes.entities[route_id].get("name", "")}
+                    for route_id in routes
+                ],
+                "route_count": len(routes),
+                **_pick(payload, "disableBgpRoutePropagation", "disable_bgp_route_propagation"),
+            }
+        if entity_type == "Route":
+            return _pick(payload, "addressPrefix", "address_prefix", "nextHopType", "next_hop_type", "nextHopIp", "next_hop_ip")
+        if entity_type == "AzureFirewall":
+            policy_ids = self.indexes.policies_for_firewall(entity_id)
+            rule_ids = {
+                rule_id
+                for policy_id in policy_ids
+                for rule_id in self.indexes.firewall_rules_for_policy(policy_id)
+            }
+            return {
+                "policy_ids": policy_ids,
+                "rules": [
+                    self._network_public_details(rule_id)
+                    | {"id": rule_id, "name": self.indexes.entities[rule_id].get("name", "")}
+                    for rule_id in sorted(rule_ids)
+                ],
+                "rule_count": len(rule_ids),
+                **_pick(payload, "privateIp", "private_ip", "publicIps", "public_ips", "skuTier", "sku_tier"),
+            }
+        if entity_type == "FirewallPolicy":
+            collections = self.indexes.related(entity_id, "hasRuleCollection", types={"FirewallRuleCollection"})
+            return {
+                "rule_collections": [
+                    {"id": collection_id, "name": self.indexes.entities[collection_id].get("name", "")}
+                    for collection_id in collections
+                ],
+                "rule_count": len(self.indexes.firewall_rules_for_policy(entity_id)),
+                **_pick(payload, "basePolicyId", "base_policy_id", "threatIntelMode", "threat_intel_mode"),
+            }
+        if entity_type == "FirewallRuleCollection":
+            rules = self.indexes.related(entity_id, "hasRule", types={"FirewallRule"})
+            return {
+                "rules": [
+                    self._network_public_details(rule_id)
+                    | {"id": rule_id, "name": self.indexes.entities[rule_id].get("name", "")}
+                    for rule_id in rules
+                ],
+                "rule_count": len(rules),
+                **_pick(payload, "priority", "action", "collectionType", "collection_type"),
+            }
+        if entity_type == "FirewallRule":
+            return _pick(
+                payload,
+                "ruleType",
+                "rule_type",
+                "action",
+                "protocols",
+                "sourceAddresses",
+                "source_addresses",
+                "destinationAddresses",
+                "destination_addresses",
+                "destinationPorts",
+                "destination_ports",
+                "destinationFqdns",
+                "destination_fqdns",
+                "sourceIpGroups",
+                "source_ip_groups",
+            )
+        if entity_type == "Subnet":
+            return _pick(payload, "addressPrefixes", "address_prefixes", "nsgId", "routeTableId", "natGatewayId", "serviceEndpoints")
+        if entity_type == "PrivateEndpoint":
+            return _pick(payload, "targetResourceId", "groupIds", "privateIps", "privateDnsZoneIds", "connectionState")
+        if entity_type in {"LoadBalancer", "NetworkGateway"}:
+            return _pick(payload, "sku", "gatewayType", "frontendIps", "publicIps", "privateIps", "backendResourceIds", "connectedCircuitIds")
+        return {}
 
     def _result_items(self, question: str, ids: set[str]) -> dict[str, Any]:
         items = self._public_rows(ids)
@@ -1406,11 +1735,42 @@ class SemanticEngine:
         }
 
     def _bounded_public(self, value: Any) -> Any:
+        scope_keys = {
+            "application",
+            "applicationName",
+            "application_name",
+            "business_service",
+            "businessService",
+            "business_service_name",
+            "connectionId",
+            "connection_id",
+            "criticality",
+            "environment",
+            "environmentName",
+            "environment_name",
+            "location",
+            "owner",
+            "owner_name",
+            "project_owner",
+            "region",
+            "subscription",
+            "subscription_connection",
+            "subscriptionId",
+            "subscription_id",
+            "support_team",
+            "supportTeam",
+            "support_team_name",
+        }
+
         def sanitize(item: Any) -> Any:
             if isinstance(item, dict):
                 result = {}
                 for key, child in item.items():
-                    safe_key = IncidentIntelligence._safe_identifier(key, "field")
+                    safe_key = (
+                        key
+                        if str(key) in scope_keys
+                        else IncidentIntelligence._safe_identifier(key, "field")
+                    )
                     if safe_key in result:
                         raise ValueError("Semantic public mapping key collision")
                     result[safe_key] = sanitize(child)
@@ -1472,3 +1832,29 @@ def _collection_metadata(count: int, returned: int) -> dict[str, int | bool]:
         "returned": returned,
         "truncated": returned < count,
     }
+
+
+def _entity_payload(row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(row.get("payload_json") or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _pick(source: dict[str, Any], *keys: str) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key in keys:
+        if key not in source or source[key] in (None, ""):
+            continue
+        result[_snake(key)] = source[key]
+    return result
+
+
+def _snake(value: str) -> str:
+    chars: list[str] = []
+    for index, char in enumerate(value):
+        if char.isupper() and index > 0:
+            chars.append("_")
+        chars.append(char.lower())
+    return "".join(chars)

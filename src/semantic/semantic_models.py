@@ -3,6 +3,15 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar
 
+from ontology.subscription_connection import (
+    BusinessServiceLinkage,
+    ConnectionHealth,
+    CredentialReference,
+    EnvironmentMapping,
+    SubscriptionConnection,
+    SyncState,
+)
+
 
 @dataclass(frozen=True)
 class SemanticEntity:
@@ -91,6 +100,10 @@ class InfrastructureKnowledge(DomainKnowledge):
         "resources",
         "health",
         "cost",
+        "subscription",
+        "environment_mappings",
+        "application_mappings",
+        "business_service_linkages",
     )
 
 
@@ -136,6 +149,37 @@ class CostKnowledge(DomainKnowledge):
 
 class SecurityKnowledge(DomainKnowledge):
     section_names = ("security_findings",)
+
+
+class NetworkKnowledge(DomainKnowledge):
+    """Network topology, enforcement and design-conformance context.
+
+    ``DomainKnowledge.build`` silently drops undeclared sections, so every
+    section the network context builder emits must be named here.
+    """
+
+    section_names = (
+        "topology",
+        "hubs",
+        "spokes",
+        "vnets",
+        "subnets",
+        "peerings",
+        "shared_services",
+        "firewalls",
+        "firewall_rule_collections",
+        "firewall_rules",
+        "security_groups",
+        "security_rules",
+        "route_tables",
+        "routes",
+        "private_endpoints",
+        "dns_zones",
+        "gaps",
+        "rule_findings",
+        "design_policy",
+        "summary",
+    )
 
 
 @dataclass(frozen=True)
@@ -258,3 +302,18 @@ class RiskScorer:
         if score >= 25:
             return "Moderate"
         return "Low"
+
+
+__all__ = [
+    "BusinessServiceLinkage",
+    "ConnectionHealth",
+    "CredentialReference",
+    "EnvironmentMapping",
+    "RiskAssessment",
+    "RiskInputs",
+    "RiskScorer",
+    "SemanticContext",
+    "SemanticEntity",
+    "SubscriptionConnection",
+    "SyncState",
+]

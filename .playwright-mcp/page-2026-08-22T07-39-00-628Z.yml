@@ -1,0 +1,27 @@
+- generic [ref=f2e5]:
+  - img "Organisation background image" [ref=f2e6]
+  - generic [ref=f2e7]:
+    - generic [ref=f2e13]:
+      - img "Microsoft" [ref=f2e58]
+      - main [ref=f2e17]:
+        - generic [ref=f2e18]:
+          - generic [ref=f2e61]:
+            - button "Back" [ref=f2e62] [cursor=pointer]
+            - generic "admin@mngenvmcap686238.onmicrosoft.com" [ref=f2e63]
+          - generic [ref=f2e64]:
+            - textbox [ref=f2e65]: admin@mngenvmcap686238.onmicrosoft.com
+            - heading "Enter password" [level=1] [ref=f2e67]
+            - generic [ref=f2e69]:
+              - alert
+              - textbox "Enter the password for admin@mngenvmcap686238.onmicrosoft.com" [active] [ref=f2e71]:
+                - /placeholder: Password
+            - link "Forgot my password" [ref=f2e78] [cursor=pointer]:
+              - /url: https://passwordreset.microsoftonline.com/?ru=https%3a%2f%2flogin.microsoftonline.com%2fffc83107-fcc0-4d2e-8798-d582da36505e%2freprocess%3fctx%3drQQIARAAjY-7j9t0AMdzvT6OqrTXTrDd0KnCnN-Pkyphx47j2E5ix-_F8uOX2Bef7cSxHXtEReoCqhADSCwwoTKAYGHs3KkDE1PFgFAlKOON6P6Dbt_hq8_38310iH4Mnz3EYDJCcIyCYEDFEI6FMcTgcAhRTEhTNEKSGIZsH9w-_u6vHz_94egn8dd_v84efSPPXx0c_H1w8Me14xlb7xKUB00agav45trdCmQg2vlBFBV1vnt--Cgo07PT03eZ-uXw4XIZ0RgCU9AyimAIj1EA0RRDQzFBo3GAkQRMgJeH9rszT4MoAlXlB5VfV2B7UiyXWZqDKz9QVSdFCfI0Pim3xTLNwKvr195cvwPfODs6un1874NbJ4Pvb1zd_-rOn9bnH7Lf_nP0-xefvHfw8sbpGmjhnnOBeoqszCSy1yHbuk1ui7wEvNjp8KW3dEcYgnbwY_QMeXaT_-_mwdNbgxfvD768-_wmt2I5SRNYlmVjnqfyIRMSGjWZx36xFjR9pDteY2J6rzkTOLC9xMX0ntWu6izr53XClZbL9tJ0oiQ95DHEuN0jcaoDVzyPtuWin0Z2jGtG1AUBoY-jcUNknpItQlRlkTlFp7ZBTaZMGl40WzDqwwvTixZTRZRXCoUFa3duqzCvuH468ms85STXJ5Z0A0l1tDlPin1CJqrbbYhYIMSs7i94KRgb85gvxmUi092sioumzE3I2peiLq8SqZ46lCbbAFdFiQ5FS90KGApmisI77bioCh9qeiTAoLWr1ARMZtvZblnb8TRKOlPXMWbOb1C_NowuEkYyJXvcCvMzemRiBlXhzh6lSIgjIETEW6lQeDEJyWG1mJb90IoX7mTL-arDRpu1WKcTa-Ub4oJehcOy2uSUX7hhu-5ZpaanQqLnQiFH4VZiTS8bcaqZhLRvQJEAwTQWMlAO2qEkLCSvruTJfreaaaseLQSVsfT5xCaCFvGtYUq6zk4X2dwYeR7ESFzNdvjegrGFyszmsOkPeStIyHVMxKPlslRqluMhvCBDkg4hWbdstpuWozyHNDQr5q5LaHvX4pRpvZ4J9WQXuLwLgDMLzbARcKOekmyDbdWwFGfA3ziRJe_HIY9LZmR67dYvd5uLOl136GKN1RG5RWSyUwR_ZBv783CDnE9dBWnjidyXKwnXmB5PmSYYr6hyZl0QJAYavXKouN5PqBVlhw0LcMZnxGhGX9SKycW0IZ1DMCR3XpP06jCGhr0_00Vk3i7H7K4vNXsDOSO_28FFgGS4QRENWOctW1ALOGyljc1VhkYHsb3PVEbCVY5VW1fQUBt4XO2uWPby7rPfLp989uTF2_Gbex_x0qiwM93WCZrTNinGN5hTbl3n9DzccLpsZoVkTNfzDda1j38-Hrw-Hry-P7i8P3j6YPA_0&mkt=en-GB&hosted=0&device_platform=macOS
+            - button "Sign in" [ref=f2e81] [cursor=pointer]
+    - contentinfo [ref=f2e53]:
+      - generic [ref=f2e54]:
+        - link "Terms of use" [ref=f2e55] [cursor=pointer]:
+          - /url: https://www.microsoft.com/en-GB/servicesagreement/
+        - link "Privacy & cookies" [ref=f2e56] [cursor=pointer]:
+          - /url: https://privacy.microsoft.com/en-GB/privacystatement
+        - button "Click here for troubleshooting information" [ref=f2e57] [cursor=pointer]: ...

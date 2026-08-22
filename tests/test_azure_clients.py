@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from hermes_arg_connector.azure import AzureCliArgClient, AzureMcpClient, CommandResult
+import httpx
+
+from hermes_arg_connector.azure import (
+    AzureCliArgClient,
+    AzureMcpClient,
+    AzureResourceGraphClient,
+    CommandResult,
+)
 from hermes_arg_connector.queries import QuerySpec
 
 
@@ -100,3 +107,31 @@ def test_arg_client_uses_management_group_scope() -> None:
 
     assert "--management-groups" in runner.commands[0]
     assert "--subscriptions" not in runner.commands[0]
+
+
+def test_resource_graph_client_uses_connection_credential_and_subscription_scope() -> None:
+    class Token:
+        token = "connection-token"
+
+    class Credential:
+        def __init__(self) -> None:
+            self.scopes: list[str] = []
+
+        def get_token(self, scope: str):
+            self.scopes.append(scope)
+            return Token()
+
+    requests: list[dict] = []
+
+    def requester(method: str, url: str, **kwargs):
+        requests.append({"method": method, "url": url, **kwargs})
+        return httpx.Response(200, json={"data": [{"id": "resource-1"}]})
+
+    credential = Credential()
+    client = AzureResourceGraphClient(credential, requester=requester)
+    spec = QuerySpec("resources", "Resources", "Resources | project id", False)
+
+    assert client.query(spec, ["connection-subscription"]) == [{"id": "resource-1"}]
+    assert credential.scopes == ["https://management.azure.com/.default"]
+    assert requests[0]["headers"]["Authorization"] == "Bearer connection-token"
+    assert requests[0]["json"]["subscriptions"] == ["connection-subscription"]

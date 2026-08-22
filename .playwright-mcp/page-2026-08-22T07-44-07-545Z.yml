@@ -1,0 +1,134 @@
+- generic [active] [ref=f5e1]:
+  - generic [ref=f5e4]:
+    - banner [ref=f5e5]:
+      - link "AI Operations Workbench" [ref=f5e6] [cursor=pointer]:
+        - /url: /
+        - generic [ref=f5e7]: A
+        - generic [ref=f5e8]:
+          - strong [ref=f5e9]: AI Operations
+          - generic [ref=f5e10]: Workbench
+      - generic [ref=f5e11]:
+        - generic [ref=f5e12]: Operating context
+        - button [ref=f5e13]
+      - generic "Read-only recommendations require operator approval" [ref=f5e17]: Advisory mode
+      - generic "Signed-in operator" [ref=f5e19]: OP
+    - complementary "Primary navigation" [ref=f5e20]:
+      - navigation [ref=f5e21]:
+        - generic [ref=f5e22]: Operate
+        - link "Home" [ref=f5e23] [cursor=pointer]:
+          - /url: /
+          - generic [ref=f5e24]: H
+        - link "Situations" [ref=f5e26] [cursor=pointer]:
+          - /url: /situations
+          - generic [ref=f5e27]: S
+        - link "Services" [ref=f5e29] [cursor=pointer]:
+          - /url: /services
+          - generic [ref=f5e30]: SV
+        - link "Topology" [ref=f5e32] [cursor=pointer]:
+          - /url: /network
+          - generic [ref=f5e33]: T
+        - link "Exposure" [ref=f5e35] [cursor=pointer]:
+          - /url: /exposure
+          - generic [ref=f5e36]: E
+        - link "Changes" [ref=f5e38] [cursor=pointer]:
+          - /url: /changes
+          - generic [ref=f5e39]: C
+        - link "Remediation" [ref=f5e41] [cursor=pointer]:
+          - /url: /remediation
+          - generic [ref=f5e42]: R
+        - generic [ref=f5e45]: Workbench
+        - link "Copilot" [ref=f5e46] [cursor=pointer]:
+          - /url: /copilot
+          - generic [ref=f5e47]: AI
+        - link "Data & integrations" [ref=f5e49] [cursor=pointer]:
+          - /url: /connections
+          - generic [ref=f5e50]: D
+        - link "Administration" [ref=f5e52] [cursor=pointer]:
+          - /url: /admin
+          - generic [ref=f5e53]: A
+      - generic [ref=f5e55]:
+        - 'generic "Unavailable providers: semantic, network, vulnerability, incidents, remediation" [ref=f5e56]': Runtime degraded
+        - generic [ref=f5e58]: Evidence-backed operational intelligence
+    - main [ref=f5e59]:
+      - generic [ref=f5e60]:
+        - generic [ref=f5e61]:
+          - generic [ref=f5e62]:
+            - generic [ref=f5e63]: My operations
+            - heading "What needs attention now" [level=1] [ref=f5e64]
+            - paragraph [ref=f5e65]: Prioritized operational risk across services, applications, environments, subscriptions, and resources.
+          - link "Open Situation queue" [ref=f5e67] [cursor=pointer]:
+            - /url: /situations
+        - complementary "Data trust and provenance" [ref=f5e68]:
+          - generic [ref=f5e69]:
+            - generic [ref=f5e70]: unknown confidence
+            - generic [ref=f5e72]:
+              - strong [ref=f5e73]: Updated
+              - text: Freshness unknown
+          - generic [ref=f5e74]: situations data unavailable · network data unavailable · exposure data unavailable · connections data unavailable
+        - complementary [ref=f5e75]:
+          - generic [ref=f5e76]:
+            - generic [ref=f5e77]: AI
+            - generic [ref=f5e78]:
+              - heading "Ask Operations Copilot" [level=3] [ref=f5e79]
+              - paragraph [ref=f5e80]: Evidence-backed answers scoped to your access.
+          - generic [ref=f5e81]:
+            - link "what needs attention right now →" [ref=f5e82] [cursor=pointer]:
+              - /url: /copilot?q=what%20needs%20attention%20right%20now
+              - text: what needs attention right now
+              - generic [ref=f5e83]: →
+            - link "which services have the highest risk →" [ref=f5e84] [cursor=pointer]:
+              - /url: /copilot?q=which%20services%20have%20the%20highest%20risk
+              - text: which services have the highest risk
+              - generic [ref=f5e85]: →
+            - link "what should be fixed first →" [ref=f5e86] [cursor=pointer]:
+              - /url: /copilot?q=what%20should%20be%20fixed%20first
+              - text: what should be fixed first
+              - generic [ref=f5e87]: →
+        - generic [ref=f5e89]:
+          - article [ref=f5e90]:
+            - generic [ref=f5e91]: Critical situations
+            - generic [ref=f5e92]: "0"
+            - generic [ref=f5e93]: 0 active situations ranked by business impact
+            - link "Investigate now" [ref=f5e95] [cursor=pointer]:
+              - /url: /situations
+          - article [ref=f5e96]:
+            - generic [ref=f5e97]: Internet-reachable CVEs
+            - generic [ref=f5e98]: —
+            - generic [ref=f5e99]: 0 reachable servers require review
+            - link "Review exposure" [ref=f5e101] [cursor=pointer]:
+              - /url: /exposure
+          - article [ref=f5e102]:
+            - generic [ref=f5e103]: Network control gaps
+            - generic [ref=f5e104]: —
+            - generic [ref=f5e105]: 0 rule findings across observed paths
+            - link "Analyze paths" [ref=f5e107] [cursor=pointer]:
+              - /url: /network
+          - article [ref=f5e108]:
+            - generic [ref=f5e109]: Data coverage risk
+            - generic [ref=f5e110]: "0"
+            - generic [ref=f5e111]: 0 onboarded subscription connections
+            - link "Check integrations" [ref=f5e113] [cursor=pointer]:
+              - /url: /connections
+        - generic [ref=f5e114]:
+          - generic [ref=f5e115]:
+            - generic [ref=f5e116]:
+              - heading "Priority situations" [level=2] [ref=f5e117]
+              - paragraph [ref=f5e118]: Ranked by severity, business blast radius, and recency—not alert volume.
+            - link "View all" [ref=f5e119] [cursor=pointer]:
+              - /url: /situations
+          - status [ref=f5e121]:
+            - generic [ref=f5e122]: ○
+            - heading "No active situations in this scope" [level=2] [ref=f5e123]
+            - paragraph [ref=f5e124]: No incident correlations are currently available. Data coverage and freshness remain visible below.
+        - generic [ref=f5e125]:
+          - article [ref=f5e126]:
+            - generic [ref=f5e128]:
+              - heading "Service risk concentration" [level=2] [ref=f5e129]
+              - paragraph [ref=f5e130]: Where active situations create the greatest operational exposure.
+            - generic [ref=f5e131]: No service risk is currently correlated.
+          - article [ref=f5e133]:
+            - generic [ref=f5e135]:
+              - heading "Operational data coverage" [level=2] [ref=f5e136]
+              - paragraph [ref=f5e137]: Confidence in the evidence behind workbench recommendations.
+            - generic [ref=f5e138]: No subscription connections are visible in this scope.
+  - alert [ref=f5e140]

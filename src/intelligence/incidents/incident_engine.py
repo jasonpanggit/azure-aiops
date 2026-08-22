@@ -11,21 +11,30 @@ from .root_cause_engine import RootCauseEngine
 class IncidentEngine:
     """Requested operational reasoning facade over verified incident intelligence."""
 
-    def __init__(self, intelligence) -> None:
+    def __init__(self, intelligence, *, network_provider=None, vulnerability_provider=None) -> None:
         self.intelligence = intelligence
+        self.network_provider = network_provider
+        self.vulnerability_provider = vulnerability_provider
         self.timeline = EventTimelineEngine()
         self.root_causes = RootCauseEngine(max_items=intelligence.max_output_items)
         self.projection_root_causes = RootCauseEngine(
             max_items=intelligence.analyzer.correlator.max_evidence
         )
-        self.blast_radius = BlastRadiusEngine(max_items=intelligence.max_output_items)
+        self.blast_radius = BlastRadiusEngine(
+            max_items=intelligence.max_output_items,
+            network_lookup=network_provider,
+        )
         self.patterns = OperationalPatterns(max_patterns=50)
         self.summaries = IncidentSummary(max_items=intelligence.max_output_items)
         self._last_analysis = None
 
     @classmethod
-    def from_intelligence(cls, intelligence):
-        return cls(intelligence)
+    def from_intelligence(cls, intelligence, *, network_provider=None, vulnerability_provider=None):
+        return cls(
+            intelligence,
+            network_provider=network_provider,
+            vulnerability_provider=vulnerability_provider,
+        )
 
     @classmethod
     def from_snapshot(cls, **snapshot):
@@ -48,7 +57,7 @@ class IncidentEngine:
             correlated = self.intelligence.analyzer.correlator.correlate(
                 raw_incident, self.intelligence.evidence
             )
-            timeline_started=self.intelligence.clock()
+            timeline_started = self.intelligence.clock()
             related_internal = self._events_from_evidence(correlated)
             related = [
                 self._public_event(event)
@@ -83,7 +92,7 @@ class IncidentEngine:
                 self.intelligence.clock() - root_started,
             )
             blast_started = self.intelligence.clock()
-            blast = self.blast_radius.analyze(finding)
+            blast = self.blast_radius.analyze({**finding, "_resource_key": raw_incident["resource_key"]})
             self._record(
                 "blast_radius_generation_duration",
                 self.intelligence.clock() - blast_started,
@@ -213,6 +222,14 @@ class IncidentEngine:
                         "blast_radius": finding["blast_radius"],
                         "timeline": finding["timeline"],
                         "business_impact": finding["business_impact"],
+                        "application": finding.get("application", ""),
+                        "business_service": finding.get("business_service", ""),
+                        "environment": finding.get("environment", ""),
+                        "owner": finding.get("owner", ""),
+                        "subscription_id": finding.get("subscription_id", ""),
+                        "subscription_connection": finding.get(
+                            "subscription_connection", ""
+                        ),
                     }
                     for finding in analysis["findings"]
                 ],
@@ -227,6 +244,8 @@ class IncidentEngine:
             incidents=self.intelligence.incidents,
             alerts=[row for row in self.intelligence.evidence if row["evidence_type"] == "Alert"],
             changes=[row for row in self.intelligence.evidence if row["evidence_type"] == "Resource Change"],
+            network_changes=[row for row in self.intelligence.evidence if row["evidence_type"] in {"Network Change", "Firewall Change", "NSG Change"}],
+            cve_exposures=[row for row in self.intelligence.evidence if row["evidence_type"] == "CVE Exposure"],
             patch=[row for row in self.intelligence.evidence if row["evidence_type"] == "Patch Failure"],
             lifecycle=[row for row in self.intelligence.evidence if row["evidence_type"] == "Lifecycle Risk"],
         )
@@ -235,13 +254,16 @@ class IncidentEngine:
         return self.timeline.normalize(
             alerts=[row for row in evidence if row["evidence_type"] == "Alert"],
             changes=[row for row in evidence if row["evidence_type"] == "Resource Change"],
+            network_changes=[row for row in evidence if row["evidence_type"] in {"Network Change", "Firewall Change", "NSG Change"}],
+            cve_exposures=[row for row in evidence if row["evidence_type"] == "CVE Exposure"],
             patch=[row for row in evidence if row["evidence_type"] == "Patch Failure"],
             lifecycle=[row for row in evidence if row["evidence_type"] == "Lifecycle Risk"],
         )
 
-    def _record(self,name,value):
-        instrument=getattr(self.intelligence.telemetry,name,None)
-        if instrument is not None: instrument.record(value)
+    def _record(self, name, value):
+        instrument = getattr(self.intelligence.telemetry, name, None)
+        if instrument is not None:
+            instrument.record(value)
 
     @staticmethod
     def _public_event(event):

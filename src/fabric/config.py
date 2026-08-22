@@ -110,6 +110,7 @@ class FabricRuntimeConfig:
     local_onelake_root: Path | None = None
     shortcuts: tuple[ShortcutDefinition, ...] = field(default_factory=tuple)
     registration_attempts: int = 20
+    write_workers: int = 4
     table_schema: str = ""
     ontology: OntologyRuntimeConfig = field(default_factory=OntologyRuntimeConfig)
     patch_policies: tuple[PatchPolicyRuntimeConfig, ...] = field(default_factory=tuple)
@@ -242,6 +243,7 @@ class FabricRuntimeConfig:
             local_onelake_root=local,
             shortcuts=shortcuts,
             registration_attempts=int(fabric.get("registration_attempts") or 20),
+            write_workers=int(fabric.get("write_workers") or 4),
             table_schema=str(fabric.get("table_schema") or ""),
             ontology=OntologyRuntimeConfig(
                 enabled=bool(ontology_payload.get("enabled", True)),
@@ -401,6 +403,8 @@ class FabricRuntimeConfig:
             raise ValueError("Configure fabric.lakehouse_id or fabric.lakehouse_name")
         if self.registration_attempts < 1:
             raise ValueError("fabric.registration_attempts must be positive")
+        if self.write_workers < 1:
+            raise ValueError("fabric.write_workers must be positive")
         if self.ontology.enabled and not self.ontology.ontology_name and not self.ontology.ontology_id:
             raise ValueError("Configure fabric.ontology.ontology_name or ontology_id")
         for shortcut in self.shortcuts:

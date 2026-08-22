@@ -391,16 +391,27 @@ class PatchIntelligence:
         resources: list[dict[str, Any]] = []
         security_findings: list[dict[str, Any]] = []
         advisor_recommendations: list[dict[str, Any]] = []
+        unresolved_resource_keys: list[str] = []
         for row in inventory:
             name = str(row.get("name") or "")
             entity_type = str(row.get("entity_type") or "Resource")
             resource_key = canonical_resource_key(row.get("resource_id"))
-            context = semantic_engine.get_resource_context(
-                resource_key, subject_type=entity_type
-            )
-            impact = semantic_engine.get_impact_context(
-                resource_key, subject_type=entity_type
-            )
+            # Inventory can legitimately contain resources that are absent from
+            # the currently published ontology snapshot (for example when a
+            # discovery run is newer than the last ontology publication). Treat
+            # those as coverage gaps rather than failing the entire provider
+            # load, which would otherwise keep API readiness at 503 for every
+            # capability.
+            try:
+                context = semantic_engine.get_resource_context(
+                    resource_key, subject_type=entity_type
+                )
+                impact = semantic_engine.get_impact_context(
+                    resource_key, subject_type=entity_type
+                )
+            except LookupError:
+                unresolved_resource_keys.append(resource_key)
+                continue
             if not isinstance(context, dict) or not isinstance(impact, dict):
                 raise TypeError("Patch Semantic context and impact must be mappings")
             raw_sections = context.get("sections")

@@ -1,31 +1,48 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
-import uuid
-from pathlib import Path
 from typing import Any
+
+from .fs import resolve_fs
 
 
 class StateStore:
-    def __init__(self, root: Path) -> None:
-        self.path = Path(root) / "state" / "state.json"
+    def __init__(self, root: str) -> None:
+        self.fs, base = resolve_fs(str(root))
+        self.path = f"{base}/state/state.json"
 
     def load(self) -> dict[str, Any]:
-        if not self.path.exists():
+        if not self.fs.exists(self.path):
             return {}
         try:
-            payload = json.loads(self.path.read_text())
+            with self.fs.open(self.path, "rt") as handle:
+                payload = json.loads(handle.read())
         except (OSError, json.JSONDecodeError):
             return {}
         return payload if isinstance(payload, dict) else {}
 
     def save(self, state: dict[str, Any]) -> None:
-        _atomic_text(self.path, json.dumps(state, indent=2, sort_keys=True) + "\n")
+        content = json.dumps(state, indent=2, sort_keys=True) + "\n"
+        parent = self.path.rsplit("/", 1)[0]
+        self.fs.makedirs(parent, exist_ok=True)
+        import uuid
+
+        temporary = f"{parent}/.{self.path.rsplit('/', 1)[-1]}.{uuid.uuid4().hex}.tmp"
+        with self.fs.open(temporary, "wt") as handle:
+            handle.write(content)
+        self.fs.mv(temporary, self.path)
 
 
-def _atomic_text(path: Path, content: str) -> None:
+def _atomic_text(path, content: str) -> None:
+    """Local-disk atomic write helper, still used by callers that are
+    guaranteed to operate on local paths only (e.g. the registry's file
+    backend, run locks)."""
+    import os
+    import sys
+    import uuid
+    from pathlib import Path
+
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if sys.platform != "win32":
         path.parent.chmod(0o700)

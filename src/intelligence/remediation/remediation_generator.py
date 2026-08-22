@@ -96,6 +96,12 @@ class RemediationGenerator:
             "resource": opportunity["resource"],
             "application": opportunity["application"],
             "business_service": opportunity["business_service"],
+            "environment": opportunity.get("environment", ""),
+            "owner": opportunity.get("owner", ""),
+            "subscription_id": opportunity.get("subscription_id", ""),
+            "subscription_connection": opportunity.get(
+                "subscription_connection", ""
+            ),
             "opportunity_type": opportunity["opportunity_type"],
             "objective": f"Reduce {opportunity['opportunity_type'].casefold()} using the governed action catalog.",
             "execution_steps": steps,

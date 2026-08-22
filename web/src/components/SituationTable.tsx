@@ -1,0 +1,87 @@
+import Link from "next/link";
+import type { SituationSummary } from "@/lib/situations";
+import { formatDateTime, relativeTime } from "@/lib/format";
+import { StatusBadge, statusTone } from "./ui/StatusBadge";
+
+export interface SituationTableProps {
+  situations: SituationSummary[];
+  compact?: boolean;
+}
+
+/** Ranked Situation queue optimized for fast operational scanning. */
+export function SituationTable({ situations, compact = false }: SituationTableProps) {
+  return (
+    <div className="table-scroll">
+      <table className="operations-table">
+        <thead>
+          <tr>
+            <th>Priority</th>
+            <th>Situation</th>
+            <th>Business impact</th>
+            <th>Likely cause</th>
+            <th>Owner</th>
+            {!compact && <th>Latest change</th>}
+            <th aria-label="Open" />
+          </tr>
+        </thead>
+        <tbody>
+          {situations.map((situation) => (
+            <tr key={situation.id}>
+              <td>
+                <StatusBadge
+                  label={situation.priority}
+                  tone={situation.priority === "P1" ? "critical" : situation.priority === "P2" ? "high" : "warning"}
+                  compact
+                />
+              </td>
+              <td>
+                <Link className="table-primary-link" href={`/situations/${encodeURIComponent(situation.id)}`}>
+                  {situation.title}
+                </Link>
+                <div className="table-secondary">
+                  <StatusBadge label={situation.status} tone={statusTone(situation.status)} compact />
+                  <span title={formatDateTime(situation.startedAt)}>Started {relativeTime(situation.startedAt)}</span>
+                </div>
+              </td>
+              <td>
+                <strong>{situation.businessServices[0] ?? "Service not mapped"}</strong>
+                <div className="table-secondary">
+                  {situation.applications.length} application{situation.applications.length === 1 ? "" : "s"}
+                </div>
+              </td>
+              <td>
+                <span className="table-wrap">{situation.cause}</span>
+                <div className="table-secondary">{Math.round(situation.confidence * 100)}% confidence</div>
+              </td>
+              <td>
+                <strong>{situation.owner}</strong>
+                <div className="table-secondary">{situation.supportTeam}</div>
+              </td>
+              {!compact && (
+                <td>
+                  {situation.latestChange ? (
+                    <>
+                      <span className="table-wrap">{situation.latestChange.summary}</span>
+                      <div className="table-secondary">{relativeTime(situation.latestChange.timestamp)}</div>
+                    </>
+                  ) : (
+                    <span className="muted">No correlated change</span>
+                  )}
+                </td>
+              )}
+              <td>
+                <Link
+                  className="table-open-link"
+                  href={`/situations/${encodeURIComponent(situation.id)}`}
+                  aria-label={`Investigate ${situation.title}`}
+                >
+                  →
+                </Link>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}

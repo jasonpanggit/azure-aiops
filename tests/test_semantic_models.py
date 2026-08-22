@@ -22,6 +22,7 @@ def test_default_registry_contains_all_domain_models():
         "Lifecycle",
         "Cost",
         "Security",
+        "Network",
     }
     assert registry.get("Application").sources == (
         "ontology_entities",
@@ -43,6 +44,7 @@ def test_default_registry_contains_all_domain_models():
         "Lifecycle": "LifecycleKnowledge",
         "Cost": "CostKnowledge",
         "Security": "SecurityKnowledge",
+        "Network": "NetworkKnowledge",
     }
     model = registry.build(
         "Application",

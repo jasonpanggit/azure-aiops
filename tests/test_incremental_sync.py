@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 from deltalake import DeltaTable
 
@@ -613,7 +614,38 @@ def test_registration_failure_rolls_back_business_tables(tmp_path: Path) -> None
     assert _delta_rows(lakehouse / "Tables/bronze_resources") == before
 
 
-def test_rollback_retries_and_continues_after_table_failure(tmp_path: Path) -> None:
+def test_mapper_reads_remote_snapshot_via_provided_filesystem(tmp_path: Path) -> None:
+    """Regression test: `InventoryDatasetMapper.load()` must use the caller's
+    `fs` for remote (ADLS) snapshots instead of re-resolving the already
+    fsspec-resolved path as a local filesystem. Previously this silently
+    returned an empty snapshot (no error) because a bare `container/path`
+    string with no `abfss://` scheme resolves to the *local* filesystem,
+    where that path doesn't exist.
+    """
+    import fsspec
+
+    remote_root = f"abfss://hermes-data@example.dfs.core.windows.net/connections/demo-{uuid4().hex}"
+    store = DatasetStore(remote_root)
+    memory_fs = fsspec.filesystem("memory")
+    store.fs = memory_fs  # swap the real ADLS backend for an in-memory one
+
+    payload = json.loads(FIXTURE.read_text())
+    graph = Normalizer().normalize(payload, datetime(2026, 8, 17, tzinfo=UTC))
+    store.publish(graph, payload, {"runId": "remote-run-1", "startedAt": "2026-08-17T00:00:00Z"})
+
+    snapshot_dir = store.current_generation()
+    assert snapshot_dir is not None
+
+    # Without passing `fs`, the mapper falls back to resolving the path
+    # itself, which treats the bare `container/path` string as local and
+    # finds nothing.
+    empty = InventoryDatasetMapper().load(snapshot_dir, "remote-run-1")
+    assert empty["bronze_resources"] == []
+
+    # Passing the store's own filesystem must load the real data.
+    tables = InventoryDatasetMapper().load(snapshot_dir, "remote-run-1", fs=memory_fs)
+    assert tables["bronze_resources"] != [] or tables["bronze_virtual_machines"] != []
+
     class Delta:
         def __init__(self):
             self.attempts = []

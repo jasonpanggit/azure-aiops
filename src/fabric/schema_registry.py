@@ -74,6 +74,7 @@ SCHEMAS: dict[str, pa.Schema] = {
     "bronze_resourcegroups": pa.schema(_ENTITY),
     "bronze_advisor": pa.schema(_ENTITY),
     "bronze_patchassessment": pa.schema(_ENTITY),
+    "bronze_patchassessmentdetail": pa.schema(_ENTITY),
     "bronze_patchinstallation": pa.schema(_ENTITY),
     "bronze_resource_changes": pa.schema(
         [
@@ -119,6 +120,19 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("available_updates", pa.int64(), nullable=False),
             pa.field("missing_critical_updates", pa.int64(), nullable=False),
             pa.field("missing_security_updates", pa.int64(), nullable=False),
+        ]
+    ),
+    "silver_patch_findings": pa.schema(
+        [
+            *_ENTITY,
+            pa.field("target_resource_id", pa.string(), nullable=False),
+            pa.field("kb_id", pa.string(), nullable=False),
+            pa.field("update_name", pa.string(), nullable=False),
+            pa.field("category", pa.string(), nullable=False),
+            pa.field("severity", pa.string(), nullable=False),
+            pa.field("status", pa.string(), nullable=False),
+            pa.field("published_at", pa.string(), nullable=False),
+            pa.field("last_modified", pa.string(), nullable=False),
         ]
     ),
     "silver_patch_policies": pa.schema(

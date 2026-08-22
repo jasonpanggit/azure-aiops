@@ -16,6 +16,7 @@ class SemanticIntent(StrEnum):
     UPSTREAM_DEPENDENCIES = "upstream_dependencies"
     OPERATIONAL_RISK = "operational_risk"
     IMPACT_CONTEXT = "impact_context"
+    NETWORK_CONTEXT = "network_context"
     SEARCH = "search"
 
 
@@ -47,6 +48,12 @@ class SemanticQuery:
             intent = SemanticIntent.APPLICATION_CONTEXT
         elif "service context" in normalized:
             intent = SemanticIntent.SERVICE_CONTEXT
+        elif (
+            "network context" in normalized
+            or "vnet context" in normalized
+            or "network topology" in normalized
+        ):
+            intent = SemanticIntent.NETWORK_CONTEXT
         elif "vm context" in normalized or "server context" in normalized or "resource context" in normalized:
             intent = SemanticIntent.RESOURCE_CONTEXT
         elif "subscription context" in normalized:
@@ -62,7 +69,7 @@ class SemanticQuery:
             intent = SemanticIntent.OPERATIONAL_RISK
         else:
             raise ValueError(
-                "Supported semantic queries: application/service/resource/subscription context; "
+                "Supported semantic queries: application/service/resource/subscription/network context; "
                 "orphan resources; ownership gaps; dependency chains; downstream impact; "
                 "upstream dependencies; operational risk"
             )

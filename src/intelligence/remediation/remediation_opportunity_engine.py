@@ -55,6 +55,14 @@ class RemediationOpportunityEngine:
                         "business_service": str(
                             resource.get("business_service") or "Unknown"
                         )[:512],
+                        "environment": str(resource.get("environment") or "")[:128],
+                        "owner": str(resource.get("owner") or "")[:512],
+                        "subscription_id": str(
+                            resource.get("subscription_id") or ""
+                        )[:128],
+                        "subscription_connection": str(
+                            resource.get("subscription_connection") or ""
+                        )[:128],
                         "opportunity_type": str(action.get("opportunity_type") or "Operational debt")[:256],
                         "action_id": str(action["action_id"]),
                         "evidence": matched,

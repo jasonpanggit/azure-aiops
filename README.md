@@ -2,6 +2,10 @@
 
 First end-to-end slice of Hermes Operations Graph: discover Azure subscriptions through Azure MCP, query Azure Resource Graph, normalize operational entities and relationships, write Fabric-aligned JSONL/Parquet datasets, and expose read-only agent questions.
 
+Production discovery through Fabric ontology activation and deployed provider
+validation is documented in
+[`docs/PRODUCTION_RUNTIME_ACTIVATION.md`](docs/PRODUCTION_RUNTIME_ACTIVATION.md).
+
 ## What is implemented
 
 - Azure MCP subscription discovery through pinned `@azure/mcp`.
@@ -352,5 +356,6 @@ Operations Agent documentation:
 
 - `docs/semantic-architecture.md`
 - `docs/SEMANTIC_API.md`
+- `docs/OPERATIONS_API.md` — HTTP Operations API: auth, RBAC, scope model, evidence envelope, endpoint inventory, and error codes
 - `docs/RISK_SCORING.md`
 - `docs/SEMANTIC_RUNBOOK.md`

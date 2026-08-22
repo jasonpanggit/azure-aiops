@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
-from typing import Any
+from types import MethodType
+from typing import Any, Callable
 
 from ontology.ontology_manager import OntologyManager
 from ontology.ontology_publisher import OntologyPublisher
@@ -15,6 +17,40 @@ from .fabric_client import FabricClient
 from .lakehouse_manager import LakehouseManager
 from .sync_service import FabricSyncService
 from .workspace_manager import WorkspaceManager
+
+
+def _select_factory_kwargs(
+    factory: Callable[..., Any], snapshot: dict[str, Any]
+) -> dict[str, Any]:
+    """Keep only the snapshot keys a factory (or its constructor) accepts.
+
+    Governed snapshots are shared across providers and may carry keys that a
+    given intelligence factory does not model. Those factories accept
+    ``**kwargs`` and forward them to their constructor, so an undeclared key
+    raises ``TypeError`` and takes down every provider refresh. When the
+    factory itself declares ``**kwargs`` the surplus keys are still meaningful
+    to the constructor, so both signatures are consulted before filtering.
+    """
+
+    def declared(func: Callable[..., Any]) -> tuple[set[str], bool]:
+        parameters = inspect.signature(func).parameters
+        names = {
+            name
+            for name, parameter in parameters.items()
+            if parameter.kind
+            in (parameter.KEYWORD_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+        }
+        accepts_extra = any(
+            parameter.kind is parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        return names, accepts_extra
+
+    accepted, accepts_extra = declared(factory)
+    if accepts_extra and isinstance(factory, MethodType):
+        # Bound classmethod: surplus kwargs are forwarded to the constructor.
+        accepted |= declared(factory.__self__.__init__)[0]
+    return {key: value for key, value in snapshot.items() if key in accepted}
 
 
 @dataclass(frozen=True)
@@ -85,9 +121,17 @@ class FabricRuntime:
             and self.config.patch_intelligence.enabled
         ):
             patch_config = self.config.patch_intelligence
+            # The governed patch snapshot also carries KB-level `findings`
+            # (silver.patch_findings), which are consumed by the vulnerability
+            # provider rather than PatchIntelligence. Only forward the keys the
+            # factory actually declares so snapshot growth cannot break startup.
+            patch_snapshot = _select_factory_kwargs(
+                PatchIntelligence.from_semantic_engine,
+                self.service.patch_intelligence_snapshot(),
+            )
             patch_intelligence = PatchIntelligence.from_semantic_engine(
                 semantic,
-                **self.service.patch_intelligence_snapshot(),
+                **patch_snapshot,
                 max_resources=patch_config.max_resources,
                 max_evidence_rows=patch_config.max_evidence_rows,
                 max_output_items=patch_config.max_output_items,
@@ -111,7 +155,10 @@ class FabricRuntime:
                 critical_months=self.config.lifecycle.critical_months,
                 max_output_items=self.config.lifecycle.max_output_items,
                 max_serialized_bytes=self.config.lifecycle.max_serialized_bytes,
-                **self.service.lifecycle_intelligence_snapshot(),
+                **_select_factory_kwargs(
+                    LifecycleIntelligence.from_semantic_engine,
+                    self.service.lifecycle_intelligence_snapshot(),
+                ),
             )
         incident_intelligence = None
         if (
@@ -167,7 +214,9 @@ class FabricRuntime:
                 correlation_lookback_hours=self.config.incident_causality.lookback_hours,
                 max_incidents=self.config.incident_causality.max_incidents,
                 max_evidence_rows=self.config.incident_causality.max_evidence_rows,
-                **snapshot,
+                **_select_factory_kwargs(
+                    IncidentIntelligence.from_semantic_engine, snapshot
+                ),
             )
         change_intelligence = None
         if (
@@ -179,7 +228,10 @@ class FabricRuntime:
                 semantic,
                 max_changes=self.config.change_intelligence.max_changes,
                 max_output_items=self.config.change_intelligence.max_output_items,
-                **self.service.change_intelligence_snapshot(),
+                **_select_factory_kwargs(
+                    ChangeIntelligence.from_semantic_engine,
+                    self.service.change_intelligence_snapshot(),
+                ),
             )
         predictive_intelligence = None
         if (
@@ -384,6 +436,7 @@ def build_runtime(config: FabricRuntimeConfig) -> FabricRuntime:
         lakehouse_id=str(lakehouse["id"]),
         shortcuts=config.shortcuts,
         registration_attempts=config.registration_attempts,
+        write_workers=config.write_workers,
         ontology_publisher=ontology_publisher,
         ontology_id=config.ontology.ontology_id,
         ontology_name=config.ontology.ontology_name,

@@ -29,6 +29,7 @@ MODELS = {
     "Lifecycle",
     "Cost",
     "Security",
+    "Network",
 }
 
 

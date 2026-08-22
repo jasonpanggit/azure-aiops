@@ -9,14 +9,14 @@ def test_query_catalog_contains_required_arg_tables() -> None:
     specs = QueryCatalog().build(datetime(2026, 8, 1, tzinfo=UTC))
     by_name = {spec.name: spec for spec in specs}
 
-    assert set(by_name) == {
+    assert {
         "resources",
         "resource_containers",
         "resource_changes",
         "patch_assessments",
         "patch_installations",
         "advisor_recommendations",
-    }
+    } <= set(by_name)
     assert by_name["resources"].table == "Resources"
     assert by_name["resource_containers"].table == "ResourceContainers"
     assert by_name["resource_changes"].table == "ResourceChanges"
@@ -27,6 +27,36 @@ def test_query_catalog_contains_required_arg_tables() -> None:
     assert by_name["patch_installations"].table == "PatchInstallationResources"
     assert "softwarepatches" in by_name["patch_installations"].query.lower()
     assert "advisorresources" in by_name["advisor_recommendations"].query.lower()
+
+
+def test_query_catalog_includes_every_network_resource_family() -> None:
+    specs = QueryCatalog().build(datetime(2026, 8, 1, tzinfo=UTC))
+    by_name = {spec.name: spec for spec in specs}
+
+    expected = {
+        "network_vnets",
+        "network_interfaces",
+        "network_security_groups",
+        "network_route_tables",
+        "network_firewalls",
+        "network_private_endpoints",
+        "network_private_dns_zones",
+        "network_gateways",
+        "network_load_balancers",
+        "network_firewall_policies",
+    }
+    assert expected <= set(by_name)
+    for name in expected:
+        assert by_name[name].table == "Resources"
+        assert "microsoft.network/" in by_name[name].query.lower()
+
+
+def test_network_queries_are_split_so_one_throttle_does_not_blank_topology() -> None:
+    """Each family is its own query, so a failure loses one type, not the graph."""
+    specs = QueryCatalog().build(datetime(2026, 8, 1, tzinfo=UTC))
+    network = [spec for spec in specs if spec.name.startswith("network_")]
+    assert len(network) >= 10
+    assert len({spec.name for spec in network}) == len(network)
 
 
 def test_query_catalog_adds_management_group_scope_when_configured() -> None:

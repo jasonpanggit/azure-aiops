@@ -19,6 +19,8 @@ TAG_ENTITY_TYPES = {
     "supportteam": "SupportTeam",
     "service": "Service",
     "servicename": "Service",
+    "subscriptionconnection": "SubscriptionConnection",
+    "connection": "SubscriptionConnection",
 }
 
 DEPENDENCY_TAGS = {"dependson", "dependencies", "applicationdependencies"}
@@ -32,6 +34,25 @@ RESOURCE_ENTITY_TYPES = {
     "microsoft.compute/virtualmachines/patchassessmentresults": "PatchAssessment",
     "microsoft.hybridcompute/machines/patchassessmentresults": "PatchAssessment",
     "microsoft.advisor/recommendations": "AdvisorRecommendation",
+    # Network topology (Prompt 16). Sub-resources (Subnet, NetworkSecurityRule,
+    # Route, VNetPeering, FirewallRuleCollection, FirewallRule) have no ARM
+    # resourceType of their own and are classified from their `entity_type`.
+    "microsoft.network/virtualnetworks": "VNet",
+    "microsoft.network/networkinterfaces": "NetworkInterface",
+    "microsoft.network/networksecuritygroups": "NetworkSecurityGroup",
+    "microsoft.network/routetables": "RouteTable",
+    "microsoft.network/azurefirewalls": "AzureFirewall",
+    "microsoft.network/firewallpolicies": "FirewallPolicy",
+    "microsoft.network/privateendpoints": "PrivateEndpoint",
+    "microsoft.network/privatednszones": "PrivateDnsZone",
+    "microsoft.network/virtualnetworkgateways": "NetworkGateway",
+    "microsoft.network/natgateways": "NetworkGateway",
+    "microsoft.network/expressroutegateways": "NetworkGateway",
+    "microsoft.network/vpngateways": "NetworkGateway",
+    "microsoft.network/bastionhosts": "NetworkGateway",
+    "microsoft.network/dnsresolvers": "NetworkGateway",
+    "microsoft.network/loadbalancers": "LoadBalancer",
+    "microsoft.network/applicationgateways": "LoadBalancer",
 }
 
 
@@ -39,6 +60,13 @@ def semantic_id(entity_type: str, tenant_id: str, value: str) -> str:
     normalized = " ".join(value.casefold().split())
     digest = hashlib.sha256(f"{tenant_id.casefold()}|{entity_type}|{normalized}".encode()).hexdigest()
     return f"ontology://{_slug(entity_type)}/{digest[:32]}"
+
+
+def scoped_semantic_id(
+    entity_type: str, tenant_id: str, subscription_id: str, value: str
+) -> str:
+    """Create a business-context identity isolated to one subscription."""
+    return semantic_id(entity_type, tenant_id, f"{subscription_id}:{value}")
 
 
 def stable_version(value: Any) -> str:
@@ -183,6 +211,99 @@ class EntityBuilder:
                     ),
                 )
 
+            connection_id = _connection_id(row)
+            if connection_id:
+                connection_key = _connection_key(tenant_id, subscription_id, connection_id)
+                if not resource_id:
+                    resource_id = connection_key
+                connection_source: dict[str, Any] = {
+                    "discovery": "subscription_connection",
+                    "connection_id": connection_id,
+                    "timestamp": timestamp or row.get("timestamp", ""),
+                }
+                connection_source.update(_connection_lineage(row, tags_value))
+                connection_display_name = (
+                    _connection_field(row, ("connection_name", "connectionName"))
+                    or str(row.get("name") or "")
+                    or connection_id
+                )
+                candidates.setdefault(
+                    connection_key,
+                    self._entity(
+                        resource_id=connection_key,
+                        entity_type="SubscriptionConnection",
+                        name=connection_display_name,
+                        tenant_id=tenant_id,
+                        subscription_id=subscription_id,
+                        run_id=run_id,
+                        source=connection_source,
+                        lineage_ids=[resource_id] if resource_id else [connection_key],
+                    ),
+                )
+                health_status = _connection_field(
+                    row,
+                    (
+                        "connection_health_status",
+                        "connectionHealthStatus",
+                        "health_status",
+                        "connectionHealth",
+                        "healthStatus",
+                    ),
+                )
+                if health_status:
+                    health_key = semantic_id("ConnectionHealth", tenant_id, f"{connection_id}:{health_status}")
+                    candidates.setdefault(
+                        health_key,
+                        self._entity(
+                            resource_id=health_key,
+                            entity_type="ConnectionHealth",
+                            name=f"{connection_id} status {health_status}",
+                            tenant_id=tenant_id,
+                            subscription_id=subscription_id,
+                            run_id=run_id,
+                            source={
+                                "discovery": "connection_health",
+                                "connection_id": connection_id,
+                                "status": health_status,
+                                "timestamp": timestamp or row.get("timestamp", ""),
+                            },
+                            lineage_ids=[connection_key],
+                        ),
+                    )
+
+                # Connection metadata is authoritative business context, so the
+                # Environment/Application/BusinessService it names must exist for
+                # the mapped_to/runs/supports lineage edges to resolve.
+                for field_name, lineage_type in (
+                    ("environment_name", "Environment"),
+                    ("application_name", "Application"),
+                    ("business_service_name", "BusinessService"),
+                ):
+                    value = connection_source.get(field_name, "")
+                    if not value:
+                        continue
+                    lineage_key = scoped_semantic_id(
+                        lineage_type, tenant_id, subscription_id, value
+                    )
+                    lineage[lineage_key].add(connection_key)
+                    candidates.setdefault(
+                        lineage_key,
+                        self._entity(
+                            resource_id=lineage_key,
+                            entity_type=lineage_type,
+                            name=value,
+                            tenant_id=tenant_id,
+                            subscription_id=subscription_id,
+                            run_id=run_id,
+                            source={
+                                "discovery": "subscription_connection_metadata",
+                                "connection_id": connection_id,
+                                "timestamp": timestamp or row.get("timestamp", ""),
+                            },
+                            lineage_ids=[connection_key],
+                        ),
+                    )
+
             tags = {
                 key.casefold(): value.strip() for key, value in tags_value.items()
             }
@@ -190,7 +311,9 @@ class EntityBuilder:
                 value = tags.get(tag_name, "")
                 if not value:
                     continue
-                entity_id = semantic_id(entity_type_from_tag, tenant_id, value)
+                entity_id = scoped_semantic_id(
+                    entity_type_from_tag, tenant_id, subscription_id, value
+                )
                 lineage[entity_id].add(resource_id)
                 candidates.setdefault(
                     entity_id,
@@ -212,7 +335,9 @@ class EntityBuilder:
 
             for dependency_tag in DEPENDENCY_TAGS:
                 for value in _tag_values(tags.get(dependency_tag, "")):
-                    entity_id = semantic_id("Application", tenant_id, value)
+                    entity_id = scoped_semantic_id(
+                        "Application", tenant_id, subscription_id, value
+                    )
                     lineage[entity_id].add(resource_id)
                     candidates.setdefault(
                         entity_id,
@@ -345,6 +470,83 @@ def _resource_group(resource_id: str) -> str:
 
 def _tag_values(value: str) -> list[str]:
     return [item.strip() for item in re.split(r"[,;]", value) if item.strip()]
+
+
+def _connection_id(row: dict[str, Any]) -> str:
+    payload = _payload(row)
+    for key in (
+        "subscription_connection_id",
+        "subscriptionConnectionId",
+        "connection_id",
+        "connectionId",
+        "connection",
+    ):
+        value = row.get(key) or payload.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _connection_field(row: dict[str, Any], keys: tuple[str, ...]) -> str:
+    """First non-empty value for ``keys``, checking the row then its payload."""
+    payload = _payload(row)
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            value = payload.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _connection_lineage(row: dict[str, Any], tags: dict[str, str]) -> dict[str, str]:
+    """Environment, application and business-service names used to build connection
+    lineage edges.
+
+    Explicit connection metadata wins; resource tags are the fallback so a
+    connection still links to business context when metadata is not yet mapped.
+    """
+    folded = {key.casefold(): str(value).strip() for key, value in tags.items()}
+    lineage: dict[str, str] = {}
+    for target, keys, tag_names in (
+        (
+            "environment_name",
+            ("environment_name", "environmentName", "environment"),
+            ("environment",),
+        ),
+        (
+            "application_name",
+            ("application_name", "applicationName", "application", "appName"),
+            ("application", "appname"),
+        ),
+        (
+            "business_service_name",
+            (
+                "business_service_name",
+                "businessServiceName",
+                "business_service",
+                "businessService",
+            ),
+            ("businessservice", "businessunit"),
+        ),
+    ):
+        value = _connection_field(row, keys)
+        if not value:
+            for tag_name in tag_names:
+                if folded.get(tag_name):
+                    value = folded[tag_name]
+                    break
+        if value:
+            lineage[target] = value
+    return lineage
+
+
+def _connection_key(tenant_id: str, subscription_id: str, connection_id: str) -> str:
+    scope = f"{tenant_id}:{subscription_id}:{connection_id}".casefold()
+    return semantic_id("SubscriptionConnection", tenant_id, scope)
 
 
 def _semantic(row: dict[str, Any]) -> dict[str, Any]:

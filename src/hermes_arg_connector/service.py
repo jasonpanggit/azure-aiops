@@ -67,7 +67,7 @@ class IngestionService:
             previous_changes,
             query_results.get("resource_changes", []),
         )
-        graph = Normalizer().normalize(normalization_payload, started)
+        graph = Normalizer(self.config.connection_context).normalize(normalization_payload, started)
         _preserve_created_timestamps(graph, self.store)
         change_watermark = _max_change_watermark(previous_watermark, graph.changes)
         run_id = str(uuid.uuid4())

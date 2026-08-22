@@ -11,6 +11,7 @@ from .semantic_models import (
     DomainKnowledge,
     InfrastructureKnowledge,
     LifecycleKnowledge,
+    NetworkKnowledge,
     OperationalRiskKnowledge,
     OwnershipKnowledge,
     PatchingKnowledge,
@@ -67,6 +68,7 @@ class SemanticRegistry:
             "Lifecycle": "Active, retired, and lifecycle context",
             "Cost": "Cost center and business-function context",
             "Security": "Security finding and exposure context",
+            "Network": "Network topology, enforcement and design-conformance context",
         }
         model_types = {
             "Application": ApplicationKnowledge,
@@ -82,6 +84,7 @@ class SemanticRegistry:
             "Lifecycle": LifecycleKnowledge,
             "Cost": CostKnowledge,
             "Security": SecurityKnowledge,
+            "Network": NetworkKnowledge,
         }
         return cls(
             tuple(

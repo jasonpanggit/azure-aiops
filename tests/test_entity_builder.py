@@ -63,6 +63,29 @@ def test_entity_builder_generates_structural_and_tag_entities_automatically():
     assert application["lifecycle_status"] == "active"
 
 
+def test_business_context_entities_are_isolated_per_subscription():
+    second = resource(
+        subscription_id="sub-2",
+        resource_id="/subscriptions/sub-2/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm2",
+        name="vm2",
+    )
+    payload = json.loads(second["payload_json"])
+    payload["id"] = second["resource_id"]
+    payload["name"] = "vm2"
+    payload["subscriptionId"] = "sub-2"
+    second["payload_json"] = json.dumps(payload)
+
+    entities = EntityBuilder().build([resource(), second], "run-2")
+    applications = [
+        row
+        for row in entities
+        if row["entity_type"] == "Application" and row["name"] == "Payments API"
+    ]
+
+    assert len(applications) == 2
+    assert {row["subscription_id"] for row in applications} == {"sub-1", "sub-2"}
+
+
 def test_entity_builder_classifies_kubernetes_and_management_group_resources():
     rows = [
         resource(

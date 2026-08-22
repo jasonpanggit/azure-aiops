@@ -13,7 +13,10 @@ from semantic.semantic_engine import SemanticEngine
 def test_incident_context_is_built_only_through_public_semantic_apis():
     scenario = semantic_scenario()
     semantic = SemanticEngine.from_rows(**scenario)
-    resource = scenario["inventory"][0]
+    resource = {
+        **scenario["inventory"][0],
+        "connection_id": "prod-core",
+    }
     resource_key = resource["resource_id"]
 
     engine = IncidentIntelligence.from_semantic_engine(
@@ -43,6 +46,8 @@ def test_incident_context_is_built_only_through_public_semantic_apis():
     assert finding["business_service"] == "Retail"
     assert finding["owner"] == "ops@example.com"
     assert finding["support_team"] == "SRE"
+    assert finding["subscription_id"] == "sub-1"
+    assert finding["subscription_connection"] == "prod-core"
     assert finding["impacted_applications"] == ["Payments"]
     assert finding["freshness"] == semantic.freshness
 

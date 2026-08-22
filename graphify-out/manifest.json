@@ -1,0 +1,1410 @@
+{
+  "/Users/jasonmba/workspace/azure-aiops/web/.eslintrc.json": {
+    "mtime": 1787141432.864476,
+    "ast_hash": "5cc89077d438e3d0d0a8308ab7e06a5a",
+    "semantic_hash": "5cc89077d438e3d0d0a8308ab7e06a5a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/next.config.mjs": {
+    "mtime": 1787141432.864611,
+    "ast_hash": "21958f5752add43cc47ab0ff5172cd46",
+    "semantic_hash": "21958f5752add43cc47ab0ff5172cd46"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/package.json": {
+    "mtime": 1787142165.3795156,
+    "ast_hash": "0d46eb587af62d2efa97fbd3458197bb",
+    "semantic_hash": "0d46eb587af62d2efa97fbd3458197bb"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/app/connections/page.tsx": {
+    "mtime": 1787142090.6864703,
+    "ast_hash": "4561007454d5d7f903ee2e01c66f8d81",
+    "semantic_hash": "4561007454d5d7f903ee2e01c66f8d81"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/app/copilot/page.tsx": {
+    "mtime": 1787142311.1550562,
+    "ast_hash": "e3917ff9f8542a80fd57f54a3ab036e0",
+    "semantic_hash": "e3917ff9f8542a80fd57f54a3ab036e0"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/app/layout.tsx": {
+    "mtime": 1787142033.413919,
+    "ast_hash": "157f36716e0cbbb322381575b73f72d5",
+    "semantic_hash": "157f36716e0cbbb322381575b73f72d5"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/app/page.tsx": {
+    "mtime": 1787142078.297201,
+    "ast_hash": "f01321b96d85fca59fe550776218be7f",
+    "semantic_hash": "f01321b96d85fca59fe550776218be7f"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/app/search/page.tsx": {
+    "mtime": 1787142104.1669714,
+    "ast_hash": "5a4a422d76558a63bfdf03ccb3c06d60",
+    "semantic_hash": "5a4a422d76558a63bfdf03ccb3c06d60"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/components/AppShell.tsx": {
+    "mtime": 1787142019.9352474,
+    "ast_hash": "4ec1a0efa0f3e9ba150446be5da3728b",
+    "semantic_hash": "4ec1a0efa0f3e9ba150446be5da3728b"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/components/AuthGate.tsx": {
+    "mtime": 1787141983.4459517,
+    "ast_hash": "9bf1cb27e478308e6635f96d1106fe9e",
+    "semantic_hash": "9bf1cb27e478308e6635f96d1106fe9e"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/components/DataCard.test.tsx": {
+    "mtime": 1787142158.951508,
+    "ast_hash": "b6db35c6c9dcb063301e1dc87b8baef8",
+    "semantic_hash": "b6db35c6c9dcb063301e1dc87b8baef8"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/components/DataCard.tsx": {
+    "mtime": 1787142048.3623476,
+    "ast_hash": "45f0439422c3ae0e019859ef0e78c543",
+    "semantic_hash": "45f0439422c3ae0e019859ef0e78c543"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/components/ErrorBoundary.tsx": {
+    "mtime": 1787142343.3075771,
+    "ast_hash": "648a873b2c13b6151d819d2093e54cf1",
+    "semantic_hash": "648a873b2c13b6151d819d2093e54cf1"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/components/Providers.tsx": {
+    "mtime": 1787141963.8301125,
+    "ast_hash": "36a72f6838b44a1f98401e58a75505b4",
+    "semantic_hash": "36a72f6838b44a1f98401e58a75505b4"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/components/RequirePermission.tsx": {
+    "mtime": 1787141988.8914473,
+    "ast_hash": "4277824f1bafa29e3218fbc3ec6a4640",
+    "semantic_hash": "4277824f1bafa29e3218fbc3ec6a4640"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/components/ScopeSelector.tsx": {
+    "mtime": 1787142009.5635657,
+    "ast_hash": "8fdaf08378b31c3421265e2462c249ad",
+    "semantic_hash": "8fdaf08378b31c3421265e2462c249ad"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/hooks/useApi.ts": {
+    "mtime": 1787142040.580886,
+    "ast_hash": "1c71a303f60fb87712818ba0ecb4e739",
+    "semantic_hash": "1c71a303f60fb87712818ba0ecb4e739"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/hooks/useTelemetry.ts": {
+    "mtime": 1787141902.7498596,
+    "ast_hash": "c3e1235fefe2b5becb72d6a239896980",
+    "semantic_hash": "c3e1235fefe2b5becb72d6a239896980"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/lib/api-client.test.ts": {
+    "mtime": 1787142151.4127018,
+    "ast_hash": "51bf122269b518047d5e5483edf8bbb2",
+    "semantic_hash": "51bf122269b518047d5e5483edf8bbb2"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/lib/api-client.ts": {
+    "mtime": 1787141938.6293428,
+    "ast_hash": "bcb3e66edf3c8341680cf381c33af3df",
+    "semantic_hash": "bcb3e66edf3c8341680cf381c33af3df"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/lib/auth.ts": {
+    "mtime": 1787142295.3908799,
+    "ast_hash": "0810963c5d476ed3fae1cdfb599c823b",
+    "semantic_hash": "0810963c5d476ed3fae1cdfb599c823b"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/lib/permissions.test.ts": {
+    "mtime": 1787142142.3039687,
+    "ast_hash": "d715fbd824c64f19f1f14e4874adbf0a",
+    "semantic_hash": "d715fbd824c64f19f1f14e4874adbf0a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/lib/permissions.ts": {
+    "mtime": 1787142292.279233,
+    "ast_hash": "8b64681da97f922b283f673d51ac7e4c",
+    "semantic_hash": "8b64681da97f922b283f673d51ac7e4c"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/lib/scope-context.tsx": {
+    "mtime": 1787141994.81406,
+    "ast_hash": "93e565cc025dce62b911e4991e57b445",
+    "semantic_hash": "93e565cc025dce62b911e4991e57b445"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/lib/scope.test.ts": {
+    "mtime": 1787142135.2037432,
+    "ast_hash": "a8068eab6e695f37b7d8c294b1383ac7",
+    "semantic_hash": "a8068eab6e695f37b7d8c294b1383ac7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/lib/scope.ts": {
+    "mtime": 1787141846.8242698,
+    "ast_hash": "571ef0149d1e660b3be5141b3fa1086a",
+    "semantic_hash": "571ef0149d1e660b3be5141b3fa1086a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/lib/services.ts": {
+    "mtime": 1787141953.0901403,
+    "ast_hash": "c07e330f47cad010416ce19809eba606",
+    "semantic_hash": "c07e330f47cad010416ce19809eba606"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/lib/types.ts": {
+    "mtime": 1787141867.9373481,
+    "ast_hash": "5e9015bcd1bc95332a2f6b228201a9d4",
+    "semantic_hash": "5e9015bcd1bc95332a2f6b228201a9d4"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/src/test/setup.ts": {
+    "mtime": 1787142128.8542154,
+    "ast_hash": "3709e3aa95abf0544678f0f2d9b46702",
+    "semantic_hash": "3709e3aa95abf0544678f0f2d9b46702"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/tsconfig.json": {
+    "mtime": 1787141432.8656144,
+    "ast_hash": "3bd7a3770c6b44dbcaab1d2f175db8bd",
+    "semantic_hash": "3bd7a3770c6b44dbcaab1d2f175db8bd"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/vitest.config.ts": {
+    "mtime": 1787142259.5193408,
+    "ast_hash": "e9e47e628e36efb50374d21f8dfc0899",
+    "semantic_hash": "e9e47e628e36efb50374d21f8dfc0899"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/web/README.md": {
+    "mtime": 1787142410.662499,
+    "ast_hash": "95f51957f00f2f0621ffaede7a50d758",
+    "semantic_hash": "95f51957f00f2f0621ffaede7a50d758"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/__init__.py": {
+    "mtime": 1786982871.9965081,
+    "seen": 1787331408.2236931,
+    "ast_hash": "e6506abd758195af3f668ac782b7b275",
+    "semantic_hash": "e6506abd758195af3f668ac782b7b275"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/__init__.py": {
+    "mtime": 1786982872.3030562,
+    "seen": 1787331408.223695,
+    "ast_hash": "32abc15b9acd6a5de60ee46c4a2533e1",
+    "semantic_hash": "32abc15b9acd6a5de60ee46c4a2533e1"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/compliance_analyzer.py": {
+    "mtime": 1787102890.7312815,
+    "seen": 1787331408.223695,
+    "ast_hash": "2dfee4f906a17a4558c686d33e479042",
+    "semantic_hash": "2dfee4f906a17a4558c686d33e479042"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/context_router.py": {
+    "mtime": 1787111416.2768726,
+    "seen": 1787331408.2236958,
+    "ast_hash": "2e7e994abd9f10bb7f4ab668cd2d9a16",
+    "semantic_hash": "2e7e994abd9f10bb7f4ab668cd2d9a16"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/health_analyzer.py": {
+    "mtime": 1787103069.9321718,
+    "seen": 1787331408.2236958,
+    "ast_hash": "6326bc03efdd8fc72ab0c6bef326c018",
+    "semantic_hash": "6326bc03efdd8fc72ab0c6bef326c018"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/impact_analyzer.py": {
+    "mtime": 1787102900.2658503,
+    "seen": 1787331408.2236958,
+    "ast_hash": "a7da9ed17b48e48e5893721bf3800283",
+    "semantic_hash": "a7da9ed17b48e48e5893721bf3800283"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/incident_analyzer.py": {
+    "mtime": 1787101458.877386,
+    "seen": 1787331408.223697,
+    "ast_hash": "90be57d47115795303b0384e77b8505e",
+    "semantic_hash": "90be57d47115795303b0384e77b8505e"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/operational_reasoner.py": {
+    "mtime": 1787103641.0193486,
+    "seen": 1787331408.223697,
+    "ast_hash": "c1890612564f383d5cc949b0916cd527",
+    "semantic_hash": "c1890612564f383d5cc949b0916cd527"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/operational_summary.py": {
+    "mtime": 1787101481.5772586,
+    "seen": 1787331408.223697,
+    "ast_hash": "b2b6852d84667498260cb5aeb2e1fee6",
+    "semantic_hash": "b2b6852d84667498260cb5aeb2e1fee6"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/operations_agent.py": {
+    "mtime": 1787111428.7675157,
+    "seen": 1787331408.223698,
+    "ast_hash": "7c84814ba5040869d8a8f7d29af6d2d6",
+    "semantic_hash": "7c84814ba5040869d8a8f7d29af6d2d6"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/ownership_analyzer.py": {
+    "mtime": 1787101581.8192296,
+    "seen": 1787331408.223698,
+    "ast_hash": "4b67f3c1fdedbbea966aa281900c225a",
+    "semantic_hash": "4b67f3c1fdedbbea966aa281900c225a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/agents/operations/recommendation_engine.py": {
+    "mtime": 1787102923.6647115,
+    "seen": 1787331408.2236989,
+    "ast_hash": "6bcee4e0780596c56eec058393091a4c",
+    "semantic_hash": "6bcee4e0780596c56eec058393091a4c"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/__init__.py": {
+    "mtime": 1787199443.778695,
+    "seen": 1787331408.2236989,
+    "ast_hash": "cc13e6df97947b99fcd7630f0db1dd18",
+    "semantic_hash": "cc13e6df97947b99fcd7630f0db1dd18"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/app.py": {
+    "mtime": 1787322098.3879893,
+    "seen": 1787331408.2236989,
+    "ast_hash": "3bd6ccda9de8aeb0d366d5cabe4148ba",
+    "semantic_hash": "3bd6ccda9de8aeb0d366d5cabe4148ba"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/auth.py": {
+    "mtime": 1787199443.7794929,
+    "seen": 1787331408.2236989,
+    "ast_hash": "c75ee60de6635dd8e01d280c68a1f64a",
+    "semantic_hash": "c75ee60de6635dd8e01d280c68a1f64a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/dependencies.py": {
+    "mtime": 1787327386.8344774,
+    "seen": 1787331408.2237,
+    "ast_hash": "2e0c74fde1450fbad189ef860c47a7b9",
+    "semantic_hash": "2e0c74fde1450fbad189ef860c47a7b9"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/errors.py": {
+    "mtime": 1787286431.7650208,
+    "seen": 1787331408.2237,
+    "ast_hash": "573dcb7182974e31144fa1a251ceb8ac",
+    "semantic_hash": "573dcb7182974e31144fa1a251ceb8ac"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/evidence.py": {
+    "mtime": 1787199443.7803593,
+    "seen": 1787331408.2237,
+    "ast_hash": "328ca025d697248d7d89255d0647710b",
+    "semantic_hash": "328ca025d697248d7d89255d0647710b"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/models.py": {
+    "mtime": 1787327402.6473215,
+    "seen": 1787331408.223701,
+    "ast_hash": "610ce76a4d05003a867b0c4bdbeda8b7",
+    "semantic_hash": "610ce76a4d05003a867b0c4bdbeda8b7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/rbac.py": {
+    "mtime": 1787199443.7812524,
+    "seen": 1787331408.223701,
+    "ast_hash": "b1d3c6aa359b2505f97bf6a058e19e35",
+    "semantic_hash": "b1d3c6aa359b2505f97bf6a058e19e35"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/routers/__init__.py": {
+    "mtime": 1787199443.7815187,
+    "seen": 1787331408.223701,
+    "ast_hash": "aa834eb4ffc1cb7057d053b2ede8b51f",
+    "semantic_hash": "aa834eb4ffc1cb7057d053b2ede8b51f"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/routers/connections.py": {
+    "mtime": 1787305652.5429497,
+    "seen": 1787331408.223701,
+    "ast_hash": "8b2482a914e18de1cb4c864f0edfbc20",
+    "semantic_hash": "8b2482a914e18de1cb4c864f0edfbc20"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/routers/context.py": {
+    "mtime": 1787199443.782089,
+    "seen": 1787331408.223702,
+    "ast_hash": "254c268927c2d53051faf6548eb6c05d",
+    "semantic_hash": "254c268927c2d53051faf6548eb6c05d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/routers/copilot.py": {
+    "mtime": 1787218746.7173963,
+    "seen": 1787331408.223702,
+    "ast_hash": "4131505e3bd60d336fe697c933d645fe",
+    "semantic_hash": "4131505e3bd60d336fe697c933d645fe"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/routers/graph.py": {
+    "mtime": 1787199443.782341,
+    "seen": 1787331408.223702,
+    "ast_hash": "679185083b54873bd592705f7700f6b3",
+    "semantic_hash": "679185083b54873bd592705f7700f6b3"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/routers/network.py": {
+    "mtime": 1787199443.782619,
+    "seen": 1787331408.223702,
+    "ast_hash": "82c71c2d4a255f92d16de007d76880de",
+    "semantic_hash": "82c71c2d4a255f92d16de007d76880de"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/routers/operations.py": {
+    "mtime": 1787199443.782862,
+    "seen": 1787331408.2237031,
+    "ast_hash": "7366e4651d8d6d6dd466ace16d994be4",
+    "semantic_hash": "7366e4651d8d6d6dd466ace16d994be4"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/routers/planned.py": {
+    "mtime": 1787199443.78318,
+    "seen": 1787331408.2237031,
+    "ast_hash": "762d91b804ede94a24a5961474388e6f",
+    "semantic_hash": "762d91b804ede94a24a5961474388e6f"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/routers/vulnerability.py": {
+    "mtime": 1787328209.5530133,
+    "seen": 1787331408.2237031,
+    "ast_hash": "e25fdaf1cb074790357f77d8cbb403d1",
+    "semantic_hash": "e25fdaf1cb074790357f77d8cbb403d1"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/runtime.py": {
+    "mtime": 1787330046.8354268,
+    "seen": 1787331408.223704,
+    "ast_hash": "06542218f0398885fa1a42df18f7700a",
+    "semantic_hash": "06542218f0398885fa1a42df18f7700a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/scope.py": {
+    "mtime": 1787199443.7842233,
+    "seen": 1787331408.223704,
+    "ast_hash": "9446509d8593ee476d189757dade02be",
+    "semantic_hash": "9446509d8593ee476d189757dade02be"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/api/telemetry.py": {
+    "mtime": 1787199443.78452,
+    "seen": 1787331408.223704,
+    "ast_hash": "1f874789ba8166ec2b7761db030a39ca",
+    "semantic_hash": "1f874789ba8166ec2b7761db030a39ca"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/__init__.py": {
+    "mtime": 1786965156.6406543,
+    "seen": 1787331408.223704,
+    "ast_hash": "9826df127c62d22747be3fd8c44de1c0",
+    "semantic_hash": "9826df127c62d22747be3fd8c44de1c0"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/auth.py": {
+    "mtime": 1786965862.711646,
+    "seen": 1787331408.223705,
+    "ast_hash": "5d18333ee76777dc13896049da2cfb16",
+    "semantic_hash": "5d18333ee76777dc13896049da2cfb16"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/commands.py": {
+    "mtime": 1786972831.1531508,
+    "seen": 1787331408.223705,
+    "ast_hash": "91b01cc58c591f2e736696a25a56f54d",
+    "semantic_hash": "91b01cc58c591f2e736696a25a56f54d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/config.py": {
+    "mtime": 1787109375.6329353,
+    "seen": 1787331408.223705,
+    "ast_hash": "f1a9fd029e53061b6c1de7c92969a53b",
+    "semantic_hash": "f1a9fd029e53061b6c1de7c92969a53b"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/data_quality.py": {
+    "mtime": 1787109993.9017859,
+    "seen": 1787331408.223706,
+    "ast_hash": "d2daf2de132bbb4c015924a58cd7e5c6",
+    "semantic_hash": "d2daf2de132bbb4c015924a58cd7e5c6"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/dataset_mapper.py": {
+    "mtime": 1787320973.140336,
+    "seen": 1787331408.223706,
+    "ast_hash": "14c3c39a10bd2601aa6053dde786d83d",
+    "semantic_hash": "14c3c39a10bd2601aa6053dde786d83d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/fabric_client.py": {
+    "mtime": 1787019626.7616343,
+    "seen": 1787331408.223706,
+    "ast_hash": "b43a8cea0f9935fc8fabd3d95392d25b",
+    "semantic_hash": "b43a8cea0f9935fc8fabd3d95392d25b"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/lakehouse_manager.py": {
+    "mtime": 1786968962.170987,
+    "seen": 1787331408.223706,
+    "ast_hash": "7723be3cefbb7c690ffaa79b5a3eccec",
+    "semantic_hash": "7723be3cefbb7c690ffaa79b5a3eccec"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/runtime.py": {
+    "mtime": 1787109239.2358625,
+    "seen": 1787331408.223707,
+    "ast_hash": "698646d60b005d258aeffec66b28083e",
+    "semantic_hash": "698646d60b005d258aeffec66b28083e"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/schema_registry.py": {
+    "mtime": 1787199443.7337065,
+    "seen": 1787331408.223707,
+    "ast_hash": "15c6a2f9acbfd553250d0461e6d432db",
+    "semantic_hash": "15c6a2f9acbfd553250d0461e6d432db"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/sync_service.py": {
+    "mtime": 1787072076.7167115,
+    "seen": 1787331408.223707,
+    "ast_hash": "e5daa5ad4504a3bb69c75d3526207a7f",
+    "semantic_hash": "e5daa5ad4504a3bb69c75d3526207a7f"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/telemetry.py": {
+    "mtime": 1786972859.7774272,
+    "seen": 1787331408.223707,
+    "ast_hash": "803d2459c02a286b0821488028c986cd",
+    "semantic_hash": "803d2459c02a286b0821488028c986cd"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/fabric/workspace_manager.py": {
+    "mtime": 1786965156.6656506,
+    "seen": 1787331408.223708,
+    "ast_hash": "12441cbda2a9312d648c7a376a820d02",
+    "semantic_hash": "12441cbda2a9312d648c7a376a820d02"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/__init__.py": {
+    "mtime": 1786963783.2632432,
+    "seen": 1787331408.223708,
+    "ast_hash": "84b2be6da113a81ebc7f8e5308018d1e",
+    "semantic_hash": "84b2be6da113a81ebc7f8e5308018d1e"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/agent_queries.py": {
+    "mtime": 1787292720.0465186,
+    "seen": 1787331408.223708,
+    "ast_hash": "e19e7d6ead92ec374a7c13c9d026cc75",
+    "semantic_hash": "e19e7d6ead92ec374a7c13c9d026cc75"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/azure.py": {
+    "mtime": 1787199443.734213,
+    "seen": 1787331408.223708,
+    "ast_hash": "9b44fb7b25a5d92fde12bdaf9f4db3b6",
+    "semantic_hash": "9b44fb7b25a5d92fde12bdaf9f4db3b6"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/cli.py": {
+    "mtime": 1787329433.628137,
+    "seen": 1787331408.2237089,
+    "ast_hash": "5b650488f780fa310b53d5f93eaf7894",
+    "semantic_hash": "5b650488f780fa310b53d5f93eaf7894"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/config.py": {
+    "mtime": 1787292838.0991225,
+    "seen": 1787331408.2237089,
+    "ast_hash": "bcbb70a36287b58756a0aa15b35d98b5",
+    "semantic_hash": "bcbb70a36287b58756a0aa15b35d98b5"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/fs.py": {
+    "mtime": 1787292816.7706232,
+    "seen": 1787331408.2237089,
+    "ast_hash": "5f2c7b1bc552982a4a659ababf558f4a",
+    "semantic_hash": "5f2c7b1bc552982a4a659ababf558f4a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/local.py": {
+    "mtime": 1787329433.6262462,
+    "seen": 1787331408.22371,
+    "ast_hash": "788e9f77eab89a42b1bb569f3f73653f",
+    "semantic_hash": "788e9f77eab89a42b1bb569f3f73653f"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/locking.py": {
+    "mtime": 1787292431.868123,
+    "seen": 1787331408.22371,
+    "ast_hash": "8e2fb19214313fe8a71ae4859c962270",
+    "semantic_hash": "8e2fb19214313fe8a71ae4859c962270"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/network_normalize.py": {
+    "mtime": 1787211691.3514776,
+    "seen": 1787331408.22371,
+    "ast_hash": "ec6fb75c2499ff73d7e018aded758e81",
+    "semantic_hash": "ec6fb75c2499ff73d7e018aded758e81"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/normalize.py": {
+    "mtime": 1787199443.7358022,
+    "seen": 1787331408.223711,
+    "ast_hash": "dcf94d82c3b579ae6e793aff568410f7",
+    "semantic_hash": "dcf94d82c3b579ae6e793aff568410f7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/ontology.py": {
+    "mtime": 1786963159.7590582,
+    "seen": 1787331408.223711,
+    "ast_hash": "de24e68d5c714199d7a1b21058a5c7e6",
+    "semantic_hash": "de24e68d5c714199d7a1b21058a5c7e6"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/plugin.py": {
+    "mtime": 1787111416.0157082,
+    "seen": 1787331408.223711,
+    "ast_hash": "ce33a31236df304c1c07fbf27762c12b",
+    "semantic_hash": "ce33a31236df304c1c07fbf27762c12b"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/queries.py": {
+    "mtime": 1787199443.736262,
+    "seen": 1787331408.223712,
+    "ast_hash": "5b4b6d12023654f88bc8e75c2eda4067",
+    "semantic_hash": "5b4b6d12023654f88bc8e75c2eda4067"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/schedule.py": {
+    "mtime": 1786963406.622162,
+    "seen": 1787331408.223712,
+    "ast_hash": "a831829146cf6b233e3c8e4a59c14c35",
+    "semantic_hash": "a831829146cf6b233e3c8e4a59c14c35"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/service.py": {
+    "mtime": 1787199443.7366772,
+    "seen": 1787331408.223712,
+    "ast_hash": "4bcd644781c2d6a46085c72833aa607c",
+    "semantic_hash": "4bcd644781c2d6a46085c72833aa607c"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/source.py": {
+    "mtime": 1786974560.1127784,
+    "seen": 1787331408.223712,
+    "ast_hash": "09ddf0da464a62683abc45a10ded2398",
+    "semantic_hash": "09ddf0da464a62683abc45a10ded2398"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/state.py": {
+    "mtime": 1787292412.3849146,
+    "seen": 1787331408.223713,
+    "ast_hash": "03113bfca86432b5b30d0a60865c5f6a",
+    "semantic_hash": "03113bfca86432b5b30d0a60865c5f6a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/hermes_arg_connector/storage.py": {
+    "mtime": 1787308711.0926888,
+    "seen": 1787331408.223713,
+    "ast_hash": "175431ca6d426233b36a5c85739ed5ed",
+    "semantic_hash": "175431ca6d426233b36a5c85739ed5ed"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/__init__.py": {
+    "mtime": 1787017228.3330336,
+    "seen": 1787331408.223713,
+    "ast_hash": "f184d665d5f601046a25374b99a46aec",
+    "semantic_hash": "f184d665d5f601046a25374b99a46aec"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/__init__.py": {
+    "mtime": 1787038155.3814456,
+    "seen": 1787331408.223713,
+    "ast_hash": "30b72cdbaee5d1bbd96a54c0404b7ba7",
+    "semantic_hash": "30b72cdbaee5d1bbd96a54c0404b7ba7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/baseline_engine.py": {
+    "mtime": 1787071800.745188,
+    "seen": 1787331408.223714,
+    "ast_hash": "c3bfe00893d3ef0f7723b81951001191",
+    "semantic_hash": "c3bfe00893d3ef0f7723b81951001191"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_analyzer.py": {
+    "mtime": 1787071863.6477644,
+    "seen": 1787331408.223714,
+    "ast_hash": "db3e73a7681f27a021753681c36cedc3",
+    "semantic_hash": "db3e73a7681f27a021753681c36cedc3"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_classifier.py": {
+    "mtime": 1787072226.397165,
+    "seen": 1787331408.223714,
+    "ast_hash": "9af04d7c4c906dfcb2eea7bdac73bbe7",
+    "semantic_hash": "9af04d7c4c906dfcb2eea7bdac73bbe7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_collector.py": {
+    "mtime": 1787072226.6694865,
+    "seen": 1787331408.223714,
+    "ast_hash": "0acc7b92d4f592d46631a3a333dd9f52",
+    "semantic_hash": "0acc7b92d4f592d46631a3a333dd9f52"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_context_builder.py": {
+    "mtime": 1787071850.0121913,
+    "seen": 1787331408.223715,
+    "ast_hash": "0e4f8dccebe96b7502ac28a9eff459c5",
+    "semantic_hash": "0e4f8dccebe96b7502ac28a9eff459c5"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_correlator.py": {
+    "mtime": 1787071800.7491977,
+    "seen": 1787331408.223715,
+    "ast_hash": "919dafa3b7abea15e4c3a7a3cd886eca",
+    "semantic_hash": "919dafa3b7abea15e4c3a7a3cd886eca"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_incident_correlator.py": {
+    "mtime": 1787039884.289221,
+    "seen": 1787331408.223715,
+    "ast_hash": "40cecccbf2db65abcb5acca10ece85b7",
+    "semantic_hash": "40cecccbf2db65abcb5acca10ece85b7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_intelligence.py": {
+    "mtime": 1787072248.210962,
+    "seen": 1787331408.223715,
+    "ast_hash": "92f0313a294416ac80b34cfbf638908c",
+    "semantic_hash": "92f0313a294416ac80b34cfbf638908c"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_risk_engine.py": {
+    "mtime": 1787072048.3080306,
+    "seen": 1787331408.223716,
+    "ast_hash": "b72172883d8adc7ad3efd455e6e78476",
+    "semantic_hash": "b72172883d8adc7ad3efd455e6e78476"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_summary.py": {
+    "mtime": 1787071800.7732413,
+    "seen": 1787331408.223716,
+    "ast_hash": "43a1bce7b99d16aa36892e48bcbc3232",
+    "semantic_hash": "43a1bce7b99d16aa36892e48bcbc3232"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_summary_engine.py": {
+    "mtime": 1787072087.2837725,
+    "seen": 1787331408.223716,
+    "ast_hash": "d74cac76812cb29c2b68cd04be9db9d1",
+    "semantic_hash": "d74cac76812cb29c2b68cd04be9db9d1"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/change_trend_engine.py": {
+    "mtime": 1787039884.5848079,
+    "seen": 1787331408.223716,
+    "ast_hash": "8129fab15938c60c7793799e81cec8ed",
+    "semantic_hash": "8129fab15938c60c7793799e81cec8ed"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/configuration_drift.py": {
+    "mtime": 1787071800.7677875,
+    "seen": 1787331408.2237172,
+    "ast_hash": "0789283bb0cdbbc938ee6e2d63f25c9f",
+    "semantic_hash": "0789283bb0cdbbc938ee6e2d63f25c9f"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/change/configuration_drift_engine.py": {
+    "mtime": 1787038155.4020817,
+    "seen": 1787331408.2237172,
+    "ast_hash": "9eedd5eeff4724d3ba61dc3dcad7613b",
+    "semantic_hash": "9eedd5eeff4724d3ba61dc3dcad7613b"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incident/__init__.py": {
+    "mtime": 1787033882.3068247,
+    "seen": 1787331408.2237172,
+    "ast_hash": "ae045be307834b98a846d9363fdc0bbe",
+    "semantic_hash": "ae045be307834b98a846d9363fdc0bbe"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incident/causality_engine.py": {
+    "mtime": 1787035671.3703985,
+    "seen": 1787331408.223718,
+    "ast_hash": "32a9c7d2909cf3307c7212271d56f3f5",
+    "semantic_hash": "32a9c7d2909cf3307c7212271d56f3f5"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incident/incident_analyzer.py": {
+    "mtime": 1787035671.625486,
+    "seen": 1787331408.223718,
+    "ast_hash": "25aee1657d6aad179222f7f179b3ca43",
+    "semantic_hash": "25aee1657d6aad179222f7f179b3ca43"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incident/incident_context_builder.py": {
+    "mtime": 1787076859.0379927,
+    "seen": 1787331408.223718,
+    "ast_hash": "efd81f1eb257ee2130a1649564c86d0b",
+    "semantic_hash": "efd81f1eb257ee2130a1649564c86d0b"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incident/incident_correlator.py": {
+    "mtime": 1787073748.2330413,
+    "seen": 1787331408.223718,
+    "ast_hash": "19950061acb8d86aae6c05d56c26c445",
+    "semantic_hash": "19950061acb8d86aae6c05d56c26c445"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incident/incident_intelligence.py": {
+    "mtime": 1787102867.497005,
+    "seen": 1787331408.223719,
+    "ast_hash": "680bac04bfd70ac3d79930fad35eed12",
+    "semantic_hash": "680bac04bfd70ac3d79930fad35eed12"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incident/incident_pattern_engine.py": {
+    "mtime": 1787033882.332205,
+    "seen": 1787331408.223719,
+    "ast_hash": "8810a24547236b3ecbf0afa84dc896fe",
+    "semantic_hash": "8810a24547236b3ecbf0afa84dc896fe"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incident/incident_summary_engine.py": {
+    "mtime": 1787033882.3265996,
+    "seen": 1787331408.223719,
+    "ast_hash": "53513d04228e8669fff3987c87ab6a0c",
+    "semantic_hash": "53513d04228e8669fff3987c87ab6a0c"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incidents/__init__.py": {
+    "mtime": 1787073242.2520773,
+    "seen": 1787331408.223719,
+    "ast_hash": "fa00a3d5684dccaf8668842ac4c4b469",
+    "semantic_hash": "fa00a3d5684dccaf8668842ac4c4b469"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incidents/blast_radius_engine.py": {
+    "mtime": 1787327827.2798452,
+    "seen": 1787331408.2237198,
+    "ast_hash": "8208e701b8332a0b7024ea000b416187",
+    "semantic_hash": "8208e701b8332a0b7024ea000b416187"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incidents/causality_graph.py": {
+    "mtime": 1787076186.2171693,
+    "seen": 1787331408.2237198,
+    "ast_hash": "25c0ccc3972e99d20ebd8f5b55219bc6",
+    "semantic_hash": "25c0ccc3972e99d20ebd8f5b55219bc6"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incidents/event_timeline.py": {
+    "mtime": 1787327609.965952,
+    "seen": 1787331408.2237198,
+    "ast_hash": "3ab11da984137f460c469a8905a7ba41",
+    "semantic_hash": "3ab11da984137f460c469a8905a7ba41"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incidents/incident_correlator.py": {
+    "mtime": 1787073242.2612462,
+    "seen": 1787331408.2237198,
+    "ast_hash": "d3e551d16bcc001b3b45da1a47b64a7c",
+    "semantic_hash": "d3e551d16bcc001b3b45da1a47b64a7c"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incidents/incident_engine.py": {
+    "mtime": 1787327652.763443,
+    "seen": 1787331408.223721,
+    "ast_hash": "60902d83c90867820d9a5f60a4f1aab5",
+    "semantic_hash": "60902d83c90867820d9a5f60a4f1aab5"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incidents/incident_summary.py": {
+    "mtime": 1787075551.6326263,
+    "seen": 1787331408.223721,
+    "ast_hash": "ad2f14b7dfdd3e8402b2c2d1fafb62c1",
+    "semantic_hash": "ad2f14b7dfdd3e8402b2c2d1fafb62c1"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incidents/operational_patterns.py": {
+    "mtime": 1787074673.7310047,
+    "seen": 1787331408.223721,
+    "ast_hash": "eb61445b6f6ac9f6e7ddba82d0aa12a2",
+    "semantic_hash": "eb61445b6f6ac9f6e7ddba82d0aa12a2"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/incidents/root_cause_engine.py": {
+    "mtime": 1787327842.8163037,
+    "seen": 1787331408.223721,
+    "ast_hash": "20c0f6bd2c567d9dcb86a4411dae6529",
+    "semantic_hash": "20c0f6bd2c567d9dcb86a4411dae6529"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/lifecycle/__init__.py": {
+    "mtime": 1787028852.812435,
+    "seen": 1787331408.223722,
+    "ast_hash": "fca110a6dfbe0e667fbe51e3f41056c7",
+    "semantic_hash": "fca110a6dfbe0e667fbe51e3f41056c7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/lifecycle/default_catalog.json": {
+    "mtime": 1787094126.1770198,
+    "seen": 1787331408.223722,
+    "ast_hash": "166f3205dd15c1c3937d54b8162f87f0",
+    "semantic_hash": "166f3205dd15c1c3937d54b8162f87f0"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/lifecycle/eol_catalog.py": {
+    "mtime": 1787094990.047905,
+    "seen": 1787331408.223722,
+    "ast_hash": "c9bf87f140b33196caf769e4ed6bf3ca",
+    "semantic_hash": "c9bf87f140b33196caf769e4ed6bf3ca"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/lifecycle/lifecycle_analyzer.py": {
+    "mtime": 1787094345.8423493,
+    "seen": 1787331408.223722,
+    "ast_hash": "9b9d934e9f69148cdbbe15e075becfd3",
+    "semantic_hash": "9b9d934e9f69148cdbbe15e075becfd3"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/lifecycle/lifecycle_context_builder.py": {
+    "mtime": 1787094060.312922,
+    "seen": 1787331408.223723,
+    "ast_hash": "b2fe2903b963b6c40c56806ecd0ef0be",
+    "semantic_hash": "b2fe2903b963b6c40c56806ecd0ef0be"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/lifecycle/lifecycle_intelligence.py": {
+    "mtime": 1787095058.8728762,
+    "seen": 1787331408.223723,
+    "ast_hash": "862d5ef2fd958c51dc98c3bcdd14adb6",
+    "semantic_hash": "862d5ef2fd958c51dc98c3bcdd14adb6"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/lifecycle/lifecycle_risk_engine.py": {
+    "mtime": 1787094152.3102984,
+    "seen": 1787331408.223723,
+    "ast_hash": "ed11d2cff040a3242c6cce02dcec8b9d",
+    "semantic_hash": "ed11d2cff040a3242c6cce02dcec8b9d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/lifecycle/lifecycle_summary_engine.py": {
+    "mtime": 1787094151.9581497,
+    "seen": 1787331408.223723,
+    "ast_hash": "9e61ad1b0fa0028e0c49a9497f8a9f47",
+    "semantic_hash": "9e61ad1b0fa0028e0c49a9497f8a9f47"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/lifecycle/lifecycle_trend_engine.py": {
+    "mtime": 1787094140.8028898,
+    "seen": 1787331408.2237241,
+    "ast_hash": "a48fc580e1bb063ecca8863f0f708cdf",
+    "semantic_hash": "a48fc580e1bb063ecca8863f0f708cdf"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/lifecycle/modernization_engine.py": {
+    "mtime": 1787094152.638838,
+    "seen": 1787331408.2237241,
+    "ast_hash": "0682690824e001bd76a49dbaf772e848",
+    "semantic_hash": "0682690824e001bd76a49dbaf772e848"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/__init__.py": {
+    "mtime": 1787017144.4496486,
+    "seen": 1787331408.2237241,
+    "ast_hash": "5be5ca060db0044c81111359d13daf9d",
+    "semantic_hash": "5be5ca060db0044c81111359d13daf9d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/compliance_engine.py": {
+    "mtime": 1787096683.4400277,
+    "seen": 1787331408.2237241,
+    "ast_hash": "1f96639594a3e6065195646878b002e5",
+    "semantic_hash": "1f96639594a3e6065195646878b002e5"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/patch_analyzer.py": {
+    "mtime": 1787018238.5359955,
+    "seen": 1787331408.223725,
+    "ast_hash": "03013557784c41d94ac3c658078a09b8",
+    "semantic_hash": "03013557784c41d94ac3c658078a09b8"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/patch_compliance_engine.py": {
+    "mtime": 1787098656.030126,
+    "seen": 1787331408.223725,
+    "ast_hash": "85c4776d111bc4e807a0c8a1e180a92a",
+    "semantic_hash": "85c4776d111bc4e807a0c8a1e180a92a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/patch_context_builder.py": {
+    "mtime": 1787098390.7572377,
+    "seen": 1787331408.223725,
+    "ast_hash": "70cf2e5444cd25f8a92eef36a88bf08d",
+    "semantic_hash": "70cf2e5444cd25f8a92eef36a88bf08d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/patch_correlator.py": {
+    "mtime": 1787018283.6115577,
+    "seen": 1787331408.223725,
+    "ast_hash": "d4d5c8f3bbe542c840d2ab04567048c7",
+    "semantic_hash": "d4d5c8f3bbe542c840d2ab04567048c7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/patch_intelligence.py": {
+    "mtime": 1787099187.9833453,
+    "seen": 1787331408.223726,
+    "ast_hash": "d3b7086b15de1a6522a307701d5f1ab4",
+    "semantic_hash": "d3b7086b15de1a6522a307701d5f1ab4"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/patch_priority_engine.py": {
+    "mtime": 1787097306.3158724,
+    "seen": 1787331408.223726,
+    "ast_hash": "e0693bdc77910131dedee504a2213bdb",
+    "semantic_hash": "e0693bdc77910131dedee504a2213bdb"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/patch_risk_engine.py": {
+    "mtime": 1787097299.7288816,
+    "seen": 1787331408.223726,
+    "ast_hash": "81b7441329e8de4015f5812e0d758fae",
+    "semantic_hash": "81b7441329e8de4015f5812e0d758fae"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/patch_summary_engine.py": {
+    "mtime": 1787097341.2678466,
+    "seen": 1787331408.223726,
+    "ast_hash": "3b9a800ecbb1ec41460c6c87dc0eba65",
+    "semantic_hash": "3b9a800ecbb1ec41460c6c87dc0eba65"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/patch/patch_trend_engine.py": {
+    "mtime": 1787098228.6208265,
+    "seen": 1787331408.223727,
+    "ast_hash": "33be6d577978dfc7214360379e60e8a7",
+    "semantic_hash": "33be6d577978dfc7214360379e60e8a7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/__init__.py": {
+    "mtime": 1787066560.930433,
+    "seen": 1787331408.223727,
+    "ast_hash": "081e03cc7ebfc3e01e4f32e45899b7fc",
+    "semantic_hash": "081e03cc7ebfc3e01e4f32e45899b7fc"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/failure_prediction.py": {
+    "mtime": 1787066270.2599885,
+    "seen": 1787331408.223727,
+    "ast_hash": "c56a445682dda49c7a371f0dbb11c898",
+    "semantic_hash": "c56a445682dda49c7a371f0dbb11c898"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/forecast_engine.py": {
+    "mtime": 1787067718.3894596,
+    "seen": 1787331408.223727,
+    "ast_hash": "c7299e4a5fcabe7176e2a04a54aaca27",
+    "semantic_hash": "c7299e4a5fcabe7176e2a04a54aaca27"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/incident_probability_engine.py": {
+    "mtime": 1787067499.671703,
+    "seen": 1787331408.2237282,
+    "ast_hash": "04bf4e899d26bd8baf3774afeb39c635",
+    "semantic_hash": "04bf4e899d26bd8baf3774afeb39c635"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/operational_debt_engine.py": {
+    "mtime": 1787067718.65742,
+    "seen": 1787331408.2237282,
+    "ast_hash": "72da7ad6a59441910a1d8bc8f645d703",
+    "semantic_hash": "72da7ad6a59441910a1d8bc8f645d703"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/prediction_context_builder.py": {
+    "mtime": 1787065413.3263817,
+    "seen": 1787331408.2237282,
+    "ast_hash": "76a256ffd0bdefda38ab83b77f07e1cf",
+    "semantic_hash": "76a256ffd0bdefda38ab83b77f07e1cf"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/prediction_summary.py": {
+    "mtime": 1787065413.3285573,
+    "seen": 1787331408.2237282,
+    "ast_hash": "15eff7c9645a7fad7abcf837b8807384",
+    "semantic_hash": "15eff7c9645a7fad7abcf837b8807384"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/predictive_context_builder.py": {
+    "mtime": 1787067579.5565183,
+    "seen": 1787331408.223729,
+    "ast_hash": "5a0d37debaf8c34b168c6008d7452258",
+    "semantic_hash": "5a0d37debaf8c34b168c6008d7452258"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/predictive_engine.py": {
+    "mtime": 1787069192.7438383,
+    "seen": 1787331408.223729,
+    "ast_hash": "752e74e5f262a633d4b5d2957b6528e6",
+    "semantic_hash": "752e74e5f262a633d4b5d2957b6528e6"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/predictive_feature_engine.py": {
+    "mtime": 1787067754.2081134,
+    "seen": 1787331408.223729,
+    "ast_hash": "10530cbc231b3ef38de49a257b37fce9",
+    "semantic_hash": "10530cbc231b3ef38de49a257b37fce9"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/predictive_intelligence.py": {
+    "mtime": 1787069192.134757,
+    "seen": 1787331408.2237298,
+    "ast_hash": "43af11ab7a703a22e4914cdbd58ebd0e",
+    "semantic_hash": "43af11ab7a703a22e4914cdbd58ebd0e"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/predictive_summary_engine.py": {
+    "mtime": 1787050189.2649157,
+    "seen": 1787331408.2237298,
+    "ast_hash": "a3eb2a53ac0666e7a42c233d4dc040fe",
+    "semantic_hash": "a3eb2a53ac0666e7a42c233d4dc040fe"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/predictive_trend_engine.py": {
+    "mtime": 1787069192.4385002,
+    "seen": 1787331408.2237298,
+    "ast_hash": "103012a369d8b4aefad37ef6fe82ad5d",
+    "semantic_hash": "103012a369d8b4aefad37ef6fe82ad5d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/risk_forecasting.py": {
+    "mtime": 1787065413.3269649,
+    "seen": 1787331408.2237298,
+    "ast_hash": "34aa6607a44d7229a90e0def6e9becf3",
+    "semantic_hash": "34aa6607a44d7229a90e0def6e9becf3"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/service_health_forecaster.py": {
+    "mtime": 1787065413.3716521,
+    "seen": 1787331408.223731,
+    "ast_hash": "94c497fcf04adae0abd7ddb4d2a274c2",
+    "semantic_hash": "94c497fcf04adae0abd7ddb4d2a274c2"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/predictive/trend_detector.py": {
+    "mtime": 1787066154.3129349,
+    "seen": 1787331408.223731,
+    "ast_hash": "00b732fa9e3937d5f7042bb6da176cf2",
+    "semantic_hash": "00b732fa9e3937d5f7042bb6da176cf2"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/__init__.py": {
+    "mtime": 1787062693.7969344,
+    "seen": 1787331408.223731,
+    "ast_hash": "aa3286bba50a7229a47cdd632ec4fe3d",
+    "semantic_hash": "aa3286bba50a7229a47cdd632ec4fe3d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/approval_engine.py": {
+    "mtime": 1787063979.727667,
+    "seen": 1787331408.223731,
+    "ast_hash": "80ba07b90793c38cbf8a04bc41db8ad5",
+    "semantic_hash": "80ba07b90793c38cbf8a04bc41db8ad5"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/dependency_analyzer.py": {
+    "mtime": 1787062693.7819257,
+    "seen": 1787331408.223732,
+    "ast_hash": "600d3a6af4f911be4a22ee09e8ea6a20",
+    "semantic_hash": "600d3a6af4f911be4a22ee09e8ea6a20"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/execution_simulator.py": {
+    "mtime": 1787064496.8507864,
+    "seen": 1787331408.223732,
+    "ast_hash": "6981667a57ae8561814776f52e7a4e74",
+    "semantic_hash": "6981667a57ae8561814776f52e7a4e74"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/impact_estimator.py": {
+    "mtime": 1787064496.5244234,
+    "seen": 1787331408.223732,
+    "ast_hash": "506b3c3364bcda785ceebeb575690eb0",
+    "semantic_hash": "506b3c3364bcda785ceebeb575690eb0"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/plan_prioritizer.py": {
+    "mtime": 1787062814.3641038,
+    "seen": 1787331408.223732,
+    "ast_hash": "c0ef01c06898b29bfb13360fae30dbd4",
+    "semantic_hash": "c0ef01c06898b29bfb13360fae30dbd4"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/plan_repository.py": {
+    "mtime": 1787063568.0762258,
+    "seen": 1787331408.223734,
+    "ast_hash": "4a09f332030e477d2dcb0476b8143fa3",
+    "semantic_hash": "4a09f332030e477d2dcb0476b8143fa3"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/remediation_generator.py": {
+    "mtime": 1787062907.3050547,
+    "seen": 1787331408.223734,
+    "ast_hash": "7cf510f9a417490e507254bbd829a4c9",
+    "semantic_hash": "7cf510f9a417490e507254bbd829a4c9"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/remediation_opportunity_engine.py": {
+    "mtime": 1787063979.921391,
+    "seen": 1787331408.223734,
+    "ast_hash": "34a76f698c1b0135e51345096858aa2a",
+    "semantic_hash": "34a76f698c1b0135e51345096858aa2a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/remediation_planner.py": {
+    "mtime": 1787063415.9961782,
+    "seen": 1787331408.223734,
+    "ast_hash": "eb2d515289dffab71927599f2bb94219",
+    "semantic_hash": "eb2d515289dffab71927599f2bb94219"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/risk_analyzer.py": {
+    "mtime": 1787064496.2299118,
+    "seen": 1787331408.223735,
+    "ast_hash": "ba44f030e78da028355e7c02d7e49b24",
+    "semantic_hash": "ba44f030e78da028355e7c02d7e49b24"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/remediation/rollback_planner.py": {
+    "mtime": 1787062693.7920387,
+    "seen": 1787331408.223735,
+    "ast_hash": "8ebb2ac8a0c097d9e16d4c2f51ee7ac5",
+    "semantic_hash": "8ebb2ac8a0c097d9e16d4c2f51ee7ac5"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/vulnerability/__init__.py": {
+    "mtime": 1787199443.786876,
+    "seen": 1787331408.223735,
+    "ast_hash": "ff31d099eeadb843603c9d2e142d857c",
+    "semantic_hash": "ff31d099eeadb843603c9d2e142d857c"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/vulnerability/connector.py": {
+    "mtime": 1787328495.1271164,
+    "seen": 1787331408.223735,
+    "ast_hash": "2712956c377bd0710dc93e9074264c6c",
+    "semantic_hash": "2712956c377bd0710dc93e9074264c6c"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/vulnerability/models.py": {
+    "mtime": 1787328483.1385033,
+    "seen": 1787331408.223736,
+    "ast_hash": "65a809ede2fee82a30f7301361f13bdc",
+    "semantic_hash": "65a809ede2fee82a30f7301361f13bdc"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/intelligence/vulnerability/service.py": {
+    "mtime": 1787328205.0457764,
+    "seen": 1787331408.223736,
+    "ast_hash": "923d354d579b64568713985048557d88",
+    "semantic_hash": "923d354d579b64568713985048557d88"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/network/__init__.py": {
+    "mtime": 1787199443.7882144,
+    "seen": 1787331408.223736,
+    "ast_hash": "e5c005da74b988ae3d7b0730907240ab",
+    "semantic_hash": "e5c005da74b988ae3d7b0730907240ab"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/network/addressing.py": {
+    "mtime": 1787199443.788527,
+    "seen": 1787331408.223736,
+    "ast_hash": "a42b53fe82606d443e7817834c3f479d",
+    "semantic_hash": "a42b53fe82606d443e7817834c3f479d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/network/design.py": {
+    "mtime": 1787199443.7890434,
+    "seen": 1787331408.223737,
+    "ast_hash": "ab2cb1b44bfcbd1c71527dadea1c7a87",
+    "semantic_hash": "ab2cb1b44bfcbd1c71527dadea1c7a87"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/network/flow.py": {
+    "mtime": 1787199443.7894068,
+    "seen": 1787331408.223737,
+    "ast_hash": "0cc9cf776e86936b12e6ceb5ca1db37f",
+    "semantic_hash": "0cc9cf776e86936b12e6ceb5ca1db37f"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/network/gaps.py": {
+    "mtime": 1787199443.7899926,
+    "seen": 1787331408.223737,
+    "ast_hash": "865600dfda78e6b0d19fad1f12252db9",
+    "semantic_hash": "865600dfda78e6b0d19fad1f12252db9"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/network/loader.py": {
+    "mtime": 1787210478.9162068,
+    "seen": 1787331408.223737,
+    "ast_hash": "e94fd9ce0d50259d9a1f7684736ff699",
+    "semantic_hash": "e94fd9ce0d50259d9a1f7684736ff699"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/network/models.py": {
+    "mtime": 1787199443.7908893,
+    "seen": 1787331408.2237382,
+    "ast_hash": "ffd1303fb6f5a6a66042ddd4e2c6a9cd",
+    "semantic_hash": "ffd1303fb6f5a6a66042ddd4e2c6a9cd"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/network/service.py": {
+    "mtime": 1787199443.791275,
+    "seen": 1787331408.2237382,
+    "ast_hash": "7a35e653fb62e14d71933b7a1350c3f3",
+    "semantic_hash": "7a35e653fb62e14d71933b7a1350c3f3"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/network/tightening.py": {
+    "mtime": 1787199443.7916224,
+    "seen": 1787331408.2237382,
+    "ast_hash": "e4484ca006b0cdcd0f454a854de5559d",
+    "semantic_hash": "e4484ca006b0cdcd0f454a854de5559d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/network/topology.py": {
+    "mtime": 1787214167.095543,
+    "seen": 1787331408.2237382,
+    "ast_hash": "6e4905d6b51a7dee1edefd7bdb3a08f9",
+    "semantic_hash": "6e4905d6b51a7dee1edefd7bdb3a08f9"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/onboarding/__init__.py": {
+    "mtime": 1787286431.768387,
+    "seen": 1787331408.223739,
+    "ast_hash": "139e1b5b02c93dd3029f32cbd41396d9",
+    "semantic_hash": "139e1b5b02c93dd3029f32cbd41396d9"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/onboarding/credentials.py": {
+    "mtime": 1787307589.8614802,
+    "seen": 1787331408.223739,
+    "ast_hash": "0dbcd043be2524dfcd12519837721704",
+    "semantic_hash": "0dbcd043be2524dfcd12519837721704"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/onboarding/health.py": {
+    "mtime": 1787199443.7932057,
+    "seen": 1787331408.223739,
+    "ast_hash": "f693de21075f5f82cfdc6d98ea6010a1",
+    "semantic_hash": "f693de21075f5f82cfdc6d98ea6010a1"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/onboarding/metadata.py": {
+    "mtime": 1787199443.7941089,
+    "seen": 1787331408.223739,
+    "ast_hash": "aeb0c19a37a5188375eea1cca70ee214",
+    "semantic_hash": "aeb0c19a37a5188375eea1cca70ee214"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/onboarding/registry.py": {
+    "mtime": 1787305632.330793,
+    "seen": 1787331408.2237399,
+    "ast_hash": "57f5e5b9abe55cdbc408745a97f03628",
+    "semantic_hash": "57f5e5b9abe55cdbc408745a97f03628"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/onboarding/runtime.py": {
+    "mtime": 1787292511.7610855,
+    "seen": 1787331408.2237399,
+    "ast_hash": "a837a8635f7697f6c649d4897ef017da",
+    "semantic_hash": "a837a8635f7697f6c649d4897ef017da"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/onboarding/service.py": {
+    "mtime": 1787305638.0367591,
+    "seen": 1787331408.2237399,
+    "ast_hash": "0729debdb31cf3c327bad7eeed73e8e9",
+    "semantic_hash": "0729debdb31cf3c327bad7eeed73e8e9"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/onboarding/store.py": {
+    "mtime": 1787292499.899512,
+    "seen": 1787331408.2237408,
+    "ast_hash": "f7a6bad169e25d48c9894e4c7d43fe6b",
+    "semantic_hash": "f7a6bad169e25d48c9894e4c7d43fe6b"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/onboarding/sync.py": {
+    "mtime": 1787292462.1363328,
+    "seen": 1787331408.2237408,
+    "ast_hash": "5f0155b7459fa1798298dded7116dbbc",
+    "semantic_hash": "5f0155b7459fa1798298dded7116dbbc"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/onboarding/validation.py": {
+    "mtime": 1787199443.795928,
+    "seen": 1787331408.2237408,
+    "ast_hash": "ec6faf9a0584ebd5dd74893b26efa1ee",
+    "semantic_hash": "ec6faf9a0584ebd5dd74893b26efa1ee"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/__init__.py": {
+    "mtime": 1787199443.7371776,
+    "seen": 1787331408.2237408,
+    "ast_hash": "e6ce9cf47536fc569bfce184453688aa",
+    "semantic_hash": "e6ce9cf47536fc569bfce184453688aa"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/entity_builder.py": {
+    "mtime": 1787199443.7376983,
+    "seen": 1787331408.223742,
+    "ast_hash": "513b19e1e6f0599552388470a8b779ef",
+    "semantic_hash": "513b19e1e6f0599552388470a8b779ef"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/graph_queries.py": {
+    "mtime": 1787113022.5792096,
+    "seen": 1787331408.223742,
+    "ast_hash": "b526a8def4d32303b6415238ffbde11e",
+    "semantic_hash": "b526a8def4d32303b6415238ffbde11e"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/ontology_manager.py": {
+    "mtime": 1786974306.4930913,
+    "seen": 1787331408.223742,
+    "ast_hash": "873b92ab937fe7d7291b8a2447fd18b0",
+    "semantic_hash": "873b92ab937fe7d7291b8a2447fd18b0"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/ontology_publisher.py": {
+    "mtime": 1787112991.9708536,
+    "seen": 1787331408.223742,
+    "ast_hash": "e63de2f8bfac8622a41be62eeae67948",
+    "semantic_hash": "e63de2f8bfac8622a41be62eeae67948"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/ontology_sync.py": {
+    "mtime": 1787112979.4297135,
+    "seen": 1787331408.223743,
+    "ast_hash": "b7af698941be69d51b941060877c533a",
+    "semantic_hash": "b7af698941be69d51b941060877c533a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/ontology_validator.py": {
+    "mtime": 1787114313.9416153,
+    "seen": 1787331408.223743,
+    "ast_hash": "26fa3d9fdcdae936a1a177b371f226e7",
+    "semantic_hash": "26fa3d9fdcdae936a1a177b371f226e7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/publisher.py": {
+    "mtime": 1787110946.8548677,
+    "seen": 1787331408.223743,
+    "ast_hash": "ced1d1c978554f0c50a038bff6cb4182",
+    "semantic_hash": "ced1d1c978554f0c50a038bff6cb4182"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/relationship_builder.py": {
+    "mtime": 1787205533.802547,
+    "seen": 1787331408.223743,
+    "ast_hash": "bdb328bd8a69433ba028d222723165f0",
+    "semantic_hash": "bdb328bd8a69433ba028d222723165f0"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/subscription_connection.py": {
+    "mtime": 1787199443.7962463,
+    "seen": 1787331408.223744,
+    "ast_hash": "c5411f498bd3a3b6fe6adee675ee11d7",
+    "semantic_hash": "c5411f498bd3a3b6fe6adee675ee11d7"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/ontology/sync_validator.py": {
+    "mtime": 1787110953.297976,
+    "seen": 1787331408.223744,
+    "ast_hash": "139492a6f8c8f9a9bf688b7f14b16025",
+    "semantic_hash": "139492a6f8c8f9a9bf688b7f14b16025"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/__init__.py": {
+    "mtime": 1787101265.0251696,
+    "seen": 1787331408.223744,
+    "ast_hash": "d3b04a8538e068e4e26c4a2f4a43546c",
+    "semantic_hash": "d3b04a8538e068e4e26c4a2f4a43546c"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/compliance_analyzer.py": {
+    "mtime": 1787101265.2966921,
+    "seen": 1787331408.223744,
+    "ast_hash": "1d280ea2b4be74d0f0e9441befb438ad",
+    "semantic_hash": "1d280ea2b4be74d0f0e9441befb438ad"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/context_router.py": {
+    "mtime": 1787101850.1583478,
+    "seen": 1787331408.223745,
+    "ast_hash": "d5143fafa53aa4a541e6f2a6d2a9bece",
+    "semantic_hash": "d5143fafa53aa4a541e6f2a6d2a9bece"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/foundry_agent.py": {
+    "mtime": 1787218542.5377676,
+    "seen": 1787331408.223745,
+    "ast_hash": "5f87af00d8835e11edb179658ea3a148",
+    "semantic_hash": "5f87af00d8835e11edb179658ea3a148"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/health_analyzer.py": {
+    "mtime": 1787101265.0788205,
+    "seen": 1787331408.223745,
+    "ast_hash": "9c6ea23d30834c60e852ed39246baebd",
+    "semantic_hash": "9c6ea23d30834c60e852ed39246baebd"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/impact_analyzer.py": {
+    "mtime": 1787101265.0624835,
+    "seen": 1787331408.223745,
+    "ast_hash": "a0e9dad40bb8823fa744b095eef7705a",
+    "semantic_hash": "a0e9dad40bb8823fa744b095eef7705a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/incident_analyzer.py": {
+    "mtime": 1787101265.094451,
+    "seen": 1787331408.223746,
+    "ast_hash": "cf799358d7763f8cf64ac619f0de5bc9",
+    "semantic_hash": "cf799358d7763f8cf64ac619f0de5bc9"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/operational_reasoner.py": {
+    "mtime": 1787101265.0410633,
+    "seen": 1787331408.223746,
+    "ast_hash": "841606bc824c90119d4f3ff62aae8d35",
+    "semantic_hash": "841606bc824c90119d4f3ff62aae8d35"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/operational_summary.py": {
+    "mtime": 1787101265.3070753,
+    "seen": 1787331408.223746,
+    "ast_hash": "996f0cbc5804d2fe35f9d5c548781b8e",
+    "semantic_hash": "996f0cbc5804d2fe35f9d5c548781b8e"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/operations_agent.py": {
+    "mtime": 1787101265.0327268,
+    "seen": 1787331408.223746,
+    "ast_hash": "f031bcfecf777764122a497d683e883f",
+    "semantic_hash": "f031bcfecf777764122a497d683e883f"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/ownership_analyzer.py": {
+    "mtime": 1787101265.2922914,
+    "seen": 1787331408.223747,
+    "ast_hash": "d047cec94ff46e0d655426f7a9f9ee7d",
+    "semantic_hash": "d047cec94ff46e0d655426f7a9f9ee7d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/operations/recommendation_engine.py": {
+    "mtime": 1787101265.0601058,
+    "seen": 1787331408.223747,
+    "ast_hash": "9ebf348681e59fbe73bc13543d11e531",
+    "semantic_hash": "9ebf348681e59fbe73bc13543d11e531"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/__init__.py": {
+    "mtime": 1787199443.7387192,
+    "seen": 1787331408.223747,
+    "ast_hash": "3804464cc2a41b1eecdcd667c0642b11",
+    "semantic_hash": "3804464cc2a41b1eecdcd667c0642b11"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/indexes.py": {
+    "mtime": 1787104775.6013858,
+    "seen": 1787331408.223747,
+    "ast_hash": "0092419da29778e51486329304f3cc8d",
+    "semantic_hash": "0092419da29778e51486329304f3cc8d"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/query_cache.py": {
+    "mtime": 1787104775.610015,
+    "seen": 1787331408.2237482,
+    "ast_hash": "43572908d0f8db8081556526e577cfa9",
+    "semantic_hash": "43572908d0f8db8081556526e577cfa9"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/semantic_cache.py": {
+    "mtime": 1787105912.2453825,
+    "seen": 1787331408.2237482,
+    "ast_hash": "d6936a046fd6010a0eff6777a757680e",
+    "semantic_hash": "d6936a046fd6010a0eff6777a757680e"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/semantic_engine.py": {
+    "mtime": 1787205348.440779,
+    "seen": 1787331408.2237482,
+    "ast_hash": "59c2a5313093d6ce3b7efe9e8109af57",
+    "semantic_hash": "59c2a5313093d6ce3b7efe9e8109af57"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/semantic_indexes.py": {
+    "mtime": 1787199443.7397294,
+    "seen": 1787331408.2237482,
+    "ast_hash": "f5efe846a9efd5a82058b197af890fb1",
+    "semantic_hash": "f5efe846a9efd5a82058b197af890fb1"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/semantic_models.py": {
+    "mtime": 1787205295.181473,
+    "seen": 1787331408.2237492,
+    "ast_hash": "d9f7cc46a0f25b83dc63556f1bc55bb3",
+    "semantic_hash": "d9f7cc46a0f25b83dc63556f1bc55bb3"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/semantic_query.py": {
+    "mtime": 1787199443.7409625,
+    "seen": 1787331408.2237492,
+    "ast_hash": "41601b0bab2a014890d6bb8c2674e33a",
+    "semantic_hash": "41601b0bab2a014890d6bb8c2674e33a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/semantic_registry.py": {
+    "mtime": 1787199443.7415485,
+    "seen": 1787331408.2237492,
+    "ast_hash": "bbc04a89692b25a420d6d4c28afb0055",
+    "semantic_hash": "bbc04a89692b25a420d6d4c28afb0055"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/semantic_validator.py": {
+    "mtime": 1787109291.2072933,
+    "seen": 1787331408.2237492,
+    "ast_hash": "9721edb77090eb24a7c1d1ebdb5bad6a",
+    "semantic_hash": "9721edb77090eb24a7c1d1ebdb5bad6a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/semantic/validator.py": {
+    "mtime": 1787104775.6149502,
+    "seen": 1787331408.2237499,
+    "ast_hash": "17486ae5e1cea8fc51383847db5781ab",
+    "semantic_hash": "17486ae5e1cea8fc51383847db5781ab"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/storage/__init__.py": {
+    "mtime": 1786965862.7117152,
+    "seen": 1787331408.2237499,
+    "ast_hash": "76f87b2c576fe5909941148febc7ae01",
+    "semantic_hash": "76f87b2c576fe5909941148febc7ae01"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/storage/delta_writer.py": {
+    "mtime": 1786969323.4768822,
+    "seen": 1787331408.2237499,
+    "ast_hash": "2f4c55c521ab2164431cc526de83f0e3",
+    "semantic_hash": "2f4c55c521ab2164431cc526de83f0e3"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/storage/onelake_writer.py": {
+    "mtime": 1786968871.243292,
+    "seen": 1787331408.2237508,
+    "ast_hash": "494062f779622612e3a52e2045d7655a",
+    "semantic_hash": "494062f779622612e3a52e2045d7655a"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/storage/parquet_writer.py": {
+    "mtime": 1786965862.7121108,
+    "seen": 1787331408.2237508,
+    "ast_hash": "4a72e3be483d3850c0c9d7d6e69b0cbd",
+    "semantic_hash": "4a72e3be483d3850c0c9d7d6e69b0cbd"
+  },
+  "/Users/jasonmba/workspace/azure-aiops/src/storage/partitioning.py": {
+    "mtime": 1786965882.71621,
+    "seen": 1787331408.2237508,
+    "ast_hash": "49e54764ed8bea7bd16877257c3d2d8f",
+    "semantic_hash": "49e54764ed8bea7bd16877257c3d2d8f"
+  }
+}

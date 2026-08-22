@@ -33,6 +33,9 @@ fabric:
     ontology_name: "Operational_Context_Graph"
 
   source_data_root: "./live-data"
+  # Bounded concurrency keeps independent Delta table writes fast without
+  # overwhelming OneLake or creating unbounded client-side pressure.
+  write_workers: 4
   registration_attempts: 20
   patch_policies:
     - name: "Production baseline"

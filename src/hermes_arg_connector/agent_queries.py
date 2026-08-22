@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 class ContextQueryService:
@@ -13,9 +14,19 @@ class ContextQueryService:
         "show patch failures",
     )
 
-    def __init__(self, output_dir: Path) -> None:
-        self.root = Path(output_dir).expanduser().resolve()
-        self.current = self.root / "current"
+    def __init__(self, output_dir: str) -> None:
+        self._is_local = urlparse(str(output_dir)).scheme not in ("abfss", "abfs", "az")
+        if self._is_local:
+            # Preserve the original local behaviour, including the symlink
+            # containment checks in `_load` below.
+            self.root = Path(output_dir).expanduser().resolve()
+            self.current = self.root / "current"
+        else:
+            # Remote (ADLS Gen2) root: no symlinks, delegate to DatasetStore's
+            # `current.json` pointer mechanism instead.
+            from .storage import DatasetStore
+
+            self._store = DatasetStore(output_dir)
 
     def answer(self, question: str) -> dict[str, Any]:
         intent = " ".join(question.lower().strip().rstrip(".?").split())
@@ -70,6 +81,9 @@ class ContextQueryService:
         return {str(row.get("id") or ""): row for row in rows}
 
     def _load(self, name: str) -> list[dict]:
+        if not self._is_local:
+            return self._store.read_dataset(name)
+
         root = self.current.resolve(strict=True)
         try:
             root.relative_to(self.root)

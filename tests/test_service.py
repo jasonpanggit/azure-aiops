@@ -25,7 +25,9 @@ class FakeSource:
     def fetch(self, specs, subscription_ids):
         self.calls.append(tuple(subscription_ids))
         self.query_batches.append(list(specs))
-        return {spec.name: list(self.payload[spec.name]) for spec in specs}
+        # A real source returns an empty result for a resource type the
+        # subscription has none of, so an absent fixture key is not an error.
+        return {spec.name: list(self.payload.get(spec.name, [])) for spec in specs}
 
 
 def test_end_to_end_mock_ingestion_tracks_incremental_state(tmp_path: Path) -> None:
@@ -84,15 +86,16 @@ def test_incremental_run_preserves_prior_resource_change_history(tmp_path: Path)
 
 
 def test_source_fetches_independent_arg_queries_in_parallel() -> None:
-    barrier = threading.Barrier(6)
+    specs = QueryCatalog().build(None)
+    workers = len(specs)
+    barrier = threading.Barrier(workers)
 
     class ParallelArg:
         def query(self, spec, subscription_ids):
-            barrier.wait(timeout=2)
+            barrier.wait(timeout=5)
             return [{"query": spec.name}]
 
-    source = AzureResourceGraphSource(mcp=None, arg=ParallelArg(), max_workers=6)
-    specs = QueryCatalog().build(None)
+    source = AzureResourceGraphSource(mcp=None, arg=ParallelArg(), max_workers=workers)
 
     result = source.fetch(specs, ["sub-1"])
 

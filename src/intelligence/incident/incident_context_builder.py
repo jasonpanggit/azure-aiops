@@ -79,6 +79,8 @@ class IncidentContextBuilder:
                 "support_team",
                 "environment",
                 "business_criticality",
+                "subscription_id",
+                "subscription_connection",
             )
         )
         return {
@@ -103,6 +105,10 @@ class IncidentContextBuilder:
             ),
             "subscription_alias": self._bounded_text(
                 row.get("subscription_alias") or "Unknown"
+            ),
+            "subscription_id": self._bounded_text(row.get("subscription_id") or ""),
+            "subscription_connection": self._bounded_text(
+                row.get("subscription_connection") or ""
             ),
             "patch_score": self._optional_score(row.get("patch_score")),
             "lifecycle_score": self._optional_score(row.get("lifecycle_score")),

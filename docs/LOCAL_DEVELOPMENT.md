@@ -1,10 +1,46 @@
-# Local Fabric Persistence Development
+# Local Development
 
 ## Install
 
 ```bash
 cd /Users/jasonmba/workspace/azure-aiops
 uv sync --extra test
+```
+
+## Start the web app and Operations API without Azure
+
+From `web/`, start the UI and API in separate terminals:
+
+```bash
+npm run start
+npm run start:api
+```
+
+`npm run start` starts the web app. `npm run start:api` reads `web/.env.local`
+and starts the API with token auth.
+
+If `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and
+`AZURE_CLIENT_SECRET` are set, the API startup injects a local subscription
+connection into `.hermes-local/`. The connection stores only
+`env://AZURE_CLIENT_SECRET`, so discovery can authenticate with the local SPN
+without persisting the secret. Startup also removes the fixture-only demo
+connection and runs initial sync for the SPN connection. Set
+`HERMES_LOCAL_AUTO_SYNC=0` to register the connection without syncing.
+
+If any SPN value is missing or still a placeholder, `npm run start:api` falls
+back to a fixture-backed snapshot from `tests/fixtures/mock_arg_responses.json`.
+The API runtime reads both real synced data and fixture snapshots through the
+same `InventoryDatasetMapper` and Semantic Knowledge Layer.
+
+Set `HERMES_LOCAL_SEED=0` when you intentionally want the live Azure-backed
+local path instead. In that mode, `scripts/start-api.sh` preserves the existing
+Postgres registry default and live connection sync behavior.
+
+You can also seed without starting the server:
+
+```bash
+uv run hermes-arg local --home .hermes-local
+uv run hermes-arg local-spn --home .hermes-local
 ```
 
 ## Generate a deterministic source snapshot

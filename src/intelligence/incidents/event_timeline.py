@@ -6,13 +6,16 @@ from datetime import UTC, datetime
 class EventTimelineEngine:
     """Normalizes governed facts and produces chronological operational chains."""
 
+    _FIREWALL_FIELDS = frozenset({"firewall", "firewallpolicy", "azfirewall", "azurefirewall", "applicationrulecollections", "networkrulecollections", "natrulecollections"})
+    _NSG_FIELDS = frozenset({"securityrules", "nsgrules", "nsg", "networksecuritygroup"})
+
     def __init__(self, *, max_events: int = 50000) -> None:
         if isinstance(max_events, bool) or not isinstance(max_events, int) or max_events < 1:
             raise ValueError("Timeline max_events must be a positive integer")
         self.max_events = max_events
 
-    def normalize(self, *, incidents=None, alerts=None, changes=None, patch=None, lifecycle=None):
-        collections = (incidents or [], alerts or [], changes or [], patch or [], lifecycle or [])
+    def normalize(self, *, incidents=None, alerts=None, changes=None, network_changes=None, cve_exposures=None, patch=None, lifecycle=None):
+        collections = (incidents or [], alerts or [], changes or [], network_changes or [], cve_exposures or [], patch or [], lifecycle or [])
         if any(not isinstance(rows, list) for rows in collections):
             raise ValueError("Timeline event collections must be lists")
         if sum(len(rows) for rows in collections) > self.max_events:
@@ -22,6 +25,8 @@ class EventTimelineEngine:
             (incidents or [], "incident_id", "started_at", self._incident_type),
             (alerts or [], "alert_id", "fired_at", self._alert_type),
             (changes or [], "change_id", "changed_at", self._change_type),
+            (network_changes or [], "change_id", "changed_at", self._network_change_type),
+            (cve_exposures or [], "finding_id", "observed_at", self._cve_exposure_type),
             (patch or [], "finding_id", "observed_at", self._patch_type),
             (lifecycle or [], "finding_id", "observed_at", self._lifecycle_type),
         )
@@ -54,8 +59,10 @@ class EventTimelineEngine:
         chains = []
         if "Patch Failure" in labels:
             chains.append("Missed patch -> exposure increase -> application at risk")
-        if "Resource Modified" in labels or "Configuration Change" in labels:
-            chains.append("Configuration change -> service degradation -> incident")
+        if "CVE Exposure" in labels:
+            chains.append("CVE exposure -> elevated operational risk -> incident")
+        if labels & {"Resource Modified", "Configuration Change", "Network Change", "Firewall Rule Change", "NSG Change"}:
+            chains.append("Configuration or network change -> service degradation -> incident")
         if "OS EOL Threshold Crossed" in labels:
             chains.append("Lifecycle exposure -> recurring risk -> business service impact")
         if any("Reboot" in event["summary"] for event in preceding):
@@ -101,6 +108,27 @@ class EventTimelineEngine:
             return "Ownership Change"
         value = str(row.get("change_type") or "").casefold()
         return "Resource Created" if value in {"create", "created"} else "Resource Deleted" if value in {"delete", "deleted"} else "Configuration Change" if fields else "Resource Modified"
+
+
+    @classmethod
+    def _network_change_type(cls, row):
+        fields = {
+            str(field).casefold().replace("_", "")
+            for field in (row.get("changed_fields") or [])
+        }
+        text = " ".join(
+            str(row.get(name) or "").casefold()
+            for name in ("summary", "source", "change_type", "category")
+        )
+        if fields & cls._FIREWALL_FIELDS or "firewall" in text:
+            return "Firewall Rule Change"
+        if fields & cls._NSG_FIELDS or "nsg" in text or "network security group" in text:
+            return "NSG Change"
+        return "Network Change"
+
+    @staticmethod
+    def _cve_exposure_type(_row):
+        return "CVE Exposure"
 
     @staticmethod
     def _patch_type(row):

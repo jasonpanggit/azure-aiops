@@ -75,7 +75,11 @@ class PredictiveIntelligence:
         for row in inventory:
             key=PredictiveContextBuilder.canonical_key(row.get("resource_id")); name=str(row.get("name") or ""); entity_type=str(row.get("entity_type") or "Resource")
             if not key or not name: continue
-            context=semantic_engine.get_resource_context(key,subject_type=entity_type); sections=context.get("sections") or {}; classification=sections.get("operational_classification") or {}; signals=dict(resource_signals.get(key) or {})
+            try:
+                context=semantic_engine.get_resource_context(key,subject_type=entity_type)
+            except LookupError:
+                continue
+            sections=context.get("sections") or {}; classification=sections.get("operational_classification") or {}; signals=dict(resource_signals.get(key) or {})
             if "security_findings" in sections:
                 signals.setdefault(
                     "security_finding_count", len(sections["security_findings"] or [])

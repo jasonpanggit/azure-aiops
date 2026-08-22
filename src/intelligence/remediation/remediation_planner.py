@@ -142,9 +142,13 @@ class RemediationPlanner:
             if not key:
                 continue
             entity_type = str(row.get("entity_type") or "Resource")
-            context = semantic_engine.get_resource_context(
-                key, subject_type=entity_type
-            )
+            try:
+                context = semantic_engine.get_resource_context(
+                    key, subject_type=entity_type
+                )
+                public = semantic_engine.indexes.public(key)
+            except LookupError:
+                continue
             sections = context.get("sections") or {}
             classification = sections.get("operational_classification") or {}
             resources.append(
@@ -168,6 +172,17 @@ class RemediationPlanner:
                     ),
                     "business_criticality": str(
                         classification.get("criticality") or "Unknown"
+                    ),
+                    "subscription_id": str(
+                        public.get("subscription_id")
+                        or row.get("subscription_id")
+                        or ""
+                    ),
+                    "subscription_connection": str(
+                        public.get("subscription_connection")
+                        or row.get("subscription_connection")
+                        or row.get("connection_id")
+                        or ""
                     ),
                     "upstream_dependencies": cls._section_names(
                         sections.get("upstream_dependencies")

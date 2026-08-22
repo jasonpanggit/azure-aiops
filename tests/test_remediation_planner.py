@@ -25,3 +25,32 @@ def test_opportunities_cover_patch_lifecycle_configuration_and_predictive_risk()
     assert "Lifecycle and modernization debt" in kinds
     assert "Configuration and policy debt" in kinds
     assert any(row["predictive_risk_score"] >= 75 for row in opportunities)
+
+
+def test_scope_metadata_is_preserved_in_opportunities_and_plans():
+    planner = remediation_planner()
+    planner.resources[0].update(
+        {
+            "environment": "production",
+            "owner": "ops@example.com",
+            "subscription_id": "sub-1",
+            "subscription_connection": "prod-core",
+        }
+    )
+
+    opportunity = next(
+        row
+        for row in planner.identify_opportunities()["opportunities"]
+        if row["subscription_connection"] == "prod-core"
+    )
+    plan = next(
+        row
+        for row in planner.generate_plans()["plans"]
+        if row["subscription_connection"] == "prod-core"
+    )
+
+    for row in (opportunity, plan):
+        assert row["environment"] == "production"
+        assert row["owner"] == "ops@example.com"
+        assert row["subscription_id"] == "sub-1"
+        assert row["subscription_connection"] == "prod-core"

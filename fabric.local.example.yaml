@@ -5,6 +5,7 @@ fabric:
   workspace_id: "local-workspace"
   lakehouse_id: "local-lakehouse"
   source_data_root: "./sample-data"
+  write_workers: 4
   local_onelake_root: "./mock-fabric-lakehouse"
   create_lakehouse_if_missing: false
   table_schema: ""

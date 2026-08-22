@@ -6,21 +6,33 @@ import re
 from pathlib import Path
 from typing import Any
 
+from hermes_arg_connector.network_normalize import NETWORK_ENTITY_TYPES
 from ontology.entity_builder import EntityBuilder
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator
 from ontology.relationship_builder import RelationshipBuilder
 
+#: The generic bucket the connector writes every unclassified ARM resource to.
+#: A resource that also lands in a typed file (a Bastion in ``NetworkGateway``,
+#: a VNet in ``VNet``) appears in both, and the typed row is the richer one.
+GENERIC_ENTITY_FILE = "Resource"
+
 ENTITY_FILES = (
     "ManagementGroup",
     "Subscription",
     "ResourceGroup",
-    "Resource",
+    GENERIC_ENTITY_FILE,
     "VirtualMachine",
     "ArcServer",
     "PatchAssessment",
+    "PatchAssessmentDetail",
     "PatchInstallation",
     "AdvisorRecommendation",
+    # Network topology entities, including the sub-resources (subnets, NSG
+    # rules, routes, peerings) that only ever exist in their own typed file.
+    # Without these the ontology has no VNet internals, so the topology graph
+    # renders nodes with no relationships between them.
+    *NETWORK_ENTITY_TYPES,
 )
 
 ONTOLOGY_ENTITY_TYPES = (
@@ -68,6 +80,55 @@ ONTOLOGY_ENTITY_TYPES = (
     "BlastRadius",
     "DependencyChain",
     "OperationalFinding",
+    # Network topology (Prompt 16)
+    "VNet",
+    "Subnet",
+    "NetworkInterface",
+    "NetworkSecurityGroup",
+    "NetworkSecurityRule",
+    "RouteTable",
+    "Route",
+    "VNetPeering",
+    "AzureFirewall",
+    "FirewallPolicy",
+    "FirewallRuleCollection",
+    "FirewallRule",
+    "PrivateEndpoint",
+    "PrivateDnsZone",
+    "NetworkGateway",
+    "LoadBalancer",
+    "KBArticle",
+    "SecurityUpdate",
+    "CVE",
+    "AffectedProduct",
+    "CVSSScore",
+    "ExploitabilitySignal",
+    "PatchSupersedence",
+    "VulnerabilityFinding",
+    "VulnerabilityExposure",
+)
+
+#: Entity types that can appear as the object of a network containment edge.
+_NETWORK_CONTAINED = (
+    "VNet",
+    "NetworkInterface",
+    "NetworkSecurityGroup",
+    "RouteTable",
+    "AzureFirewall",
+    "FirewallPolicy",
+    "PrivateEndpoint",
+    "PrivateDnsZone",
+    "NetworkGateway",
+    "LoadBalancer",
+)
+
+#: Entity types that can be attached to a subnet.
+_SUBNET_ATTACHED = (
+    "NetworkInterface",
+    "AzureFirewall",
+    "PrivateEndpoint",
+    "NetworkGateway",
+    "LoadBalancer",
 )
 
 ONTOLOGY_RELATIONSHIP_TYPES = (
@@ -84,6 +145,17 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     ("BusinessService", "funded_by", "BusinessFunction"),
     ("Owner", "owns", "Service"),
     ("Owner", "owns", "BusinessService"),
+    ("MissingUpdate", "identifiedBy", "KBArticle"),
+    ("SecurityUpdate", "addresses", "CVE"),
+    ("CVE", "affects", "AffectedProduct"),
+    ("CVE", "hasScore", "CVSSScore"),
+    ("CVE", "hasExploitabilitySignal", "ExploitabilitySignal"),
+    ("SecurityUpdate", "supersedes", "PatchSupersedence"),
+    ("VulnerabilityFinding", "forCVE", "CVE"),
+    ("VulnerabilityFinding", "onResource", "Resource"),
+    ("VulnerabilityFinding", "affectsApplication", "Application"),
+    ("VulnerabilityFinding", "impactsBusinessService", "BusinessService"),
+    ("VulnerabilityExposure", "aggregates", "VulnerabilityFinding"),
     ("Application", "requiresPlan", "RemediationPlan"),
     ("RemediationPlan", "mitigatesRisk", "RiskAssessment"),
     ("RemediationPlan", "protectsService", "BusinessService"),
@@ -113,30 +185,81 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     *(("AdvisorRecommendation", "affects", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *(("PatchAssessment", "evaluates", asset) for asset in ("VirtualMachine", "ArcServer")),
     *(("PatchInstallation", "records_installation_for", asset) for asset in ("VirtualMachine", "ArcServer")),
+    # Network topology (Prompt 16)
+    ("VNet", "contains", "Subnet"),
+    ("VNet", "hasPeering", "VNetPeering"),
+    ("VNetPeering", "peersWith", "VNet"),
+    ("Subnet", "protectedBy", "NetworkSecurityGroup"),
+    ("Subnet", "routedBy", "RouteTable"),
+    ("Subnet", "egressesVia", "NetworkGateway"),
+    ("NetworkSecurityGroup", "hasRule", "NetworkSecurityRule"),
+    ("RouteTable", "hasRoute", "Route"),
+    ("NetworkInterface", "protectedBy", "NetworkSecurityGroup"),
+    ("AzureFirewall", "enforcesPolicy", "FirewallPolicy"),
+    ("FirewallPolicy", "hasRuleCollection", "FirewallRuleCollection"),
+    ("FirewallRuleCollection", "hasRule", "FirewallRule"),
+    ("PrivateDnsZone", "resolvesFor", "VNet"),
+    *((entity, "belongsTo", "ResourceGroup") for entity in _NETWORK_CONTAINED),
+    *((entity, "attachedTo", "Subnet") for entity in _SUBNET_ATTACHED),
+    *(
+        ("PrivateEndpoint", "exposesPrivately", asset)
+        for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")
+    ),
+    *(
+        (asset, "hasNetworkInterface", "NetworkInterface")
+        for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")
+    ),
+    *(
+        ("LoadBalancer", "loadBalances", asset)
+        for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")
+    ),
 )
 
 
 class InventoryDatasetMapper:
-    def load(self, snapshot: Path, ingestion_run_id: str) -> dict[str, list[dict[str, Any]]]:
-        manifest = _read_json(snapshot / "manifest.json")
+    def load(
+        self,
+        snapshot: str | Path,
+        ingestion_run_id: str,
+        fs: Any | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Load one connection's mapped inventory from its dataset snapshot.
+
+        ``snapshot`` is the *already-resolved* generation path/directory
+        returned by ``DatasetStore.current_generation()`` - for remote (ADLS)
+        roots that string has no ``abfss://`` scheme (it's the bare
+        ``container/path`` fsspec uses internally), so re-resolving it here
+        would silently fall back to the local filesystem and read nothing.
+        Callers with a remote ``DatasetStore`` must pass its ``fs`` through;
+        only bare local-path callers (e.g. CLI/tests) may omit it.
+        """
+        if fs is None:
+            from hermes_arg_connector.fs import resolve_fs
+
+            fs, root = resolve_fs(str(snapshot))
+        else:
+            root = str(snapshot)
+        manifest = _read_json(fs, f"{root}/manifest.json")
         ingestion_timestamp = str(manifest.get("startedAt") or "1970-01-01T00:00:00Z")
         entities = {
-            entity_type: _read_jsonl(snapshot / "entities" / f"{entity_type}.jsonl")
+            entity_type: _read_jsonl(fs, f"{root}/entities/{entity_type}.jsonl")
             for entity_type in ENTITY_FILES
         }
-        relationships = _read_jsonl(snapshot / "relationships/relationships.jsonl")
-        changes = _read_jsonl(snapshot / "changes/resource_changes.jsonl")
+        relationships = _read_jsonl(fs, f"{root}/relationships/relationships.jsonl")
+        changes = _read_jsonl(fs, f"{root}/changes/resource_changes.jsonl")
 
         all_resources = [
             *entities["Resource"],
             *entities["VirtualMachine"],
             *entities["ArcServer"],
         ]
-        inventory_entity_rows = [
-            _entity_row(row, entity_type, ingestion_run_id)
-            for entity_type, rows in entities.items()
-            for row in rows
-        ]
+        inventory_entity_rows = _dedupe_entity_rows(
+            [
+                _entity_row(row, entity_type, ingestion_run_id)
+                for entity_type, rows in entities.items()
+                for row in rows
+            ]
+        )
         resource_index = {row["resource_id"]: row for row in inventory_entity_rows}
         subscription_tenants = {
             str(row.get("subscriptionId") or "").casefold(): str(row.get("tenantId") or "")
@@ -173,6 +296,10 @@ class InventoryDatasetMapper:
                 _entity_row(row, "PatchAssessment", ingestion_run_id)
                 for row in entities["PatchAssessment"]
             ],
+            "bronze_patchassessmentdetail": [
+                _entity_row(row, "PatchAssessmentDetail", ingestion_run_id)
+                for row in entities["PatchAssessmentDetail"]
+            ],
             "bronze_patchinstallation": [
                 _entity_row(row, "PatchInstallation", ingestion_run_id)
                 for row in entities["PatchInstallation"]
@@ -199,6 +326,16 @@ class InventoryDatasetMapper:
             "silver_patch_installations": [
                 _patch_installation_row(row, ingestion_run_id)
                 for row in entities["PatchInstallation"]
+            ],
+            "silver_patch_findings": [
+                *(
+                    _patch_finding_row(row, ingestion_run_id, status="missing")
+                    for row in entities["PatchAssessmentDetail"]
+                ),
+                *(
+                    _patch_finding_row(row, ingestion_run_id, status="installed")
+                    for row in entities["PatchInstallation"]
+                ),
             ],
             "silver_resource_relationships": relationship_rows,
             "ontology_entities": graph.entities,
@@ -236,6 +373,33 @@ class InventoryDatasetMapper:
         for relationship_type in ONTOLOGY_RELATIONSHIP_TYPES:
             datasets.setdefault(ontology_relationship_table(*relationship_type), [])
         return datasets
+
+
+def _dedupe_entity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapses rows that describe the same resource, keeping the typed one.
+
+    The connector writes a Bastion host to both ``Resource.jsonl`` and
+    ``NetworkGateway.jsonl``. Only the typed row carries the network payload
+    (``subnetId``, ``vnetId``, ...), and feeding both to the entity builder
+    raises a canonical-duplicate conflict, so the typed row wins.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    unkeyed: list[dict[str, Any]] = []
+    for row in rows:
+        resource_id = str(row.get("resource_id") or "")
+        if not resource_id:
+            unkeyed.append(row)
+            continue
+        existing = by_id.get(resource_id)
+        if existing is not None:
+            # Whichever order the files were read in, the typed row wins and a
+            # second generic row never displaces it.
+            existing_generic = existing["entity_type"] == GENERIC_ENTITY_FILE
+            row_generic = row["entity_type"] == GENERIC_ENTITY_FILE
+            if row_generic or not existing_generic:
+                continue
+        by_id[resource_id] = row
+    return [*by_id.values(), *unkeyed]
 
 
 def _entity_row(row: dict[str, Any], entity_type: str, run_id: str) -> dict[str, Any]:
@@ -307,6 +471,40 @@ def _patch_installation_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
                 for item in errors
                 if isinstance(item, dict)
             ),
+        }
+    )
+    return result
+
+
+def _patch_finding_row(row: dict[str, Any], run_id: str, *, status: str) -> dict[str, Any]:
+    """Holistic per-KB row combining pending (``PatchAssessmentDetail``) and
+    installed (``PatchInstallation``) patches so downstream consumers (the
+    vulnerability intelligence service) can see both what is still missing
+    and what has already been remediated for the same KB/target, rather than
+    only the aggregate counts in ``silver_compliance``."""
+    entity_type = "PatchAssessmentDetail" if status == "missing" else "PatchInstallation"
+    result = _entity_row(row, entity_type, run_id)
+    classifications = row.get("classifications") or []
+    classifications = classifications if isinstance(classifications, list) else [str(classifications)]
+    severity = str(row.get("msrcSeverity") or "").strip()
+    if not severity:
+        severity = (
+            "Critical"
+            if any(str(item).casefold() == "critical" for item in classifications)
+            else "Security"
+            if any(str(item).casefold() == "security" for item in classifications)
+            else "Unknown"
+        )
+    result.update(
+        {
+            "target_resource_id": str(row.get("targetResourceId") or "").casefold(),
+            "kb_id": str(row.get("kbId") or "").strip(),
+            "update_name": str(row.get("updateName") or ""),
+            "category": ",".join(str(item) for item in classifications),
+            "severity": severity,
+            "status": status,
+            "published_at": str(row.get("publishedDateTime") or ""),
+            "last_modified": str(row.get("lastModifiedDateTime") or ""),
         }
     )
     return result
@@ -410,10 +608,11 @@ def _subscription_from_id(value: str) -> str:
         return ""
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+def _read_jsonl(fs, path: str) -> list[dict[str, Any]]:
+    if not fs.exists(path):
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    with fs.open(path, "rt") as handle:
+        return [json.loads(line) for line in handle.read().splitlines() if line.strip()]
 
 
 def ontology_entity_table(entity_type: str) -> str:
@@ -447,8 +646,11 @@ def _health_row(health: dict[str, Any], run_id: str, timestamp: str) -> dict[str
     return row
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text()) if path.exists() else {}
+def _read_json(fs, path: str) -> dict[str, Any]:
+    if not fs.exists(path):
+        return {}
+    with fs.open(path, "rt") as handle:
+        return json.loads(handle.read())
 
 
 def _ontology_quality_row(

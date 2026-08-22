@@ -1,0 +1,29 @@
+- generic [ref=f2e5]:
+  - img "Organisation background image" [ref=f2e6]
+  - generic [ref=f2e7]:
+    - generic [ref=f2e12]:
+      - generic [ref=f2e13]:
+        - img "Microsoft" [ref=f2e16]
+        - main [ref=f2e17]:
+          - generic [ref=f2e20]:
+            - heading "Sign in" [level=1] [ref=f2e24]
+            - generic [ref=f2e25]: You're signing in to aiops-demo-spn on another device located in Singapore. If it's not you, close this page.
+            - generic [ref=f2e27]:
+              - alert
+              - generic [ref=f2e29]:
+                - textbox "Enter your email, phone, or Skype." [active] [ref=f2e30]:
+                  - /placeholder: Email, phone, or Skype
+                - textbox [ref=f2e31]
+            - link "Can’t access your account?" [ref=f2e37] [cursor=pointer]:
+              - /url: "#"
+            - generic [ref=f2e38]:
+              - button "Back" [ref=f2e40] [cursor=pointer]
+              - button "Next" [ref=f2e42] [cursor=pointer]
+      - button "Sign-in options" [ref=f2e48] [cursor=pointer]
+    - contentinfo [ref=f2e53]:
+      - generic [ref=f2e54]:
+        - link "Terms of use" [ref=f2e55] [cursor=pointer]:
+          - /url: https://www.microsoft.com/en-GB/servicesagreement/
+        - link "Privacy & cookies" [ref=f2e56] [cursor=pointer]:
+          - /url: https://privacy.microsoft.com/en-GB/privacystatement
+        - button "Click here for troubleshooting information" [ref=f2e57] [cursor=pointer]: ...

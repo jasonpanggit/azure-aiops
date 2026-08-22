@@ -1,0 +1,43 @@
+{
+  "name": "web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "clean:next": "rm -rf .next",
+    "start": "npm run clean:next && next dev",
+    "start:api": "../scripts/start-api.sh",
+    "start:prod": "next start",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@azure/msal-browser": "^5.18.0",
+    "@azure/msal-react": "^5.5.5",
+    "@fluentui/react-components": "^9.74.6",
+    "@fluentui/react-icons": "^2.0.335",
+    "cytoscape": "^3.34.1",
+    "cytoscape-fcose": "^2.2.0",
+    "next": "14.2.35",
+    "react": "^18",
+    "react-dom": "^18",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.4",
+    "@types/cytoscape": "^3.21.9",
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@vitejs/plugin-react": "^4.7.0",
+    "eslint": "^8",
+    "eslint-config-next": "14.2.35",
+    "jsdom": "^25.0.1",
+    "typescript": "^5",
+    "vitest": "^2.1.9"
+  }
+}
