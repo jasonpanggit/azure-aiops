@@ -2488,6 +2488,7 @@ body.topology-fullscreen-open {
 
 .copilot-thread {
   min-height: 480px;
+  min-width: 0;
 }
 
 .copilot-welcome {
@@ -2622,6 +2623,10 @@ body.topology-fullscreen-open {
   margin-top: 20px;
 }
 
+.copilot-turn {
+  min-width: 0;
+}
+
 .copilot-question {
   display: flex;
   justify-content: flex-end;
@@ -2638,11 +2643,13 @@ body.topology-fullscreen-open {
 .copilot-question p {
   max-width: 76%;
   padding: 9px 12px;
+  overflow-wrap: anywhere;
   background: var(--color-brand-subtle);
   border-radius: 10px 2px 10px 10px;
 }
 
 .copilot-answer {
+  min-width: 0;
   padding: 16px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -2672,15 +2679,74 @@ body.topology-fullscreen-open {
   gap: 9px;
 }
 
-/* The Foundry agent's narration. Rendered above the structured rows it
+/* The Foundry agent's narration, rendered as structured markdown (headings,
+   lists, inline emphasis, code) via MarkdownLite rather than one
+   `white-space: pre-wrap` blob. Sits above the structured rows it
    summarises, so the prose reads as a lead-in to the evidence rather than as
-   a standalone claim. */
-.copilot-narration {
+   a standalone claim. `min-width: 0` plus `overflow-wrap` keep long
+   unbroken tokens (resource IDs, GUIDs) from forcing the narrow chat column
+   to overflow horizontally. */
+.markdown-lite {
+  min-width: 0;
   margin: 0 0 12px;
   padding-bottom: 12px;
+  overflow-wrap: anywhere;
   border-bottom: 1px solid var(--color-border);
   line-height: 1.55;
-  white-space: pre-wrap;
+}
+
+.markdown-lite > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-lite-paragraph {
+  margin: 0 0 10px;
+}
+
+.markdown-lite-heading {
+  margin: 14px 0 6px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.markdown-lite-heading:first-child {
+  margin-top: 0;
+}
+
+.markdown-lite-list {
+  margin: 0 0 10px;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+}
+
+.markdown-lite-list li {
+  overflow-wrap: anywhere;
+}
+
+.markdown-lite-code {
+  padding: 1px 5px;
+  font-size: 0.9em;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
+.markdown-lite-pre {
+  max-width: 100%;
+  padding: 10px 12px;
+  margin: 0 0 10px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.markdown-lite-pre code {
+  white-space: pre;
 }
 
 .copilot-answer-results > div {

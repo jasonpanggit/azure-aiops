@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
+import { MarkdownLite } from "@/components/ui/MarkdownLite";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
@@ -138,7 +139,7 @@ function CopilotContent() {
                 ) : (
                   <>
                     {turn.narration && (
-                      <p className="copilot-narration">{turn.narration.text}</p>
+                      <MarkdownLite text={turn.narration.text} />
                     )}
                     {turn.toolCalls?.length ? (
                       <div className="copilot-tool-calls">
