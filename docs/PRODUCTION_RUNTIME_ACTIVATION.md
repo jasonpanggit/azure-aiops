@@ -175,6 +175,37 @@ delegated scope (e.g. `access_as_user`) matching `NEXT_PUBLIC_ENTRA_API_SCOPE`.
 After changing `requestedAccessTokenVersion`, users must sign out/in again —
 already-cached v1.0 tokens remain invalid until MSAL acquires a fresh token.
 
+#### App roles (required for grants to resolve)
+
+`EntraJwtAuthenticator` reads the token's `roles` claim and intersects it with
+each subject's roles from `HERMES_API_GATEWAY_GRANTS`
+(`src/api/runtime.py:_gateway_grants`). Entra only ever populates a `roles`
+claim when **both** of the following are true:
+
+1. The app registration defines `appRoles` (by default this list is empty).
+2. The signed-in user (or SPN) has been assigned one of those app roles on the
+   app's service principal.
+
+If either is missing, every token carries an empty `roles` claim and every
+principal is rejected with `Entra principal has no configured Hermes grants`,
+even though `HERMES_API_GATEWAY_GRANTS` correctly lists the subject. This is a
+one-time, admin-only setup step — run
+[`infra/scripts/configure-entra-app-roles.sh`](../infra/scripts/configure-entra-app-roles.sh)
+as a tenant/app admin (requires `Application.ReadWrite.All` or app ownership;
+the deployment SPN itself typically cannot grant this to itself):
+
+```bash
+ENTRA_WEB_CLIENT_ID="306c1437-0e7d-43bd-940b-79b878166331" \
+HERMES_API_GATEWAY_GRANTS='{"admin@contoso.com":[{"role":"admin"}]}' \
+./infra/scripts/configure-entra-app-roles.sh
+```
+
+The script defines `admin`/`operator`/`reader` app roles on the app
+registration (idempotent) and assigns each subject in
+`HERMES_API_GATEWAY_GRANTS` the app role matching their highest configured
+role. Affected users must sign out and back in (or otherwise force MSAL to
+acquire a fresh token) before the new `roles` claim takes effect.
+
 ### Administrator Entra configuration
 
 Administrators can save the deployment's Entra values from `/admin`. The form
