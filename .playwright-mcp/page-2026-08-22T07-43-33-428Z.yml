@@ -1,6 +1,0 @@
-- generic [active] [ref=e1]:
-  - generic [ref=e3]:
-    - generic [ref=e4]: Azure AI Operations Workbench
-    - generic [ref=e5]: Sign in with your organizational account to continue.
-    - button "Sign in" [ref=e6]
-  - alert [ref=e7]
