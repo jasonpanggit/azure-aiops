@@ -1,0 +1,360 @@
+"""Operations API application factory.
+
+Builds the FastAPI app that fronts Hermes for the Azure AI Operations
+Workbench. The app itself contains no business logic: it authenticates,
+authorizes, routes, and translates exceptions into a stable error contract.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import threading
+import uuid
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
+
+from .dependencies import ApiContext, OperatePrincipal
+from .errors import ApiError, ErrorCode, translate
+from .models import EnvelopeModel, ErrorModel
+from .routers import admin as admin_routes
+from .routers import connections, graph, network, operations, planned, vulnerability
+from .routers import context as context_routes
+from .routers import copilot as copilot_routes
+from .telemetry import Timer
+
+API_TITLE = "Hermes Operations API"
+API_VERSION = "1.0.0"
+API_DESCRIPTION = """
+Backend for the Azure AI Operations Workbench.
+
+Every response is an envelope of `data`, `evidence`, and `scope`. Evidence
+records the source engine, source table, timestamp, subscription connection,
+resource id, confidence, and freshness for the data returned.
+
+Reads are served exclusively through the Semantic Knowledge Layer. Network
+topology and vulnerability endpoints are published as contracts and return
+`501 not_implemented` until their engines land.
+"""
+logger = logging.getLogger("hermes.api")
+_CORRELATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
+_ERROR_RESPONSES = {
+    str(status): {
+        "description": description,
+        "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/ErrorModel"}}
+        },
+    }
+    for status, description in {
+        400: "Invalid request",
+        401: "Unauthenticated",
+        403: "Forbidden",
+        404: "Not found",
+        409: "Conflict",
+        500: "Internal error",
+        501: "Not implemented",
+        502: "Upstream unavailable",
+        503: "Secret unavailable",
+    }.items()
+}
+
+
+def _route_label(request: Request) -> str:
+    """Templated path (not the concrete URL) to keep telemetry low-cardinality."""
+    route = request.scope.get("route")
+    return getattr(route, "path", None) or "unmatched"
+
+
+def _correlation_id(request: Request) -> str:
+    value = str(request.headers.get("x-correlation-id") or "").strip()
+    return value if _CORRELATION_ID.fullmatch(value) else uuid.uuid4().hex
+
+
+def _error_body(error: ApiError, request: Request) -> dict[str, Any]:
+    return error.to_dict(correlation_id=getattr(request.state, "correlation_id", ""))
+
+
+def _register_openapi(app: FastAPI) -> None:
+    """Publish stable success/error envelopes and auth requirements for clients."""
+
+    def custom_openapi() -> dict[str, Any]:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        components = schema.setdefault("components", {})
+        schemas = components.setdefault("schemas", {})
+        for model in (EnvelopeModel, ErrorModel):
+            model_schema = model.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            )
+            schemas.update(model_schema.pop("$defs", {}))
+            schemas[model.__name__] = model_schema
+        components.setdefault("securitySchemes", {})["bearerAuth"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "Opaque token",
+            "description": (
+                "Bearer token for local development. Gateway deployments validate "
+                "identity upstream and map it to explicitly configured grants."
+            ),
+        }
+        for path, path_operations in schema["paths"].items():
+            for method, operation in path_operations.items():
+                if method not in {"get", "post", "patch", "put", "delete"}:
+                    continue
+                if path not in {"/health", "/ready"}:
+                    operation["security"] = [{"bearerAuth": []}]
+                responses = operation.setdefault("responses", {})
+                for status in ("200", "201"):
+                    if status in responses:
+                        responses[status].setdefault("content", {})[
+                            "application/json"
+                        ] = {"schema": {"$ref": "#/components/schemas/EnvelopeModel"}}
+                responses.update(
+                    {
+                        status: detail
+                        for status, detail in _ERROR_RESPONSES.items()
+                        if status not in responses
+                    }
+                )
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi
+
+
+def _start_background_refresh(app: FastAPI, context: ApiContext) -> None:
+    """Refresh providers on a dedicated background thread.
+
+    Provider loaders can perform slow, rate-limited network calls (NVD/MSRC
+    CVE enrichment, Fabric OneLake reads). Relying on request threads (probe
+    or otherwise) to drive refreshes means a slow loader blocks whatever
+    request happened to trigger it -- including liveness/readiness probes,
+    which Container Apps kills on timeout. This timer thread is the only
+    thing that performs *blocking* refreshes; request threads only ever call
+    `refresh(blocking=False)`, which is a no-op if this thread is already
+    working.
+    """
+    provider_runtime = context.provider_runtime
+    if provider_runtime is None:
+        return
+    stop_event = threading.Event()
+    interval = max(provider_runtime.refresh_interval_seconds, 5)
+
+    def _loop() -> None:
+        # First pass forces a refresh immediately (do not wait a full
+        # interval before the process has any provider data at all), then
+        # settles into the normal interval-based cadence.
+        try:
+            provider_runtime.refresh(force=True, blocking=True)
+        except Exception:
+            logger.exception("background_provider_refresh_failed")
+        while not stop_event.wait(interval):
+            try:
+                provider_runtime.refresh(blocking=True)
+            except Exception:
+                logger.exception("background_provider_refresh_failed")
+
+    thread = threading.Thread(
+        target=_loop, name="provider-refresh", daemon=True
+    )
+    thread.start()
+    app.state.provider_refresh_stop = stop_event
+    app.state.provider_refresh_thread = thread
+
+    @app.on_event("shutdown")
+    def _stop_background_refresh() -> None:
+        stop_event.set()
+        thread.join(timeout=5)
+
+
+def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
+    """Build the API.
+
+    When no context is supplied one is assembled from the environment (see
+    :mod:`api.runtime`), so ``uvicorn --factory api.app:create_app`` serves a
+    working API instead of failing on every request.
+    """
+    if context is None:
+        from .runtime import build_context
+
+        context = build_context()
+    app = FastAPI(
+        title=API_TITLE,
+        version=API_VERSION,
+        description=API_DESCRIPTION,
+        **kwargs,
+    )
+    app.state.context = context
+    _start_background_refresh(app, context)
+    configured_origins = os.environ.get(
+        "HERMES_API_CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[origin.strip() for origin in configured_origins.split(",") if origin.strip()],
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["X-Correlation-ID"],
+    )
+    _register_openapi(app)
+    telemetry = context.telemetry
+
+    app.include_router(connections.router)
+    app.include_router(admin_routes.router)
+    app.include_router(context_routes.router)
+    app.include_router(copilot_routes.router)
+    app.include_router(graph.router)
+    app.include_router(network.router)
+    app.include_router(operations.router)
+    app.include_router(planned.router)
+    app.include_router(vulnerability.router)
+
+    @app.middleware("http")
+    async def _observe(request: Request, call_next):
+        timer = Timer()
+        correlation_id = _correlation_id(request)
+        request.state.correlation_id = correlation_id
+        try:
+            response = await call_next(request)
+        except Exception:
+            # The exception handlers below own the response body; record the
+            # failure here so a crash is never invisible to telemetry.
+            telemetry.record_request(
+                route=_route_label(request),
+                method=request.method,
+                status_code=500,
+                duration_ms=timer.elapsed_ms(),
+            )
+            logger.error(
+                "api_request_failed correlation_id=%s route=%s method=%s",
+                correlation_id,
+                _route_label(request),
+                request.method,
+            )
+            raise
+        route = _route_label(request)
+        telemetry.record_request(
+            route=route,
+            method=request.method,
+            status_code=response.status_code,
+            duration_ms=timer.elapsed_ms(),
+        )
+        if response.status_code in (401, 403):
+            telemetry.record_denied(route=route, reason=str(response.status_code))
+        response.headers["X-Correlation-ID"] = correlation_id
+        logger.info(
+            "api_request correlation_id=%s route=%s method=%s status=%s duration_ms=%.2f",
+            correlation_id,
+            route,
+            request.method,
+            response.status_code,
+            timer.elapsed_ms(),
+        )
+        return response
+
+    @app.exception_handler(ApiError)
+    async def _api_error(request: Request, exc: ApiError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content=_error_body(exc, request))
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # Report *which* fields failed and why, but never echo the submitted
+        # value: a rejected payload can still contain secret material.
+        fields = [
+            {
+                "field": ".".join(str(part) for part in error.get("loc", ())[1:]),
+                "reason": str(error.get("type", "invalid")),
+            }
+            for error in exc.errors()
+        ]
+        error = ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "Request validation failed",
+            {"fields": fields},
+        )
+        return JSONResponse(status_code=error.status_code, content=_error_body(error, request))
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+        error = translate(exc)
+        logger.error(
+            "api_unhandled_error correlation_id=%s error_code=%s",
+            getattr(request.state, "correlation_id", ""),
+            error.code,
+        )
+        return JSONResponse(status_code=error.status_code, content=_error_body(error, request))
+
+    @app.get("/health", tags=["meta"], summary="Liveness and provider state")
+    def health() -> dict[str, Any]:
+        runtime_health = (
+            context.provider_runtime.health(refresh=False)
+            if context.provider_runtime is not None
+            else {
+                "readiness": "ready" if context.semantic_provider else "degraded",
+                "ontology_version": "",
+                "freshness": "",
+                "last_discovery_run": "",
+                "last_ontology_publication": "",
+                "degraded_reason": "",
+                "providers": {
+                    "semantic": {
+                        "state": "ready" if context.semantic_provider else "disabled",
+                        "loaded": context.semantic_provider is not None,
+                    }
+                },
+            }
+        )
+        semantic = runtime_health["providers"].get("semantic", {})
+        return {
+            "status": "ok",
+            "version": API_VERSION,
+            "semantic_snapshot_loaded": bool(semantic.get("loaded")),
+            **runtime_health,
+        }
+
+    @app.get("/ready", tags=["meta"], summary="Provider readiness")
+    def readiness() -> JSONResponse:
+        if context.provider_runtime is not None:
+            # Never block this probe request behind a slow/rate-limited
+            # provider loader (e.g. NVD CVE enrichment): if a refresh is
+            # already running (background timer or a concurrent probe),
+            # `blocking=False` skips waiting and serves the last known
+            # state instead. Container Apps kills the container if a probe
+            # doesn't respond within its timeout, so a blocking refresh here
+            # can turn a slow upstream dependency into a crash loop.
+            context.provider_runtime.refresh(blocking=False)
+        body = health()
+        ready = body["readiness"] in {"ready", "partial", "stale"}
+        return JSONResponse(status_code=200 if ready else 503, content=body)
+
+    @app.post(
+        "/api/v1/runtime/refresh",
+        tags=["meta"],
+        summary="Refresh configured runtime providers",
+    )
+    def refresh_runtime(_principal: OperatePrincipal) -> dict[str, Any]:
+        if context.provider_runtime is None:
+            raise ApiError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "Managed provider runtime is not configured",
+            )
+        return context.provider_runtime.refresh(force=True)
+
+    return app

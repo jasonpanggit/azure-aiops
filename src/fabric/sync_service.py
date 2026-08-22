@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -57,6 +58,7 @@ class FabricSyncService:
         lakehouse_id: str = "",
         shortcuts: tuple[object, ...] = (),
         registration_attempts: int = 20,
+        write_workers: int = 4,
         ontology_publisher=None,
         ontology_id: str = "",
         ontology_name: str = "Operational_Context_Graph",
@@ -76,6 +78,9 @@ class FabricSyncService:
         self.lakehouse_id = lakehouse_id
         self.shortcuts = shortcuts
         self.registration_attempts = registration_attempts
+        if write_workers < 1:
+            raise ValueError("write_workers must be positive")
+        self.write_workers = write_workers
         self.ontology_publisher = ontology_publisher
         self.ontology_id = ontology_id
         self.ontology_name = ontology_name
@@ -213,7 +218,10 @@ class FabricSyncService:
                     raise ValueError(f"Fabric data quality validation failed: {failed_records} records")
                 return result
 
-            for table_name, rows in datasets.items():
+            def write_table(
+                item: tuple[str, list[dict[str, Any]]],
+            ) -> tuple[str, str, int | None, DeltaWriteResult]:
+                table_name, rows = item
                 layer, logical_name = table_name.split("_", 1)
                 mode = (
                     DeltaWriteMode.MERGE
@@ -235,10 +243,25 @@ class FabricSyncService:
                     partition_by=self.partitioning.columns_for(table_name),
                     schema=schema_for(table_name),
                 )
-                table_results[table_name] = result
-                if result.version != before_version:
-                    written_versions[table_name] = (table_uri, before_version)
-                self.metrics.record_table(table_name, result)
+                return table_name, table_uri, before_version, result
+
+            with ThreadPoolExecutor(max_workers=self.write_workers) as executor:
+                futures = [
+                    executor.submit(write_table, item) for item in datasets.items()
+                ]
+                write_error = None
+                for future in as_completed(futures):
+                    try:
+                        table_name, table_uri, before_version, result = future.result()
+                    except Exception as exc:  # noqa: BLE001 - collect all worker failures before rollback.
+                        write_error = write_error or exc
+                        continue
+                    table_results[table_name] = result
+                    if result.version != before_version:
+                        written_versions[table_name] = (table_uri, before_version)
+                    self.metrics.record_table(table_name, result)
+                if write_error is not None:
+                    raise write_error
 
             catalog = _catalog_metadata(datasets, table_results, run_id, source_run_id)
             self._register_fabric_assets(set(table_results))
@@ -334,6 +357,49 @@ class FabricSyncService:
         rows = self.delta.read(self.onelake.table_uri("ontology", "health"))
         return max(rows, key=lambda row: str(row.get("timestamp") or ""), default={})
 
+    # Governed tables (beyond ontology entities) whose timestamps can lag or
+    # lead ontology publication independently, since each is written by its
+    # own ingestion pipeline. Every intelligence engine validates its inputs
+    # against `SemanticEngine.freshness`, so that value must be the maximum
+    # watermark across *everything* being loaded -- not just ontology
+    # entities -- or a perfectly valid, newer row from any of these tables
+    # trips the "observation exceeds snapshot freshness" guard and the whole
+    # provider is marked unavailable.
+    _FRESHNESS_WATERMARK_TABLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+        ("silver", "compliance", ("timestamp",)),
+        ("silver", "patch_findings", ("timestamp",)),
+        ("silver", "patch_installations", ("timestamp",)),
+        ("silver", "patch_history", ("observed_at", "timestamp")),
+        ("silver", "lifecycle_history", ("observed_at", "timestamp")),
+        ("silver", "incidents", ("started_at", "timestamp")),
+        ("silver", "alerts", ("fired_at", "timestamp")),
+        ("silver", "incident_history", ("observed_at", "timestamp")),
+        ("silver", "change_history", ("observed_at", "timestamp")),
+        ("silver", "predictive_history", ("observed_at", "timestamp")),
+        ("bronze", "resource_changes", ("timestamp",)),
+    )
+
+    def _global_freshness_watermark(self, floor: str) -> str:
+        """Return the max timestamp across `floor` and every table in
+        `_FRESHNESS_WATERMARK_TABLES` that is actually present, so
+        `SemanticEngine.freshness` never lags behind data intelligence
+        engines will validate against it.
+        """
+        watermark = floor
+        for layer, name, fields in self._FRESHNESS_WATERMARK_TABLES:
+            uri = self.onelake.table_uri(layer, name)
+            if self.delta.version(uri) is None:
+                continue
+            for row in self.delta.read(uri):
+                value = ""
+                for field in fields:
+                    value = str(row.get(field) or "")
+                    if value:
+                        break
+                if value and value > watermark:
+                    watermark = value
+        return watermark
+
     def semantic_snapshot(self) -> dict[str, Any]:
         """Internal knowledge snapshot; agent tools must use SemanticEngine instead."""
 
@@ -345,6 +411,14 @@ class FabricSyncService:
         latest = max(states, key=lambda row: str(row.get("timestamp") or ""), default={})
         entities = read("ontology", "entities")
         relationships = read("ontology", "relationships")
+        # A published ontology can outlive its ingestion-state rows (for example
+        # when the metadata table was truncated or written by an earlier run).
+        # Fall back to the newest published entity timestamp so downstream
+        # intelligence receives a real freshness instead of an empty string,
+        # which every consumer rejects as an invalid timestamp.
+        entity_watermark = max(
+            (str(row.get("timestamp") or "") for row in entities), default=""
+        )
         entity_index = {row["resource_id"]: row for row in entities}
         security: list[dict[str, Any]] = []
         for edge in relationships:
@@ -395,12 +469,20 @@ class FabricSyncService:
             and str(edge.get("object_id") or "") in service_functions
         ]
         raw_version = str(
-            latest.get("source_run_id") or latest.get("change_version") or ""
+            latest.get("source_run_id")
+            or latest.get("change_version")
+            or max(
+                (str(row.get("ingestion_run_id") or "") for row in entities),
+                default="",
+            )
         )
         public_version = (
             f"semantic-{_hash_json(raw_version)[:16]}"
             if raw_version
             else "semantic-unversioned"
+        )
+        freshness = self._global_freshness_watermark(
+            str(latest.get("watermark") or latest.get("timestamp") or entity_watermark)
         )
         return {
             "entities": entities,
@@ -410,8 +492,10 @@ class FabricSyncService:
             "security": security,
             "cost": cost,
             "knowledge_version": public_version,
-            "freshness": str(latest.get("watermark") or latest.get("timestamp") or ""),
-            "ontology_synchronized_at": str(latest.get("timestamp") or ""),
+            "freshness": freshness,
+            "ontology_synchronized_at": str(
+                latest.get("timestamp") or entity_watermark
+            ),
         }
 
     def semantic_version(self) -> str:
@@ -420,6 +504,16 @@ class FabricSyncService:
         raw_version = str(
             latest.get("source_run_id") or latest.get("change_version") or ""
         )
+        if not raw_version:
+            # Mirror semantic_snapshot()'s fallback so the cached engine version
+            # matches the snapshot version and the engine is not rebuilt on
+            # every call when ingestion state is missing.
+            uri = self.onelake.table_uri("ontology", "entities")
+            entities = self.delta.read(uri) if self.delta.version(uri) is not None else []
+            raw_version = max(
+                (str(row.get("ingestion_run_id") or "") for row in entities),
+                default="",
+            )
         return (
             f"semantic-{_hash_json(raw_version)[:16]}"
             if raw_version
@@ -576,6 +670,7 @@ class FabricSyncService:
         return {
             "inventory": read("bronze", "resources"),
             "assessments": read("silver", "compliance"),
+            "findings": read("silver", "patch_findings"),
             "installations": read("silver", "patch_installations"),
             "history": read("silver", "patch_history"),
             "policies": policies,
@@ -641,16 +736,16 @@ class FabricSyncService:
             }
             for row in read("silver", "alerts")
         ]
-        resource_changes = [
+        resource_changes = _dedupe_changes([
             {
-                "change_id": str(row.get("resource_id") or ""),
+                "change_id": _change_identity(row, namespace="resource_changes"),
                 "change_type": str(row.get("change_type") or "Unknown"),
                 "changed_at": str(row.get("timestamp") or ""),
                 "resource_key": str(row.get("target_resource_id") or "").casefold(),
                 "summary": f"Resource change: {row.get('change_type') or 'Unknown'}",
             }
             for row in read("bronze", "resource_changes")
-        ]
+        ])
         return {
             "inventory": read("bronze", "resources"),
             "incidents": incidents,
@@ -707,7 +802,7 @@ class FabricSyncService:
                 authorized = None
             resource_changes.append(
                 {
-                    "change_id": str(row.get("resource_id") or ""),
+                    "change_id": _change_identity(row, namespace="resource_changes"),
                     "resource_key": str(
                         row.get("target_resource_id") or ""
                     ).casefold(),
@@ -730,6 +825,7 @@ class FabricSyncService:
                     ),
                 }
             )
+        resource_changes = _dedupe_changes(resource_changes)
 
         def deviations(name: str) -> list[dict[str, Any]]:
             return [
@@ -749,9 +845,13 @@ class FabricSyncService:
             ]
 
         def changes(name: str) -> list[dict[str, Any]]:
-            return [
+            return _dedupe_changes([
                 {
-                    "change_id": str(row.get("change_id") or ""),
+                    "change_id": _change_identity(
+                        row,
+                        fallback=str(row.get("change_id") or ""),
+                        namespace=name,
+                    ),
                     "resource_key": str(
                         row.get("target_resource_id") or ""
                     ).casefold(),
@@ -764,7 +864,7 @@ class FabricSyncService:
                     "summary": str(row.get("summary") or "Change observed"),
                 }
                 for row in read("silver", name)
-            ]
+            ])
 
         def configurations(name: str) -> dict[str, dict[str, Any]]:
             result = {}
@@ -1142,6 +1242,67 @@ def _hash_json(value: Any) -> str:
     import hashlib
 
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _dedupe_changes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Guarantee a unique identity for every retained change event.
+
+    Delta tables can retain byte-identical change rows across refreshes, and
+    distinct events can share a resource, timestamp and change type. Consumers
+    reject the whole batch on a duplicate identity, so identical rows are
+    collapsed and remaining collisions are disambiguated with a deterministic
+    ordinal suffix.
+    """
+    seen: set[str] = set()
+    fingerprints: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for row in rows:
+        identity = str(row.get("change_id") or "").strip()
+        if not identity:
+            continue
+        fingerprint = _hash_json(
+            {key: str(value) for key, value in sorted(row.items())}
+        )
+        if fingerprint in fingerprints:
+            continue
+        fingerprints.add(fingerprint)
+        candidate = identity
+        ordinal = 1
+        while candidate.casefold() in seen:
+            candidate = f"{identity}~{ordinal}"
+            ordinal += 1
+        seen.add(candidate.casefold())
+        unique.append({**row, "change_id": candidate})
+    return unique
+
+
+def _change_identity(
+    row: dict[str, Any], fallback: str = "", *, namespace: str = ""
+) -> str:
+    """Build a stable, unique identity for one change event.
+
+    A single resource can legitimately record many change events, so the bare
+    ``resource_id`` is not unique and every consumer rejects the batch with
+    "Duplicate change identity". The identity is emitted as an opaque hash
+    rather than the raw resource path because consumers redact
+    ``/subscriptions/...`` text, which would otherwise collapse every
+    resource-scoped identity onto the same redacted string. ``namespace``
+    separates the change categories, which the consumer concatenates into a
+    single identity space.
+    """
+    base = str(row.get("resource_id") or fallback or "").strip()
+    if not base:
+        return ""
+    digest = _hash_json(
+        [
+            namespace,
+            base,
+            str(row.get("timestamp") or row.get("changed_at") or ""),
+            str(row.get("change_version") or ""),
+            str(row.get("change_type") or ""),
+        ]
+    )[:32]
+    return f"{namespace or 'change'}-{digest}"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
