@@ -95,17 +95,39 @@ Traceability is populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01–FOUND-05 | Pending | Pending |
-| DETECT-01–DETECT-07 | Pending | Pending |
-| RECOMM-01–RECOMM-03 | Pending | Pending |
-| APPROVE-01–APPROVE-03 | Pending | Pending |
-| EXEC-01–EXEC-06 | Pending | Pending |
-| PILOT-01–PILOT-04 | Pending | Pending |
+| FOUND-01 | Phase 1 | Pending |
+| FOUND-02 | Phase 1 | Pending |
+| FOUND-03 | Phase 1 | Pending |
+| FOUND-04 | Phase 1 | Pending |
+| FOUND-05 | Phase 1 | Pending |
+| DETECT-01 | Phase 1 | Pending |
+| DETECT-02 | Phase 1 | Pending |
+| DETECT-03 | Phase 2 | Pending |
+| DETECT-04 | Phase 2 | Pending |
+| DETECT-05 | Phase 2 | Pending |
+| DETECT-06 | Phase 2 | Pending |
+| DETECT-07 | Phase 2 | Pending |
+| RECOMM-01 | Phase 2 | Pending |
+| RECOMM-02 | Phase 2 | Pending |
+| RECOMM-03 | Phase 2 | Pending |
+| APPROVE-01 | Phase 2 | Pending |
+| APPROVE-02 | Phase 2 | Pending |
+| APPROVE-03 | Phase 2 | Pending |
+| EXEC-01 | Phase 3 | Pending |
+| EXEC-02 | Phase 3 | Pending |
+| EXEC-03 | Phase 3 | Pending |
+| EXEC-04 | Phase 3 | Pending |
+| EXEC-05 | Phase 3 | Pending |
+| EXEC-06 | Phase 3 | Pending |
+| PILOT-01 | Phase 4 | Pending |
+| PILOT-02 | Phase 4 | Pending |
+| PILOT-03 | Phase 4 | Pending |
+| PILOT-04 | Phase 5 | Pending |
 
 **Coverage:**
 - v1 requirements: 28 total
-- Mapped to phases: 0
-- Unmapped: 28
+- Mapped to phases: 28
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-08-23*
