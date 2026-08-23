@@ -1,0 +1,1 @@
+{"content":"SRE risk guidance supports explicit error budgets, staged exposure, rollback, and operational readiness; a pilot should begin read-only or shadowed, define stop conditions, and prove recovery before allowing bounded write actions.","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-08-23T13:38:36.806Z","ttl":86400000,"kind":"web"}

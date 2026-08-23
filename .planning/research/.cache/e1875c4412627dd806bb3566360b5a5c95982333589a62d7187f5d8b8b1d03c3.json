@@ -1,0 +1,1 @@
+{"content":"Azure Well-Architected identity guidance recommends least privilege, managed identities, explicit authorization boundaries, and separation of duties; operational automation should not inherit broad operator privileges by default.","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-08-23T13:38:36.720Z","ttl":86400000,"kind":"web"}
