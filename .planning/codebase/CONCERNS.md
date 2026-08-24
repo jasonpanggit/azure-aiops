@@ -1,172 +1,155 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-08-23
+**Analysis Date:** 2026-08-24
 
 ## Tech Debt
 
 **Large multi-responsibility modules:**
-- Issue: Core behavior is concentrated in very large modules, including semantic query/normalization logic, synchronization orchestration, API runtime composition, and several intelligence engines.
+- Issue: Core behavior is concentrated in very large modules (semantic query/runtime assembly, synchronization orchestration, and intelligence processing).
 - Files: `src/semantic/semantic_engine.py`, `src/fabric/sync_service.py`, `src/api/runtime.py`, `src/intelligence/patch/patch_intelligence.py`, `src/agents/operations/operations_agent.py`
-- Impact: Changes cross many concerns, increase regression risk, and make review and targeted testing difficult.
-- Fix approach: Extract stable ports and focused services around query execution, ingestion stages, provider construction, and intelligence projections; preserve the existing API contracts while moving one responsibility at a time.
+- Impact: Changes cut across multiple concerns, increasing regression risk and review complexity.
+- Fix approach: Extract narrow services behind stable interfaces (query execution, provider composition, synchronization phases) while preserving route and data contracts.
 
-**Duplicated local/cloud storage paths:**
-- Issue: The connector and API support local files, OneLake/fsspec paths, Data Lake SDK paths, Delta tables, and JSONL/Parquet generations through separate branches.
-- Files: `src/hermes_arg_connector/storage.py`, `src/hermes_arg_connector/onelake_fs.py`, `src/storage/onelake_writer.py`, `src/storage/onelake_documents.py`, `src/storage/delta_writer.py`
-- Impact: Semantics such as atomic activation, cleanup, permissions, and error handling can diverge between development and production.
-- Fix approach: Define one storage abstraction with conformance tests for local and OneLake implementations, especially for publish interruption, concurrent writers, and partial remote writes.
+**Storage behavior is split across multiple backends and code paths:**
+- Issue: Local filesystem and OneLake paths diverge across `Path`, fsspec, and Data Lake SDK logic, including lock semantics and atomic publish behavior.
+- Files: `src/hermes_arg_connector/storage.py`, `src/hermes_arg_connector/onelake_fs.py`, `src/hermes_arg_connector/locking.py`, `src/storage/onelake_writer.py`, `src/storage/onelake_documents.py`
+- Impact: Correctness guarantees differ by environment, making production-only failures more likely.
+- Fix approach: Define one storage/locking contract with conformance tests that run against both local and OneLake implementations.
 
-**Runtime configuration is spread across environment variables and Terraform:**
-- Issue: Authentication, grants, Foundry, Fabric, Key Vault, image, and scaling behavior are configured across `src/api/runtime.py`, shell launchers, and Terraform variables rather than validated by one startup configuration model.
-- Files: `src/api/runtime.py`, `scripts/start-api.sh`, `infra/terraform/variables.tf`, `infra/terraform/container_apps.tf`
-- Impact: Invalid or inconsistent deployment combinations can start in a degraded state and only fail when a provider or route is used.
-- Fix approach: Centralize typed configuration validation, fail startup for mandatory production settings, and add a deployment smoke test for every supported mode.
+**Exception handling policy is inconsistent and often broad:**
+- Issue: Broad `except Exception` handlers are used in runtime composition, refresh loops, and sync paths, which can hide root causes behind degraded states.
+- Files: `src/api/app.py`, `src/api/runtime.py`, `src/api/providers.py`, `src/fabric/sync_service.py`, `src/hermes_arg_connector/service.py`, `src/operations/autonomous_investigation.py`
+- Impact: Operators get less precise failure diagnostics and engineers face longer incident triage time.
+- Fix approach: Narrow exception boundaries to expected failure classes and emit structured failure reasons with actionable remediation context.
 
 ## Known Bugs
 
-**Remote ingestion lock can expire during a long sync:**
-- Symptoms: A OneLake writer lease is acquired for 60 seconds, but the sync path does not renew it while processing large datasets or waiting on upstream services; another replica can acquire the lock after expiry while the first sync is still writing.
-- Files: `src/hermes_arg_connector/locking.py`, `src/storage/onelake_writer.py`, `src/fabric/sync_service.py`
-- Trigger: A production ingestion run lasts longer than `LEASE_DURATION_SECONDS`.
-- Workaround: Keep runs below the lease duration or manually coordinate a single replica; this is not a reliable safeguard.
+**OneLake connector lock lease can expire during long ingestion runs:**
+- Symptoms: `RunLock` uses a finite `LEASE_DURATION_SECONDS = 60`, and `IngestionService.run()` acquires the lock once without periodic renewal.
+- Files: `src/hermes_arg_connector/locking.py`, `src/hermes_arg_connector/service.py`
+- Trigger: Long-running ingestion exceeds 60 seconds while writing/normalizing large estates.
+- Workaround: Operate with a single replica and shorter runs; this is operationally fragile and not deterministic.
 
-**Provider refresh work is process-local:**
-- Symptoms: Every API replica starts its own background refresh thread and maintains its own provider/snapshot state.
-- Files: `src/api/app.py`, `src/api/providers.py`, `src/api/runtime.py`
-- Trigger: Scaling the API beyond one replica or restarting a replica during a refresh cycle.
-- Workaround: Use the persisted Fabric/OneLake snapshot and tolerate provider staleness; add distributed refresh coordination and shared status before relying on synchronized freshness.
+**Timed-out autonomous investigation threads can continue running:**
+- Symptoms: Futures are cancelled when possible, but the executor is shut down with `wait=False`, so in-flight work can outlive request timeout.
+- Files: `src/operations/autonomous_investigation.py`, `src/api/routers/multi_agent.py`
+- Trigger: Investigation timeout with agents blocked on external calls or long computation.
+- Workaround: Lower timeout and reduce agent fan-out; behavior remains best-effort due to non-cooperative thread cancellation.
 
 ## Security Considerations
 
-**Header-based identity has a trust-boundary dependency:**
-- Risk: `HeaderPrincipalAuthenticator` accepts identity and role headers without validating a token. Direct exposure of the API, a misconfigured ingress, or a route that bypasses the trusted gateway can enable forged principals.
-- Files: `src/api/auth.py`, `src/api/runtime.py`, `infra/terraform/container_apps.tf`
-- Current mitigation: Production Terraform selects Entra mode and the authenticator documents that it must be behind a validating gateway; an Entra JWT implementation also exists in `src/api/auth.py`.
-- Recommendations: Prefer `EntraJwtAuthenticator` or cryptographically bind gateway assertions, reject direct production ingress unless explicitly protected, and add an integration test proving forged headers cannot authorize a request.
+**Header-based principal assertion depends on strict perimeter trust:**
+- Risk: `HeaderPrincipalAuthenticator` trusts asserted headers and does not verify bearer tokens itself.
+- Files: `src/api/auth.py`, `src/api/runtime.py`
+- Current mitigation: Entra JWT auth path exists and header mode requires configured grants resolver.
+- Recommendations: Default production auth to `EntraJwtAuthenticator`, and enforce ingress policy preventing direct access paths that can spoof assertion headers.
 
-**API ingress and browser credentials are broadly enabled by defaults:**
-- Risk: `api_external_ingress` defaults to true and CORS allows credentials, all methods, and all headers for configured origins. A deployment mistake can expose a credential-bearing API more broadly than intended.
-- Files: `infra/terraform/variables.tf`, `infra/terraform/container_apps.tf`, `src/api/app.py`
-- Current mitigation: The default origin list is local-only and production Terraform sets the web origin explicitly.
-- Recommendations: Make external ingress opt-in for non-public deployments, restrict methods and headers, validate origins as HTTPS in production, and add Terraform policy checks for public ingress plus missing identity protection.
+**CORS and ingress defaults are permissive for credential-bearing requests:**
+- Risk: API enables `allow_credentials=True`, `allow_methods=["*"]`, `allow_headers=["*"]`, and Terraform defaults `api_external_ingress` to true.
+- Files: `src/api/app.py`, `infra/terraform/variables.tf`, `infra/terraform/container_apps.tf`
+- Current mitigation: Localhost origins are defaulted for development, and deployments can override origins.
+- Recommendations: Make external ingress opt-in by default, constrain CORS methods/headers, and enforce HTTPS-only origin validation in production.
 
-**Key Vault runtime identity is over-privileged:**
-- Risk: The API identity is granted `Key Vault Secrets Officer`, which permits broad secret data-plane operations even though the application primarily needs narrowly defined read/write operations.
-- Files: `infra/terraform/main.tf`, `src/onboarding/credentials.py`, `src/api/routers/admin.py`
-- Current mitigation: Secrets are stored in Key Vault rather than the registry, and application secret names are allowlisted in `src/api/routers/admin.py`.
-- Recommendations: Separate writer and reader identities, use the least-privilege custom roles supported by the deployment, restrict vault scope, and add an audit alert for unexpected secret deletion or enumeration.
-
-**Infrastructure credentials remain Terraform inputs:**
-- Risk: `client_secret` is passed into multiple Terraform providers and can be retained in Terraform state or provider/resource metadata if state handling is misconfigured.
-- Files: `infra/terraform/providers.tf`, `infra/terraform/variables.tf`, `infra/terraform/main.tf`
-- Current mitigation: The variable is marked sensitive and local state/tfvars are ignored by `.gitignore`.
-- Recommendations: Use workload identity/OIDC for deployment where possible, store remote state in a protected backend with encryption and access logging, and add a CI check that rejects local state, tfvars, or secret-bearing artifacts.
-
-**Sensitive operational data may be sent to external AI services:**
-- Risk: The Copilot and Foundry integration sends retrieved operational context to a Foundry agent; context can include asset, incident, vulnerability, and business metadata. Scope filtering errors or overly broad prompts could disclose estate information.
-- Files: `src/api/routers/copilot.py`, `src/operations/foundry_agent.py`, `src/operations/tools.py`
-- Current mitigation: Requests require read scope, tool results are filtered, and context is placed in the user turn rather than agent instructions.
-- Recommendations: Minimize and classify fields before transmission, enforce tenant/business-service scope immediately before the outbound call, document retention/residency, and add red-team tests for prompt injection and cross-scope data leakage.
+**Key Vault and deployment secrets posture is broad:**
+- Risk: App identity gets `Key Vault Secrets Officer`, and Terraform providers still consume `client_secret` as input.
+- Files: `infra/terraform/main.tf`, `infra/terraform/providers.tf`, `infra/terraform/variables.tf`, `src/api/routers/admin.py`
+- Current mitigation: Sensitive Terraform variables are flagged as sensitive and Key Vault is used instead of plaintext persistence.
+- Recommendations: Move deployment auth to workload identity/OIDC, reduce runtime role privileges where feasible, and add policy checks against local/unsafe state handling.
 
 ## Performance Bottlenecks
 
-**Freshness fallback scans complete Delta tables:**
-- Problem: If the SQL reader is unavailable, freshness calculation reads every row from each present governed table solely to find a maximum timestamp.
-- Files: `src/fabric/sync_service.py`, `src/storage/delta_writer.py`
-- Cause: `_global_freshness_watermark` falls back from aggregate SQL queries to full `delta.read` calls across many tables.
-- Improvement path: Persist per-table watermarks during writes, use Delta statistics or metadata-only aggregation, and bound fallback work with an explicit degraded/stale state.
+**Freshness fallback performs full-table Delta scans:**
+- Problem: If SQL endpoint aggregation fails, freshness logic iterates full rows across governed tables to find a max timestamp.
+- Files: `src/fabric/sync_service.py`
+- Cause: `_global_freshness_watermark()` falls back from SQL max aggregation to repeated `delta.read()` scans.
+- Improvement path: Persist incremental table watermarks on write and query metadata/aggregates instead of full reads.
 
-**Full generation materialization duplicates large datasets:**
-- Problem: Publishing prepares sorted JSONL strings, converts all rows to Parquet in memory, then writes immutable generations and retains three generations.
+**Dataset publishing materializes full JSONL and Parquet payloads in memory:**
+- Problem: `_write_dataset()` builds complete JSONL strings and full `pyarrow.Table.from_pylist(...)` before writing.
 - Files: `src/hermes_arg_connector/storage.py`
-- Cause: `_write_dataset` builds complete serialized representations and `pyarrow.Table.from_pylist` before writing; cleanup is deferred until after activation.
-- Improvement path: Stream or batch serialization, write Parquet incrementally, cap dataset sizes, and make retention configurable by environment.
+- Cause: Serialization pipeline is batch-in-memory, not streaming/chunked.
+- Improvement path: Introduce chunked writers for JSONL/Parquet and enforce upper bounds per dataset generation.
 
-**Autonomous investigation work can outlive the request:**
-- Problem: After timeout, worker futures are cancelled where possible but the executor is shut down with `wait=False`; running tasks continue while the request proceeds to reconciliation and executive synthesis.
-- Files: `src/operations/autonomous_investigation.py`, `src/api/routers/multi_agent.py`
-- Cause: Python threads cannot be forcibly cancelled and the implementation does not propagate a cancellation token to agent work.
-- Improvement path: Pass cooperative cancellation through every tool call, enforce per-agent budgets, use a bounded shared executor, and persist asynchronous jobs instead of keeping long work tied to request execution.
+**Process-local refresh loops duplicate expensive work across replicas:**
+- Problem: Each API process runs its own background provider refresh thread.
+- Files: `src/api/app.py`, `src/api/providers.py`
+- Cause: Refresh scheduling and state are instance-local rather than coordinated.
+- Improvement path: Add distributed refresh coordination and shared freshness markers.
 
 ## Fragile Areas
 
-**Multi-stage Fabric sync and rollback:**
-- Files: `src/fabric/sync_service.py`, `src/storage/delta_writer.py`, `src/ontology/ontology_sync.py`
-- Why fragile: Multiple tables are written concurrently, followed by catalog publication, ontology publication, state updates, shortcuts, and rollback. Failures after data commit intentionally retain graph tables, so intermediate states are possible.
-- Safe modification: Preserve idempotent run IDs and state transitions, test failures at every stage, and never add a side effect after commit without defining recovery behavior.
-- Test coverage: `tests/test_incremental_sync.py` and related Fabric/ontology tests cover core paths, but external OneLake failures, lease expiry, and process termination during commit are not fully exercised.
+**Multi-stage sync transaction boundaries:**
+- Files: `src/fabric/sync_service.py`, `src/storage/delta_writer.py`, `src/ontology/ontology_publisher.py`
+- Why fragile: Sync spans dataset mapping, parallel writes, ontology publication, and state transition/rollback handling across separate subsystems.
+- Safe modification: Preserve idempotent run IDs and explicit failure-stage semantics; add failure-injection tests for each stage boundary.
+- Test coverage: `tests/test_incremental_sync.py`, `tests/test_ontology_sync.py`, and `tests/test_delta_tables.py` cover primary flows but not full stage-failure permutations in live environments.
 
-**Scope narrowing and row-level authorization:**
+**Authorization + scope filtering on nested payloads:**
 - Files: `src/api/rbac.py`, `src/api/scope.py`, `src/api/routers/context.py`, `src/api/routers/copilot.py`, `src/api/routers/operations.py`
-- Why fragile: Authorization requires both action gating and filtering; several providers return nested structures that are recursively filtered, making a new response shape easy to expose accidentally.
-- Safe modification: Add a scope projection for every new field/provider, apply filtering immediately after provider retrieval, and test subscription/business-service combinations plus empty and unrestricted scopes.
-- Test coverage: API RBAC tests exist, but each newly added intelligence response needs explicit cross-scope fixtures rather than relying only on route-level tests.
+- Why fragile: Correctness depends on both action authorization and post-query scope filtering across diverse payload structures.
+- Safe modification: Apply scope projection immediately after data retrieval and require explicit scope tests for every new response field.
+- Test coverage: `tests/test_api_primitives.py` validates core grant behavior, but route-level regression coverage is uneven for newly added nested response shapes.
 
-**Cross-platform path and lock behavior:**
-- Files: `src/hermes_arg_connector/storage.py`, `src/hermes_arg_connector/onelake_fs.py`, `src/hermes_arg_connector/locking.py`, `src/storage/onelake_writer.py`
-- Why fragile: Local paths use platform-specific `Path` behavior while remote paths use URI/string operations; lock acquisition and atomic activation have different guarantees.
-- Safe modification: Keep remote paths in POSIX form, reject traversal after normalization, and run local tests on Linux and Windows semantics where supported.
-- Test coverage: `tests/test_run_lock.py`, `tests/test_onelake_fs.py`, and `tests/test_onelake_documents.py` exercise adapters, but live service lease and rename behavior require integration coverage.
+**Remote locking semantics differ between connector and sync writer:**
+- Files: `src/hermes_arg_connector/locking.py`, `src/storage/onelake_writer.py`, `src/fabric/sync_service.py`, `src/hermes_arg_connector/service.py`
+- Why fragile: Connector uses finite renewable leases while sync writer uses explicit Data Lake lock files with indefinite lease/break behavior.
+- Safe modification: Unify lock lifecycle policy and provide common lease telemetry (acquire, renew/break, release).
+- Test coverage: `tests/test_run_lock.py` exercises lock semantics in isolation, but end-to-end multi-replica contention is not covered.
 
 ## Scaling Limits
 
-**In-memory provider and API result processing:**
-- Current capacity: API pagination caps individual collection responses at 500 rows, but provider refreshes and many service methods materialize complete datasets.
-- Limit: Memory and latency grow with the full ontology, intelligence tables, and concurrent refreshes; three API replicas each maintain their own copies.
-- Scaling path: Push filtering, pagination, and aggregates into SQL/Delta queries, use bounded caches, and share immutable snapshot artifacts rather than repeatedly materializing Python lists.
+**Azure Resource Graph extraction has hard pagination ceilings:**
+- Current capacity: Default `page_size=1000` and `max_pages=1000` permit up to one million rows per query.
+- Limit: Larger estates truncate/fail once maximum pages are exhausted.
+- Scaling path: Add resumable checkpoints and partitioned query execution by subscription/management group.
+- Files: `src/hermes_arg_connector/config.py`, `src/hermes_arg_connector/azure.py`, `src/hermes_arg_connector/source.py`
 
-**ARG pagination ceiling:**
-- Current capacity: ARG clients permit at most 1,000 pages with a default page size of 1,000.
-- Limit: Larger estates fail rather than completing after the ceiling, while a single sync can issue up to one million-row pages of work.
-- Scaling path: Add resumable checkpoints, query partitioning by subscription, telemetry for approaching the limit, and an explicit operator-configured maximum.
-- Files: `src/hermes_arg_connector/azure.py`, `src/hermes_arg_connector/config.py`, `src/hermes_arg_connector/source.py`
+**Large in-memory snapshots and projections:**
+- Current capacity: Providers and services repeatedly materialize full table payloads in Python objects.
+- Limit: Memory and tail latency scale with ontology + intelligence table growth.
+- Scaling path: Push pagination/aggregation into Delta SQL paths and use bounded caching.
+- Files: `src/fabric/sync_service.py`, `src/api/providers.py`, `src/semantic/semantic_engine.py`
 
 ## Dependencies at Risk
 
-**External CLI and image installation supply chain:**
-- Risk: The runtime image installs Azure CLI from a remote `https://aka.ms/InstallAzureCLIDeb` script and relies on the `resource-graph` extension; availability or upstream changes can alter builds and runtime behavior.
-- Files: `Dockerfile`, `src/hermes_arg_connector/azure.py`
-- Impact: Reproducibility and build trust depend on an external installer and mutable extension contents.
-- Migration plan: Pin a trusted Azure CLI package/version and extension version, verify checksums/signatures where available, and remove the CLI fallback by using the Resource Graph SDK when its required capabilities are available.
-
-**FastAPI/httpx test-client compatibility warning:**
-- Risk: Test collection reports a Starlette deprecation warning because the installed TestClient path uses an older httpx compatibility surface.
-- Files: `pyproject.toml`, `tests/test_api_http.py`
-- Impact: A future dependency update can break API tests or mask real failures.
-- Migration plan: Align FastAPI/Starlette/httpx constraints and migrate tests to the supported client combination before upgrading the dependency set.
+**Azure CLI install path relies on remote bootstrap script:**
+- Risk: Runtime image installs Azure CLI via `curl -sL https://aka.ms/InstallAzureCLIDeb | bash` and then adds `resource-graph` extension.
+- Files: `Dockerfile`
+- Impact: Build reproducibility and supply-chain integrity depend on mutable remote artifacts.
+- Migration plan: Pin packaged CLI versions and extension versions with integrity verification.
 
 ## Missing Critical Features
 
-**No durable job model for long-running operations:**
-- Problem: Syncs, provider refreshes, and autonomous investigations can be slow but are invoked through synchronous API paths or process-local background threads.
-- Blocks: Reliable retries, progress reporting, cancellation, and exactly-once coordination across replicas.
-- Files: `src/api/app.py`, `src/api/routers/connections.py`, `src/api/routers/multi_agent.py`, `src/fabric/sync_service.py`
+**No durable async job model for long-running operations:**
+- Problem: Sync and autonomous investigations are request-coupled or process-thread coupled.
+- Blocks: Reliable retries, resumability, progress tracking, and deterministic cancellation across replicas.
+- Files: `src/api/routers/connections.py`, `src/api/routers/multi_agent.py`, `src/fabric/sync_service.py`, `src/api/app.py`
 
-**No production-grade distributed observability contract:**
-- Problem: Correlation IDs and request metrics exist, but there is no demonstrated end-to-end trace propagation to ARG, Fabric, Key Vault, or Foundry, nor an explicit alert policy for data freshness, failed rollbacks, or authorization anomalies.
-- Blocks: Fast diagnosis of partial ingestion and cross-service latency/security incidents.
-- Files: `src/api/telemetry.py`, `src/fabric/telemetry.py`, `infra/terraform/alerting.tf`, `src/operations/foundry_agent.py`
+**No distributed provider-refresh ownership:**
+- Problem: Provider refresh is process-local, so replicas can drift in freshness and degradation state.
+- Blocks: Predictable multi-replica behavior and single-source runtime health truth.
+- Files: `src/api/app.py`, `src/api/providers.py`, `src/api/runtime.py`
 
 ## Test Coverage Gaps
 
-**Live Azure and OneLake failure modes:**
-- What's not tested: Token expiry during a request, private endpoint/DNS failures, remote lease expiry/renewal, partial upload, and concurrent remote generation cleanup.
-- Files: `src/hermes_arg_connector/azure.py`, `src/hermes_arg_connector/locking.py`, `src/storage/onelake_writer.py`, `src/hermes_arg_connector/storage.py`
-- Risk: Production-only failures can leave stale data, overlapping syncs, or unrecoverable generation pointers.
+**Ingress/CORS security posture is not explicitly integration-tested:**
+- What's not tested: Production-like combinations of ingress exposure + credentialed CORS behavior.
+- Files: `src/api/app.py`, `infra/terraform/container_apps.tf`, `infra/terraform/variables.tf`
+- Risk: Configuration drift can silently widen exposure.
 - Priority: High
 
-**Security-boundary integration tests:**
-- What's not tested: Direct access to header authentication, production CORS/ingress combinations, Key Vault least privilege, and prompt-injection/cross-scope behavior through Foundry.
-- Files: `src/api/auth.py`, `src/api/app.py`, `infra/terraform/container_apps.tf`, `src/api/routers/copilot.py`
-- Risk: Configuration drift or a new response shape can bypass otherwise well-tested unit-level authorization.
+**Lease-expiry and multi-replica lock contention are under-tested end-to-end:**
+- What's not tested: Long-running ingestion with lease renewal behavior under real OneLake timing and competing writers.
+- Files: `src/hermes_arg_connector/locking.py`, `src/hermes_arg_connector/service.py`, `src/storage/onelake_writer.py`
+- Risk: Duplicate or overlapping ingestion writes during peak workloads.
 - Priority: High
 
-**Failure injection across post-commit sync stages:**
-- What's not tested: Process death or network failure between data commit, catalog write, ontology publication, state completion, and shortcut creation.
-- Files: `src/fabric/sync_service.py`, `src/ontology/ontology_publisher.py`, `src/storage/delta_writer.py`
-- Risk: Operators may see completed or failed status that does not fully represent the durable data state.
+**Timeout/cancellation semantics for multi-agent runs lack stress coverage:**
+- What's not tested: Request timeout behavior with agents blocked on external dependencies while futures continue beyond timeout.
+- Files: `src/operations/autonomous_investigation.py`, `src/api/routers/multi_agent.py`, `src/operations/foundry_agent.py`
+- Risk: Background resource leakage and inconsistent operator expectations after timeout responses.
 - Priority: Medium
 
 ---
 
-*Concerns audit: 2026-08-23*
+*Concerns audit: 2026-08-24*

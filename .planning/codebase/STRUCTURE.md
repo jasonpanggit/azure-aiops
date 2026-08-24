@@ -1,6 +1,6 @@
 # Codebase Structure
 
-**Analysis Date:** 2026-08-23
+**Analysis Date:** 2026-08-24
 
 ## Directory Layout
 
@@ -86,7 +86,7 @@ azure-aiops/
 **`web/`:**
 - Purpose: Independent frontend client.
 - Contains: Next.js/TypeScript configuration, package lock, Vitest setup, and UI source directories below the inspected depth.
-- Key files: `web/package.json`, `web/next.config.mjs`, `web/vitest.config.ts`, `web/tsconfig.json`.
+- Key files: `web/package.json`, `web/next.config.mjs`, `web/vitest.config.ts`, `web/src/app/layout.tsx`, `web/src/lib/api-client.ts`.
 
 **`infra/`:**
 - Purpose: Deployment and Azure infrastructure.
@@ -124,7 +124,7 @@ azure-aiops/
 ## Naming Conventions
 
 **Files:**
-- Python modules use lowercase `snake_case`, such as `src/hermes_arg_connector/query_catalog.py`-style names and `src/api/runtime.py`.
+- Python modules use lowercase `snake_case`, such as `src/hermes_arg_connector/service.py`, `src/hermes_arg_connector/queries.py`, and `src/api/runtime.py`.
 - Test modules use `test_<feature>.py`; scenario helpers use `<feature>_scenario.py`.
 - Infrastructure uses descriptive lowercase Terraform filenames such as `container_apps.tf` and `persistence.tf`.
 - Documentation uses uppercase project artifacts at the root and title-case/uppercase Markdown names under planning.
@@ -183,4 +183,4 @@ azure-aiops/
 
 ---
 
-*Structure analysis: 2026-08-23*
+*Structure analysis: 2026-08-24*

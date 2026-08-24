@@ -1,38 +1,38 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-08-23
+**Analysis Date:** 2026-08-24
 
 ## Test Framework
 
 **Runner:**
-- Python tests use `pytest>=9.0.3,<10`, configured in `pyproject.toml`.
-- Frontend tests use Vitest 2 with scripts in `web/package.json`; no frontend test files outside dependencies are detected.
+- Backend tests use `pytest` (declared in `pyproject.toml` and executed in CI via `.github/workflows/ci.yml`).
+- Frontend tests use `vitest` with `jsdom`, configured in `web/vitest.config.ts` and invoked through `web/package.json` scripts.
 
 **Assertion Library:**
-- Python tests use plain `assert` statements and `pytest.raises`, `pytest.mark.parametrize`, and fixtures.
-- API tests use `fastapi.testclient.TestClient` assertions against JSON response contracts, as in `tests/test_api_semantic.py`.
+- Python uses native `assert` plus `pytest.raises`, `pytest.mark.parametrize`, fixtures, and `monkeypatch`, for example in `tests/test_api_semantic.py` and `tests/test_subscription_cli.py`.
+- Frontend uses Vitest `expect` and Testing Library assertions (`@testing-library/jest-dom/vitest` in `web/src/test/setup.ts`), for example `web/src/components/DataCard.test.tsx` and `web/src/app/agents/page.test.tsx`.
 
 **Run Commands:**
 ```bash
-uv run pytest                         # Run Python tests (pytest discovers tests/)
+python -m pytest                      # CI baseline (see .github/workflows/ci.yml)
+python -m ruff check src tests        # CI lint gate
+uv run pytest                         # Local Python test run
 uv run pytest tests/test_api_semantic.py
-uv run pytest -k "scope"              # Run matching tests
-uv run ruff check .
-cd web && npm test                    # Run Vitest once
-cd web && npm run test:watch          # Watch mode
+cd web && npm test                    # vitest run
+cd web && npm run test:watch          # vitest watch
 ```
 
-`testpaths = ["tests"]` and `addopts = "-q"` are set in `pyproject.toml`. A coverage configuration/threshold is not detected.
+`testpaths = ["tests"]` and `addopts = "-q"` are set in `pyproject.toml`.
 
 ## Test File Organization
 
 **Location:**
-- Python tests are centralized under `tests/`, with fixtures under `tests/fixtures/`; they are not generally co-located with `src/`.
-- Large behavior areas have dedicated modules, for example `tests/test_change_analysis.py`, `tests/test_patch_analysis.py`, and `tests/test_network_topology.py`.
+- Python tests are centralized under `tests/`, with fixtures under `tests/fixtures/`.
+- Frontend tests are mostly co-located with source files in `web/src/**` using `.test.ts` and `.test.tsx`.
 
 **Naming:**
-- Files use `test_<feature>.py`; hardening and requirement contracts use suffixes such as `_hardening.py` and `_requirements.py`.
-- Test names describe the expected behavior and failure mode, e.g. `test_provider_unavailable`-style contracts in `tests/test_api_semantic.py`.
+- Python files: `test_<feature>.py`, with targeted suites such as `_hardening.py` and `_requirements.py` (`tests/test_patch_v2_hardening.py`, `tests/test_predictive_v2_requirements.py`).
+- Frontend files: `<module>.test.ts[x]` (`web/src/lib/network-services.test.ts`, `web/src/app/remediation/page.test.tsx`).
 
 **Structure:**
 ```
@@ -42,6 +42,11 @@ tests/
 ├── test_<domain>_hardening.py
 ├── test_<domain>_requirements.py
 └── fixtures/*.json
+
+web/src/
+├── app/**/page.test.tsx
+├── components/**/*.test.tsx
+└── lib/**/*.test.ts
 ```
 
 ## Test Structure
@@ -50,109 +55,147 @@ tests/
 ```python
 @pytest.fixture
 def client(tmp_path) -> TestClient:
-    context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
-        authenticator=StaticTokenAuthenticator(...),
-        authorizer=Authorizer(),
-        telemetry=ApiTelemetry(),
-        semantic_provider=lambda: engine,
-    )
-    return TestClient(create_app(context), raise_server_exceptions=False)
+        engine = _build_engine(make_connection())
+        context = ApiContext(..., semantic_provider=lambda: engine)
+        return TestClient(create_app(context), raise_server_exceptions=False)
 
 def test_unknown_subject_is_404_not_500(client):
-    response = client.get("/api/v1/applications/NoSuchApp", headers=HEADERS)
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "not_found"
+        response = client.get("/api/v1/applications/NoSuchApp", headers=HEADERS)
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "not_found"
 ```
-This pattern is used in `tests/test_api_semantic.py`.
+Pattern source: `tests/test_api_semantic.py`.
+
+```typescript
+describe("apiRequest", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("throws a typed ApiError for an error contract response", async () => {
+        mockFetch({ status: 404, body: { error: { code: "not_found", message: "no such connection", details: {} } } });
+        await expect(apiRequest("/subscription-connections/missing", { anonymous: true })).rejects.toMatchObject({
+            code: "not_found",
+            status: 404,
+        });
+    });
+});
+```
+Pattern source: `web/src/lib/api-client.test.ts`.
 
 **Patterns:**
-- Use fixtures for reusable clients, engines, clocks, and temporary stores; use `tmp_path` for filesystem isolation.
-- Build realistic semantic graphs for API composition tests rather than stubbing the entire domain. `_build_engine` and `make_connection` from `tests/test_connection_lineage_integration.py` are reused by `tests/test_api_semantic.py` and `tests/test_api_copilot.py`.
-- Assert both status and contract fields, including error codes, evidence, scope, warnings, and redaction behavior.
-- Use parameterization for equivalent invalid inputs or route families, as in `tests/test_fabric_sql_endpoint.py` and `tests/test_api_semantic.py`.
+- Build reusable fixtures for context setup and dependency injection (`tests/test_api_semantic.py`).
+- Favor behavior contracts at API boundaries: assert status, `error.code`, scope, evidence, and key payload fields.
+- Use `pytest.mark.parametrize` heavily for invalid-input and boundary matrices (`tests/test_fabric_sql_endpoint.py`, `tests/test_patch_v2_hardening.py`).
+- Frontend tests focus on user-visible behavior and state transitions (`web/src/app/agents/page.test.tsx`, `web/src/app/connections/page.test.tsx`).
 
 ## Mocking
 
-**Framework:** Pytest fixtures and `monkeypatch`; lightweight hand-written fakes/stubs are preferred. `unittest.mock` usage is not a dominant detected pattern.
+**Framework:**
+- Python: `monkeypatch` and hand-written fakes/stubs.
+- Frontend: `vi.mock`, `vi.hoisted`, `vi.fn`, and fetch stubs.
 
 **Patterns:**
 ```python
-@dataclass
-class FakeRunner:
-    responses: list[CommandResult]
-
-    def __post_init__(self) -> None:
-        self.commands: list[list[str]] = []
-
-    def run(self, command: list[str], timeout: int) -> CommandResult:
-        self.commands.append(command)
-        return self.responses.pop(0)
+def test_cli_local_spn_injects_env_backed_connection(tmp_path, monkeypatch, capsys) -> None:
+        monkeypatch.setenv("AZURE_CLIENT_SECRET", "super-secret-value")
+        assert _run(["local-spn", "--home", str(tmp_path / "hermes-local")]) == 0
 ```
-This injectable boundary fake appears in `tests/test_azure_clients.py`. `StubAgent` in `tests/test_api_copilot.py` records calls and can inject failure.
+Source: `tests/test_subscription_cli.py`.
+
+```typescript
+const { action, catalog, investigate } = vi.hoisted(() => ({
+    action: vi.fn(),
+    catalog: vi.fn(),
+    investigate: vi.fn(),
+}));
+
+vi.mock("@/lib/services", () => ({
+    multiAgentApi: { action, catalog, investigate },
+}));
+```
+Source: `web/src/app/agents/page.test.tsx`.
 
 **What to Mock:**
-- Mock external process, HTTP, agent, clock, and persistence boundaries while testing the application logic: `tests/test_azure_clients.py`, `tests/test_api_copilot.py`, and `tests/test_enrichment_cache.py`.
-- Use `monkeypatch` for environment/configuration and controlled retry/failure behavior, as in `tests/test_api_copilot.py`.
+- External boundaries and mutable runtime context: environment variables, network/process adapters, and service clients.
+- Frontend service modules and network fetch for deterministic UI tests.
 
 **What NOT to Mock:**
-- Do not replace the semantic graph or ingestion composition when the behavior under test is retrieval, scope filtering, lineage, or evidence. Use the real harness in `tests/test_api_semantic.py` and `tests/test_connection_lineage_integration.py`.
-- Do not call live Azure, Fabric, or public vulnerability services in unit tests.
+- Avoid mocking away semantic composition when testing semantic API behavior; reuse real harness/builders (`tests/test_connection_lineage_integration.py`, `tests/test_api_semantic.py`).
+- Do not hit live cloud services in unit/integration tests.
 
 ## Fixtures and Factories
 
 **Test Data:**
 ```python
-cache = EnrichmentCache(
-    "cache/feed.json",
-    store=OneLakeDocumentStore(tmp_path),
-    ttl_seconds=60,
-    clock=clock,
-)
+@pytest.fixture
+def client(tmp_path) -> TestClient:
+        context = ApiContext(onboarding=SubscriptionOnboardingService(tmp_path / "hermes"), ...)
+        return TestClient(create_app(context), raise_server_exceptions=False)
 ```
-Deterministic JSON fixtures live in `tests/fixtures/`, including `mock_arg_responses.json` and domain scenario datasets.
+Source: `tests/test_api_semantic.py`.
+
+```typescript
+const envelope = <T,>(data: T) => ({
+    data,
+    evidence: [...],
+    scope: {},
+    knowledge_version: "graph-1",
+});
+```
+Source: `web/src/app/agents/page.test.tsx`.
 
 **Location:**
-- Shared domain builders are defined in test modules such as `tests/test_connection_lineage_integration.py`.
-- Temporary persistence uses pytest's `tmp_path`; avoid shared mutable repository paths.
+- JSON fixtures live in `tests/fixtures/` (for example `tests/fixtures/mock_arg_responses.json`).
+- Frontend setup bootstraps jest-dom matchers in `web/src/test/setup.ts`.
 
 ## Coverage
 
-**Requirements:** No coverage target or enforcement is detected in `pyproject.toml`, CI configuration, or the test scripts inspected.
+**Requirements:**
+- No explicit coverage threshold or coverage gate is detected in `pyproject.toml`, `web/package.json`, or `.github/workflows/ci.yml`.
 
 **View Coverage:**
 ```bash
 uv run pytest --cov=src --cov-report=term-missing
+cd web && npx vitest run --coverage
 ```
-This is a usable ad hoc command, but `pytest-cov` is not declared in the project test extras.
+These are ad hoc commands; coverage tooling is not currently wired into CI.
 
 ## Test Types
 
 **Unit Tests:**
-- Deterministic normalization, configuration, caching, validation, scoring, and error translation are tested directly; examples include `tests/test_normalize.py`, `tests/test_config.py`, `tests/test_enrichment_cache.py`, and `tests/test_api_http.py`.
+- Core normalization/config/cache/validation logic is tested directly (`tests/test_normalize.py`, `tests/test_config.py`, `tests/test_enrichment_cache.py`).
+- Frontend utility units are tested in `web/src/lib/*.test.ts` (`web/src/lib/scope.test.ts`, `web/src/lib/permissions.test.ts`).
 
 **Integration Tests:**
-- API tests build real domain/semantic components and exercise HTTP composition with `TestClient`, while external providers are replaced at their boundary. See `tests/test_api_semantic.py` and `tests/test_connection_lineage_integration.py`.
-- Storage and connector integrations use temporary stores and injectable runners, as in `tests/test_azure_clients.py` and `tests/test_storage.py`.
+- API integration uses FastAPI `TestClient` with realistic semantic/domain composition (`tests/test_api_semantic.py`).
+- CLI integration validates command behavior and output contracts with patched service dependencies (`tests/test_subscription_cli.py`).
+- Frontend page-level integration tests render complete pages and mock service boundaries (`web/src/app/investigate/page.test.tsx`, `web/src/app/remediation/page.test.tsx`).
 
 **E2E Tests:**
-- A browser E2E suite is not detected. Frontend has Vitest dependencies/scripts in `web/package.json`, but no repository-owned `web/*.test.*` or `web/*.spec.*` files were found.
+- Browser E2E framework (Playwright/Cypress) is not detected in repository-owned test suites; current frontend coverage is component/page integration through Vitest + Testing Library.
 
 ## Common Patterns
 
 **Async Testing:**
-- Async behavior is generally exercised through synchronous service/API wrappers or direct async tests where present; use pytest async support only when the target API is async. Do not introduce event-loop management into ordinary synchronous tests.
+```typescript
+it("runs agents ...", async () => {
+    renderPage();
+    expect(await screen.findByText("Network Agent")).toBeInTheDocument();
+    await waitFor(() => expect(action).toHaveBeenCalledWith("mai-123", "assign_owner", { owner: "Finance Ops" }, {}));
+});
+```
+Source: `web/src/app/agents/page.test.tsx`.
 
 **Error Testing:**
 ```python
-def test_arg_client_raises_actionable_error() -> None:
-    runner = FakeRunner([CommandResult(1, "", "not logged in")])
-    client = AzureCliArgClient(runner=runner)
-    with pytest.raises(RuntimeError, match="not logged in"):
-        client.query(spec, ["sub-1"])
+def test_unknown_subject_is_404_not_500(client):
+        response = client.get("/api/v1/applications/NoSuchApp", headers=HEADERS)
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "not_found"
 ```
-For HTTP surfaces, assert stable `error.code` and status rather than brittle full messages, as in `tests/test_api_semantic.py`.
+Source: `tests/test_api_semantic.py`.
+
+HTTP and UI tests consistently assert stable machine-readable error contracts (`error.code`, status) instead of brittle full-text message matching.
 
 ---
 
-*Testing analysis: 2026-08-23*
+*Testing analysis: 2026-08-24*

@@ -1,7 +1,7 @@
-<!-- refreshed: 2026-08-23 -->
+<!-- refreshed: 2026-08-24 -->
 # Architecture
 
-**Analysis Date:** 2026-08-23
+**Analysis Date:** 2026-08-24
 
 ## System Overview
 
@@ -98,19 +98,20 @@
 
 ### Primary Ingestion and Publication Path
 
-1. `src/hermes_arg_connector/cli.py` dispatches `sync`, or a Hermes schedule invokes the same service.
-2. `src/hermes_arg_connector/service.py` acquires `RunLock`, loads `StateStore`, discovers subscriptions through `AzureMcpClient`, and fetches catalogued ARG queries through `AzureCliArgClient`.
-3. `src/hermes_arg_connector/normalize.py` produces canonical entities and relationships; `ResourceChanges` is merged with retained history and the watermark is advanced only after success.
-4. `src/hermes_arg_connector/storage.py` writes a complete generation and atomically switches `current`; `src/hermes_arg_connector/ontology.py` writes ontology metadata.
-5. `src/fabric/sync_service.py` maps the source generation, validates quality, writes bronze/silver/ontology Delta tables through `src/storage/delta_writer.py`, and updates ontology health/state.
-6. `src/semantic/semantic_engine.py` and the intelligence services read the governed snapshot for API, CLI, and agent answers.
+1. `src/hermes_arg_connector/cli.py:160` dispatches the `sync` action to ingestion.
+2. `src/hermes_arg_connector/service.py:48` acquires `RunLock`, then builds query specs with `QueryCatalog` (`src/hermes_arg_connector/service.py:70`).
+3. `src/hermes_arg_connector/service.py:82` normalizes merged source payloads via `Normalizer`, including historical change merge before watermark advancement.
+4. `src/hermes_arg_connector/service.py:86` publishes an immutable generation and `src/hermes_arg_connector/service.py:97` persists new state/watermarks.
+5. `src/fabric/sync_service.py` maps and writes curated datasets through `src/storage/delta_writer.py` into OneLake/Delta and updates ontology publication state.
+6. `src/semantic/semantic_engine.py` and domain engines consume the governed snapshot through runtime providers.
 
 ### API Request Path
 
-1. `src/api/app.py:create_app` builds context through `src/api/runtime.py:build_context`, installs middleware, and includes routers from `src/api/routers/`.
-2. Router dependencies authenticate and authorize the principal through `src/api/auth.py`, `src/api/rbac.py`, and `src/api/dependencies.py`.
-3. A router invokes a semantic, live, network, vulnerability, or operations service; `src/api/evidence.py` and response models preserve scope and provenance.
-4. Middleware adds correlation IDs and telemetry; exception translation in `src/api/errors.py` returns the stable error envelope.
+1. `src/api/app.py:192` creates the API and includes router modules at `src/api/app.py:227` through `src/api/app.py:238`.
+2. `src/api/runtime.py:1113` builds `ApiContext` providers, including semantic/live/hybrid paths, and is attached to app state in `src/api/app.py`.
+3. Router handlers in `src/api/routers/` resolve providers through dependencies (`src/api/dependencies.py`) and enforce auth/RBAC (`src/api/auth.py`, `src/api/rbac.py`).
+4. API responses are wrapped with evidence/scope envelopes (`src/api/evidence.py`, `src/api/models.py`), and failures are translated through `src/api/errors.py`.
+5. Health/readiness probes enter via `src/api/app.py:317` and `src/api/app.py:345`, which rely on runtime provider state.
 
 **State Management:**
 - Connection, watermark, hash, and run state live under the configured Hermes root through `src/hermes_arg_connector/state.py`.
@@ -196,4 +197,4 @@
 
 ---
 
-*Architecture analysis: 2026-08-23*
+*Architecture analysis: 2026-08-24*

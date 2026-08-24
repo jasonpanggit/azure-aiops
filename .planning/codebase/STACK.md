@@ -1,89 +1,83 @@
 # Technology Stack
 
-**Analysis Date:** 2026-08-23
+**Analysis Date:** 2026-08-24
 
 ## Languages
 
 **Primary:**
-- Python 3.11+ (`pyproject.toml`) - connector CLI, FastAPI API, Fabric/OneLake persistence, ontology, semantic and operational intelligence.
-- TypeScript/JavaScript (`web/src/`, `web/package.json`) - Next.js operations workbench UI.
+- Python (project requires `>=3.11`) - core backend, connector, API, ontology, semantic, and intelligence modules (`pyproject.toml`, `src/`).
+- TypeScript/JavaScript - Next.js operator web app (`web/package.json`, `web/src/`).
 
 **Secondary:**
-- HCL/Terraform (`infra/terraform/`) - Azure and Fabric infrastructure provisioning.
-- Bash (`scripts/`, `infra/scripts/`) - local startup, image publishing, deployment, and Foundry post-apply operations.
-- YAML (`config.example.yaml`, `fabric.config.example.yaml`, `plugin.yaml`) - connector, Fabric, and Hermes plugin configuration.
+- HCL/Terraform - Azure/Fabric infrastructure and deployment topology (`infra/terraform/`).
+- Bash - deployment and runtime helper scripts (`infra/scripts/deploy.sh`, `scripts/start-api.sh`).
+- YAML - connector, Fabric, and plugin/runtime config (`config.example.yaml`, `fabric.config.example.yaml`, `plugin.yaml`).
 
 ## Runtime
 
 **Environment:**
-- Python 3.12-slim in the production API image (`Dockerfile`); the project supports Python `>=3.11` (`pyproject.toml`).
-- Node.js runtime for the Next.js web image; the web app uses Next.js standalone output (`web/next.config.mjs`).
-- Azure Container Apps for deployed API and UI (`infra/terraform/container_apps.tf`).
+- API container runtime is Python `3.12-slim` (`Dockerfile`).
+- Web container runtime is Node `22-alpine` (`web/Dockerfile`).
+- API and web are deployed to Azure Container Apps (`infra/terraform/container_apps.tf`).
 
 **Package Manager:**
-- `uv` for Python dependency resolution and virtual environments (`Dockerfile`, `uv.lock`).
-- npm for the web application (`web/package.json`; lockfile should be kept with the web project).
-- Lockfiles: `uv.lock` is present; Terraform provider lock is present at `infra/terraform/.terraform.lock.hcl`.
+- Python packages are resolved and installed with `uv` (`Dockerfile`, `uv.lock`).
+- Web dependencies are managed with npm (`web/package.json`, `web/package-lock.json`).
+- Lockfile: `uv.lock` present; `web/package-lock.json` present.
 
 ## Frameworks
 
 **Core:**
-- FastAPI `>=0.115,<1` and Uvicorn `>=0.32,<1` (`pyproject.toml`) - HTTP API and ASGI serving (`src/api/app.py`, `Dockerfile`).
-- Next.js `14.2.35`, React 18, and React DOM (`web/package.json`) - browser workbench.
-- Fluent UI React Components 9 (`web/package.json`) - UI component system.
-- Cytoscape and `cytoscape-fcose` (`web/package.json`) - graph visualization and layout.
+- FastAPI (`>=0.115,<1`) + Uvicorn (`>=0.32,<1`) for the backend API (`pyproject.toml`, `src/api/app.py`).
+- Next.js `14.2.35` + React 18 for the web workbench (`web/package.json`).
+- Fluent UI v9 for frontend component system (`web/package.json`).
 
 **Testing:**
-- pytest `>=9.0.3,<10` (`pyproject.toml`) - Python tests under `tests/`.
-- Vitest 2, Testing Library React, jsdom, and `@testing-library/user-event` (`web/package.json`) - UI tests.
+- pytest (`>=9.0.3,<10`) for backend tests (`pyproject.toml`, `tests/`).
+- Vitest + Testing Library + jsdom for frontend tests (`web/package.json`, `web/src/**/*.test.ts*`).
 
 **Build/Dev:**
-- Hatchling (`pyproject.toml`) - Python wheel packaging.
-- uv sync with frozen `uv.lock` (`Dockerfile`) - reproducible API image dependencies.
-- Next standalone build (`web/next.config.mjs`) - self-contained production web bundle.
-- Terraform >=1.9,<2 with AzureRM, Fabric, AzAPI, and Random providers (`infra/terraform/providers.tf`).
-- Azure CLI plus the Resource Graph extension (`Dockerfile`, `src/hermes_arg_connector/azure.py`) - production ARG extraction.
+- Hatchling for Python build backend (`pyproject.toml`).
+- Terraform for infra provisioning (`infra/terraform/*.tf`).
+- Azure CLI + Resource Graph extension required in API runtime (`Dockerfile`, `src/hermes_arg_connector/azure.py`).
 
 ## Key Dependencies
 
 **Critical:**
-- `azure-identity` (`pyproject.toml`) - managed identity, service principal, and developer Azure CLI credentials (`src/fabric/auth.py`, `src/operations/foundry_agent.py`).
-- `azure-keyvault-secrets` (`pyproject.toml`, `src/api/akv_bootstrap.py`) - secret storage and retrieval.
-- `azure-storage-file-datalake`, `adlfs`, `deltalake`, `pyarrow`, and `fsspec` (`pyproject.toml`) - OneLake/ADLS-backed Delta, Parquet, and filesystem access.
-- `httpx` (`pyproject.toml`) - Fabric, Resource Graph, MSRC, NVD, EPSS, and other HTTP clients.
-- `PyJWT[crypto]` (`pyproject.toml`, `src/api/auth.py`) - Entra JWT signature, issuer, audience, and claim validation.
-- `PyYAML` (`pyproject.toml`) - YAML connector and Fabric configuration loading.
-- `opentelemetry-api` (`pyproject.toml`, `src/api/telemetry.py`) - low-cardinality request and intelligence metrics.
-- `@azure/msal-browser` and `@azure/msal-react` (`web/package.json`) - browser-side Entra authentication.
-- `zod` (`web/package.json`) - frontend runtime validation.
+- `azure-identity` - managed identity/service principal and token acquisition across Azure services (`pyproject.toml`, `src/fabric/auth.py`, `src/operations/foundry_agent.py`).
+- `azure-keyvault-secrets` - Key Vault secret read/write for onboarding/bootstrap (`pyproject.toml`, `src/onboarding/credentials.py`, `src/api/akv_bootstrap.py`).
+- `azure-storage-file-datalake`, `adlfs`, `deltalake`, `pyarrow`, `fsspec` - OneLake/Delta/Parquet persistence (`pyproject.toml`, `src/storage/`, `src/hermes_arg_connector/fs.py`).
+- `httpx` - outbound HTTP for Fabric, ARG REST path, and vulnerability feeds (`pyproject.toml`, `src/fabric/fabric_client.py`, `src/hermes_arg_connector/azure.py`, `src/intelligence/vulnerability/connector.py`).
+- `PyJWT[crypto]` - Entra JWT validation in API auth path (`pyproject.toml`, `src/api/auth.py`).
+- `opentelemetry-api` - API telemetry instrumentation (`pyproject.toml`, `src/api/telemetry.py`).
+- `@azure/msal-browser` + `@azure/msal-react` - browser Entra auth (`web/package.json`, `web/src/lib/auth.ts`).
 
 **Infrastructure:**
-- `azurerm` `~>5.1`, `microsoft/fabric` `~>1.13`, `Azure/azapi` `~>2.6`, and `hashicorp/random` `~>3.6` (`infra/terraform/providers.tf`) - Azure resources, Fabric workspace/lakehouse, API resources not covered by AzureRM, and unique naming.
+- Terraform providers: `hashicorp/azurerm`, `microsoft/fabric`, `azure/azapi`, and `hashicorp/random` (`infra/terraform/providers.tf`).
 
 ## Configuration
 
 **Environment:**
-- Python connector defaults are YAML-driven through `config.yaml`, based on `config.example.yaml`; do not read or publish local secret-bearing config.
-- Fabric runtime is selected with `HERMES_FABRIC_CONFIG` and `fabric.config.yaml`/`fabric.config.example.yaml` (`src/api/runtime.py`).
-- API auth, storage root, CORS, provider refresh, Foundry, Key Vault, and Azure identity are environment-driven (`src/api/runtime.py`, `src/api/akv_bootstrap.py`).
-- Browser configuration is in `web/.env.local.example`; only `NEXT_PUBLIC_*` variables are intended for browser exposure.
+- Connector behavior is configured by YAML (`config.example.yaml`) and loaded by `ConnectorConfig` (`src/hermes_arg_connector/config.py`).
+- API runtime wiring is environment-driven via `HERMES_*`, `FABRIC_*`, and `AZURE_*` variables (`src/api/runtime.py`, `infra/terraform/container_apps.tf`).
+- Web auth/API addressing uses `NEXT_PUBLIC_*` variables plus runtime `/api/config` lookup (`web/src/lib/auth.ts`, `web/src/lib/api-client.ts`, `web/Dockerfile`).
 
 **Build:**
-- Python packaging: `pyproject.toml` and `uv.lock`.
-- API container: `Dockerfile`.
-- Web build: `web/package.json`, `web/next.config.mjs`, and `web/tsconfig.json`.
-- Deployment: `infra/terraform/*.tf` and `infra/scripts/deploy.sh`.
+- Backend build files: `pyproject.toml`, `uv.lock`, `Dockerfile`.
+- Frontend build files: `web/package.json`, `web/package-lock.json`, `web/Dockerfile`.
+- Infrastructure/deploy files: `infra/terraform/*.tf`, `infra/scripts/deploy.sh`.
 
 ## Platform Requirements
 
 **Development:**
-- Python 3.11+, uv, Node.js/npm, Azure CLI with Resource Graph, and an authenticated Azure identity (`README.md`).
-- Use `uv sync --extra test` and `npm` scripts defined in `web/package.json`.
+- Python 3.11+, Node.js, npm, and Azure CLI with Resource Graph extension (`README.md`, `Dockerfile`).
+- Local/dev runs use `uv sync --extra test` and npm scripts from `web/package.json` (`README.md`).
 
 **Production:**
-- Azure Container Apps, Azure Container Registry, user-assigned managed identity, Key Vault, Log Analytics/Application Insights, and optionally Fabric capacity/workspace/lakehouse (`infra/terraform/main.tf`, `infra/terraform/container_apps.tf`, `infra/terraform/fabric.tf`).
-- The API image must contain the `az` Resource Graph extension (`Dockerfile`); durable production state should use OneLake rather than container-local disk (`infra/terraform/container_apps.tf`).
+- Azure Container Apps + Azure Container Registry + user-assigned managed identity (`infra/terraform/container_apps.tf`).
+- Azure Key Vault private endpoint path for onboarding secrets (`infra/terraform/persistence.tf`).
+- Optional/expected Fabric OneLake-backed durable state via `abfss://...onelake.dfs.fabric.microsoft.com/...` (`infra/terraform/container_apps.tf`, `src/hermes_arg_connector/fs.py`).
 
 ---
 
-*Stack analysis: 2026-08-23*
+*Stack analysis: 2026-08-24*
