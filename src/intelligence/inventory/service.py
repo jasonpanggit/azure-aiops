@@ -14,6 +14,7 @@ from hermes_arg_connector.storage import DatasetStore
 from intelligence.lifecycle import EOLCatalog
 
 from .eol_review import EOLReviewService
+from .mapping_repository import SoftwareMapping, SoftwareMappingRepository
 from .models import (
     InventorySourceStatus,
     MachineObservation,
@@ -22,6 +23,7 @@ from .models import (
     SoftwareObservation,
     group_key,
 )
+from .software_normalization import annotate_mapping, mapping_for_observation, project_mapping
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class InventorySnapshot:
     observed_at: str = ""
     query_version: str = "inventory-os-v1"
     generation_id: str = ""
+    software_mapping_suggestions: tuple[dict[str, Any], ...] = ()
 
     @classmethod
     def from_payload(cls, payload: Any) -> InventorySnapshot:
@@ -69,6 +72,13 @@ class InventorySnapshot:
             for row in software_rows
             if isinstance(row, (dict, SoftwareObservation))
         )
+        suggestions_payload = (
+            metadata.get("software_mapping_suggestions")
+            or metadata.get("mapping_suggestions")
+            or []
+        )
+        if not isinstance(suggestions_payload, list):
+            raise TypeError("Inventory mapping suggestions must be a list")
         statuses_payload = metadata.get("source_status") or {}
         if isinstance(statuses_payload, list):
             statuses_payload = {
@@ -131,6 +141,9 @@ class InventorySnapshot:
             observed_at=str(metadata.get("observed_at") or _latest(observations)),
             query_version=query_version,
             generation_id=str(metadata.get("generation_id") or metadata.get("run_id") or ""),
+            software_mapping_suggestions=tuple(
+                dict(item) for item in suggestions_payload if isinstance(item, dict)
+            ),
         )
 
     @classmethod
@@ -151,6 +164,7 @@ class InventoryService:
         catalog: EOLCatalog | None = None,
         now: datetime | None = None,
         eol_review: EOLReviewService | None = None,
+        mapping_repository: SoftwareMappingRepository | None = None,
     ) -> None:
         self.snapshot = (
             source
@@ -162,6 +176,8 @@ class InventoryService:
         self.eol_review = eol_review or EOLReviewService(catalog=catalog)
         self.catalog = catalog or self.eol_review.catalog().catalog
         self.now = now or datetime.now(UTC)
+        self.mapping_repository = mapping_repository or SoftwareMappingRepository()
+        self._persist_mapping_suggestions()
 
     @classmethod
     def from_fixture(
@@ -170,11 +186,13 @@ class InventoryService:
         *,
         catalog: EOLCatalog | None = None,
         eol_review: EOLReviewService | None = None,
+        mapping_repository: SoftwareMappingRepository | None = None,
     ) -> InventoryService:
         return cls(
             InventorySnapshot.from_fixture(path),
             catalog=catalog,
             eol_review=eol_review,
+            mapping_repository=mapping_repository,
         )
 
     @classmethod
@@ -184,6 +202,7 @@ class InventoryService:
         *,
         catalog: EOLCatalog | None = None,
         eol_review: EOLReviewService | None = None,
+        mapping_repository: SoftwareMappingRepository | None = None,
     ) -> InventoryService | None:
         rows = store.read_dataset("inventory/os_observations")
         status_rows = store.read_dataset("inventory/source_status")
@@ -214,6 +233,7 @@ class InventoryService:
             InventorySnapshot.from_payload(metadata),
             catalog=catalog,
             eol_review=eol_review,
+            mapping_repository=mapping_repository,
         )
 
     @property
@@ -332,9 +352,17 @@ class InventoryService:
         }
 
     def _scoped_software(self, scope: Scope) -> tuple[SoftwareObservation, ...]:
-        rows = [
-            row
-            for row in self.snapshot.software_observations
+        rows: list[SoftwareObservation] = []
+        for raw_row in self.snapshot.software_observations:
+            mapping = mapping_for_observation(raw_row, self.mapping_repository)
+            if mapping is not None:
+                if mapping.status != "approved":
+                    # Suggestions and rejections stay in the review API, not
+                    # aggregate counts.
+                    continue
+                row = project_mapping(raw_row, mapping)
+            else:
+                row = raw_row
             if scope.matches(
                 scope_attributes(
                     {
@@ -343,8 +371,8 @@ class InventoryService:
                         "resource_group": row.resource_group,
                     }
                 )
-            )
-        ]
+            ):
+                rows.append(row)
         return tuple(
             sorted(
                 rows,
@@ -356,6 +384,93 @@ class InventoryService:
                 ),
             )
         )
+
+    def _visible_mappings(self, scope: Scope) -> tuple[SoftwareMapping, ...]:
+        from .software_normalization import scopes_overlap
+
+        return tuple(
+            sorted(
+                (
+                    item
+                    for item in self.mapping_repository.read().mappings
+                    if scopes_overlap(scope, Scope.from_mapping(item.scope_predicate))
+                ),
+                key=lambda item: (item.status, item.raw_name.casefold(), item.mapping_id),
+            )
+        )
+
+    def mapping_collection(
+        self, scope: Scope, *, offset: int = 0, limit: int = 100
+    ) -> dict[str, Any]:
+        snapshot = self.mapping_repository.read()
+        mappings = self._visible_mappings(scope)
+        warnings = [
+            "One or more mapping suggestions failed validation."
+            for item in mappings
+            if item.provenance.get("validation_error")
+        ]
+        return {
+            "data": {
+                "mappings": [item.to_dict() for item in mappings[offset : offset + limit]],
+                "repository_revision": snapshot.repository_revision,
+                "requested_scope": scope.to_dict(),
+            },
+            "total": len(mappings),
+            "warnings": list(dict.fromkeys(warnings)),
+        }
+
+    def mapping_detail(self, mapping_id: str, scope: Scope) -> dict[str, Any] | None:
+        item = next(
+            (candidate for candidate in self._visible_mappings(scope)
+             if candidate.mapping_id == mapping_id),
+            None,
+        )
+        if item is None:
+            return None
+        return {
+            "data": {"mapping": item.to_dict(), "requested_scope": scope.to_dict()},
+            "total": 1,
+            "warnings": (
+                ["Mapping suggestion failed validation."]
+                if item.provenance.get("validation_error")
+                else []
+            ),
+        }
+
+    def _persist_mapping_suggestions(self) -> None:
+        from .software_normalization import suggestion_from_model_output
+
+        for suggestion in self.snapshot.software_mapping_suggestions:
+            try:
+                suggestion_from_model_output(
+                    repository=self.mapping_repository,
+                    raw_name=str(
+                        suggestion.get("raw_name")
+                        or suggestion.get("software_name")
+                        or ""
+                    ),
+                    raw_version=str(
+                        suggestion.get("raw_version")
+                        or suggestion.get("software_version")
+                        or ""
+                    ),
+                    publisher=str(suggestion.get("publisher") or ""),
+                    model_output=(
+                        suggestion.get("model_output")
+                        if isinstance(suggestion.get("model_output"), dict)
+                        else suggestion
+                    ),
+                    source_timestamp=str(
+                        suggestion.get("source_timestamp")
+                        or suggestion.get("observed_at")
+                        or self.observed_at
+                    ),
+                    scope_predicate=suggestion.get("scope_predicate"),
+                )
+            except (TypeError, ValueError):
+                # Provider malformation cannot make an otherwise usable
+                # inventory snapshot unavailable.
+                continue
 
     def software_source_status(
         self, rows: tuple[SoftwareObservation, ...] | None = None

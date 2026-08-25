@@ -16,6 +16,7 @@ import type {
   OsInventoryMachine,
   SoftwareInventoryGroup,
   SoftwareInventoryMachine,
+  SoftwareMapping,
 } from "@/lib/types";
 
 function lifecycleLabel(group: OsInventoryGroup): string {
@@ -41,9 +42,15 @@ export default function SoftwareInventoryPage() {
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [manualDate, setManualDate] = useState("");
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [mappingError, setMappingError] = useState<string | null>(null);
+  const [mappingSubmitting, setMappingSubmitting] = useState<string | null>(null);
   const scopeKey = useMemo(() => JSON.stringify(scope), [scope]);
   const inventory = useApi(() => inventoryApi.os(scope), [scopeKey, refreshKey]);
   const softwareInventory = useApi(() => inventoryApi.software(scope), [scopeKey]);
+  const mappings = useApi(
+    () => inventoryApi.mappings?.(scope) ?? Promise.resolve({ data: { mappings: [], repository_revision: 0, requested_scope: {} }, evidence: [], scope: {}, warnings: [] }),
+    [scopeKey, refreshKey],
+  );
 
   const groups = inventory.data?.data.groups ?? [];
   const totalMachines = groups.reduce((total, group) => total + group.machine_count, 0);
@@ -56,6 +63,7 @@ export default function SoftwareInventoryPage() {
   const softwareSourceStates: Record<string, InventorySourceStatus> =
     softwareInventory.data?.data.source_status ?? {};
   const softwarePartialSource = Object.values(softwareSourceStates).find((source) => source.state !== "ready");
+  const mappingItems: SoftwareMapping[] = mappings.data?.data.mappings ?? [];
 
   async function openGroup(group: OsInventoryGroup) {
     setSelectedKey(group.key);
@@ -118,6 +126,23 @@ export default function SoftwareInventoryPage() {
       setReviewError(error instanceof Error ? error.message : "Lifecycle confirmation failed.");
     } finally {
       setReviewSubmitting(false);
+    }
+
+  }
+
+  async function decideMapping(mapping: SoftwareMapping, decision: "approve" | "reject") {
+    setMappingSubmitting(mapping.mapping_id);
+    setMappingError(null);
+    try {
+      const response = decision === "approve"
+        ? await inventoryApi.approveMapping(mapping.mapping_id, mapping.revision, scope)
+        : await inventoryApi.rejectMapping(mapping.mapping_id, mapping.revision, scope);
+      void response;
+      setRefreshKey((value) => value + 1);
+    } catch (error) {
+      setMappingError(error instanceof Error ? error.message : "Mapping decision failed.");
+    } finally {
+      setMappingSubmitting(null);
     }
   }
 
@@ -201,6 +226,45 @@ export default function SoftwareInventoryPage() {
                   ))}
                 </tbody>
               </table>
+            </section>
+          )}
+          {mappingError && <StatePanel title="Mapping decision unavailable" message={mappingError} tone="error" />}
+          {mappingItems.length > 0 && (
+            <section aria-label="Software normalization review" className="detail-panel">
+              <h2>Normalization review</h2>
+              <p>Only approved mappings change software group counts.</p>
+              <ul>
+                {mappingItems.map((mapping) => (
+                  <li key={mapping.mapping_id}>
+                    <strong>{mapping.raw_name} {mapping.raw_version}</strong>
+                    {mapping.publisher && <span className="table-subtitle">Publisher: {mapping.publisher}</span>}
+                    <span className="table-subtitle">
+                      Suggests: {mapping.canonical_name} {mapping.canonical_version} · {mapping.status} · confidence {mapping.confidence}
+                    </span>
+                    <span className="table-subtitle">
+                      Source: {mapping.method} · observed {mapping.source_timestamp}
+                    </span>
+                    {mapping.status === "suggested" && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={mappingSubmitting === mapping.mapping_id}
+                          onClick={() => void decideMapping(mapping, "approve")}
+                        >
+                          Approve mapping
+                        </button>
+                        <button
+                          type="button"
+                          disabled={mappingSubmitting === mapping.mapping_id}
+                          onClick={() => void decideMapping(mapping, "reject")}
+                        >
+                          Reject mapping
+                        </button>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </section>
           )}
           {softwareDetailGroup && (

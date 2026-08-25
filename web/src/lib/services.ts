@@ -3,6 +3,9 @@ import type { ScopeSelection } from "./scope";
 import { scopeToSearchParams } from "./scope";
 import type {
   BusinessMetadata,
+  ChangeAssessment,
+  ChangeAssessmentSources,
+  ChangeAssessmentSummary,
   ConnectionCreateRequest,
   ConnectionHealthReport,
   ConnectionSyncResult,
@@ -17,22 +20,49 @@ import type {
   FlowResult,
   HubDependents,
   NetworkGap,
+  NetworkDesignPolicy,
   NetworkSeverity,
   NetworkSummary,
   NetworkTopology,
   RuleFinding,
   SearchResult,
+  ServerExposure,
   SemanticContext,
   SubscriptionConnection,
   CveDetail,
   KbDetail,
   PatchPriority,
+  PatchRun,
+  PatchRunCreateRequest,
+  PatchTarget,
   RiskException,
   SlaComplianceReport,
   AttackPathGraph,
   VulnerabilityExposure,
   VulnerabilitySummary,
   EvidenceItem,
+  TwinComparison,
+  TwinExport,
+  TwinQueryResult,
+  TwinScenarioResult,
+  TwinSnapshot,
+  TwinTraversal,
+  AutonomousAgent,
+  MultiAgentLedger,
+  FinOpsSummary,
+  SavingsOpportunity,
+  WasteItem,
+  FinOpsAttributionGroup,
+  IdentitySummary,
+  PrincipalRisk,
+  SubscriptionOwnerRecord,
+  StaleAccessRecord,
+  NonHumanIdentity,
+  SpnSummary,
+  ServicePrincipalGovernance,
+  AccessReviewPack,
+  AuditExportPack,
+  EnterpriseSettings,
   OsInventoryCollection,
   OsInventoryDetail,
 } from "./types";
@@ -170,6 +200,34 @@ export const inventoryApi = {
     query.set("limit", String(limit));
     return apiRequest<SoftwareInventoryDetail>(`/inventory/software/${encodeURIComponent(key)}`, { query });
   },
+  mappings: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<SoftwareMappingCollection>("/inventory/software/mappings", { query });
+  },
+  approveMapping: (
+    mapping_id: string,
+    expected_revision: number,
+    scope: ScopeSelection = {},
+    reason = "",
+  ) =>
+    apiRequest<SoftwareMapping>("/inventory/software/mappings/approve", {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+      body: { mapping_id, expected_revision, reason },
+    }),
+  rejectMapping: (
+    mapping_id: string,
+    expected_revision: number,
+    scope: ScopeSelection = {},
+    reason = "",
+  ) =>
+    apiRequest<SoftwareMapping>("/inventory/software/mappings/reject", {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+      body: { mapping_id, expected_revision, reason },
+    }),
 };
 
 // ---------------------------------------------------------------------------
@@ -195,18 +253,33 @@ export const contextApi = {
     return apiRequest<SearchResult>("/search", { query });
   },
 
-  businessService: (name: string) => apiRequest<SemanticContext>(`/business-services/${encodeURIComponent(name)}`),
-  application: (name: string) => apiRequest<SemanticContext>(`/applications/${encodeURIComponent(name)}`),
-  environment: (name: string) => apiRequest<SemanticContext>(`/environments/${encodeURIComponent(name)}`),
-  subscription: (name: string) => apiRequest<SemanticContext>(`/subscriptions/${encodeURIComponent(name)}`),
-  subscriptionConnectionContext: (name: string) =>
-    apiRequest<SemanticContext>(`/subscription-connections/${encodeURIComponent(name)}/context`),
-  resource: (resourceId: string) => apiRequest<SemanticContext>(`/resources/${encodeURIComponent(resourceId)}`),
-  risk: (subject: string) => apiRequest<SemanticContext>(`/risk/${encodeURIComponent(subject)}`),
-  impact: (subject: string) => apiRequest<SemanticContext>(`/impact/${encodeURIComponent(subject)}`),
-  dependencyGraph: (application: string, direction: "upstream" | "downstream" | "both" = "both") =>
+  businessService: (name: string, scope: ScopeSelection = {}) =>
+    apiRequest<SemanticContext>(`/business-services/${encodeURIComponent(name)}`, { query: scopeToSearchParams(scope) }),
+  application: (name: string, scope: ScopeSelection = {}) =>
+    apiRequest<SemanticContext>(`/applications/${encodeURIComponent(name)}`, { query: scopeToSearchParams(scope) }),
+  environment: (name: string, scope: ScopeSelection = {}) =>
+    apiRequest<SemanticContext>(`/environments/${encodeURIComponent(name)}`, { query: scopeToSearchParams(scope) }),
+  subscription: (name: string, scope: ScopeSelection = {}) =>
+    apiRequest<SemanticContext>(`/subscriptions/${encodeURIComponent(name)}`, { query: scopeToSearchParams(scope) }),
+  subscriptionConnectionContext: (name: string, scope: ScopeSelection = {}) =>
+    apiRequest<SemanticContext>(`/subscription-connections/${encodeURIComponent(name)}/context`, {
+      query: scopeToSearchParams(scope),
+    }),
+  resource: (resourceId: string, scope: ScopeSelection = {}) =>
+    apiRequest<SemanticContext>(`/resources/${encodeURIComponent(resourceId)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+  risk: (subject: string, scope: ScopeSelection = {}) =>
+    apiRequest<SemanticContext>(`/risk/${encodeURIComponent(subject)}`, { query: scopeToSearchParams(scope) }),
+  impact: (subject: string, scope: ScopeSelection = {}) =>
+    apiRequest<SemanticContext>(`/impact/${encodeURIComponent(subject)}`, { query: scopeToSearchParams(scope) }),
+  dependencyGraph: (
+    application: string,
+    direction: "upstream" | "downstream" | "both" = "both",
+    scope: ScopeSelection = {},
+  ) =>
     apiRequest<DependencyGraph>(`/graph/dependencies/${encodeURIComponent(application)}`, {
-      query: { direction },
+      query: { ...Object.fromEntries(scopeToSearchParams(scope)), direction },
     }),
 };
 
@@ -306,7 +379,8 @@ export const operationsApi = {
     query.set("limit", String(limit));
     return apiRequest<IncidentReport>("/incidents", { query });
   },
-  incident: (id: string) => apiRequest<IncidentDetail>(`/incidents/${encodeURIComponent(id)}`),
+  incident: (id: string, scope: ScopeSelection = {}) =>
+    apiRequest<IncidentDetail>(`/incidents/${encodeURIComponent(id)}`, { query: scopeToSearchParams(scope) }),
   remediationPlans: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
@@ -379,6 +453,16 @@ export const networkApi = {
     if (options.category) query.set("category", options.category);
     return apiRequest<{ findings: RuleFinding[]; summary: NetworkSummary }>("/network/rule-findings", { query });
   },
+
+  /** The rule-based, UI-editable design policy gap analysis is checked against. */
+  policy: (scope: ScopeSelection = {}) =>
+    apiRequest<NetworkDesignPolicy>("/network/policy", { query: scopeToSearchParams(scope) }),
+
+  updatePolicy: (changes: Record<string, unknown>) =>
+    apiRequest<NetworkDesignPolicy>("/network/policy", {
+      method: "PATCH",
+      body: changes,
+    }),
 };
 
 export const vulnerabilityApi = {
@@ -388,6 +472,8 @@ export const vulnerabilityApi = {
     apiRequest<VulnerabilityExposure[]>("/vulnerabilities/exposures", { query: scopeToSearchParams(scope) }),
   patchPriorities: (scope: ScopeSelection = {}) =>
     apiRequest<PatchPriority[]>("/vulnerabilities/patch-priorities", { query: scopeToSearchParams(scope) }),
+  serverExposures: (scope: ScopeSelection = {}) =>
+    apiRequest<ServerExposure[]>("/vulnerabilities/server-exposures", { query: scopeToSearchParams(scope) }),
   cves: (scope: ScopeSelection = {}, q?: string) => {
     const query = scopeToSearchParams(scope);
     if (q) query.set("q", q);
@@ -405,6 +491,74 @@ export const vulnerabilityApi = {
   attackPath: (cveId: string, scope: ScopeSelection = {}) =>
     apiRequest<AttackPathGraph>(`/cves/${encodeURIComponent(cveId)}/attack-path`, {
       query: scopeToSearchParams(scope),
+    }),
+};
+
+/**
+ * Patch remediation: patchable inventory, and the single guarded trigger.
+ * The API re-validates every selection against the target's own available
+ * patches, so the UI's job is only to make the operator's choice explicit.
+ */
+export const patchingApi = {
+  targets: (scope: ScopeSelection = {}) =>
+    apiRequest<PatchTarget[]>("/patching/targets", { query: scopeToSearchParams(scope) }),
+  target: (targetId: string, scope: ScopeSelection = {}) =>
+    apiRequest<PatchTarget>(`/patching/targets/${encodeURIComponent(targetId)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+  runs: (scope: ScopeSelection = {}) =>
+    apiRequest<PatchRun[]>("/patching/runs", { query: scopeToSearchParams(scope) }),
+  trigger: (payload: PatchRunCreateRequest) =>
+    apiRequest<PatchRun>("/patching/runs", { method: "POST", body: payload }),
+};
+
+export const twinApi = {
+  query: (q = "", scope: ScopeSelection = {}) => {
+    const query = scopeToSearchParams(scope);
+    if (q) query.set("q", q);
+    return apiRequest<TwinQueryResult>("/twin", { query });
+  },
+  graph: (scope: ScopeSelection = {}) =>
+    apiRequest<TwinSnapshot>("/twin/graph", { query: scopeToSearchParams(scope) }),
+  timeline: (scope: ScopeSelection = {}) =>
+    apiRequest<Pick<TwinSnapshot, "version" | "observed_at" | "timeline"> & TwinSnapshot["temporal"]>(
+      "/twin/timeline",
+      { query: scopeToSearchParams(scope) }
+    ),
+  compare: (scope: ScopeSelection = {}) =>
+    apiRequest<TwinComparison>("/twin/compare", { query: scopeToSearchParams(scope) }),
+  scenario: (scenario: string, target: string, scope: ScopeSelection = {}) =>
+    apiRequest<TwinScenarioResult>("/twin/scenarios", {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+      body: { scenario, target },
+    }),
+  traverse: (resourceId: string, scope: ScopeSelection = {}) =>
+    apiRequest<TwinTraversal>(`/twin/traverse/${encodeURIComponent(resourceId)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+  export: (scope: ScopeSelection = {}) =>
+    apiRequest<TwinExport>("/twin/export", { query: scopeToSearchParams(scope) }),
+};
+
+export const multiAgentApi = {
+  catalog: (scope: ScopeSelection = {}) =>
+    apiRequest<{ agents: AutonomousAgent[] }>("/agents/catalog", { query: scopeToSearchParams(scope) }),
+  investigate: (objective: string, scope: ScopeSelection = {}, timeoutSeconds = 8) =>
+    apiRequest<MultiAgentLedger>("/agents/investigations", {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+      body: { objective, timeout_seconds: timeoutSeconds },
+    }),
+  ledger: (ledgerId: string, scope: ScopeSelection = {}) =>
+    apiRequest<MultiAgentLedger>(`/agents/investigations/${encodeURIComponent(ledgerId)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+  action: (ledgerId: string, action: string, payload: Record<string, unknown>, scope: ScopeSelection = {}) =>
+    apiRequest<MultiAgentLedger>(`/agents/investigations/${encodeURIComponent(ledgerId)}/actions`, {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+      body: { action, payload },
     }),
 };
 
@@ -470,6 +624,124 @@ export const adminApi = {
 };
 
 export type { Envelope };
+
+/**
+ * Governance surface: FinOps, identity risk, SPN posture, access reviews,
+ * audit evidence, and enterprise administration. Every read carries the
+ * global scope so the API applies subscription isolation server-side.
+ */
+export const governanceApi = {
+  finopsSummary: (scope: ScopeSelection = {}) =>
+    apiRequest<FinOpsSummary>("/governance/finops/summary", {
+      query: scopeToSearchParams(scope),
+    }),
+
+  finopsOpportunities: (scope: ScopeSelection = {}) =>
+    apiRequest<{ opportunities: SavingsOpportunity[]; count: number }>(
+      "/governance/finops/opportunities",
+      { query: scopeToSearchParams(scope) },
+    ),
+
+  finopsWaste: (scope: ScopeSelection = {}) =>
+    apiRequest<{ waste: WasteItem[]; count: number }>("/governance/finops/waste", {
+      query: scopeToSearchParams(scope),
+    }),
+
+  finopsAttribution: (dimension: string, scope: ScopeSelection = {}) => {
+    const query = scopeToSearchParams(scope);
+    query.set("dimension", dimension);
+    return apiRequest<{
+      dimension: string;
+      groups: FinOpsAttributionGroup[];
+      count: number;
+    }>("/governance/finops/attribution", { query });
+  },
+
+  identitySummary: (scope: ScopeSelection = {}) =>
+    apiRequest<IdentitySummary>("/governance/identity/summary", {
+      query: scopeToSearchParams(scope),
+    }),
+
+  identityPrincipals: (scope: ScopeSelection = {}) =>
+    apiRequest<{ principals: PrincipalRisk[]; count: number }>(
+      "/governance/identity/principals",
+      { query: scopeToSearchParams(scope) },
+    ),
+
+  subscriptionOwners: (scope: ScopeSelection = {}) =>
+    apiRequest<{ owners: SubscriptionOwnerRecord[]; count: number }>(
+      "/governance/identity/subscription-owners",
+      { query: scopeToSearchParams(scope) },
+    ),
+
+  staleAccess: (scope: ScopeSelection = {}) =>
+    apiRequest<{ assignments: StaleAccessRecord[]; count: number }>(
+      "/governance/identity/stale-access",
+      { query: scopeToSearchParams(scope) },
+    ),
+
+  nonHumanIdentities: (scope: ScopeSelection = {}) =>
+    apiRequest<{ identities: NonHumanIdentity[]; count: number }>(
+      "/governance/identity/non-human",
+      { query: scopeToSearchParams(scope) },
+    ),
+
+  spnCredentials: (scope: ScopeSelection = {}) =>
+    apiRequest<{
+      credentials: ServicePrincipalGovernance[];
+      summary: SpnSummary;
+      count: number;
+    }>("/governance/spn/credentials", { query: scopeToSearchParams(scope) }),
+
+  accessReviewKinds: () =>
+    apiRequest<{ audiences: string[] }>("/governance/access-reviews"),
+
+  accessReview: (audience: string, scope: ScopeSelection = {}) =>
+    apiRequest<AccessReviewPack>(
+      `/governance/access-reviews/${encodeURIComponent(audience)}`,
+      { query: scopeToSearchParams(scope) },
+    ),
+
+  exportKinds: () => apiRequest<{ kinds: string[] }>("/governance/exports"),
+
+  auditExport: (kind: string, scope: ScopeSelection = {}) =>
+    apiRequest<AuditExportPack>(`/governance/exports/${encodeURIComponent(kind)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+
+  settings: (scope: ScopeSelection = {}) =>
+    apiRequest<EnterpriseSettings>("/governance/settings", {
+      query: scopeToSearchParams(scope),
+    }),
+
+  updateSettings: (payload: Record<string, unknown>) =>
+    apiRequest<EnterpriseSettings>("/governance/settings", {
+      method: "PATCH",
+      body: payload,
+    }),
+};
+
+/** Pre-deployment change risk and impact assessment. */
+export const predeployApi = {
+  sources: () => apiRequest<ChangeAssessmentSources>("/changes/assessment-sources"),
+
+  assess: (source: string, payload: Record<string, unknown>, changeId = "") =>
+    apiRequest<ChangeAssessment>("/changes/assess", {
+      method: "POST",
+      body: { source, payload, change_id: changeId },
+    }),
+
+  assessments: (scope: ScopeSelection = {}) =>
+    apiRequest<{ assessments: ChangeAssessmentSummary[]; count: number }>(
+      "/changes/assessments",
+      { query: scopeToSearchParams(scope) },
+    ),
+
+  assessment: (assessmentId: string) =>
+    apiRequest<ChangeAssessment>(
+      `/changes/assessments/${encodeURIComponent(assessmentId)}`,
+    ),
+};
 
 /** Durable Phase 1 situation reads; unlike the legacy incident API these IDs and records are persisted. */
 export const situationsApi = {

@@ -260,6 +260,13 @@ class SoftwareObservation:
     software_type: str
     observed_at: str
     evidence: tuple[dict[str, str], ...] = ()
+    mapping_id: str = ""
+    mapping_status: str = ""
+    mapping_revision: int = 0
+    mapping_method: str = ""
+    mapping_confidence: float = 0
+    mapping_provenance: dict[str, Any] | None = None
+    mapping_source_timestamp: str = ""
 
     @classmethod
     def from_mapping(cls, row: dict[str, Any]) -> SoftwareObservation:
@@ -289,6 +296,17 @@ class SoftwareObservation:
             software_type=str(row.get("software_type") or ""),
             observed_at=str(row.get("observed_at") or row.get("time_generated") or ""),
             evidence=parsed_evidence,
+            mapping_id=str(row.get("mapping_id") or ""),
+            mapping_status=str(row.get("mapping_status") or ""),
+            mapping_revision=int(row.get("mapping_revision", 0)),
+            mapping_method=str(row.get("mapping_method") or ""),
+            mapping_confidence=float(row.get("mapping_confidence", 0)),
+            mapping_provenance=(
+                dict(row["mapping_provenance"])
+                if isinstance(row.get("mapping_provenance"), dict)
+                else None
+            ),
+            mapping_source_timestamp=str(row.get("mapping_source_timestamp") or ""),
         )
 
     def __post_init__(self) -> None:
@@ -317,6 +335,21 @@ class SoftwareObservation:
         object.__setattr__(self, "software_type", _text(self.software_type))
         object.__setattr__(self, "observed_at", _text(self.observed_at))
         object.__setattr__(self, "evidence", tuple(self.evidence))
+        if self.mapping_status and self.mapping_status not in {"suggested", "approved", "rejected"}:
+            raise ValueError("Software observation has an invalid mapping status")
+        if self.mapping_revision < 0 or isinstance(self.mapping_revision, bool):
+            raise ValueError("Software observation has an invalid mapping revision")
+        if not 0 <= self.mapping_confidence <= 1:
+            raise ValueError("Software observation has an invalid mapping confidence")
+        object.__setattr__(self, "mapping_id", _text(self.mapping_id))
+        object.__setattr__(self, "mapping_status", _text(self.mapping_status))
+        object.__setattr__(self, "mapping_method", _text(self.mapping_method))
+        object.__setattr__(self, "mapping_source_timestamp", _text(self.mapping_source_timestamp))
+        object.__setattr__(
+            self,
+            "mapping_provenance",
+            dict(self.mapping_provenance) if self.mapping_provenance else None,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -349,6 +382,13 @@ class SoftwareObservation:
                 item.to_dict() if isinstance(item, InventoryEvidence) else dict(item)
                 for item in self.evidence
             ],
+            "mapping_id": self.mapping_id,
+            "mapping_status": self.mapping_status,
+            "mapping_revision": self.mapping_revision,
+            "mapping_method": self.mapping_method,
+            "mapping_confidence": self.mapping_confidence,
+            "mapping_provenance": self.mapping_provenance,
+            "mapping_source_timestamp": self.mapping_source_timestamp,
         }
 
 

@@ -156,6 +156,14 @@ class EOLConfirmationRequest(ApiModel):
     support_channel: Literal["mainstream", "extended"] = "mainstream"
 
 
+class SoftwareMappingDecisionRequest(ApiModel):
+    """Approve or reject one server-owned mapping at an expected revision."""
+
+    mapping_id: str = Field(min_length=1, max_length=160)
+    expected_revision: int = Field(ge=0)
+    reason: str = Field("", max_length=1024)
+
+
 class ScopeModel(ApiModel):
     """Cross-subscription scope selector."""
 

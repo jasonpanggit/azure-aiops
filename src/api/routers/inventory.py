@@ -11,13 +11,18 @@ from intelligence.inventory.eol_repository import (
     CatalogRevisionConflict,
     DuplicateCatalogConfirmation,
 )
+from intelligence.inventory.mapping_repository import (
+    MappingNotFound,
+    MappingRevisionConflict,
+    MappingStatusConflict,
+)
 from intelligence.inventory.eol_review import normalize_os_key
 from intelligence.inventory.service import InventoryService
 
 from ..dependencies import Context, OperatePrincipal, Page, ReadScope
 from ..errors import ApiError, ErrorCode
 from ..evidence import Evidence, envelope
-from ..models import EOLConfirmationRequest
+from ..models import EOLConfirmationRequest, SoftwareMappingDecisionRequest
 
 router = APIRouter(prefix="/api/v1", tags=["inventory"])
 _GROUP_KEY = re.compile(r"^[^|/\\]{1,120}\|[^|/\\]{1,120}$")
@@ -180,6 +185,111 @@ def software_inventory(context: Context, scope: ReadScope, page: Page) -> dict[s
         warnings=result["warnings"],
         pagination=page.to_dict(result["total"]),
     )
+
+
+@router.get(
+    "/inventory/software/mappings",
+    summary="List software normalization mappings for the authorized scope",
+)
+def software_mapping_list(
+    context: Context, scope: ReadScope, page: Page
+) -> dict[str, Any]:
+    service = _service(context)
+    result = service.mapping_collection(scope, offset=page.offset, limit=page.limit)
+    return envelope(
+        result["data"],
+        evidence=_software_evidence(service),
+        scope=scope.to_dict(),
+        knowledge_version=str(result["data"]["repository_revision"]),
+        warnings=result["warnings"],
+        pagination=page.to_dict(result["total"]),
+    )
+
+
+@router.get(
+    "/inventory/software/mappings/{mapping_id:path}",
+    summary="Get one authorized software normalization mapping",
+)
+def software_mapping_detail(
+    mapping_id: str, context: Context, scope: ReadScope
+) -> dict[str, Any]:
+    service = _service(context)
+    result = service.mapping_detail(mapping_id, scope)
+    if result is None:
+        raise ApiError(ErrorCode.NOT_FOUND, "No software mapping matches this scope")
+    return envelope(
+        result["data"],
+        evidence=_software_evidence(service),
+        scope=scope.to_dict(),
+        knowledge_version=str(result["data"]["mapping"]["revision"]),
+        warnings=result["warnings"],
+    )
+
+
+def _decide_mapping(
+    decision: str,
+    payload: SoftwareMappingDecisionRequest,
+    context: Context,
+    scope: ReadScope,
+    principal: OperatePrincipal,
+) -> dict[str, Any]:
+    operate_scope = context.authorizer.effective_scope(principal, "operate", scope)
+    service = _service(context)
+    # The visibility check is deliberately before mutation so an operator
+    # cannot probe or mutate a mapping outside the effective scope.
+    if service.mapping_detail(payload.mapping_id, operate_scope) is None:
+        raise ApiError(ErrorCode.NOT_FOUND, "No software mapping matches this scope")
+    try:
+        mapping = service.mapping_repository.decide(
+            payload.mapping_id,
+            decision=decision,
+            expected_revision=payload.expected_revision,
+            actor=principal.subject,
+            scope_snapshot=operate_scope.to_dict(),
+            reason=payload.reason,
+        )
+    except MappingRevisionConflict as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "The software mapping changed; refresh before deciding",
+            {"mapping_id": exc.mapping_id, "expected_revision": exc.expected, "current_revision": exc.current},
+        ) from exc
+    except MappingStatusConflict as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+    except MappingNotFound as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "No software mapping matches this scope") from exc
+    return envelope(
+        mapping.to_dict(),
+        evidence=_software_evidence(service),
+        scope=operate_scope.to_dict(),
+        knowledge_version=str(mapping.revision),
+    )
+
+
+@router.post(
+    "/inventory/software/mappings/approve",
+    summary="Approve a software normalization mapping",
+)
+def approve_software_mapping(
+    payload: SoftwareMappingDecisionRequest,
+    context: Context,
+    scope: ReadScope,
+    principal: OperatePrincipal,
+) -> dict[str, Any]:
+    return _decide_mapping("approved", payload, context, scope, principal)
+
+
+@router.post(
+    "/inventory/software/mappings/reject",
+    summary="Reject a software normalization mapping",
+)
+def reject_software_mapping(
+    payload: SoftwareMappingDecisionRequest,
+    context: Context,
+    scope: ReadScope,
+    principal: OperatePrincipal,
+) -> dict[str, Any]:
+    return _decide_mapping("rejected", payload, context, scope, principal)
 
 
 @router.get(

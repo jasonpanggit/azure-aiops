@@ -30,6 +30,9 @@ export interface Envelope<T> {
   evidence: EvidenceItem[];
   scope: Record<string, string[]>;
   knowledge_version?: string;
+  graph_freshness?: string;
+  live_observed_at?: string;
+  source_status?: Record<string, string>;
   warnings?: string[];
   pagination?: Pagination | null;
 }
@@ -136,6 +139,197 @@ export interface OsInventoryDetail {
   requested_scope: Record<string, string[]>;
 }
 
+export interface TwinEntity {
+  id: string;
+  kind: string;
+  name: string;
+  version: string;
+  state: string;
+  confidence: Confidence;
+  provenance: Array<Record<string, unknown>>;
+  properties: Record<string, unknown>;
+}
+
+export interface TwinRelationship {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  confidence: Confidence;
+  provenance: Array<Record<string, unknown>>;
+}
+
+export interface TwinTimelineEvent {
+  timestamp: string;
+  type: string;
+  entity: string;
+  summary: string;
+  provenance?: Record<string, unknown>;
+}
+
+export interface TwinTemporalState {
+  current_state_version: string;
+  previous_state_version: string;
+  change_history: Array<Record<string, unknown>>;
+  risk_trend: Array<Record<string, unknown>>;
+  dependency_evolution: Array<Record<string, unknown>>;
+}
+
+export interface TwinSnapshot {
+  twin_id: string;
+  version: string;
+  previous_version: string;
+  observed_at: string;
+  scope: Record<string, string[]>;
+  entities: TwinEntity[];
+  relationships: TwinRelationship[];
+  timeline: TwinTimelineEvent[];
+  provenance: Array<Record<string, unknown>>;
+  confidence: Confidence;
+  temporal: TwinTemporalState;
+  warnings?: string[];
+  live_observed_at?: string;
+  source_status?: Record<string, string>;
+}
+
+export interface TwinQueryResult {
+  query: string;
+  version: string;
+  entities: TwinEntity[];
+  relationships: TwinRelationship[];
+  timeline: TwinTimelineEvent[];
+}
+
+export interface TwinComparison {
+  current_version: string;
+  previous_version: string;
+  added: TwinEntity[];
+  removed: TwinEntity[];
+  changed: Array<Record<string, unknown>>;
+  summary: string;
+}
+
+export interface TwinScenarioResult {
+  scenario: string;
+  target: string;
+  version: string;
+  likely_impact: string;
+  risk_delta: number;
+  impacted_entities: TwinEntity[];
+  assumptions: string[];
+}
+
+export interface TwinTraversal {
+  resource_id: string;
+  path: TwinEntity[];
+  relationships: TwinRelationship[];
+  business_consequence: string[];
+}
+
+export interface TwinExport {
+  format: string;
+  exported_at: string;
+  snapshot: TwinSnapshot;
+}
+
+export interface AutonomousAgent {
+  id: string;
+  name: string;
+  role: string;
+  tools: string[];
+  keywords: string[];
+  depends_on: string[];
+}
+
+export interface AgentToolCall {
+  tool: string;
+  arguments: Record<string, unknown>;
+  status: "ok" | "empty" | "unavailable" | "denied" | "partial";
+  warning: string;
+  attempts: number;
+}
+
+export interface AgentFinding {
+  finding_id: string;
+  agent_id: string;
+  summary: string;
+  status: string;
+  confidence: Confidence;
+  evidence_count: number;
+  unsupported?: boolean;
+}
+
+export interface AgentRun {
+  agent_id: string;
+  agent_name: string;
+  status: string;
+  started_at: string;
+  completed_at: string;
+  duration_ms: number;
+  tool_calls: AgentToolCall[];
+  findings: AgentFinding[];
+  evidence: EvidenceItem[];
+  confidence: Confidence;
+  hidden_reasoning_exposed: boolean;
+}
+
+export interface EvidenceReconciliation {
+  conflicts: string[];
+  stale_evidence: EvidenceItem[];
+  missing_providers: AgentToolCall[];
+  unsupported_conclusions: AgentFinding[];
+  evidence_count: number;
+  reconciled_confidence: Confidence;
+}
+
+export interface InvestigationSynthesis {
+  summary: string;
+  recommended_plan: string;
+  required_decision: string;
+  unresolved_questions: string[];
+  confidence: Confidence;
+  /** Optional Foundry narration of the evidence; empty when no agent is configured. */
+  narration?: string;
+  narrated_by?: string;
+  narration_warning?: string;
+  llm_calls?: number;
+}
+
+export interface HumanDecision {
+  at: string;
+  action: string;
+  payload: Record<string, unknown>;
+}
+
+export interface InvestigationEvaluation {
+  groundedness: number;
+  scope_isolation: string;
+  tool_correctness: number;
+  convergence: string;
+  latency_ms: number;
+  cost: Record<string, number>;
+}
+
+export interface MultiAgentLedger {
+  ledger_id: string;
+  objective: string;
+  scope: Record<string, string[]>;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  status: string;
+  selected_agents: AutonomousAgent[];
+  agent_runs: AgentRun[];
+  reconciliation: EvidenceReconciliation;
+  synthesis: InvestigationSynthesis;
+  human_controls: { available_actions: string[] };
+  decisions: HumanDecision[];
+  approvals: HumanDecision[];
+  outcome: string;
+  stop_reason: string;
+  evaluation: InvestigationEvaluation;
+}
+
 export type ErrorCode =
   | "invalid_request"
   | "unauthenticated"
@@ -189,6 +383,35 @@ export interface VulnerabilitySummary {
   metadata_source: string;
 }
 
+export interface ServerExposure {
+  server_id: string;
+  name: string;
+  resource_type: string;
+  inventory_kind: string;
+  subscription_id: string;
+  subscription_connection: string;
+  environment: string;
+  business_service: string;
+  application: string;
+  owner: string;
+  region: string;
+  criticality: string;
+  network_exposure: string;
+  reachable: boolean;
+  internet_exposed: boolean;
+  cve_count: number;
+  finding_count: number;
+  critical_count: number;
+  overdue_count: number;
+  max_days_open: number;
+  missing_kbs: string[];
+  cve_ids: string[];
+  severities: string[];
+  priority_score: number;
+  expected_risk_reduction: number;
+  finding_ids: string[];
+}
+
 export interface VulnerabilityFinding {
   finding_id: string;
   cve_id: string;
@@ -198,7 +421,13 @@ export interface VulnerabilityFinding {
   business_service: string;
   owner: string;
   subscription_id: string;
+  subscription_connection: string;
   environment: string;
+  region: string;
+  criticality: string;
+  resource_type: string;
+  resource_kind: string;
+  resource_name: string;
   severity: string;
   exploit_signal: string;
   network_exposure: string;
@@ -503,12 +732,24 @@ export interface SemanticSubject {
 export interface SemanticContext {
   subject: SemanticSubject;
   sections: Record<string, unknown>;
+  /** Durable graph and request-time observation metadata, when hybrid reads are enabled. */
+  graph_freshness?: string;
+  live_observed_at?: string;
+  source_status?: Record<string, string>;
 }
 
 export interface SearchResult {
-  query: string;
+  query?: string;
   intent: string;
-  results: Array<Record<string, unknown>>;
+  /** Hybrid/live search returns results; graph search historically called these items. */
+  results?: Array<Record<string, unknown>>;
+  items?: Array<Record<string, unknown>>;
+  count?: number;
+  freshness?: string;
+  graph_freshness?: string;
+  live_observed_at?: string;
+  source_status?: Record<string, string>;
+  truncated?: boolean;
 }
 
 export interface DependencyGraphNode {
@@ -829,6 +1070,38 @@ export interface NetworkGap {
   vnet_id?: string;
 }
 
+/** One rule in the rule-based, UI-editable network design policy. */
+export interface NetworkPolicyRule {
+  rule_id: string;
+  name: string;
+  description: string;
+  category: string;
+  severity: NetworkSeverity;
+  enabled: boolean;
+  parameters: Record<string, unknown>;
+}
+
+/** The full design policy gap analysis is checked against. */
+export interface NetworkDesignPolicy {
+  name: string;
+  description: string;
+  is_declared: boolean;
+  source_path: string;
+  hub_vnet_names: string[];
+  require_firewall_in_hub: boolean;
+  require_default_route_to_firewall: boolean;
+  require_nsg_on_every_subnet: boolean;
+  forbid_spoke_to_spoke_peering: boolean;
+  forbid_public_ip_on_spoke_nics: boolean;
+  require_private_endpoint_for_services: string[];
+  require_private_dns_zone_link: boolean;
+  require_bidirectional_peering: boolean;
+  approved_peerings: Array<{ source: string; target: string; bidirectional: boolean }>;
+  exempt_subnet_names: string[];
+  exempt_vnet_names: string[];
+  rules: NetworkPolicyRule[];
+}
+
 export interface RuleFinding {
   finding_id: string;
   category: string;
@@ -902,6 +1175,469 @@ export interface HubDependents {
   }>;
   dependent_count: number;
   shared_services?: SharedServiceSummary[];
+}
+
+// --------------------------------------------------------------------------
+// FinOps, identity, SPN governance, access reviews, and audit evidence.
+//
+// `annual_savings` is deliberately nullable: Azure Advisor does not quantify
+// every recommendation, and null means "not quantified" rather than "no
+// saving". `unavailable_metrics` names the figures the platform genuinely
+// cannot observe so the UI states the gap instead of implying zero spend.
+// --------------------------------------------------------------------------
+
+export interface UnavailableMetric {
+  metric: string;
+  reason: string;
+}
+
+export interface FinOpsSummary {
+  identified_annual_savings: number;
+  currency: string;
+  savings_opportunity_count: number;
+  quantified_opportunity_count: number;
+  waste_item_count: number;
+  actual_spend?: number;
+  actual_spend_currency?: string;
+  actual_spend_source?: string;
+  actual_spend_period_start?: string;
+  actual_spend_period_end?: string;
+  actual_spend_record_count?: number;
+  unavailable_metrics: UnavailableMetric[];
+}
+
+export interface SavingsOpportunity {
+  recommendation_id: string;
+  resource_id: string;
+  problem: string;
+  solution: string;
+  impact: string;
+  annual_savings: number | null;
+  currency: string;
+  savings_source: string;
+  subscription?: string;
+  application?: string;
+  business_service?: string;
+  owner?: string;
+  environment?: string;
+}
+
+export interface WasteItem {
+  resource_id: string;
+  resource_type: string;
+  reason: string;
+  detail: string;
+  annual_savings: number | null;
+  currency: string;
+  savings_source: string;
+  subscription?: string;
+  application?: string;
+  business_service?: string;
+  owner?: string;
+  environment?: string;
+}
+
+export interface FinOpsAttributionGroup {
+  identified_annual_savings: number;
+  savings_opportunity_count: number;
+  waste_item_count: number;
+  [dimension: string]: string | number;
+}
+
+export interface IdentitySummary {
+  principal_count: number;
+  privileged_principal_count: number;
+  subscription_owner_count: number;
+  stale_assignment_count: number;
+  non_human_principal_count: number;
+  assignment_count: number;
+  stale_threshold_days: number;
+}
+
+export interface PrincipalRisk {
+  principal_id: string;
+  principal_type: string;
+  assignment_count: number;
+  privileged: boolean;
+  widest_scope: string;
+  widest_scope_breadth: string;
+  roles: string[];
+  stale: boolean;
+  last_changed: string;
+  blast_radius: Record<string, number>;
+}
+
+export interface SubscriptionOwnerRecord {
+  principal_id: string;
+  principal_type: string;
+  scope: string;
+  scope_breadth: string;
+  subscription_id: string;
+  assigned_on: string;
+  stale: boolean;
+}
+
+export interface StaleAccessRecord {
+  assignment_id: string;
+  principal_id: string;
+  principal_type: string;
+  role: string;
+  scope: string;
+  privileged: boolean;
+  last_changed: string;
+  threshold_days: number;
+}
+
+export interface NonHumanIdentity {
+  principal_id: string;
+  principal_type: string;
+  name?: string;
+  resource_id?: string;
+  assignment_count?: number;
+  privileged?: boolean;
+}
+
+export interface SpnSummary {
+  credential_count: number;
+  expired_count: number;
+  expiring_soon_count: number;
+  unknown_expiry_count: number;
+  healthy_count: number;
+  unused_count: number;
+  expiry_warning_days: number;
+}
+
+export interface ServicePrincipalGovernance {
+  credential_id: string;
+  connection_id: string;
+  connection_name: string;
+  client_id: string;
+  tenant_id: string;
+  subscription_id: string;
+  kind: string;
+  active: boolean;
+  scopes: string[];
+  expires_at: string;
+  days_to_expiry: number | null;
+  rotation_status: string;
+  secret_ref: string;
+  in_use: boolean;
+  last_used: string;
+  /** Null when the SPN object id is unknown: role assignments reference the
+   * object id, never the client id, so a count would otherwise be misleading. */
+  observed_assignment_count: number | null;
+  assignment_lookup_state: string;
+  issues: string[];
+}
+
+export interface AccessReviewPack {
+  audience: string;
+  generated_at: string;
+  scope: Record<string, string[]>;
+  provenance: Record<string, unknown>;
+  sections: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface AuditExportPack {
+  kind: string;
+  generated_at: string;
+  scope: Record<string, string[]>;
+  provenance: Record<string, unknown>;
+  sections: Record<string, unknown>;
+  warnings?: string[];
+  [key: string]: unknown;
+}
+
+export interface EnterpriseRole {
+  role_id: string;
+  name: string;
+  description: string;
+  permissions: string[];
+}
+
+export interface EnterpriseSettings {
+  roles: EnterpriseRole[];
+  taxonomies: Record<string, string[]>;
+  onboarding_policy: Record<string, unknown>;
+  architecture_policy: Record<string, unknown>;
+  vulnerability_policy?: Record<string, unknown>;
+  agent_policy?: Record<string, unknown>;
+  retention_policy?: Record<string, unknown>;
+  report_templates?: unknown[];
+  [key: string]: unknown;
+}
+
+// --------------------------------------------------------------------------
+// Pre-deployment change risk
+// --------------------------------------------------------------------------
+
+export interface ChangeAssessmentSources {
+  sources: string[];
+  simulation_domains: string[];
+  verdicts: string[];
+  risk_levels: string[];
+}
+
+export interface ProposedResourceChange {
+  address: string;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  name: string;
+  provider: string;
+  changed_properties: string[];
+  is_destructive: boolean;
+  source_ref: string;
+}
+
+export interface ProposedChange {
+  change_id: string;
+  source: string;
+  title: string;
+  author: string;
+  submitted_at: string;
+  repository: string;
+  target_environment: string;
+  target_subscriptions: string[];
+  resource_changes: ProposedResourceChange[];
+  effective_change_count: number;
+  ingestion_warnings: string[];
+}
+
+export interface StateComparisonEntry {
+  address: string;
+  finding: string;
+  action: string;
+  resource_id: string;
+  detail: string;
+  drifted_properties: string[];
+  discovered_observed_at: string;
+}
+
+export interface StateComparison {
+  comparisons: StateComparisonEntry[];
+  counts: Record<string, number>;
+  compared_count: number;
+  discovered_count: number;
+  consistent: boolean;
+  unknowns: string[];
+}
+
+export interface ImpactedResource {
+  resource_id: string;
+  resource_type: string;
+  name: string;
+  application: string;
+  business_service: string;
+  environment: string;
+  subscription: string;
+  owner: string;
+  support_team: string;
+  region: string;
+  criticality: string;
+  depth: number;
+  relationship: string;
+  depends_on: string[];
+  observed_at: string;
+}
+
+export interface ChangeBlastRadius {
+  impacted_resources: ImpactedResource[];
+  total_impacted_count: number;
+  directly_changed_count: number;
+  applications: string[];
+  business_services: string[];
+  subscriptions: string[];
+  environments: string[];
+  owners: string[];
+  support_teams: string[];
+  regions: string[];
+  network_controls_in_path: string[];
+  vulnerable_resources_in_path: string[];
+  max_depth_reached: number;
+  truncated: boolean;
+  unknowns: string[];
+  interpretation: string;
+  confirmed_impact: boolean;
+}
+
+export interface SimulatedEffect {
+  domain: string;
+  address: string;
+  effect: string;
+  severity: string;
+  detail: string;
+  basis: string;
+  requires_validation: boolean;
+}
+
+export interface ChangeSimulation {
+  effects: SimulatedEffect[];
+  simulated_domains: string[];
+  by_domain: Record<string, number>;
+  by_severity: Record<string, number>;
+  highest_severity: string;
+  unclassified_addresses: string[];
+  unknowns: string[];
+  basis: string;
+  interpretation: string;
+  confirmed_outcome: boolean;
+}
+
+export interface RiskEvidenceItem {
+  factor: string;
+  observation: string;
+  source: string;
+}
+
+export interface ChangeRisk {
+  score: number;
+  level: string;
+  factors: Record<string, number>;
+  contributing_factors: Record<string, number>;
+  evidence: RiskEvidenceItem[];
+  confidence: string;
+  confidence_rationale: string;
+  unknowns: string[];
+  justification: string;
+  interpretation: string;
+  confirmed_cause: boolean;
+}
+
+export interface CabTrigger {
+  trigger: string;
+  reason: string;
+}
+
+export interface CabRecommendation {
+  verdict: string;
+  summary: string;
+  conditions: string[];
+  required_approvals: string[];
+  triggers: CabTrigger[];
+  risk_score: number;
+  risk_level: string;
+  confidence: string;
+  unknowns: string[];
+  interpretation: string;
+  confirmed_cause: boolean;
+}
+
+export interface ChangeAssessment {
+  assessment_id: string;
+  assessed_at: string;
+  source_engine: string;
+  change: ProposedChange;
+  state_comparison: StateComparison;
+  blast_radius: ChangeBlastRadius;
+  simulation: ChangeSimulation;
+  risk: ChangeRisk;
+  cab_recommendation: CabRecommendation;
+  scope: Record<string, string[]>;
+  scope_excluded_resource_count: number;
+  confirmed_cause: boolean;
+}
+
+export interface ChangeAssessmentSummary {
+  assessment_id: string;
+  change_id: string;
+  source: string;
+  title: string;
+  author: string;
+  assessed_at: string;
+  target_environment: string;
+  resource_change_count: number;
+  risk_score: number;
+  risk_level: string;
+  confidence: string;
+  verdict: string;
+  total_impacted_count: number;
+  business_services: string[];
+}
+
+// --------------------------------------------------------------------------
+// Patch remediation
+// --------------------------------------------------------------------------
+
+export interface AvailablePatch {
+  patch_id: string;
+  title: string;
+  classification: string;
+  severity: string;
+  cve_ids: string[];
+  reboot_required: boolean;
+  published_at: string;
+  /** Provenance of the availability claim, e.g. "derived:open-findings". */
+  source: string;
+  node_pool: string;
+  current_version: string;
+  target_version: string;
+}
+
+export type PatchOperation = "install_patches" | "node_image_upgrade";
+
+export interface PatchTarget {
+  target_id: string;
+  name: string;
+  inventory_kind: string;
+  resource_type: string;
+  subscription_id: string;
+  subscription_connection: string;
+  resource_group: string;
+  environment: string;
+  business_service: string;
+  application: string;
+  owner: string;
+  region: string;
+  criticality: string;
+  os_family: string;
+  reachable: boolean;
+  internet_exposed: boolean;
+  cve_count: number;
+  critical_count: number;
+  overdue_count: number;
+  max_days_open: number;
+  available_patches: AvailablePatch[];
+  patchable: boolean;
+  blocked_reason: string;
+  requires_node_pool: boolean;
+  operation: PatchOperation;
+}
+
+export interface PatchRun {
+  run_id: string;
+  target_id: string;
+  inventory_kind: string;
+  operation: PatchOperation;
+  patch_ids: string[];
+  state: string;
+  requested_by: string;
+  approved_by: string;
+  reason: string;
+  reboot_setting: string;
+  dry_run: boolean;
+  created_at: string;
+  updated_at: string;
+  provider: string;
+  provider_job_id: string;
+  message: string;
+  subscription_id: string;
+  subscription_connection: string;
+  business_service: string;
+  environment: string;
+  details: Record<string, unknown>;
+  terminal: boolean;
+}
+
+export interface PatchRunCreateRequest {
+  target_id: string;
+  patch_ids: string[];
+  reason: string;
+  approved_by?: string;
+  reboot_setting?: "IfRequired" | "Never" | "Always";
+  node_pool?: string;
+  dry_run?: boolean;
 }
 
 export interface DurableEvidence {
@@ -1043,5 +1779,34 @@ export interface SoftwareInventoryDetail {
   observed_at: string;
   query_version: string;
   generation_id: string;
+  requested_scope: Record<string, string[]>;
+}
+
+export type SoftwareMappingStatus = "suggested" | "approved" | "rejected";
+
+export interface SoftwareMapping {
+  mapping_id: string;
+  raw_name: string;
+  raw_version: string;
+  publisher: string;
+  raw_identity: { name: string; version: string; publisher: string };
+  canonical_name: string;
+  canonical_version: string;
+  canonical_identity: string;
+  method: "deterministic" | "ai" | "operator";
+  confidence: number;
+  status: SoftwareMappingStatus;
+  provenance: Record<string, unknown>;
+  source_timestamp: string;
+  scope_predicate: Record<string, string[]>;
+  revision: number;
+  reason: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SoftwareMappingCollection {
+  mappings: SoftwareMapping[];
+  repository_revision: number;
   requested_scope: Record<string, string[]>;
 }

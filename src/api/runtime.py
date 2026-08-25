@@ -918,14 +918,27 @@ def _runtime_metadata(
 def _load_inventory_service() -> Any:
     """Load inventory only from an active generation (or explicit fixture)."""
     from hermes_arg_connector.storage import DatasetStore
+    from intelligence.inventory.mapping_repository import SoftwareMappingRepository
     from intelligence.inventory.service import InventoryService
 
     eol_review = _load_eol_review_service()
+    root = hermes_home()
+    mapping_repository = SoftwareMappingRepository(
+        document_store=OneLakeDocumentStore(str(root)),
+        document_name="state/software_mappings.json",
+    )
     fixture = os.environ.get("HERMES_INVENTORY_FIXTURE", "").strip()
     if fixture:
-        return InventoryService.from_fixture(fixture, eol_review=eol_review)
-    return InventoryService.from_store(DatasetStore(hermes_home()), eol_review=eol_review)
-
+        return InventoryService.from_fixture(
+            fixture,
+            eol_review=eol_review,
+            mapping_repository=mapping_repository,
+        )
+    return InventoryService.from_store(
+        DatasetStore(root),
+        eol_review=eol_review,
+        mapping_repository=mapping_repository,
+    )
 
 def _load_eol_review_service() -> Any:
     """Build lifecycle review from server-owned catalog and provider state."""
