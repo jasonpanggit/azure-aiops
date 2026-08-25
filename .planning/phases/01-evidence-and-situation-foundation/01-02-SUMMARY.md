@@ -101,7 +101,7 @@ coverage:
         status: pass
     human_judgment: false
 
-duration: 40 min
+duration: 22 min
 completed: 2026-08-25
 status: complete
 ---
@@ -112,7 +112,7 @@ status: complete
 
 ## Performance
 
-- **Duration:** 40 min
+- **Duration:** 22 min
 - **Started:** 2026-08-25T13:44:01Z
 - **Completed:** 2026-08-25T14:04:40Z
 - **Tasks:** 3
