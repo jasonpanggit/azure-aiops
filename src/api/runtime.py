@@ -58,6 +58,7 @@ from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
 from operations.foundry_agent import FoundryPromptAgent
 from semantic.semantic_engine import SemanticEngine
+from storage.onelake_documents import OneLakeDocumentStore
 
 from .auth import (
     EntraJwtAuthenticator,
@@ -85,6 +86,9 @@ ENV_FABRIC_CONFIG = "HERMES_FABRIC_CONFIG"
 ENV_RUNTIME_MODE = "HERMES_RUNTIME_MODE"
 ENV_PROVIDER_REFRESH_SECONDS = "HERMES_PROVIDER_REFRESH_SECONDS"
 ENV_PROVIDER_STALE_HOURS = "HERMES_PROVIDER_STALE_HOURS"
+ENV_FOUNDRY_PROJECT_ENDPOINT = "FOUNDRY_PROJECT_ENDPOINT"
+ENV_APPROVED_SEARCH_API_ENDPOINT = "APPROVED_SEARCH_API_ENDPOINT"
+ENV_APPROVED_SEARCH_API_KEY = "APPROVED_SEARCH_API_KEY"
 
 AUTH_GATEWAY = "gateway"
 AUTH_ENTRA = "entra"
@@ -915,16 +919,49 @@ def _load_inventory_service() -> Any:
     """Load inventory only from an active generation (or explicit fixture)."""
     from hermes_arg_connector.storage import DatasetStore
     from intelligence.inventory.service import InventoryService
-    from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
-    from intelligence.inventory.eol_review import EOLReviewService
 
-    eol_review = EOLReviewService(
-        repository=LocalEOLCatalogRepository(Path(hermes_home()) / "state" / "eol_catalog.json")
-    )
+    eol_review = _load_eol_review_service()
     fixture = os.environ.get("HERMES_INVENTORY_FIXTURE", "").strip()
     if fixture:
         return InventoryService.from_fixture(fixture, eol_review=eol_review)
     return InventoryService.from_store(DatasetStore(hermes_home()), eol_review=eol_review)
+
+
+def _load_eol_review_service() -> Any:
+    """Build lifecycle review from server-owned catalog and provider state."""
+    from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
+    from intelligence.inventory.eol_review import (
+        ApprovedSearchApiLifecycleProvider,
+        CandidateResolver,
+        EOLReviewService,
+        UnavailableLifecycleSearchProvider,
+    )
+
+    root = hermes_home()
+    document_store = OneLakeDocumentStore(str(root))
+    endpoint = os.environ.get(ENV_APPROVED_SEARCH_API_ENDPOINT, "").strip()
+    credential = os.environ.get(ENV_APPROVED_SEARCH_API_KEY, "").strip()
+    if endpoint:
+        try:
+            search_provider = ApprovedSearchApiLifecycleProvider(
+                endpoint, credential=credential
+            )
+        except ValueError:
+            _LOGGER.warning("approved_lifecycle_provider_invalid_endpoint")
+            search_provider = UnavailableLifecycleSearchProvider()
+    else:
+        # The existing Foundry client is narration-only, not web search.
+        # External search stays disabled until an approved contract exists.
+        if os.environ.get(ENV_FOUNDRY_PROJECT_ENDPOINT, "").strip():
+            _LOGGER.info("foundry_lifecycle_search_not_configured")
+        search_provider = UnavailableLifecycleSearchProvider()
+    return EOLReviewService(
+        repository=LocalEOLCatalogRepository(
+            document_store=document_store,
+            document_name="state/eol_catalog.json",
+        ),
+        resolver=CandidateResolver(web_search_fetch=search_provider.resolve),
+    )
 
 
 def _build_provider_runtime(

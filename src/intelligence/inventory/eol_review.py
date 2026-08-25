@@ -9,10 +9,11 @@ import json
 import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -173,6 +174,107 @@ class SourceAdapterError(RuntimeError):
         super().__init__(message)
 
 
+class LifecycleSearchProvider(Protocol):
+    """Server-side boundary for an approved web/LLM lifecycle provider."""
+
+    def resolve(
+        self, os_name: str, os_version: str
+    ) -> Iterable[Mapping[str, Any]]: ...
+
+
+class UnavailableLifecycleSearchProvider:
+    """Safe default when no approved external lifecycle provider is configured."""
+
+    def resolve(
+        self, _os_name: str, _os_version: str
+    ) -> Iterable[Mapping[str, Any]]:
+        raise SourceAdapterError(
+            "provider_not_configured",
+            "External web or LLM lifecycle resolution is unavailable until an approved provider is configured.",
+            status="unavailable",
+        )
+
+
+class ApprovedSearchApiLifecycleProvider:
+    """Bounded adapter for a server-configured approved search API.
+
+    The adapter deliberately sends only a normalized OS identity and a fixed
+    lifecycle lookup operation. Browser input, inventory rows, scopes, and
+    provider credentials never enter the request body.
+    """
+
+    def __init__(
+        self,
+        endpoint: str,
+        *,
+        credential: str = "",
+        timeout_seconds: float = 5.0,
+        max_response_bytes: int = 256_000,
+    ) -> None:
+        if timeout_seconds <= 0 or max_response_bytes < 1024:
+            raise ValueError("Lifecycle provider bounds must be positive")
+        self.endpoint = _https_url(endpoint, allow_endoflife=False, allow_any_https=True)
+        self.credential = credential.strip()
+        self.timeout_seconds = timeout_seconds
+        self.max_response_bytes = max_response_bytes
+
+    def resolve(
+        self, os_name: str, os_version: str
+    ) -> Iterable[Mapping[str, Any]]:
+        key = normalize_os_key(os_name, os_version)
+        timeout = httpx.Timeout(
+            self.timeout_seconds,
+            connect=self.timeout_seconds,
+            read=self.timeout_seconds,
+            write=self.timeout_seconds,
+            pool=self.timeout_seconds,
+        )
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if self.credential:
+            headers["Authorization"] = f"Bearer {self.credential}"
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+                response = client.post(
+                    self.endpoint,
+                    json={"operation": "lifecycle_lookup", "normalized_os_key": key},
+                    headers=headers,
+                )
+                response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise SourceAdapterError(
+                "timeout", "Approved lifecycle provider request timed out.", status="unavailable"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise SourceAdapterError(
+                "http_error",
+                f"Approved lifecycle provider returned HTTP {exc.response.status_code}.",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise SourceAdapterError(
+                "network_error",
+                "Approved lifecycle provider request failed.",
+                status="unavailable",
+            ) from exc
+        if len(response.content) > self.max_response_bytes:
+            raise SourceAdapterError(
+                "response_too_large",
+                "Approved lifecycle provider response exceeded the byte limit.",
+            )
+        try:
+            payload = response.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise SourceAdapterError(
+                "malformed_content", "Approved lifecycle provider returned malformed JSON."
+            ) from exc
+        rows = payload.get("candidates") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+            raise SourceAdapterError(
+                "malformed_content",
+                "Approved lifecycle provider response must contain candidate objects.",
+            )
+        return tuple(dict(row) for row in rows)
+
+
 class CandidateResolver:
     """Run all configured candidate sources without selecting a winner."""
 
@@ -203,9 +305,12 @@ class CandidateResolver:
                 version,
                 timeout_seconds=timeout_seconds,
                 max_response_bytes=max_response_bytes,
+                allowed_origins=official_vendor_origins or _OFFICIAL_DOMAINS,
             )
         )
-        self.web_search_fetch = web_search_fetch or _empty_web_search
+        self.web_search_fetch = web_search_fetch or (
+            UnavailableLifecycleSearchProvider().resolve
+        )
         self.timeout_seconds = timeout_seconds
         self.max_response_bytes = max_response_bytes
         self.official_vendor_origins = frozenset(
@@ -227,17 +332,34 @@ class CandidateResolver:
             ("official_vendor", self.official_vendor_fetch),
             ("web_search", self.web_search_fetch),
         )
-        for source, fetch in sources:
+        def resolve_source(
+            source: str, fetch: Callable[[str, str], Iterable[Mapping[str, Any]]]
+        ) -> tuple[str, tuple[LifecycleCandidate, ...], SourceFailure | None]:
             try:
                 rows = fetch(os_name, os_version)
-                for row in rows:
-                    candidate = LifecycleCandidate.from_mapping(
+                candidates = tuple(
+                    LifecycleCandidate.from_mapping(
                         row, os_key=key, source_kind=source
                     )
-                    found.append(candidate)
+                    for row in rows
+                )
+                return source, candidates, None
             except Exception as exc:  # noqa: BLE001 - isolate each untrusted source
                 _LOGGER.warning("eol_candidate_source_failed source=%s error=%s", source, exc)
-                failures.append(_source_failure(source, exc))
+                return source, (), _source_failure(source, exc)
+
+        with ThreadPoolExecutor(
+            max_workers=len(sources), thread_name_prefix="eol-source"
+        ) as executor:
+            futures = {
+                executor.submit(resolve_source, source, fetch): source
+                for source, fetch in sources
+            }
+            for future in as_completed(futures):
+                _source, candidates, failure = future.result()
+                found.extend(candidates)
+                if failure is not None:
+                    failures.append(failure)
         unique: dict[str, LifecycleCandidate] = {}
         for candidate in found:
             unique[candidate.candidate_id] = candidate
@@ -522,14 +644,6 @@ def _fetch_official_vendor(
         }
         for value in values
     ]
-
-
-def _empty_web_search(_os_name: str, _os_version: str) -> Iterable[Mapping[str, Any]]:
-    raise SourceAdapterError(
-        "provider_not_configured",
-        "No approved web or LLM lifecycle provider is configured.",
-        status="unavailable",
-    )
 
 
 def _bounded_json_get(

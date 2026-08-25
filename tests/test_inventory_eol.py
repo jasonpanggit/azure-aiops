@@ -12,10 +12,12 @@ from intelligence.inventory.eol_repository import (
     LocalEOLCatalogRepository,
 )
 from intelligence.inventory.eol_review import (
+    ApprovedSearchApiLifecycleProvider,
     CandidateResolver,
     EOLReviewService,
     LifecycleCandidate,
     SourceAdapterError,
+    UnavailableLifecycleSearchProvider,
     _fetch_official_vendor,
 )
 from intelligence.lifecycle import EOLCatalog
@@ -68,11 +70,11 @@ def test_catalog_miss_returns_all_sources_and_confirmation_persists_provenance(
         "web_search",
     }
     assert all(candidate.citation.startswith("https://") for candidate in review.candidates)
-    assert calls == ["endoflife.date", "official_vendor", "web_search"]
+    assert set(calls) == {"endoflife.date", "official_vendor", "web_search"}
 
     persisted = service.review("Windows Server", "2099-preview")
     assert len(persisted.candidates) == 3
-    assert calls == ["endoflife.date", "official_vendor", "web_search"]
+    assert set(calls) == {"endoflife.date", "official_vendor", "web_search"}
 
     confirmed = service.confirm(
         os_name="Windows Server",
@@ -341,3 +343,113 @@ def test_cross_domain_vendor_redirect_is_rejected(monkeypatch) -> None:
                 "confidence": 0.5,
             }
         )
+
+
+def test_unconfigured_external_search_is_explicitly_unavailable() -> None:
+    resolver = CandidateResolver(
+        endoflife_fetch=lambda *_: (),
+        official_vendor_fetch=lambda *_: (),
+        web_search_fetch=UnavailableLifecycleSearchProvider().resolve,
+    )
+
+    result = resolver.resolve_with_status("Contoso OS", "1")
+
+    assert result.candidates == ()
+    assert result.source_failures == (
+        result.source_failures[0],
+    )
+    assert result.source_failures[0].source_kind == "web_search"
+    assert result.source_failures[0].status == "unavailable"
+    assert result.source_failures[0].code == "provider_not_configured"
+
+
+class _FakeProviderHTTPClient:
+    def __init__(self, response: httpx.Response, **_kwargs) -> None:
+        self.response = response
+        self.requests: list[dict[str, object]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def post(self, url, *, json, headers):
+        self.requests.append({"url": url, "json": json, "headers": headers})
+        return self.response
+
+
+def test_approved_search_provider_sends_only_normalized_identity(monkeypatch) -> None:
+    response = httpx.Response(
+        200,
+        json={
+            "candidates": [
+                {
+                    "date": "2030-01-01",
+                    "source_kind": "web_search",
+                    "citation": "https://vendor.example/lifecycle",
+                    "retrieved_at": "2026-08-26T00:00:00Z",
+                    "extracted_claim": "Approved provider claim",
+                    "confidence": 0.7,
+                }
+            ]
+        },
+        request=httpx.Request("POST", "https://search.example/lookup"),
+    )
+    fake = _FakeProviderHTTPClient(response)
+    monkeypatch.setattr(
+        "intelligence.inventory.eol_review.httpx.Client",
+        lambda **kwargs: fake,
+    )
+
+    provider = ApprovedSearchApiLifecycleProvider(
+        "https://search.example/lookup", credential="secret-not-in-body"
+    )
+    [candidate] = provider.resolve("Windows Server", "2099-preview")
+
+    assert candidate["citation"] == "https://vendor.example/lifecycle"
+    assert fake.requests[0]["json"] == {
+        "operation": "lifecycle_lookup",
+        "normalized_os_key": "windows server|2099-preview",
+    }
+    assert "secret-not-in-body" not in str(fake.requests[0]["json"])
+
+
+def test_document_backed_catalog_persists_seed_provenance_and_audit(tmp_path) -> None:
+    from storage.onelake_documents import OneLakeDocumentStore
+
+    document_store = OneLakeDocumentStore(tmp_path)
+    repository = LocalEOLCatalogRepository(
+        base_catalog=EOLCatalog.default(),
+        document_store=document_store,
+    )
+    service = EOLReviewService(
+        repository,
+        CandidateResolver(
+            endoflife_fetch=lambda *_: (),
+            official_vendor_fetch=lambda *_: (),
+            web_search_fetch=lambda *_: (),
+        ),
+    )
+    review = service.review("Contoso OS", "1")
+    confirmed = service.confirm(
+        os_name="Contoso OS",
+        os_version="1",
+        normalized_os_key=review.normalized_os_key,
+        expected_revision=review.catalog_revision,
+        reviewer="operator@example.com",
+        manual_date="2030-02-03",
+    )
+
+    document = document_store.read("state/eol_catalog.json")
+    restarted = LocalEOLCatalogRepository(
+        base_catalog=EOLCatalog.default(),
+        document_store=OneLakeDocumentStore(tmp_path),
+    )
+
+    assert document["catalog_seed"]
+    assert document["revision"] == 1
+    assert restarted.read().catalog.lookup("Contoso OS", "1") is not None
+    assert restarted.read().audit_events[-1]["action"] == "lifecycle.confirmed"
+    assert restarted.read().audit_events[-1]["source_references"]
+    assert confirmed.catalog_revision == 1

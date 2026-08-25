@@ -15,7 +15,11 @@ from api.telemetry import ApiTelemetry
 from hermes_arg_connector.inventory_normalize import normalize_configuration_data
 from intelligence.inventory import InventoryService
 from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
-from intelligence.inventory.eol_review import CandidateResolver, EOLReviewService
+from intelligence.inventory.eol_review import (
+    CandidateResolver,
+    EOLReviewService,
+    UnavailableLifecycleSearchProvider,
+)
 from onboarding.service import SubscriptionOnboardingService
 
 TOKEN = "inventory-token-0123456789"
@@ -39,7 +43,7 @@ def client(tmp_path: Path) -> TestClient:
                 },
             ),
             official_vendor_fetch=lambda *_: (),
-            web_search_fetch=lambda *_: (),
+            web_search_fetch=UnavailableLifecycleSearchProvider().resolve,
         ),
     )
     os_service = InventoryService.from_fixture(FIXTURE, eol_review=review_service)
@@ -168,6 +172,8 @@ def test_lifecycle_route_returns_cited_candidates_and_confirms_explicitly(
     assert body["candidates"][0]["citation"].startswith("https://")
     assert body["candidates"][0]["retrieved_at"]
     assert body["candidates"][0]["extracted_claim"]
+    assert body["source_failures"][0]["source_kind"] == "web_search"
+    assert body["source_failures"][0]["code"] == "provider_not_configured"
 
     confirmed = client.post(
         "/api/v1/inventory/os/Windows%20Server%7C2099-preview/lifecycle/confirm",
