@@ -638,7 +638,7 @@ def _latest_inventory_observations(rows: list[Any]) -> list[Any]:
 
 def _inventory_time(value: str) -> datetime:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value)
     except ValueError:
         return datetime.min.replace(tzinfo=UTC)
 def _change(row: dict, observed: str) -> dict:

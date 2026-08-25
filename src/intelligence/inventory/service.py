@@ -357,7 +357,7 @@ def _latest_observations(rows: list[MachineObservation]) -> list[MachineObservat
 
 def _observation_time(value: str) -> datetime:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value)
     except ValueError:
         return datetime.min.replace(tzinfo=UTC)
 

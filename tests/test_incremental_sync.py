@@ -11,7 +11,9 @@ from deltalake import DeltaTable
 from fabric.data_quality import DataQualityValidator
 from fabric.dataset_mapper import InventoryDatasetMapper
 from fabric.sync_service import FabricSyncService
+from hermes_arg_connector.config import ConnectorConfig
 from hermes_arg_connector.normalize import Normalizer
+from hermes_arg_connector.service import IngestionService
 from hermes_arg_connector.storage import DatasetStore
 from semantic.semantic_engine import SemanticEngine
 from storage.delta_writer import DeltaWriter
@@ -569,6 +571,87 @@ def test_snapshot_sync_removes_resources_missing_from_new_generation(tmp_path: P
         if row["subject_type"] == "VirtualMachine" or row["object_type"] == "VirtualMachine"
     )
 
+
+def test_inventory_generation_publishes_successful_family_when_arc_fails(
+    tmp_path: Path,
+) -> None:
+    class FamilyFailureSource:
+        def list_subscriptions(self) -> list[dict]:
+            return [{"subscriptionId": "sub-a"}]
+
+        def fetch(self, specs, subscription_ids):
+            return {
+                spec.name: (
+                    [
+                        {
+                            "id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+                            "name": "vm-1",
+                            "type": "microsoft.compute/virtualmachines",
+                            "subscriptionId": "sub-a",
+                            "resourceGroup": "rg",
+                            "tags": {"Environment": "prod"},
+                            "osType": "Windows",
+                        }
+                    ]
+                    if spec.name == "inventory_native_vm_os"
+                    else (
+                        [{"status": "failed", "provider_status": "failed", "error": "Arc timeout"}]
+                        if spec.name == "inventory_arc_os"
+                        else []
+                    )
+                )
+                for spec in specs
+            }
+
+    service = IngestionService(
+        ConnectorConfig(output_dir=tmp_path, subscriptions=("sub-a",)),
+        source=FamilyFailureSource(),
+        clock=lambda: datetime(2026, 8, 25, 10, tzinfo=UTC),
+    )
+    service.run()
+
+    generation = (tmp_path / "current").resolve()
+    observations = [
+        json.loads(line)
+        for line in (generation / "inventory/os_observations.jsonl").read_text().splitlines()
+    ]
+    statuses = {
+        json.loads(line)["source_type"]: json.loads(line)
+        for line in (generation / "inventory/source_status.jsonl").read_text().splitlines()
+    }
+    assert len(observations) == 1
+    assert observations[0]["environment"] == "prod"
+    assert observations[0]["os_version"] == "Unknown"
+    assert statuses["azure_vm"]["state"] == "ready"
+    assert statuses["arc"]["state"] == "degraded"
+    assert statuses["arc"]["error"] == "Arc timeout"
+    assert statuses["arc"]["requested_scope"] == {"subscription": ["sub-a"]}
+
+
+def test_inventory_source_status_and_rows_have_family_query_versions(tmp_path: Path) -> None:
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "mock_inventory_arg.json").read_text())
+    graph = Normalizer().normalize(
+        {
+            "inventory_native_vm_os": fixture["inventory_native_vm_os"],
+            "inventory_arc_os": fixture["inventory_arc_os"],
+        },
+        datetime(2026, 8, 25, 10, tzinfo=UTC),
+        run_id="inventory-query-version-run",
+        requested_scope={"subscription": ["sub-a", "sub-b"]},
+    )
+    store = DatasetStore(tmp_path)
+    store.publish(graph, {}, {"runId": "inventory-query-version-run", "status": "completed"})
+
+    statuses = store.read_dataset("inventory/source_status")
+    observations = store.read_dataset("inventory/os_observations")
+    assert {row["query_version"] for row in statuses} == {
+        "inventory-native-vm-os-v1",
+        "inventory-arc-os-v1",
+    }
+    assert {row["query_version"] for row in observations} == {
+        "inventory-native-vm-os-v1",
+        "inventory-arc-os-v1",
+    }
 
 def test_registration_failure_rolls_back_business_tables(tmp_path: Path) -> None:
     source = tmp_path / "source"
