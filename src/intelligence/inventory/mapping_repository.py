@@ -16,11 +16,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from api.scope import Scope
-
+from typing import Any, Protocol
 
 MAPPING_STATUSES = frozenset({"suggested", "approved", "rejected"})
 MAPPING_METHODS = frozenset({"deterministic", "ai", "operator"})

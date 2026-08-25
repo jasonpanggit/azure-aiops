@@ -5,8 +5,8 @@ from intelligence.inventory.mapping_repository import (
     MappingRevisionConflict,
     SoftwareMappingRepository,
 )
-from intelligence.inventory.software_normalization import suggestion_from_model_output
 from intelligence.inventory.service import InventoryService
+from intelligence.inventory.software_normalization import suggestion_from_model_output
 
 
 def _payload() -> dict:
