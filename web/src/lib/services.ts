@@ -65,6 +65,11 @@ import type {
   EnterpriseSettings,
   OsInventoryCollection,
   OsInventoryDetail,
+  InventoryNarrative,
+  SoftwareInventoryCollection,
+  SoftwareInventoryDetail,
+  SoftwareMapping,
+  SoftwareMappingCollection,
 } from "./types";
 
 async function listAllConnections(scope: ScopeSelection): Promise<Envelope<SubscriptionConnection[]>> {
@@ -149,8 +154,6 @@ export const connectionsApi = {
     apiRequest<ConnectionHealthReport>(`/subscription-connections/${encodeURIComponent(id)}/health`),
 };
 
-import type { SoftwareInventoryCollection, SoftwareInventoryDetail } from "./types";
-
 export const inventoryApi = {
   os: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);
@@ -200,6 +203,10 @@ export const inventoryApi = {
     query.set("limit", String(limit));
     return apiRequest<SoftwareInventoryDetail>(`/inventory/software/${encodeURIComponent(key)}`, { query });
   },
+  narrative: (scope: ScopeSelection = {}) =>
+    apiRequest<InventoryNarrative>("/inventory/narrative", {
+      query: scopeToSearchParams(scope),
+    }),
   mappings: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));

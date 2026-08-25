@@ -12,6 +12,7 @@ from typing import Any
 MACHINE_SOURCE_TYPES = frozenset({"azure_vm", "arc"})
 SOURCE_TYPES = frozenset({"azure_vm", "arc", "logs"})
 SOURCE_STATES = frozenset({"ready", "partial", "stale", "degraded", "unavailable"})
+NARRATIVE_CONFIDENCE_LEVELS = frozenset({"high", "medium", "low", "unknown"})
 
 
 def _text(value: Any, default: str = "") -> str:
@@ -72,6 +73,27 @@ class InventorySourceStatus:
         object.__setattr__(self, "error", _text(self.error))
 
     def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class InventoryNarrativeCitation:
+    """A safe source reference shown beside inventory facts or narration."""
+
+    source_engine: str
+    source_table: str
+    timestamp: str
+    reference: str = ""
+
+    def __post_init__(self) -> None:
+        if not _text(self.source_engine) or not _text(self.source_table):
+            raise ValueError("Narrative citations require a source engine and table")
+        object.__setattr__(self, "source_engine", _text(self.source_engine))
+        object.__setattr__(self, "source_table", _text(self.source_table))
+        object.__setattr__(self, "timestamp", _text(self.timestamp))
+        object.__setattr__(self, "reference", _text(self.reference))
+
+    def to_dict(self) -> dict[str, str]:
         return asdict(self)
 
 

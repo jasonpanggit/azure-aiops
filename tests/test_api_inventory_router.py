@@ -326,3 +326,60 @@ def test_mapping_list_decision_is_scoped_audited_and_revision_checked(
         json={"mapping_id": mapping["mapping_id"], "expected_revision": 1},
     )
     assert reader.status_code == 403
+
+
+def test_inventory_narrative_returns_fact_only_fallback_with_scoped_sources(
+    client: TestClient,
+) -> None:
+    response = client.get(
+        "/api/v1/inventory/narrative",
+        params={"subscription": "sub-a"},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["status"] == "fact_only"
+    assert body["data"]["narrated_summary"] is None
+    assert "4 machines" in body["data"]["fact_summary"]
+    assert body["data"]["source_status"]["arc"]["row_count"] == 2
+    assert any("no Foundry" in warning for warning in body["warnings"])
+    assert all("resource_id" not in str(item) for item in body["data"]["citations"])
+
+
+def test_inventory_narrative_sends_only_aggregates_and_preserves_facts(
+    client: TestClient,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeNarrator:
+        def answer(self, *, question: str, context: dict[str, object]):
+            from operations.foundry_agent import AgentAnswer
+
+            captured["question"] = question
+            captured["context"] = context
+            return AgentAnswer(
+                text="Prioritize review of the scoped lifecycle facts.",
+                agent_name="inventory-risk-agent",
+                model="test-model",
+            )
+
+    client.app.state.context.foundry_agent_provider = lambda: FakeNarrator()
+    response = client.get(
+        "/api/v1/inventory/narrative",
+        params={"subscription": "sub-a"},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["status"] == "narrated"
+    assert body["data"]["narrated_summary"].startswith("Prioritize")
+    context = captured["context"]
+    assert isinstance(context, dict)
+    serialized = json.dumps(context)
+    assert "sub-b" not in serialized
+    assert "vm-" not in serialized
+    assert "web-01" not in serialized
+    assert "Reviewable Agent" not in serialized
+    assert "fact_summary" in serialized

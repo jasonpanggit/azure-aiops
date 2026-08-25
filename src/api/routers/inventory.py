@@ -11,12 +11,13 @@ from intelligence.inventory.eol_repository import (
     CatalogRevisionConflict,
     DuplicateCatalogConfirmation,
 )
+from intelligence.inventory.eol_review import normalize_os_key
 from intelligence.inventory.mapping_repository import (
     MappingNotFound,
     MappingRevisionConflict,
     MappingStatusConflict,
 )
-from intelligence.inventory.eol_review import normalize_os_key
+from intelligence.inventory.narrative import build_inventory_narrative
 from intelligence.inventory.service import InventoryService
 
 from ..dependencies import Context, OperatePrincipal, Page, ReadScope
@@ -188,6 +189,23 @@ def software_inventory(context: Context, scope: ReadScope, page: Page) -> dict[s
         knowledge_version=result["data"]["query_version"],
         warnings=result["warnings"],
         pagination=page.to_dict(result["total"]),
+    )
+
+
+@router.get(
+    "/inventory/narrative",
+    summary="Narrate scoped inventory risk aggregates",
+)
+def inventory_narrative(context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Return deterministic inventory facts plus optional Foundry narration."""
+    service = _service(context)
+    result = build_inventory_narrative(service, scope, context.foundry_agent())
+    return envelope(
+        result["data"],
+        evidence=_evidence(service),
+        scope=scope.to_dict(),
+        knowledge_version=service.query_version,
+        warnings=result["warnings"],
     )
 
 

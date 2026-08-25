@@ -139,6 +139,31 @@ export interface OsInventoryDetail {
   requested_scope: Record<string, string[]>;
 }
 
+export interface InventoryNarrativeCitation {
+  source_engine: string;
+  source_table: string;
+  timestamp: string;
+  reference: string;
+}
+
+export interface InventoryNarrativeFact {
+  label: string;
+  value: string;
+}
+
+export interface InventoryNarrative {
+  fact_summary: string;
+  fact_items: InventoryNarrativeFact[];
+  narrated_summary: string | null;
+  narrated_by: string;
+  model: string;
+  confidence: Confidence;
+  citations: InventoryNarrativeCitation[];
+  source_status: Record<string, InventorySourceStatus>;
+  requested_scope: { dimensions: string[] };
+  status: "narrated" | "fact_only";
+}
+
 export interface TwinEntity {
   id: string;
   kind: string;

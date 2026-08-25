@@ -23,7 +23,10 @@ from .models import (
     SoftwareObservation,
     group_key,
 )
-from .software_normalization import annotate_mapping, mapping_for_observation, project_mapping
+from .software_normalization import (
+    mapping_for_observation,
+    project_mapping,
+)
 
 
 @dataclass(frozen=True)
@@ -556,6 +559,60 @@ class InventoryService:
 
     # Explicit alias for consumers that use the grouped-detail terminology.
     software_group_detail = software_detail
+
+    def narrative_aggregates(
+        self,
+        scope: Scope,
+        *,
+        max_os_groups: int = 12,
+        max_software_groups: int = 12,
+    ) -> dict[str, Any]:
+        """Return bounded, scope-filtered aggregates for optional narration.
+
+        This deliberately exposes groups and source metadata, never the machine
+        or installation rows used to calculate them.  The narrative layer can
+        therefore send a small, already-authorized fact set to an external model
+        without creating a second retrieval path.
+        """
+        os_rows = self._scoped_classified(scope)
+        software_rows = self._scoped_software(scope)
+        os_grouped: dict[str, list[MachineObservation]] = {}
+        for row in os_rows:
+            os_grouped.setdefault(group_key(row.os_name, row.os_version), []).append(row)
+        os_groups = [
+            _make_group(key, items)
+            for key, items in os_grouped.items()
+        ]
+        software_grouped: dict[str, list[SoftwareObservation]] = {}
+        for row in software_rows:
+            software_grouped.setdefault(
+                f"{row.software_name}|{row.software_version}", []
+            ).append(row)
+        software_groups = [
+            _make_software_group(key, items)
+            for key, items in software_grouped.items()
+        ]
+        os_groups.sort(key=lambda item: (-item.machine_count, item.key.casefold()))
+        software_groups.sort(
+            key=lambda item: (-item.install_count, item.key.casefold())
+        )
+        os_limit = max(0, min(int(max_os_groups), 50))
+        software_limit = max(0, min(int(max_software_groups), 50))
+        os_status = self.source_status(os_rows)
+        software_status = self.software_source_status(software_rows)
+        return {
+            "os_groups": [item.to_dict() for item in os_groups[:os_limit]],
+            "software_groups": [
+                item.to_dict() for item in software_groups[:software_limit]
+            ],
+            "os_machine_count": len(os_rows),
+            "software_install_count": len(software_rows),
+            "source_status": {**os_status, **software_status},
+            "evidence": [
+                *self._evidence(os_rows),
+                *self._software_evidence(software_rows),
+            ],
+        }
 
     def evidence_for_api(self, rows: tuple[MachineObservation, ...] = ()) -> list[Evidence]:
         return [

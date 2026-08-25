@@ -2,11 +2,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { os, osGroup, software, softwareGroup, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } = vi.hoisted(() => ({
+const { os, osGroup, software, softwareGroup, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } = vi.hoisted(() => ({
   os: vi.fn(),
   osGroup: vi.fn(),
   software: vi.fn(),
   softwareGroup: vi.fn(),
+  narrative: vi.fn(),
   lifecycleReview: vi.fn(),
   confirmLifecycle: vi.fn(),
   mappings: vi.fn(),
@@ -14,7 +15,7 @@ const { os, osGroup, software, softwareGroup, lifecycleReview, confirmLifecycle,
   rejectMapping: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } }));
+vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } }));
 
 import SoftwareInventoryPage from "./page";
 
@@ -98,6 +99,26 @@ describe("Software Inventory OS tracer", () => {
       query_version: "v1",
       generation_id: "generation-1",
       requested_scope: {},
+    }));
+    narrative.mockResolvedValue(envelope({
+      fact_summary: "3 machines across 2 OS groups. EOL risk: 0 expired, 0 expiring within 90 days, 3 supported, 0 needs review.",
+      fact_items: [
+        { label: "Machines", value: "3" },
+        { label: "EOL risk", value: "0 expired, 0 expiring within 90 days, 3 supported, 0 needs review" },
+      ],
+      narrated_summary: null,
+      narrated_by: "",
+      model: "",
+      confidence: "medium",
+      citations: [{
+        source_engine: "InventoryService",
+        source_table: "inventory/os_observations",
+        timestamp: "2026-08-25T10:00:00Z",
+        reference: "",
+      }],
+      source_status: collection.source_status,
+      requested_scope: { dimensions: ["subscription"] },
+      status: "fact_only",
     }));
     softwareGroup.mockResolvedValue(envelope({
       group: {
@@ -268,5 +289,17 @@ describe("Software Inventory OS tracer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Approve mapping" }));
 
     expect(approveMapping).toHaveBeenCalledWith("software-map://review-1", 0, {});
+  });
+
+  it("renders deterministic facts and filters OS groups without changing the API scope", async () => {
+    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+
+    expect(await screen.findByText("Inventory risk narrative")).toBeInTheDocument();
+    expect(screen.getByText(/3 machines across 2 OS groups/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Arc · partial/).length).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByPlaceholderText("Name or version"), { target: { value: "2099" } });
+    expect(screen.getByRole("button", { name: /View machines for Windows Server 2099-preview/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /View machines for Windows Server 2019/ })).not.toBeInTheDocument();
   });
 });

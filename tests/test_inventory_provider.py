@@ -551,3 +551,17 @@ def _write_payload(payload: dict) -> str:
     path = Path("/tmp/inventory-empty-success-test.json")
     path.write_text(json.dumps(payload), encoding="utf-8")
     return str(path)
+
+
+def test_narrative_aggregates_are_scoped_bounded_and_row_free() -> None:
+    from api.scope import Scope
+
+    service = InventoryService.from_fixture(FIXTURE)
+    aggregates = service.narrative_aggregates(Scope.from_mapping({"subscription": ["sub-a"]}))
+
+    assert aggregates["os_machine_count"] == 4
+    assert all(group["machine_count"] <= 4 for group in aggregates["os_groups"])
+    assert "machines" not in aggregates
+    assert "software_rows" not in aggregates
+    assert all("resource_id" not in group for group in aggregates["os_groups"])
+    assert aggregates["source_status"]["arc"]["row_count"] == 2
