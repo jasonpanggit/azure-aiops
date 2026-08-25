@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 1
 current_phase_name: Evidence and Situation Foundation
 status: verifying
-stopped_at: Completed 06-04-PLAN.md
-last_updated: "2026-08-25T16:00:18.971Z"
+stopped_at: Completed 06-05-PLAN.md
+last_updated: "2026-08-25T16:14:48.617Z"
 last_activity: 2026-08-25
 last_activity_desc: Completed Phase 1 plan 01 execution and recorded verification results.
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 13
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # Project State
@@ -32,7 +32,7 @@ Plan: 2 of 2 in current phase
 Status: Phase complete — ready for verification
 Last activity: 2026-08-23 — Created brownfield MVP roadmap with complete v1 requirement coverage.
 
-Progress: ██░░░░░░░░ [█████░░░░░] 54%
+Progress: ██░░░░░░░░ [██████░░░░] 62%
 
 ## Performance Metrics
 
@@ -64,6 +64,7 @@ Progress: ██░░░░░░░░ [█████░░░░░] 54%
 | Phase 06 P02 | 9min | 2 tasks | 9 files |
 | Phase 06 P03 | 9min | 2 tasks | 14 files |
 | Phase 06 P04 | 18min | 2 tasks | 12 files |
+| Phase 06 P05 | 13min | 2 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -95,6 +96,8 @@ Recent decisions affecting current work:
 - [Phase ?]: Only validated server-owned workspace mappings are queried for each connection; browser workspace selection is not accepted.
 - [Phase ?]: Logs lifecycle distinguishes unavailable, ready empty, partial, degraded, and stale states while retaining last-known rows after failed refreshes.
 - [Phase ?]: Inventory freshness is read from the active immutable generation manifest so stale data remains available but clearly marked.
+- [Phase ?]: Curated lifecycle catalog is consulted at request time; catalog misses remain review-required and never auto-select a candidate.
+- [Phase ?]: Lifecycle confirmation uses effective operate scope, exact normalized OS keys, validated HTTPS provenance, and atomic optimistic revisions.
 
 ### Roadmap Evolution
 
@@ -118,6 +121,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-25T16:00:18.965Z
-Stopped at: Completed 06-04-PLAN.md
+Last session: 2026-08-25T16:14:48.611Z
+Stopped at: Completed 06-05-PLAN.md
 Resume file: None
