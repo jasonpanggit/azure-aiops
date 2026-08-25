@@ -6,7 +6,7 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
 
 ## Phases
 
-- [ ] **Phase 1: Evidence and Situation Foundation** - Establish durable situations, governed evidence, source quality, authorization, and audit primitives.
+- [x] **Phase 1: Evidence and Situation Foundation** - Establish durable situations, governed evidence, source quality, authorization, and audit primitives.
 - [ ] **Phase 2: Investigation, Recommendation, and Approval** - Deliver bounded investigation, cited recommendations, and server-enforced approval.
 - [ ] **Phase 3: Safe Remediation Execution** - Execute one or two typed, allowlisted actions with preview, durable jobs, verification, and bounded retries.
 - [ ] **Phase 4: Domain Coverage and Operational Twin** - Prove representative incident, exposure, vulnerability, and twin-discrepancy workflows with replayable views.
@@ -102,7 +102,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Evidence and Situation Foundation | 1/1 | In Progress|  |
+| 1. Evidence and Situation Foundation | 1/1 | Complete | 2026-08-25 |
 | 2. Investigation, Recommendation, and Approval | 0/TBD | Not started | - |
 | 3. Safe Remediation Execution | 0/TBD | Not started | - |
 | 4. Domain Coverage and Operational Twin | 0/TBD | Not started | - |
