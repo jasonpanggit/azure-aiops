@@ -21,6 +21,8 @@ import type {
   SoftwareMapping,
 } from "@/lib/types";
 
+type InventoryTab = "os" | "software";
+
 function lifecycleLabel(group: OsInventoryGroup): string {
   return group.review_required ? "EOL date needs review" : group.lifecycle_status;
 }
@@ -41,7 +43,7 @@ function sourceTone(state: string): "success" | "warning" | "critical" | "unknow
 
 function riskBucket(group: OsInventoryGroup): "expired" | "expiring" | "supported" | "review" {
   if (group.review_required || group.lifecycle_status.toLowerCase() === "unknown") return "review";
-  if (group.lifecycle_status.toLowerCase() === "eol") return "expired";
+  if (["eol", "expired"].includes(group.lifecycle_status.toLowerCase())) return "expired";
   if (group.days_remaining !== null && group.days_remaining >= 0 && group.days_remaining <= 90) return "expiring";
   return "supported";
 }
@@ -100,12 +102,19 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
 
 export default function SoftwareInventoryPage() {
   const { scope } = useScope();
-  const [tab, setTab] = useState<"os" | "software">("os");
+  const [tab, setTab] = useState<InventoryTab>("os");
+  const [subscriptionFilter, setSubscriptionFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "azure_vm" | "arc">("all");
+  const [lifecycleFilter, setLifecycleFilter] = useState<"all" | "expired" | "expiring" | "supported" | "review">("all");
+  const [softwareSearch, setSoftwareSearch] = useState("");
+  const [softwareSourceFilter, setSoftwareSourceFilter] = useState<"all" | "azure_vm" | "arc" | "unlinked">("all");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [detail, setDetail] = useState<OsInventoryMachine[]>([]);
   const [detailGroup, setDetailGroup] = useState<OsInventoryGroup | null>(null);
   const [softwareDetail, setSoftwareDetail] = useState<SoftwareInventoryMachine[]>([]);
   const [softwareDetailGroup, setSoftwareDetailGroup] = useState<SoftwareInventoryGroup | null>(null);
+  const [softwareDetailEnvelope, setSoftwareDetailEnvelope] = useState<Envelope<import("@/lib/types").SoftwareInventoryDetail> | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [review, setReview] = useState<LifecycleReview | null>(null);
@@ -115,20 +124,21 @@ export default function SoftwareInventoryPage() {
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const [mappingError, setMappingError] = useState<string | null>(null);
   const [mappingSubmitting, setMappingSubmitting] = useState<string | null>(null);
-  const scopeKey = useMemo(() => JSON.stringify(scope), [scope]);
-  const inventory = useApi(() => inventoryApi.os(scope), [scopeKey, refreshKey]);
-  const softwareInventory = useApi(() => inventoryApi.software(scope), [scopeKey]);
-  const narrative = useApi(() => inventoryApi.narrative(scope), [scopeKey, refreshKey]);
+  const effectiveScope = useMemo(
+    () => subscriptionFilter === "all"
+      ? scope
+      : { ...scope, subscription: [subscriptionFilter] },
+    [scope, subscriptionFilter],
+  );
+  const scopeKey = useMemo(() => JSON.stringify(effectiveScope), [effectiveScope]);
+  const inventory = useApi(() => inventoryApi.os(effectiveScope), [scopeKey, refreshKey]);
+  const softwareInventory = useApi(() => inventoryApi.software(effectiveScope), [scopeKey, refreshKey]);
+  const narrative = useApi(() => inventoryApi.narrative(effectiveScope), [scopeKey, refreshKey]);
   const mappings = useApi(
-    () => inventoryApi.mappings(scope),
+    () => inventoryApi.mappings(effectiveScope),
     [scopeKey, refreshKey],
   );
 
-  const [search, setSearch] = useState("");
-  const [sourceFilter, setSourceFilter] = useState<"all" | "azure_vm" | "arc">("all");
-  const [lifecycleFilter, setLifecycleFilter] = useState<"all" | "expired" | "expiring" | "supported" | "review">("all");
-  const [softwareSearch, setSoftwareSearch] = useState("");
-  const [softwareSourceFilter, setSoftwareSourceFilter] = useState<"all" | "azure_vm" | "arc" | "unlinked">("all");
   const groups = inventory.data?.data.groups ?? [];
   const filteredGroups = useMemo(
     () => groups.filter((group) => {
@@ -141,8 +151,8 @@ export default function SoftwareInventoryPage() {
     }),
     [groups, lifecycleFilter, search, sourceFilter],
   );
-  const totalMachines = groups.reduce((total, group) => total + group.machine_count, 0);
-  const reviewCount = groups.filter((group) => group.review_required).length;
+  const totalMachines = filteredGroups.reduce((total, group) => total + group.machine_count, 0);
+  const reviewCount = filteredGroups.filter((group) => group.review_required).length;
   const sourceStates: Record<string, InventorySourceStatus> = inventory.data?.data.source_status ?? {};
   const partialSource = Object.values(sourceStates).find((source) => source.state !== "ready");
   const softwareGroups = softwareInventory.data?.data.groups ?? [];
@@ -156,8 +166,8 @@ export default function SoftwareInventoryPage() {
     }),
     [softwareGroups, softwareSearch, softwareSourceFilter],
   );
-  const softwareTotal = softwareGroups.reduce((total, group) => total + group.install_count, 0);
-  const unlinkedSoftware = softwareGroups.reduce((total, group) => total + group.unlinked_count, 0);
+  const softwareTotal = filteredSoftwareGroups.reduce((total, group) => total + group.install_count, 0);
+  const unlinkedSoftware = filteredSoftwareGroups.reduce((total, group) => total + group.unlinked_count, 0);
   const softwareSourceStates: Record<string, InventorySourceStatus> =
     softwareInventory.data?.data.source_status ?? {};
   const softwarePartialSource = Object.values(softwareSourceStates).find((source) => source.state !== "ready");
@@ -167,7 +177,7 @@ export default function SoftwareInventoryPage() {
     setSelectedKey(group.key);
     setDetailError(null);
     try {
-      const response = await inventoryApi.osGroup(group.key, scope);
+      const response = await inventoryApi.osGroup(group.key, effectiveScope);
       setDetail(response.data.machines);
       setDetailGroup(response.data.group);
     } catch (error) {
@@ -181,9 +191,10 @@ export default function SoftwareInventoryPage() {
     setSelectedKey(group.key);
     setDetailError(null);
     try {
-      const response = await inventoryApi.softwareGroup(group.key, scope);
+      const response = await inventoryApi.softwareGroup(group.key, effectiveScope);
       setSoftwareDetail(response.data.machines);
       setSoftwareDetailGroup(response.data.group);
+      setSoftwareDetailEnvelope(response);
     } catch (error) {
       setSoftwareDetail([]);
       setSoftwareDetailGroup(null);
@@ -197,7 +208,7 @@ export default function SoftwareInventoryPage() {
     setReviewError(null);
     setManualDate("");
     try {
-      const response = await inventoryApi.lifecycleReview(group.key, scope);
+      const response = await inventoryApi.lifecycleReview(group.key, effectiveScope);
       setReview(response.data);
     } catch (error) {
       setReviewError(error instanceof Error ? error.message : "Lifecycle review is unavailable.");
@@ -216,7 +227,7 @@ export default function SoftwareInventoryPage() {
           expected_revision: review.catalog_revision,
           ...(candidateId ? { candidate_id: candidateId } : { manual_date: manualDate }),
         },
-        scope,
+        effectiveScope,
       );
       setReview(response.data);
       setRefreshKey((value) => value + 1);
@@ -233,8 +244,8 @@ export default function SoftwareInventoryPage() {
     setMappingError(null);
     try {
       const response = decision === "approve"
-        ? await inventoryApi.approveMapping(mapping.mapping_id, mapping.revision, scope)
-        : await inventoryApi.rejectMapping(mapping.mapping_id, mapping.revision, scope);
+        ? await inventoryApi.approveMapping(mapping.mapping_id, mapping.revision, effectiveScope)
+        : await inventoryApi.rejectMapping(mapping.mapping_id, mapping.revision, effectiveScope);
       void response;
       setRefreshKey((value) => value + 1);
     } catch (error) {
@@ -249,7 +260,7 @@ export default function SoftwareInventoryPage() {
       <PageHeader
         eyebrow="Inventory"
         title="Software Inventory"
-        description="Inspect authorized operating-system observations across native Azure VMs and Arc-enabled servers."
+        description="Find authorized operating-system and installed-software coverage across native Azure VMs and Arc-enabled servers."
         metadata={
           inventory.data && (
             <EvidenceBar
@@ -263,27 +274,43 @@ export default function SoftwareInventoryPage() {
         }
       />
 
-      <nav aria-label="Inventory views" className="tab-list">
-        <button type="button" aria-pressed={tab === "os"} onClick={() => setTab("os")}>
+      <div role="tablist" aria-label="Inventory views" className="tab-list">
+        <button
+          id="os-inventory-tab"
+          type="button"
+          role="tab"
+          aria-selected={tab === "os"}
+          aria-controls="os-inventory-panel"
+          tabIndex={tab === "os" ? 0 : -1}
+          onClick={() => setTab("os")}
+        >
           OS Inventory
         </button>
-        <button type="button" aria-pressed={tab === "software"} onClick={() => setTab("software")}>
+        <button
+          id="installed-software-tab"
+          type="button"
+          role="tab"
+          aria-selected={tab === "software"}
+          aria-controls="installed-software-panel"
+          tabIndex={tab === "software" ? 0 : -1}
+          onClick={() => setTab("software")}
+        >
           Installed Software
         </button>
-      </nav>
+      </div>
 
       <NarrativePanel narrative={narrative} />
 
       {tab === "software" ? (
-        <>
+        <section id="installed-software-panel" role="tabpanel" aria-labelledby="installed-software-tab" tabIndex={0}>
           <section aria-label="Installed software summary" className="metric-grid">
-            <MetricCard label="Software groups" value={softwareGroups.length} detail="Canonical name and version" />
+            <MetricCard label="Software groups" value={filteredSoftwareGroups.length} detail="Canonical name and version" />
             <MetricCard label="Installations" value={softwareTotal} detail="Authorized current rows" />
             <MetricCard label="Unlinked rows" value={unlinkedSoftware} detail="Exact resource join required" />
           </section>
           <section aria-label="Installed software dashboard" className="inventory-dashboard">
             <div className="card-header"><h2>Top software by install count</h2><span className="muted">{filteredSoftwareGroups.length} shown</span></div>
-            {softwareGroups.slice(0, 5).map((group) => (
+            {filteredSoftwareGroups.slice(0, 5).map((group) => (
               <div className="inventory-bar-row" key={group.key}>
                 <span>{group.software_name} {group.software_version}</span>
                 <div className="inventory-bar" style={{ width: `${softwareTotal ? Math.max(4, (group.install_count / softwareTotal) * 100) : 0}%` }} aria-hidden="true" />
@@ -305,6 +332,15 @@ export default function SoftwareInventoryPage() {
                 <option value="unlinked">Unlinked</option>
               </select>
             </label>
+            <label>
+              Subscription
+              <select value={subscriptionFilter} onChange={(event) => setSubscriptionFilter(event.target.value)}>
+                <option value="all">All authorized subscriptions</option>
+                {(scope.subscription ?? []).map((subscription) => (
+                  <option key={subscription} value={subscription}>{subscription}</option>
+                ))}
+              </select>
+            </label>
             <div className="inventory-source-badges" aria-label="Installed software source status">
               {Object.values(softwareSourceStates).map((source) => (
                 <StatusBadge key={source.source_type} label={`${sourceLabel(source.source_type)} · ${source.state}`} tone={sourceTone(source.state)} compact />
@@ -319,6 +355,9 @@ export default function SoftwareInventoryPage() {
           )}
           {!softwareInventory.loading && !softwareInventory.error && softwareGroups.length === 0 && (
             <StatePanel title="No installed software observations" message="The authorized scope has no successful ConfigurationData rows." />
+          )}
+          {!softwareInventory.loading && !softwareInventory.error && softwareGroups.length > 0 && filteredSoftwareGroups.length === 0 && (
+            <StatePanel title="No matching installed software" message="Adjust the search, source, or subscription filters." />
           )}
           {softwarePartialSource && (
             <StatePanel
@@ -400,26 +439,45 @@ export default function SoftwareInventoryPage() {
           {softwareDetailGroup && (
             <section aria-label="Installed software machine details" className="detail-panel">
               <h2>{softwareDetailGroup.software_name} {softwareDetailGroup.software_version}</h2>
+              <p className="detail-context">
+                Exact server lookup · {softwareDetail.length} authorized machine{softwareDetail.length === 1 ? "" : "s"} ·
+                scope {Object.entries(softwareDetailEnvelope?.scope ?? {}).map(([key, values]) => `${key}: ${values.join(", ")}`).join(" · ") || "all authorized scope"}
+              </p>
               {detailError ? (
                 <StatePanel title="Software detail unavailable" message={detailError} tone="error" />
               ) : (
-                <ul>
+                <div className="table-scroll">
+                <table className="data-table detail-table">
+                  <thead>
+                    <tr>
+                      <th>Machine</th>
+                      <th>Source / environment</th>
+                      <th>Subscription / resource group</th>
+                      <th>Canonical identity</th>
+                      <th>Raw identity</th>
+                      <th>Observed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
                   {softwareDetail.map((machine, index) => (
-                    <li key={`${machine.resource_id || machine.source_computer_id || machine.machine_name}-${index}`}>
-                      <strong>{machine.machine_name}</strong> · {machine.source_type ? sourceLabel(machine.source_type) : "Unlinked"} · {machine.environment} · {machine.subscription_id}
-                      <span className="table-subtitle">
-                        {machine.resource_group} · {machine.join_status === "linked" ? "exact resource join" : "resource join unavailable"} · observed {machine.observed_at}
-                      </span>
-                      <span className="table-subtitle">Raw: {machine.raw_software_name} {machine.raw_software_version}</span>
-                    </li>
+                    <tr key={`${machine.resource_id || machine.source_computer_id || machine.machine_name}-${index}`}>
+                      <td><strong>{machine.machine_name}</strong><span className="table-subtitle">{machine.resource_id || machine.source_computer_id}</span></td>
+                      <td>{machine.source_type ? sourceLabel(machine.source_type) : "Unlinked"}<span className="table-subtitle">{machine.environment}</span></td>
+                      <td>{machine.subscription_id || "Unknown"}<span className="table-subtitle">{machine.resource_group || "Unknown"}</span></td>
+                      <td>{machine.canonical_identity}<span className="table-subtitle">{machine.canonical_name} {machine.canonical_version}</span></td>
+                      <td>{machine.raw_identity.name || "Unknown"}<span className="table-subtitle">{machine.raw_identity.version || "Unknown"} · {machine.join_status === "linked" ? "exact resource join" : "resource join unavailable"}</span></td>
+                      <td>{machine.observed_at}<span className="table-subtitle">{machine.time_generated}</span></td>
+                    </tr>
                   ))}
-                </ul>
+                  </tbody>
+                </table>
+                </div>
               )}
             </section>
           )}
-        </>
+        </section>
       ) : (
-        <>
+        <section id="os-inventory-panel" role="tabpanel" aria-labelledby="os-inventory-tab" tabIndex={0}>
           <section aria-label="OS inventory summary" className="metric-grid">
             <MetricCard label="OS groups" value={groups.length} detail="Authorized OS identities" />
             <MetricCard label="Machines" value={totalMachines} detail="After scope filtering" />
@@ -428,7 +486,7 @@ export default function SoftwareInventoryPage() {
           <section aria-label="OS inventory dashboard" className="inventory-dashboard">
             <div className="card-header"><h2>EOL risk distribution</h2><span className="muted">{totalMachines} machines</span></div>
             {(["expired", "expiring", "supported", "review"] as const).map((bucket) => {
-              const count = groups.filter((group) => riskBucket(group) === bucket).reduce((total, group) => total + group.machine_count, 0);
+              const count = filteredGroups.filter((group) => riskBucket(group) === bucket).reduce((total, group) => total + group.machine_count, 0);
               return (
                 <div className="inventory-bar-row" key={bucket}>
                   <span>{bucket === "expiring" ? "Expiring within 90 days" : bucket === "review" ? "Needs review" : bucket[0].toUpperCase() + bucket.slice(1)}</span>
@@ -438,7 +496,7 @@ export default function SoftwareInventoryPage() {
               );
             })}
             <div className="card-header inventory-chart-secondary"><h2>Top OS versions</h2></div>
-            {groups.slice(0, 5).map((group) => (
+            {filteredGroups.slice(0, 5).map((group) => (
               <div className="inventory-bar-row" key={group.key}>
                 <span>{group.os_name} {group.os_version}</span>
                 <div className="inventory-bar" style={{ width: `${totalMachines ? Math.max(4, (group.machine_count / totalMachines) * 100) : 0}%` }} aria-hidden="true" />
@@ -469,6 +527,15 @@ export default function SoftwareInventoryPage() {
                 <option value="review">Needs review</option>
               </select>
             </label>
+            <label>
+              Subscription
+              <select value={subscriptionFilter} onChange={(event) => setSubscriptionFilter(event.target.value)}>
+                <option value="all">All authorized subscriptions</option>
+                {(scope.subscription ?? []).map((subscription) => (
+                  <option key={subscription} value={subscription}>{subscription}</option>
+                ))}
+              </select>
+            </label>
             <div className="inventory-source-badges" aria-label="OS source status">
               {Object.values(sourceStates).map((source) => (
                 <StatusBadge key={source.source_type} label={`${sourceLabel(source.source_type)} · ${source.state}`} tone={sourceTone(source.state)} compact />
@@ -482,6 +549,9 @@ export default function SoftwareInventoryPage() {
           )}
           {!inventory.loading && !inventory.error && groups.length === 0 && (
             <StatePanel title="No OS observations" message="The authorized scope has no published OS inventory rows." />
+          )}
+          {!inventory.loading && !inventory.error && groups.length > 0 && filteredGroups.length === 0 && (
+            <StatePanel title="No matching OS observations" message="Adjust the search, source, lifecycle, or subscription filters." />
           )}
           {partialSource && (
             <StatePanel
@@ -599,18 +669,34 @@ export default function SoftwareInventoryPage() {
               {detailError ? (
                 <StatePanel title="Machine detail unavailable" message={detailError} tone="error" />
               ) : (
-                <ul>
+                <div className="table-scroll">
+                <table className="data-table detail-table">
+                  <thead>
+                    <tr>
+                      <th>Machine</th>
+                      <th>Source / environment</th>
+                      <th>Subscription / resource group</th>
+                      <th>Lifecycle</th>
+                      <th>Observed / evidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
                   {detail.map((machine) => (
-                    <li key={machine.resource_id}>
-                      <strong>{machine.machine_name}</strong> · {sourceLabel(machine.source_type)} · {machine.environment} · {machine.subscription_id}
-                      <span className="table-subtitle">{machine.resource_group} · observed {machine.observed_at}</span>
-                    </li>
+                    <tr key={machine.resource_id}>
+                      <td><strong>{machine.machine_name}</strong><span className="table-subtitle">{machine.resource_id}</span></td>
+                      <td>{sourceLabel(machine.source_type)}<span className="table-subtitle">{machine.environment}</span></td>
+                      <td>{machine.subscription_id}<span className="table-subtitle">{machine.resource_group}</span></td>
+                      <td><StatusBadge label={machine.review_required ? "EOL date needs review" : machine.lifecycle_status} tone={machine.review_required ? "unknown" : lifecycleTone({ ...machine, key: machine.resource_id, machine_count: 1, source_types: [machine.source_type] })} /></td>
+                      <td>{machine.observed_at}<span className="table-subtitle">{machine.evidence.map((item) => `${item.source_engine} / ${item.source_table}`).join(" · ") || "Evidence retained by API envelope"}</span></td>
+                    </tr>
                   ))}
-                </ul>
+                  </tbody>
+                </table>
+                </div>
               )}
             </section>
           )}
-        </>
+        </section>
       )}
     </main>
   );

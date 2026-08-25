@@ -253,12 +253,12 @@ describe("Software Inventory OS tracer", () => {
 
   it("renders canonical installed software and exact linked details", async () => {
     render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
-    fireEvent.click(screen.getByRole("button", { name: "Installed Software" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
 
     expect(await screen.findByText("7-Zip")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /View machines for 7-Zip 19.00/ }));
     expect(await screen.findByText(/exact resource join/)).toBeInTheDocument();
-    expect(screen.getByText(/Raw: 7-Zip v19.00 v19.00/)).toBeInTheDocument();
+    expect(screen.getByText("7-Zip v19.00")).toBeInTheDocument();
     expect(softwareGroup).toHaveBeenCalledWith("7-Zip|19.00", {});
   });
 
@@ -283,7 +283,7 @@ describe("Software Inventory OS tracer", () => {
 
   it("renders server-owned mapping review controls and sends its revision", async () => {
     render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
-    fireEvent.click(screen.getByRole("button", { name: "Installed Software" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
 
     expect(await screen.findByText(/Widget Suite v1.0/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Approve mapping" }));

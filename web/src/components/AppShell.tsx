@@ -13,6 +13,7 @@ const PRIMARY_NAV = [
   { href: "/services", label: "Services", short: "SV" },
   { href: "/network", label: "Topology", short: "T" },
   { href: "/exposure", label: "Exposure", short: "E" },
+  { href: "/software-inventory", label: "Software Inventory", short: "SI" },
   { href: "/changes", label: "Changes", short: "C" },
   { href: "/remediation", label: "Remediation", short: "R" },
 ] as const;
