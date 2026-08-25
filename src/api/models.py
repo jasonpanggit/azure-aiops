@@ -217,3 +217,9 @@ class RiskExceptionCreateRequest(ApiModel):
     expires_at: str = Field(
         "", description="ISO-8601 expiry; omit for an exception with no expiry"
     )
+
+class SoftwareMappingPathDecisionRequest(ApiModel):
+    """Decision payload for the mapping-id-in-path route aliases."""
+
+    expected_revision: int = Field(ge=0)
+    reason: str = Field("", max_length=1024)

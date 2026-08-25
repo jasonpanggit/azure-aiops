@@ -20,6 +20,7 @@ from intelligence.inventory.eol_review import (
     EOLReviewService,
     UnavailableLifecycleSearchProvider,
 )
+from intelligence.inventory.mapping_repository import SoftwareMappingRepository
 from onboarding.service import SubscriptionOnboardingService
 
 TOKEN = "inventory-token-0123456789"
@@ -53,7 +54,23 @@ def client(tmp_path: Path) -> TestClient:
         row.to_dict()
         for row in normalize_configuration_data(software_rows, os_service.snapshot.observations)
     ]
+    payload["software_mapping_suggestions"] = [
+        {
+            "raw_name": "Reviewable Agent",
+            "raw_version": "v3.2",
+            "publisher": "Contoso",
+            "source_timestamp": "2026-08-26T00:00:00Z",
+            "scope_predicate": {"subscription": ["sub-a"]},
+            "model_output": {
+                "canonical_name": "Reviewable Agent",
+                "canonical_version": "3.2",
+                "confidence": 0.86,
+                "provenance": {"model": "approved-normalizer"},
+            },
+        }
+    ]
     payload["software_source_status"] = {"logs": {"state": "ready", "query_version": "inventory-software-v1"}}
+    mapping_repository = SoftwareMappingRepository(tmp_path / "software-mappings.json")
     context = ApiContext(
         onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
         authenticator=StaticTokenAuthenticator(
@@ -67,7 +84,11 @@ def client(tmp_path: Path) -> TestClient:
         ),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
-        inventory_provider=lambda: InventoryService(payload, eol_review=review_service),
+        inventory_provider=lambda: InventoryService(
+            payload,
+            eol_review=review_service,
+            mapping_repository=mapping_repository,
+        ),
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -250,3 +271,58 @@ def test_lifecycle_confirmation_rejects_extra_fields_and_malformed_dates(
         },
     )
     assert malformed.status_code == 400
+
+
+def test_mapping_list_decision_is_scoped_audited_and_revision_checked(
+    client: TestClient,
+) -> None:
+    listed = client.get(
+        "/api/v1/inventory/software/mappings",
+        params={"subscription": "sub-a"},
+        headers=_auth(),
+    )
+    assert listed.status_code == 200
+    mapping = listed.json()["data"]["mappings"][0]
+    assert mapping["status"] == "suggested"
+    assert mapping["provenance"]["model"] == "approved-normalizer"
+
+    outside = client.get(
+        "/api/v1/inventory/software/mappings",
+        params={"subscription": "sub-b"},
+        headers=_auth(),
+    )
+    assert outside.status_code == 200
+    assert outside.json()["data"]["mappings"] == []
+
+    approved = client.post(
+        "/api/v1/inventory/software/mappings/approve",
+        params={"subscription": "sub-a"},
+        headers=_auth(),
+        json={
+            "mapping_id": mapping["mapping_id"],
+            "expected_revision": mapping["revision"],
+            "reason": "Verified vendor identity",
+        },
+    )
+    assert approved.status_code == 200
+    body = approved.json()["data"]
+    assert body["status"] == "approved"
+    assert body["revision"] == 1
+    assert body["provenance"]["reviewer"] == "operator@example.com"
+    assert body["provenance"]["scope_snapshot"] == {"subscription": ["sub-a"]}
+
+    stale = client.post(
+        "/api/v1/inventory/software/mappings/reject",
+        params={"subscription": "sub-a"},
+        headers=_auth(),
+        json={"mapping_id": mapping["mapping_id"], "expected_revision": 0},
+    )
+    assert stale.status_code == 409
+
+    reader = client.post(
+        "/api/v1/inventory/software/mappings/reject",
+        params={"subscription": "sub-b"},
+        headers={"Authorization": "Bearer " + READER_TOKEN},
+        json={"mapping_id": mapping["mapping_id"], "expected_revision": 1},
+    )
+    assert reader.status_code == 403

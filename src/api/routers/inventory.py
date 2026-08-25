@@ -22,7 +22,11 @@ from intelligence.inventory.service import InventoryService
 from ..dependencies import Context, OperatePrincipal, Page, ReadScope
 from ..errors import ApiError, ErrorCode
 from ..evidence import Evidence, envelope
-from ..models import EOLConfirmationRequest, SoftwareMappingDecisionRequest
+from ..models import (
+    EOLConfirmationRequest,
+    SoftwareMappingDecisionRequest,
+    SoftwareMappingPathDecisionRequest,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["inventory"])
 _GROUP_KEY = re.compile(r"^[^|/\\]{1,120}\|[^|/\\]{1,120}$")
@@ -290,6 +294,59 @@ def reject_software_mapping(
     principal: OperatePrincipal,
 ) -> dict[str, Any]:
     return _decide_mapping("rejected", payload, context, scope, principal)
+
+
+def _decide_mapping_by_path(
+    decision: str,
+    mapping_id: str,
+    payload: SoftwareMappingPathDecisionRequest,
+    context: Context,
+    scope: ReadScope,
+    principal: OperatePrincipal,
+) -> dict[str, Any]:
+    return _decide_mapping(
+        decision,
+        SoftwareMappingDecisionRequest(
+            mapping_id=mapping_id,
+            expected_revision=payload.expected_revision,
+            reason=payload.reason,
+        ),
+        context,
+        scope,
+        principal,
+    )
+
+
+@router.post(
+    "/inventory/software/mappings/{mapping_id:path}/approve",
+    summary="Approve a software normalization mapping by id",
+)
+def approve_software_mapping_by_path(
+    mapping_id: str,
+    payload: SoftwareMappingPathDecisionRequest,
+    context: Context,
+    scope: ReadScope,
+    principal: OperatePrincipal,
+) -> dict[str, Any]:
+    return _decide_mapping_by_path(
+        "approved", mapping_id, payload, context, scope, principal
+    )
+
+
+@router.post(
+    "/inventory/software/mappings/{mapping_id:path}/reject",
+    summary="Reject a software normalization mapping by id",
+)
+def reject_software_mapping_by_path(
+    mapping_id: str,
+    payload: SoftwareMappingPathDecisionRequest,
+    context: Context,
+    scope: ReadScope,
+    principal: OperatePrincipal,
+) -> dict[str, Any]:
+    return _decide_mapping_by_path(
+        "rejected", mapping_id, payload, context, scope, principal
+    )
 
 
 @router.get(

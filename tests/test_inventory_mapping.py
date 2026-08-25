@@ -5,6 +5,7 @@ from intelligence.inventory.mapping_repository import (
     MappingRevisionConflict,
     SoftwareMappingRepository,
 )
+from intelligence.inventory.software_normalization import suggestion_from_model_output
 from intelligence.inventory.service import InventoryService
 
 
@@ -122,15 +123,14 @@ def test_rejection_and_stale_revision_do_not_change_counts() -> None:
 
 def test_malformed_model_output_is_visible_but_non_authoritative() -> None:
     repository = SoftwareMappingRepository()
-    item = repository.suggest(
+    item = suggestion_from_model_output(
+        repository=repository,
         raw_name="Mystery",
         raw_version="v2",
         publisher="Acme",
-        canonical_name="Mystery",
-        canonical_version="2",
-        provenance={"source": "ai", "validation_error": "canonical_version_missing"},
+        model_output={"canonical_name": "Mystery", "confidence": "not-a-number"},
         source_timestamp="2026-08-26T00:00:00Z",
     )
     assert item.status == "suggested"
-    assert item.provenance["validation_error"] == "canonical_version_missing"
+    assert "confidence_invalid" in item.provenance["validation_error"]
     assert repository.read().mappings[0].status == "suggested"

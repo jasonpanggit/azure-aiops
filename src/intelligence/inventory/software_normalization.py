@@ -106,8 +106,17 @@ def suggestion_from_model_output(
     except (TypeError, ValueError):
         errors.append("confidence_invalid")
         confidence = 0
-    provenance = dict(model_output.get("provenance") or {})
-    provenance.update({"source": "ai", "raw_model_output": dict(model_output)})
+    provided_provenance = model_output.get("provenance")
+    provenance = (
+        {
+            key: str(value)[:512]
+            for key, value in provided_provenance.items()
+            if isinstance(key, str) and isinstance(value, (str, int, float, bool))
+        }
+        if isinstance(provided_provenance, Mapping)
+        else {}
+    )
+    provenance["source"] = "ai"
     if errors:
         provenance["validation_error"] = ",".join(errors)
     return repository.suggest(

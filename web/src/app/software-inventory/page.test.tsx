@@ -2,16 +2,19 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { os, osGroup, software, softwareGroup, lifecycleReview, confirmLifecycle } = vi.hoisted(() => ({
+const { os, osGroup, software, softwareGroup, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } = vi.hoisted(() => ({
   os: vi.fn(),
   osGroup: vi.fn(),
   software: vi.fn(),
   softwareGroup: vi.fn(),
   lifecycleReview: vi.fn(),
   confirmLifecycle: vi.fn(),
+  mappings: vi.fn(),
+  approveMapping: vi.fn(),
+  rejectMapping: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup, lifecycleReview, confirmLifecycle } }));
+vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } }));
 
 import SoftwareInventoryPage from "./page";
 
@@ -140,6 +143,36 @@ describe("Software Inventory OS tracer", () => {
       generation_id: "generation-1",
       requested_scope: {},
     }));
+    mappings.mockResolvedValue(envelope({
+      mappings: [{
+        mapping_id: "software-map://review-1",
+        raw_name: "Widget Suite",
+        raw_version: "v1.0",
+        publisher: "Acme",
+        raw_identity: { name: "Widget Suite", version: "v1.0", publisher: "Acme" },
+        canonical_name: "Widget",
+        canonical_version: "1.0",
+        canonical_identity: "Widget|1.0",
+        method: "ai",
+        confidence: 0.91,
+        status: "suggested",
+        provenance: { model: "approved-normalizer" },
+        source_timestamp: "2026-08-26T00:00:00Z",
+        scope_predicate: { subscription: ["sub-a"] },
+        revision: 0,
+        reason: "",
+        created_at: "2026-08-26T00:00:00Z",
+        updated_at: "2026-08-26T00:00:00Z",
+      }],
+      repository_revision: 1,
+      requested_scope: {},
+    }));
+    approveMapping.mockResolvedValue(envelope({
+      ...({ mapping_id: "software-map://review-1", status: "approved", revision: 1 } as object),
+    }));
+    rejectMapping.mockResolvedValue(envelope({
+      ...({ mapping_id: "software-map://review-1", status: "rejected", revision: 1 } as object),
+    }));
     lifecycleReview.mockResolvedValue(envelope({
       normalized_os_key: "windows server|2099-preview",
       os_name: "Windows Server",
@@ -225,5 +258,15 @@ describe("Software Inventory OS tracer", () => {
       }),
       {},
     );
+  });
+
+  it("renders server-owned mapping review controls and sends its revision", async () => {
+    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Installed Software" }));
+
+    expect(await screen.findByText(/Widget Suite v1.0/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Approve mapping" }));
+
+    expect(approveMapping).toHaveBeenCalledWith("software-map://review-1", 0, {});
   });
 });
