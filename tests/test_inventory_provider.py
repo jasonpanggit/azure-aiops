@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from api.scope import Scope
+from hermes_arg_connector.normalize import Normalizer
+from hermes_arg_connector.queries import QueryCatalog
+from hermes_arg_connector.storage import DatasetStore
 from intelligence.inventory import InventoryService
 from intelligence.lifecycle import EOLCatalog
 
@@ -98,6 +102,122 @@ def test_empty_success_is_distinct_from_unavailable() -> None:
     payload = {"source_status": {"azure_vm": {"state": "unavailable", "error": "timeout"}, "arc": "ready"}}
     unavailable = InventoryService.from_fixture(_write_payload(payload))
     assert unavailable.collection(Scope.unrestricted())["data"]["source_status"]["azure_vm"]["state"] == "unavailable"
+
+
+def test_native_and_arc_queries_are_versioned_and_independent() -> None:
+    specs = {spec.name: spec for spec in QueryCatalog().build(None)}
+
+    native = specs["inventory_native_vm_os"]
+    arc = specs["inventory_arc_os"]
+    assert native.version == "inventory-native-vm-os-v1"
+    assert arc.version == "inventory-arc-os-v1"
+    assert native.query != arc.query
+    assert "imageVersion" in native.query
+    assert "osVersion" in arc.query
+    assert "| order by id asc" in native.query
+    assert "| order by id asc" in arc.query
+
+
+def test_generated_inventory_rows_preserve_source_identity_and_image_uncertainty(
+    tmp_path: Path,
+) -> None:
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    graph = Normalizer().normalize(
+        {
+            "inventory_native_vm_os": fixture["inventory_native_vm_os"],
+            "inventory_arc_os": fixture["inventory_arc_os"],
+        },
+        datetime.fromisoformat("2026-08-25T10:00:00+00:00"),
+        run_id="inventory-run",
+        requested_scope={"subscription": ["sub-a", "sub-b"]},
+    )
+
+    native = next(row for row in graph.inventory_observations if row["source_type"] == "azure_vm")
+    arc = next(row for row in graph.inventory_observations if row["source_type"] == "arc")
+    assert native["os_version"] == "Unknown"
+    assert native["image_sku"] == "2019-Datacenter"
+    assert native["image_version"] == "latest"
+    assert native["environment"] == "prod"
+    assert arc["os_name"] == "Ubuntu"
+    assert arc["os_version"] == "22.04"
+    assert arc["environment"] == "prod"
+    assert native["resource_id"].startswith("/subscriptions/sub-a/")
+    assert native["evidence"][0]["query_version"] == "inventory-native-vm-os-v1"
+
+    store = DatasetStore(tmp_path)
+    store.publish(graph, {}, {"runId": "inventory-run", "status": "completed"})
+    loaded = InventoryService.from_store(store)
+    assert loaded is not None
+    result = loaded.detail("Windows Server|2019", Scope.from_mapping({"subscription": ["sub-a"]}))
+    assert result is not None
+    assert [row["source_type"] for row in result["data"]["machines"]] == ["arc"]
+
+
+def test_inventory_latest_state_deduplicates_by_exact_source_and_resource() -> None:
+    payload = {
+        "query_version": "inventory-os-v1",
+        "observations": [
+            {
+                "id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm",
+                "name": "vm",
+                "type": "microsoft.compute/virtualMachines",
+                "subscriptionId": "sub-a",
+                "resourceGroup": "rg",
+                "tags": {"ENV": "stage", "EnvironmentName": "prod"},
+                "osName": "Windows",
+                "osVersion": "2022",
+                "observed_at": "2026-08-25T09:00:00Z",
+            },
+            {
+                "id": "/SUBSCRIPTIONS/SUB-A/RESOURCEGROUPS/rg/providers/Microsoft.Compute/virtualMachines/vm",
+                "name": "vm",
+                "type": "microsoft.compute/virtualMachines",
+                "subscriptionId": "sub-a",
+                "resourceGroup": "rg",
+                "tags": {"ENV": "stage", "EnvironmentName": "prod"},
+                "osName": "Windows",
+                "osVersion": "2025",
+                "observed_at": "2026-08-25T10:00:00Z",
+            },
+        ],
+    }
+    service = InventoryService(payload)
+    assert len(service.snapshot.observations) == 1
+    row = service.snapshot.observations[0]
+    assert row.os_version == "2025"
+    assert row.environment == "stage"
+
+
+def test_failed_inventory_family_remains_visible_without_erasing_other_family() -> None:
+    graph = Normalizer().normalize(
+        {
+            "inventory_native_vm_os": [
+                {
+                    "id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm",
+                    "name": "vm",
+                    "type": "microsoft.compute/virtualMachines",
+                    "subscriptionId": "sub-a",
+                    "resourceGroup": "rg",
+                    "tags": {},
+                    "osType": "Windows",
+                }
+            ],
+            "inventory_arc_os": [
+                {
+                    "status": "failed",
+                    "provider_status": "failed",
+                    "error": "Arc query timed out",
+                }
+            ],
+        },
+        datetime.fromisoformat("2026-08-25T10:00:00+00:00"),
+        run_id="inventory-failure-run",
+    )
+    statuses = {row["source_type"]: row for row in graph.inventory_source_status}
+    assert len(graph.inventory_observations) == 1
+    assert statuses["azure_vm"]["state"] == "ready"
+    assert statuses["arc"]["state"] == "degraded"
+    assert statuses["arc"]["error"] == "Arc query timed out"
 
 
 def _write_payload(payload: dict) -> str:

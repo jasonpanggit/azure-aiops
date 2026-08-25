@@ -11,6 +11,7 @@ class QuerySpec:
     query: str
     incremental: bool
     scope: str = "subscriptions"
+    version: str = "1.0.0"
 
 
 class QueryCatalog:
@@ -116,6 +117,7 @@ class QueryCatalog:
                 f"| {projection}",
                 False,
             ),
+            *_inventory_specs(),
             *_network_specs(projection),
         ]
         if include_management_groups:
@@ -132,6 +134,51 @@ class QueryCatalog:
                 ),
             )
         return specs
+
+
+def _inventory_specs() -> list[QuerySpec]:
+        """Independent, fixed ARG queries for the machine OS inventory.
+
+        Native VMs and Arc machines intentionally have separate specs.  Apart from
+        making source failures attributable, this prevents the native image SKU
+        from being mistaken for an installed OS release on either source.
+        """
+        return [
+            QuerySpec(
+                "inventory_native_vm_os",
+                "Resources",
+                (
+                    "Resources "
+                    "| where type =~ 'microsoft.compute/virtualmachines' "
+                    "| project id, name, type, subscriptionId, resourceGroup, location, tags, "
+                    "osType=tostring(properties.storageProfile.osDisk.osType), "
+                    "imagePublisher=tostring(properties.storageProfile.imageReference.publisher), "
+                    "imageOffer=tostring(properties.storageProfile.imageReference.offer), "
+                    "imageSku=tostring(properties.storageProfile.imageReference.sku), "
+                    "imageVersion=tostring(properties.storageProfile.imageReference.version) "
+                    "| order by id asc"
+                ),
+                False,
+                version="inventory-native-vm-os-v1",
+            ),
+            QuerySpec(
+                "inventory_arc_os",
+                "Resources",
+                (
+                    "Resources "
+                    "| where type =~ 'microsoft.hybridcompute/machines' "
+                    "| project id, name, type, subscriptionId, resourceGroup, location, tags, "
+                    "computerName=tostring(properties.osProfile.computerName), "
+                    "osName=tostring(properties.osName), "
+                    "osVersion=tostring(properties.osVersion), "
+                    "osSku=tostring(properties.osSku), "
+                    "status=tostring(properties.status) "
+                    "| order by id asc"
+                ),
+                False,
+                version="inventory-arc-os-v1",
+            ),
+        ]
 
 
 #: ARM resource types fetched for network topology, grouped by payload key.

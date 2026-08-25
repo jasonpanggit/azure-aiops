@@ -76,6 +76,10 @@ class DatasetStore:
             rows = getattr(graph, collection, None)
             if rows is not None:
                 datasets[f"situations/{collection}"] = _sorted_rows(rows)
+        if getattr(graph, "inventory_observations", None) is not None:
+            datasets["inventory/os_observations"] = _sorted_rows(graph.inventory_observations)
+        if getattr(graph, "inventory_source_status", None) is not None:
+            datasets["inventory/source_status"] = _sorted_rows(graph.inventory_source_status)
         if self.retain_raw_queries:
             datasets.update(
                 {f"queries/{name}": _sorted_rows(rows) for name, rows in sorted(query_results.items())}

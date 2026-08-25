@@ -90,6 +90,14 @@ class MachineObservation:
     support_end: str | None = None
     days_remaining: int | None = None
     review_required: bool = False
+    query_version: str = ""
+    os_type: str = ""
+    image_publisher: str = ""
+    image_offer: str = ""
+    image_sku: str = ""
+    image_version: str = ""
+    computer_name: str = ""
+    machine_status: str = ""
 
     def __post_init__(self) -> None:
         required = ("resource_id", "machine_name", "subscription_id", "resource_group", "observed_at")
@@ -115,6 +123,14 @@ class MachineObservation:
         object.__setattr__(self, "lifecycle_status", _text(self.lifecycle_status, "Unknown"))
         object.__setattr__(self, "support_end", _text(self.support_end) or None)
         object.__setattr__(self, "evidence", tuple(self.evidence))
+        object.__setattr__(self, "query_version", _text(self.query_version))
+        object.__setattr__(self, "os_type", _text(self.os_type))
+        object.__setattr__(self, "image_publisher", _text(self.image_publisher))
+        object.__setattr__(self, "image_offer", _text(self.image_offer))
+        object.__setattr__(self, "image_sku", _text(self.image_sku))
+        object.__setattr__(self, "image_version", _text(self.image_version))
+        object.__setattr__(self, "computer_name", _text(self.computer_name))
+        object.__setattr__(self, "machine_status", _text(self.machine_status))
 
     @classmethod
     def from_mapping(
@@ -172,13 +188,7 @@ class MachineObservation:
             for item in evidence_rows
             if isinstance(item, dict)
         )
-        environment = (
-            row.get("environment")
-            or tags.get("environment")
-            or tags.get("env")
-            or props.get("environment")
-            or "Unknown"
-        )
+        environment = _environment_from_tags(tags)
         return cls(
             resource_id=row.get("resource_id") or row.get("id") or "",
             machine_name=row.get("machine_name") or row.get("name") or row.get("computer", ""),
@@ -195,12 +205,34 @@ class MachineObservation:
             support_end=row.get("support_end"),
             days_remaining=row.get("days_remaining"),
             review_required=bool(row.get("review_required", False)),
+            query_version=row.get("query_version") or query_version,
+            os_type=row.get("os_type") or row.get("osType") or "",
+            image_publisher=row.get("image_publisher") or row.get("imagePublisher") or "",
+            image_offer=row.get("image_offer") or row.get("imageOffer") or "",
+            image_sku=row.get("image_sku") or row.get("imageSku") or "",
+            image_version=row.get("image_version") or row.get("imageVersion") or "",
+            computer_name=row.get("computer_name") or row.get("computerName") or "",
+            machine_status=row.get("machine_status") or row.get("status") or "",
         )
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["evidence"] = [item.to_dict() for item in self.evidence]
         return payload
+
+
+def _environment_from_tags(tags: dict[str, Any]) -> str:
+    """Read only approved resource-tag keys, with deterministic precedence."""
+    by_name = {
+        str(key).casefold(): value
+        for key, value in tags.items()
+        if str(key).strip()
+    }
+    for key in ("environment", "env", "environmentname"):
+        value = _text(by_name.get(key))
+        if value:
+            return value
+    return "Unknown"
 
 
 @dataclass(frozen=True)

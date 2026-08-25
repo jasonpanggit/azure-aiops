@@ -73,5 +73,69 @@
       "observed_at": "2026-08-25T09:54:00Z",
       "evidence": [{"source_engine": "Azure Resource Graph", "source_table": "Resources", "observed_at": "2026-08-25T09:54:00Z", "source_id": "vm-sub-b-shared", "query_version": "arg-v1"}]
     }
+  ],
+  "inventory_native_vm_os": [
+    {
+      "id": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/web-01",
+      "name": "web-01",
+      "type": "microsoft.compute/virtualmachines",
+      "subscriptionId": "sub-a",
+      "resourceGroup": "rg-prod",
+      "location": "australiaeast",
+      "tags": {"Environment": "prod"},
+      "osType": "Windows",
+      "imagePublisher": "MicrosoftWindowsServer",
+      "imageOffer": "WindowsServer",
+      "imageSku": "2019-Datacenter",
+      "imageVersion": "latest",
+      "observed_at": "2026-08-25T09:58:00Z"
+    },
+    {
+      "id": "/subscriptions/sub-b/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/shared-name",
+      "name": "shared-name",
+      "type": "microsoft.compute/virtualmachines",
+      "subscriptionId": "sub-b",
+      "resourceGroup": "rg-prod",
+      "location": "australiaeast",
+      "tags": {"env": "prod"},
+      "osType": "Linux",
+      "imagePublisher": "Canonical",
+      "imageOffer": "0001-com-ubuntu-server-jammy",
+      "imageSku": "22_04-lts-gen2",
+      "imageVersion": "latest",
+      "observed_at": "2026-08-25T09:54:00Z"
+    }
+  ],
+  "inventory_arc_os": [
+    {
+      "id": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.HybridCompute/machines/arc-01",
+      "name": "arc-01",
+      "type": "microsoft.hybridcompute/machines",
+      "subscriptionId": "sub-a",
+      "resourceGroup": "rg-prod",
+      "location": "australiaeast",
+      "tags": {"ENVIRONMENTNAME": "prod"},
+      "computerName": "arc-01",
+      "osName": "Ubuntu",
+      "osVersion": "22.04",
+      "osSku": "Ubuntu Server",
+      "status": "Connected",
+      "observed_at": "2026-08-25T09:57:00Z"
+    },
+    {
+      "id": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.HybridCompute/machines/shared-name",
+      "name": "shared-name",
+      "type": "microsoft.hybridcompute/machines",
+      "subscriptionId": "sub-a",
+      "resourceGroup": "rg-prod",
+      "location": "australiaeast",
+      "tags": {"environment": "prod"},
+      "computerName": "shared-name",
+      "osName": "Windows Server",
+      "osVersion": "2019",
+      "osSku": "Datacenter",
+      "status": "Connected",
+      "observed_at": "2026-08-25T09:55:00Z"
+    }
   ]
 }

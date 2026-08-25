@@ -42,7 +42,7 @@ class InventorySnapshot:
         if not isinstance(rows, list):
             raise TypeError("Inventory observations must be a list")
         query_version = str(metadata.get("query_version") or "inventory-os-v1")
-        observations = tuple(
+        parsed_observations = [
             row
             if isinstance(row, MachineObservation)
             else MachineObservation.from_mapping(
@@ -52,7 +52,8 @@ class InventorySnapshot:
             )
             for row in rows
             if isinstance(row, (dict, MachineObservation))
-        )
+        ]
+        observations = tuple(_latest_observations(parsed_observations))
         statuses_payload = metadata.get("source_status") or {}
         if isinstance(statuses_payload, list):
             statuses_payload = {
@@ -106,7 +107,10 @@ class InventoryService:
 
     def __init__(
         self,
-        source: InventorySnapshot | list[dict[str, Any]] | tuple[MachineObservation, ...],
+        source: InventorySnapshot
+        | dict[str, Any]
+        | list[dict[str, Any]]
+        | tuple[MachineObservation, ...],
         *,
         catalog: EOLCatalog | None = None,
         now: datetime | None = None,
@@ -114,7 +118,9 @@ class InventoryService:
         self.snapshot = (
             source
             if isinstance(source, InventorySnapshot)
-            else InventorySnapshot.from_payload(list(source))
+            else InventorySnapshot.from_payload(
+                source if isinstance(source, (dict, list)) else list(source)
+            )
         )
         self.catalog = catalog or EOLCatalog.default()
         self.now = now or datetime.now(UTC)
@@ -331,6 +337,29 @@ def _unique_evidence(rows: tuple[MachineObservation, ...]) -> tuple[Any, ...]:
         for item in row.evidence:
             values[(item.source_engine, item.source_table, item.observed_at)] = item
     return tuple(values.values())
+
+
+def _latest_observations(rows: list[MachineObservation]) -> list[MachineObservation]:
+    """Keep one current row per exact source/resource identity."""
+    selected: dict[tuple[str, str], MachineObservation] = {}
+    for row in rows:
+        key = (row.source_type, row.resource_id.casefold())
+        previous = selected.get(key)
+        if previous is None or _observation_time(row.observed_at) >= _observation_time(
+            previous.observed_at
+        ):
+            selected[key] = row
+    return sorted(
+        selected.values(),
+        key=lambda row: (group_key(row.os_name, row.os_version), row.resource_id.casefold()),
+    )
+
+
+def _observation_time(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
 
 
 def _status_warnings(statuses: dict[str, dict[str, Any]]) -> list[str]:

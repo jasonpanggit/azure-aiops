@@ -63,7 +63,7 @@ class IngestionService:
         query_results = self.source.fetch(specs, subscriptions)
         for spec in specs:
             for row in query_results.get(spec.name, []):
-                row.setdefault("query_version", "1.0.0")
+                row.setdefault("query_version", spec.version)
                 row.setdefault("requested_scope", {"subscription": sorted(subscriptions)})
                 row.setdefault("provider_status", "ok")
         previous_changes = self.store.read_dataset("changes/resource_changes")
