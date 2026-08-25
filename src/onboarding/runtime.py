@@ -12,6 +12,7 @@ from typing import Any
 from hermes_arg_connector.azure import AzureResourceGraphClient
 from hermes_arg_connector.config import ConnectorConfig
 from hermes_arg_connector.fs import join_root
+from hermes_arg_connector.logs import AzureMonitorLogsClient, LogsQueryLimits
 from hermes_arg_connector.service import IngestionService
 from hermes_arg_connector.source import AzureResourceGraphSource
 from ontology.subscription_connection import SubscriptionConnection
@@ -81,7 +82,14 @@ def build_connection_ingestion(
         max_workers=scoped.max_query_workers,
         management_group_ids=(),
     )
-    return IngestionService(scoped, source=source)
+    logs_client = None
+    if scoped.workspaces_for_connection(connection.connection_id):
+        credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
+        logs_client = AzureMonitorLogsClient(
+            credential_resolver.build(connection.credential),
+            limits=LogsQueryLimits(timeout_seconds=scoped.command_timeout_seconds),
+        )
+    return IngestionService(scoped, source=source, logs_client=logs_client)
 
 
 def build_connection_arg_client(

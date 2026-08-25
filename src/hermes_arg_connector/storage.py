@@ -18,7 +18,14 @@ from .normalize import NormalizedGraph
 from .ontology import generate_ontology_metadata
 from .state import _atomic_text
 
-_VOLATILE_KEYS = {"createdTimestamp", "lastObservedTimestamp", "observedAt", "generatedAt", "runId"}
+_VOLATILE_KEYS = {
+    "createdTimestamp",
+    "lastObservedTimestamp",
+    "observedAt",
+    "generatedAt",
+    "runId",
+    "observed_at",
+}
 
 _REMOTE_SCHEMES = ("abfss", "abfs", "az")
 _POINTER_NAME = "current.json"
@@ -80,6 +87,14 @@ class DatasetStore:
             datasets["inventory/os_observations"] = _sorted_rows(graph.inventory_observations)
         if getattr(graph, "inventory_source_status", None) is not None:
             datasets["inventory/source_status"] = _sorted_rows(graph.inventory_source_status)
+        if getattr(graph, "inventory_software_observations", None) is not None:
+            datasets["inventory/software_observations"] = _sorted_rows(
+                graph.inventory_software_observations
+            )
+        if getattr(graph, "inventory_software_source_status", None) is not None:
+            datasets["inventory/software_source_status"] = _sorted_rows(
+                graph.inventory_software_source_status
+            )
         if self.retain_raw_queries:
             datasets.update(
                 {f"queries/{name}": _sorted_rows(rows) for name, rows in sorted(query_results.items())}

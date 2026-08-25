@@ -7,9 +7,11 @@ from pathlib import Path
 import pytest
 
 from api.scope import Scope
+from hermes_arg_connector.config import ConnectorConfig
 from hermes_arg_connector.inventory_normalize import normalize_configuration_data
 from hermes_arg_connector.normalize import Normalizer
 from hermes_arg_connector.queries import QueryCatalog
+from hermes_arg_connector.service import IngestionService
 from hermes_arg_connector.storage import DatasetStore
 from intelligence.inventory import InventoryService, MachineObservation
 from intelligence.lifecycle import EOLCatalog
@@ -381,6 +383,168 @@ def test_software_logs_source_failure_is_distinct_from_empty_success() -> None:
     empty_result = empty.software_collection(Scope.unrestricted())
     assert empty_result["data"]["source_status"]["logs"]["state"] == "ready"
     assert empty_result["warnings"] == []
+
+
+class _InventorySource:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+
+    def list_subscriptions(self) -> list[dict]:
+        return [{"subscriptionId": "sub-a"}]
+
+    def fetch(self, specs, subscription_ids: list[str]) -> dict[str, list[dict]]:
+        return {"inventory_native_vm_os": self.rows}
+
+
+class _LogsSource:
+    def __init__(self, results: dict[str, list[dict]] | None = None, failures: set[str] | None = None) -> None:
+        self.results = results or {}
+        self.failures = failures or set()
+        self.calls: list[str] = []
+
+    def query_configuration_data(self, workspace_id: str) -> list[dict]:
+        self.calls.append(workspace_id)
+        if workspace_id in self.failures:
+            raise RuntimeError("workspace access denied")
+        return self.results.get(workspace_id, [])
+
+
+def _ingestion(
+    tmp_path: Path,
+    logs: _LogsSource,
+    *,
+    workspaces: dict[str, str | tuple[str, ...]] | None = None,
+) -> IngestionService:
+    if workspaces is None:
+        workspaces = {"connection-1": "workspace-1"}
+    inventory = json.loads(FIXTURE.read_text(encoding="utf-8"))["inventory_native_vm_os"]
+    config = ConnectorConfig(
+        output_dir=tmp_path,
+        subscriptions=("sub-a",),
+        connection_context={"connection_id": "connection-1"},
+        logs_workspaces=workspaces,
+        cost_management_enabled=False,
+    )
+    return IngestionService(
+        config,
+        source=_InventorySource(inventory[:1]),
+        logs_client=logs,
+        clock=lambda: datetime.fromisoformat("2026-08-25T12:00:00+00:00"),
+    )
+
+
+def test_configured_workspace_publishes_software_in_the_active_generation(
+    tmp_path: Path,
+) -> None:
+    logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:2]
+    logs = _LogsSource({"workspace-1": logs_rows})
+    ingestion = _ingestion(tmp_path, logs)
+
+    manifest = ingestion.run()
+    store = DatasetStore(tmp_path)
+    software = store.read_dataset("inventory/software_observations")
+    loaded = InventoryService.from_store(store)
+
+    assert logs.calls == ["workspace-1"]
+    assert manifest["datasets"]["inventory/software_observations"]["rowCount"] == 1
+    assert len(software) == 1
+    assert software[0]["environment"] == "prod"
+    assert software[0]["resource_join_status"] == "linked"
+    assert loaded is not None
+    assert loaded.software_source_status()["logs"]["state"] == "ready"
+    assert loaded.generation_id
+
+
+def test_workspace_failures_retain_last_known_rows_and_mark_degraded(
+    tmp_path: Path,
+) -> None:
+    logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:1]
+    first = _ingestion(tmp_path, _LogsSource({"workspace-1": logs_rows}))
+    first.run()
+
+    failed = _ingestion(
+        tmp_path,
+        _LogsSource(failures={"workspace-1"}),
+    )
+    failed.run()
+    loaded = InventoryService.from_store(DatasetStore(tmp_path))
+
+    assert loaded is not None
+    assert len(loaded.snapshot.software_observations) == 1
+    status = loaded.software_source_status()["logs"]
+    assert status["state"] == "degraded"
+    assert "access denied" in status["error"]
+
+
+def test_successful_empty_workspace_replaces_previous_rows_as_ready_empty(
+    tmp_path: Path,
+) -> None:
+    logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:1]
+    _ingestion(tmp_path, _LogsSource({"workspace-1": logs_rows})).run()
+    _ingestion(tmp_path, _LogsSource({"workspace-1": []})).run()
+
+    loaded = InventoryService.from_store(DatasetStore(tmp_path))
+    assert loaded is not None
+    assert loaded.snapshot.software_observations == ()
+    assert loaded.software_source_status()["logs"]["state"] == "ready"
+    assert loaded.software_source_status()["logs"]["row_count"] == 0
+
+
+def test_multiple_server_configured_workspaces_report_partial_without_browser_input(
+    tmp_path: Path,
+) -> None:
+    logs = _LogsSource(
+        {"workspace-1": json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:1]},
+        failures={"workspace-2"},
+    )
+    ingestion = _ingestion(
+        tmp_path,
+        logs,
+        workspaces={"connection-1": ("workspace-1", "workspace-2")},
+    )
+
+    ingestion.run()
+    loaded = InventoryService.from_store(DatasetStore(tmp_path))
+
+    assert logs.calls == ["workspace-1", "workspace-2"]
+    assert loaded is not None
+    status = loaded.software_source_status()["logs"]
+    assert status["state"] == "partial"
+    assert status["workspace_count"] == 2
+
+
+def test_missing_workspace_mapping_is_unavailable_and_never_queries_arbitrary_id(
+    tmp_path: Path,
+) -> None:
+    logs = _LogsSource({"attacker-workspace": json.loads(SOFTWARE_FIXTURE.read_text())})
+    _ingestion(tmp_path, logs, workspaces={}).run()
+    loaded = InventoryService.from_store(DatasetStore(tmp_path))
+
+    assert logs.calls == []
+    assert loaded is not None
+    assert loaded.software_source_status()["logs"]["state"] == "unavailable"
+    assert loaded.snapshot.software_observations == ()
+
+
+def test_workspace_configuration_is_validated_and_server_owned(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "azure:\n"
+        "  log_analytics_workspaces:\n"
+        "    connection-1: [workspace-1, workspace-2]\n"
+    )
+
+    config = ConnectorConfig.load(config_path)
+
+    assert config.workspaces_for_connection("CONNECTION-1") == (
+        "workspace-1",
+        "workspace-2",
+    )
+    with pytest.raises(ValueError, match="workspace ID"):
+        ConnectorConfig(
+            output_dir=tmp_path,
+            logs_workspaces={"connection-1": "../workspace"},
+        )
 
 
 def _write_payload(payload: dict) -> str:

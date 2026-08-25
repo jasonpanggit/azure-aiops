@@ -132,3 +132,8 @@ def _validated_workspace_id(value: str) -> str:
     if not _WORKSPACE_ID.fullmatch(workspace):
         raise ValueError("Logs workspace ID is invalid")
     return workspace
+
+
+def validate_workspace_id(value: str) -> str:
+    """Validate a workspace identifier at a configuration boundary."""
+    return _validated_workspace_id(value)

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -13,6 +17,8 @@ from api.auth import (
 )
 from api.runtime import build_authenticator, build_context, hermes_home
 from hermes_arg_connector.local import seed_local_environment
+from hermes_arg_connector.normalize import Normalizer
+from hermes_arg_connector.storage import DatasetStore
 from onboarding.credentials import KeyVaultSecretWriter
 
 TOKENS = '{"demo-token-0123456789abcdef": {"subject": "d@e.com", "grants": [{"role": "admin"}]}}'
@@ -152,3 +158,38 @@ def test_context_loads_local_seeded_snapshot(monkeypatch, tmp_path):
     assert context.semantic_provider() is not None
     assert context.network_provider is not None
     assert context.network_provider() is not None
+
+
+def test_inventory_runtime_loader_reads_active_generation_metadata(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "hermes"
+    fixture = json.loads(
+        Path("tests/fixtures/mock_inventory_arg.json").read_text(encoding="utf-8")
+    )
+    graph = Normalizer().normalize(
+        {
+            "inventory_native_vm_os": fixture["inventory_native_vm_os"][:1],
+        },
+        datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+        run_id="runtime-inventory-run",
+        requested_scope={"subscription": ["sub-a"]},
+    )
+    DatasetStore(home).publish(
+        graph,
+        {},
+        {
+            "runId": "runtime-inventory-run",
+            "startedAt": "2026-08-25T12:00:00Z",
+            "queryVersion": "inventory-os-v1",
+            "status": "completed",
+        },
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from api.runtime import _load_inventory_service
+
+    service = _load_inventory_service()
+    assert service is not None
+    assert service.generation_id == "runtime-inventory-run"
+    assert service.observed_at == "2026-08-25T12:00:00Z"

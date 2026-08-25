@@ -90,6 +90,7 @@ class InventorySnapshot:
                         query_version=str(raw.get("query_version") or query_version),
                         row_count=int(raw.get("row_count", _count_source(observations, source_type))),
                         error=str(raw.get("error") or ""),
+                        workspace_count=int(raw.get("workspace_count", 0)),
                     )
                 )
         else:
@@ -118,6 +119,7 @@ class InventorySnapshot:
                     query_version=str(raw.get("query_version") or query_version),
                     row_count=int(raw.get("row_count", len(software_observations))),
                     error=str(raw.get("error") or ""),
+                    workspace_count=int(raw.get("workspace_count", 0)),
                 )
             )
         return cls(
@@ -174,24 +176,27 @@ class InventoryService:
         software_status_rows = store.read_dataset("inventory/software_source_status")
         if not rows and not status_rows and not software_rows and not software_status_rows:
             return None
+        manifest = _store_manifest(store)
         statuses = {
             str(item.get("source_type") or ""): item
             for item in status_rows
             if isinstance(item, dict) and item.get("source_type")
         }
+        metadata = {
+            "observations": rows,
+            "source_status": statuses,
+            "software_observations": software_rows,
+            "software_source_status": {
+                str(item.get("source_type") or ""): item
+                for item in software_status_rows
+                if isinstance(item, dict) and item.get("source_type")
+            },
+            "observed_at": str(manifest.get("startedAt") or ""),
+            "query_version": str(manifest.get("queryVersion") or "inventory-os-v1"),
+            "generation_id": str(manifest.get("runId") or ""),
+        }
         return cls(
-            InventorySnapshot.from_payload(
-                {
-                    "observations": rows,
-                    "source_status": statuses,
-                    "software_observations": software_rows,
-                    "software_source_status": {
-                        str(item.get("source_type") or ""): item
-                        for item in software_status_rows
-                        if isinstance(item, dict) and item.get("source_type")
-                    },
-                }
-            ),
+            InventorySnapshot.from_payload(metadata),
             catalog=catalog,
         )
 
@@ -556,6 +561,28 @@ def _latest_observations(rows: list[MachineObservation]) -> list[MachineObservat
         selected.values(),
         key=lambda row: (group_key(row.os_name, row.os_version), row.resource_id.casefold()),
     )
+
+
+def _store_manifest(store: DatasetStore) -> dict[str, Any]:
+    """Read generation metadata without making the provider own persistence."""
+    generation = store.current_generation()
+    if not generation:
+        return {}
+    path = f"{generation}/manifest.json" if store.is_remote else Path(generation) / "manifest.json"
+    try:
+        if store.is_remote:
+            if not store.fs.exists(path):
+                return {}
+            with store.fs.open(path, "rt") as handle:
+                payload = json.loads(handle.read())
+        else:
+            manifest_path = Path(path)
+            if not manifest_path.exists():
+                return {}
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _observation_time(value: str) -> datetime:

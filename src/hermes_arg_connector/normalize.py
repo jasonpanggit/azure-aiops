@@ -46,6 +46,8 @@ class NormalizedGraph:
     changes: list[dict] = field(default_factory=list)
     inventory_observations: list[dict] = field(default_factory=list)
     inventory_source_status: list[dict] = field(default_factory=list)
+    inventory_software_observations: list[dict] = field(default_factory=list)
+    inventory_software_source_status: list[dict] = field(default_factory=list)
     situations: list[dict] = field(default_factory=list)
     evidence: list[dict] = field(default_factory=list)
     links: list[dict] = field(default_factory=list)

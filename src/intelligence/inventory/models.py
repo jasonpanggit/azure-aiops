@@ -52,6 +52,7 @@ class InventorySourceStatus:
     query_version: str = ""
     row_count: int = 0
     error: str = ""
+    workspace_count: int = 0
 
     def __post_init__(self) -> None:
         source = _text(self.source_type).casefold()
@@ -62,6 +63,8 @@ class InventorySourceStatus:
             raise ValueError(f"Unknown inventory source state {self.state!r}")
         if self.row_count < 0:
             raise ValueError("Inventory source row_count cannot be negative")
+        if self.workspace_count < 0:
+            raise ValueError("Inventory source workspace_count cannot be negative")
         object.__setattr__(self, "source_type", source)
         object.__setattr__(self, "state", state)
         object.__setattr__(self, "observed_at", _text(self.observed_at))
@@ -189,7 +192,7 @@ class MachineObservation:
             for item in evidence_rows
             if isinstance(item, dict)
         )
-        environment = _environment_from_tags(tags)
+        environment = _text(row.get("environment")) or _environment_from_tags(tags)
         return cls(
             resource_id=row.get("resource_id") or row.get("id") or "",
             machine_name=row.get("machine_name") or row.get("name") or row.get("computer", ""),
