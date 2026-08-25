@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 1
 current_phase_name: Evidence and Situation Foundation
 status: verifying
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-08-25T15:24:42.582Z"
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-08-25T15:34:30.917Z"
 last_activity: 2026-08-25
 last_activity_desc: Completed Phase 1 plan 01 execution and recorded verification results.
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 13
-  completed_plans: 4
+  completed_plans: 5
 ---
 
 # Project State
@@ -32,7 +32,7 @@ Plan: 2 of 2 in current phase
 Status: Phase complete — ready for verification
 Last activity: 2026-08-23 — Created brownfield MVP roadmap with complete v1 requirement coverage.
 
-Progress: ██░░░░░░░░ [███░░░░░░░] 31%
+Progress: ██░░░░░░░░ [████░░░░░░] 38%
 
 ## Performance Metrics
 
@@ -61,6 +61,7 @@ Progress: ██░░░░░░░░ [███░░░░░░░] 31%
 | Phase 01 P02 | 40 min | 3 tasks | 28 files |
 | Phase 01 P03 | 16 min | 3 tasks | 9 files |
 | Phase 06 P01 | 8min | 2 tasks | 14 files |
+| Phase 06 P02 | 9min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -83,6 +84,9 @@ Recent decisions affecting current work:
 - [Phase ?]: D-02: Keep Azure VM and Arc source labels in one grouped view without collapsing source identity.
 - [Phase ?]: D-09: Unknown lifecycle matches remain visible with an explicit EOL date review flag.
 - [Phase ?]: Read source status from the active immutable generation and scope row counts before projection.
+- [Phase ?]: Native VM image SKU and latest image version remain image metadata; installed OS release remains Unknown without an installed observation.
+- [Phase ?]: Native VM and Arc ARG queries remain independent so a family failure is degraded without erasing usable rows.
+- [Phase ?]: Environment uses case-insensitive resource tags in environment, env, environmentName precedence and otherwise persists Unknown.
 
 ### Roadmap Evolution
 
@@ -106,6 +110,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-25T15:24:42.576Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-08-25T15:34:30.910Z
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None

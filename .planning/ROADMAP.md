@@ -117,12 +117,12 @@ Plans:
 **Goal:** Operators can inspect authorized, evidence-backed OS and installed-software inventory across Azure VMs and Arc-enabled servers, understand lifecycle risk, and export exact software/version matches for follow-up.
 **Requirements**: INV-01, INV-02, INV-03, INV-04, INV-05, INV-06
 **Depends on:** Phase 5
-**Plans:** 1/9 plans executed
+**Plans:** 2/9 plans executed
 
 Plans:
 
 - [x] 06-01-PLAN.md — Establish the scoped OS inventory tracer and Software Inventory route
-- [ ] 06-02-PLAN.md — Acquire native VM and Arc OS observations through immutable ARG generation
+- [x] 06-02-PLAN.md — Acquire native VM and Arc OS observations through immutable ARG generation
 - [ ] 06-03-PLAN.md — Trace ConfigurationData through canonical exact software lookup and detail
 - [ ] 06-04-PLAN.md — Integrate configured Logs workspaces and source lifecycle status
 - [ ] 06-05-PLAN.md — Deliver the server-owned EOL review and confirmation tracer
