@@ -32,6 +32,7 @@ def test_fixture_groups_native_and_arc_after_scope_filter(service: InventoryServ
     assert windows["machine_count"] == 2
     assert list(windows["source_types"]) == ["arc", "azure_vm"]
     assert "sub-b" not in json.dumps(result)
+    assert result["data"]["source_status"]["azure_vm"]["row_count"] == 2
 
 
 def test_detail_is_exact_resource_join_and_preserves_environment(service: InventoryService) -> None:
@@ -45,6 +46,7 @@ def test_detail_is_exact_resource_join_and_preserves_environment(service: Invent
     assert {row["source_type"] for row in result["data"]["machines"]} == {"azure_vm", "arc"}
     assert all(row["environment"] == "prod" for row in result["data"]["machines"])
     assert all(row["evidence"] for row in result["data"]["machines"])
+    assert len({row["resource_id"] for row in result["data"]["machines"]}) == 2
 
 
 def test_unknown_lifecycle_requires_review(service: InventoryService) -> None:

@@ -14,7 +14,6 @@ from hermes_arg_connector.storage import DatasetStore
 from intelligence.lifecycle import EOLCatalog
 
 from .models import (
-    SOURCE_STATES,
     InventorySourceStatus,
     MachineObservation,
     OSGroup,
@@ -55,6 +54,12 @@ class InventorySnapshot:
             if isinstance(row, (dict, MachineObservation))
         )
         statuses_payload = metadata.get("source_status") or {}
+        if isinstance(statuses_payload, list):
+            statuses_payload = {
+                str(item.get("source_type") or ""): item
+                for item in statuses_payload
+                if isinstance(item, dict)
+            }
         statuses: list[InventorySourceStatus] = []
         if isinstance(statuses_payload, dict):
             for source_type in ("azure_vm", "arc"):
@@ -125,9 +130,20 @@ class InventoryService:
         cls, store: DatasetStore, *, catalog: EOLCatalog | None = None
     ) -> InventoryService | None:
         rows = store.read_dataset("inventory/os_observations")
-        if not rows:
+        status_rows = store.read_dataset("inventory/source_status")
+        if not rows and not status_rows:
             return None
-        return cls(rows, catalog=catalog)
+        statuses = {
+            str(item.get("source_type") or ""): item
+            for item in status_rows
+            if isinstance(item, dict) and item.get("source_type")
+        }
+        return cls(
+            InventorySnapshot.from_payload(
+                {"observations": rows, "source_status": statuses}
+            ),
+            catalog=catalog,
+        )
 
     @property
     def observed_at(self) -> str:
@@ -141,9 +157,16 @@ class InventoryService:
     def generation_id(self) -> str:
         return self.snapshot.generation_id
 
-    def source_status(self) -> dict[str, dict[str, Any]]:
+    def source_status(
+        self, rows: tuple[MachineObservation, ...] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Project source state with row counts limited to the effective scope."""
+        scoped_rows = rows if rows is not None else self.snapshot.observations
         return {
-            item.source_type: item.to_dict()
+            item.source_type: {
+                **item.to_dict(),
+                "row_count": _count_source(scoped_rows, item.source_type),
+            }
             for item in sorted(self.snapshot.source_status, key=lambda value: value.source_type)
         }
 
@@ -184,7 +207,7 @@ class InventoryService:
             _make_group(key, items)
             for key, items in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
         ]
-        statuses = self.source_status()
+        statuses = self.source_status(rows)
         data = {
             "groups": [item.to_dict() for item in groups[offset : offset + limit]],
             "source_status": statuses,
@@ -212,7 +235,7 @@ class InventoryService:
             "data": {
                 "group": group.to_dict(),
                 "machines": [row.to_dict() for row in matching[offset : offset + limit]],
-                "source_status": self.source_status(),
+                "source_status": self.source_status(rows),
                 "observed_at": self.observed_at,
                 "query_version": self.query_version,
                 "generation_id": self.generation_id,
@@ -220,7 +243,7 @@ class InventoryService:
             },
             "total": len(matching),
             "evidence": self._evidence(matching),
-            "warnings": _status_warnings(self.source_status()),
+            "warnings": _status_warnings(self.source_status(rows)),
         }
 
     def evidence_for_api(self, rows: tuple[MachineObservation, ...] = ()) -> list[Evidence]:
