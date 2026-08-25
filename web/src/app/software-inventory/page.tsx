@@ -48,7 +48,7 @@ export default function SoftwareInventoryPage() {
   const inventory = useApi(() => inventoryApi.os(scope), [scopeKey, refreshKey]);
   const softwareInventory = useApi(() => inventoryApi.software(scope), [scopeKey]);
   const mappings = useApi(
-    () => inventoryApi.mappings?.(scope) ?? Promise.resolve({ data: { mappings: [], repository_revision: 0, requested_scope: {} }, evidence: [], scope: {}, warnings: [] }),
+    () => inventoryApi.mappings(scope),
     [scopeKey, refreshKey],
   );
 
