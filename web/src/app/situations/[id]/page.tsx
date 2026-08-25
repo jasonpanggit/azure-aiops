@@ -29,6 +29,7 @@ export default function SituationDetailPage({ params }: { params: { id: string }
   const situationId = decodeURIComponent(params.id);
   const [situation, setSituation] = useState<Envelope<DurableSituation> | null>(null);
   const [audit, setAudit] = useState<Envelope<SituationAuditEvent[]> | null>(null);
+  const [auditError, setAuditError] = useState("");
   const [error, setError] = useState("");
   const [selectedEvidence, setSelectedEvidence] = useState<DurableEvidence | null>(null);
   const [saved, setSaved] = useState(false);
@@ -39,6 +40,7 @@ export default function SituationDetailPage({ params }: { params: { id: string }
     let active = true;
     setSituation(null);
     setAudit(null);
+    setAuditError("");
     setError("");
     Promise.allSettled([situationsApi.get(situationId, scope), situationsApi.audit(situationId, scope)])
       .then(([detail, events]) => {
@@ -48,7 +50,11 @@ export default function SituationDetailPage({ params }: { params: { id: string }
           return;
         }
         setSituation(detail.value);
-        if (events.status === "fulfilled") setAudit(events.value);
+        if (events.status === "fulfilled") {
+          setAudit(events.value);
+        } else {
+          setAuditError(events.reason instanceof Error ? events.reason.message : "Audit service unavailable");
+        }
       });
     return () => {
       active = false;
@@ -135,7 +141,11 @@ export default function SituationDetailPage({ params }: { params: { id: string }
         </div>
       </section>
 
-      <EvidenceBar durableEvidence={evidence} warnings={record.warnings} />
+      <EvidenceBar
+        durableEvidence={evidence}
+        durableSourceStatus={record.source_status ?? []}
+        warnings={record.warnings}
+      />
 
       <section className="answer-grid" aria-label="Situation summary">
         <article className="answer-card answer-critical">
@@ -210,7 +220,7 @@ export default function SituationDetailPage({ params }: { params: { id: string }
       <section className="card audit-boundary" aria-labelledby="audit-heading">
         <div className="card-header"><div><h2 id="audit-heading">Audit history</h2><p>Recorded by the service; local collaboration remains separate under “Save view locally”.</p></div></div>
         <div className="card-body">
-          {audit?.data.length ? audit.data.map((event) => (
+        {auditError ? <p>Audit history unavailable from the service</p> : audit?.data.length ? audit.data.map((event) => (
             <article className="reasoning-card" key={event.event_id}>
               <strong>Recorded event · {event.action}</strong>
               <span>Event ID: <code>{event.event_id}</code> · Actor: {event.actor} · {formatDateTime(event.timestamp)}</span>
