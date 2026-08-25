@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 1
 current_phase_name: Evidence and Situation Foundation
 status: verifying
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-08-25T13:31:50.667Z"
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-08-25T14:05:53.011Z"
 last_activity: 2026-08-25
 last_activity_desc: Completed Phase 1 plan 01 execution and recorded verification results.
 progress:
-  total_phases: 5
+  total_phases: 2
   completed_phases: 1
-  total_plans: 1
-  completed_plans: 1
+  total_plans: 2
+  completed_plans: 2
 ---
 
 # Project State
@@ -58,6 +58,7 @@ Progress: ██░░░░░░░░ [██████████] 100%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 01 P01 | 14 min | 3 tasks | 21 files |
+| Phase 01 P02 | 40 min | 3 tasks | 28 files |
 
 ## Accumulated Context
 
@@ -70,6 +71,13 @@ Recent decisions affecting current work:
 - Treat Fabric Ontology as a projection and Azure services as systems of record.
 - [Phase ?]: Use compact immutable Pydantic situation/evidence records with deterministic IDs and keep raw provider payloads outside API responses.
 - [Phase ?]: Preserve overlapping pre-existing worktree edits and commit only newly owned situation foundation files.
+- [Phase ?]: Keep all six source families on the existing NormalizedGraph and immutable generation path; do not add a parallel ingestion store.
+- [Phase ?]: Persist unresolved operational links with explicit quality instead of dropping targets absent from the authorized entity index.
+- [Phase ?]: Use service-recorded audit events only for audit history; local Save view locally state is not server audit.
+
+### Roadmap Evolution
+
+- Phase 6 added: Software and OS Inventory Visibility — UI page extracting OS inventory (Azure VMs + Arc-enabled servers) and installed software (Arc Change Tracking & Inventory) from ARG, with OS EOL dates from official vendor sources.
 
 ### Pending Todos
 
@@ -89,6 +97,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-25T13:31:50.662Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-08-25T14:05:53.006Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None

@@ -27,11 +27,13 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
   3. Operator can see freshness, availability, provenance, quality, and authorization scope for information used by the situation.
   4. Auditor can see immutable events for observations and other lifecycle activity without unauthorized users seeing out-of-scope data.
 
-**Plans:** 1/2 plans complete
+**Plans:** 2/2 plans executed
 Plans:
 
+- [x] 01-PLAN.md
+
 - [x] 01-01-PLAN.md — Deliver the durable situation, evidence, audit, authorization, and operator-trust foundation
-- [ ] 01-02-PLAN.md — Close production ingestion, trust, audit, authorization, UI, and MVP verification blockers
+- [x] 01-02-PLAN.md — Close production ingestion, trust, audit, authorization, UI, and MVP verification blockers
 
 **UI hint:** yes
 
@@ -102,7 +104,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Evidence and Situation Foundation | 1/1 | Complete | 2026-08-25 |
+| 1. Evidence and Situation Foundation | 2/2 | In Progress|  |
 | 2. Investigation, Recommendation, and Approval | 0/TBD | Not started | - |
 | 3. Safe Remediation Execution | 0/TBD | Not started | - |
 | 4. Domain Coverage and Operational Twin | 0/TBD | Not started | - |
