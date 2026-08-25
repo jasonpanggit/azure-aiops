@@ -10,6 +10,7 @@ from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
+from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from hermes_arg_connector.inventory_normalize import normalize_configuration_data
 from intelligence.inventory import InventoryService
@@ -18,6 +19,7 @@ from intelligence.inventory.eol_review import CandidateResolver, EOLReviewServic
 from onboarding.service import SubscriptionOnboardingService
 
 TOKEN = "inventory-token-0123456789"
+READER_TOKEN = "inventory-reader-012345"
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_inventory_arg.json"
 SOFTWARE_FIXTURE = Path(__file__).parent / "fixtures" / "mock_configurationdata.json"
 
@@ -51,7 +53,13 @@ def client(tmp_path: Path) -> TestClient:
     context = ApiContext(
         onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
         authenticator=StaticTokenAuthenticator(
-            {TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),))}
+            {
+                TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),)),
+                READER_TOKEN: Principal(
+                    subject="reader@example.com",
+                    grants=(Grant("reader", Scope.from_mapping({"subscription": ["sub-b"]})),),
+                ),
+            }
         ),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
@@ -185,3 +193,54 @@ def test_lifecycle_route_returns_cited_candidates_and_confirms_explicitly(
         },
     )
     assert stale.status_code == 409
+
+
+def test_lifecycle_reads_require_auth_and_mutations_require_operate_scope(
+    client: TestClient,
+) -> None:
+    path = "/api/v1/inventory/os/Windows%20Server%7C2099-preview/lifecycle"
+    assert client.get(path).status_code == 401
+    assert client.get(
+        path,
+        params={"subscription": "sub-a"},
+        headers={"Authorization": f"Bearer {READER_TOKEN}"},
+    ).status_code == 403
+
+    response = client.post(
+        path + "/confirm",
+        headers={"Authorization": f"Bearer {READER_TOKEN}"},
+        json={
+            "normalized_os_key": "windows server|2099-preview",
+            "expected_revision": 0,
+            "manual_date": "2030-01-01",
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_lifecycle_confirmation_rejects_extra_fields_and_malformed_dates(
+    client: TestClient,
+) -> None:
+    path = "/api/v1/inventory/os/Windows%20Server%7C2099-preview/lifecycle/confirm"
+    extra = client.post(
+        path,
+        headers=_auth(),
+        json={
+            "normalized_os_key": "windows server|2099-preview",
+            "expected_revision": 0,
+            "manual_date": "2030-01-01",
+            "untrusted": "ignored",
+        },
+    )
+    assert extra.status_code == 400
+
+    malformed = client.post(
+        path,
+        headers=_auth(),
+        json={
+            "normalized_os_key": "windows server|2099-preview",
+            "expected_revision": 0,
+            "manual_date": "not-a-date",
+        },
+    )
+    assert malformed.status_code == 400

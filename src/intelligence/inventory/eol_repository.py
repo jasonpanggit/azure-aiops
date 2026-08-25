@@ -233,5 +233,8 @@ def _candidate_mapping(value: Any) -> dict[str, list[dict[str, Any]]]:
         raise TypeError("Lifecycle catalog candidates must be an object")
     result: dict[str, list[dict[str, Any]]] = {}
     for key, rows in value.items():
-        result[_normalized_key(str(key))] = _list_of_mappings(rows, "candidate records")
+        normalized = _normalized_key(str(key))
+        if not normalized:
+            raise ValueError("Lifecycle catalog candidate key is not normalized")
+        result[normalized] = _list_of_mappings(rows, "candidate records")
     return result

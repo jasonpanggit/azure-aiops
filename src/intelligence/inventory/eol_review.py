@@ -72,6 +72,7 @@ class LifecycleCandidate:
             raise ValueError("Candidate confidence must be between 0 and 1")
         if self.support_channel not in {"mainstream", "extended"}:
             raise ValueError("Candidate support_channel must be mainstream or extended")
+        _bounded_url(self.citation)
         if not 1 <= len(self.extracted_claim.strip()) <= 2000:
             raise ValueError("Candidate extracted_claim must be between 1 and 2000 characters")
 
@@ -136,8 +137,22 @@ class CandidateResolver:
     ) -> None:
         if timeout_seconds <= 0 or max_response_bytes < 1024:
             raise ValueError("Candidate resolver bounds must be positive")
-        self.endoflife_fetch = endoflife_fetch or _fetch_endoflife
-        self.official_vendor_fetch = official_vendor_fetch or _fetch_official_vendor
+        self.endoflife_fetch = endoflife_fetch or (
+            lambda name, version: _fetch_endoflife(
+                name,
+                version,
+                timeout_seconds=timeout_seconds,
+                max_response_bytes=max_response_bytes,
+            )
+        )
+        self.official_vendor_fetch = official_vendor_fetch or (
+            lambda name, version: _fetch_official_vendor(
+                name,
+                version,
+                timeout_seconds=timeout_seconds,
+                max_response_bytes=max_response_bytes,
+            )
+        )
         self.web_search_fetch = web_search_fetch or _empty_web_search
         self.timeout_seconds = timeout_seconds
         self.max_response_bytes = max_response_bytes
@@ -331,12 +346,22 @@ def normalize_key(value: str) -> str:
     return f"{product}|{version}" if product and version else ""
 
 
-def _fetch_endoflife(os_name: str, os_version: str) -> Iterable[Mapping[str, Any]]:
+def _fetch_endoflife(
+    os_name: str,
+    os_version: str,
+    *,
+    timeout_seconds: float = 5.0,
+    max_response_bytes: int = 256_000,
+) -> Iterable[Mapping[str, Any]]:
     slug = _EOL_SLUGS.get(" ".join(os_name.casefold().split()))
     if not slug:
         return ()
     url = f"https://endoflife.date/api/{slug}.json"
-    payload = _bounded_json_get(url)
+    payload = _bounded_json_get(
+        url,
+        timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+    )
     if not isinstance(payload, list):
         return ()
     candidates = []
@@ -359,12 +384,22 @@ def _fetch_endoflife(os_name: str, os_version: str) -> Iterable[Mapping[str, Any
     return candidates
 
 
-def _fetch_official_vendor(os_name: str, os_version: str) -> Iterable[Mapping[str, Any]]:
+def _fetch_official_vendor(
+    os_name: str,
+    os_version: str,
+    *,
+    timeout_seconds: float = 5.0,
+    max_response_bytes: int = 256_000,
+) -> Iterable[Mapping[str, Any]]:
     product = " ".join(os_name.casefold().split())
     url = _VENDOR_URLS.get(product, lambda version: "")(os_version)
     if not url:
         return ()
-    body = _bounded_text_get(url)
+    body = _bounded_text_get(
+        url,
+        timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+    )
     text = " ".join(_TextExtractor().feed(body))
     values = sorted(
         {
@@ -390,24 +425,28 @@ def _empty_web_search(_os_name: str, _os_version: str) -> Iterable[Mapping[str, 
     return ()
 
 
-def _bounded_json_get(url: str) -> Any:
+def _bounded_json_get(
+    url: str, *, timeout_seconds: float = 5.0, max_response_bytes: int = 256_000
+) -> Any:
     _https_url(url, allow_endoflife=True)
-    with httpx.Client(timeout=5.0, follow_redirects=False) as client:
+    with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
         response = client.get(url, headers={"Accept": "application/json"})
         response.raise_for_status()
         content = response.content
-        if len(content) > 256_000:
+        if len(content) > max_response_bytes:
             raise ValueError("Candidate response exceeded the byte limit")
         return response.json()
 
 
-def _bounded_text_get(url: str) -> str:
+def _bounded_text_get(
+    url: str, *, timeout_seconds: float = 5.0, max_response_bytes: int = 256_000
+) -> str:
     _https_url(url, allow_endoflife=False)
-    with httpx.Client(timeout=5.0, follow_redirects=False) as client:
+    with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
         response = client.get(url, headers={"Accept": "text/html"})
         response.raise_for_status()
         content = response.content
-        if len(content) > 256_000:
+        if len(content) > max_response_bytes:
             raise ValueError("Official vendor response exceeded the byte limit")
         return content.decode("utf-8", errors="replace")
 
@@ -450,8 +489,10 @@ def _candidate_id(key: str, source: str, value: str, citation: str, claim: str) 
 
 def _bounded_text(value: Any, field_name: str) -> str:
     text = str(value or "").strip()
-    if not 1 <= len(text) <= 120:
+    if not 1 <= len(text) <= 120 or any(ord(char) < 32 for char in text):
         raise ValueError(f"{field_name} must be between 1 and 120 characters")
+    if any(separator in text for separator in ("|", "/", "\\")):
+        raise ValueError(f"{field_name} contains a forbidden separator")
     return text
 
 
@@ -492,6 +533,13 @@ def _https_url(
         if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", host) or ":" in host:
             raise
     return str(value)
+
+
+def _bounded_url(value: str) -> str:
+    text = str(value or "").strip()
+    if not 1 <= len(text) <= 2048 or any(ord(char) < 32 for char in text):
+        raise ValueError("Lifecycle citation must be a bounded HTTPS URL")
+    return text
 
 
 def _catalog_citation(

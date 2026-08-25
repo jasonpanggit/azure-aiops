@@ -7,9 +7,14 @@ import pytest
 
 from intelligence.inventory.eol_repository import (
     CatalogRevisionConflict,
+    DuplicateCatalogConfirmation,
     LocalEOLCatalogRepository,
 )
-from intelligence.inventory.eol_review import CandidateResolver, EOLReviewService
+from intelligence.inventory.eol_review import (
+    CandidateResolver,
+    EOLReviewService,
+    LifecycleCandidate,
+)
 from intelligence.lifecycle import EOLCatalog
 
 
@@ -154,3 +159,65 @@ def test_manual_date_requires_exactly_one_selection_and_valid_https_citations(
         manual_date="2030-02-03",
     )
     assert confirmed.classification["support_end"] == "2030-02-03"
+
+
+def test_catalog_hit_is_authoritative_and_duplicate_confirmation_is_rejected(
+    tmp_path: Path,
+) -> None:
+    repository = LocalEOLCatalogRepository(tmp_path / "eol.json")
+    resolver = CandidateResolver(
+        endoflife_fetch=lambda *_: (),
+        official_vendor_fetch=lambda *_: (),
+        web_search_fetch=lambda *_: (),
+    )
+    service = EOLReviewService(repository, resolver)
+
+    hit = service.review("Windows Server", "2019")
+
+    assert hit.status == "catalog_hit"
+    assert hit.candidates == ()
+    assert hit.classification["support_channel"] == "extended"
+
+    miss = service.review("Windows Server", "2099-preview")
+    service.confirm(
+        os_name="Windows Server",
+        os_version="2099-preview",
+        normalized_os_key=miss.normalized_os_key,
+        expected_revision=miss.catalog_revision,
+        reviewer="operator@example.com",
+        manual_date="2030-01-01",
+    )
+    with pytest.raises(DuplicateCatalogConfirmation):
+        service.confirm(
+            os_name="Windows Server",
+            os_version="2099-preview",
+            normalized_os_key=miss.normalized_os_key,
+            expected_revision=1,
+            reviewer="operator@example.com",
+            manual_date="2031-01-01",
+        )
+
+
+def test_candidate_citations_are_https_and_bounded_to_approved_sources() -> None:
+    with pytest.raises(ValueError, match="HTTPS"):
+        LifecycleCandidate.from_mapping(
+            {
+                "date": "2030-01-01",
+                "source_kind": "official_vendor",
+                "citation": "http://learn.microsoft.com/lifecycle",
+                "retrieved_at": "2026-08-26T00:00:00Z",
+                "extracted_claim": "untrusted",
+                "confidence": 0.5,
+            }
+        )
+    with pytest.raises(ValueError, match="approved"):
+        LifecycleCandidate.from_mapping(
+            {
+                "date": "2030-01-01",
+                "source_kind": "official_vendor",
+                "citation": "https://example.com/lifecycle",
+                "retrieved_at": "2026-08-26T00:00:00Z",
+                "extracted_claim": "untrusted",
+                "confidence": 0.5,
+            }
+        )
