@@ -134,6 +134,30 @@ export const inventoryApi = {
     query.set("limit", String(limit));
     return apiRequest<OsInventoryDetail>(`/inventory/os/${encodeURIComponent(key)}`, { query });
   },
+  lifecycleReview: (key: string, scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").LifecycleReview>(
+      `/inventory/os/${encodeURIComponent(key)}/lifecycle`,
+      { query: scopeToSearchParams(scope) },
+    ),
+  confirmLifecycle: (
+    key: string,
+    payload: {
+      normalized_os_key: string;
+      expected_revision: number;
+      candidate_id?: string;
+      manual_date?: string;
+      support_channel?: "mainstream" | "extended";
+    },
+    scope: ScopeSelection = {},
+  ) =>
+    apiRequest<import("./types").LifecycleReview>(
+      `/inventory/os/${encodeURIComponent(key)}/lifecycle/confirm`,
+      {
+        method: "POST",
+        query: scopeToSearchParams(scope),
+        body: payload,
+      },
+    ),
   software: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));

@@ -34,7 +34,7 @@ export interface Envelope<T> {
   pagination?: Pagination | null;
 }
 
-export type InventorySourceType = "azure_vm" | "arc";
+export type InventorySourceType = "azure_vm" | "arc" | "logs";
 export type InventorySourceState = "ready" | "partial" | "stale" | "degraded" | "unavailable";
 
 export interface InventoryEvidence {
@@ -64,6 +64,8 @@ export interface OsInventoryGroup {
   support_end: string | null;
   days_remaining: number | null;
   review_required: boolean;
+  support_channel: "mainstream" | "extended" | "";
+  lifecycle_evidence: string[];
 }
 
 export interface OsInventoryMachine {
@@ -82,6 +84,37 @@ export interface OsInventoryMachine {
   support_end: string | null;
   days_remaining: number | null;
   review_required: boolean;
+  support_channel: "mainstream" | "extended" | "";
+  lifecycle_evidence: string[];
+}
+
+export interface LifecycleCandidate {
+  candidate_id: string;
+  date: string;
+  source_kind: "endoflife.date" | "official_vendor" | "web_search";
+  citation: string;
+  retrieved_at: string;
+  extracted_claim: string;
+  confidence: number;
+  support_channel: "mainstream" | "extended";
+}
+
+export interface LifecycleReview {
+  normalized_os_key: string;
+  os_name: string;
+  os_version: string;
+  status: "catalog_hit" | "review_required" | "confirmed";
+  catalog_revision: number;
+  classification: {
+    status: string;
+    support_end: string | null;
+    days_remaining: number | null;
+    support_channel: "mainstream" | "extended";
+    confidence: number;
+    evidence: string[];
+  };
+  candidates: LifecycleCandidate[];
+  provenance: Record<string, unknown> | null;
 }
 
 export interface OsInventoryCollection {

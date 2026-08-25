@@ -13,6 +13,8 @@ from api.rbac import Authorizer, Grant, Principal
 from api.telemetry import ApiTelemetry
 from hermes_arg_connector.inventory_normalize import normalize_configuration_data
 from intelligence.inventory import InventoryService
+from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
+from intelligence.inventory.eol_review import CandidateResolver, EOLReviewService
 from onboarding.service import SubscriptionOnboardingService
 
 TOKEN = "inventory-token-0123456789"
@@ -22,7 +24,23 @@ SOFTWARE_FIXTURE = Path(__file__).parent / "fixtures" / "mock_configurationdata.
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
-    os_service = InventoryService.from_fixture(FIXTURE)
+    review_service = EOLReviewService(
+        LocalEOLCatalogRepository(tmp_path / "eol.json"),
+        CandidateResolver(
+            endoflife_fetch=lambda *_: (
+                {
+                    "date": "2030-01-01",
+                    "citation": "https://endoflife.date/api/windows-server.json",
+                    "retrieved_at": "2026-08-26T00:00:00Z",
+                    "extracted_claim": "endoflife.date claim",
+                    "confidence": 0.8,
+                },
+            ),
+            official_vendor_fetch=lambda *_: (),
+            web_search_fetch=lambda *_: (),
+        ),
+    )
+    os_service = InventoryService.from_fixture(FIXTURE, eol_review=review_service)
     software_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))
     payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
     payload["software_observations"] = [
@@ -37,7 +55,7 @@ def client(tmp_path: Path) -> TestClient:
         ),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
-        inventory_provider=lambda: InventoryService(payload),
+        inventory_provider=lambda: InventoryService(payload, eol_review=review_service),
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -124,3 +142,46 @@ def test_software_routes_return_canonical_exact_details_and_unlinked_status(
         params={"subscription": "sub-a"},
         headers=_auth(),
     ).status_code == 404
+
+
+def test_lifecycle_route_returns_cited_candidates_and_confirms_explicitly(
+    client: TestClient,
+) -> None:
+    review = client.get(
+        "/api/v1/inventory/os/Windows%20Server%7C2099-preview/lifecycle",
+        params={"subscription": "sub-a"},
+        headers=_auth(),
+    )
+    assert review.status_code == 200
+    body = review.json()["data"]
+    assert body["status"] == "review_required"
+    assert body["normalized_os_key"] == "windows server|2099-preview"
+    assert body["candidates"][0]["candidate_id"]
+    assert body["candidates"][0]["citation"].startswith("https://")
+    assert body["candidates"][0]["retrieved_at"]
+    assert body["candidates"][0]["extracted_claim"]
+
+    confirmed = client.post(
+        "/api/v1/inventory/os/Windows%20Server%7C2099-preview/lifecycle/confirm",
+        params={"subscription": "sub-a"},
+        headers=_auth(),
+        json={
+            "normalized_os_key": body["normalized_os_key"],
+            "expected_revision": body["catalog_revision"],
+            "candidate_id": body["candidates"][0]["candidate_id"],
+        },
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["data"]["status"] == "confirmed"
+
+    stale = client.post(
+        "/api/v1/inventory/os/Windows%20Server%7C2099-preview/lifecycle/confirm",
+        params={"subscription": "sub-a"},
+        headers=_auth(),
+        json={
+            "normalized_os_key": body["normalized_os_key"],
+            "expected_revision": body["catalog_revision"],
+            "manual_date": "2031-01-01",
+        },
+    )
+    assert stale.status_code == 409

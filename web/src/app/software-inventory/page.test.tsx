@@ -2,14 +2,16 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { os, osGroup, software, softwareGroup } = vi.hoisted(() => ({
+const { os, osGroup, software, softwareGroup, lifecycleReview, confirmLifecycle } = vi.hoisted(() => ({
   os: vi.fn(),
   osGroup: vi.fn(),
   software: vi.fn(),
   softwareGroup: vi.fn(),
+  lifecycleReview: vi.fn(),
+  confirmLifecycle: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup } }));
+vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup, lifecycleReview, confirmLifecycle } }));
 
 import SoftwareInventoryPage from "./page";
 
@@ -138,6 +140,49 @@ describe("Software Inventory OS tracer", () => {
       generation_id: "generation-1",
       requested_scope: {},
     }));
+    lifecycleReview.mockResolvedValue(envelope({
+      normalized_os_key: "windows server|2099-preview",
+      os_name: "Windows Server",
+      os_version: "2099-preview",
+      status: "review_required",
+      catalog_revision: 0,
+      classification: {
+        status: "Unknown",
+        support_end: null,
+        days_remaining: null,
+        support_channel: "mainstream",
+        confidence: 0,
+        evidence: ["No authoritative lifecycle entry matches Windows Server 2099-preview."],
+      },
+      candidates: [{
+        candidate_id: "eol-candidate-1",
+        date: "2030-01-01",
+        source_kind: "official_vendor",
+        citation: "https://learn.microsoft.com/en-us/lifecycle/products/windows-server-2099-preview",
+        retrieved_at: "2026-08-26T00:00:00Z",
+        extracted_claim: "Official vendor claim",
+        confidence: 0.8,
+        support_channel: "mainstream",
+      }],
+      provenance: null,
+    }));
+    confirmLifecycle.mockResolvedValue(envelope({
+      normalized_os_key: "windows server|2099-preview",
+      os_name: "Windows Server",
+      os_version: "2099-preview",
+      status: "confirmed",
+      catalog_revision: 1,
+      classification: {
+        status: "Supported",
+        support_end: "2030-01-01",
+        days_remaining: 1000,
+        support_channel: "mainstream",
+        confidence: 1,
+        evidence: ["confirmed"],
+      },
+      candidates: [],
+      provenance: { reviewer: "operator@example.com" },
+    }));
   });
 
   it("renders grouped OS rows, status warnings, review state, and scoped drill-down", async () => {
@@ -161,5 +206,24 @@ describe("Software Inventory OS tracer", () => {
     expect(await screen.findByText(/exact resource join/)).toBeInTheDocument();
     expect(screen.getByText(/Raw: 7-Zip v19.00 v19.00/)).toBeInTheDocument();
     expect(softwareGroup).toHaveBeenCalledWith("7-Zip|19.00", {});
+  });
+
+  it("shows all EOL candidate citations and confirms an explicit choice", async () => {
+    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Review EOL date" }));
+
+    expect(await screen.findByText(/Claim: Official vendor claim/)).toBeInTheDocument();
+    expect(screen.getByText("2030-01-01")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm this date" }));
+
+    expect(confirmLifecycle).toHaveBeenCalledWith(
+      "Windows Server|2099-preview",
+      expect.objectContaining({
+        normalized_os_key: "windows server|2099-preview",
+        expected_revision: 0,
+        candidate_id: "eol-candidate-1",
+      }),
+      {},
+    );
   });
 });

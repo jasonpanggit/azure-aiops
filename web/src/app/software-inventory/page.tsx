@@ -11,6 +11,7 @@ import { useScope } from "@/lib/scope-context";
 import { inventoryApi } from "@/lib/services";
 import type {
   InventorySourceStatus,
+  LifecycleReview,
   OsInventoryGroup,
   OsInventoryMachine,
   SoftwareInventoryGroup,
@@ -34,8 +35,14 @@ export default function SoftwareInventoryPage() {
   const [softwareDetail, setSoftwareDetail] = useState<SoftwareInventoryMachine[]>([]);
   const [softwareDetailGroup, setSoftwareDetailGroup] = useState<SoftwareInventoryGroup | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [review, setReview] = useState<LifecycleReview | null>(null);
+  const [reviewGroup, setReviewGroup] = useState<OsInventoryGroup | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [manualDate, setManualDate] = useState("");
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const scopeKey = useMemo(() => JSON.stringify(scope), [scope]);
-  const inventory = useApi(() => inventoryApi.os(scope), [scopeKey]);
+  const inventory = useApi(() => inventoryApi.os(scope), [scopeKey, refreshKey]);
   const softwareInventory = useApi(() => inventoryApi.software(scope), [scopeKey]);
 
   const groups = inventory.data?.data.groups ?? [];
@@ -75,6 +82,42 @@ export default function SoftwareInventoryPage() {
       setSoftwareDetail([]);
       setSoftwareDetailGroup(null);
       setDetailError(error instanceof Error ? error.message : "Software detail is unavailable.");
+    }
+  }
+
+  async function openLifecycleReview(group: OsInventoryGroup) {
+    setReviewGroup(group);
+    setReview(null);
+    setReviewError(null);
+    setManualDate("");
+    try {
+      const response = await inventoryApi.lifecycleReview(group.key, scope);
+      setReview(response.data);
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : "Lifecycle review is unavailable.");
+    }
+  }
+
+  async function confirmLifecycle(candidateId?: string) {
+    if (!review) return;
+    setReviewSubmitting(true);
+    setReviewError(null);
+    try {
+      const response = await inventoryApi.confirmLifecycle(
+        reviewGroup?.key ?? review.normalized_os_key,
+        {
+          normalized_os_key: review.normalized_os_key,
+          expected_revision: review.catalog_revision,
+          ...(candidateId ? { candidate_id: candidateId } : { manual_date: manualDate }),
+        },
+        scope,
+      );
+      setReview(response.data);
+      setRefreshKey((value) => value + 1);
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : "Lifecycle confirmation failed.");
+    } finally {
+      setReviewSubmitting(false);
     }
   }
 
@@ -233,11 +276,76 @@ export default function SoftwareInventoryPage() {
                         <button type="button" onClick={() => openGroup(group)} aria-label={`View machines for ${group.os_name} ${group.os_version}`}>
                           View machines
                         </button>
+                        {group.review_required && (
+                          <button type="button" onClick={() => openLifecycleReview(group)}>
+                            Review EOL date
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            </section>
+          )}
+
+          {reviewGroup && (
+            <section aria-label="EOL lifecycle review" className="detail-panel">
+              <h2>Review lifecycle: {reviewGroup.os_name} {reviewGroup.os_version}</h2>
+              {reviewError && <StatePanel title="Lifecycle review unavailable" message={reviewError} tone="error" />}
+              {review && (
+                <>
+                  <p>
+                    {review.status === "catalog_hit" || review.status === "confirmed"
+                      ? `Confirmed ${review.classification.support_end ?? "without a support end date"}.`
+                      : "No catalog winner was selected. Review every cited candidate before confirming."}
+                  </p>
+                  {review.candidates.length > 0 && (
+                    <ul>
+                      {review.candidates.map((candidate) => (
+                        <li key={candidate.candidate_id}>
+                          <strong>{candidate.date}</strong> · {candidate.source_kind} · confidence {candidate.confidence}
+                          <span className="table-subtitle">Claim: {candidate.extracted_claim}</span>
+                          <span className="table-subtitle">Retrieved: {candidate.retrieved_at}</span>
+                          <a href={candidate.citation} target="_blank" rel="noreferrer">
+                            Citation
+                          </a>
+                          {review.status === "review_required" && (
+                            <button
+                              type="button"
+                              disabled={reviewSubmitting}
+                              onClick={() => confirmLifecycle(candidate.candidate_id)}
+                            >
+                              Confirm this date
+                            </button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {review.status === "review_required" && (
+                    <form
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void confirmLifecycle();
+                      }}
+                    >
+                      <label>
+                        Or enter a date
+                        <input
+                          type="date"
+                          value={manualDate}
+                          onChange={(event) => setManualDate(event.target.value)}
+                          required
+                        />
+                      </label>
+                      <button type="submit" disabled={reviewSubmitting || !manualDate}>
+                        Confirm manual date
+                      </button>
+                    </form>
+                  )}
+                </>
+              )}
             </section>
           )}
 

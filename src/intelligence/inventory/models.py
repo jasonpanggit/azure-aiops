@@ -102,6 +102,8 @@ class MachineObservation:
     image_version: str = ""
     computer_name: str = ""
     machine_status: str = ""
+    support_channel: str = ""
+    lifecycle_evidence: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         required = ("resource_id", "machine_name", "subscription_id", "resource_group", "observed_at")
@@ -135,6 +137,15 @@ class MachineObservation:
         object.__setattr__(self, "image_version", _text(self.image_version))
         object.__setattr__(self, "computer_name", _text(self.computer_name))
         object.__setattr__(self, "machine_status", _text(self.machine_status))
+        channel = _text(self.support_channel).casefold()
+        if channel and channel not in {"mainstream", "extended"}:
+            raise ValueError("Machine observation has an invalid support channel")
+        object.__setattr__(self, "support_channel", channel)
+        object.__setattr__(
+            self,
+            "lifecycle_evidence",
+            tuple(_text(item) for item in self.lifecycle_evidence if _text(item)),
+        )
 
     @classmethod
     def from_mapping(
@@ -217,11 +228,14 @@ class MachineObservation:
             image_version=row.get("image_version") or row.get("imageVersion") or "",
             computer_name=row.get("computer_name") or row.get("computerName") or "",
             machine_status=row.get("machine_status") or row.get("status") or "",
+            support_channel=row.get("support_channel") or "",
+            lifecycle_evidence=tuple(row.get("lifecycle_evidence") or ()),
         )
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["evidence"] = [item.to_dict() for item in self.evidence]
+        payload["lifecycle_evidence"] = list(self.lifecycle_evidence)
         return payload
 
 
@@ -363,10 +377,13 @@ class OSGroup:
     support_end: str | None
     days_remaining: int | None
     review_required: bool
+    support_channel: str = ""
+    lifecycle_evidence: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["source_types"] = list(self.source_types)
+        payload["lifecycle_evidence"] = list(self.lifecycle_evidence)
         return payload
 
 

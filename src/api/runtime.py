@@ -915,11 +915,16 @@ def _load_inventory_service() -> Any:
     """Load inventory only from an active generation (or explicit fixture)."""
     from hermes_arg_connector.storage import DatasetStore
     from intelligence.inventory.service import InventoryService
+    from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
+    from intelligence.inventory.eol_review import EOLReviewService
 
+    eol_review = EOLReviewService(
+        repository=LocalEOLCatalogRepository(Path(hermes_home()) / "state" / "eol_catalog.json")
+    )
     fixture = os.environ.get("HERMES_INVENTORY_FIXTURE", "").strip()
     if fixture:
-        return InventoryService.from_fixture(fixture)
-    return InventoryService.from_store(DatasetStore(hermes_home()))
+        return InventoryService.from_fixture(fixture, eol_review=eol_review)
+    return InventoryService.from_store(DatasetStore(hermes_home()), eol_review=eol_review)
 
 
 def _build_provider_runtime(

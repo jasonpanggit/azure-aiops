@@ -13,6 +13,7 @@ from api.scope import Scope, scope_attributes
 from hermes_arg_connector.storage import DatasetStore
 from intelligence.lifecycle import EOLCatalog
 
+from .eol_review import EOLReviewService
 from .models import (
     InventorySourceStatus,
     MachineObservation,
@@ -149,6 +150,7 @@ class InventoryService:
         *,
         catalog: EOLCatalog | None = None,
         now: datetime | None = None,
+        eol_review: EOLReviewService | None = None,
     ) -> None:
         self.snapshot = (
             source
@@ -157,18 +159,31 @@ class InventoryService:
                 source if isinstance(source, (dict, list)) else list(source)
             )
         )
-        self.catalog = catalog or EOLCatalog.default()
+        self.eol_review = eol_review or EOLReviewService(catalog=catalog)
+        self.catalog = catalog or self.eol_review.catalog().catalog
         self.now = now or datetime.now(UTC)
 
     @classmethod
     def from_fixture(
-        cls, path: str | Path, *, catalog: EOLCatalog | None = None
+        cls,
+        path: str | Path,
+        *,
+        catalog: EOLCatalog | None = None,
+        eol_review: EOLReviewService | None = None,
     ) -> InventoryService:
-        return cls(InventorySnapshot.from_fixture(path), catalog=catalog)
+        return cls(
+            InventorySnapshot.from_fixture(path),
+            catalog=catalog,
+            eol_review=eol_review,
+        )
 
     @classmethod
     def from_store(
-        cls, store: DatasetStore, *, catalog: EOLCatalog | None = None
+        cls,
+        store: DatasetStore,
+        *,
+        catalog: EOLCatalog | None = None,
+        eol_review: EOLReviewService | None = None,
     ) -> InventoryService | None:
         rows = store.read_dataset("inventory/os_observations")
         status_rows = store.read_dataset("inventory/source_status")
@@ -198,6 +213,7 @@ class InventoryService:
         return cls(
             InventorySnapshot.from_payload(metadata),
             catalog=catalog,
+            eol_review=eol_review,
         )
 
     @property
@@ -236,7 +252,8 @@ class InventoryService:
         return tuple(sorted(rows, key=lambda row: (group_key(row.os_name, row.os_version), row.resource_id)))
 
     def _classified(self, row: MachineObservation) -> MachineObservation:
-        classification = self.catalog.classify_product(
+        catalog = self.eol_review.catalog().catalog
+        classification = catalog.classify_product(
             row.os_name, row.os_version, now=self.now
         )
         unknown = classification.status.value == "Unknown"
@@ -247,11 +264,24 @@ class InventoryService:
                 "support_end": classification.support_end,
                 "days_remaining": classification.days_remaining,
                 "review_required": unknown or row.review_required,
+                "support_channel": classification.support_channel,
+                "lifecycle_evidence": classification.evidence,
             }
         )
 
     def _scoped_classified(self, scope: Scope) -> tuple[MachineObservation, ...]:
         return tuple(self._classified(row) for row in self._scoped(scope))
+
+    def lifecycle_review(
+        self, key: str, scope: Scope
+    ) -> dict[str, Any] | None:
+        """Return candidates only for a group visible in the effective scope."""
+        rows = self._scoped_classified(scope)
+        matching = tuple(row for row in rows if group_key(row.os_name, row.os_version) == key)
+        if not matching:
+            return None
+        first = matching[0]
+        return self.eol_review.review(first.os_name, first.os_version).to_dict()
 
     def collection(self, scope: Scope, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
         rows = self._scoped_classified(scope)
@@ -474,6 +504,8 @@ def _make_group(key: str, rows: list[MachineObservation]) -> OSGroup:
         support_end=selected.support_end,
         days_remaining=selected.days_remaining,
         review_required=any(row.review_required for row in rows),
+        support_channel=selected.support_channel,
+        lifecycle_evidence=selected.lifecycle_evidence,
     )
 
 

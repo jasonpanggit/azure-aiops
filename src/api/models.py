@@ -7,7 +7,8 @@ evolve without breaking clients.
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import date
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -143,6 +144,16 @@ class ConnectionValidateRequest(ApiModel):
 
 class SearchRequest(ApiModel):
     query: str = Field(min_length=1, max_length=512)
+
+
+class EOLConfirmationRequest(ApiModel):
+    """Bounded operator input for one explicit lifecycle confirmation."""
+
+    normalized_os_key: str = Field(min_length=3, max_length=241)
+    expected_revision: int = Field(ge=0)
+    candidate_id: str | None = Field(default=None, min_length=3, max_length=80)
+    manual_date: date | None = None
+    support_channel: Literal["mainstream", "extended"] = "mainstream"
 
 
 class ScopeModel(ApiModel):
