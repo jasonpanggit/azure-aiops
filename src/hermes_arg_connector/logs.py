@@ -13,7 +13,7 @@ CONFIGURATION_DATA_QUERY = """
 ConfigurationData
 | where ConfigDataType == "Software"
 | summarize arg_max(TimeGenerated, *) by Computer, SourceComputerId, _ResourceId, SoftwareName
-| project TimeGenerated, Computer, SourceComputerId, _ResourceId, _SubscriptionId,
+| project ConfigDataType, TimeGenerated, Computer, SourceComputerId, _ResourceId, _SubscriptionId,
           SoftwareName, CurrentVersion, Publisher, SoftwareType
 | order by _ResourceId asc, SoftwareName asc, CurrentVersion asc
 """.strip()

@@ -11,7 +11,7 @@ from hermes_arg_connector.inventory_normalize import normalize_configuration_dat
 from hermes_arg_connector.normalize import Normalizer
 from hermes_arg_connector.queries import QueryCatalog
 from hermes_arg_connector.storage import DatasetStore
-from intelligence.inventory import InventoryService
+from intelligence.inventory import InventoryService, MachineObservation
 from intelligence.lifecycle import EOLCatalog
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_inventory_arg.json"
@@ -268,6 +268,119 @@ def test_software_collection_and_exact_version_detail_are_scope_first() -> None:
     assert detail["data"]["machines"][0]["resource_join_status"] == "linked"
     assert detail["data"]["machines"][0]["environment"] == "prod"
     assert service.software_detail("7-Zip", "18.00", _scope(subscription=["sub-a"])) is None
+
+
+def test_software_latest_guard_handles_duplicates_case_changes_and_hostname_collisions() -> None:
+    machine = {
+        "id": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.HybridCompute/machines/arc-01",
+        "name": "shared-name",
+        "type": "microsoft.hybridcompute/machines",
+        "subscriptionId": "sub-a",
+        "resourceGroup": "rg-prod",
+        "tags": {"Environment": "stage"},
+        "osName": "Ubuntu",
+        "osVersion": "22.04",
+        "observed_at": "2026-08-25T08:00:00Z",
+    }
+    rows = [
+        {
+            "ConfigDataType": "Software",
+            "SoftwareName": "7-Zip 19.00",
+            "CurrentVersion": "19.00",
+            "Computer": "shared-name",
+            "SourceComputerId": "arc-agent",
+            "_ResourceId": machine["id"],
+            "_SubscriptionId": "sub-a",
+            "TimeGenerated": "2026-08-25T09:00:00Z",
+        },
+        {
+            "ConfigDataType": "Software",
+            "SoftwareName": "7-Zip v19.00",
+            "CurrentVersion": "v19.00",
+            "Computer": "shared-name",
+            "SourceComputerId": "arc-agent",
+            "_ResourceId": machine["id"].upper(),
+            "_SubscriptionId": "sub-a",
+            "TimeGenerated": "2026-08-25T10:00:00Z",
+        },
+        {
+            "ConfigDataType": "Software",
+            "SoftwareName": "7-Zip",
+            "CurrentVersion": "18.00",
+            "Computer": "shared-name",
+            "SourceComputerId": "arc-agent",
+            "_ResourceId": machine["id"],
+            "_SubscriptionId": "sub-a",
+            "TimeGenerated": "2026-08-25T07:00:00Z",
+        },
+        {
+            "ConfigDataType": "Software",
+            "SoftwareName": "7-Zip",
+            "CurrentVersion": "19.00",
+            "Computer": "shared-name",
+            "SourceComputerId": "arc-agent",
+            "_ResourceId": machine["id"],
+            "_SubscriptionId": "sub-a",
+            "TimeGenerated": "2026-08-25T10:00:00Z",
+        },
+        {
+            "ConfigDataType": "Software",
+            "SoftwareName": "Agent",
+            "CurrentVersion": "1",
+            "Computer": "shared-name",
+            "SourceComputerId": "unlinked-a",
+            "_SubscriptionId": "sub-a",
+            "TimeGenerated": "2026-08-25T10:00:00Z",
+        },
+        {
+            "ConfigDataType": "Software",
+            "SoftwareName": "Agent",
+            "CurrentVersion": "1",
+            "Computer": "shared-name",
+            "SourceComputerId": "unlinked-b",
+            "_SubscriptionId": "sub-a",
+            "TimeGenerated": "2026-08-25T10:00:00Z",
+        },
+    ]
+    normalized_machine = MachineObservation.from_mapping(machine)
+    normalized = normalize_configuration_data(rows, [normalized_machine])
+
+    seven_zip = [row for row in normalized if row.software_name == "7-Zip"]
+    agents = [row for row in normalized if row.software_name == "Agent"]
+    assert len(seven_zip) == 1
+    assert seven_zip[0].software_version == "19.00"
+    assert seven_zip[0].source_type == "arc"
+    assert seven_zip[0].subscription_id == "sub-a"
+    assert seven_zip[0].resource_group == "rg-prod"
+    assert seven_zip[0].environment == "stage"
+    assert len(agents) == 2
+    assert all(row.join_status == "unlinked" for row in agents)
+    assert all(row.source_type is None and row.environment == "Unknown" for row in agents)
+
+
+def test_software_logs_source_failure_is_distinct_from_empty_success() -> None:
+    failed = InventoryService(
+        {
+            "software_observations": [],
+            "software_source_status": {
+                "logs": {"state": "degraded", "error": "Logs timeout", "row_count": 0}
+            },
+        }
+    )
+    failed_result = failed.software_collection(Scope.unrestricted())
+    assert failed_result["data"]["groups"] == []
+    assert failed_result["data"]["source_status"]["logs"]["state"] == "degraded"
+    assert failed_result["warnings"]
+
+    empty = InventoryService(
+        {
+            "software_observations": [],
+            "software_source_status": {"logs": {"state": "ready", "row_count": 0}},
+        }
+    )
+    empty_result = empty.software_collection(Scope.unrestricted())
+    assert empty_result["data"]["source_status"]["logs"]["state"] == "ready"
+    assert empty_result["warnings"] == []
 
 
 def _write_payload(payload: dict) -> str:
