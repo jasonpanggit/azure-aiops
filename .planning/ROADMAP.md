@@ -24,7 +24,9 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
   2. Representative ARG/Activity Log, Monitor or Service Health, Defender, Policy, and vulnerability signals appear as normalized records with source identifiers, timestamps, watermarks, and ingestion status.
   3. Operator can see freshness, availability, provenance, quality, and authorization scope for information used by the situation.
   4. Auditor can see immutable events for observations and other lifecycle activity without unauthorized users seeing out-of-scope data.
-**Plans:** TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 01-01-PLAN.md — Deliver the durable situation, evidence, audit, authorization, and operator-trust foundation
 **UI hint:** yes
 
 ### Phase 2: Investigation, Recommendation, and Approval
@@ -82,7 +84,7 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Evidence and Situation Foundation | 0/TBD | Not started | - |
+| 1. Evidence and Situation Foundation | 0/1 | Not started | - |
 | 2. Investigation, Recommendation, and Approval | 0/TBD | Not started | - |
 | 3. Safe Remediation Execution | 0/TBD | Not started | - |
 | 4. Domain Coverage and Operational Twin | 0/TBD | Not started | - |
