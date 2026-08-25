@@ -1786,6 +1786,13 @@ export interface SoftwareInventoryMachine {
   observed_at: string;
   time_generated: string;
   evidence: InventoryEvidence[];
+  mapping_id?: string;
+  mapping_status?: SoftwareMappingStatus | "";
+  mapping_revision?: number;
+  mapping_method?: "deterministic" | "ai" | "operator" | "";
+  mapping_confidence?: number;
+  mapping_provenance?: Record<string, unknown> | null;
+  mapping_source_timestamp?: string;
 }
 
 export interface SoftwareInventoryCollection {

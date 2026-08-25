@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
+import { downloadCsv, serializeCsv } from "@/lib/csv";
 import { useScope } from "@/lib/scope-context";
 import { inventoryApi } from "@/lib/services";
 import type {
@@ -17,6 +18,7 @@ import type {
   OsInventoryGroup,
   OsInventoryMachine,
   SoftwareInventoryGroup,
+  SoftwareInventoryDetail,
   SoftwareInventoryMachine,
   SoftwareMapping,
 } from "@/lib/types";
@@ -53,6 +55,10 @@ function lifecycleTone(group: OsInventoryGroup) {
   if (riskBucket(group) === "expired") return "critical" as const;
   if (riskBucket(group) === "expiring") return "warning" as const;
   return "success" as const;
+}
+
+function safeFilenamePart(value: string): string {
+  return value.trim().replace(/[^a-z0-9._-]+/gi, "_").replace(/^[._-]+|[._-]+$/g, "") || "software";
 }
 
 function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Envelope<InventoryNarrative>>> }) {
@@ -114,7 +120,7 @@ export default function SoftwareInventoryPage() {
   const [detailGroup, setDetailGroup] = useState<OsInventoryGroup | null>(null);
   const [softwareDetail, setSoftwareDetail] = useState<SoftwareInventoryMachine[]>([]);
   const [softwareDetailGroup, setSoftwareDetailGroup] = useState<SoftwareInventoryGroup | null>(null);
-  const [softwareDetailEnvelope, setSoftwareDetailEnvelope] = useState<Envelope<import("@/lib/types").SoftwareInventoryDetail> | null>(null);
+  const [softwareDetailEnvelope, setSoftwareDetailEnvelope] = useState<Envelope<SoftwareInventoryDetail> | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [review, setReview] = useState<LifecycleReview | null>(null);
@@ -139,7 +145,7 @@ export default function SoftwareInventoryPage() {
     [scopeKey, refreshKey],
   );
 
-  const groups = inventory.data?.data.groups ?? [];
+  const groups = useMemo(() => inventory.data?.data.groups ?? [], [inventory.data]);
   const filteredGroups = useMemo(
     () => groups.filter((group) => {
       const haystack = `${group.os_name} ${group.os_version}`.toLowerCase();
@@ -155,7 +161,7 @@ export default function SoftwareInventoryPage() {
   const reviewCount = filteredGroups.filter((group) => group.review_required).length;
   const sourceStates: Record<string, InventorySourceStatus> = inventory.data?.data.source_status ?? {};
   const partialSource = Object.values(sourceStates).find((source) => source.state !== "ready");
-  const softwareGroups = softwareInventory.data?.data.groups ?? [];
+  const softwareGroups = useMemo(() => softwareInventory.data?.data.groups ?? [], [softwareInventory.data]);
   const filteredSoftwareGroups = useMemo(
     () => softwareGroups.filter((group) => {
       const haystack = `${group.software_name} ${group.software_version}`.toLowerCase();
@@ -176,6 +182,8 @@ export default function SoftwareInventoryPage() {
   async function openGroup(group: OsInventoryGroup) {
     setSelectedKey(group.key);
     setDetailError(null);
+    setSoftwareDetailGroup(null);
+    setSoftwareDetailEnvelope(null);
     try {
       const response = await inventoryApi.osGroup(group.key, effectiveScope);
       setDetail(response.data.machines);
@@ -190,6 +198,7 @@ export default function SoftwareInventoryPage() {
   async function openSoftwareGroup(group: SoftwareInventoryGroup) {
     setSelectedKey(group.key);
     setDetailError(null);
+    setDetailGroup(null);
     try {
       const response = await inventoryApi.softwareGroup(group.key, effectiveScope);
       setSoftwareDetail(response.data.machines);
@@ -200,6 +209,42 @@ export default function SoftwareInventoryPage() {
       setSoftwareDetailGroup(null);
       setDetailError(error instanceof Error ? error.message : "Software detail is unavailable.");
     }
+  }
+
+  function exportSoftwareDetail() {
+    if (!softwareDetailGroup || softwareDetail.length === 0) return;
+    const rows = softwareDetail.map((machine) => ({
+      canonical_name: machine.canonical_name,
+      canonical_version: machine.canonical_version,
+      canonical_identity: machine.canonical_identity,
+      raw_software_name: machine.raw_identity.name,
+      raw_software_version: machine.raw_identity.version,
+      machine_name: machine.machine_name,
+      resource_id: machine.resource_id || machine.source_computer_id,
+      source_type: machine.source_type ?? "unlinked",
+      subscription_id: machine.subscription_id,
+      resource_group: machine.resource_group,
+      environment: machine.environment,
+      observed_at: machine.observed_at || machine.time_generated,
+    }));
+    const columns = [
+      "canonical_name",
+      "canonical_version",
+      "canonical_identity",
+      "raw_software_name",
+      "raw_software_version",
+      "machine_name",
+      "resource_id",
+      "source_type",
+      "subscription_id",
+      "resource_group",
+      "environment",
+      "observed_at",
+    ] as const;
+    downloadCsv(
+      serializeCsv(rows, columns),
+      `software-inventory-${safeFilenamePart(softwareDetailGroup.software_name)}-${safeFilenamePart(softwareDetailGroup.software_version)}.csv`,
+    );
   }
 
   async function openLifecycleReview(group: OsInventoryGroup) {
@@ -439,10 +484,25 @@ export default function SoftwareInventoryPage() {
           {softwareDetailGroup && (
             <section aria-label="Installed software machine details" className="detail-panel">
               <h2>{softwareDetailGroup.software_name} {softwareDetailGroup.software_version}</h2>
+              {softwareDetailEnvelope && (
+                <EvidenceBar
+                  evidence={softwareDetailEnvelope.evidence}
+                  sourceStatus={Object.fromEntries(
+                    Object.entries(softwareDetailEnvelope.data.source_status).map(([source, status]) => [source, status.state]),
+                  )}
+                  warnings={softwareDetailEnvelope.warnings}
+                />
+              )}
               <p className="detail-context">
                 Exact server lookup · {softwareDetail.length} authorized machine{softwareDetail.length === 1 ? "" : "s"} ·
                 scope {Object.entries(softwareDetailEnvelope?.scope ?? {}).map(([key, values]) => `${key}: ${values.join(", ")}`).join(" · ") || "all authorized scope"}
               </p>
+              <div className="detail-actions">
+                <button type="button" onClick={exportSoftwareDetail} disabled={softwareDetail.length === 0}>
+                  Export CSV ({softwareDetail.length} row{softwareDetail.length === 1 ? "" : "s"})
+                </button>
+                <span className="muted">Exports only the exact rows returned for this authorized lookup.</span>
+              </div>
               {detailError ? (
                 <StatePanel title="Software detail unavailable" message={detailError} tone="error" />
               ) : (

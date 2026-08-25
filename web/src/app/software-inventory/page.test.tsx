@@ -302,4 +302,22 @@ describe("Software Inventory OS tracer", () => {
     expect(screen.getByRole("button", { name: /View machines for Windows Server 2099-preview/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /View machines for Windows Server 2019/ })).not.toBeInTheDocument();
   });
+
+  it("keeps the two-tab boundary and shows authorized export context for exact lookup", async () => {
+    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    expect(screen.getByRole("tab", { name: "OS Inventory" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
+    expect(screen.getByRole("tab", { name: "Installed Software" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByLabelText("Subscription")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: /View machines for 7-Zip 19.00/ }));
+
+    expect(await screen.findByRole("button", { name: "Export CSV (1 row)" })).toBeInTheDocument();
+    expect(screen.getByText(/Exports only the exact rows returned/)).toBeInTheDocument();
+    expect(screen.getByText(/Log Analytics · ready/)).toBeInTheDocument();
+    expect(screen.getByText("prod")).toBeInTheDocument();
+    expect(screen.getByText("sub-a")).toBeInTheDocument();
+  });
 });
