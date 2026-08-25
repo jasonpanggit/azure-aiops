@@ -800,7 +800,7 @@ def _situation_ontology_relationship(
         return None
     situation = next((row for row in situations if row.get("situation_id") == situation_id), {})
     subject_id = str(situation.get("resource_id") or situation_id).casefold()
-    entity_type = str(link.get("entity_type") or known_types[entity_id])
+    entity_type = known_types[entity_id]
     relation = str(link.get("relation") or "affects")
     relationship_id = _version([subject_id, relation, entity_id, entity_type])
     return {
