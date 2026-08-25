@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 
 from intelligence.inventory.eol_repository import (
@@ -14,6 +15,8 @@ from intelligence.inventory.eol_review import (
     CandidateResolver,
     EOLReviewService,
     LifecycleCandidate,
+    SourceAdapterError,
+    _fetch_official_vendor,
 )
 from intelligence.lifecycle import EOLCatalog
 
@@ -209,6 +212,123 @@ def test_candidate_citations_are_https_and_bounded_to_approved_sources() -> None
                 "extracted_claim": "untrusted",
                 "confidence": 0.5,
             }
+        )
+
+
+class _FakeHTTPClient:
+    def __init__(self, response: httpx.Response | Exception, **_kwargs) -> None:
+        self.response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def get(self, *_args, **_kwargs):
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+def test_official_vendor_adapter_extracts_bounded_citation(monkeypatch) -> None:
+    response = httpx.Response(
+        200,
+        content=(
+            b"<html><body>Windows Server 2099 support ends "
+            b"2031-01-01.</body></html>"
+        ),
+        request=httpx.Request("GET", "https://learn.microsoft.com/lifecycle"),
+    )
+    monkeypatch.setattr(
+        "intelligence.inventory.eol_review.httpx.Client",
+        lambda **kwargs: _FakeHTTPClient(response, **kwargs),
+    )
+
+    [candidate] = _fetch_official_vendor(
+        "Windows Server",
+        "2099-preview",
+        allowed_origins={"learn.microsoft.com"},
+    )
+
+    assert candidate["date"] == "2031-01-01"
+    assert candidate["citation"].startswith("https://learn.microsoft.com/")
+    assert candidate["retrieved_at"]
+    assert len(candidate["extracted_claim"]) <= 4096
+
+
+@pytest.mark.parametrize(
+    ("response", "code"),
+    [
+        (
+            httpx.Response(
+                503,
+                request=httpx.Request("GET", "https://learn.microsoft.com/lifecycle"),
+            ),
+            "http_error",
+        ),
+        (
+            httpx.Response(
+                200,
+                content=b"x" * (1024 * 1024 + 1),
+                request=httpx.Request("GET", "https://learn.microsoft.com/lifecycle"),
+            ),
+            "response_too_large",
+        ),
+        (
+            httpx.Response(
+                200,
+                content=b"<html><body>No lifecycle claims</body></html>",
+                request=httpx.Request("GET", "https://learn.microsoft.com/lifecycle"),
+            ),
+            "no_date_claim",
+        ),
+        (
+            httpx.TimeoutException("timed out"),
+            "timeout",
+        ),
+    ],
+)
+def test_bounded_official_vendor_failures_are_typed(
+    monkeypatch, response, code
+) -> None:
+    monkeypatch.setattr(
+        "intelligence.inventory.eol_review.httpx.Client",
+        lambda **kwargs: _FakeHTTPClient(response, **kwargs),
+    )
+    resolver = CandidateResolver(
+        endoflife_fetch=lambda *_: (),
+        official_vendor_fetch=lambda name, version: _fetch_official_vendor(
+            name,
+            version,
+            allowed_origins={"learn.microsoft.com"},
+        ),
+        web_search_fetch=lambda *_: (),
+    )
+
+    result = resolver.resolve_with_status("Windows Server", "2099-preview")
+
+    assert result.candidates == ()
+    assert result.source_failures[0].source_kind == "official_vendor"
+    assert result.source_failures[0].code == code
+
+
+def test_cross_domain_vendor_redirect_is_rejected(monkeypatch) -> None:
+    redirect = httpx.Response(
+        302,
+        headers={"location": "https://attacker.example/eol"},
+        request=httpx.Request("GET", "https://learn.microsoft.com/lifecycle"),
+    )
+    monkeypatch.setattr(
+        "intelligence.inventory.eol_review.httpx.Client",
+        lambda **kwargs: _FakeHTTPClient(redirect, **kwargs),
+    )
+
+    with pytest.raises(SourceAdapterError, match="crossed"):
+        _fetch_official_vendor(
+            "Windows Server",
+            "2099-preview",
+            allowed_origins={"learn.microsoft.com"},
         )
     with pytest.raises(ValueError, match="approved"):
         LifecycleCandidate.from_mapping(

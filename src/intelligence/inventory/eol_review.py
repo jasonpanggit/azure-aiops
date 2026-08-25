@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import ipaddress
+import json
 import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
@@ -12,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -28,6 +29,9 @@ from .eol_repository import (
 
 _LOGGER = logging.getLogger(__name__)
 _DATE_RE = re.compile(r"\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b")
+_MAX_RESPONSE_BYTES = 1 * 1024 * 1024
+_MAX_CLAIM_CHARS = 4 * 1024
+_MAX_REDIRECTS = 3
 _CANDIDATE_SOURCES = frozenset({"endoflife.date", "official_vendor", "web_search"})
 _OFFICIAL_DOMAINS = frozenset(
     {
@@ -73,8 +77,10 @@ class LifecycleCandidate:
         if self.support_channel not in {"mainstream", "extended"}:
             raise ValueError("Candidate support_channel must be mainstream or extended")
         _bounded_url(self.citation)
-        if not 1 <= len(self.extracted_claim.strip()) <= 2000:
-            raise ValueError("Candidate extracted_claim must be between 1 and 2000 characters")
+        if not 1 <= len(self.extracted_claim.strip()) <= _MAX_CLAIM_CHARS:
+            raise ValueError(
+                "Candidate extracted_claim must be between 1 and 4096 characters"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -115,12 +121,56 @@ class LifecycleReviewResult:
     catalog_revision: int
     classification: dict[str, Any]
     candidates: tuple[LifecycleCandidate, ...] = ()
+    source_failures: tuple[SourceFailure, ...] = ()
     provenance: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["candidates"] = [candidate.to_dict() for candidate in self.candidates]
+        payload["source_failures"] = [
+            failure.to_dict() for failure in self.source_failures
+        ]
         return payload
+
+
+@dataclass(frozen=True)
+class SourceFailure:
+    """A safe, typed explanation for one unavailable candidate source."""
+
+    source_kind: str
+    status: str
+    code: str
+    message: str
+
+    def __post_init__(self) -> None:
+        if self.source_kind not in _CANDIDATE_SOURCES:
+            raise ValueError("Source failure source_kind is not supported")
+        if self.status not in {"unavailable", "failed"}:
+            raise ValueError("Source failure status is not supported")
+        if not 1 <= len(self.code) <= 64 or not re.fullmatch(
+            r"[a-z0-9_]+", self.code
+        ):
+            raise ValueError("Source failure code is not bounded")
+        if not 1 <= len(self.message) <= 240:
+            raise ValueError("Source failure message is not bounded")
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class CandidateResolution:
+    candidates: tuple[LifecycleCandidate, ...]
+    source_failures: tuple[SourceFailure, ...]
+
+
+class SourceAdapterError(RuntimeError):
+    """Expected, operator-safe failure from a candidate source adapter."""
+
+    def __init__(self, code: str, message: str, *, status: str = "failed") -> None:
+        self.code = code
+        self.status = status
+        super().__init__(message)
 
 
 class CandidateResolver:
@@ -133,7 +183,8 @@ class CandidateResolver:
         official_vendor_fetch: Callable[[str, str], Iterable[Mapping[str, Any]]] | None = None,
         web_search_fetch: Callable[[str, str], Iterable[Mapping[str, Any]]] | None = None,
         timeout_seconds: float = 5.0,
-        max_response_bytes: int = 256_000,
+        max_response_bytes: int = _MAX_RESPONSE_BYTES,
+        official_vendor_origins: Iterable[str] | None = None,
     ) -> None:
         if timeout_seconds <= 0 or max_response_bytes < 1024:
             raise ValueError("Candidate resolver bounds must be positive")
@@ -143,6 +194,7 @@ class CandidateResolver:
                 version,
                 timeout_seconds=timeout_seconds,
                 max_response_bytes=max_response_bytes,
+                allowed_origins=official_vendor_origins or _OFFICIAL_DOMAINS,
             )
         )
         self.official_vendor_fetch = official_vendor_fetch or (
@@ -156,10 +208,20 @@ class CandidateResolver:
         self.web_search_fetch = web_search_fetch or _empty_web_search
         self.timeout_seconds = timeout_seconds
         self.max_response_bytes = max_response_bytes
+        self.official_vendor_origins = frozenset(
+            origin.casefold().strip().rstrip("/")
+            for origin in (official_vendor_origins or _OFFICIAL_DOMAINS)
+        )
 
     def resolve(self, os_name: str, os_version: str) -> tuple[LifecycleCandidate, ...]:
+        return self.resolve_with_status(os_name, os_version).candidates
+
+    def resolve_with_status(
+        self, os_name: str, os_version: str
+    ) -> CandidateResolution:
         key = normalize_os_key(os_name, os_version)
         found: list[LifecycleCandidate] = []
+        failures: list[SourceFailure] = []
         sources = (
             ("endoflife.date", self.endoflife_fetch),
             ("official_vendor", self.official_vendor_fetch),
@@ -173,12 +235,21 @@ class CandidateResolver:
                         row, os_key=key, source_kind=source
                     )
                     found.append(candidate)
-            except (OSError, RuntimeError, TypeError, ValueError, httpx.HTTPError) as exc:
+            except Exception as exc:  # noqa: BLE001 - isolate each untrusted source
                 _LOGGER.warning("eol_candidate_source_failed source=%s error=%s", source, exc)
+                failures.append(_source_failure(source, exc))
         unique: dict[str, LifecycleCandidate] = {}
         for candidate in found:
             unique[candidate.candidate_id] = candidate
-        return tuple(unique[key] for key in sorted(unique))
+        unique_failures = {
+            (failure.source_kind, failure.code): failure for failure in failures
+        }
+        return CandidateResolution(
+            candidates=tuple(unique[key] for key in sorted(unique)),
+            source_failures=tuple(
+                unique_failures[key] for key in sorted(unique_failures)
+            ),
+        )
 
 
 class EOLReviewService:
@@ -218,13 +289,26 @@ class EOLReviewService:
                 classification=classification.to_dict(),
                 provenance=_latest_provenance(snapshot, key),
             )
+
         candidates = tuple(
             LifecycleCandidate.from_mapping(row, os_key=key)
             for row in (snapshot.candidates or {}).get(key, ())
         )
-        if not candidates:
-            candidates = self.resolver.resolve(product, version)
-            self.repository.save_candidates(key, [item.to_dict() for item in candidates])
+        cached_failures = tuple(
+            SourceFailure(**row)
+            for row in (snapshot.source_failures or {}).get(key, ())
+        )
+        if key not in (snapshot.candidates or {}) and key not in (
+            snapshot.source_failures or {}
+        ):
+            resolution = self.resolver.resolve_with_status(product, version)
+            candidates = resolution.candidates
+            cached_failures = resolution.source_failures
+            self.repository.save_candidates(
+                key,
+                [item.to_dict() for item in candidates],
+                [item.to_dict() for item in cached_failures],
+            )
             snapshot = self.repository.read()
         return LifecycleReviewResult(
             normalized_os_key=key,
@@ -236,6 +320,7 @@ class EOLReviewService:
                 product, version, now=self.clock()
             ).to_dict(),
             candidates=candidates,
+            source_failures=cached_failures,
             provenance=_latest_provenance(snapshot, key),
         )
 
@@ -389,31 +474,49 @@ def _fetch_official_vendor(
     os_version: str,
     *,
     timeout_seconds: float = 5.0,
-    max_response_bytes: int = 256_000,
+    max_response_bytes: int = _MAX_RESPONSE_BYTES,
+    allowed_origins: Iterable[str] = _OFFICIAL_DOMAINS,
 ) -> Iterable[Mapping[str, Any]]:
     product = " ".join(os_name.casefold().split())
     url = _VENDOR_URLS.get(product, lambda version: "")(os_version)
     if not url:
-        return ()
+        raise SourceAdapterError(
+            "not_configured",
+            f"No official vendor URL is configured for {os_name}.",
+            status="unavailable",
+        )
     body = _bounded_text_get(
         url,
         timeout_seconds=timeout_seconds,
         max_response_bytes=max_response_bytes,
+        allowed_origins=allowed_origins,
     )
-    text = " ".join(_TextExtractor().feed(body))
+    extractor = _TextExtractor()
+    extractor.feed(body)
+    text = " ".join(extractor.text)
+    if not text:
+        raise SourceAdapterError(
+            "malformed_content",
+            "Official vendor response contained no readable text.",
+        )
     values = sorted(
         {
-            date(year, int(month), int(day)).isoformat()
+            date(int(year), int(month), int(day)).isoformat()
             for year, month, day in _DATE_RE.findall(html.unescape(text))
             if _valid_date(year, month, day)
         }
     )
+    if not values:
+        raise SourceAdapterError(
+            "no_date_claim",
+            "Official vendor content contained no valid lifecycle date claim.",
+        )
     return [
         {
             "date": value,
             "citation": url,
             "retrieved_at": _now(),
-            "extracted_claim": f"Official vendor page for {os_name} {os_version} contains lifecycle date {value}.",
+            "extracted_claim": _claim_excerpt(text, value),
             "confidence": 0.75,
             "support_channel": "mainstream",
         }
@@ -422,7 +525,11 @@ def _fetch_official_vendor(
 
 
 def _empty_web_search(_os_name: str, _os_version: str) -> Iterable[Mapping[str, Any]]:
-    return ()
+    raise SourceAdapterError(
+        "provider_not_configured",
+        "No approved web or LLM lifecycle provider is configured.",
+        status="unavailable",
+    )
 
 
 def _bounded_json_get(
@@ -439,16 +546,76 @@ def _bounded_json_get(
 
 
 def _bounded_text_get(
-    url: str, *, timeout_seconds: float = 5.0, max_response_bytes: int = 256_000
+        url: str,
+        *,
+        timeout_seconds: float = 5.0,
+        max_response_bytes: int = _MAX_RESPONSE_BYTES,
+        allowed_origins: Iterable[str] = _OFFICIAL_DOMAINS,
 ) -> str:
-    _https_url(url, allow_endoflife=False)
-    with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
-        response = client.get(url, headers={"Accept": "text/html"})
-        response.raise_for_status()
-        content = response.content
-        if len(content) > max_response_bytes:
-            raise ValueError("Official vendor response exceeded the byte limit")
-        return content.decode("utf-8", errors="replace")
+        allowed_hosts = _configured_hosts(allowed_origins)
+        current_url = _https_url(
+            url, allow_endoflife=False, allowed_hosts=allowed_hosts
+        )
+        initial_host = urlparse(current_url).hostname
+        timeout = httpx.Timeout(
+            timeout_seconds,
+            connect=timeout_seconds,
+            read=timeout_seconds,
+            write=timeout_seconds,
+            pool=timeout_seconds,
+        )
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            for redirect_count in range(_MAX_REDIRECTS + 1):
+                response = client.get(current_url, headers={"Accept": "text/html"})
+                if response.is_redirect or 300 <= response.status_code < 400:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise SourceAdapterError(
+                            "malformed_content",
+                            "Official vendor redirect did not provide a location.",
+                        )
+                    if redirect_count >= _MAX_REDIRECTS:
+                        raise SourceAdapterError(
+                            "redirect_limit",
+                            "Official vendor redirect limit was exceeded.",
+                        )
+                    redirected_url = urljoin(current_url, location)
+                    redirected_host = urlparse(redirected_url).hostname
+                    if redirected_host != initial_host:
+                        raise SourceAdapterError(
+                            "cross_domain_redirect",
+                            "Official vendor redirect crossed the approved origin.",
+                        )
+                    current_url = _https_url(
+                        redirected_url,
+                        allow_endoflife=False,
+                        allowed_hosts=allowed_hosts,
+                    )
+                    continue
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise SourceAdapterError(
+                        "http_error",
+                        f"Official vendor returned HTTP {exc.response.status_code}.",
+                    ) from exc
+                content = response.content
+                if len(content) > max_response_bytes:
+                    raise SourceAdapterError(
+                        "response_too_large",
+                        "Official vendor response exceeded the byte limit.",
+                    )
+                try:
+                    return content.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise SourceAdapterError(
+                        "malformed_content",
+                        "Official vendor response was not valid UTF-8 content.",
+                    ) from exc
+            raise SourceAdapterError(
+                "redirect_limit",
+                "Official vendor redirect limit was exceeded.",
+            )
 
 
 class _TextExtractor(HTMLParser):
@@ -512,7 +679,11 @@ def _timestamp(value: str) -> bool:
 
 
 def _https_url(
-    value: str, *, allow_endoflife: bool, allow_any_https: bool = False
+    value: str,
+    *,
+    allow_endoflife: bool,
+    allow_any_https: bool = False,
+    allowed_hosts: Iterable[str] | None = None,
 ) -> str:
     parsed = urlparse(str(value or ""))
     host = parsed.hostname.casefold() if parsed.hostname else ""
@@ -524,6 +695,8 @@ def _https_url(
         allowed = _OFFICIAL_DOMAINS | {"endoflife.date", "www.endoflife.date"}
     else:
         allowed = _OFFICIAL_DOMAINS
+    if allowed_hosts is not None:
+        allowed = set(allowed_hosts)
     if allowed is not None and host not in allowed:
         raise ValueError("Lifecycle citation is not from an approved source domain")
     try:
@@ -540,6 +713,54 @@ def _bounded_url(value: str) -> str:
     if not 1 <= len(text) <= 2048 or any(ord(char) < 32 for char in text):
         raise ValueError("Lifecycle citation must be a bounded HTTPS URL")
     return text
+
+
+def _configured_hosts(origins: Iterable[str]) -> frozenset[str]:
+    hosts: set[str] = set()
+    for origin in origins:
+        text = str(origin or "").strip()
+        parsed = urlparse(text if "://" in text else f"https://{text}")
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("Official vendor origins must be HTTPS hosts")
+        hosts.add(parsed.hostname.casefold())
+    if not hosts:
+        raise ValueError("At least one official vendor origin must be configured")
+    return frozenset(hosts)
+
+
+def _claim_excerpt(text: str, value: str) -> str:
+    """Return bounded surrounding source text rather than an unbounded page."""
+    position = text.find(value)
+    if position < 0:
+        return f"Official vendor content contains lifecycle date {value}."
+    excerpt = text[max(0, position - 512) : position + len(value) + 512].strip()
+    return excerpt[:_MAX_CLAIM_CHARS]
+
+
+def _source_failure(source: str, exc: Exception) -> SourceFailure:
+    if isinstance(exc, SourceAdapterError):
+        return SourceFailure(source, exc.status, exc.code, str(exc))
+    if isinstance(exc, httpx.TimeoutException):
+        return SourceFailure(
+            source, "unavailable", "timeout", "The source request timed out."
+        )
+    if isinstance(exc, httpx.HTTPStatusError):
+        return SourceFailure(
+            source, "failed", "http_error", "The source returned an HTTP error."
+        )
+    if isinstance(exc, httpx.HTTPError):
+        return SourceFailure(
+            source, "unavailable", "network_error", "The source request failed."
+        )
+    if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):
+        return SourceFailure(
+            source, "failed", "malformed_content", "The source content was malformed."
+        )
+    if isinstance(exc, ValueError):
+        return SourceFailure(source, "failed", "invalid_content", str(exc)[:240])
+    return SourceFailure(
+        source, "unavailable", "source_error", "The source could not be queried."
+    )
 
 
 def _catalog_citation(

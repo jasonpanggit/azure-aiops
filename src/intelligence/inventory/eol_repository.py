@@ -44,6 +44,7 @@ class CatalogSnapshot:
     revision: int
     provenance: tuple[dict[str, Any], ...] = ()
     candidates: Mapping[str, tuple[dict[str, Any], ...]] | None = None
+    source_failures: Mapping[str, tuple[dict[str, Any], ...]] | None = None
     updated_at: str = ""
 
 
@@ -56,6 +57,7 @@ class EOLCatalogRepository(Protocol):
         self,
         normalized_os_key: str,
         candidates: list[dict[str, Any]],
+        source_failures: list[dict[str, Any]] | None = None,
     ) -> CatalogSnapshot: ...
 
     def confirm(
@@ -98,11 +100,16 @@ class LocalEOLCatalogRepository:
                 key: tuple(dict(item) for item in rows)
                 for key, rows in state["candidates"].items()
             }
+            source_failures = {
+                key: tuple(dict(item) for item in rows)
+                for key, rows in state["source_failures"].items()
+            }
             return CatalogSnapshot(
                 catalog=catalog,
                 revision=state["revision"],
                 provenance=tuple(dict(item) for item in state["provenance"]),
                 candidates=candidates,
+                source_failures=source_failures,
                 updated_at=state["updated_at"],
             )
 
@@ -110,6 +117,7 @@ class LocalEOLCatalogRepository:
         self,
         normalized_os_key: str,
         candidates: list[dict[str, Any]],
+        source_failures: list[dict[str, Any]] | None = None,
     ) -> CatalogSnapshot:
         key = _normalized_key(normalized_os_key)
         if not key:
@@ -117,6 +125,9 @@ class LocalEOLCatalogRepository:
         with self._lock:
             state = self._read_state()
             state["candidates"][key] = [dict(item) for item in candidates]
+            state["source_failures"][key] = [
+                dict(item) for item in (source_failures or [])
+            ]
             state["updated_at"] = _now()
             self._write_state(state)
             return self.read()
@@ -149,6 +160,7 @@ class LocalEOLCatalogRepository:
             state["overrides"].append(entry.to_dict())
             state["provenance"].append(dict(provenance))
             state["candidates"].pop(key, None)
+            state["source_failures"].pop(key, None)
             state["revision"] = current + 1
             state["updated_at"] = _now()
             self._write_state(state)
@@ -161,6 +173,7 @@ class LocalEOLCatalogRepository:
                 "overrides": [],
                 "provenance": [],
                 "candidates": {},
+                "source_failures": {},
                 "updated_at": "",
             }
         try:
@@ -174,6 +187,9 @@ class LocalEOLCatalogRepository:
             "overrides": _list_of_mappings(payload.get("overrides", []), "overrides"),
             "provenance": _list_of_mappings(payload.get("provenance", []), "provenance"),
             "candidates": _candidate_mapping(payload.get("candidates", {})),
+            "source_failures": _candidate_mapping(
+                payload.get("source_failures", {})
+            ),
             "updated_at": str(payload.get("updated_at") or ""),
         }
 
@@ -185,6 +201,7 @@ class LocalEOLCatalogRepository:
             "overrides": state["overrides"],
             "provenance": state["provenance"],
             "candidates": state["candidates"],
+            "source_failures": state["source_failures"],
             "updated_at": state["updated_at"],
         }
         fd, temporary = tempfile.mkstemp(
