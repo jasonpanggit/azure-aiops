@@ -50,6 +50,15 @@ Requirements for the controlled Azure pilot.
 - [ ] **PILOT-03**: Operators can replay the evidence snapshot and audit history used for a historical recommendation.
 - [ ] **PILOT-04**: Pilot includes failure and stale-source handling for ingestion, authorization, execution, verification, and provider outage scenarios.
 
+### Software and OS Inventory Visibility
+
+- [ ] **INV-01**: Platform ingests native Azure VM and Arc-enabled server OS observations from Azure Resource Graph and installed-software observations from the Log Analytics ConfigurationData table, preserving source-specific status, timestamps, and provenance.
+- [ ] **INV-02**: Platform normalizes and groups OS identity and current software name/version identity, preserves raw values and exact machine joins, and supports exact general-purpose software/version lookup without incident-casework semantics.
+- [ ] **INV-03**: Platform uses a curated request-time OS lifecycle catalog, presents all cited candidates from the required resolution sources for unmapped versions, and persists only explicit operator-confirmed or manually entered dates with revision protection.
+- [ ] **INV-04**: Platform provides a short risk narrative grounded in authorized inventory aggregates and visibly falls back to cited deterministic facts when AI narration is unavailable.
+- [ ] **INV-05**: Inventory collection, grouping, detail, narrative, review, and CSV responses enforce effective scope and expose evidence, freshness, pagination, partial/unavailable status, and source identity.
+- [ ] **INV-06**: A single Software Inventory page provides OS Inventory and Installed Software tabs with summary cards/charts, required filters, lifecycle badges, machine drill-down, and safe software/version CSV export.
+
 ## v2 Requirements
 
 Deferred until the core pilot loop is proven.
@@ -123,11 +132,17 @@ Traceability is populated during roadmap creation.
 | PILOT-02 | Phase 4 | Pending |
 | PILOT-03 | Phase 4 | Pending |
 | PILOT-04 | Phase 5 | Pending |
+| INV-01 | Phase 6 | Pending |
+| INV-02 | Phase 6 | Pending |
+| INV-03 | Phase 6 | Pending |
+| INV-04 | Phase 6 | Pending |
+| INV-05 | Phase 6 | Pending |
+| INV-06 | Phase 6 | Pending |
 
 **Coverage:**
 
-- v1 requirements: 28 total
-- Mapped to phases: 28
+- v1 requirements: 34 total
+- Mapped to phases: 34
 - Unmapped: 0
 
 ---

@@ -114,11 +114,15 @@ Plans:
 
 ### Phase 6: Software and OS Inventory Visibility
 
-**Goal:** [To be planned]
-**Requirements**: TBD
+**Goal:** Operators can inspect authorized, evidence-backed OS and installed-software inventory across Azure VMs and Arc-enabled servers, understand lifecycle risk, and export exact software/version matches for follow-up.
+**Requirements**: INV-01, INV-02, INV-03, INV-04, INV-05, INV-06
 **Depends on:** Phase 5
-**Plans:** 0 plans
+**Plans:** 5 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 6 to break down)
+- [ ] 06-01-PLAN.md — Establish the scoped OS inventory path and native/Arc ARG projection
+- [ ] 06-02-PLAN.md — Add Log Analytics ConfigurationData software inventory and exact lookup
+- [ ] 06-03-PLAN.md — Deliver curated EOL catalog resolution and operator review persistence
+- [ ] 06-04-PLAN.md — Add grounded inventory risk narrative and reviewable software normalization
+- [ ] 06-05-PLAN.md — Complete the two-tab dashboard, drill-down, filtering, and CSV export
