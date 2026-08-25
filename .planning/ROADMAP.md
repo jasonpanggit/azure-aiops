@@ -16,7 +16,7 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
 
 ### Phase 1: Evidence and Situation Foundation
 
-**Goal:** Operators can create and inspect a durable, authorized situation whose evidence, freshness, provenance, quality, and audit history are trustworthy.
+**Goal:** As a platform operator, I want to open a durable authorized situation and inspect its qualified evidence and audit history, so that I can trust the operational picture before investigation or action.
 **Mode:** mvp
 **Depends on:** Existing Azure ingestion, OneLake/Delta, Fabric projection, FastAPI, Entra, and Next.js foundations
 **Requirements:** FOUND-01, FOUND-02, FOUND-03, FOUND-04, FOUND-05, DETECT-01, DETECT-02
