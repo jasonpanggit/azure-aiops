@@ -37,6 +37,15 @@ def _evidence(service: InventoryService) -> Evidence:
     )
 
 
+def _software_evidence(service: InventoryService) -> Evidence:
+    return Evidence(
+        source_engine="intelligence.inventory.InventoryService",
+        source_table="inventory/software_observations",
+        timestamp=service.observed_at,
+        confidence="high",
+    )
+
+
 @router.get("/inventory/os", summary="Grouped operating-system inventory")
 def os_inventory(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
     service = _service(context)
@@ -64,6 +73,53 @@ def os_inventory_detail(
     return envelope(
         result["data"],
         evidence=_evidence(service),
+        scope=scope.to_dict(),
+        knowledge_version=result["data"]["query_version"],
+        warnings=result["warnings"],
+        pagination=page.to_dict(result["total"]),
+    )
+
+
+@router.get("/inventory/software", summary="Grouped installed-software inventory")
+def software_inventory(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+    service = _service(context)
+    result = service.software_collection(scope, offset=page.offset, limit=page.limit)
+    return envelope(
+        result["data"],
+        evidence=_software_evidence(service),
+        scope=scope.to_dict(),
+        knowledge_version=result["data"]["query_version"],
+        warnings=result["warnings"],
+        pagination=page.to_dict(result["total"]),
+    )
+
+
+@router.get(
+    "/inventory/software/{software_key:path}",
+    summary="Machines with an exact installed software and version",
+)
+def software_inventory_detail(
+    software_key: str, context: Context, scope: ReadScope, page: Page
+) -> dict[str, Any]:
+    if not _GROUP_KEY.fullmatch(software_key):
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Invalid software inventory key")
+    software_name, software_version = software_key.split("|", 1)
+    service = _service(context)
+    result = service.software_detail(
+        software_name,
+        software_version,
+        scope,
+        offset=page.offset,
+        limit=page.limit,
+    )
+    if result is None:
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "No installed software and version matches this scope",
+        )
+    return envelope(
+        result["data"],
+        evidence=_software_evidence(service),
         scope=scope.to_dict(),
         knowledge_version=result["data"]["query_version"],
         warnings=result["warnings"],

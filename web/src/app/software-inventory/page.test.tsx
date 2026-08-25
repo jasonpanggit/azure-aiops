@@ -2,12 +2,14 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { os, osGroup } = vi.hoisted(() => ({
+const { os, osGroup, software, softwareGroup } = vi.hoisted(() => ({
   os: vi.fn(),
   osGroup: vi.fn(),
+  software: vi.fn(),
+  softwareGroup: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup } }));
+vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup } }));
 
 import SoftwareInventoryPage from "./page";
 
@@ -73,6 +75,69 @@ describe("Software Inventory OS tracer", () => {
         review_required: false,
       }],
     }));
+    software.mockResolvedValue(envelope({
+      groups: [{
+        key: "7-Zip|19.00",
+        software_name: "7-Zip",
+        software_version: "19.00",
+        install_count: 1,
+        source_types: ["azure_vm"],
+        linked_count: 1,
+        unlinked_count: 0,
+        publishers: ["Igor Pavlov"],
+      }],
+      source_status: {
+        logs: { source_type: "logs", state: "ready", observed_at: "", query_version: "v1", row_count: 1, error: "" },
+      },
+      observed_at: "2026-08-25T10:00:00Z",
+      query_version: "v1",
+      generation_id: "generation-1",
+      requested_scope: {},
+    }));
+    softwareGroup.mockResolvedValue(envelope({
+      group: {
+        key: "7-Zip|19.00",
+        software_name: "7-Zip",
+        software_version: "19.00",
+        install_count: 1,
+        source_types: ["azure_vm"],
+        linked_count: 1,
+        unlinked_count: 0,
+        publishers: ["Igor Pavlov"],
+      },
+      machines: [{
+        software_name: "7-Zip",
+        software_version: "19.00",
+        canonical_name: "7-Zip",
+        canonical_version: "19.00",
+        canonical_identity: "7-Zip|19.00",
+        raw_software_name: "7-Zip v19.00",
+        raw_software_version: "v19.00",
+        raw_identity: { name: "7-Zip v19.00", version: "v19.00" },
+        resource_id: "vm-1",
+        machine_name: "web-01",
+        computer: "web-01",
+        source_computer_id: "agent-web-01",
+        source_type: "azure_vm",
+        join_status: "linked",
+        resource_join_status: "linked",
+        subscription_id: "sub-a",
+        resource_group: "rg-prod",
+        environment: "prod",
+        publisher: "Igor Pavlov",
+        software_type: "Package",
+        observed_at: "2026-08-25T10:00:00Z",
+        time_generated: "2026-08-25T10:00:00Z",
+        evidence: [],
+      }],
+      source_status: {
+        logs: { source_type: "logs", state: "ready", observed_at: "", query_version: "v1", row_count: 1, error: "" },
+      },
+      observed_at: "2026-08-25T10:00:00Z",
+      query_version: "v1",
+      generation_id: "generation-1",
+      requested_scope: {},
+    }));
   });
 
   it("renders grouped OS rows, status warnings, review state, and scoped drill-down", async () => {
@@ -85,5 +150,16 @@ describe("Software Inventory OS tracer", () => {
     fireEvent.click(screen.getByRole("button", { name: /View machines for Windows Server 2019/ }));
     expect(await screen.findByText("web-01")).toBeInTheDocument();
     expect(osGroup).toHaveBeenCalledWith("Windows Server|2019", {});
+  });
+
+  it("renders canonical installed software and exact linked details", async () => {
+    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Installed Software" }));
+
+    expect(await screen.findByText("7-Zip")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /View machines for 7-Zip 19.00/ }));
+    expect(await screen.findByText(/exact resource join/)).toBeInTheDocument();
+    expect(screen.getByText(/Raw: 7-Zip v19.00 v19.00/)).toBeInTheDocument();
+    expect(softwareGroup).toHaveBeenCalledWith("7-Zip|19.00", {});
   });
 });

@@ -119,6 +119,8 @@ export const connectionsApi = {
     apiRequest<ConnectionHealthReport>(`/subscription-connections/${encodeURIComponent(id)}/health`),
 };
 
+import type { SoftwareInventoryCollection, SoftwareInventoryDetail } from "./types";
+
 export const inventoryApi = {
   os: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);
@@ -131,6 +133,18 @@ export const inventoryApi = {
     query.set("offset", String(offset));
     query.set("limit", String(limit));
     return apiRequest<OsInventoryDetail>(`/inventory/os/${encodeURIComponent(key)}`, { query });
+  },
+  software: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<SoftwareInventoryCollection>("/inventory/software", { query });
+  },
+  softwareGroup: (key: string, scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<SoftwareInventoryDetail>(`/inventory/software/${encodeURIComponent(key)}`, { query });
   },
 };
 

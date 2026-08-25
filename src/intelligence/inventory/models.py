@@ -9,7 +9,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-SOURCE_TYPES = frozenset({"azure_vm", "arc"})
+MACHINE_SOURCE_TYPES = frozenset({"azure_vm", "arc"})
+SOURCE_TYPES = frozenset({"azure_vm", "arc", "logs"})
 SOURCE_STATES = frozenset({"ready", "partial", "stale", "degraded", "unavailable"})
 
 
@@ -105,7 +106,7 @@ class MachineObservation:
             if not _text(getattr(self, name)):
                 raise ValueError(f"Machine observation requires {name}")
         source = _text(self.source_type).casefold()
-        if source not in SOURCE_TYPES:
+        if source not in MACHINE_SOURCE_TYPES:
             raise ValueError(f"Unknown inventory source type {self.source_type!r}")
         status = _text(self.source_status).casefold()
         if status not in SOURCE_STATES:
@@ -221,6 +222,119 @@ class MachineObservation:
         return payload
 
 
+@dataclass(frozen=True)
+class SoftwareObservation:
+    """A current ConfigurationData installation, optionally joined to a machine."""
+
+    software_name: str
+    software_version: str
+    raw_software_name: str
+    raw_software_version: str
+    canonical_identity: str
+    resource_id: str
+    machine_name: str
+    source_computer_id: str
+    source_type: str | None
+    join_status: str
+    subscription_id: str
+    resource_group: str
+    environment: str
+    publisher: str
+    software_type: str
+    observed_at: str
+    evidence: tuple[dict[str, str], ...] = ()
+
+    @classmethod
+    def from_mapping(cls, row: dict[str, Any]) -> SoftwareObservation:
+        evidence = row.get("evidence")
+        parsed_evidence = tuple(
+            item
+            if isinstance(item, InventoryEvidence)
+            else dict(item)
+            for item in evidence or ()
+            if isinstance(item, (dict, InventoryEvidence))
+        )
+        return cls(
+            software_name=str(row.get("software_name") or row.get("canonical_name") or ""),
+            software_version=str(row.get("software_version") or row.get("canonical_version") or ""),
+            raw_software_name=str(row.get("raw_software_name") or ""),
+            raw_software_version=str(row.get("raw_software_version") or ""),
+            canonical_identity=str(row.get("canonical_identity") or ""),
+            resource_id=str(row.get("resource_id") or ""),
+            machine_name=str(row.get("machine_name") or row.get("computer") or ""),
+            source_computer_id=str(row.get("source_computer_id") or ""),
+            source_type=row.get("source_type"),
+            join_status=str(row.get("join_status") or row.get("resource_join_status") or "unlinked"),
+            subscription_id=str(row.get("subscription_id") or ""),
+            resource_group=str(row.get("resource_group") or ""),
+            environment=str(row.get("environment") or ""),
+            publisher=str(row.get("publisher") or ""),
+            software_type=str(row.get("software_type") or ""),
+            observed_at=str(row.get("observed_at") or row.get("time_generated") or ""),
+            evidence=parsed_evidence,
+        )
+
+    def __post_init__(self) -> None:
+        if not _text(self.software_name) or not _text(self.software_version):
+            raise ValueError("Software observation requires a canonical name and version")
+        if self.join_status not in {"linked", "unlinked"}:
+            raise ValueError("Software observation has an invalid join status")
+        if self.source_type is not None and self.source_type not in MACHINE_SOURCE_TYPES:
+            raise ValueError("Software observation has an invalid source type")
+        object.__setattr__(self, "software_name", _text(self.software_name, "Unknown Software"))
+        object.__setattr__(self, "software_version", _text(self.software_version, "Unknown"))
+        object.__setattr__(self, "raw_software_name", _text(self.raw_software_name))
+        object.__setattr__(self, "raw_software_version", _text(self.raw_software_version))
+        object.__setattr__(
+            self,
+            "canonical_identity",
+            _text(self.canonical_identity, f"{self.software_name}|{self.software_version}"),
+        )
+        object.__setattr__(self, "resource_id", _text(self.resource_id))
+        object.__setattr__(self, "machine_name", _text(self.machine_name, "Unknown machine"))
+        object.__setattr__(self, "source_computer_id", _text(self.source_computer_id))
+        object.__setattr__(self, "subscription_id", _text(self.subscription_id))
+        object.__setattr__(self, "resource_group", _text(self.resource_group, "Unknown"))
+        object.__setattr__(self, "environment", _text(self.environment, "Unknown"))
+        object.__setattr__(self, "publisher", _text(self.publisher))
+        object.__setattr__(self, "software_type", _text(self.software_type))
+        object.__setattr__(self, "observed_at", _text(self.observed_at))
+        object.__setattr__(self, "evidence", tuple(self.evidence))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "software_name": self.software_name,
+            "software_version": self.software_version,
+            "canonical_name": self.software_name,
+            "canonical_version": self.software_version,
+            "canonical_identity": self.canonical_identity,
+            "raw_software_name": self.raw_software_name,
+            "raw_software_version": self.raw_software_version,
+            "raw_identity": {
+                "name": self.raw_software_name,
+                "version": self.raw_software_version,
+            },
+            "resource_id": self.resource_id,
+            "machine_name": self.machine_name,
+            "computer": self.machine_name,
+            "source_computer_id": self.source_computer_id,
+            "source_type": self.source_type,
+            "join_status": self.join_status,
+            "resource_join_status": self.join_status,
+            "subscription_id": self.subscription_id,
+            "resource_group": self.resource_group,
+            "environment": self.environment,
+            "publisher": self.publisher,
+            "software_type": self.software_type,
+            "observed_at": self.observed_at,
+            "time_generated": self.observed_at,
+            "evidence": [
+                item.to_dict() if isinstance(item, InventoryEvidence) else dict(item)
+                for item in self.evidence
+            ],
+        }
+
+
 def _environment_from_tags(tags: dict[str, Any]) -> str:
     """Read only approved resource-tag keys, with deterministic precedence."""
     by_name = {
@@ -250,4 +364,22 @@ class OSGroup:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["source_types"] = list(self.source_types)
+        return payload
+
+
+@dataclass(frozen=True)
+class SoftwareGroup:
+    key: str
+    software_name: str
+    software_version: str
+    install_count: int
+    source_types: tuple[str, ...]
+    linked_count: int
+    unlinked_count: int
+    publishers: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["source_types"] = list(self.source_types)
+        payload["publishers"] = list(self.publishers)
         return payload

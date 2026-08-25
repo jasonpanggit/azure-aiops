@@ -954,3 +954,61 @@ export interface DurableSituation {
   links?: DurableSituationLink[];
   source_status?: DurableSourceStatus[];
 }
+
+export type SoftwareSourceType = InventorySourceType | "unlinked";
+
+export interface SoftwareInventoryGroup {
+  key: string;
+  software_name: string;
+  software_version: string;
+  install_count: number;
+  source_types: SoftwareSourceType[];
+  linked_count: number;
+  unlinked_count: number;
+  publishers: string[];
+}
+
+export interface SoftwareInventoryMachine {
+  software_name: string;
+  software_version: string;
+  canonical_name: string;
+  canonical_version: string;
+  canonical_identity: string;
+  raw_software_name: string;
+  raw_software_version: string;
+  raw_identity: { name: string; version: string };
+  resource_id: string;
+  machine_name: string;
+  computer: string;
+  source_computer_id: string;
+  source_type: InventorySourceType | null;
+  join_status: "linked" | "unlinked";
+  resource_join_status: "linked" | "unlinked";
+  subscription_id: string;
+  resource_group: string;
+  environment: string;
+  publisher: string;
+  software_type: string;
+  observed_at: string;
+  time_generated: string;
+  evidence: InventoryEvidence[];
+}
+
+export interface SoftwareInventoryCollection {
+  groups: SoftwareInventoryGroup[];
+  source_status: Record<string, InventorySourceStatus>;
+  observed_at: string;
+  query_version: string;
+  generation_id: string;
+  requested_scope: Record<string, string[]>;
+}
+
+export interface SoftwareInventoryDetail {
+  group: SoftwareInventoryGroup;
+  machines: SoftwareInventoryMachine[];
+  source_status: Record<string, InventorySourceStatus>;
+  observed_at: string;
+  query_version: string;
+  generation_id: string;
+  requested_scope: Record<string, string[]>;
+}

@@ -1,0 +1,50 @@
+[
+  {
+    "ConfigDataType": "Software",
+    "SoftwareName": "7-Zip 19.00",
+    "CurrentVersion": "19.00",
+    "Publisher": "Igor Pavlov",
+    "SoftwareType": "Package",
+    "Computer": "web-01",
+    "SourceComputerId": "agent-web-01",
+    "_ResourceId": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/web-01",
+    "_SubscriptionId": "sub-a",
+    "TimeGenerated": "2026-08-25T10:00:00Z"
+  },
+  {
+    "ConfigDataType": "Software",
+    "SoftwareName": "7-Zip v19.00",
+    "CurrentVersion": "v19.00",
+    "Publisher": "Igor Pavlov",
+    "SoftwareType": "Package",
+    "Computer": "web-01",
+    "SourceComputerId": "agent-web-01",
+    "_ResourceId": "/SUBSCRIPTIONS/SUB-A/RESOURCEGROUPS/RG-PROD/PROVIDERS/MICROSOFT.COMPUTE/VIRTUALMACHINES/WEB-01",
+    "_SubscriptionId": "sub-a",
+    "TimeGenerated": "2026-08-25T11:00:00Z"
+  },
+  {
+    "ConfigDataType": "Software",
+    "SoftwareName": "7-Zip",
+    "CurrentVersion": "18.00",
+    "Publisher": "Igor Pavlov",
+    "SoftwareType": "Package",
+    "Computer": "web-01",
+    "SourceComputerId": "agent-web-01",
+    "_ResourceId": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/web-01",
+    "_SubscriptionId": "sub-a",
+    "TimeGenerated": "2026-08-24T10:00:00Z"
+  },
+  {
+    "ConfigDataType": "Software",
+    "SoftwareName": "Contoso Agent",
+    "CurrentVersion": "4.2",
+    "Publisher": "Contoso",
+    "SoftwareType": "Package",
+    "Computer": "orphan",
+    "SourceComputerId": "agent-orphan",
+    "_ResourceId": "/subscriptions/sub-a/resourceGroups/rg-unknown/providers/Microsoft.Compute/virtualMachines/missing",
+    "_SubscriptionId": "sub-a",
+    "TimeGenerated": "2026-08-25T09:00:00Z"
+  }
+]

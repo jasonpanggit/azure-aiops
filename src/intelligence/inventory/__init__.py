@@ -5,6 +5,8 @@ from .models import (
     InventorySourceStatus,
     MachineObservation,
     OSGroup,
+    SoftwareGroup,
+    SoftwareObservation,
     group_key,
 )
 from .service import InventoryService, InventorySnapshot
@@ -16,5 +18,7 @@ __all__ = [
     "InventorySourceStatus",
     "MachineObservation",
     "OSGroup",
+    "SoftwareGroup",
+    "SoftwareObservation",
     "group_key",
 ]

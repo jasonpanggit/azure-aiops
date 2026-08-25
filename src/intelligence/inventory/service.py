@@ -17,6 +17,8 @@ from .models import (
     InventorySourceStatus,
     MachineObservation,
     OSGroup,
+    SoftwareGroup,
+    SoftwareObservation,
     group_key,
 )
 
@@ -25,6 +27,8 @@ from .models import (
 class InventorySnapshot:
     observations: tuple[MachineObservation, ...]
     source_status: tuple[InventorySourceStatus, ...]
+    software_observations: tuple[SoftwareObservation, ...] = ()
+    software_source_status: tuple[InventorySourceStatus, ...] = ()
     observed_at: str = ""
     query_version: str = "inventory-os-v1"
     generation_id: str = ""
@@ -54,6 +58,16 @@ class InventorySnapshot:
             if isinstance(row, (dict, MachineObservation))
         ]
         observations = tuple(_latest_observations(parsed_observations))
+        software_rows = metadata.get("software_observations") or metadata.get("software_rows") or []
+        if not isinstance(software_rows, list):
+            raise TypeError("Inventory software observations must be a list")
+        software_observations = tuple(
+            row
+            if isinstance(row, SoftwareObservation)
+            else SoftwareObservation.from_mapping(row)
+            for row in software_rows
+            if isinstance(row, (dict, SoftwareObservation))
+        )
         statuses_payload = metadata.get("source_status") or {}
         if isinstance(statuses_payload, list):
             statuses_payload = {
@@ -89,9 +103,28 @@ class InventorySnapshot:
                 )
                 for source_type in ("azure_vm", "arc")
             ]
+        software_statuses_payload = metadata.get("software_source_status") or {}
+        software_statuses: list[InventorySourceStatus] = []
+        if isinstance(software_statuses_payload, dict):
+            raw = software_statuses_payload.get("logs")
+            if isinstance(raw, str):
+                raw = {"state": raw}
+            raw = raw if isinstance(raw, dict) else {}
+            software_statuses.append(
+                InventorySourceStatus(
+                    source_type="logs",
+                    state=str(raw.get("state") or "ready"),
+                    observed_at=str(raw.get("observed_at") or metadata.get("observed_at") or _latest_software(software_observations)),
+                    query_version=str(raw.get("query_version") or query_version),
+                    row_count=int(raw.get("row_count", len(software_observations))),
+                    error=str(raw.get("error") or ""),
+                )
+            )
         return cls(
             observations=observations,
             source_status=tuple(statuses),
+            software_observations=software_observations,
+            software_source_status=tuple(software_statuses),
             observed_at=str(metadata.get("observed_at") or _latest(observations)),
             query_version=query_version,
             generation_id=str(metadata.get("generation_id") or metadata.get("run_id") or ""),
@@ -137,7 +170,9 @@ class InventoryService:
     ) -> InventoryService | None:
         rows = store.read_dataset("inventory/os_observations")
         status_rows = store.read_dataset("inventory/source_status")
-        if not rows and not status_rows:
+        software_rows = store.read_dataset("inventory/software_observations")
+        software_status_rows = store.read_dataset("inventory/software_source_status")
+        if not rows and not status_rows and not software_rows and not software_status_rows:
             return None
         statuses = {
             str(item.get("source_type") or ""): item
@@ -146,7 +181,16 @@ class InventoryService:
         }
         return cls(
             InventorySnapshot.from_payload(
-                {"observations": rows, "source_status": statuses}
+                {
+                    "observations": rows,
+                    "source_status": statuses,
+                    "software_observations": software_rows,
+                    "software_source_status": {
+                        str(item.get("source_type") or ""): item
+                        for item in software_status_rows
+                        if isinstance(item, dict) and item.get("source_type")
+                    },
+                }
             ),
             catalog=catalog,
         )
@@ -252,6 +296,117 @@ class InventoryService:
             "warnings": _status_warnings(self.source_status(rows)),
         }
 
+    def _scoped_software(self, scope: Scope) -> tuple[SoftwareObservation, ...]:
+        rows = [
+            row
+            for row in self.snapshot.software_observations
+            if scope.matches(
+                scope_attributes(
+                    {
+                        "subscription_id": row.subscription_id,
+                        "environment": row.environment,
+                        "resource_group": row.resource_group,
+                    }
+                )
+            )
+        ]
+        return tuple(
+            sorted(
+                rows,
+                key=lambda row: (
+                    row.software_name.casefold(),
+                    row.software_version.casefold(),
+                    row.resource_id.casefold(),
+                    row.machine_name.casefold(),
+                ),
+            )
+        )
+
+    def software_source_status(
+        self, rows: tuple[SoftwareObservation, ...] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        scoped_rows = rows if rows is not None else self.snapshot.software_observations
+        statuses = self.snapshot.software_source_status or (
+            InventorySourceStatus(
+                source_type="logs",
+                state="ready",
+                observed_at=self.observed_at,
+                query_version=self.query_version,
+                row_count=len(self.snapshot.software_observations),
+            ),
+        )
+        return {
+            item.source_type: {
+                **item.to_dict(),
+                "row_count": len(scoped_rows),
+            }
+            for item in statuses
+        }
+
+    def software_collection(
+        self, scope: Scope, *, offset: int = 0, limit: int = 100
+    ) -> dict[str, Any]:
+        rows = self._scoped_software(scope)
+        grouped: dict[str, list[SoftwareObservation]] = {}
+        for row in rows:
+            grouped.setdefault(f"{row.software_name}|{row.software_version}", []).append(row)
+        groups = [
+            _make_software_group(key, items)
+            for key, items in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
+        ]
+        statuses = self.software_source_status(rows)
+        data = {
+            "groups": [item.to_dict() for item in groups[offset : offset + limit]],
+            "source_status": statuses,
+            "observed_at": self.observed_at,
+            "query_version": self.query_version,
+            "generation_id": self.generation_id,
+            "requested_scope": scope.to_dict(),
+        }
+        return {
+            "data": data,
+            "total": len(groups),
+            "evidence": self._software_evidence(rows),
+            "warnings": _status_warnings(statuses),
+        }
+
+    def software_detail(
+        self,
+        software_name: str,
+        software_version: str,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any] | None:
+        rows = self._scoped_software(scope)
+        key = f"{software_name}|{software_version}"
+        matching = tuple(
+            row
+            for row in rows
+            if row.software_name == software_name and row.software_version == software_version
+        )
+        if not matching:
+            return None
+        statuses = self.software_source_status(rows)
+        return {
+            "data": {
+                "group": _make_software_group(key, list(matching)).to_dict(),
+                "machines": [row.to_dict() for row in matching[offset : offset + limit]],
+                "source_status": statuses,
+                "observed_at": self.observed_at,
+                "query_version": self.query_version,
+                "generation_id": self.generation_id,
+                "requested_scope": scope.to_dict(),
+            },
+            "total": len(matching),
+            "evidence": self._software_evidence(matching),
+            "warnings": _status_warnings(statuses),
+        }
+
+    # Explicit alias for consumers that use the grouped-detail terminology.
+    software_group_detail = software_detail
+
     def evidence_for_api(self, rows: tuple[MachineObservation, ...] = ()) -> list[Evidence]:
         return [
             Evidence(
@@ -276,6 +431,22 @@ class InventoryService:
             for item in _unique_evidence(rows)
         ]
 
+    def _software_evidence(
+        self, rows: tuple[SoftwareObservation, ...]
+    ) -> list[dict[str, str]]:
+        return [
+            {
+                "source_engine": item.get("source_engine", "Azure Monitor Logs"),
+                "source_table": item.get("source_table", "ConfigurationData"),
+                "timestamp": item.get("observed_at", self.observed_at),
+                "subscription_connection": "",
+                "resource_id": item.get("source_id", ""),
+                "confidence": "high",
+                "freshness": "unknown",
+            }
+            for item in _unique_software_evidence(rows)
+        ]
+
 
 def _scope_row(row: MachineObservation) -> dict[str, str]:
     return {
@@ -298,6 +469,23 @@ def _make_group(key: str, rows: list[MachineObservation]) -> OSGroup:
         support_end=selected.support_end,
         days_remaining=selected.days_remaining,
         review_required=any(row.review_required for row in rows),
+    )
+
+
+def _make_software_group(key: str, rows: list[SoftwareObservation]) -> SoftwareGroup:
+    selected = rows[0]
+    source_types = sorted({row.source_type for row in rows if row.source_type})
+    if any(row.join_status == "unlinked" for row in rows):
+        source_types.append("unlinked")
+    return SoftwareGroup(
+        key=key,
+        software_name=selected.software_name,
+        software_version=selected.software_version,
+        install_count=len(rows),
+        source_types=tuple(source_types),
+        linked_count=sum(row.join_status == "linked" for row in rows),
+        unlinked_count=sum(row.join_status == "unlinked" for row in rows),
+        publishers=tuple(sorted({row.publisher for row in rows if row.publisher})),
     )
 
 
@@ -331,11 +519,26 @@ def _latest(rows: tuple[MachineObservation, ...]) -> str:
     return max((row.observed_at for row in rows), default="")
 
 
+def _latest_software(rows: tuple[SoftwareObservation, ...]) -> str:
+    return max((row.observed_at for row in rows), default="")
+
+
 def _unique_evidence(rows: tuple[MachineObservation, ...]) -> tuple[Any, ...]:
     values: dict[tuple[str, str, str], Any] = {}
     for row in rows:
         for item in row.evidence:
             values[(item.source_engine, item.source_table, item.observed_at)] = item
+    return tuple(values.values())
+
+
+def _unique_software_evidence(rows: tuple[SoftwareObservation, ...]) -> tuple[dict[str, str], ...]:
+    values: dict[tuple[str, str, str], dict[str, str]] = {}
+    for row in rows:
+        for item in row.evidence:
+            source_engine = item.get("source_engine", "Azure Monitor Logs")
+            source_table = item.get("source_table", "ConfigurationData")
+            observed_at = item.get("observed_at", "")
+            values[(source_engine, source_table, observed_at)] = item
     return tuple(values.values())
 
 

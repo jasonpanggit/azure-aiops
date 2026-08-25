@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from api.scope import Scope
+from hermes_arg_connector.inventory_normalize import normalize_configuration_data
 from hermes_arg_connector.normalize import Normalizer
 from hermes_arg_connector.queries import QueryCatalog
 from hermes_arg_connector.storage import DatasetStore
@@ -14,6 +15,7 @@ from intelligence.inventory import InventoryService
 from intelligence.lifecycle import EOLCatalog
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_inventory_arg.json"
+SOFTWARE_FIXTURE = Path(__file__).parent / "fixtures" / "mock_configurationdata.json"
 
 
 def _scope(**kwargs: list[str]) -> Scope:
@@ -218,6 +220,54 @@ def test_failed_inventory_family_remains_visible_without_erasing_other_family() 
     assert statuses["azure_vm"]["state"] == "ready"
     assert statuses["arc"]["state"] == "degraded"
     assert statuses["arc"]["error"] == "Arc query timed out"
+
+
+def test_configuration_data_normalizes_and_exactly_joins_machine_context() -> None:
+    machine_service = InventoryService.from_fixture(FIXTURE)
+    rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))
+    software = normalize_configuration_data(rows, machine_service.snapshot.observations)
+
+    assert len(software) == 2
+    seven_zip = next(row for row in software if row.software_name == "7-Zip")
+    assert seven_zip.software_version == "19.00"
+    assert seven_zip.raw_software_name == "7-Zip v19.00"
+    assert seven_zip.join_status == "linked"
+    assert seven_zip.environment == "prod"
+    assert seven_zip.resource_group == "rg-prod"
+    orphan = next(row for row in software if row.software_name == "Contoso Agent")
+    assert orphan.join_status == "unlinked"
+    assert orphan.source_type is None
+    assert orphan.environment == "Unknown"
+    assert orphan.resource_group == "Unknown"
+
+
+def test_software_collection_and_exact_version_detail_are_scope_first() -> None:
+    machine_service = InventoryService.from_fixture(FIXTURE)
+    rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    payload["software_observations"] = [
+        row.to_dict()
+        for row in normalize_configuration_data(rows, machine_service.snapshot.observations)
+    ]
+    payload["software_source_status"] = {
+        "logs": {
+            "state": "ready",
+            "observed_at": "2026-08-25T11:00:00Z",
+            "query_version": "inventory-software-v1",
+        }
+    }
+    service = InventoryService(payload)
+
+    collection = service.software_collection(_scope(subscription=["sub-a"]))
+    assert [group["key"] for group in collection["data"]["groups"]] == [
+        "7-Zip|19.00",
+        "Contoso Agent|4.2",
+    ]
+    detail = service.software_detail("7-Zip", "19.00", _scope(subscription=["sub-a"]))
+    assert detail is not None
+    assert detail["data"]["machines"][0]["resource_join_status"] == "linked"
+    assert detail["data"]["machines"][0]["environment"] == "prod"
+    assert service.software_detail("7-Zip", "18.00", _scope(subscription=["sub-a"])) is None
 
 
 def _write_payload(payload: dict) -> str:
