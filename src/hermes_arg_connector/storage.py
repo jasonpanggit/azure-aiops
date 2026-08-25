@@ -72,6 +72,10 @@ class DatasetStore:
             "relationships/relationships": graph.relationships,
             "changes/resource_changes": graph.changes,
         }
+        for collection in ("situations", "evidence", "links", "audit_events", "source_status"):
+            rows = getattr(graph, collection, None)
+            if rows is not None:
+                datasets[f"situations/{collection}"] = _sorted_rows(rows)
         if self.retain_raw_queries:
             datasets.update(
                 {f"queries/{name}": _sorted_rows(rows) for name, rows in sorted(query_results.items())}

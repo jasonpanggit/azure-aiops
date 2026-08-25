@@ -44,6 +44,11 @@ class NormalizedGraph:
     entities: dict[str, list[dict]] = field(default_factory=lambda: {name: [] for name in ENTITY_TYPES})
     relationships: list[dict] = field(default_factory=list)
     changes: list[dict] = field(default_factory=list)
+    situations: list[dict] = field(default_factory=list)
+    evidence: list[dict] = field(default_factory=list)
+    links: list[dict] = field(default_factory=list)
+    audit_events: list[dict] = field(default_factory=list)
+    source_status: list[dict] = field(default_factory=list)
 
 
 class Normalizer:
@@ -61,7 +66,7 @@ class Normalizer:
             if str(value or "").strip()
         }
 
-    def normalize(self, payload: dict[str, list[dict]], observed_at: datetime) -> NormalizedGraph:
+    def normalize(self, payload: dict[str, list[dict]], observed_at: datetime, *, run_id: str = "normalization", requested_scope: dict[str, list[str]] | None = None) -> NormalizedGraph:
         observed = _iso(observed_at)
         context = self.connection_context
         graph = NormalizedGraph()
@@ -139,7 +144,7 @@ class Normalizer:
             if target:
                 _add_edge(edge_index, entity["id"], "impacts", target, "arg:AdvisorResources", observed, 0.98)
 
-        graph.changes = [_change(row, observed) for row in payload.get("resource_changes", [])]
+        graph.changes = [_change(row, observed) for row in payload.get("resource_changes", []) if not _failed_provider_row(row)]
         self._normalize_network(payload, observed, entity_index, edge_index)
         if context:
             for entity_type in ENTITY_TYPES:
@@ -162,6 +167,13 @@ class Normalizer:
             ),
             key=lambda item: item["relationshipId"],
         )
+        from situations.materializer import materialize_graph
+        generated = materialize_graph(graph, run_id, ingested_at=observed)
+        graph.situations = generated["situations"]
+        graph.evidence = generated["evidence"]
+        graph.links = generated["links"]
+        graph.audit_events = generated["audit_events"]
+        graph.source_status = _source_statuses(payload.get("resource_changes", []), run_id=run_id, observed_at=observed, requested_scope=requested_scope)
         return graph
 
 
@@ -577,3 +589,15 @@ def _lower(value: Any) -> str:
 
 def _iso(value: datetime) -> str:
     return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _failed_provider_row(row: Mapping[str, Any]) -> bool:
+    return str(row.get("status") or "").casefold() in {"failed", "unavailable"}
+
+
+def _source_statuses(rows: list[dict[str, Any]], *, run_id: str, observed_at: str, requested_scope: dict[str, list[str]] | None) -> list[dict[str, Any]]:
+    from situations.models import SourceStatus
+    failed = next((row for row in rows if _failed_provider_row(row)), None)
+    timestamps = [str(row.get("changedAt") or row.get("observed_at") or row.get("watermark") or ((row.get("properties") or {}).get("changeAttributes") or {}).get("timestamp") or "") for row in rows if not _failed_provider_row(row)]
+    status = SourceStatus(source_family="arg_activity_log", run_id=run_id, status="failed" if failed else "succeeded", observed_at=max(timestamps, default=observed_at), ingested_at=observed_at, watermark="" if failed else max(timestamps, default=""), query_version=str((rows[0] if rows else {}).get("query_version") or "1.0.0"), requested_scope=requested_scope or {}, provider_status=str((failed or {}).get("status") or "ok"), freshness="unknown" if failed else "fresh", availability="unavailable" if failed else "available", quality="degraded" if failed else "complete", error=str((failed or {}).get("error") or ""))
+    return [status.to_dict()]

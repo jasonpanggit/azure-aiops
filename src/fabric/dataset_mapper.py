@@ -247,6 +247,7 @@ class InventoryDatasetMapper:
         }
         relationships = _read_jsonl(fs, f"{root}/relationships/relationships.jsonl")
         changes = _read_jsonl(fs, f"{root}/changes/resource_changes.jsonl")
+        source_status = _read_jsonl(fs, f"{root}/situations/source_status.jsonl")
 
         all_resources = [
             *entities["Resource"],
@@ -338,6 +339,7 @@ class InventoryDatasetMapper:
                 ),
             ],
             "silver_resource_relationships": relationship_rows,
+            "metadata_source_status": [_source_status_row(row, ingestion_run_id) for row in source_status],
             "ontology_entities": graph.entities,
             "ontology_relationships": graph.relationships,
             "ontology_application_context": graph.views["application_context"],
@@ -572,6 +574,33 @@ def _change_row(
         "target_resource_id": resource_id,
         "change_type": str(row.get("changeType") or ""),
         "payload_json": _canonical(row),
+    }
+
+
+def _source_status_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    requested_scope = row.get("requested_scope") or {}
+    subscriptions = requested_scope.get("subscription") if isinstance(requested_scope, dict) else []
+    source_family = str(row.get("source_family") or "unknown")
+    resource_id = f"source-status://{source_family}/{row.get("run_id") or run_id}".casefold()
+    return {
+        "tenant_id": "unknown",
+        "subscription_id": str((subscriptions or ["unknown"])[0]),
+        "resource_id": resource_id,
+        "timestamp": str(row.get("ingested_at") or row.get("observed_at") or "unknown"),
+        "change_version": _version(row),
+        "ingestion_run_id": run_id,
+        "source_family": source_family,
+        "status": str(row.get("status") or "unknown"),
+        "observed_at": str(row.get("observed_at") or ""),
+        "ingested_at": str(row.get("ingested_at") or ""),
+        "watermark": str(row.get("watermark") or ""),
+        "query_version": str(row.get("query_version") or ""),
+        "requested_scope_json": _canonical(requested_scope),
+        "provider_status": str(row.get("provider_status") or ""),
+        "freshness": str(row.get("freshness") or "unknown"),
+        "availability": str(row.get("availability") or "unknown"),
+        "quality": str(row.get("quality") or "unknown"),
+        "error": str(row.get("error") or ""),
     }
 
 

@@ -67,10 +67,10 @@ class IngestionService:
             previous_changes,
             query_results.get("resource_changes", []),
         )
-        graph = Normalizer(self.config.connection_context).normalize(normalization_payload, started)
+        run_id = str(uuid.uuid4())
+        graph = Normalizer(self.config.connection_context).normalize(normalization_payload, started, run_id=run_id, requested_scope={"subscription": sorted(subscriptions)})
         _preserve_created_timestamps(graph, self.store)
         change_watermark = _max_change_watermark(previous_watermark, graph.changes)
-        run_id = str(uuid.uuid4())
         manifest = self.store.publish(
             graph,
             query_results,
@@ -97,8 +97,10 @@ class IngestionService:
 
 def _merge_changes(previous: list[dict], current: list[dict]) -> list[dict]:
     merged: dict[str, dict] = {}
-    for row in [*previous, *current]:
+    for index, row in enumerate([*previous, *current]):
         row_id = str(row.get("id") or "").strip().lower()
+        if not row_id and str(row.get("status") or "").casefold() in {"failed", "unavailable"}:
+            row_id = f"__provider_failure__{index}"
         if row_id:
             merged[row_id] = row
     return list(merged.values())

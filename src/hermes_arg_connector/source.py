@@ -37,5 +37,9 @@ class AzureResourceGraphSource:
                 if spec.scope != "management_groups" or self.management_group_ids
             }
             for future in as_completed(futures):
-                results[futures[future]] = future.result()
+                name = futures[future]
+                try:
+                    results[name] = future.result()
+                except Exception as exc:  # noqa: BLE001 - preserve provider failure as data
+                    results[name] = [{"status": "failed", "provider_status": "failed", "error": str(exc)[:2048]}]
         return results

@@ -9,7 +9,9 @@ from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
+from hermes_arg_connector.config import ConnectorConfig
 from hermes_arg_connector.normalize import Normalizer
+from hermes_arg_connector.service import IngestionService
 
 TOKEN = "situation-tracer-token-012345"
 
@@ -75,3 +77,67 @@ def test_normalization_to_scoped_api_read(tmp_path) -> None:
         headers={"authorization": f"Bearer {TOKEN}"},
     )
     assert forbidden.status_code in {403, 404}
+
+
+def test_production_ingestion_publishes_arg_activity_and_source_status(tmp_path) -> None:
+    import json
+    from pathlib import Path
+
+    fixture = json.loads(Path("tests/fixtures/phase1_signal_payloads.json").read_text())
+
+    class FixtureSource:
+        def list_subscriptions(self):
+            return [{"subscriptionId": "sub-a"}]
+
+        def fetch(self, specs, subscriptions):
+            return {spec.name: list(fixture.get(spec.name, [])) for spec in specs}
+
+    started = datetime(2026, 8, 25, 2, tzinfo=UTC)
+    service = IngestionService(
+        ConnectorConfig(output_dir=tmp_path, subscriptions=("sub-a",)),
+        source=FixtureSource(),
+        clock=lambda: started,
+    )
+
+    service.run()
+    evidence = service.store.read_dataset("situations/evidence")
+    statuses = service.store.read_dataset("situations/source_status")
+
+    assert [row["source_family"] for row in evidence] == ["arg_activity_log"]
+    assert evidence[0]["source_object_id"] == "change-1"
+    assert evidence[0]["observed_at"] == "2026-08-25T01:00:00Z"
+    assert evidence[0]["ingested_at"] == "2026-08-25T02:00:00Z"
+    assert evidence[0]["run_id"] == statuses[0]["run_id"]
+    assert statuses[0]["source_family"] == "arg_activity_log"
+    assert statuses[0]["status"] == "succeeded"
+    assert statuses[0]["watermark"] == "2026-08-25T01:00:00Z"
+    assert statuses[0]["requested_scope"] == {"subscription": ["sub-a"]}
+
+
+def test_production_ingestion_retains_failed_arg_status_without_watermark(tmp_path) -> None:
+    class FailedSource:
+        def list_subscriptions(self):
+            return [{"subscriptionId": "sub-a"}]
+
+        def fetch(self, specs, subscriptions):
+            return {
+                spec.name: (
+                    [{"status": "failed", "error": "provider offline", "watermark": "future"}]
+                    if spec.name == "resource_changes"
+                    else []
+                )
+                for spec in specs
+            }
+
+    service = IngestionService(
+        ConnectorConfig(output_dir=tmp_path, subscriptions=("sub-a",)),
+        source=FailedSource(),
+        clock=lambda: datetime(2026, 8, 25, 2, tzinfo=UTC),
+    )
+    service.run()
+    status = service.store.read_dataset("situations/source_status")[0]
+
+    assert status["status"] == "failed"
+    assert status["watermark"] == ""
+    assert status["availability"] == "unavailable"
+    assert service.store.read_dataset("situations/evidence") == []

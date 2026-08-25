@@ -281,6 +281,92 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("report_json", pa.string(), nullable=False),
         ]
     ),
+    "silver_situations": pa.schema(
+        [
+            *_BASE,
+            pa.field("situation_id", pa.string(), nullable=False),
+            pa.field("title", pa.string(), nullable=False),
+            pa.field("situation_type", pa.string(), nullable=False),
+            pa.field("lifecycle_state", pa.string(), nullable=False),
+            pa.field("severity", pa.string(), nullable=False),
+            pa.field("priority", pa.string(), nullable=False),
+            pa.field("scope_json", pa.string(), nullable=False),
+            pa.field("owner", pa.string(), nullable=False),
+            pa.field("support_team", pa.string(), nullable=False),
+            pa.field("affected_resource_ids_json", pa.string(), nullable=False),
+            pa.field("linked_evidence_ids_json", pa.string(), nullable=False),
+            pa.field("started_at", pa.string(), nullable=False),
+            pa.field("last_observed_at", pa.string(), nullable=False),
+            pa.field("evidence_state", pa.string(), nullable=False),
+            pa.field("warnings_json", pa.string(), nullable=False),
+            pa.field("contradiction_ids_json", pa.string(), nullable=False),
+            pa.field("unknowns_json", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_situation_evidence": pa.schema(
+        [
+            *_BASE,
+            pa.field("evidence_id", pa.string(), nullable=False),
+            pa.field("situation_id", pa.string(), nullable=False),
+            pa.field("source_family", pa.string(), nullable=False),
+            pa.field("source_object_id", pa.string(), nullable=False),
+            pa.field("locator", pa.string(), nullable=False),
+            pa.field("resource_ids_json", pa.string(), nullable=False),
+            pa.field("observed_at", pa.string(), nullable=False),
+            pa.field("ingested_at", pa.string(), nullable=False),
+            pa.field("watermark", pa.string(), nullable=False),
+            pa.field("ingestion_status", pa.string(), nullable=False),
+            pa.field("provenance_json", pa.string(), nullable=False),
+            pa.field("freshness", pa.string(), nullable=False),
+            pa.field("quality", pa.string(), nullable=False),
+            pa.field("availability", pa.string(), nullable=False),
+            pa.field("confidence", pa.float64(), nullable=False),
+            pa.field("assertion", pa.string(), nullable=False),
+            pa.field("fingerprint", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_situation_links": pa.schema(
+        [
+            *_BASE,
+            pa.field("link_id", pa.string(), nullable=False),
+            pa.field("situation_id", pa.string(), nullable=False),
+            pa.field("entity_type", pa.string(), nullable=False),
+            pa.field("entity_id", pa.string(), nullable=False),
+            pa.field("relation", pa.string(), nullable=False),
+            pa.field("quality", pa.string(), nullable=False),
+            pa.field("provenance_json", pa.string(), nullable=False),
+        ]
+    ),
+    "metadata_audit_events": pa.schema(
+        [
+            *_BASE,
+            pa.field("event_id", pa.string(), nullable=False),
+            pa.field("actor", pa.string(), nullable=False),
+            pa.field("action", pa.string(), nullable=False),
+            pa.field("scope_snapshot_json", pa.string(), nullable=False),
+            pa.field("event_timestamp", pa.string(), nullable=False),
+            pa.field("situation_id", pa.string(), nullable=False),
+            pa.field("evidence_ids_json", pa.string(), nullable=False),
+            pa.field("source_references_json", pa.string(), nullable=False),
+        ]
+    ),
+    "metadata_source_status": pa.schema(
+        [
+            *_BASE,
+            pa.field("source_family", pa.string(), nullable=False),
+            pa.field("status", pa.string(), nullable=False),
+            pa.field("observed_at", pa.string(), nullable=False),
+            pa.field("ingested_at", pa.string(), nullable=False),
+            pa.field("watermark", pa.string(), nullable=False),
+            pa.field("query_version", pa.string(), nullable=False),
+            pa.field("requested_scope_json", pa.string(), nullable=False),
+            pa.field("provider_status", pa.string(), nullable=False),
+            pa.field("freshness", pa.string(), nullable=False),
+            pa.field("availability", pa.string(), nullable=False),
+            pa.field("quality", pa.string(), nullable=False),
+            pa.field("error", pa.string(), nullable=False),
+        ]
+    ),
 }
 
 

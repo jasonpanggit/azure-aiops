@@ -4,5 +4,6 @@
   "service_health": [{"id": "health-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:02:00Z"}],
   "defender": [{"id": "defender-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:03:00Z"}],
   "policy": [{"id": "policy-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:04:00Z"}],
-  "vulnerability": [{"id": "vulnerability-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:05:00Z"}]
+  "vulnerability": [{"id": "vulnerability-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:05:00Z"}],
+  "resource_changes": [{"id": "change-1", "properties": {"targetResourceId": "/subscriptions/sub-a/resource-1", "changeType": "Microsoft.Resources/resource/write", "changeAttributes": {"timestamp": "2026-08-25T01:00:00Z"}}}]
 }
