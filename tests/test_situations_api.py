@@ -40,7 +40,9 @@ def test_collection_audit_and_evidence_reads_use_the_envelope() -> None:
     assert client.get(f"/api/v1/evidence/{quote(evidence_id, safe='')}", headers={"authorization": f"Bearer {token}"}).status_code == 200
     audit = client.get(f"/api/v1/situations/{quote(situation_id, safe='')}/audit", headers={"authorization": f"Bearer {token}"})
     assert audit.status_code == 200
-    assert {row["action"] for row in audit.json()["data"]} == {
+    assert {row["action"] for row in audit.json()["data"]} >= {
         "observation.recorded",
         "situation.created",
+        "evidence.ingested",
+        "situation.lifecycle",
     }

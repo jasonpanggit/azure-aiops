@@ -247,6 +247,10 @@ class InventoryDatasetMapper:
         }
         relationships = _read_jsonl(fs, f"{root}/relationships/relationships.jsonl")
         changes = _read_jsonl(fs, f"{root}/changes/resource_changes.jsonl")
+        situations = _read_jsonl(fs, f"{root}/situations/situations.jsonl")
+        situation_evidence = _read_jsonl(fs, f"{root}/situations/evidence.jsonl")
+        situation_links = _read_jsonl(fs, f"{root}/situations/links.jsonl")
+        audit_events = _read_jsonl(fs, f"{root}/situations/audit_events.jsonl")
         source_status = _read_jsonl(fs, f"{root}/situations/source_status.jsonl")
 
         all_resources = [
@@ -339,6 +343,10 @@ class InventoryDatasetMapper:
                 ),
             ],
             "silver_resource_relationships": relationship_rows,
+            "silver_situations": [_situation_row(row, ingestion_run_id) for row in situations],
+            "silver_situation_evidence": [_situation_evidence_row(row, ingestion_run_id) for row in situation_evidence],
+            "silver_situation_links": [_situation_link_row(row, ingestion_run_id) for row in situation_links],
+            "metadata_audit_events": [_audit_event_row(row, ingestion_run_id) for row in audit_events],
             "metadata_source_status": [_source_status_row(row, ingestion_run_id) for row in source_status],
             "ontology_entities": graph.entities,
             "ontology_relationships": graph.relationships,
@@ -374,6 +382,14 @@ class InventoryDatasetMapper:
             ]
         for relationship_type in ONTOLOGY_RELATIONSHIP_TYPES:
             datasets.setdefault(ontology_relationship_table(*relationship_type), [])
+        situation_entity_rows = [_situation_ontology_entity(row, ingestion_run_id) for row in situations]
+        datasets["ontology_entities"].extend(situation_entity_rows)
+        datasets["ontology_situation_entities"] = situation_entity_rows
+        known_types = {row["resource_id"]: str(row.get("entity_type") or "Resource") for row in datasets["ontology_entities"]}
+        situation_relationships = [_situation_ontology_relationship(row, situations, known_types, ingestion_run_id) for row in situation_links]
+        situation_relationships = [row for row in situation_relationships if row]
+        datasets["ontology_relationships"].extend(situation_relationships)
+        datasets["ontology_rel_situation_affects_resource"] = situation_relationships
         return datasets
 
 
@@ -601,6 +617,212 @@ def _source_status_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
         "availability": str(row.get("availability") or "unknown"),
         "quality": str(row.get("quality") or "unknown"),
         "error": str(row.get("error") or ""),
+    }
+
+
+def _situation_base(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    scope = row.get("scope") or {}
+    subscription_ids = scope.get("subscription") if isinstance(scope, dict) else ()
+    return {
+        "tenant_id": str(row.get("tenant_id") or "unknown"),
+        "subscription_id": str((subscription_ids or ["unknown"])[0]),
+        "resource_id": str(row.get("resource_id") or row.get("situation_id") or "").casefold(),
+        "timestamp": str(
+            row.get("last_observed_at")
+            or row.get("observed_at")
+            or row.get("timestamp")
+            or row.get("started_at")
+            or "unknown"
+        ),
+        "change_version": _version(row),
+        "ingestion_run_id": run_id,
+    }
+
+
+def _situation_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    result = _situation_base(row, run_id)
+    return {
+        **result,
+        "situation_id": str(row.get("situation_id") or result["resource_id"]),
+        "title": str(row.get("title") or ""),
+        "situation_type": str(row.get("situation_type") or ""),
+        "lifecycle_state": str(row.get("lifecycle_state") or "open"),
+        "severity": str(row.get("severity") or "unknown"),
+        "priority": str(row.get("priority") or "P3"),
+        "scope_json": _canonical(row.get("scope") or {}),
+        "owner": str(row.get("owner") or ""),
+        "support_team": str(row.get("support_team") or ""),
+        "affected_resource_ids_json": _canonical(row.get("affected_resource_ids") or []),
+        "linked_evidence_ids_json": _canonical(row.get("linked_evidence_ids") or []),
+        "started_at": str(row.get("started_at") or ""),
+        "last_observed_at": str(row.get("last_observed_at") or ""),
+        "evidence_state": str(row.get("evidence_state") or "unknown"),
+        "warnings_json": _canonical(row.get("warnings") or []),
+        "contradiction_ids_json": _canonical(row.get("contradiction_ids") or []),
+        "unknowns_json": _canonical(row.get("unknowns") or []),
+    }
+
+
+def _situation_evidence_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    result = _situation_base(row, run_id)
+    result["resource_id"] = str(row.get("evidence_id") or result["resource_id"]).casefold()
+    return {
+        **result,
+        "evidence_id": str(row.get("evidence_id") or result["resource_id"]),
+        "situation_id": str(row.get("situation_id") or ""),
+        "source_family": str(row.get("source_family") or ""),
+        "source_object_id": str(row.get("source_object_id") or ""),
+        "locator": str(row.get("locator") or ""),
+        "resource_ids_json": _canonical(row.get("resource_ids") or []),
+        "observed_at": str(row.get("observed_at") or ""),
+        "ingested_at": str(row.get("ingested_at") or ""),
+        "watermark": str(row.get("watermark") or ""),
+        "ingestion_status": str(row.get("ingestion_status") or "unknown"),
+        "provenance_json": _canonical(row.get("provenance") or {}),
+        "freshness": str(row.get("freshness") or "unknown"),
+        "quality": str(row.get("quality") or "unknown"),
+        "availability": str(row.get("availability") or "unknown"),
+        "confidence": _confidence_number(row.get("confidence")),
+        "assertion": str(row.get("assertion") or ""),
+        "fingerprint": str(row.get("fingerprint") or ""),
+    }
+
+
+def _situation_link_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    result = _situation_base(row, run_id)
+    result["resource_id"] = str(row.get("link_id") or result["resource_id"]).casefold()
+    return {
+        **result,
+        "link_id": str(row.get("link_id") or result["resource_id"]),
+        "situation_id": str(row.get("situation_id") or ""),
+        "entity_type": str(row.get("entity_type") or ""),
+        "entity_id": str(row.get("entity_id") or "").casefold(),
+        "relation": str(row.get("relation") or ""),
+        "quality": str(row.get("quality") or "unresolved"),
+        "provenance_json": _canonical(row.get("provenance") or {}),
+    }
+
+
+def _audit_event_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    result = _situation_base(row, run_id)
+    event_timestamp = str(row.get("timestamp") or "")
+    result["resource_id"] = str(row.get("event_id") or result["resource_id"]).casefold()
+    result["timestamp"] = event_timestamp
+    result["change_version"] = _version(row)
+    return {
+        **result,
+        "event_id": str(row.get("event_id") or result["resource_id"]),
+        "actor": str(row.get("actor") or ""),
+        "action": str(row.get("action") or ""),
+        "scope_snapshot_json": _canonical(row.get("scope_snapshot") or {}),
+        "event_timestamp": event_timestamp,
+        "situation_id": str(row.get("situation_id") or ""),
+        "evidence_ids_json": _canonical(row.get("evidence_ids") or []),
+        "source_references_json": _canonical(row.get("source_references") or []),
+    }
+
+
+def _source_status_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    source_family = str(row.get("source_family") or "unknown")
+    requested_scope = row.get("requested_scope") or {}
+    subscriptions = requested_scope.get("subscription") if isinstance(requested_scope, dict) else []
+    resource_id = f"source-status://{source_family}/{row.get('run_id') or run_id}".casefold()
+    timestamp = str(row.get("ingested_at") or row.get("observed_at") or "unknown")
+    return {
+        "tenant_id": "unknown",
+        "subscription_id": str((subscriptions or ["unknown"])[0]),
+        "resource_id": resource_id,
+        "timestamp": timestamp,
+        "change_version": _version(row),
+        "ingestion_run_id": run_id,
+        "source_family": source_family,
+        "status": str(row.get("status") or "unknown"),
+        "observed_at": str(row.get("observed_at") or ""),
+        "ingested_at": str(row.get("ingested_at") or ""),
+        "watermark": str(row.get("watermark") or ""),
+        "query_version": str(row.get("query_version") or ""),
+        "requested_scope_json": _canonical(requested_scope),
+        "provider_status": str(row.get("provider_status") or ""),
+        "freshness": str(row.get("freshness") or "unknown"),
+        "availability": str(row.get("availability") or "unknown"),
+        "quality": str(row.get("quality") or "unknown"),
+        "error": str(row.get("error") or ""),
+    }
+
+
+def _situation_ontology_entity(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    result = _situation_base(row, run_id)
+    payload = {
+        "situation_id": str(row.get("situation_id") or ""),
+        "title": str(row.get("title") or ""),
+        "severity": str(row.get("severity") or ""),
+        "priority": str(row.get("priority") or ""),
+        "scope": row.get("scope") or {},
+    }
+    return {
+        **result,
+        "entity_type": "Situation",
+        "name": payload["title"] or payload["situation_id"],
+        "resource_type": "hermes/situation",
+        "location": "",
+        "payload_json": _canonical(payload),
+        "lineage_json": _canonical({"source_resource_ids": row.get("affected_resource_ids") or []}),
+        "semantic_metadata_json": _canonical({"projection": "situation", "source": "delta"}),
+        "lifecycle_status": "active",
+        "valid_from": str(row.get("started_at") or result["timestamp"]),
+        "retired_at": "",
+        "ontology_version": "1",
+    }
+
+
+def _confidence_number(value: Any) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return max(0.0, min(1.0, float(value)))
+    return {
+        "high": 1.0,
+        "medium": 0.7,
+        "low": 0.4,
+        "unknown": 0.0,
+    }.get(str(value or "unknown").casefold(), 0.0)
+def _situation_ontology_relationship(
+    link: dict[str, Any],
+    situations: list[dict[str, Any]],
+    known_types: dict[str, str],
+    run_id: str,
+) -> dict[str, Any] | None:
+    situation_id = str(link.get("situation_id") or "")
+    entity_id = str(link.get("entity_id") or "").casefold()
+    if (
+        str(link.get("quality") or "") != "resolved"
+        or not entity_id
+        or entity_id not in known_types
+    ):
+        return None
+    situation = next((row for row in situations if row.get("situation_id") == situation_id), {})
+    subject_id = str(situation.get("resource_id") or situation_id).casefold()
+    entity_type = str(link.get("entity_type") or known_types[entity_id])
+    relation = str(link.get("relation") or "affects")
+    relationship_id = _version([subject_id, relation, entity_id, entity_type])
+    return {
+        "tenant_id": "unknown",
+        "subscription_id": str((situation.get("scope") or {}).get("subscription", ["unknown"])[0]),
+        "resource_id": relationship_id,
+        "timestamp": str(situation.get("last_observed_at") or ""),
+        "change_version": relationship_id,
+        "ingestion_run_id": run_id,
+        "subject_id": subject_id,
+        "subject_type": "Situation",
+        "predicate": relation,
+        "object_id": entity_id,
+        "object_type": entity_type,
+        "confidence": 1.0,
+        "source": "situation-link",
+        "payload_json": _canonical({"relation": relation}),
+        "lineage_json": _canonical({"source_entity_ids": [subject_id, entity_id]}),
+        "lifecycle_status": "active",
+        "valid_from": str(situation.get("started_at") or ""),
+        "retired_at": "",
+        "ontology_version": "1",
     }
 
 

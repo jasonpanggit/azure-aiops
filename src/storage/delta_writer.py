@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -139,23 +140,30 @@ class DeltaWriter:
                 )
         if mode is DeltaWriteMode.APPEND and exists:
             table = DeltaTable(uri, storage_options=self.storage_options)
-            existing = table.to_pyarrow_table(columns=["ingestion_run_id", "resource_id"])
-            existing_keys = set(
-                zip(
-                    existing.column("ingestion_run_id").to_pylist(),
-                    existing.column("resource_id").to_pylist(),
-                    strict=True,
-                )
-            )
-            rows = [
-                row
-                for row in rows
-                if (str(row["ingestion_run_id"]), str(row["resource_id"])) not in existing_keys
-            ]
-        if mode is DeltaWriteMode.APPEND:
-            unique_rows: dict[tuple[str, str], dict[str, Any]] = {}
+            existing_rows = table.to_pyarrow_table().to_pylist()
+            existing_by_key = {_row_key(row, key_columns): row for row in existing_rows}
+            incoming_by_key: dict[tuple[str, ...], dict[str, Any]] = {}
             for row in rows:
-                key = (str(row["ingestion_run_id"]), str(row["resource_id"]))
+                key = _row_key(row, key_columns)
+                previous = incoming_by_key.get(key)
+                if previous is not None and _canonical_row(previous) != _canonical_row(row):
+                    raise ValueError(f"Append row mutation for key {key}")
+                incoming_by_key[key] = row
+            rows = []
+            for key, row in incoming_by_key.items():
+                previous = existing_by_key.get(key)
+                if previous is not None:
+                    if _canonical_row(previous) != _canonical_row(row):
+                        raise ValueError(f"Append row mutation for key {key}")
+                    continue
+                rows.append(row)
+        if mode is DeltaWriteMode.APPEND:
+            unique_rows: dict[tuple[str, ...], dict[str, Any]] = {}
+            for row in rows:
+                key = _row_key(row, key_columns)
+                previous = unique_rows.get(key)
+                if previous is not None and _canonical_row(previous) != _canonical_row(row):
+                    raise ValueError(f"Append row mutation for key {key}")
                 unique_rows[key] = row
             rows = list(unique_rows.values())
         if mode is DeltaWriteMode.APPEND and exists and not rows:
@@ -251,4 +259,24 @@ def _is_transient(exc: Exception) -> bool:
     return any(
         marker in text
         for marker in ("429", "500", "502", "503", "504", "timeout", "temporarily", "conflict")
+    )
+
+
+def _row_key(row: Mapping[str, Any], key_columns: tuple[str, ...]) -> tuple[str, ...]:
+    if not key_columns:
+        raise ValueError("append mode requires key_columns")
+    missing = [column for column in key_columns if column not in row]
+    if missing:
+        raise ValueError("Append row is missing key columns: " + ", ".join(missing))
+    return tuple(str(row[column]) for column in key_columns)
+
+
+def _canonical_row(row: Mapping[str, Any]) -> str:
+    # The physical ingestion run is write metadata, not event content. A
+    # replay of the same stable event must remain idempotent across runs.
+    return json.dumps(
+        {key: value for key, value in row.items() if key != "ingestion_run_id"},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
     )

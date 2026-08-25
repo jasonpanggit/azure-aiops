@@ -52,6 +52,39 @@ class QueryCatalog:
                 True,
             ),
             QuerySpec(
+                "monitor",
+                "InsightsMetrics",
+                "InsightsMetrics | project id, name, type, subscriptionId, resourceId, "
+                "timestamp, properties",
+                False,
+            ),
+            QuerySpec(
+                "service_health",
+                "HealthResources",
+                "HealthResources | project id, name, type, subscriptionId, properties",
+                False,
+            ),
+            QuerySpec(
+                "defender",
+                "SecurityResources",
+                "SecurityResources | where type startswith 'microsoft.security/' "
+                "| project id, name, type, subscriptionId, resourceId, properties",
+                False,
+            ),
+            QuerySpec(
+                "policy",
+                "PolicyResources",
+                "PolicyResources | project id, name, type, subscriptionId, resourceId, properties",
+                False,
+            ),
+            QuerySpec(
+                "vulnerability",
+                "SecurityResources",
+                "SecurityResources | where type contains 'vulnerability' "
+                "| project id, name, type, subscriptionId, resourceId, properties",
+                False,
+            ),
+            QuerySpec(
                 "patch_assessments",
                 "PatchAssessmentResources",
                 "patchassessmentresources "

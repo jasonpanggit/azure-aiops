@@ -84,6 +84,7 @@ def test_production_ingestion_publishes_arg_activity_and_source_status(tmp_path)
     from pathlib import Path
 
     fixture = json.loads(Path("tests/fixtures/phase1_signal_payloads.json").read_text())
+    fixture = {"resource_changes": fixture["resource_changes"]}
 
     class FixtureSource:
         def list_subscriptions(self):
@@ -141,3 +142,34 @@ def test_production_ingestion_retains_failed_arg_status_without_watermark(tmp_pa
     assert status["watermark"] == ""
     assert status["availability"] == "unavailable"
     assert service.store.read_dataset("situations/evidence") == []
+
+
+def test_normalizer_production_graph_contains_all_six_signal_families() -> None:
+    import json
+    from pathlib import Path
+
+    payload = json.loads(Path("tests/fixtures/phase1_signal_payloads.json").read_text())
+    graph = Normalizer().normalize(
+        payload,
+        datetime(2026, 8, 25, 2, tzinfo=UTC),
+        run_id="six-family-run",
+        requested_scope={"subscription": ["sub-a"]},
+    )
+
+    assert {row["source_family"] for row in graph.evidence} == {
+        "arg_activity_log",
+        "monitor",
+        "service_health",
+        "defender",
+        "policy",
+        "vulnerability",
+    }
+    assert {row["source_family"] for row in graph.source_status} == {
+        "arg_activity_log",
+        "monitor",
+        "service_health",
+        "defender",
+        "policy",
+        "vulnerability",
+    }
+    assert all(row["run_id"] == "six-family-run" for row in graph.evidence)

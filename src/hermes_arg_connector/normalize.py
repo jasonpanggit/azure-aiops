@@ -167,13 +167,19 @@ class Normalizer:
             ),
             key=lambda item: item["relationshipId"],
         )
-        from situations.materializer import materialize_graph
-        generated = materialize_graph(graph, run_id, ingested_at=observed)
+        from situations.materializer import materialize_graph, normalize_signal_families
+        signal_payloads = dict(payload)
+        if "arg_activity_log" not in signal_payloads and "arg" not in signal_payloads:
+            signal_payloads["arg_activity_log"] = [{"id": row.get("id"), "resource_id": row.get("targetResourceId"), "observed_at": row.get("changedAt") or observed, "watermark": row.get("changedAt") or observed, "assertion": row.get("changeType") or "resource changed"} for row in graph.changes]
+        signal_evidence, source_statuses = normalize_signal_families(signal_payloads, run_id=run_id, ingested_at=observed, requested_scope=requested_scope)
+        if payload.get("resource_changes") and "arg_activity_log" not in payload and "arg" not in payload:
+            signal_evidence = [item for item in signal_evidence if item.source_family != "arg_activity_log"]
+        generated = materialize_graph(graph, run_id, ingested_at=observed, additional_evidence=signal_evidence, source_statuses=source_statuses)
         graph.situations = generated["situations"]
         graph.evidence = generated["evidence"]
         graph.links = generated["links"]
         graph.audit_events = generated["audit_events"]
-        graph.source_status = _source_statuses(payload.get("resource_changes", []), run_id=run_id, observed_at=observed, requested_scope=requested_scope)
+        graph.source_status = [status.to_dict() for status in source_statuses]
         return graph
 
 

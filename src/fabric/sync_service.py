@@ -239,7 +239,7 @@ class FabricSyncService:
                     table_uri,
                     rows,
                     mode=mode,
-                    key_columns=("resource_id",),
+                    key_columns=("event_id",) if table_name == "metadata_audit_events" else ("resource_id",),
                     partition_by=self.partitioning.columns_for(table_name),
                     schema=schema_for(table_name),
                 )

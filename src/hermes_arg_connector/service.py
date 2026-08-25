@@ -61,6 +61,11 @@ class IngestionService:
             since, include_management_groups=bool(self.config.management_groups)
         )
         query_results = self.source.fetch(specs, subscriptions)
+        for spec in specs:
+            for row in query_results.get(spec.name, []):
+                row.setdefault("query_version", "1.0.0")
+                row.setdefault("requested_scope", {"subscription": sorted(subscriptions)})
+                row.setdefault("provider_status", "ok")
         previous_changes = self.store.read_dataset("changes/resource_changes")
         normalization_payload = dict(query_results)
         normalization_payload["resource_changes"] = _merge_changes(
@@ -70,6 +75,7 @@ class IngestionService:
         run_id = str(uuid.uuid4())
         graph = Normalizer(self.config.connection_context).normalize(normalization_payload, started, run_id=run_id, requested_scope={"subscription": sorted(subscriptions)})
         _preserve_created_timestamps(graph, self.store)
+        _preserve_source_watermarks(graph, self.store)
         change_watermark = _max_change_watermark(previous_watermark, graph.changes)
         manifest = self.store.publish(
             graph,
@@ -107,6 +113,15 @@ def _merge_changes(previous: list[dict], current: list[dict]) -> list[dict]:
 
 
 def _preserve_created_timestamps(graph, store: DatasetStore) -> None:
+    prior_evidence = {row.get("evidence_id"): row for row in store.read_dataset("situations/evidence")}
+    for evidence in graph.evidence:
+        previous = prior_evidence.get(evidence.get("evidence_id"))
+        if previous and previous.get("ingested_at"):
+            evidence["ingested_at"] = previous["ingested_at"]
+    evidence_times = {row.get("evidence_id"): row.get("ingested_at") for row in graph.evidence if row.get("evidence_id")}
+    for event in graph.audit_events:
+        if event.get("action") == "evidence.ingested" and event.get("evidence_ids"):
+            event["timestamp"] = evidence_times.get(event["evidence_ids"][0], event.get("timestamp"))
     for entity_type, entities in graph.entities.items():
         prior = {row.get("id"): row for row in store.read_dataset(f"entities/{entity_type}")}
         for entity in entities:
@@ -121,6 +136,18 @@ def _preserve_created_timestamps(graph, store: DatasetStore) -> None:
         previous = prior_edges.get(edge.get("relationshipId"))
         if previous and previous.get("createdTimestamp"):
             edge["createdTimestamp"] = previous["createdTimestamp"]
+
+
+def _preserve_source_watermarks(graph, store: DatasetStore) -> None:
+    previous = {row.get("source_family"): row for row in store.read_dataset("situations/source_status")}
+    for status in graph.source_status:
+        if status.get("status") != "succeeded":
+            status["watermark"] = ""
+            continue
+        old = str(previous.get(status.get("source_family"), {}).get("watermark") or "")
+        current = str(status.get("watermark") or "")
+        if old and (not current or old > current):
+            status["watermark"] = old
 
 
 def _max_change_watermark(previous: str | None, changes: list[dict]) -> str | None:

@@ -25,6 +25,22 @@ _FAMILY_ALIASES = {
     "policy": "policy",
     "vulnerability": "vulnerability",
 }
+_CANONICAL_FAMILIES = (
+    "arg_activity_log",
+    "monitor",
+    "service_health",
+    "defender",
+    "policy",
+    "vulnerability",
+)
+_DEFAULT_LINK_TYPES = {
+    "arg_activity_log": "Change",
+    "monitor": "Incident",
+    "service_health": "Incident",
+    "defender": "Exposure",
+    "policy": "Compliance",
+    "vulnerability": "Vulnerability",
+}
 
 
 def _iso(value: datetime | str | None) -> str:
@@ -46,6 +62,7 @@ def _resource_ids(row: Mapping[str, Any]) -> list[str]:
         or row.get("target_resource_id")
         or row.get("targetResourceId")
         or row.get("resourceId")
+        or row.get("resource_id")
     )
     return sorted({str(item).strip().casefold() for item in [target, *values] if str(item or "").strip()})
 
@@ -80,7 +97,14 @@ def _priority(severity: str) -> str:
     return "P1" if value in {"critical", "sev0", "sev1"} else "P2" if value in {"high", "sev2"} else "P3"
 
 
-def materialize_graph(graph: Any, run_id: str, *, ingested_at: datetime | str | None = None) -> dict[str, list[dict[str, Any]]]:
+def materialize_graph(
+    graph: Any,
+    run_id: str,
+    *,
+    ingested_at: datetime | str | None = None,
+    additional_evidence: Iterable[EvidenceRecord] = (),
+    source_statuses: Iterable[SourceStatus] = (),
+) -> dict[str, list[dict[str, Any]]]:
     """Materialize normalized resource changes without storing raw source payloads in situations."""
     ingested = _iso(ingested_at or datetime.now(UTC))
     entity_by_id = {
@@ -164,6 +188,17 @@ def materialize_graph(graph: Any, run_id: str, *, ingested_at: datetime | str | 
                 provenance={"source": "arg:ResourceChanges"},
             )
         )
+        links.append(
+            SituationLink(
+                link_id=stable_id("link", situation_id, "Change", source_id),
+                situation_id=situation_id,
+                entity_type="Change",
+                entity_id=source_id,
+                relation="correlates_with",
+                quality="unresolved",
+                provenance={"source": "arg:ResourceChanges"},
+            )
+        )
         audits.extend(
             [
                 AuditEvent(
@@ -188,6 +223,149 @@ def materialize_graph(graph: Any, run_id: str, *, ingested_at: datetime | str | 
                 ),
             ]
         )
+    situation_by_resource = {
+        resource_id: situation
+        for situation in situations
+        for resource_id in situation.affected_resource_ids
+    }
+    for item in additional_evidence:
+        resource_ids = item.resource_ids
+        situation = next(
+            (situation_by_resource.get(resource_id) for resource_id in resource_ids if resource_id in situation_by_resource),
+            None,
+        )
+        if situation is None:
+            target = resource_ids[0] if resource_ids else item.source_object_id
+            situation = Situation(
+                situation_id=stable_id("situation", item.source_family, target),
+                resource_id=stable_id("situation", item.source_family, target),
+                title=f"{item.source_family.replace('_', ' ').title()} signal for {target}",
+                situation_type=item.source_family,
+                scope=_scope({"resource_id": target}),
+                affected_resource_ids=resource_ids,
+                started_at=item.observed_at,
+                last_observed_at=item.observed_at,
+                evidence_state=item.quality,
+                run_id=run_id,
+            )
+            situations.append(situation)
+            for resource_id in resource_ids:
+                situation_by_resource[resource_id] = situation
+        item = item.model_copy(update={"situation_id": situation.situation_id, "run_id": run_id})
+        evidence.append(item)
+        if item.source_family == "arg_activity_log":
+            links.append(
+                SituationLink(
+                    link_id=stable_id("link", situation.situation_id, "Change", item.source_object_id),
+                    situation_id=situation.situation_id,
+                    entity_type="Change",
+                    entity_id=item.source_object_id,
+                    relation="correlates_with",
+                    quality="unresolved",
+                    provenance=item.provenance,
+                )
+            )
+        for spec in item.provenance.get("link_specs", []):
+            if not isinstance(spec, Mapping):
+                continue
+            entity_type = str(spec.get("entity_type") or "").strip()
+            entity_id = str(spec.get("entity_id") or "").strip().casefold()
+            if entity_type and entity_id:
+                links.append(
+                    SituationLink(
+                        link_id=stable_id("link", situation.situation_id, entity_type, entity_id),
+                        situation_id=situation.situation_id,
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        relation=str(spec.get("relation") or "relates_to"),
+                        quality="resolved" if entity_id in entity_by_id else "unresolved",
+                        provenance=item.provenance,
+                    )
+                )
+        default_type = _DEFAULT_LINK_TYPES.get(item.source_family)
+        if default_type:
+            entity_id = item.source_object_id.casefold()
+            links.append(
+                SituationLink(
+                    link_id=stable_id("link", situation.situation_id, default_type, entity_id),
+                    situation_id=situation.situation_id,
+                    entity_type=default_type,
+                    entity_id=entity_id,
+                    relation="correlates_with",
+                    quality="resolved" if entity_id in entity_by_id else "unresolved",
+                    provenance=item.provenance,
+                )
+            )
+        if resource_ids:
+            for resource_id in resource_ids:
+                links.append(
+                    SituationLink(
+                        link_id=stable_id("link", situation.situation_id, "Resource", resource_id),
+                        situation_id=situation.situation_id,
+                        entity_type="Resource",
+                        entity_id=resource_id,
+                        relation="affects",
+                        quality="resolved" if resource_id in entity_by_id else "unresolved",
+                        provenance=item.provenance,
+                    )
+                )
+    status_by_family = {status.source_family: status for status in source_statuses}
+    refreshed_situations: list[Situation] = []
+    evidence_by_situation: dict[str, list[EvidenceRecord]] = {}
+    for item in evidence:
+        evidence_by_situation.setdefault(item.situation_id, []).append(item)
+    for situation in situations:
+        related = evidence_by_situation.get(situation.situation_id, [])
+        qualities = {item.quality for item in related}
+        failed = any(status.status in {"failed", "unavailable"} for status in status_by_family.values())
+        state = "unknown" if failed or "contradictory" in qualities else (
+            "incomplete" if "incomplete" in qualities else "complete"
+        )
+        refreshed_situations.append(
+            situation.model_copy(
+                update={
+                    "linked_evidence_ids": [item.evidence_id for item in related],
+                    "evidence_state": state,
+                    "warnings": ["One or more source families failed or are unavailable."] if failed else [],
+                    "unknowns": ["Source coverage is incomplete for this situation."] if failed else [],
+                }
+            )
+        )
+    situations = refreshed_situations
+    for item in evidence:
+        audits.append(
+            AuditEvent(
+                event_id=stable_id("audit", "evidence.ingested", item.evidence_id),
+                actor="system:ingestion",
+                action="evidence.ingested",
+                scope_snapshot=_scope({"resource_id": item.resource_ids[0] if item.resource_ids else ""}),
+                timestamp=item.ingested_at,
+                situation_id=item.situation_id,
+                evidence_ids=[item.evidence_id],
+                source_references=[item.source_object_id],
+                run_id=run_id,
+            )
+        )
+    for situation in situations:
+        audits.append(
+            AuditEvent(
+                event_id=stable_id("audit", "situation.lifecycle", situation.situation_id, situation.lifecycle_state),
+                actor="system:ingestion",
+                action="situation.lifecycle",
+                scope_snapshot=situation.scope,
+                timestamp=situation.last_observed_at,
+                situation_id=situation.situation_id,
+                evidence_ids=situation.linked_evidence_ids,
+                run_id=run_id,
+            )
+        )
+    situation_scopes = {situation.situation_id: situation.scope for situation in situations}
+    audits = [
+        event.model_copy(
+            update={"scope_snapshot": situation_scopes.get(event.situation_id, event.scope_snapshot)}
+        )
+        for event in audits
+    ]
     return {
         "situations": [row.to_dict() for row in _dedupe(situations, "situation_id")],
         "evidence": [row.to_dict() for row in _dedupe(evidence, "evidence_id")],
@@ -207,12 +385,29 @@ def normalize_signal_families(
     ingested = _iso(ingested_at)
     output: list[EvidenceRecord] = []
     statuses: list[SourceStatus] = []
+    canonical_payloads: dict[str, list[Mapping[str, Any]]] = {family: [] for family in _CANONICAL_FAMILIES}
     for raw_family, rows in payloads.items():
         family = _FAMILY_ALIASES.get(raw_family, raw_family)
+        if family in canonical_payloads:
+            canonical_payloads[family].extend(rows or ())
+    for family in _CANONICAL_FAMILIES:
+        rows = canonical_payloads[family]
         row_list = list(rows or ())
-        failed = next((row for row in row_list if str(row.get("status") or "").casefold() in {"failed", "unavailable"}), None)
+        failed = next(
+            (
+                row
+                for row in row_list
+                if str(row.get("status") or row.get("provider_status") or "").casefold()
+                in {"failed", "unavailable"}
+            ),
+            None,
+        )
         status = "failed" if failed else "succeeded"
-        watermark = max((str(row.get("watermark") or row.get("observed_at") or "") for row in row_list), default="")
+        watermark = max(
+            (str(row.get("watermark") or row.get("observed_at") or "") for row in row_list),
+            default="",
+        )
+        has_rows = bool(row_list) and failed is None
         statuses.append(
             SourceStatus(
                 source_family=family,
@@ -224,9 +419,9 @@ def normalize_signal_families(
                 query_version=str((row_list[0] if row_list else {}).get("query_version") or ""),
                 requested_scope=requested_scope or {},
                 provider_status=str((failed or {}).get("status") or "ok"),
-                freshness="unknown" if failed else "fresh",
-                availability="unavailable" if failed else "available",
-                quality="degraded" if failed else "complete",
+                freshness="unknown" if not has_rows else "fresh",
+                availability="unavailable" if failed else "available" if has_rows else "unknown",
+                quality="degraded" if failed else "complete" if has_rows else "unknown",
                 error=str((failed or {}).get("error") or ""),
             )
         )
@@ -248,19 +443,25 @@ def normalize_signal_families(
                     ingested_at=str(row.get("ingested_at") or ingested),
                     watermark=str(row.get("watermark") or observed),
                     ingestion_status="succeeded",
-                    provenance={"run_id": run_id, "query_version": str(row.get("query_version") or "")},
-                    freshness=str(row.get("freshness") or "fresh"),
-                    quality=str(row.get("quality") or "complete"),
-                    availability="available",
+                    provenance={
+                        "run_id": run_id,
+                        "query_version": str(row.get("query_version") or ""),
+                        "link_specs": _link_specs(row),
+                    },
+                    freshness=_freshness(row, observed, ingested),
+                    quality=_quality(row.get("quality"), default="complete"),
+                    availability=_availability(row),
                     confidence=str(row.get("confidence") or "unknown"),
                     assertion=str(row.get("assertion") or row.get("summary") or ""),
                     fingerprint=fingerprint,
                     run_id=run_id,
                 )
             )
-    unique: dict[tuple[str, str], EvidenceRecord] = {}
+    unique: dict[tuple[str, str, str], EvidenceRecord] = {}
     for item in output:
-        unique[(item.source_family, item.fingerprint)] = item
+        # Identical retries from one provider collapse, while the same
+        # observation reported by two source objects remains attributable.
+        unique[(item.source_family, item.fingerprint, item.source_object_id)] = item
     grouped: dict[str, list[EvidenceRecord]] = {}
     for item in unique.values():
         for resource_id in item.resource_ids:
@@ -270,8 +471,61 @@ def normalize_signal_families(
         if len(assertions) > 1:
             for item in items:
                 item_copy = item.model_copy(update={"quality": "contradictory"})
-                unique[(item.source_family, item.fingerprint)] = item_copy
+                unique[(item.source_family, item.fingerprint, item.source_object_id)] = item_copy
     return list(unique.values()), statuses
+
+
+def _link_specs(row: Mapping[str, Any]) -> list[dict[str, str]]:
+    values = row.get("related_entities") or row.get("links") or []
+    if isinstance(values, Mapping):
+        values = [values]
+    result: list[dict[str, str]] = []
+    for value in values:
+        if not isinstance(value, Mapping):
+            continue
+        entity_type = str(value.get("entity_type") or value.get("type") or "").strip()
+        entity_id = str(value.get("entity_id") or value.get("id") or "").strip()
+        if entity_type and entity_id:
+            result.append(
+                {
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "relation": str(value.get("relation") or "relates_to"),
+                }
+            )
+    for key, entity_type in (
+        ("incident_id", "Incident"),
+        ("exposure_id", "Exposure"),
+        ("compliance_id", "Compliance"),
+        ("vulnerability_id", "Vulnerability"),
+        ("change_id", "Change"),
+        ("service_id", "Service"),
+        ("operational_twin_id", "OperationalTwin"),
+    ):
+        entity_id = str(row.get(key) or "").strip()
+        if entity_id:
+            result.append({"entity_type": entity_type, "entity_id": entity_id, "relation": "relates_to"})
+    return result
+
+
+def _quality(value: Any, *, default: str) -> str:
+    allowed = {"complete", "incomplete", "contradictory", "degraded", "unknown"}
+    candidate = str(value or default).casefold()
+    return candidate if candidate in allowed else "unknown"
+
+
+def _availability(row: Mapping[str, Any]) -> str:
+    value = str(row.get("availability") or "").casefold()
+    if value in {"available", "degraded", "unavailable", "unknown"}:
+        return value
+    return "degraded" if str(row.get("status") or "").casefold() == "degraded" else "available"
+
+
+def _freshness(row: Mapping[str, Any], observed: str, ingested: str) -> str:
+    value = str(row.get("freshness") or "").casefold()
+    if value in {"fresh", "aging", "stale", "unknown"}:
+        return value
+    return "fresh" if observed >= ingested else "unknown"
 
 
 def _dedupe(rows: Iterable[Any], key: str) -> list[Any]:
