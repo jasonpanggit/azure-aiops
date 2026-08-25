@@ -383,3 +383,33 @@ def test_inventory_narrative_sends_only_aggregates_and_preserves_facts(
     assert "web-01" not in serialized
     assert "Reviewable Agent" not in serialized
     assert "fact_summary" in serialized
+
+
+def test_inventory_narrative_timeout_and_malformed_output_are_fact_only(
+    client: TestClient,
+) -> None:
+    class TimeoutNarrator:
+        def answer(self, **_kwargs):
+            raise TimeoutError("timed out")
+
+    client.app.state.context.foundry_agent_provider = lambda: TimeoutNarrator()
+    response = client.get("/api/v1/inventory/narrative", headers=_auth())
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "fact_only"
+    assert any("Foundry prompt agent failed" in warning for warning in response.json()["warnings"])
+
+    class MalformedNarrator:
+        def answer(self, **_kwargs):
+            return object()
+
+    client.app.state.context.foundry_agent_provider = lambda: MalformedNarrator()
+    response = client.get(
+        "/api/v1/inventory/narrative",
+        params={"business_service": "not-authorized-inventory-field"},
+        headers=_auth(),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["status"] == "fact_only"
+    assert body["data"]["fact_summary"].startswith("0 machines across 0 OS groups")
+    assert any("Foundry prompt agent failed" in warning for warning in body["warnings"])

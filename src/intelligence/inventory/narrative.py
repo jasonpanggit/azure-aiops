@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 
 MAX_NARRATIVE_CITATIONS = 24
 MAX_NARRATIVE_FACT_CHARS = 4_000
+SUPPORTED_CITATION_TABLES = frozenset(
+    {"inventory/os_observations", "inventory/software_observations", "Resources", "ConfigurationData"}
+)
 _NARRATIVE_QUESTION = (
     "Summarize the operational risk concentrations in these scoped inventory "
     "aggregates. Use only the supplied facts, mention source degradation when "
@@ -84,7 +87,14 @@ def build_inventory_narrative(
             narrated_summary = text[:MAX_NARRATIVE_FACT_CHARS]
             narrated_by = str(getattr(answer, "agent_name", "") or "")
             model = str(getattr(answer, "model", "") or "")
-        except (FoundryAgentError, AttributeError, TypeError, ValueError):
+        except (
+            FoundryAgentError,
+            AttributeError,
+            ConnectionError,
+            TimeoutError,
+            TypeError,
+            ValueError,
+        ):
             # Narration is optional and must never turn a usable inventory
             # response into a provider failure or an apparent zero-row result.
             warnings.append(
@@ -184,6 +194,8 @@ def _citations(raw: Any) -> list[dict[str, str]]:
             source_table=str(item.get("source_table") or "inventory"),
             timestamp=str(item.get("timestamp") or ""),
         )
+        if citation.source_table not in SUPPORTED_CITATION_TABLES:
+            continue
         key = (citation.source_engine, citation.source_table, citation.timestamp)
         if key not in seen:
             seen.add(key)

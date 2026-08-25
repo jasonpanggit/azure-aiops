@@ -565,3 +565,52 @@ def test_narrative_aggregates_are_scoped_bounded_and_row_free() -> None:
     assert "software_rows" not in aggregates
     assert all("resource_id" not in group for group in aggregates["os_groups"])
     assert aggregates["source_status"]["arc"]["row_count"] == 2
+
+
+def test_narrative_aggregate_limits_bound_group_payload() -> None:
+    from intelligence.inventory.narrative import build_inventory_narrative
+
+    rows = [
+        {
+            "id": f"/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-{index}",
+            "name": f"vm-{index}",
+            "type": "Microsoft.Compute/virtualMachines",
+            "os_name": "OS",
+            "os_version": str(index),
+            "subscription_id": "sub-a",
+            "resource_group": "rg",
+            "environment": "prod",
+            "observed_at": "2026-08-25T10:00:00Z",
+        }
+        for index in range(30)
+    ]
+    service = InventoryService(rows)
+    captured: dict[str, object] = {}
+
+    class FakeNarrator:
+        def answer(self, *, question: str, context: dict[str, object]):
+            from operations.foundry_agent import AgentAnswer
+
+            captured["context"] = context
+            return AgentAnswer(text="Bounded.", agent_name="test")
+
+    result = build_inventory_narrative(service, Scope.from_mapping({"subscription": ["sub-a"]}), FakeNarrator())
+    context = captured["context"]
+    assert isinstance(context, dict)
+    assert len(context["facts"]["fact_items"]) <= 5
+    assert context["aggregate_limits"]["max_os_groups"] == 12
+    assert result["data"]["status"] == "narrated"
+
+
+def test_unsupported_inventory_citation_is_not_rendered() -> None:
+    from intelligence.inventory.narrative import _citations
+
+    citations = _citations(
+        [
+            {"source_engine": "untrusted", "source_table": "secret/raw_rows", "timestamp": "now"},
+            {"source_engine": "InventoryService", "source_table": "Resources", "timestamp": "now"},
+        ]
+    )
+
+    assert len(citations) == 1
+    assert citations[0]["source_table"] == "Resources"
