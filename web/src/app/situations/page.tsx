@@ -102,8 +102,12 @@ export default function SituationsPage() {
         />
       ) : situations.length === 0 ? (
         <StatePanel
-          title="No Situations match these filters"
-          message="Adjust the priority or search criteria. This result reflects the current operating scope."
+          title={query.trim() || priority !== "all" ? "No situations match these filters" : "No active situations in this scope"}
+          message={
+            query.trim() || priority !== "all"
+              ? "Adjust the priority or search criteria. This result reflects the current operating scope."
+              : "No durable situation records are currently available for the selected operating scope. This is not a source-health confirmation; review data coverage below."
+          }
         />
       ) : (
         <div className="card queue-card">
