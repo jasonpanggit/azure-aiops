@@ -1,48 +1,72 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
-import { StructuredData } from "@/components/ui/StructuredData";
-import { formatDateTime, relativeTime, titleize } from "@/lib/format";
-import { operationsApi } from "@/lib/services";
-import { toSituationSummary } from "@/lib/situations";
-import type { Envelope, IncidentCause, IncidentDetail, IncidentTimelineEvent } from "@/lib/types";
+import { formatDateTime } from "@/lib/format";
+import { useScope } from "@/lib/scope-context";
+import { situationsApi } from "@/lib/services";
+import type {
+  DurableEvidence,
+  DurableSituation,
+  Envelope,
+  SituationAuditEvent,
+} from "@/lib/types";
 
-function latestChange(timeline: IncidentTimelineEvent[]): IncidentTimelineEvent | undefined {
-  return timeline
-    .filter((event) => event.event_type.toLowerCase().includes("change"))
-    .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))[0];
+function allEvidence(situation: DurableSituation): DurableEvidence[] {
+  return situation.evidence ?? [];
 }
 
-function rawEvidenceRecord(item: IncidentCause | IncidentTimelineEvent): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(item).filter(([, value]) => value !== undefined));
+function linkedEntities(situation: DurableSituation) {
+  return situation.links ?? [];
 }
 
-/** Evidence-backed investigation workspace that answers the five core operator questions. */
 export default function SituationDetailPage({ params }: { params: { id: string } }) {
-  const [envelope, setEnvelope] = useState<Envelope<IncidentDetail> | null>(null);
+  const { scope } = useScope();
+  const situationId = decodeURIComponent(params.id);
+  const [situation, setSituation] = useState<Envelope<DurableSituation> | null>(null);
+  const [audit, setAudit] = useState<Envelope<SituationAuditEvent[]> | null>(null);
   const [error, setError] = useState("");
-  const [selectedEvidence, setSelectedEvidence] = useState<Record<string, unknown> | null>(null);
+  const [selectedEvidence, setSelectedEvidence] = useState<DurableEvidence | null>(null);
+  const [saved, setSaved] = useState(false);
+  const lastTrigger = useRef<HTMLButtonElement | null>(null);
+  const drawer = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     let active = true;
-    operationsApi
-      .incident(decodeURIComponent(params.id))
-      .then((result) => active && setEnvelope(result))
-      .catch((reason: unknown) => active && setError(reason instanceof Error ? reason.message : "Situation unavailable"));
+    setSituation(null);
+    setAudit(null);
+    setError("");
+    Promise.allSettled([situationsApi.get(situationId, scope), situationsApi.audit(situationId, scope)])
+      .then(([detail, events]) => {
+        if (!active) return;
+        if (detail.status === "rejected") {
+          setError(detail.reason instanceof Error ? detail.reason.message : "Situation unavailable");
+          return;
+        }
+        setSituation(detail.value);
+        if (events.status === "fulfilled") setAudit(events.value);
+      });
     return () => {
       active = false;
     };
-  }, [params.id]);
+  }, [scope, situationId]);
 
-  const summary = useMemo(
-    () => (envelope ? toSituationSummary(envelope.data.finding) : null),
-    [envelope]
-  );
+  useEffect(() => {
+    if (!selectedEvidence) {
+      lastTrigger.current?.focus();
+      return;
+    }
+    drawer.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedEvidence(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedEvidence]);
 
   if (error) {
     return (
@@ -51,297 +75,163 @@ export default function SituationDetailPage({ params }: { params: { id: string }
           title="Situation could not be opened"
           message={`${error}. Confirm the Situation is still visible in the current operating scope.`}
           tone="error"
-          action={
-            <Link className="button" href="/situations">
-              Return to queue
-            </Link>
-          }
+          action={<Link className="button" href="/situations">Return to queue</Link>}
         />
       </div>
     );
   }
 
-  if (!envelope || !summary) {
+  if (!situation) {
     return (
       <div className="page-container">
-        <StatePanel
-          title="Preparing investigation"
-          message="Loading evidence, blast radius, ownership, correlated changes, and remediation guidance."
-          tone="loading"
-        />
+        <StatePanel title="Loading Situation detail" message="Reading the durable situation record and service audit history." tone="loading" />
       </div>
     );
   }
 
-  const finding = envelope.data.finding;
-  const rootCause = finding.root_cause_analysis;
-  const timeline = [...(finding.timeline ?? rootCause.timeline ?? [])].sort(
-    (left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp)
-  );
-  const change = latestChange(timeline);
-  const action = finding.recommended_action;
-  const blast = finding.blast_radius;
+  const record = situation.data;
+  const evidence = allEvidence(record);
+  const links = linkedEntities(record);
+  const conflicts = evidence.filter((item) => item.quality === "contradictory");
+  const latest = [...evidence].sort((left, right) => right.observed_at.localeCompare(left.observed_at))[0];
+  const grouped = evidence.reduce<Record<string, DurableEvidence[]>>((groups, item) => {
+    (groups[item.source_family] ??= []).push(item);
+    return groups;
+  }, {});
+  const saveView = () => {
+    window.localStorage.setItem(`hermes.situation-view.${record.situation_id}`, JSON.stringify({ scope, savedAt: new Date().toISOString() }));
+    setSaved(true);
+  };
 
   return (
     <div className="page-container investigation-page">
       <div className="breadcrumb">
-        <Link href="/situations">Situations</Link>
-        <span>/</span>
-        <span>{summary.id}</span>
+        <Link href="/situations">Situations</Link><span>/</span><code>{record.situation_id}</code>
       </div>
       <PageHeader
-        eyebrow={`${summary.priority} Situation`}
-        title={summary.title}
-        description={`${summary.id} · Started ${relativeTime(summary.startedAt)} · ${summary.businessServices[0] ?? "Service not mapped"}`}
-        actions={
-          <>
-            <Link className="button" href={`/copilot?situation=${encodeURIComponent(summary.id)}`}>
-              Ask Copilot
-            </Link>
-            <Link className="button button-primary" href={`/remediation?incident=${encodeURIComponent(summary.id)}`}>
-              Create action plan
-            </Link>
-          </>
-        }
+        eyebrow="Durable situation brief"
+        title={record.title}
+        description="Evidence-backed, authorized operational context. Read-only in Phase 1."
+        actions={<button type="button" className="button" onClick={saveView}>Save view locally</button>}
         metadata={
           <>
-            <StatusBadge label={summary.status} tone={statusTone(summary.status)} />
-            <StatusBadge label={`${Math.round(summary.confidence * 100)}% cause confidence`} tone="info" />
-            <span>Advisory only</span>
+            <StatusBadge label={record.lifecycle_state} tone={statusTone(record.lifecycle_state)} />
+            <StatusBadge label={record.severity} tone={statusTone(record.severity)} />
+            <StatusBadge label={record.priority} tone={statusTone(record.priority)} />
+            <span>Owner: {record.owner || "Unassigned"}</span>
+            {saved && <span role="status">Local view saved</span>}
           </>
         }
       />
 
-      <EvidenceBar
-        evidence={envelope.evidence}
-        knowledgeVersion={envelope.knowledge_version}
-        warnings={envelope.warnings}
-        fallbackTimestamp={envelope.data.freshness}
-      />
+      <section className="card" aria-label="Situation identity">
+        <div className="card-body command-grid">
+          <span>Situation ID <code tabIndex={0}>{record.situation_id}</code></span>
+          <span>Scope <strong>{Object.entries(record.scope).map(([key, values]) => `${key}: ${values.join(", ")}`).join(" · ") || "Authorized scope"}</strong></span>
+          <span>Started <time dateTime={record.started_at}>{formatDateTime(record.started_at)}</time></span>
+          <span>Last observed <time dateTime={record.last_observed_at}>{formatDateTime(record.last_observed_at)}</time></span>
+          <span>Affected resources <strong>{record.affected_resource_ids.length}</strong></span>
+          <span>Read-only handoff <strong>View future-phase candidate</strong></span>
+        </div>
+      </section>
 
-      <section className="answer-grid" aria-label="Situation executive summary">
+      <EvidenceBar durableEvidence={evidence} warnings={record.warnings} />
+
+      <section className="answer-grid" aria-label="Situation summary">
         <article className="answer-card answer-critical">
-          <span className="answer-number">01</span>
           <h2>What failed?</h2>
-          <strong>{summary.cause}</strong>
-          <p>{rootCause.conclusion || `${summary.title} is ${summary.status.toLowerCase()}.`}</p>
+          <strong>{record.evidence_state === "contradictory" ? "Evidence conflicts" : record.evidence_state}</strong>
+          <p>{record.warnings[0] ?? "No definitive failure has been asserted by the authorized evidence."}</p>
         </article>
         <article className="answer-card answer-high">
-          <span className="answer-number">02</span>
           <h2>What is at risk?</h2>
-          <strong>{summary.businessServices.join(", ") || "Business service not mapped"}</strong>
-          <p>
-            {summary.applications.length} application{summary.applications.length === 1 ? "" : "s"} across{" "}
-            {finding.blast_radius.service_count} service{finding.blast_radius.service_count === 1 ? "" : "s"}.
-          </p>
+          <strong>{record.affected_resource_ids.length} affected resource{record.affected_resource_ids.length === 1 ? "" : "s"}</strong>
+          <p>{record.owner || "Ownership is not assigned."}</p>
         </article>
         <article className="answer-card">
-          <span className="answer-number">03</span>
-          <h2>Who owns it?</h2>
-          <strong>{summary.owner}</strong>
-          <p>{summary.supportTeam}</p>
-        </article>
-        <article className="answer-card">
-          <span className="answer-number">04</span>
           <h2>What changed?</h2>
-          <strong>{change?.summary ?? "No correlated change"}</strong>
-          <p>{change ? `${formatDateTime(change.timestamp)} · ${change.source}` : "No change evidence was linked."}</p>
-        </article>
-        <article className="answer-card answer-action">
-          <span className="answer-number">05</span>
-          <h2>How do I fix it?</h2>
-          <strong>{action?.suggested_action ?? "Review the probable cause and validate the affected service."}</strong>
-          <p>{action?.impact ?? "Recommended actions remain advisory until an operator approves execution."}</p>
+          <strong>{latest?.assertion || "No change assertion available"}</strong>
+          <p>{latest ? `${latest.source_family} · ${formatDateTime(latest.observed_at)}` : "No evidence is available."}</p>
         </article>
       </section>
 
-      <div className="investigation-grid">
-        <section className="card">
-          <div className="card-header">
-            <div>
-              <h2>Root-cause candidates</h2>
-              <p>Confidence-ranked evidence, contradictions, unknowns, and advisory next steps.</p>
-            </div>
-            <StatusBadge
-              label={rootCause.confirmed_cause ? "Confirmed cause" : "Probable cause"}
-              tone={rootCause.confirmed_cause ? "success" : "warning"}
-            />
-          </div>
-          <div className="card-body reasoning-stack">
-            {rootCause.probable_causes.map((cause, index) => (
-              <div className="reasoning-card" key={cause.evidence_id ?? index}>
-                <div className="reasoning-heading">
-                  <strong>{cause.summary ?? titleize(cause.classification ?? `Cause ${index + 1}`)}</strong>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <StatusBadge
-                      label={`${Math.round((cause.confidence ?? cause.causal_score ?? 0) * 100)}%`}
-                      tone="info"
-                      compact
-                    />
-                    <button type="button" className="button" onClick={() => setSelectedEvidence(rawEvidenceRecord(cause))}>
-                      View evidence
-                    </button>
-                  </div>
-                </div>
-                {cause.evidence && (
-                  <ul>
-                    {cause.evidence.slice(0, 4).map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ))}
-            {rootCause.contradicting_evidence.length > 0 && (
-              <div>
-                <h3>Contradicting evidence</h3>
-                <ul>
-                  {rootCause.contradicting_evidence.map((item, index) => (
-                    <li key={String(item.evidence_id ?? index)}>
-                      <button type="button" className="table-primary-link" onClick={() => setSelectedEvidence(item)}>
-                        {String(item.summary ?? item.evidence_type ?? `Contradiction ${index + 1}`)}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {rootCause.unknowns.length > 0 && (
-              <div>
-                <h3>Unknowns</h3>
-                <ul>
-                  {rootCause.unknowns.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {rootCause.next_steps.length > 0 && (
-              <div>
-                <h3>Next steps</h3>
-                <ol className="reasoning-chain">
-                  {rootCause.next_steps.map((step) => (
-                    <li key={step}>{step}</li>
-                  ))}
-                </ol>
-              </div>
-            )}
-            {rootCause.reasoning_chain.length > 0 && (
-              <ol className="reasoning-chain">
-                {rootCause.reasoning_chain.map((step) => (
-                  <li key={step}>{step}</li>
-                ))}
-              </ol>
-            )}
-          </div>
+      {conflicts.length > 0 && (
+        <section className="card callout callout-warning" aria-labelledby="conflicts-heading">
+          <h2 id="conflicts-heading">Evidence conflicts</h2>
+          <p>Evidence conflicts — review the source records before drawing a conclusion.</p>
+          <p>{conflicts.length} contradictory source record{conflicts.length === 1 ? "" : "s"} remain visible.</p>
         </section>
+      )}
+      {record.unknowns.length > 0 && (
+        <section className="card" aria-labelledby="unknown-heading">
+          <h2 id="unknown-heading">What is not known</h2>
+          <ul>{record.unknowns.map((unknown) => <li key={unknown}>{unknown}</li>)}</ul>
+        </section>
+      )}
 
-        <aside className="card">
-          <div className="card-header">
-            <div>
-              <h2>Network-aware blast radius</h2>
-              <p>Business dependencies plus observed subscription and network context.</p>
-            </div>
-          </div>
-          <div className="card-body blast-radius">
-            <div>
-              <span>Business services</span>
-              <strong>{finding.blast_radius.business_service_count}</strong>
-              <p>{finding.blast_radius.business_services.join(", ") || "Not mapped"}</p>
-            </div>
-            <div>
-              <span>Applications</span>
-              <strong>{finding.blast_radius.application_count}</strong>
-              <p>{finding.blast_radius.applications.join(", ") || "None identified"}</p>
-            </div>
-            <div>
-              <span>Services</span>
-              <strong>{finding.blast_radius.service_count}</strong>
-              <p>{finding.blast_radius.services.join(", ") || "None identified"}</p>
-            </div>
-            <div>
-              <span>Subscriptions</span>
-              <p>{blast.subscriptions.join(", ") || blast.notes?.join(", ") || "Not observed"}</p>
-            </div>
-            <div>
-              <span>Network paths</span>
-              <ul>
-                {blast.network_paths.map((path) => <li key={path}>{path}</li>)}
-                {blast.network_paths.length === 0 && <li>Not observed</li>}
-              </ul>
-            </div>
-            <div>
-              <span>Hub dependencies</span>
-              <p>{blast.hub_dependencies.join(", ") || "None observed"}</p>
-            </div>
-            <div>
-              <span>Firewall impact</span>
-              <ul>
-                {blast.firewall_impact.map((item, index) => (
-                  <li key={String(item.finding_id ?? index)}>{String(item.title ?? item.rule_name ?? "Firewall finding")}</li>
-                ))}
-                {blast.firewall_impact.length === 0 && <li>No firewall findings linked</li>}
-              </ul>
-            </div>
-            <div>
-              <span>NSG impact</span>
-              <ul>
-                {blast.nsg_impact.map((item, index) => (
-                  <li key={String(item.finding_id ?? index)}>{String(item.title ?? item.rule_name ?? "NSG finding")}</li>
-                ))}
-                {blast.nsg_impact.length === 0 && <li>No NSG findings linked</li>}
-              </ul>
-            </div>
-            <div>
-              <span>Downstream services</span>
-              <p>{blast.downstream_services.join(", ") || "None observed"}</p>
-            </div>
-          </div>
-        </aside>
-      </div>
-
-      <section className="card timeline-card">
-        <div className="card-header">
-          <div>
-            <h2>Correlated timeline</h2>
-            <p>Signals, alerts, changes, patch failures, lifecycle events, and exposure evidence in sequence.</p>
-          </div>
-        </div>
-        <div className="card-body timeline">
-          {timeline.map((event) => (
-            <button
-              type="button"
-              className="timeline-event"
-              key={event.event_id}
-              onClick={() => setSelectedEvidence(rawEvidenceRecord(event))}
-              style={{ textAlign: "left", background: "transparent", border: 0, padding: 0 }}
-            >
-              <div className="timeline-marker" aria-hidden="true" />
-              <time dateTime={event.timestamp}>{formatDateTime(event.timestamp)}</time>
-              <div>
-                <StatusBadge label={titleize(event.event_type)} tone={event.event_type.includes("Change") ? "info" : "neutral"} compact />
-                <strong>{event.summary}</strong>
-                <span>{event.source}</span>
-              </div>
-            </button>
+      <section className="card" aria-labelledby="evidence-heading">
+        <div className="card-header"><div><h2 id="evidence-heading">Evidence by source</h2><p>Every row retains source identity, provenance, freshness, quality, and ingestion facts.</p></div></div>
+        <div className="card-body reasoning-stack">
+          {Object.entries(grouped).map(([source, rows]) => (
+            <section key={source} aria-labelledby={`source-${source}`}>
+              <h3 id={`source-${source}`}>{source}</h3>
+              {rows.map((item) => (
+                <div className="reasoning-card" key={item.evidence_id}>
+                  <strong>{item.assertion || item.source_object_id}</strong>
+                  <span>{item.source_object_id} · {item.quality} · {item.availability} · {item.freshness} · {item.ingestion_status}</span>
+                  <button type="button" className="button" onClick={(event) => { lastTrigger.current = event.currentTarget; setSelectedEvidence(item); }}>
+                    View evidence details
+                  </button>
+                </div>
+              ))}
+            </section>
           ))}
-          {timeline.length === 0 && <span className="muted">No timeline events are available.</span>}
+          {evidence.length === 0 && <p>No evidence is visible in this scope.</p>}
+        </div>
+      </section>
+
+      <section className="card" aria-labelledby="links-heading">
+        <div className="card-header"><div><h2 id="links-heading">Linked entities</h2><p>Bounded links are labelled and retain unresolved quality.</p></div></div>
+        <div className="card-body">
+          <ul>{links.map((link) => <li key={link.link_id}><strong>{link.entity_type}</strong> <code>{link.entity_id}</code> · {link.relation} · {link.quality}</li>)}</ul>
+          {links.length === 0 && <p>No linked entities are visible in this scope.</p>}
+        </div>
+      </section>
+
+      <section className="card timeline-card" aria-labelledby="timeline-heading">
+        <div className="card-header"><div><h2 id="timeline-heading">Evidence timeline</h2><p>Exact observed timestamps from durable source records.</p></div></div>
+        <div className="card-body timeline">
+          {[...evidence].sort((left, right) => right.observed_at.localeCompare(left.observed_at)).map((item) => (
+            <div className="timeline-event" key={item.evidence_id}><time dateTime={item.observed_at}>{formatDateTime(item.observed_at)}</time><strong>{item.source_family}</strong><span>{item.assertion || item.source_object_id}</span></div>
+          ))}
+        </div>
+      </section>
+
+      <section className="card audit-boundary" aria-labelledby="audit-heading">
+        <div className="card-header"><div><h2 id="audit-heading">Audit history</h2><p>Recorded by the service; local collaboration remains separate under “Save view locally”.</p></div></div>
+        <div className="card-body">
+          {audit?.data.length ? audit.data.map((event) => (
+            <article className="reasoning-card" key={event.event_id}>
+              <strong>Recorded event · {event.action}</strong>
+              <span>Event ID: <code>{event.event_id}</code> · Actor: {event.actor} · {formatDateTime(event.timestamp)}</span>
+              <span>Scope snapshot: {JSON.stringify(event.scope_snapshot)} · Evidence: {event.evidence_ids.join(", ") || "none"} · Sources: {event.source_references.join(", ") || "none"}</span>
+            </article>
+          )) : <p>No audit events are visible in this scope.</p>}
         </div>
       </section>
 
       {selectedEvidence && (
-        <aside className="card" aria-label="Evidence drawer">
-          <div className="card-header">
-            <div>
-              <h2>Evidence drawer</h2>
-              <p>Full evidence record for operator review.</p>
-            </div>
-            <button type="button" className="button" onClick={() => setSelectedEvidence(null)}>
-              Close
-            </button>
-          </div>
+        <aside className="card" aria-label="Evidence detail drawer" tabIndex={-1} ref={drawer}>
+          <div className="card-header"><div><h2>Evidence detail</h2><p>Source and trust facts for operator review.</p></div><button type="button" className="button" onClick={() => setSelectedEvidence(null)}>Close</button></div>
           <div className="card-body">
-            <StructuredData value={selectedEvidence} />
+            <dl>
+              <dt>Source family/object ID</dt><dd>{selectedEvidence.source_family} / {selectedEvidence.source_object_id}</dd>
+              <dt>Locator</dt><dd>{selectedEvidence.locator || "Source locator unavailable"}</dd>
+              <dt>Observed / ingested</dt><dd>{selectedEvidence.observed_at} / {selectedEvidence.ingested_at}</dd>
+              <dt>Watermark / status</dt><dd>{selectedEvidence.watermark || "unknown"} / {selectedEvidence.ingestion_status}</dd>
+              <dt>Provenance / quality</dt><dd>{JSON.stringify(selectedEvidence.provenance)} / {selectedEvidence.quality}</dd>
+              <dt>Availability / freshness / confidence</dt><dd>{selectedEvidence.availability} / {selectedEvidence.freshness} / {selectedEvidence.confidence}</dd>
+            </dl>
           </div>
         </aside>
       )}

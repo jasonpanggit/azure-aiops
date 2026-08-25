@@ -415,3 +415,27 @@ export const adminApi = {
 };
 
 export type { Envelope };
+
+/** Durable Phase 1 situation reads; unlike the legacy incident API these IDs and records are persisted. */
+export const situationsApi = {
+  list: (scope: ScopeSelection = {}, query = "", priority = "", offset = 0, limit = 100) => {
+    const params = scopeToSearchParams(scope);
+    if (query) params.set("q", query);
+    if (priority) params.set("priority", priority);
+    params.set("offset", String(offset));
+    params.set("limit", String(limit));
+    return apiRequest<import("./types").DurableSituation[]>("/situations", { query: params });
+  },
+  get: (id: string, scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").DurableSituation>(`/situations/${encodeURIComponent(id)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+  audit: (id: string, scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").SituationAuditEvent[]>(`/situations/${encodeURIComponent(id)}/audit`, {
+      query: scopeToSearchParams(scope),
+    }),
+  evidence: (id: string, scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").DurableEvidence>(`/evidence/${encodeURIComponent(id)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+};

@@ -10,18 +10,17 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useScope } from "@/lib/scope-context";
-import { connectionsApi, networkApi, operationsApi, vulnerabilityApi } from "@/lib/services";
-import { rankSituations } from "@/lib/situations";
+import { connectionsApi, networkApi, situationsApi, vulnerabilityApi } from "@/lib/services";
+import { rankDurableSituations } from "@/lib/situations";
 import type {
   Envelope,
-  IncidentReport,
   NetworkSummary,
   SubscriptionConnection,
   VulnerabilitySummary,
 } from "@/lib/types";
 
 interface DashboardState {
-  incidents?: Envelope<IncidentReport>;
+  situations?: Envelope<import("@/lib/types").DurableSituation[]>;
   network?: Envelope<NetworkSummary>;
   vulnerabilities?: Envelope<VulnerabilitySummary>;
   connections?: Envelope<SubscriptionConnection[]>;
@@ -38,7 +37,7 @@ export default function Home() {
     let active = true;
     setLoading(true);
     Promise.allSettled([
-      operationsApi.incidents(scope, 0, 20),
+      situationsApi.list(scope, "", "", 0, 100),
       networkApi.summary(scope),
       vulnerabilityApi.summary(scope),
       connectionsApi.list(scope, 0, 100),
@@ -52,7 +51,7 @@ export default function Home() {
         return undefined;
       });
       setState({
-        incidents: values[0] as Envelope<IncidentReport> | undefined,
+        situations: values[0] as Envelope<import("@/lib/types").DurableSituation[]> | undefined,
         network: values[1] as Envelope<NetworkSummary> | undefined,
         vulnerabilities: values[2] as Envelope<VulnerabilitySummary> | undefined,
         connections: values[3] as Envelope<SubscriptionConnection[]> | undefined,
@@ -66,8 +65,8 @@ export default function Home() {
   }, [scope]);
 
   const situations = useMemo(
-    () => rankSituations(state.incidents?.data.incidents ?? []),
-    [state.incidents]
+    () => rankDurableSituations(state.situations?.data ?? []),
+    [state.situations]
   );
   const criticalSituations = situations.filter((situation) => situation.priority === "P1").length;
   const staleConnections =
@@ -75,7 +74,7 @@ export default function Home() {
       (connection) => connection.health_status === "stale" || connection.sync_status === "failed"
     ).length ?? 0;
   const evidence = [
-    ...(state.incidents?.evidence ?? []),
+    ...(state.situations?.evidence ?? []),
     ...(state.vulnerabilities?.evidence ?? []),
     ...(state.network?.evidence ?? []),
   ];
@@ -103,9 +102,9 @@ export default function Home() {
         <>
           <EvidenceBar
             evidence={evidence}
-            knowledgeVersion={state.incidents?.knowledge_version}
+            knowledgeVersion={state.situations?.knowledge_version}
             warnings={[
-              ...(state.incidents?.warnings ?? []),
+              ...(state.situations?.warnings ?? []),
               ...(state.network?.warnings ?? []),
               ...(state.vulnerabilities?.warnings ?? []),
               ...state.errors,

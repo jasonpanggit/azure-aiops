@@ -2,63 +2,55 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { SituationTable } from "@/components/SituationTable";
-import { CopilotLauncher } from "@/components/ui/CopilotLauncher";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { useScope } from "@/lib/scope-context";
-import { operationsApi } from "@/lib/services";
-import { rankSituations, type SituationPriority } from "@/lib/situations";
-import type { Envelope, IncidentReport } from "@/lib/types";
+import { situationsApi } from "@/lib/services";
+import { rankDurableSituations, type SituationPriority } from "@/lib/situations";
+import type { DurableSituation, Envelope } from "@/lib/types";
 
 /** Triage queue for ranked, service-aware operational Situations. */
 export default function SituationsPage() {
   const { scope } = useScope();
-  const [envelope, setEnvelope] = useState<Envelope<IncidentReport> | null>(null);
+  const [envelope, setEnvelope] = useState<Envelope<DurableSituation[]> | null>(null);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [priority, setPriority] = useState<"all" | SituationPriority>("all");
+  const [page, setPage] = useState(0);
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
     setError("");
-    operationsApi
-      .incidents(scope, 0, 100)
+    setEnvelope(null);
+    situationsApi
+      .list(scope, query, priority === "all" ? "" : priority, page * 25, 25)
       .then((result) => active && setEnvelope(result))
       .catch((reason: unknown) => active && setError(reason instanceof Error ? reason.message : "Situations are unavailable"));
     return () => {
       active = false;
     };
-  }, [scope]);
+  }, [page, priority, query, scope]);
 
   const situations = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    return rankSituations(envelope?.data.incidents ?? []).filter((situation) => {
-      if (priority !== "all" && situation.priority !== priority) return false;
-      if (!normalized) return true;
-      return [
-        situation.title,
-        situation.id,
-        situation.owner,
-        situation.supportTeam,
-        situation.cause,
-        ...situation.businessServices,
-        ...situation.applications,
-      ].some((value) => value.toLowerCase().includes(normalized));
-    });
-  }, [envelope, priority, query]);
+    return rankDurableSituations(envelope?.data ?? []);
+  }, [envelope]);
 
   return (
     <div className="page-container">
       <PageHeader
         eyebrow="Operate"
-        title="Situations"
-        description="Correlated operational work ranked by business impact, blast radius, evidence confidence, and recency."
+        title="Which situations need triage?"
+        description="Compare authorized situations by impact, blast radius, evidence confidence, and recency before opening an evidence-backed brief."
+        actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about situations" />}
         metadata={
           <>
-            <span>{envelope?.data.incidents.length ?? 0} active</span>
+            <span>{envelope?.data.length ?? 0} in current scope</span>
             <span>Read-only investigation</span>
-            <span>Operator approval required for remediation</span>
+            <span>Remediation handoff is future-phase and read-only</span>
           </>
         }
       />
@@ -68,13 +60,9 @@ export default function SituationsPage() {
           evidence={envelope.evidence}
           knowledgeVersion={envelope.knowledge_version}
           warnings={envelope.warnings}
-          fallbackTimestamp={envelope.data.freshness}
+          fallbackTimestamp={envelope.evidence[0]?.timestamp}
         />
       )}
-
-      <CopilotLauncher
-        starterQuestions={["which incidents are highest priority", "what changed before the outage", "what should be fixed first"]}
-      />
 
       <div className="queue-toolbar">
         <label className="search-field">
@@ -82,7 +70,7 @@ export default function SituationsPage() {
           <input
             type="search"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => { setQuery(event.target.value); setPage(0); }}
             placeholder="Service, application, owner, cause, or incident ID"
           />
         </label>
@@ -92,7 +80,7 @@ export default function SituationsPage() {
               type="button"
               key={value}
               className={priority === value ? "segmented-active" : ""}
-              onClick={() => setPriority(value)}
+              onClick={() => { setPriority(value); setPage(0); }}
             >
               {value === "all" ? "All priorities" : value}
             </button>
@@ -122,13 +110,27 @@ export default function SituationsPage() {
           <SituationTable situations={situations} />
           {envelope.pagination && (
             <div className="table-footer">
-              Showing {envelope.pagination.offset + 1}–
-              {Math.min(envelope.pagination.offset + envelope.pagination.limit, envelope.pagination.total)} of{" "}
-              {envelope.pagination.total}
+              Showing {envelope.pagination.total === 0 ? 0 : envelope.pagination.offset + 1}–
+              {Math.min(envelope.pagination.offset + envelope.data.length, envelope.pagination.total)} of {envelope.pagination.total}
+              <span className="table-footer-actions">
+                <button type="button" className="button" disabled={page === 0} onClick={() => setPage((value) => Math.max(0, value - 1))}>Previous</button>
+                <button type="button" className="button" disabled={envelope.pagination.next_offset === null} onClick={() => setPage((value) => value + 1)}>Next</button>
+              </span>
             </div>
           )}
         </div>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Situations queue"
+        starterQuestions={[
+          { label: "Which situations are highest priority?", tool: "incidents", toolArguments: {} },
+          { label: "What should be fixed first?", tool: "remediation_opportunities", toolArguments: {} },
+          { label: "What changed before the outage?", tool: "incidents", toolArguments: {} },
+        ]}
+      />
     </div>
   );
 }

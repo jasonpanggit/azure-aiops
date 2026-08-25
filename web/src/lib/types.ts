@@ -801,3 +801,87 @@ export interface HubDependents {
   dependent_count: number;
   shared_services?: SharedServiceSummary[];
 }
+
+export interface DurableEvidence {
+  evidence_id: string;
+  source_family: string;
+  source_object_id: string;
+  locator: string;
+  resource_ids: string[];
+  entity_ids: string[];
+  observed_at: string;
+  ingested_at: string;
+  watermark: string;
+  ingestion_status: string;
+  provenance: Record<string, unknown>;
+  freshness: Freshness;
+  quality: string;
+  availability: string;
+  confidence: string;
+  assertion: string;
+  fingerprint: string;
+  situation_id: string;
+}
+
+export interface DurableSourceStatus {
+  source_family: string;
+  run_id: string;
+  status: string;
+  observed_at: string;
+  ingested_at: string;
+  watermark: string;
+  query_version: string;
+  requested_scope: Record<string, string[]>;
+  provider_status: string;
+  freshness: Freshness;
+  availability: string;
+  quality: string;
+  error: string;
+}
+
+export interface DurableSituationLink {
+  link_id: string;
+  situation_id: string;
+  entity_type: string;
+  entity_id: string;
+  relation: string;
+  quality: "resolved" | "unresolved" | "degraded" | string;
+  provenance: Record<string, unknown>;
+}
+
+export interface SituationAuditEvent {
+  event_id: string;
+  actor: string;
+  action: string;
+  scope_snapshot: Record<string, string[]>;
+  timestamp: string;
+  situation_id: string;
+  evidence_ids: string[];
+  source_references: string[];
+  run_id: string;
+}
+
+export interface DurableSituation {
+  situation_id: string;
+  resource_id: string;
+  title: string;
+  situation_type: string;
+  lifecycle_state: string;
+  severity: string;
+  priority: "P1" | "P2" | "P3" | string;
+  scope: Record<string, string[]>;
+  owner: string;
+  support_team: string;
+  affected_resource_ids: string[];
+  linked_evidence_ids: string[];
+  started_at: string;
+  last_observed_at: string;
+  evidence_state: string;
+  warnings: string[];
+  contradiction_ids: string[];
+  unknowns: string[];
+  run_id: string;
+  evidence?: DurableEvidence[];
+  links?: DurableSituationLink[];
+  source_status?: DurableSourceStatus[];
+}

@@ -95,3 +95,33 @@ export function rankSituations(entries: Array<IncidentReportEntry | IncidentFind
       return Date.parse(right.startedAt) - Date.parse(left.startedAt);
     });
 }
+
+/** Adapt a durable server record to the existing comparison table shape. */
+export function durableSituationSummary(situation: import("./types").DurableSituation): SituationSummary {
+  return {
+    id: situation.situation_id,
+    title: situation.title,
+    priority: situation.priority as SituationPriority,
+    severity: situation.severity,
+    status: situation.lifecycle_state,
+    startedAt: situation.started_at,
+    owner: situation.owner || "Owner unassigned",
+    supportTeam: situation.support_team || "Support team unassigned",
+    businessServices: situation.scope.business_service ?? [],
+    applications: situation.scope.application ?? [],
+    cause: situation.evidence_state === "contradictory" ? "Evidence conflicts" : "Cause not yet determined",
+    confidence: situation.evidence_state === "complete" ? 1 : 0,
+    latestChange: null,
+    impactScore: situation.priority === "P1" ? 100 : situation.priority === "P2" ? 50 : 10,
+  };
+}
+
+export function rankDurableSituations(situations: import("./types").DurableSituation[]): SituationSummary[] {
+  return situations
+    .map(durableSituationSummary)
+    .sort((left, right) => {
+      const priority = PRIORITY_ORDER[left.priority] - PRIORITY_ORDER[right.priority];
+      if (priority !== 0) return priority;
+      return Date.parse(right.startedAt) - Date.parse(left.startedAt);
+    });
+}
