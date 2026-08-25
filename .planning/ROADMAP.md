@@ -27,11 +27,11 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
   3. Operator can see freshness, availability, provenance, quality, and authorization scope for information used by the situation.
   4. Auditor can see immutable events for observations and other lifecycle activity without unauthorized users seeing out-of-scope data.
 
-**Plans:** 1/1 plans executed
+**Plans:** 1/2 plans complete
 Plans:
 
-- [x] 01-PLAN.md
 - [x] 01-01-PLAN.md — Deliver the durable situation, evidence, audit, authorization, and operator-trust foundation
+- [ ] 01-02-PLAN.md — Close production ingestion, trust, audit, authorization, UI, and MVP verification blockers
 
 **UI hint:** yes
 
@@ -107,3 +107,14 @@ Plans:
 | 3. Safe Remediation Execution | 0/TBD | Not started | - |
 | 4. Domain Coverage and Operational Twin | 0/TBD | Not started | - |
 | 5. Controlled Pilot Readiness | 0/TBD | Not started | - |
+
+### Phase 6: Software and OS Inventory Visibility
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 5
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 6 to break down)
