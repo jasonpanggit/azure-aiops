@@ -15,7 +15,7 @@ affects: [investigation, recommendation, approval, remediation, pilot-readiness]
 actuals:
   tokens: 17000
   tasks: 3
-  commits: 5
+  commits: 8
 tech-stack:
   added: []
   patterns:
@@ -121,6 +121,8 @@ status: complete
 1. **Task 1: Tracer — persist and open one authorized situation end to end** — `0ed80fd`
 2. **Task 2: Expand representative evidence, deduplication, trust states, audit, and ontology links** — `1d31e57`
 3. **Task 3: Complete scoped read APIs and the approved operator-trust workbench surfaces** — `0f7653e`, `dccfecb`
+
+Task 3 uses two commits because its API authorization tests and UI contract test were kept as separate owned file sets.
 
 ## Verification
 
