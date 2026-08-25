@@ -1,0 +1,8 @@
+{
+  "arg": [{"id": "arg-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:00:00Z", "watermark": "arg-1"}],
+  "monitor": [{"id": "monitor-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:01:00Z"}],
+  "service_health": [{"id": "health-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:02:00Z"}],
+  "defender": [{"id": "defender-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:03:00Z"}],
+  "policy": [{"id": "policy-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:04:00Z"}],
+  "vulnerability": [{"id": "vulnerability-1", "resource_id": "/subscriptions/sub-a/resource-1", "observed_at": "2026-08-25T01:05:00Z"}]
+}

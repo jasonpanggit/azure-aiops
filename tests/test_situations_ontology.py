@@ -1,0 +1,25 @@
+from fabric.dataset_mapper import InventoryDatasetMapper
+from ontology.ontology_validator import OntologyValidator
+
+
+def test_situations_are_registered_as_ontology_entities_with_typed_links(tmp_path) -> None:
+    from datetime import UTC, datetime
+
+    from hermes_arg_connector.normalize import Normalizer
+    from situations.store import SituationStore
+
+    observed = datetime(2026, 8, 25, tzinfo=UTC)
+    graph = Normalizer().normalize(
+        {
+            "resources": [{"id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm", "subscriptionId": "sub-a", "type": "Microsoft.Compute/virtualMachines"}],
+            "resource_changes": [{"id": "change", "properties": {"targetResourceId": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm", "changeType": "write", "changeAttributes": {"timestamp": observed.isoformat()}}}],
+        },
+        observed,
+    )
+    source = SituationStore(tmp_path)
+    source.publish(graph, {}, {"runId": "run", "startedAt": observed.isoformat()})
+    datasets = InventoryDatasetMapper().load(tmp_path / "current", "sync")
+    report = OntologyValidator().validate(datasets["ontology_entities"], datasets["ontology_relationships"])
+    assert report.passed
+    assert any(row["entity_type"] == "Situation" for row in datasets["ontology_entities"])
+    assert any(row["subject_type"] == "Situation" for row in datasets["ontology_relationships"])
