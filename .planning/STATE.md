@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 1
 current_phase_name: Evidence and Situation Foundation
 status: verifying
-stopped_at: Completed 01-03-PLAN.md
-last_updated: "2026-08-25T14:36:36.976Z"
+stopped_at: Completed 06-01-PLAN.md
+last_updated: "2026-08-25T15:24:42.582Z"
 last_activity: 2026-08-25
 last_activity_desc: Completed Phase 1 plan 01 execution and recorded verification results.
 progress:
   total_phases: 2
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 13
+  completed_plans: 4
 ---
 
 # Project State
@@ -32,7 +32,7 @@ Plan: 2 of 2 in current phase
 Status: Phase complete — ready for verification
 Last activity: 2026-08-23 — Created brownfield MVP roadmap with complete v1 requirement coverage.
 
-Progress: ██░░░░░░░░ [██████████] 100%
+Progress: ██░░░░░░░░ [███░░░░░░░] 31%
 
 ## Performance Metrics
 
@@ -60,6 +60,7 @@ Progress: ██░░░░░░░░ [██████████] 100%
 | Phase 01 P01 | 14 min | 3 tasks | 21 files |
 | Phase 01 P02 | 40 min | 3 tasks | 28 files |
 | Phase 01 P03 | 16 min | 3 tasks | 9 files |
+| Phase 06 P01 | 8min | 2 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,10 @@ Recent decisions affecting current work:
 - [Phase ?]: Treat each nested audit event scope_snapshot as an authorization predicate before serialization.
 - [Phase ?]: Derive freshness from UTC timestamp age bands with valid provider bands preserved.
 - [Phase ?]: Keep service-recorded audit failure distinct from successful empty history and local collaboration.
+- [Phase ?]: D-01: Group OS observations by canonical OS name/version and use server-owned keys for drill-down.
+- [Phase ?]: D-02: Keep Azure VM and Arc source labels in one grouped view without collapsing source identity.
+- [Phase ?]: D-09: Unknown lifecycle matches remain visible with an explicit EOL date review flag.
+- [Phase ?]: Read source status from the active immutable generation and scope row counts before projection.
 
 ### Roadmap Evolution
 
@@ -101,6 +106,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-25T14:36:36.971Z
-Stopped at: Completed 01-03-PLAN.md
+Last session: 2026-08-25T15:24:42.576Z
+Stopped at: Completed 06-01-PLAN.md
 Resume file: None
