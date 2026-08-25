@@ -911,6 +911,17 @@ def _runtime_metadata(
     }
 
 
+def _load_inventory_service() -> Any:
+    """Load inventory only from an active generation (or explicit fixture)."""
+    from hermes_arg_connector.storage import DatasetStore
+    from intelligence.inventory.service import InventoryService
+
+    fixture = os.environ.get("HERMES_INVENTORY_FIXTURE", "").strip()
+    if fixture:
+        return InventoryService.from_fixture(fixture)
+    return InventoryService.from_store(DatasetStore(hermes_home()))
+
+
 def _build_provider_runtime(
     onboarding: SubscriptionOnboardingService,
 ) -> ProviderRuntime:
@@ -1003,6 +1014,11 @@ def _build_provider_runtime(
         name: ProviderSpec(loader=loader, configured=True, required=True)
         for name, loader in loaders.items()
     }
+    specs["inventory"] = ProviderSpec(
+        loader=_load_inventory_service,
+        configured=True,
+        required=False,
+    )
     specs["copilot"] = ProviderSpec(
         loader=_load_foundry_agent,
         configured=foundry_configured,
@@ -1040,5 +1056,6 @@ def build_context() -> ApiContext:
         risk_exception_add=add_risk_exception,
         risk_exception_revoke=revoke_risk_exception,
         foundry_agent_provider=_load_foundry_agent,
+        inventory_provider=lambda: providers.get("inventory", optional=True),
         provider_runtime=providers,
     )

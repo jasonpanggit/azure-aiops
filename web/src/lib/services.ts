@@ -33,6 +33,8 @@ import type {
   VulnerabilityExposure,
   VulnerabilitySummary,
   EvidenceItem,
+  OsInventoryCollection,
+  OsInventoryDetail,
 } from "./types";
 
 async function listAllConnections(scope: ScopeSelection): Promise<Envelope<SubscriptionConnection[]>> {
@@ -115,6 +117,21 @@ export const connectionsApi = {
 
   health: (id: string) =>
     apiRequest<ConnectionHealthReport>(`/subscription-connections/${encodeURIComponent(id)}/health`),
+};
+
+export const inventoryApi = {
+  os: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<OsInventoryCollection>("/inventory/os", { query });
+  },
+  osGroup: (key: string, scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<OsInventoryDetail>(`/inventory/os/${encodeURIComponent(key)}`, { query });
+  },
 };
 
 // ---------------------------------------------------------------------------

@@ -60,6 +60,8 @@ class ApiContext:
     # with the Copilot degrading to retrieval-only answers.
     foundry_agent_provider: Callable[[], Any] | None = None
     provider_runtime: ProviderRuntime | None = None
+    # OS inventory is a read-only projection of the active immutable generation.
+    inventory_provider: Callable[[], Any] | None = None
 
     def resolve_provider(self, name: str, *, optional: bool = False) -> Any:
         """Resolve a provider through the managed runtime or legacy callable."""

@@ -34,6 +34,75 @@ export interface Envelope<T> {
   pagination?: Pagination | null;
 }
 
+export type InventorySourceType = "azure_vm" | "arc";
+export type InventorySourceState = "ready" | "partial" | "stale" | "degraded" | "unavailable";
+
+export interface InventoryEvidence {
+  source_engine: string;
+  source_table: string;
+  observed_at: string;
+  source_id: string;
+  query_version: string;
+}
+
+export interface InventorySourceStatus {
+  source_type: InventorySourceType;
+  state: InventorySourceState;
+  observed_at: string;
+  query_version: string;
+  row_count: number;
+  error: string;
+}
+
+export interface OsInventoryGroup {
+  key: string;
+  os_name: string;
+  os_version: string;
+  machine_count: number;
+  source_types: InventorySourceType[];
+  lifecycle_status: string;
+  support_end: string | null;
+  days_remaining: number | null;
+  review_required: boolean;
+}
+
+export interface OsInventoryMachine {
+  resource_id: string;
+  machine_name: string;
+  source_type: InventorySourceType;
+  os_name: string;
+  os_version: string;
+  subscription_id: string;
+  resource_group: string;
+  environment: string;
+  observed_at: string;
+  evidence: InventoryEvidence[];
+  source_status: InventorySourceState;
+  lifecycle_status: string;
+  support_end: string | null;
+  days_remaining: number | null;
+  review_required: boolean;
+}
+
+export interface OsInventoryCollection {
+  groups: OsInventoryGroup[];
+  source_status: Record<InventorySourceType, InventorySourceStatus>;
+  observed_at: string;
+  query_version: string;
+  generation_id: string;
+  requested_scope: Record<string, string[]>;
+}
+
+export interface OsInventoryDetail {
+  group: OsInventoryGroup;
+  machines: OsInventoryMachine[];
+  source_status: Record<InventorySourceType, InventorySourceStatus>;
+  observed_at: string;
+  query_version: string;
+  generation_id: string;
+  requested_scope: Record<string, string[]>;
+}
+
 export type ErrorCode =
   | "invalid_request"
   | "unauthenticated"

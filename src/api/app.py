@@ -24,6 +24,7 @@ from .dependencies import ApiContext, OperatePrincipal
 from .errors import ApiError, ErrorCode, translate
 from .models import EnvelopeModel, ErrorModel
 from .routers import admin as admin_routes
+from .routers import inventory
 from .routers import connections, graph, network, operations, planned, vulnerability
 from .routers import context as context_routes
 from .routers import copilot as copilot_routes
@@ -219,6 +220,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     app.include_router(context_routes.router)
     app.include_router(copilot_routes.router)
     app.include_router(graph.router)
+    app.include_router(inventory.router)
     app.include_router(network.router)
     app.include_router(operations.router)
     app.include_router(planned.router)

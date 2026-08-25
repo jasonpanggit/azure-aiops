@@ -1,0 +1,77 @@
+{
+  "query_version": "arg-inventory-os-v1",
+  "generation_id": "inventory-generation-2026-08-25",
+  "observed_at": "2026-08-25T10:00:00Z",
+  "source_status": {
+    "azure_vm": {
+      "state": "ready",
+      "observed_at": "2026-08-25T10:00:00Z",
+      "query_version": "arg-v1",
+      "row_count": 3
+    },
+    "arc": {
+      "state": "partial",
+      "observed_at": "2026-08-25T10:00:00Z",
+      "query_version": "arg-v1",
+      "row_count": 2,
+      "error": "One Arc subscription timed out"
+    }
+  },
+  "observations": [
+    {
+      "id": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/web-01",
+      "name": "web-01",
+      "type": "microsoft.compute/virtualmachines",
+      "subscriptionId": "sub-a",
+      "resourceGroup": "rg-prod",
+      "tags": {"environment": "prod"},
+      "properties": {"osName": "Windows Server", "osVersion": "2019"},
+      "observed_at": "2026-08-25T09:58:00Z",
+      "evidence": [{"source_engine": "Azure Resource Graph", "source_table": "Resources", "observed_at": "2026-08-25T09:58:00Z", "source_id": "vm-web-01", "query_version": "arg-v1"}]
+    },
+    {
+      "id": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.HybridCompute/machines/arc-01",
+      "name": "arc-01",
+      "type": "microsoft.hybridcompute/machines",
+      "subscriptionId": "sub-a",
+      "resourceGroup": "rg-prod",
+      "tags": {"env": "prod"},
+      "properties": {"osName": "Ubuntu", "osVersion": "22.04"},
+      "observed_at": "2026-08-25T09:57:00Z",
+      "evidence": [{"source_engine": "Azure Resource Graph", "source_table": "HybridCompute", "observed_at": "2026-08-25T09:57:00Z", "source_id": "arc-01", "query_version": "arg-v1"}]
+    },
+    {
+      "id": "/subscriptions/sub-a/resourceGroups/rg-dev/providers/Microsoft.Compute/virtualMachines/unknown-01",
+      "name": "unknown-01",
+      "type": "microsoft.compute/virtualmachines",
+      "subscriptionId": "sub-a",
+      "resourceGroup": "rg-dev",
+      "tags": {"environment": "dev"},
+      "properties": {"osName": "Windows Server", "osVersion": "2099-preview"},
+      "observed_at": "2026-08-25T09:56:00Z",
+      "evidence": [{"source_engine": "Azure Resource Graph", "source_table": "Resources", "observed_at": "2026-08-25T09:56:00Z", "source_id": "vm-unknown-01", "query_version": "arg-v1"}]
+    },
+    {
+      "id": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.HybridCompute/machines/shared-name",
+      "name": "shared-name",
+      "type": "microsoft.hybridcompute/machines",
+      "subscriptionId": "sub-a",
+      "resourceGroup": "rg-prod",
+      "tags": {"environment": "prod"},
+      "properties": {"osName": "Windows Server", "osVersion": "2019"},
+      "observed_at": "2026-08-25T09:55:00Z",
+      "evidence": [{"source_engine": "Azure Resource Graph", "source_table": "HybridCompute", "observed_at": "2026-08-25T09:55:00Z", "source_id": "arc-shared-name", "query_version": "arg-v1"}]
+    },
+    {
+      "id": "/subscriptions/sub-b/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/shared-name",
+      "name": "shared-name",
+      "type": "microsoft.compute/virtualmachines",
+      "subscriptionId": "sub-b",
+      "resourceGroup": "rg-prod",
+      "tags": {"environment": "prod"},
+      "properties": {"osName": "Windows Server", "osVersion": "2019"},
+      "observed_at": "2026-08-25T09:54:00Z",
+      "evidence": [{"source_engine": "Azure Resource Graph", "source_table": "Resources", "observed_at": "2026-08-25T09:54:00Z", "source_id": "vm-sub-b-shared", "query_version": "arg-v1"}]
+    }
+  ]
+}
