@@ -15,6 +15,7 @@ from api.auth import (
     HeaderPrincipalAuthenticator,
     StaticTokenAuthenticator,
 )
+from api.providers import STALE, ProviderRuntime, ProviderSpec
 from api.runtime import build_authenticator, build_context, hermes_home
 from hermes_arg_connector.local import seed_local_environment
 from hermes_arg_connector.normalize import Normalizer
@@ -193,3 +194,43 @@ def test_inventory_runtime_loader_reads_active_generation_metadata(
     assert service is not None
     assert service.generation_id == "runtime-inventory-run"
     assert service.observed_at == "2026-08-25T12:00:00Z"
+
+
+def test_inventory_runtime_marks_old_generation_stale_without_erasing_rows(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "hermes"
+    fixture = json.loads(
+        Path("tests/fixtures/mock_inventory_arg.json").read_text(encoding="utf-8")
+    )
+    graph = Normalizer().normalize(
+        {"inventory_native_vm_os": fixture["inventory_native_vm_os"][:1]},
+        datetime(2026, 8, 20, 12, 0, tzinfo=UTC),
+        run_id="stale-inventory-run",
+    )
+    DatasetStore(home).publish(
+        graph,
+        {},
+        {
+            "runId": "stale-inventory-run",
+            "startedAt": "2026-08-20T12:00:00Z",
+            "queryVersion": "inventory-os-v1",
+            "status": "completed",
+        },
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from api.runtime import _load_inventory_service
+
+    service = _load_inventory_service()
+    assert service is not None
+    runtime = ProviderRuntime(
+        {"inventory": ProviderSpec(lambda: service)},
+        stale_after_hours=24,
+        clock=lambda: datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+    )
+
+    health = runtime.refresh(force=True)
+
+    assert health["providers"]["inventory"]["state"] == STALE
+    assert runtime.get("inventory").snapshot.observations

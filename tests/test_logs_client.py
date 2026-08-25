@@ -111,3 +111,21 @@ def test_logs_client_rejects_invalid_workspace_and_row_limit() -> None:
     }
     with pytest.raises(ValueError, match="row limit"):
         parse_logs_tables(payload, max_rows=1)
+
+
+def test_logs_client_preserves_timeout_and_malformed_json_failures() -> None:
+    def timeout_requester(method: str, url: str, **kwargs):
+        raise httpx.ReadTimeout("workspace query timed out")
+
+    with pytest.raises(httpx.ReadTimeout, match="timed out"):
+        AzureMonitorLogsClient(Credential(), requester=timeout_requester).query(
+            "workspace-1"
+        )
+
+    def malformed_requester(method: str, url: str, **kwargs):
+        return httpx.Response(200, content=b"not-json")
+
+    with pytest.raises(RuntimeError, match="valid JSON"):
+        AzureMonitorLogsClient(Credential(), requester=malformed_requester).query(
+            "workspace-1"
+        )
