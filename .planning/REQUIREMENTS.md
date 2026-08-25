@@ -9,16 +9,16 @@ Requirements for the controlled Azure pilot.
 
 ### Foundations
 
-- [ ] **FOUND-01**: Operator can open a durable situation record with type, lifecycle state, severity, priority, scope, owner, and affected resources.
-- [ ] **FOUND-02**: Situation records can link incidents, exposure findings, compliance findings, vulnerabilities, changes, and operational-twin entities.
-- [ ] **FOUND-03**: Operator can see source freshness, availability, provenance, and data-quality status for information used in a situation.
-- [ ] **FOUND-04**: The platform persists immutable audit events for observations, recommendations, approvals, executions, failures, and verification results.
-- [ ] **FOUND-05**: Authorized users can view only the subscriptions, resources, fields, evidence, and actions permitted by their Entra/RBAC scope.
+- [x] **FOUND-01**: Operator can open a durable situation record with type, lifecycle state, severity, priority, scope, owner, and affected resources.
+- [x] **FOUND-02**: Situation records can link incidents, exposure findings, compliance findings, vulnerabilities, changes, and operational-twin entities.
+- [x] **FOUND-03**: Operator can see source freshness, availability, provenance, and data-quality status for information used in a situation.
+- [x] **FOUND-04**: The platform persists immutable audit events for observations, recommendations, approvals, executions, failures, and verification results.
+- [x] **FOUND-05**: Authorized users can view only the subscriptions, resources, fields, evidence, and actions permitted by their Entra/RBAC scope.
 
 ### Detect and Explain
 
-- [ ] **DETECT-01**: Platform can ingest and normalize representative signals from existing Azure Resource Graph/Activity Log, Azure Monitor or Service Health, Defender for Cloud, Azure Policy, and vulnerability feeds.
-- [ ] **DETECT-02**: Platform deduplicates related signals and preserves source identifiers, timestamps, watermarks, and ingestion status.
+- [x] **DETECT-01**: Platform can ingest and normalize representative signals from existing Azure Resource Graph/Activity Log, Azure Monitor or Service Health, Defender for Cloud, Azure Policy, and vulnerability feeds.
+- [x] **DETECT-02**: Platform deduplicates related signals and preserves source identifiers, timestamps, watermarks, and ingestion status.
 - [ ] **DETECT-03**: Operator can view a situation timeline correlating relevant changes, incidents, findings, and source events.
 - [ ] **DETECT-04**: Operator can inspect an evidence-backed explanation where every material claim links to source, timestamp, scope, query or deep link, provenance, freshness, and quality.
 - [ ] **DETECT-05**: Operator can see affected resources, services, dependencies, ownership, environment, and business criticality within a bounded graph context.
@@ -95,13 +95,13 @@ Traceability is populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | Phase 1 | Pending |
-| FOUND-02 | Phase 1 | Pending |
-| FOUND-03 | Phase 1 | Pending |
-| FOUND-04 | Phase 1 | Pending |
-| FOUND-05 | Phase 1 | Pending |
-| DETECT-01 | Phase 1 | Pending |
-| DETECT-02 | Phase 1 | Pending |
+| FOUND-01 | Phase 1 | Complete |
+| FOUND-02 | Phase 1 | Complete |
+| FOUND-03 | Phase 1 | Complete |
+| FOUND-04 | Phase 1 | Complete |
+| FOUND-05 | Phase 1 | Complete |
+| DETECT-01 | Phase 1 | Complete |
+| DETECT-02 | Phase 1 | Complete |
 | DETECT-03 | Phase 2 | Pending |
 | DETECT-04 | Phase 2 | Pending |
 | DETECT-05 | Phase 2 | Pending |
@@ -125,6 +125,7 @@ Traceability is populated during roadmap creation.
 | PILOT-04 | Phase 5 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 28 total
 - Mapped to phases: 28
 - Unmapped: 0
