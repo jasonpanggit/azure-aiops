@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 9
+open_count: 10
 waived_count: 0
 fixed_count: 1
-total_count: 10
-last_updated: 2026-08-25T15:43:01.297Z
+total_count: 11
+last_updated: 2026-08-25T15:59:08.032Z
 ---
 
 # Broken Windows Ledger
@@ -25,6 +25,7 @@ last_updated: 2026-08-25T15:43:01.297Z
 | 8 | 06 | stub | web/src/app/software-inventory/page.tsx | 82 | Installed Software tab is an intentional tracer placeholder until the ConfigurationData slice is connected in later Phase 6 plans. | fixed |  | 2026-08-25T15:23:57.293Z | 2026-08-25T15:43:01.297Z |
 | 9 | 06 | unrun-verify | web/src/app/software-inventory/page.tsx |  | Manual browser walkthrough of /software-inventory was not run; automated page tests cover grouped rows, source warning, review flag, and drill-down. | open |  | 2026-08-25T15:24:07.515Z |  |
 | 10 | 06 | unrun-verify | web/src/app/software-inventory/page.tsx |  | End-of-phase human walkthrough still required: search exact software/version and inspect linked/unlinked environment-bearing details. | open |  | 2026-08-25T15:42:50.255Z |  |
+| 11 | 06 | unrun-verify | web/src/app/software-inventory/page.tsx |  | Human browser walkthrough of healthy and failed workspace refresh was not run in this non-interactive execution. | open |  | 2026-08-25T15:59:08.032Z |  |
 
 ````json
 [
@@ -146,6 +147,18 @@ last_updated: 2026-08-25T15:43:01.297Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-25T15:42:50.255Z",
+    "resolved_at": null
+  },
+  {
+    "id": 11,
+    "kind": "unrun-verify",
+    "phase": "06",
+    "file": "web/src/app/software-inventory/page.tsx",
+    "line": null,
+    "description": "Human browser walkthrough of healthy and failed workspace refresh was not run in this non-interactive execution.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-25T15:59:08.032Z",
     "resolved_at": null
   }
 ]
