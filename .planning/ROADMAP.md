@@ -27,13 +27,15 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
   3. Operator can see freshness, availability, provenance, quality, and authorization scope for information used by the situation.
   4. Auditor can see immutable events for observations and other lifecycle activity without unauthorized users seeing out-of-scope data.
 
-**Plans:** 2/2 plans executed
+**Plans:** 3 plans (2 executed, 1 gap-closure)
 Plans:
 
 - [x] 01-PLAN.md
 
 - [x] 01-01-PLAN.md — Deliver the durable situation, evidence, audit, authorization, and operator-trust foundation
 - [x] 01-02-PLAN.md — Close production ingestion, trust, audit, authorization, UI, and MVP verification blockers
+
+- [ ] 01-03-PLAN.md — Close remaining audit scope, trust freshness, audit-error, queue, and walkthrough blockers
 
 **UI hint:** yes
 
