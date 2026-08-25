@@ -42,3 +42,20 @@ def test_duplicate_fingerprint_is_deduplicated_but_conflicting_assertions_are_re
     )
     assert len(evidence) == 2
     assert {item["quality"] for item in evidence} == {"contradictory"}
+
+
+def test_freshness_uses_persisted_timestamp_age_bands_and_explicit_values() -> None:
+    def freshness(row: dict) -> str:
+        evidence, _ = normalize_evidence_payloads(
+            {"arg": [row]},
+            run_id="run",
+            ingested_at="2026-08-25T02:00:00Z",
+        )
+        return evidence[0]["freshness"]
+
+    assert freshness({"id": "fresh", "observed_at": "2026-08-25T01:00:00Z"}) == "fresh"
+    assert freshness({"id": "aging", "observed_at": "2026-08-24T02:00:01Z"}) == "aging"
+    assert freshness({"id": "stale", "observed_at": "2026-08-24T01:59:59Z"}) == "stale"
+    assert freshness({"id": "future", "observed_at": "2026-08-25T03:00:00Z"}) == "fresh"
+    assert freshness({"id": "invalid", "observed_at": "not-a-timestamp"}) == "unknown"
+    assert freshness({"id": "explicit", "observed_at": "2026-08-25T00:00:00Z", "freshness": "aging"}) == "aging"

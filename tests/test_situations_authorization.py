@@ -58,6 +58,16 @@ def test_nested_scope_filters_evidence_links_source_status_and_audit_references(
         ],
         audits=[
             {"event_id": "audit://a", "situation_id": situation_id, "timestamp": "2026-01-01", "evidence_ids": ["evidence://a", "evidence://b"], "source_references": ["source-a", "source-b"]},
+            {
+                "event_id": "audit://b",
+                "situation_id": situation_id,
+                "actor": "secret-actor",
+                "action": "secret.action",
+                "timestamp": "2026-01-02",
+                "scope_snapshot": {"subscription": ["sub-b"]},
+                "evidence_ids": ["evidence://b"],
+                "source_references": ["source-b"],
+            },
         ],
     )
 
@@ -72,4 +82,9 @@ def test_nested_scope_filters_evidence_links_source_status_and_audit_references(
         "evidence_ids": ["evidence://a"],
         "source_references": ["source-a"],
     }]
+    assert all(row["event_id"] != "audit://b" for row in audit)
+    assert "secret-actor" not in str(audit)
+    assert "secret.action" not in str(audit)
+    assert "2026-01-02" not in str(audit)
+    assert "sub-b" not in str(audit)
     assert provider.evidence("evidence://b", Scope.from_mapping({"subscription": ["sub-a"]})) is None

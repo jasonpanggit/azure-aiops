@@ -525,7 +525,29 @@ def _freshness(row: Mapping[str, Any], observed: str, ingested: str) -> str:
     value = str(row.get("freshness") or "").casefold()
     if value in {"fresh", "aging", "stale", "unknown"}:
         return value
-    return "fresh" if observed >= ingested else "unknown"
+    fresh_max_age_seconds = 60 * 60
+    aging_max_age_seconds = 24 * 60 * 60
+    try:
+        observed_at = _parse_utc(observed)
+        ingested_at = _parse_utc(ingested)
+    except (TypeError, ValueError):
+        return "unknown"
+    age_seconds = (ingested_at - observed_at).total_seconds()
+    if age_seconds <= fresh_max_age_seconds:
+        return "fresh"
+    if age_seconds <= aging_max_age_seconds:
+        return "aging"
+    return "stale"
+
+
+def _parse_utc(value: str) -> datetime:
+    timestamp = str(value or "").strip()
+    if not timestamp:
+        raise ValueError("timestamp is required")
+    parsed = datetime.fromisoformat(timestamp)
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include a timezone")
+    return parsed.astimezone(UTC)
 
 
 def _dedupe(rows: Iterable[Any], key: str) -> list[Any]:

@@ -166,14 +166,15 @@ def _nested_matches(row: dict[str, Any], scope: Scope, parent: dict[str, Any]) -
     if scope.is_unrestricted():
         return True
     attributes = _scope_attributes(row)
-    requested = row.get("requested_scope")
-    if isinstance(requested, dict):
-        for dimension, values in requested.items():
-            allowed = scope.values(dimension)
-            if allowed and values and not allowed.intersection(
-                str(value).casefold() for value in values
-            ):
-                return False
+    for scope_key in ("requested_scope", "scope_snapshot"):
+        requested = row.get(scope_key)
+        if isinstance(requested, dict):
+            for dimension, values in requested.items():
+                allowed = scope.values(dimension)
+                if allowed and values and not allowed.intersection(
+                    str(value).casefold() for value in values
+                ):
+                    return False
     parent_scope = parent.get("scope") if isinstance(parent.get("scope"), dict) else {}
     for value in _referenced_ids(row):
         match = re.search(r"/subscriptions/([^/]+)", value, re.IGNORECASE)
