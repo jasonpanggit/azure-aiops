@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 1
 current_phase_name: Evidence and Situation Foundation
 status: verifying
-stopped_at: Completed 06-08-PLAN.md
-last_updated: "2026-08-25T16:43:32.963Z"
+stopped_at: Completed 06-09-PLAN.md
+last_updated: "2026-08-25T16:54:47.173Z"
 last_activity: 2026-08-25
 last_activity_desc: Completed Phase 1 plan 01 execution and recorded verification results.
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 13
-  completed_plans: 11
+  completed_plans: 12
 ---
 
 # Project State
@@ -32,7 +32,7 @@ Plan: 2 of 2 in current phase
 Status: Phase complete — ready for verification
 Last activity: 2026-08-23 — Created brownfield MVP roadmap with complete v1 requirement coverage.
 
-Progress: ██░░░░░░░░ [█████████░] 85%
+Progress: ██░░░░░░░░ [█████████░] 92%
 
 ## Performance Metrics
 
@@ -68,6 +68,7 @@ Progress: ██░░░░░░░░ [█████████░] 85%
 | Phase 06 P06 | 8min | 3 tasks | 7 files |
 | Phase 06 P07 | 9min | 2 tasks | 13 files |
 | Phase 06 P08 | 7min | 2 tasks | 10 files |
+| Phase 06 P09 | 13min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -111,6 +112,9 @@ Recent decisions affecting current work:
 - [Phase ?]: Build narration from server-owned, scope-filtered OS and approved software aggregates only.
 - [Phase ?]: Keep fact summary, model narration, confidence, citations, source status, and warnings as separate response fields.
 - [Phase ?]: Keep Foundry optional; timeout, malformed, ungrounded, or unavailable output degrades to fact-only inventory.
+- [Phase ?]: Use semantic ARIA tabs and one discoverable Software Inventory route for OS and Installed Software.
+- [Phase ?]: Narrow subscription selection through the existing authorized API scope; keep other filters as views over returned rows.
+- [Phase ?]: Export only exact authorized software detail rows with quoted and formula-protected CSV cells.
 
 ### Roadmap Evolution
 
@@ -134,6 +138,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-25T16:43:32.956Z
-Stopped at: Completed 06-08-PLAN.md
+Last session: 2026-08-25T16:54:47.165Z
+Stopped at: Completed 06-09-PLAN.md
 Resume file: None
