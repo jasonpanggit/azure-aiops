@@ -119,6 +119,39 @@ def ensure_web_connection(client: httpx.Client, api_url: str, *, display_name: s
     return response.json()["id"]
 
 
+def sync_connection_access(client: httpx.Client, workspace_id: str, connection_id: str) -> None:
+    """Grant every workspace Admin/Member user Owner access on the connection.
+
+    Fabric connections have their own, separate role-assignment list from the
+    workspace/item they're used by. A user can be a workspace Admin and still
+    see "Failed to load the connection. Please make sure it exists and you
+    have the permissions to access it." in the pipeline UI if they were never
+    explicitly granted a role on the connection itself (this happened live:
+    the connection was created by the deploying service principal, which
+    made itself the sole Owner). This keeps human operators able to view/
+    edit the pipeline in the portal without needing a manual one-off grant
+    after every fresh deployment.
+    """
+    ws_roles = client.get(f"/workspaces/{workspace_id}/roleAssignments")
+    ws_roles.raise_for_status()
+    conn_roles = client.get(f"/connections/{connection_id}/roleAssignments")
+    conn_roles.raise_for_status()
+    existing_principal_ids = {r["principal"]["id"] for r in conn_roles.json().get("value", [])}
+
+    for assignment in ws_roles.json().get("value", []):
+        principal = assignment["principal"]
+        if principal.get("type") != "User" or assignment.get("role") not in ("Admin", "Member"):
+            continue
+        if principal["id"] in existing_principal_ids:
+            continue
+        body = {"principal": {"id": principal["id"], "type": "User"}, "role": "Owner"}
+        response = client.post(f"/connections/{connection_id}/roleAssignments", json=body)
+        if response.status_code == 201:
+            print(f"Granted connection access to {principal.get('displayName', principal['id'])}.", file=sys.stderr)
+        elif response.status_code != 400:
+            print(response.text, file=sys.stderr)
+
+
 def build_pipeline_content(
     api_url: str,
     trigger_secret: str,
@@ -264,6 +297,7 @@ def main() -> int:
     )
 
     connection_id = ensure_web_connection(client, args.api_url, display_name=f"{args.display_name} API")
+    sync_connection_access(client, args.workspace_id, connection_id)
     pipeline_content = build_pipeline_content(
         args.api_url, args.trigger_secret, connection_id, timeout_seconds=args.timeout_seconds
     )
