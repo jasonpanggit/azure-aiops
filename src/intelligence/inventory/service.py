@@ -8,8 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from api.evidence import Evidence
-from api.scope import Scope, scope_attributes
 from storage.datasets import DatasetStore
 from intelligence.lifecycle import EOLCatalog
 
@@ -265,6 +263,8 @@ class InventoryService:
         }
 
     def _scoped(self, scope: Scope) -> tuple[MachineObservation, ...]:
+        from api.scope import scope_attributes
+
         # This is intentionally the first operation before classification,
         # grouping, pagination, or evidence projection.
         rows = [
@@ -355,6 +355,8 @@ class InventoryService:
         }
 
     def _scoped_software(self, scope: Scope) -> tuple[SoftwareObservation, ...]:
+        from api.scope import scope_attributes
+
         rows: list[SoftwareObservation] = []
         for raw_row in self.snapshot.software_observations:
             mapping = mapping_for_observation(raw_row, self.mapping_repository)
@@ -396,7 +398,7 @@ class InventoryService:
                 (
                     item
                     for item in self.mapping_repository.read().mappings
-                    if scopes_overlap(scope, Scope.from_mapping(item.scope_predicate))
+                    if scopes_overlap(scope, _scope_from_mapping(item.scope_predicate))
                 ),
                 key=lambda item: (item.status, item.raw_name.casefold(), item.mapping_id),
             )
@@ -615,6 +617,8 @@ class InventoryService:
         }
 
     def evidence_for_api(self, rows: tuple[MachineObservation, ...] = ()) -> list[Evidence]:
+        from api.evidence import Evidence
+
         return [
             Evidence(
                 source_engine="intelligence.inventory.InventoryService",
@@ -661,6 +665,12 @@ def _scope_row(row: MachineObservation) -> dict[str, str]:
         "environment": row.environment,
         "resource_group": row.resource_group,
     }
+
+
+def _scope_from_mapping(values: dict[str, Any]):
+    from api.scope import Scope
+
+    return Scope.from_mapping(values)
 
 
 def _make_group(key: str, rows: list[MachineObservation]) -> OSGroup:

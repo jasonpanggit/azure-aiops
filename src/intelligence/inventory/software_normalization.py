@@ -7,8 +7,6 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from api.scope import Scope
-
 from .mapping_repository import SoftwareMapping, SoftwareMappingRepository
 from .models import MachineObservation, SoftwareObservation
 
@@ -75,6 +73,8 @@ def mapping_for_observation(
     repository: SoftwareMappingRepository,
 ) -> SoftwareMapping | None:
     """Find an exact raw identity mapping, including publisher separation."""
+    from api.scope import Scope
+
     row_scope = Scope.from_mapping(
         {
             "subscription": [row.subscription_id] if row.subscription_id else [],
@@ -189,7 +189,7 @@ def suggestion_from_model_output(
     )
 
 
-def scopes_overlap(left: Scope, right: Scope) -> bool:
+def scopes_overlap(left: Any, right: Any) -> bool:
     for dimension in set(left.dimensions) & set(right.dimensions):
         if not left.values(dimension) & right.values(dimension):
             return False
