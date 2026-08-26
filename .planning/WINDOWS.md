@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 16
+open_count: 17
 waived_count: 0
-fixed_count: 1
-total_count: 17
-last_updated: 2026-08-26T07:16:57.699Z
+fixed_count: 2
+total_count: 19
+last_updated: 2026-08-26T07:39:43.000Z
 ---
 
 # Broken Windows Ledger
@@ -28,10 +28,12 @@ last_updated: 2026-08-26T07:16:57.699Z
 | 11 | 06 | unrun-verify | web/src/app/software-inventory/page.tsx |  | Human browser walkthrough of healthy and failed workspace refresh was not run in this non-interactive execution. | open |  | 2026-08-25T15:59:08.032Z |  |
 | 12 | 06 | unrun-verify | web/src/app/software-inventory/page.tsx |  | Authenticated browser walkthrough of unknown-OS lifecycle review, candidate inspection, explicit confirmation, refresh persistence, and stale-revision conflict was not run in this non-interactive executor. | open |  | 2026-08-25T16:14:01.600Z |  |
 | 13 | 06 | deviation | src/intelligence/inventory/eol_review.py |  | External web/LLM lifecycle provider remains explicitly unavailable until approved endpoint configuration is supplied. | open |  | 2026-08-25T16:25:30.658Z |  |
-| 14 | 07 | unrun-verify | .planning/phases/07-unified-resource-inventory/07-06-PLAN.md |  | Authenticated Azure/Fabric and browser UX Phase 7 exit walkthrough remains human verification because this non-interactive executor has no live tenant/browser context. | open |  | 2026-08-26T07:16:57.507Z |  |
+| 14 | 07 | unrun-verify | .planning/phases/07-unified-resource-inventory/07-06-PLAN.md |  | Authenticated browser UX Phase 7 exit walkthrough remains human verification. Live Fabric publication was partially verified by run 0bc31dd4-7965-4650-91f0-b6347c635400: ARG-backed inventory tables wrote to OneLake; LAW software inventory is tracked separately in window #18. | open |  | 2026-08-26T07:16:57.507Z |  |
 | 15 | 07 | deviation | tests/test_onelake_fs.py | 257 | Full-suite run has pre-existing OneLake filesystem type assertion failure unrelated to inventory read-port changes. | open |  | 2026-08-26T07:16:57.570Z |  |
 | 16 | 07 | deviation | tests/test_situations_ontology.py | 25 | Full-suite run has pre-existing situation ontology relationship assertion failure outside inventory scope. | open |  | 2026-08-26T07:16:57.635Z |  |
 | 17 | 07 | deviation | tests/test_storage.py | 105 | Full-suite run has pre-existing partial-publish changedDatasets expectation failure from DatasetStore behavior outside 07-06 scope. | open |  | 2026-08-26T07:16:57.699Z |  |
+| 18 | 07 | live-source-data | src/hermes_arg_connector/logs.py | 13 | Live LAW software inventory publication authenticated successfully after switching the token audience to https://api.loganalytics.io/.default, but workspace 4cf2b41b-bace-4dd6-8ec0-61c7050ed552 returned SEM0100 because the ConfigurationData table does not exist; inventory_software_observations published 0 rows and source status is degraded. | open |  | 2026-08-26T07:39:43.000Z |  |
+| 19 | 07 | live-verification | infra/scripts/push_inventory_refresh_pipeline.py |  | Native Fabric DataPipeline `Inventory Refresh` verified end-to-end: on-demand Pipeline job status `Completed`, and API logs confirm `POST /api/v1/inventory/refresh` returned `200 OK`. Root cause of the earlier `datasetSettings are required for the connection 'Web'` failure was an incorrect Fabric connection type -- the script created a `"Web"` (Power Query/Dataflow) connection, but pipeline WebActivity requires a `"WebForPipeline"` connection (creation method `WebForPipeline.Contents`, parameter `baseUrl`). Fixed by recreating the connection with the correct type and switching the activity's `typeProperties` from `url` to the schema-correct `relativeUrl`. 60-minute enabled Cron schedule also confirmed present. | fixed | None -- verified working via live on-demand run and API access logs on 2026-08-26. | 2026-08-26T17:25:03.390Z | 2026-08-26T17:42:05.000Z |
 
 ````json
 [
@@ -197,7 +199,7 @@ last_updated: 2026-08-26T07:16:57.699Z
     "phase": "07",
     "file": ".planning/phases/07-unified-resource-inventory/07-06-PLAN.md",
     "line": null,
-    "description": "Authenticated Azure/Fabric and browser UX Phase 7 exit walkthrough remains human verification because this non-interactive executor has no live tenant/browser context.",
+    "description": "Authenticated browser UX Phase 7 exit walkthrough remains human verification. Live Fabric publication was partially verified by run 0bc31dd4-7965-4650-91f0-b6347c635400: ARG-backed inventory tables wrote to OneLake; LAW software inventory is tracked separately in window #18.",
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-26T07:16:57.507Z",
@@ -237,6 +239,30 @@ last_updated: 2026-08-26T07:16:57.699Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-26T07:16:57.699Z",
+    "resolved_at": null
+  },
+  {
+    "id": 18,
+    "kind": "live-source-data",
+    "phase": "07",
+    "file": "src/hermes_arg_connector/logs.py",
+    "line": 13,
+    "description": "Live LAW software inventory publication authenticated successfully after switching the token audience to https://api.loganalytics.io/.default, but workspace 4cf2b41b-bace-4dd6-8ec0-61c7050ed552 returned SEM0100 because the ConfigurationData table does not exist; inventory_software_observations published 0 rows and source status is degraded.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-26T07:39:43.000Z",
+    "resolved_at": null
+  },
+  {
+    "id": 19,
+    "kind": "deviation",
+    "phase": "07",
+    "file": "src/hermes_arg_connector/cli.py",
+    "line": null,
+    "description": "Verified via Fabric REST API that all 5 inventory_* Delta tables (inventory_os_observations, inventory_resource_observations, inventory_source_status, inventory_software_source_status, inventory_software_observations) are registered in lakehouse operational_context_graph \u2014 data delivery is confirmed. However, publication runs only as an ad hoc inventory-refresh CLI invocation; no native Fabric Data Pipeline/Data Factory artifact or scheduled trigger exists, so nothing appears under the workspace's \"Data pipeline\" item and there is no automated recurring refresh.",
+    "status": "open",
+    "reason": "Start or attach an active Fabric capacity, then rerun the on-demand job and verify completion.",
+    "recorded_at": "2026-08-26T17:25:03.390Z",
     "resolved_at": null
   }
 ]

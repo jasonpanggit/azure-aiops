@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Create/update the native Fabric Data Pipeline that triggers inventory refresh.
+
+Unlike Digital Twin Builder, Fabric's DataPipeline item type supports both
+service principal and managed identity callers (see
+https://learn.microsoft.com/en-us/rest/api/fabric/datapipeline/items/create-data-pipeline#microsoft-entra-supported-identities),
+so this script can run non-interactively as part of the SPN-driven deploy
+flow -- it does not require `az login` as a user.
+
+The pipeline has a single Web activity that POSTs to the deployed API's
+`/api/v1/inventory/refresh` trigger endpoint (see
+`src/api/routers/inventory.py`), authenticated via the same shared-secret
+header the endpoint itself validates (`x-hermes-trigger-secret`). Fabric
+owns *scheduling* only; all acquisition/normalization/publication logic
+stays in Python (`run_inventory_refresh`) so there is exactly one
+implementation of that logic to maintain.
+
+Usage:
+    python3 infra/scripts/push_inventory_refresh_pipeline.py \\
+        --workspace-id <ws> \\
+        --api-url https://aiops-dev-api.<region>.azurecontainerapps.io \\
+        --trigger-secret <secret> \\
+        [--display-name "Inventory Refresh"] \\
+        [--schedule-interval Hour --schedule-frequency 1]
+
+Auth: uses DefaultAzureCredential (same chain as the rest of the codebase),
+so it picks up `az login`, a service principal via AZURE_CLIENT_ID/
+AZURE_CLIENT_SECRET/AZURE_TENANT_ID, or a managed identity automatically.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import sys
+import time
+from typing import Any
+
+import httpx
+from azure.identity import DefaultAzureCredential
+
+_API_BASE = "https://api.fabric.microsoft.com/v1"
+_SCOPE = "https://api.fabric.microsoft.com/.default"
+
+
+def _b64(payload: dict[str, Any]) -> str:
+    return base64.b64encode(json.dumps(payload, indent=2).encode("utf-8")).decode("ascii")
+
+
+def _get_token() -> str:
+    credential = DefaultAzureCredential()
+    return credential.get_token(_SCOPE).token
+
+
+def _find_existing_item(client: httpx.Client, workspace_id: str, display_name: str) -> str | None:
+    response = client.get(f"{_API_BASE}/workspaces/{workspace_id}/items", params={"type": "DataPipeline"})
+    response.raise_for_status()
+    for item in response.json().get("value", []):
+        if item.get("displayName") == display_name:
+            return item.get("id")
+    return None
+
+
+def _find_existing_connection(client: httpx.Client, display_name: str) -> tuple[str, str] | None:
+    response = client.get("/connections")
+    response.raise_for_status()
+    for conn in response.json().get("value", []):
+        if conn.get("displayName") == display_name:
+            conn_type = conn.get("connectionDetails", {}).get("type", "")
+            return conn.get("id"), conn_type
+    return None
+
+
+def ensure_web_connection(client: httpx.Client, api_url: str, *, display_name: str) -> str:
+    """Create (or reuse) the Fabric "WebForPipeline" connection the Web
+    activity binds to.
+
+    Fabric's pipeline WebActivity always resolves its target through a
+    Connection resource (`externalReferences.connection`) -- unlike classic
+    ADF, it has no inline-URL mode. The connector type must be
+    "WebForPipeline" (creation method "WebForPipeline.Contents", parameter
+    "baseUrl") -- the "Web" connector type is for Power Query/Dataflow Gen2
+    and is NOT compatible with pipeline WebActivity; using it produces a
+    misleading "datasetSettings are required for the connection 'Web'"
+    runtime error. Authentication stays anonymous at the connection level
+    because the real auth is the `x-hermes-trigger-secret` header baked
+    into the activity's own `typeProperties.headers`.
+    """
+    existing = _find_existing_connection(client, display_name)
+    if existing:
+        existing_id, existing_type = existing
+        if existing_type != "WebForPipeline":
+            # Stale connection from before we learned pipeline WebActivity
+            # requires the "WebForPipeline" connector (not the Power-Query
+            # "Web" connector) -- delete and recreate with the right type.
+            client.delete(f"/connections/{existing_id}")
+        else:
+            return existing_id
+    body = {
+        "connectivityType": "ShareableCloud",
+        "displayName": display_name,
+        "connectionDetails": {
+            "type": "WebForPipeline",
+            "creationMethod": "WebForPipeline.Contents",
+            "parameters": [{"dataType": "Text", "name": "baseUrl", "value": api_url.rstrip("/")}],
+        },
+        "privacyLevel": "Organizational",
+        "credentialDetails": {
+            "singleSignOnType": "None",
+            "connectionEncryption": "NotEncrypted",
+            "credentials": {"credentialType": "Anonymous"},
+        },
+    }
+    response = client.post("/connections", json=body)
+    if response.status_code != 201:
+        print(response.text, file=sys.stderr)
+    response.raise_for_status()
+    return response.json()["id"]
+
+
+def build_pipeline_content(
+    api_url: str,
+    trigger_secret: str,
+    connection_id: str,
+    *,
+    timeout_seconds: int = 1800,
+) -> dict[str, Any]:
+    return {
+        "properties": {
+            "description": (
+                "Triggers the unified inventory refresh (ARG acquisition + "
+                "normalization + OneLake publication) via the deployed API's "
+                "POST /api/v1/inventory/refresh endpoint. All refresh logic "
+                "lives in Python -- this pipeline only schedules the call."
+            ),
+            "activities": [
+                {
+                    "name": "TriggerInventoryRefresh",
+                    "type": "WebActivity",
+                    "dependsOn": [],
+                    "policy": {
+                        "timeout": f"0.{timeout_seconds // 3600:02d}:{(timeout_seconds % 3600) // 60:02d}:{timeout_seconds % 60:02d}",
+                        "retry": 0,
+                        "retryIntervalInSeconds": 30,
+                        "secureOutput": False,
+                        "secureInput": True,
+                    },
+                    "externalReferences": {"connection": connection_id},
+                    "typeProperties": {
+                        "relativeUrl": "/api/v1/inventory/refresh",
+                        "method": "POST",
+                        "headers": {
+                            "Content-Type": "application/json",
+                            "x-hermes-trigger-secret": trigger_secret,
+                        },
+                        "body": "{}",
+                    },
+                }
+            ],
+        }
+    }
+
+
+def build_definition_parts(pipeline_content: dict[str, Any]) -> list[dict[str, str]]:
+    platform = {
+        "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+        "metadata": {
+            "type": "DataPipeline",
+            "displayName": "Inventory Refresh",
+        },
+        "config": {"version": "2.0", "logicalId": "00000000-0000-0000-0000-000000000000"},
+    }
+    return [
+        {
+            "path": "pipeline-content.json",
+            "payload": _b64(pipeline_content),
+            "payloadType": "InlineBase64",
+        },
+        {
+            "path": ".platform",
+            "payload": _b64(platform),
+            "payloadType": "InlineBase64",
+        },
+    ]
+
+
+def _poll_lro(client: httpx.Client, response: httpx.Response) -> None:
+    if response.status_code != 202:
+        return
+    operation_url = response.headers.get("Location")
+    retry_after = float(response.headers.get("Retry-After", "2"))
+    if not operation_url:
+        return
+    for _ in range(60):
+        time.sleep(retry_after)
+        poll = client.get(operation_url)
+        poll.raise_for_status()
+        status = poll.json().get("status")
+        if status == "Succeeded":
+            return
+        if status == "Failed":
+            raise RuntimeError(f"Fabric long-running operation failed: {poll.json()}")
+    raise RuntimeError("Fabric long-running operation did not complete within the poll budget")
+
+
+def create_schedule(
+    client: httpx.Client,
+    workspace_id: str,
+    item_id: str,
+    *,
+    interval_minutes: int,
+) -> None:
+    """Create a recurring Cron schedule for the pipeline's default job type.
+
+    DataPipeline's runnable job type is "Pipeline". Schedules only control
+    timing -- they cannot carry a custom payload -- which is fine here since
+    the Web activity's request body/headers are already baked into the
+    pipeline definition itself.
+    """
+    start = time.gmtime()
+    # Fabric requires an explicit endDateTime for Cron schedules; use a
+    # 10-year horizon so this recurring schedule effectively never expires.
+    end = time.gmtime(time.time() + 10 * 365 * 24 * 3600)
+    response = client.post(
+        f"/workspaces/{workspace_id}/items/{item_id}/jobs/Pipeline/schedules",
+        json={
+            "enabled": True,
+            "configuration": {
+                "type": "Cron",
+                "interval": interval_minutes,
+                "startDateTime": time.strftime("%Y-%m-%dT%H:%M:%S", start),
+                "endDateTime": time.strftime("%Y-%m-%dT%H:%M:%S", end),
+                "localTimeZoneId": "UTC",
+            },
+        },
+    )
+    if response.status_code not in (200, 201, 202):
+        print(response.text, file=sys.stderr)
+    response.raise_for_status()
+    _poll_lro(client, response)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--workspace-id", required=True)
+    parser.add_argument("--api-url", required=True, help="Base URL of the deployed API (e.g. https://aiops-dev-api.<region>.azurecontainerapps.io)")
+    parser.add_argument("--trigger-secret", required=True, help="Value of HERMES_REFRESH_TRIGGER_SECRET on the API")
+    parser.add_argument("--display-name", default="Inventory Refresh")
+    parser.add_argument("--timeout-seconds", type=int, default=1800)
+    parser.add_argument(
+        "--schedule-interval-minutes",
+        type=int,
+        default=0,
+        help="If set (>0), create/replace a recurring Cron schedule with this interval in minutes.",
+    )
+    args = parser.parse_args()
+
+    token = _get_token()
+    client = httpx.Client(
+        base_url=_API_BASE,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        timeout=60,
+    )
+
+    connection_id = ensure_web_connection(client, args.api_url, display_name=f"{args.display_name} API")
+    pipeline_content = build_pipeline_content(
+        args.api_url, args.trigger_secret, connection_id, timeout_seconds=args.timeout_seconds
+    )
+    parts = build_definition_parts(pipeline_content)
+    definition = {"parts": parts}
+
+    existing_id = _find_existing_item(client, args.workspace_id, args.display_name)
+    if existing_id:
+        print(f"Updating existing DataPipeline item {existing_id} ('{args.display_name}')...", file=sys.stderr)
+        response = client.post(
+            f"/workspaces/{args.workspace_id}/items/{existing_id}/updateDefinition",
+            json={"definition": definition},
+        )
+        response.raise_for_status()
+        _poll_lro(client, response)
+        item_id = existing_id
+    else:
+        print(f"Creating new DataPipeline item '{args.display_name}'...", file=sys.stderr)
+        response = client.post(
+            f"/workspaces/{args.workspace_id}/dataPipelines",
+            json={"displayName": args.display_name, "definition": definition},
+        )
+        if response.status_code not in (200, 201, 202):
+            print(response.text, file=sys.stderr)
+        response.raise_for_status()
+        _poll_lro(client, response)
+        item_id = response.json().get("id") if response.status_code == 201 else None
+        if item_id is None:
+            item_id = _find_existing_item(client, args.workspace_id, args.display_name)
+
+    print(json.dumps({"workspaceId": args.workspace_id, "itemId": item_id, "displayName": args.display_name}, indent=2))
+
+    if args.schedule_interval_minutes > 0:
+        if not item_id:
+            print("Cannot create schedule: item ID unavailable (unexpected 202 without polled ID).", file=sys.stderr)
+        else:
+            print(f"Creating {args.schedule_interval_minutes}-minute Cron schedule...", file=sys.stderr)
+            create_schedule(client, args.workspace_id, item_id, interval_minutes=args.schedule_interval_minutes)
+            print("Schedule created.", file=sys.stderr)
+    else:
+        print(
+            "\nNo --schedule-interval-minutes given -- configure a schedule "
+            "later via this script or the Fabric UI (pipeline > Home tab > Schedule).",
+            file=sys.stderr,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
