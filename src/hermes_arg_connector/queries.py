@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from intelligence.inventory.sources.arg import inventory_os_specs
+
 
 @dataclass(frozen=True)
 class QuerySpec:
@@ -117,7 +119,8 @@ class QueryCatalog:
                 f"| {projection}",
                 False,
             ),
-            *_inventory_specs(),
+            *inventory_os_specs(),
+            *_identity_specs(projection),
             *_network_specs(projection),
         ]
         if include_management_groups:
@@ -134,51 +137,6 @@ class QueryCatalog:
                 ),
             )
         return specs
-
-
-def _inventory_specs() -> list[QuerySpec]:
-        """Independent, fixed ARG queries for the machine OS inventory.
-
-        Native VMs and Arc machines intentionally have separate specs.  Apart from
-        making source failures attributable, this prevents the native image SKU
-        from being mistaken for an installed OS release on either source.
-        """
-        return [
-            QuerySpec(
-                "inventory_native_vm_os",
-                "Resources",
-                (
-                    "Resources "
-                    "| where type =~ 'microsoft.compute/virtualmachines' "
-                    "| project id, name, type, subscriptionId, resourceGroup, location, tags, "
-                    "osType=tostring(properties.storageProfile.osDisk.osType), "
-                    "imagePublisher=tostring(properties.storageProfile.imageReference.publisher), "
-                    "imageOffer=tostring(properties.storageProfile.imageReference.offer), "
-                    "imageSku=tostring(properties.storageProfile.imageReference.sku), "
-                    "imageVersion=tostring(properties.storageProfile.imageReference.version) "
-                    "| order by id asc"
-                ),
-                False,
-                version="inventory-native-vm-os-v1",
-            ),
-            QuerySpec(
-                "inventory_arc_os",
-                "Resources",
-                (
-                    "Resources "
-                    "| where type =~ 'microsoft.hybridcompute/machines' "
-                    "| project id, name, type, subscriptionId, resourceGroup, location, tags, "
-                    "computerName=tostring(properties.osProfile.computerName), "
-                    "osName=tostring(properties.osName), "
-                    "osVersion=tostring(properties.osVersion), "
-                    "osSku=tostring(properties.osSku), "
-                    "status=tostring(properties.status) "
-                    "| order by id asc"
-                ),
-                False,
-                version="inventory-arc-os-v1",
-            ),
-        ]
 
 
 #: ARM resource types fetched for network topology, grouped by payload key.
@@ -212,6 +170,47 @@ NETWORK_RESOURCE_TYPES: dict[str, tuple[str, ...]] = {
         "microsoft.network/applicationgateways",
     ),
 }
+
+
+def _identity_specs(projection: str) -> list[QuerySpec]:
+    """Role assignments, definitions, and managed identities.
+
+    These come from the ``authorizationresources`` and ``Resources`` tables,
+    which the same Reader-scoped service principal can already read -- no
+    extra Graph API permission is required, so identity governance works for
+    exactly the subscriptions a connection is onboarded for and no others.
+
+    Split per family for the same reason as the network specs: a throttle on
+    one table must not blank the whole identity picture. An estate with an
+    unreadable role-assignment table is reported as partial, never as an
+    estate with no privileged access.
+    """
+    return [
+        QuerySpec(
+            "role_assignments",
+            "AuthorizationResources",
+            "authorizationresources "
+            "| where type =~ 'microsoft.authorization/roleassignments' "
+            f"| {projection}",
+            False,
+        ),
+        QuerySpec(
+            "role_definitions",
+            "AuthorizationResources",
+            "authorizationresources "
+            "| where type =~ 'microsoft.authorization/roledefinitions' "
+            f"| {projection}",
+            False,
+        ),
+        QuerySpec(
+            "managed_identities",
+            "Resources",
+            "Resources "
+            "| where type =~ 'microsoft.managedidentity/userassignedidentities' "
+            f"| {projection}",
+            False,
+        ),
+    ]
 
 
 def _network_specs(projection: str) -> list[QuerySpec]:

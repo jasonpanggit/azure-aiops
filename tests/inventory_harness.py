@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_arg_connector.config import ConnectorConfig
-from hermes_arg_connector.service import IngestionService
+from intelligence.inventory.pipeline import InventoryPipeline
 
 
 class _InventorySource:
@@ -67,10 +67,10 @@ def refresh_inventory(
         logs_workspaces=workspaces,
         cost_management_enabled=False,
     )
-    service = IngestionService(
+    service = InventoryPipeline(
         config,
         source=_InventorySource(fixture),
         logs_client=_LogsSource(software_rows, failures=failed_workspaces),
         clock=lambda: clock or datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
     )
-    return service.run()
+    return service.refresh().manifest

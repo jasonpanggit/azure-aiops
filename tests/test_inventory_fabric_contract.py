@@ -202,3 +202,20 @@ def test_inventory_contract_rejects_duplicate_identity_and_assessment_fields() -
     assert any(failure["rule"] == "duplicates" for failure in duplicate.failures)
     assert any(failure["rule"] == "assessment_fields" for failure in assessment.failures)
     assert SOURCE_STATES == {"ready", "partial", "stale", "degraded", "unavailable"}
+
+
+def test_standalone_inventory_refresh_publishes_os_rows_without_hermes_sync(tmp_path) -> None:
+    from hermes_arg_connector.storage import DatasetStore
+    from intelligence.inventory.fabric_contracts import fabric_table_for_logical_name
+    from intelligence.inventory.service import InventoryService
+    from inventory_harness import refresh_inventory
+
+    manifest = refresh_inventory(tmp_path)
+    store = DatasetStore(tmp_path)
+    service = InventoryService.from_store(store)
+
+    assert service is not None
+    assert store.read_dataset("inventory/os_observations")
+    assert manifest["fabricTables"]["inventory/os_observations"] == fabric_table_for_logical_name(
+        "inventory/os_observations"
+    )
