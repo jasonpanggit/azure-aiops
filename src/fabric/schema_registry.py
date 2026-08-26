@@ -376,6 +376,14 @@ def schema_for(table_name: str) -> pa.Schema:
     if table_name.startswith("ontology_") and table_name.endswith("_entities"):
         return pa.schema(_ONTOLOGY_ENTITY)
     try:
+        from intelligence.inventory.fabric_contracts import (
+            INVENTORY_FABRIC_SCHEMAS_BY_TABLE,
+        )
+
+        return INVENTORY_FABRIC_SCHEMAS_BY_TABLE[table_name]
+    except KeyError:
+        pass
+    try:
         return SCHEMAS[table_name]
     except KeyError as exc:
         raise KeyError(f"No versioned schema for table: {table_name}") from exc
