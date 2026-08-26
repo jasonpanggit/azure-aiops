@@ -4,11 +4,11 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 7
 current_phase_name: Unified Resource Inventory
-status: human_verification_needed
-stopped_at: Phase 7 implementation complete through 07-06; live Azure/Fabric/browser verification remains open in WINDOWS.md
-last_updated: "2026-08-26T07:39:57.000Z"
+status: paused
+stopped_at: "PAUSED for architecture pivot: Fabric to become the unified data platform (owns ingestion/ETL/cataloguing from ARG, LAW, etc.; web/API/Hermes become pure consumers). See .planning/phases/07-unified-resource-inventory/.continue-here.md and .planning/HANDOFF.json before resuming. Prior state: Fabric inventory pipeline deployed to OneLake; ARG-backed tables published, LAW software table remains degraded because the target workspace has no ConfigurationData table."
+last_updated: "2026-08-26T06:27:28.391Z"
 last_activity: 2026-08-26
-last_activity_desc: Operator pivoted Phase 7 after neutral storage extraction. Fabric/OneLake is now the unified inventory data platform and authoritative persistence boundary; 07-03 through 07-06 have been replanned around Fabric-backed inventory contracts, PaaS, per-family availability, and read-port-only consumption.
+last_activity_desc: Deployed the inventory-owned Fabric/OneLake publication path for ARG-backed inventory tables and confirmed LAW authentication now reaches the Logs API; the configured workspace lacks ConfigurationData.
 progress:
   total_phases: 9
   completed_phases: 3
@@ -29,8 +29,8 @@ See: .planning/PROJECT.md (updated 2026-08-23)
 
 Phase: 7 of 9 (Unified Resource Inventory)
 Plan: 6 of 6 in current phase
-Status: Implementation complete — live Azure/Fabric/browser verification pending
-Last activity: 2026-08-26 — Completed Fabric-backed inventory ownership inversion, ResourceObservation contract, PaaS availability, and scoped read port.
+Status: Implementation complete — Fabric inventory pipeline deployed; LAW source-data and browser walkthrough verification pending
+Last activity: 2026-08-26 — Deployed Fabric/OneLake publication for ARG-backed inventory and confirmed LAW authentication now reaches Azure Monitor Logs; the configured workspace lacks ConfigurationData.
 
 Progress: ██░░░░░░░░ [██████████] 95%
 
@@ -83,6 +83,8 @@ Progress: ██░░░░░░░░ [██████████] 95%
 Recent decisions affecting current work:
 
 - [Phase 7]: **Fabric pivot (2026-08-26)** — Fabric/OneLake is the unified inventory data platform and durable source of truth for inventory. Inventory acquisition and normalization still belong to the inventory domain, but publication targets governed Fabric-backed inventory tables/lakehouse datasets rather than a repo-local/Hermes generation root as the final architecture.
+- [Phase 7]: Live Fabric deployment evidence (2026-08-26) — `inventory-refresh --fabric-config fabric.config.yaml --connection-id local-spn` published to workspace `1c328da7-2490-48dc-9ba6-de8c1f333756` / lakehouse `aef9854d-ab23-413e-a86d-99a344a269c0`; run `0bc31dd4-7965-4650-91f0-b6347c635400` completed with ARG-backed `inventory_os_observations`, `inventory_resource_observations`, and source-status tables written to OneLake.
+- [Phase 7]: LAW auth audience fix (2026-08-26) — Azure Monitor Logs tokens use `https://api.loganalytics.io/.default`; the live query now authenticates and returns a semantic source error because workspace `4cf2b41b-bace-4dd6-8ec0-61c7050ed552` has no `ConfigurationData` table.
 - [Phase 7]: The original 07-03 was superseded and replaced. Execute only the new Fabric-backed 07-03 plan, which defines Fabric table contracts, OneLake persistence, Fabric quality gates, and inventory-owned publication/read compatibility before removing Hermes ownership.
 - [Phase 7]: Hermes remains a consumer: it performs discovery and semantic modelling from Fabric-backed unified inventory and must not manage inventory lifecycle or call ARG for inventory identity once the pivot is implemented.
 - [Phase 7]: Two publishers sharing one generation root also share `state/dataset_hashes.json`. A partial publish marks every absent dataset as removed (`storage.py:128`) and overwrites the hash baseline wholesale (`storage.py:143`), destroying Hermes incremental-change detection. Publication must merge-not-replace or namespace per domain — planned as 07-03 T1a, ahead of the tracer.
@@ -159,13 +161,14 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- Complete live Phase 7 verification in a configured Azure/Fabric environment: authenticated Azure/ARG/LAW walkthrough, healthy/failed workspace refresh, unknown-OS lifecycle review, exact software/version search, EOL citation review, PaaS drill-down, per-family degradation, and browser UX/accessibility.
+- Complete remaining live Phase 7 verification: enable or target a Log Analytics workspace with `ConfigurationData`, rerun software inventory publication, then complete browser UX/accessibility walkthroughs for OS/software, failed-refresh retention, exact software/version search, EOL citation review, PaaS drill-down, and per-family degradation.
 - Triage the three recorded full-suite failures in `.planning/WINDOWS.md` so full-suite green is a usable signal after Phase 7.
 - Configure `APPROVED_SEARCH_API_ENDPOINT` / `APPROVED_SEARCH_API_KEY` if the third EOL source is operationally required.
 
 ### Blockers/Concerns
 
-- Phase 7: Implementation plans 07-01 through 07-06 are complete. Live Azure/Fabric/browser verification remains open and is recorded in `.planning/WINDOWS.md`.
+- Phase 7: Implementation plans 07-01 through 07-06 are complete and ARG-backed Fabric inventory tables have been deployed. LAW software inventory remains source-degraded until the configured workspace exposes `ConfigurationData`; browser verification remains open in `.planning/WINDOWS.md`.
+- Phase 7: Confirmed via Fabric REST API (2026-08-26) that all 5 `inventory_*` Delta tables are registered in lakehouse `operational_context_graph`, and that the native `Inventory Refresh` DataPipeline plus enabled 60-minute Cron schedule exist. The first on-demand Pipeline job failed before activity execution because its assigned Fabric capacity is inactive (`CapacityNotActive`); rerun is pending an active capacity.
 - Phase 7: Proceeding without a verified live inventory baseline. Live-only regressions introduced by the refactor cannot be distinguished from pre-existing Phase 6 defects. Accepted risk; mitigated by characterization tests rather than empirical comparison.
 - Phase 8: **Contract losslessness is the pivot's single point of failure.** If `ResourceObservation` cannot carry the full raw property bag and per-family watermark semantics, Hermes must keep its own ARG identity path and the pivot cannot complete. Resolve by auditing Hermes's actual reads into `properties` (normalize.py, network_normalize.py, identity specs) *before* fixing the contract shape.
 - Phase 9: Web page impact is unaudited. Pages surfacing resource identity (`services`, `search`, `investigate`, `twin`, `changes`) need review at plan time; the "most pages need no change" expectation rests on route contracts holding.
@@ -182,6 +185,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-26T07:17:46.186Z
-Stopped at: Phase 7 implementation complete; live verification pending
+Last session: 2026-08-26T07:39:43.000Z
+Stopped at: Phase 7 Fabric inventory pipeline deployed; LAW ConfigurationData source and browser verification pending
 Resume file: None

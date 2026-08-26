@@ -1,0 +1,64 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-08-26T06:27:28.391Z",
+  "phase": "07",
+  "phase_name": "Unified Resource Inventory",
+  "phase_dir": ".planning/phases/07-unified-resource-inventory",
+  "plan": 2,
+  "task": null,
+  "total_tasks": 6,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": 1, "name": "07-01 Characterization test baseline", "status": "done"},
+    {"id": 2, "name": "07-02 Neutral DatasetStore extraction (storage.datasets, storage.fs, storage.onelake_fs, storage.locking)", "status": "done"}
+  ],
+  "remaining_tasks": [
+    {"id": 3, "name": "07-03 Publication safety and ownership inversion", "status": "not_started_now_suspect"},
+    {"id": 4, "name": "07-04", "status": "not_started_now_suspect"},
+    {"id": 5, "name": "07-05", "status": "not_started_now_suspect"},
+    {"id": 6, "name": "07-06", "status": "not_started_now_suspect"}
+  ],
+  "blockers": [
+    {
+      "description": "Fundamental design shift: Fabric is to become the unified data platform — Fabric pipelines own ingestion/refresh from ARG, LAW, and other sources, plus data cataloguing and ETL to curate all tables needed by web/API/Hermes. Every component becomes a consumer of Fabric-curated data; no component (including Hermes/API) queries ARG/LAW directly anymore. User explicitly accepted the consequence that Fabric's ARG connector is import-only (no DirectQuery, typically 15+ min refresh latency) and chose to accept minutes of staleness everywhere, including previously-interactive features like live network path analysis.",
+      "type": "human_action",
+      "workaround": "Phase 7 plans 03-06 assume Python (the new intelligence/inventory domain) issues its own ARG query for PaaS acquisition (D-15) and owns acquisition/normalization/retention/publication in-process (D-01/D-02). Under the new model, acquisition/ETL belongs in Fabric pipelines, not Python. These plans need to be re-scoped or rewritten against the new architecture before further execution."
+    }
+  ],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {
+      "action": "Design the Fabric-as-unified-data-platform shift: define which Fabric pipelines ingest which sources (ARG, LAW, others), the cataloguing/ETL layer, the curated tables each consumer (web, API, Hermes) needs, and how the existing FABRIC_INTEGRATION.md model (Fabric as projection, Azure as source of truth) is superseded or revised.",
+      "context": "This is an architecture-level reversal of the currently documented principle in FABRIC_INTEGRATION.md (\"Fabric is the governed semantic and analytics plane... not the source of operational truth\"). It should probably be captured as a new roadmap phase or a revision to PROJECT.md/ROADMAP.md before Phase 7 plans are touched again.",
+      "blocking": true
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Pause Phase 7 (Unified Resource Inventory) after plan 02; do not execute 07-03 through 07-06 as currently written.",
+      "rationale": "Those plans' premise (Python/inventory domain queries ARG directly and owns the ETL) is superseded by the new Fabric-as-unified-platform direction.",
+      "phase": "07"
+    },
+    {
+      "decision": "07-02's neutral extraction (storage.datasets.DatasetStore, storage.fs, storage.onelake_fs, storage.locking) is believed to survive the pivot.",
+      "rationale": "Generic OneLake publish/read plumbing is still needed by whatever writes/reads Fabric-curated tables, regardless of who performs ingestion.",
+      "phase": "07"
+    },
+    {
+      "decision": "Under the new model, all consumers (web, API, Hermes) read only Fabric-curated data; no direct ARG/LAW queries from Python, even for interactive/live features.",
+      "rationale": "User explicit choice after being told Fabric's ARG connector is import-only with ~15+ minute typical refresh latency — accepted the staleness tradeoff for a single unified data platform over per-component live queries.",
+      "phase": "07"
+    },
+    {
+      "decision": "Subscription differentiation in Fabric is handled by row-level tagging only (subscription_id/tenant_id columns on every curated table, already present per dataset_mapper.py) — Fabric/OneLake does not need to enforce access isolation itself.",
+      "rationale": "User chose row-tagging + existing API-layer authorization over Fabric-side RLS/per-tenant workspaces, matching today's model where the API already scopes which subscriptions a connection/user can query.",
+      "phase": "07"
+    }
+  ],
+  "uncommitted_files": [
+    "07-02-SUMMARY.md and the neutral storage extraction diff are already staged (see git status) — pre-existing at pause time, not part of this handoff",
+    "Unrelated pre-existing uncommitted changes across the repo (ci.yml, .gitignore, README.md, config.example.yaml, docker-compose.yml deletion, docs/*, infra/*, src/api/*, src/fabric/*, etc.) predate this session and must not be touched by the resuming agent"
+  ],
+  "next_action": "Do NOT resume 07-03 as written. Instead, design the Fabric-as-unified-data-platform architecture (new roadmap phase or PROJECT.md/ROADMAP.md revision), then re-evaluate which parts of Phase 7 plans 03-06 still apply versus need to move into that new Fabric-pipeline design.",
+  "context_notes": "This session also completed and deployed (to aiops-dev, tag v12) an unrelated fix: the Design Policy 'private-endpoints-preferred' rule was inert (hard-coded gap-analyzer dispatch only checked 2 built-in rules). Fixed with a generic rule registry in src/network/gaps.py plus PaaS-resource projection from the synced ontology. That work is separate from Phase 7 and is complete, tested, and live — it is unrelated to this pause."
+}
