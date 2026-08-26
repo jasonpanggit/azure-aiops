@@ -19,6 +19,7 @@ from .models import (
     OSGroup,
     SoftwareGroup,
     SoftwareObservation,
+    ResourceObservation,
     group_key,
 )
 from .software_normalization import (
@@ -33,6 +34,7 @@ class InventorySnapshot:
     source_status: tuple[InventorySourceStatus, ...]
     software_observations: tuple[SoftwareObservation, ...] = ()
     software_source_status: tuple[InventorySourceStatus, ...] = ()
+    resource_observations: tuple[ResourceObservation, ...] = ()
     observed_at: str = ""
     query_version: str = "inventory-os-v1"
     generation_id: str = ""
@@ -80,6 +82,16 @@ class InventorySnapshot:
         )
         if not isinstance(suggestions_payload, list):
             raise TypeError("Inventory mapping suggestions must be a list")
+        resource_rows = metadata.get("resource_observations") or []
+        if not isinstance(resource_rows, list):
+            raise TypeError("Inventory resource observations must be a list")
+        resource_observations = tuple(
+            row
+            if isinstance(row, ResourceObservation)
+            else ResourceObservation.from_fabric_row(row)
+            for row in resource_rows
+            if isinstance(row, (dict, ResourceObservation))
+        )
         statuses_payload = metadata.get("source_status") or {}
         if isinstance(statuses_payload, list):
             statuses_payload = {
@@ -139,6 +151,7 @@ class InventorySnapshot:
             source_status=tuple(statuses),
             software_observations=software_observations,
             software_source_status=tuple(software_statuses),
+            resource_observations=resource_observations,
             observed_at=str(metadata.get("observed_at") or _latest(observations)),
             query_version=query_version,
             generation_id=str(metadata.get("generation_id") or metadata.get("run_id") or ""),
@@ -209,7 +222,10 @@ class InventoryService:
         status_rows = store.read_dataset("inventory/source_status")
         software_rows = store.read_dataset("inventory/software_observations")
         software_status_rows = store.read_dataset("inventory/software_source_status")
-        if not rows and not status_rows and not software_rows and not software_status_rows:
+        resource_rows = store.read_dataset("inventory/resource_observations")
+        if not resource_rows:
+            resource_rows = store.read_dataset("inventory_resource_observations")
+        if not rows and not status_rows and not software_rows and not software_status_rows and not resource_rows:
             return None
         manifest = _store_manifest(store)
         statuses = {
@@ -226,6 +242,7 @@ class InventoryService:
                 for item in software_status_rows
                 if isinstance(item, dict) and item.get("source_type")
             },
+            "resource_observations": resource_rows,
             "observed_at": str(manifest.get("startedAt") or ""),
             "query_version": str(manifest.get("queryVersion") or "inventory-os-v1"),
             "generation_id": str(manifest.get("runId") or ""),
@@ -236,6 +253,50 @@ class InventoryService:
             eol_review=eol_review,
             mapping_repository=mapping_repository,
         )
+
+    def family_availability(self, *, registry=None) -> dict[str, dict[str, Any]]:
+        from .registry import default_inventory_registry
+
+        registry = registry or default_inventory_registry()
+        os_state = "ready" if self.snapshot.observations or self.snapshot.source_status else "unavailable"
+        software_status = self.software_source_status()
+        software_state = (
+            next(iter(software_status.values())).get("state")
+            if software_status
+            else "unavailable"
+        )
+        base = {
+            "os": {
+                "family": "os",
+                "state": os_state,
+                "row_count": len(self.snapshot.observations),
+                "logical_dataset": "inventory/os_observations",
+            },
+            "software": {
+                "family": "software",
+                "state": software_state,
+                "row_count": len(self.snapshot.software_observations),
+                "logical_dataset": "inventory/software_observations",
+            },
+            "paas": {
+                "family": "paas",
+                "state": "ready" if self.snapshot.resource_observations else "unavailable",
+                "row_count": len(self.snapshot.resource_observations),
+                "logical_dataset": "inventory/resource_observations",
+            },
+        }
+        return {
+            family.family: base.get(
+                family.family,
+                {
+                    "family": family.family,
+                    "state": "unavailable",
+                    "row_count": 0,
+                    "logical_dataset": family.logical_dataset,
+                },
+            )
+            for family in registry.families
+        }
 
     @property
     def observed_at(self) -> str:
@@ -562,6 +623,95 @@ class InventoryService:
     # Explicit alias for consumers that use the grouped-detail terminology.
     software_group_detail = software_detail
 
+    def paas_collection(self, scope: Scope, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        rows = self._scoped_resources(scope, family="paas")
+        grouped: dict[str, list[ResourceObservation]] = {}
+        for row in rows:
+            grouped.setdefault(resource_group_key(row), []).append(row)
+        groups = [
+            {
+                "key": key,
+                "resource_type": items[0].resource_type,
+                "sku": items[0].sku,
+                "tier": items[0].tier,
+                "resource_count": len(items),
+            }
+            for key, items in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
+        ]
+        data = {
+            "groups": groups[offset : offset + limit],
+            "source_status": {"paas": self.family_availability()["paas"]},
+            "observed_at": self.observed_at,
+            "query_version": self.query_version,
+            "generation_id": self.generation_id,
+            "requested_scope": scope.to_dict(),
+        }
+        return {
+            "data": data,
+            "total": len(groups),
+            "evidence": self._resource_evidence(rows),
+            "warnings": _status_warnings(data["source_status"]),
+        }
+
+    def paas_detail(
+        self, key: str, scope: Scope, *, offset: int = 0, limit: int = 100
+    ) -> dict[str, Any] | None:
+        rows = self._scoped_resources(scope, family="paas")
+        matching = tuple(row for row in rows if resource_group_key(row) == key)
+        if not matching:
+            return None
+        return {
+            "data": {
+                "group": {
+                    "key": key,
+                    "resource_type": matching[0].resource_type,
+                    "sku": matching[0].sku,
+                    "tier": matching[0].tier,
+                    "resource_count": len(matching),
+                },
+                "resources": [row.to_api_dict() for row in matching[offset : offset + limit]],
+                "source_status": {"paas": self.family_availability()["paas"]},
+                "observed_at": self.observed_at,
+                "query_version": self.query_version,
+                "generation_id": self.generation_id,
+                "requested_scope": scope.to_dict(),
+            },
+            "total": len(matching),
+            "evidence": self._resource_evidence(matching),
+            "warnings": _status_warnings({"paas": self.family_availability()["paas"]}),
+        }
+
+    def resources(self, scope: Scope, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        rows = [
+            {
+                "family": "os",
+                "resource_id": row.resource_id,
+                "resource_name": row.machine_name,
+                "resource_type": (
+                    "microsoft.hybridcompute/machines"
+                    if row.source_type == "arc"
+                    else "microsoft.compute/virtualmachines"
+                ),
+                "subscription_id": row.subscription_id,
+                "resource_group": row.resource_group,
+                "environment": row.environment,
+            }
+            for row in self._scoped(scope)
+        ]
+        rows.extend(row.to_api_dict() for row in self._scoped_resources(scope))
+        rows.sort(key=lambda row: (row["family"], row["resource_id"]))
+        return {
+            "data": {
+                "resources": rows[offset : offset + limit],
+                "family_availability": self.family_availability(),
+                "requested_scope": scope.to_dict(),
+                "query_version": self.query_version,
+            },
+            "total": len(rows),
+            "evidence": self._resource_evidence(self._scoped_resources(scope)),
+            "warnings": _status_warnings(self.family_availability()),
+        }
+
     def narrative_aggregates(
         self,
         scope: Scope,
@@ -602,6 +752,7 @@ class InventoryService:
         software_limit = max(0, min(int(max_software_groups), 50))
         os_status = self.source_status(os_rows)
         software_status = self.software_source_status(software_rows)
+        paas_rows = self._scoped_resources(scope, family="paas")
         return {
             "os_groups": [item.to_dict() for item in os_groups[:os_limit]],
             "software_groups": [
@@ -609,10 +760,12 @@ class InventoryService:
             ],
             "os_machine_count": len(os_rows),
             "software_install_count": len(software_rows),
+            "paas_resource_count": len(paas_rows),
             "source_status": {**os_status, **software_status},
             "evidence": [
                 *self._evidence(os_rows),
                 *self._software_evidence(software_rows),
+                *self._resource_evidence(paas_rows),
             ],
         }
 
@@ -658,6 +811,42 @@ class InventoryService:
             for item in _unique_software_evidence(rows)
         ]
 
+    def _scoped_resources(
+        self, scope: Scope, *, family: str | None = None
+    ) -> tuple[ResourceObservation, ...]:
+        from api.scope import scope_attributes
+
+        rows = [
+            row
+            for row in self.snapshot.resource_observations
+            if (family is None or row.family == family)
+            and scope.matches(
+                scope_attributes(
+                    {
+                        "subscription_id": row.subscription_id,
+                        "resource_group": row.resource_group,
+                    }
+                )
+            )
+        ]
+        return tuple(sorted(rows, key=lambda row: row.resource_id.casefold()))
+
+    def _resource_evidence(
+        self, rows: tuple[ResourceObservation, ...]
+    ) -> list[dict[str, str]]:
+        return [
+            {
+                "source_engine": item.source_type or "arg",
+                "source_table": "inventory/resource_observations",
+                "timestamp": item.observed_at,
+                "subscription_connection": "",
+                "resource_id": item.resource_id,
+                "confidence": "high",
+                "freshness": "unknown",
+            }
+            for item in rows
+        ]
+
 
 def _scope_row(row: MachineObservation) -> dict[str, str]:
     return {
@@ -671,6 +860,11 @@ def _scope_from_mapping(values: dict[str, Any]):
     from api.scope import Scope
 
     return Scope.from_mapping(values)
+
+
+def resource_group_key(row: ResourceObservation) -> str:
+    resource_type = row.resource_type.replace("/", ":")
+    return f"{resource_type}|{row.sku or 'Unknown'}|{row.tier or 'Unknown'}"
 
 
 def _make_group(key: str, rows: list[MachineObservation]) -> OSGroup:

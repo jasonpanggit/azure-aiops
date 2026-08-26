@@ -11,9 +11,9 @@ from storage.locking import RunLock
 
 from .fabric_publication import InventoryFabricPublisher
 from .models import SoftwareObservation
-from .normalization import normalize_os_inventory
+from .normalization import normalize_os_inventory, normalize_paas_resources
 from .software_normalization import normalize_configuration_data
-from .sources.arg import inventory_os_specs
+from .sources.arg import inventory_os_specs, inventory_resource_specs
 from .sources.logs import fetch_software_inventory
 
 
@@ -63,7 +63,7 @@ class InventoryPipeline:
         if not subscriptions:
             raise RuntimeError("No Azure subscriptions were returned by Azure inventory source")
 
-        specs = inventory_os_specs()
+        specs = [*inventory_os_specs(), *inventory_resource_specs()]
         query_results = self.source.fetch(specs, subscriptions)
         requested_scope = {"subscription": sorted(subscriptions)}
         for spec in specs:
@@ -98,6 +98,11 @@ class InventoryPipeline:
             ]
         software_dataset = [row.to_dict() for row in software_observations]
         software_status["row_count"] = len(software_dataset)
+        resource_rows = normalize_paas_resources(
+            query_results.get("inventory_resources", []),
+            observed,
+            run_id=run_id,
+        )
 
         manifest = self.publisher.publish(
             {
@@ -105,6 +110,7 @@ class InventoryPipeline:
                 "inventory/source_status": os_status,
                 "inventory/software_observations": software_dataset,
                 "inventory/software_source_status": [software_status],
+                "inventory/resource_observations": resource_rows,
             },
             query_results=query_results,
             run_metadata={

@@ -56,5 +56,24 @@ def inventory_os_specs() -> list[InventoryQuerySpec]:
     ]
 
 
-__all__ = ["InventoryQuerySpec", "inventory_os_specs"]
+def inventory_resource_specs() -> list[InventoryQuerySpec]:
+    """Generic Resources acquisition used to project PaaS/resource families.
 
+    This is intentionally one generic query, not targeted PaaS family queries.
+    """
+    return [
+        InventoryQuerySpec(
+            "inventory_resources",
+            "Resources",
+            (
+                "Resources "
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, "
+                "location, tags, sku, properties "
+                "| order by id asc"
+            ),
+            version="inventory-resources-v1",
+        )
+    ]
+
+
+__all__ = ["InventoryQuerySpec", "inventory_os_specs", "inventory_resource_specs"]

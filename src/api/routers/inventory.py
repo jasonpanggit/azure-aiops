@@ -31,6 +31,7 @@ from ..models import (
 
 router = APIRouter(prefix="/api/v1", tags=["inventory"])
 _GROUP_KEY = re.compile(r"^[^|/\\]{1,120}\|[^|/\\]{1,120}$")
+_PAAS_GROUP_KEY = re.compile(r"^[^|/\\]{1,160}\|[^|/\\]{1,120}\|[^|/\\]{1,120}$")
 
 
 def _service(context: Context) -> InventoryService:
@@ -57,6 +58,15 @@ def _software_evidence(service: InventoryService) -> Evidence:
     return Evidence(
         source_engine="intelligence.inventory.InventoryService",
         source_table="inventory/software_observations",
+        timestamp=service.observed_at,
+        confidence="high",
+    )
+
+
+def _resource_evidence(service: InventoryService) -> Evidence:
+    return Evidence(
+        source_engine="intelligence.inventory.InventoryService",
+        source_table="inventory/resource_observations",
         timestamp=service.observed_at,
         confidence="high",
     )
@@ -206,6 +216,54 @@ def inventory_narrative(context: Context, scope: ReadScope) -> dict[str, Any]:
         scope=scope.to_dict(),
         knowledge_version=service.query_version,
         warnings=result["warnings"],
+    )
+
+
+@router.get("/inventory/paas", summary="Grouped PaaS resource inventory")
+def paas_inventory(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+    service = _service(context)
+    result = service.paas_collection(scope, offset=page.offset, limit=page.limit)
+    return envelope(
+        result["data"],
+        evidence=_resource_evidence(service),
+        scope=scope.to_dict(),
+        knowledge_version=result["data"]["query_version"],
+        warnings=result["warnings"],
+        pagination=page.to_dict(result["total"]),
+    )
+
+
+@router.get("/inventory/paas/{group_key:path}", summary="Resources in a PaaS inventory group")
+def paas_inventory_detail(
+    group_key: str, context: Context, scope: ReadScope, page: Page
+) -> dict[str, Any]:
+    if not _PAAS_GROUP_KEY.fullmatch(group_key):
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Invalid PaaS inventory group key")
+    service = _service(context)
+    result = service.paas_detail(group_key, scope, offset=page.offset, limit=page.limit)
+    if result is None:
+        raise ApiError(ErrorCode.NOT_FOUND, "No PaaS inventory group matches this scope")
+    return envelope(
+        result["data"],
+        evidence=_resource_evidence(service),
+        scope=scope.to_dict(),
+        knowledge_version=result["data"]["query_version"],
+        warnings=result["warnings"],
+        pagination=page.to_dict(result["total"]),
+    )
+
+
+@router.get("/inventory/resources", summary="Scoped cross-family inventory resources")
+def inventory_resources(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+    service = _service(context)
+    result = service.resources(scope, offset=page.offset, limit=page.limit)
+    return envelope(
+        result["data"],
+        evidence=_resource_evidence(service),
+        scope=scope.to_dict(),
+        knowledge_version=result["data"]["query_version"],
+        warnings=result["warnings"],
+        pagination=page.to_dict(result["total"]),
     )
 
 

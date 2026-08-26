@@ -80,7 +80,7 @@ def default_inventory_registry() -> InventoryFamilyRegistry:
                 raw_payload_internal_only=True,
             ),
             InventoryFamily(
-                family="resource",
+                family="paas",
                 logical_dataset=resource_contract.logical_name,
                 fabric_table=resource_contract.table_name,
                 status_dataset="inventory/source_status",

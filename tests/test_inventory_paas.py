@@ -15,6 +15,7 @@ from api.telemetry import ApiTelemetry
 from hermes_arg_connector.config import ConnectorConfig
 from intelligence.inventory.pipeline import InventoryPipeline
 from intelligence.inventory.service import InventoryService
+from onboarding.service import SubscriptionOnboardingService
 from storage.datasets import DatasetStore
 
 TOKEN = "inventory-paas-token"
@@ -87,13 +88,14 @@ def _service(tmp_path: Path) -> InventoryService:
     return InventoryService.from_store(DatasetStore(tmp_path))
 
 
-def _client(service: InventoryService) -> TestClient:
+def _client(service: InventoryService, tmp_path: Path) -> TestClient:
     context = ApiContext(
         authenticator=StaticTokenAuthenticator(
             {TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),))}
         ),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
+        onboarding=SubscriptionOnboardingService(tmp_path / "onboarding"),
         inventory_provider=lambda: service,
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
@@ -112,7 +114,7 @@ def test_paas_refresh_writes_fabric_table_and_excludes_vm_arc(tmp_path: Path) ->
 
 
 def test_paas_grouped_route_is_scoped_evidence_wrapped_and_paginated(tmp_path: Path) -> None:
-    client = _client(_service(tmp_path))
+    client = _client(_service(tmp_path), tmp_path)
 
     response = client.get(
         "/api/v1/inventory/paas",
@@ -130,7 +132,7 @@ def test_paas_grouped_route_is_scoped_evidence_wrapped_and_paginated(tmp_path: P
 
 
 def test_paas_scope_excludes_out_of_scope_subscription(tmp_path: Path) -> None:
-    client = _client(_service(tmp_path))
+    client = _client(_service(tmp_path), tmp_path)
 
     response = client.get(
         "/api/v1/inventory/paas",
@@ -143,7 +145,7 @@ def test_paas_scope_excludes_out_of_scope_subscription(tmp_path: Path) -> None:
 
 
 def test_paas_drilldown_rejects_path_keys_and_filters_scope(tmp_path: Path) -> None:
-    client = _client(_service(tmp_path))
+    client = _client(_service(tmp_path), tmp_path)
 
     invalid = client.get(
         "/api/v1/inventory/paas/microsoft.web/sites|P1v3|PremiumV3",
@@ -162,7 +164,7 @@ def test_paas_drilldown_rejects_path_keys_and_filters_scope(tmp_path: Path) -> N
 
 
 def test_cross_family_route_returns_multiple_scoped_families_without_payload(tmp_path: Path) -> None:
-    client = _client(_service(tmp_path))
+    client = _client(_service(tmp_path), tmp_path)
 
     response = client.get(
         "/api/v1/inventory/resources",

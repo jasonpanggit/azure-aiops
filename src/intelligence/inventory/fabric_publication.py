@@ -35,7 +35,8 @@ class InventoryFabricPublisher:
                 raise ValueError(f"Inventory quality validation failed: {report.to_dict()}")
             contract = INVENTORY_FABRIC_CONTRACTS[logical_name]
             self.fabric_tables[contract.table_name] = list(rows)
-            published_datasets[logical_name] = list(rows)
+            if logical_name != "inventory/resource_observations":
+                published_datasets[logical_name] = list(rows)
             published_datasets[contract.table_name] = list(rows)
 
         metadata = {
