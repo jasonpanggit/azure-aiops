@@ -18,6 +18,7 @@ from intelligence.inventory.mapping_repository import (
     MappingStatusConflict,
 )
 from intelligence.inventory.narrative import build_inventory_narrative
+from intelligence.inventory.read_port import InventoryReadPort
 from intelligence.inventory.service import InventoryService
 
 from ..dependencies import Context, OperatePrincipal, Page, ReadScope
@@ -256,12 +257,21 @@ def paas_inventory_detail(
 @router.get("/inventory/resources", summary="Scoped cross-family inventory resources")
 def inventory_resources(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
     service = _service(context)
-    result = service.resources(scope, offset=page.offset, limit=page.limit)
+    result = InventoryReadPort(service).list_resources(
+        scope,
+        offset=page.offset,
+        limit=page.limit,
+    )
     return envelope(
-        result["data"],
+        {
+            "resources": result["resources"],
+            "family_availability": result["family_availability"],
+            "requested_scope": scope.to_dict(),
+            "query_version": service.query_version,
+        },
         evidence=_resource_evidence(service),
         scope=scope.to_dict(),
-        knowledge_version=result["data"]["query_version"],
+        knowledge_version=service.query_version,
         warnings=result["warnings"],
         pagination=page.to_dict(result["total"]),
     )

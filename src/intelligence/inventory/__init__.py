@@ -13,6 +13,7 @@ from .models import (
     SoftwareObservation,
     group_key,
 )
+from .read_port import InventoryReadPort
 
 if TYPE_CHECKING:
     from .service import InventoryService, InventorySnapshot
@@ -30,6 +31,7 @@ __all__ = [
     "InventoryEvidence",
     "InventoryNarrativeCitation",
     "InventoryService",
+    "InventoryReadPort",
     "InventorySnapshot",
     "InventorySourceStatus",
     "MachineObservation",

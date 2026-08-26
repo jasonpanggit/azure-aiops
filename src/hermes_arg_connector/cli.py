@@ -19,11 +19,11 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     sync = actions.add_parser("sync", help="Run Azure MCP discovery and ARG ingestion now")
     sync.add_argument("--config", default="config.yaml")
 
-    inventory_refresh = actions.add_parser(
+    refresh_parser = actions.add_parser(
         "inventory-refresh",
-        help="Run the standalone inventory-owned Fabric/OneLake refresh",
+        help="Run the standalone resource catalog refresh",
     )
-    inventory_refresh.add_argument("--config", default="config.yaml")
+    refresh_parser.add_argument("--config", default="config.yaml")
 
     query = actions.add_parser("query", help="Query the normalized operational context")
     query.add_argument("question")
@@ -50,7 +50,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     local_spn.add_argument("--name", default="Local SPN Subscription")
     local_spn.add_argument("--sync", action="store_true", help="Run discovery after injecting the connection")
 
-    fabric = actions.add_parser("fabric", help="Run a Microsoft Fabric inventory command")
+    fabric = actions.add_parser("fabric", help="Run a Microsoft Fabric command")
     fabric.add_argument("command")
     fabric.add_argument("--config", default="fabric.config.yaml")
     fabric.add_argument("--replay-source-run-id", default="")
