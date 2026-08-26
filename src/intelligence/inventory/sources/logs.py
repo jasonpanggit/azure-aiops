@@ -20,7 +20,7 @@ def fetch_software_inventory(
         return [], {
             "source_type": "logs",
             "state": "unavailable",
-            "observed_at": "",
+            "observed_at": started.astimezone().replace(microsecond=0).isoformat(),
             "query_version": query_version,
             "row_count": 0,
             "error": "No Log Analytics workspace is configured for this connection",
@@ -31,7 +31,7 @@ def fetch_software_inventory(
         return [], {
             "source_type": "logs",
             "state": "unavailable",
-            "observed_at": "",
+            "observed_at": started.astimezone().replace(microsecond=0).isoformat(),
             "query_version": query_version,
             "row_count": 0,
             "error": "No Azure Monitor Logs client is configured",
@@ -69,4 +69,3 @@ def fetch_software_inventory(
 
 
 __all__ = ["fetch_software_inventory"]
-

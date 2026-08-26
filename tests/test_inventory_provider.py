@@ -8,12 +8,12 @@ import pytest
 
 from api.scope import Scope
 from hermes_arg_connector.config import ConnectorConfig
-from hermes_arg_connector.inventory_normalize import normalize_configuration_data
-from hermes_arg_connector.normalize import Normalizer
-from hermes_arg_connector.queries import QueryCatalog
-from hermes_arg_connector.service import IngestionService
-from hermes_arg_connector.storage import DatasetStore
+from intelligence.inventory.software_normalization import normalize_configuration_data
+from storage.datasets import DatasetStore
 from intelligence.inventory import InventoryService, MachineObservation
+from intelligence.inventory.normalization import normalize_os_inventory
+from intelligence.inventory.pipeline import InventoryPipeline
+from intelligence.inventory.sources.arg import inventory_os_specs
 from intelligence.lifecycle import EOLCatalog
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_inventory_arg.json"
@@ -109,7 +109,7 @@ def test_empty_success_is_distinct_from_unavailable() -> None:
 
 
 def test_native_and_arc_queries_are_versioned_and_independent() -> None:
-    specs = {spec.name: spec for spec in QueryCatalog().build(None)}
+    specs = {spec.name: spec for spec in inventory_os_specs()}
 
     native = specs["inventory_native_vm_os"]
     arc = specs["inventory_arc_os"]
@@ -126,18 +126,18 @@ def test_generated_inventory_rows_preserve_source_identity_and_image_uncertainty
     tmp_path: Path,
 ) -> None:
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    graph = Normalizer().normalize(
+    observations, statuses = normalize_os_inventory(
         {
             "inventory_native_vm_os": fixture["inventory_native_vm_os"],
             "inventory_arc_os": fixture["inventory_arc_os"],
         },
-        datetime.fromisoformat("2026-08-25T10:00:00+00:00"),
+        "2026-08-25T10:00:00+00:00",
         run_id="inventory-run",
         requested_scope={"subscription": ["sub-a", "sub-b"]},
     )
 
-    native = next(row for row in graph.inventory_observations if row["source_type"] == "azure_vm")
-    arc = next(row for row in graph.inventory_observations if row["source_type"] == "arc")
+    native = next(row for row in observations if row["source_type"] == "azure_vm")
+    arc = next(row for row in observations if row["source_type"] == "arc")
     assert native["os_version"] == "Unknown"
     assert native["image_sku"] == "2019-Datacenter"
     assert native["image_version"] == "latest"
@@ -149,7 +149,14 @@ def test_generated_inventory_rows_preserve_source_identity_and_image_uncertainty
     assert native["evidence"][0]["query_version"] == "inventory-native-vm-os-v1"
 
     store = DatasetStore(tmp_path)
-    store.publish(graph, {}, {"runId": "inventory-run", "status": "completed"})
+    store.publish(
+        {
+            "inventory/os_observations": observations,
+            "inventory/source_status": statuses,
+        },
+        {},
+        {"runId": "inventory-run", "status": "completed"},
+    )
     loaded = InventoryService.from_store(store)
     assert loaded is not None
     result = loaded.detail("Windows Server|2019", Scope.from_mapping({"subscription": ["sub-a"]}))
@@ -193,7 +200,7 @@ def test_inventory_latest_state_deduplicates_by_exact_source_and_resource() -> N
 
 
 def test_failed_inventory_family_remains_visible_without_erasing_other_family() -> None:
-    graph = Normalizer().normalize(
+    observations, status_rows = normalize_os_inventory(
         {
             "inventory_native_vm_os": [
                 {
@@ -214,11 +221,12 @@ def test_failed_inventory_family_remains_visible_without_erasing_other_family() 
                 }
             ],
         },
-        datetime.fromisoformat("2026-08-25T10:00:00+00:00"),
+        "2026-08-25T10:00:00+00:00",
         run_id="inventory-failure-run",
+        requested_scope=None,
     )
-    statuses = {row["source_type"]: row for row in graph.inventory_source_status}
-    assert len(graph.inventory_observations) == 1
+    statuses = {row["source_type"]: row for row in status_rows}
+    assert len(observations) == 1
     assert statuses["azure_vm"]["state"] == "ready"
     assert statuses["arc"]["state"] == "degraded"
     assert statuses["arc"]["error"] == "Arc query timed out"
@@ -414,7 +422,7 @@ def _ingestion(
     logs: _LogsSource,
     *,
     workspaces: dict[str, str | tuple[str, ...]] | None = None,
-) -> IngestionService:
+) -> InventoryPipeline:
     if workspaces is None:
         workspaces = {"connection-1": "workspace-1"}
     inventory = json.loads(FIXTURE.read_text(encoding="utf-8"))["inventory_native_vm_os"]
@@ -425,7 +433,7 @@ def _ingestion(
         logs_workspaces=workspaces,
         cost_management_enabled=False,
     )
-    return IngestionService(
+    return InventoryPipeline(
         config,
         source=_InventorySource(inventory[:1]),
         logs_client=logs,
@@ -440,7 +448,7 @@ def test_configured_workspace_publishes_software_in_the_active_generation(
     logs = _LogsSource({"workspace-1": logs_rows})
     ingestion = _ingestion(tmp_path, logs)
 
-    manifest = ingestion.run()
+    manifest = ingestion.refresh().manifest
     store = DatasetStore(tmp_path)
     software = store.read_dataset("inventory/software_observations")
     loaded = InventoryService.from_store(store)
@@ -460,13 +468,13 @@ def test_workspace_failures_retain_last_known_rows_and_mark_degraded(
 ) -> None:
     logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:1]
     first = _ingestion(tmp_path, _LogsSource({"workspace-1": logs_rows}))
-    first.run()
+    first.refresh()
 
     failed = _ingestion(
         tmp_path,
         _LogsSource(failures={"workspace-1"}),
     )
-    failed.run()
+    failed.refresh()
     loaded = InventoryService.from_store(DatasetStore(tmp_path))
 
     assert loaded is not None
@@ -480,8 +488,8 @@ def test_successful_empty_workspace_replaces_previous_rows_as_ready_empty(
     tmp_path: Path,
 ) -> None:
     logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:1]
-    _ingestion(tmp_path, _LogsSource({"workspace-1": logs_rows})).run()
-    _ingestion(tmp_path, _LogsSource({"workspace-1": []})).run()
+    _ingestion(tmp_path, _LogsSource({"workspace-1": logs_rows})).refresh()
+    _ingestion(tmp_path, _LogsSource({"workspace-1": []})).refresh()
 
     loaded = InventoryService.from_store(DatasetStore(tmp_path))
     assert loaded is not None
@@ -503,7 +511,7 @@ def test_multiple_server_configured_workspaces_report_partial_without_browser_in
         workspaces={"connection-1": ("workspace-1", "workspace-2")},
     )
 
-    ingestion.run()
+    ingestion.refresh()
     loaded = InventoryService.from_store(DatasetStore(tmp_path))
 
     assert logs.calls == ["workspace-1", "workspace-2"]
@@ -517,7 +525,7 @@ def test_missing_workspace_mapping_is_unavailable_and_never_queries_arbitrary_id
     tmp_path: Path,
 ) -> None:
     logs = _LogsSource({"attacker-workspace": json.loads(SOFTWARE_FIXTURE.read_text())})
-    _ingestion(tmp_path, logs, workspaces={}).run()
+    _ingestion(tmp_path, logs, workspaces={}).refresh()
     loaded = InventoryService.from_store(DatasetStore(tmp_path))
 
     assert logs.calls == []

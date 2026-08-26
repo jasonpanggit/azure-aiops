@@ -26,14 +26,6 @@ class DatasetStore(_DatasetStore):
             rows = getattr(graph, collection, None)
             if rows is not None:
                 datasets[f"situations/{collection}"] = list(rows)
-        if getattr(graph, "inventory_observations", None) is not None:
-            datasets["inventory/os_observations"] = list(graph.inventory_observations)
-        if getattr(graph, "inventory_source_status", None) is not None:
-            datasets["inventory/source_status"] = list(graph.inventory_source_status)
-        if getattr(graph, "inventory_software_observations", None) is not None:
-            datasets["inventory/software_observations"] = list(graph.inventory_software_observations)
-        if getattr(graph, "inventory_software_source_status", None) is not None:
-            datasets["inventory/software_source_status"] = list(graph.inventory_software_source_status)
         return super().publish(
             datasets,
             query_results,

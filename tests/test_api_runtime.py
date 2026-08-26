@@ -20,6 +20,8 @@ from api.runtime import build_authenticator, build_context, hermes_home
 from hermes_arg_connector.local import seed_local_environment
 from hermes_arg_connector.normalize import Normalizer
 from hermes_arg_connector.storage import DatasetStore
+from intelligence.inventory.normalization import normalize_os_inventory
+from storage.datasets import DatasetStore as NeutralDatasetStore
 from onboarding.credentials import KeyVaultSecretWriter
 
 TOKENS = '{"demo-token-0123456789abcdef": {"subject": "d@e.com", "grants": [{"role": "admin"}]}}'
@@ -168,16 +170,19 @@ def test_inventory_runtime_loader_reads_active_generation_metadata(
     fixture = json.loads(
         Path("tests/fixtures/mock_inventory_arg.json").read_text(encoding="utf-8")
     )
-    graph = Normalizer().normalize(
+    observations, statuses = normalize_os_inventory(
         {
             "inventory_native_vm_os": fixture["inventory_native_vm_os"][:1],
         },
-        datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+        "2026-08-25T12:00:00+00:00",
         run_id="runtime-inventory-run",
         requested_scope={"subscription": ["sub-a"]},
     )
-    DatasetStore(home).publish(
-        graph,
+    NeutralDatasetStore(home).publish(
+        {
+            "inventory/os_observations": observations,
+            "inventory/source_status": statuses,
+        },
         {},
         {
             "runId": "runtime-inventory-run",
@@ -203,13 +208,17 @@ def test_inventory_runtime_marks_old_generation_stale_without_erasing_rows(
     fixture = json.loads(
         Path("tests/fixtures/mock_inventory_arg.json").read_text(encoding="utf-8")
     )
-    graph = Normalizer().normalize(
+    observations, statuses = normalize_os_inventory(
         {"inventory_native_vm_os": fixture["inventory_native_vm_os"][:1]},
-        datetime(2026, 8, 20, 12, 0, tzinfo=UTC),
+        "2026-08-20T12:00:00+00:00",
         run_id="stale-inventory-run",
+        requested_scope={"subscription": ["sub-a"]},
     )
-    DatasetStore(home).publish(
-        graph,
+    NeutralDatasetStore(home).publish(
+        {
+            "inventory/os_observations": observations,
+            "inventory/source_status": statuses,
+        },
         {},
         {
             "runId": "stale-inventory-run",

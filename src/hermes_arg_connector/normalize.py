@@ -44,10 +44,6 @@ class NormalizedGraph:
     entities: dict[str, list[dict]] = field(default_factory=lambda: {name: [] for name in ENTITY_TYPES})
     relationships: list[dict] = field(default_factory=list)
     changes: list[dict] = field(default_factory=list)
-    inventory_observations: list[dict] = field(default_factory=list)
-    inventory_source_status: list[dict] = field(default_factory=list)
-    inventory_software_observations: list[dict] = field(default_factory=list)
-    inventory_software_source_status: list[dict] = field(default_factory=list)
     situations: list[dict] = field(default_factory=list)
     evidence: list[dict] = field(default_factory=list)
     links: list[dict] = field(default_factory=list)
@@ -148,7 +144,6 @@ class Normalizer:
             if target:
                 _add_edge(edge_index, entity["id"], "impacts", target, "arg:AdvisorResources", observed, 0.98)
 
-        graph.inventory_observations, graph.inventory_source_status = _normalize_inventory(payload, observed, run_id=run_id, requested_scope=requested_scope)
         graph.changes = [_change(row, observed) for row in payload.get("resource_changes", []) if not _failed_provider_row(row)]
         self._normalize_network(payload, observed, entity_index, edge_index)
         if context:
@@ -510,160 +505,6 @@ def _advisor(row: dict, observed: str) -> dict:
         "properties": props,
     })
     return entity
-
-
-def _normalize_inventory(
-    payload: Mapping[str, list[dict]],
-    observed: str,
-    *,
-    run_id: str,
-    requested_scope: dict[str, list[str]] | None,
-) -> tuple[list[dict], list[dict]]:
-    """Normalize the independent native VM and Arc OS query families.
-
-    The query families deliberately remain separate through status creation.
-    A provider failure therefore cannot be converted into a successful empty
-    inventory, and the normalized rows can still share the normal generation
-    publication boundary.
-    """
-    from intelligence.inventory.models import MachineObservation
-
-    families = (
-        ("inventory_native_vm_os", "azure_vm", "inventory-native-vm-os-v1"),
-        ("inventory_arc_os", "arc", "inventory-arc-os-v1"),
-    )
-    observations: list[dict] = []
-    statuses: list[dict] = []
-    for family, source_type, default_query_version in families:
-        rows = [
-            row for row in payload.get(family, []) if isinstance(row, Mapping)
-        ]
-        failed = next(
-            (
-                row
-                for row in rows
-                if str(row.get("status") or row.get("provider_status") or "").casefold()
-                in {"failed", "unavailable"}
-            ),
-            None,
-        )
-        query_version = str(
-            (rows[0] if rows else {}).get("query_version") or default_query_version
-        )
-        family_observations: list[MachineObservation] = []
-        if failed is None:
-            for row in rows:
-                source_id = str(row.get("id") or row.get("resource_id") or "").strip()
-                if not source_id:
-                    continue
-                if source_type == "azure_vm":
-                    # Image metadata is evidence about the image, not an
-                    # installed release. Keep it separate and leave the
-                    # installed version explicitly unknown.
-                    properties = row.get("properties") if isinstance(row.get("properties"), Mapping) else {}
-                    os_type = str(
-                        row.get("osType")
-                        or row.get("os_type")
-                        or properties.get("osType")
-                        or ""
-                    )
-                    row = {
-                        **row,
-                        "os_name": os_type or "Unknown OS",
-                        "os_version": "Unknown",
-                        "os_type": os_type,
-                        "image_publisher": row.get("imagePublisher") or "",
-                        "image_offer": row.get("imageOffer") or "",
-                        "image_sku": row.get("imageSku") or "",
-                        "image_version": row.get("imageVersion") or "",
-                    }
-                else:
-                    properties = row.get("properties") if isinstance(row.get("properties"), Mapping) else {}
-                    row = {
-                        **row,
-                        "os_name": row.get("osName") or properties.get("osName") or "",
-                        "os_version": row.get("osVersion") or properties.get("osVersion") or "Unknown",
-                        "computer_name": row.get("computerName") or properties.get("computerName") or "",
-                        "machine_status": row.get("status") or properties.get("status") or "",
-                        "os_type": row.get("osSku") or properties.get("osSku") or "",
-                    }
-                row["source_type"] = source_type
-                row["observed_at"] = str(
-                    row.get("observed_at") or row.get("observedAt") or observed
-                )
-                row["query_version"] = query_version
-                row["source_status"] = "ready"
-                row["evidence"] = [
-                    {
-                        "source_engine": "Azure Resource Graph",
-                        "source_table": "Resources",
-                        "observed_at": row["observed_at"],
-                        "source_id": source_id,
-                        "query_version": query_version,
-                    }
-                ]
-                family_observations.append(
-                    MachineObservation.from_mapping(
-                        row,
-                        default_status="ready",
-                        query_version=query_version,
-                    )
-                )
-        current = _latest_inventory_observations(family_observations)
-        observations.extend(item.to_dict() for item in current)
-        status = "degraded" if failed else "ready"
-        timestamps = [item.observed_at for item in current]
-        statuses.append(
-            {
-                "source_type": source_type,
-                "state": status,
-                "observed_at": max(timestamps, default=observed),
-                "query_version": query_version,
-                "row_count": len(current),
-                "error": str((failed or {}).get("error") or ""),
-                "run_id": run_id,
-                "requested_scope": requested_scope or {},
-            }
-        )
-    return observations, statuses
-
-
-def _latest_inventory_observations(rows: list[Any]) -> list[Any]:
-    selected: dict[tuple[str, str], Any] = {}
-    for row in rows:
-        key = (row.source_type, row.resource_id.casefold())
-        previous = selected.get(key)
-        if previous is None or _inventory_time(row.observed_at) >= _inventory_time(previous.observed_at):
-            selected[key] = row
-    return sorted(selected.values(), key=lambda row: (row.source_type, row.resource_id.casefold()))
-
-
-def _inventory_time(value: str) -> datetime:
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return datetime.min.replace(tzinfo=UTC)
-def _change(row: dict, observed: str) -> dict:
-    props = row.get("properties") or {}
-    attrs = props.get("changeAttributes") or {}
-    return {
-        "id": _lower(row.get("id") or row.get("name")),
-        "targetResourceId": _lower(props.get("targetResourceId")),
-        "changeType": str(props.get("changeType") or ""),
-        "changedAt": str(attrs.get("timestamp") or ""),
-        "properties": props,
-        "sourceSystem": "arg:ResourceChanges",
-        "lastObservedTimestamp": observed,
-    }
-
-
-def _entity_type_for_resource(row: dict) -> str:
-    resource_type = _lower(row.get("type"))
-    if resource_type == "microsoft.compute/virtualmachines":
-        return "VirtualMachine"
-    if resource_type == "microsoft.hybridcompute/machines":
-        return "ArcServer"
-    return "Resource"
 
 
 def _subscription_key(row: dict) -> str:

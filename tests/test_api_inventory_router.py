@@ -12,7 +12,7 @@ from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
-from hermes_arg_connector.inventory_normalize import normalize_configuration_data
+from intelligence.inventory.software_normalization import normalize_configuration_data
 from intelligence.inventory import InventoryService
 from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
 from intelligence.inventory.eol_review import (

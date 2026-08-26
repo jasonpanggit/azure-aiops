@@ -87,27 +87,6 @@ class IngestionService:
             run_id=run_id,
             requested_scope={"subscription": sorted(subscriptions)},
         )
-        from .inventory_normalize import normalize_configuration_data
-        from intelligence.inventory.models import SoftwareObservation
-
-        software_rows, software_status = self._fetch_software_inventory(
-            subscriptions, started
-        )
-        software_observations = normalize_configuration_data(
-            software_rows,
-            graph.inventory_observations,
-            observed_at=_iso(started),
-        )
-        if not software_observations and software_status["state"] != "ready":
-            software_observations = [
-                SoftwareObservation.from_mapping(row)
-                for row in self.store.read_dataset("inventory/software_observations")
-            ]
-        graph.inventory_software_observations = [
-            row.to_dict() for row in software_observations
-        ]
-        software_status["row_count"] = len(software_observations)
-        graph.inventory_software_source_status = [software_status]
         _preserve_created_timestamps(graph, self.store)
         _preserve_source_watermarks(graph, self.store)
         change_watermark = _max_change_watermark(previous_watermark, graph.changes)
@@ -133,66 +112,6 @@ class IngestionService:
             }
         )
         return manifest
-
-    def _fetch_software_inventory(
-        self, subscriptions: list[str], started: datetime
-    ) -> tuple[list[dict], dict]:
-        """Fetch ConfigurationData only from server-owned workspace mappings."""
-        connection_id = str(self.config.connection_context.get("connection_id") or "")
-        workspaces = self.config.workspaces_for_connection(connection_id)
-        requested_scope = {"subscription": sorted(subscriptions)}
-        query_version = "inventory-software-v1"
-        if not workspaces:
-            return [], {
-                "source_type": "logs",
-                "state": "unavailable",
-                "observed_at": "",
-                "query_version": query_version,
-                "row_count": 0,
-                "error": "No Log Analytics workspace is configured for this connection",
-                "workspace_count": 0,
-                "requested_scope": requested_scope,
-            }
-        if self.logs_client is None:
-            return [], {
-                "source_type": "logs",
-                "state": "unavailable",
-                "observed_at": "",
-                "query_version": query_version,
-                "row_count": 0,
-                "error": "No Azure Monitor Logs client is configured",
-                "workspace_count": len(workspaces),
-                "requested_scope": requested_scope,
-            }
-        rows: list[dict] = []
-        errors: list[str] = []
-        for workspace_id in workspaces:
-            try:
-                result = self.logs_client.query_configuration_data(workspace_id)
-            except Exception as exc:  # noqa: BLE001 - preserve source failure
-                errors.append(
-                    f"{workspace_id}: {str(exc).strip() or exc.__class__.__name__}"
-                )
-            else:
-                rows.extend(result)
-        state = "ready" if not errors else "partial" if rows else "degraded"
-        observed = max(
-            (
-                str(row.get("TimeGenerated") or row.get("time_generated") or "")
-                for row in rows
-            ),
-            default=_iso(started),
-        )
-        return rows, {
-            "source_type": "logs",
-            "state": state,
-            "observed_at": observed,
-            "query_version": query_version,
-            "row_count": len(rows),
-            "error": "; ".join(errors)[:2048],
-            "workspace_count": len(workspaces),
-            "requested_scope": requested_scope,
-        }
 
 
 def _merge_changes(previous: list[dict], current: list[dict]) -> list[dict]:

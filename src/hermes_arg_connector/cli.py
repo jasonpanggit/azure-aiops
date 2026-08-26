@@ -19,6 +19,12 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     sync = actions.add_parser("sync", help="Run Azure MCP discovery and ARG ingestion now")
     sync.add_argument("--config", default="config.yaml")
 
+    inventory_refresh = actions.add_parser(
+        "inventory-refresh",
+        help="Run the standalone inventory-owned Fabric/OneLake refresh",
+    )
+    inventory_refresh.add_argument("--config", default="config.yaml")
+
     query = actions.add_parser("query", help="Query the normalized operational context")
     query.add_argument("question")
     query.add_argument("--output-dir", default="./data")
@@ -160,6 +166,39 @@ def cli_command(args: argparse.Namespace) -> int:
     if action == "sync":
         manifest = IngestionService(ConnectorConfig.load(args.config)).run()
         print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
+    if action == "inventory-refresh":
+        from .azure import AzureCliArgClient, AzureMcpClient
+        from .logs import AzureMonitorLogsClient
+        from .source import AzureResourceGraphSource
+        from intelligence.inventory.pipeline import InventoryPipeline
+
+        config = ConnectorConfig.load(args.config)
+        source = AzureResourceGraphSource(
+            mcp=AzureMcpClient(
+                command_prefix=config.azure_mcp_command,
+                timeout=config.command_timeout_seconds,
+            ),
+            arg=AzureCliArgClient(
+                page_size=config.page_size,
+                max_pages=config.max_pages,
+                timeout=config.command_timeout_seconds,
+            ),
+            tenant_id=config.tenant_id,
+            max_workers=config.max_query_workers,
+            management_group_ids=config.management_groups,
+        )
+        logs_client = None
+        if config.logs_workspaces:
+            from azure.identity import DefaultAzureCredential
+
+            logs_client = AzureMonitorLogsClient(DefaultAzureCredential())
+        result = InventoryPipeline(
+            config,
+            source=source,
+            logs_client=logs_client,
+        ).refresh()
+        print(json.dumps(result.manifest, indent=2, sort_keys=True))
         return 0
     if action == "query":
         result = ContextQueryService(Path(args.output_dir).expanduser().resolve()).answer(args.question)

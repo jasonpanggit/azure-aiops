@@ -15,6 +15,7 @@ from hermes_arg_connector.config import ConnectorConfig
 from hermes_arg_connector.normalize import Normalizer
 from hermes_arg_connector.service import IngestionService
 from hermes_arg_connector.storage import DatasetStore
+from intelligence.inventory.pipeline import InventoryPipeline
 from semantic.semantic_engine import SemanticEngine
 from storage.delta_writer import DeltaWriter
 from storage.onelake_writer import OneLakeWriter
@@ -603,12 +604,12 @@ def test_inventory_generation_publishes_successful_family_when_arc_fails(
                 for spec in specs
             }
 
-    service = IngestionService(
+    service = InventoryPipeline(
         ConnectorConfig(output_dir=tmp_path, subscriptions=("sub-a",)),
         source=FamilyFailureSource(),
         clock=lambda: datetime(2026, 8, 25, 10, tzinfo=UTC),
     )
-    service.run()
+    service.refresh()
 
     generation = (tmp_path / "current").resolve()
     observations = [
@@ -630,17 +631,27 @@ def test_inventory_generation_publishes_successful_family_when_arc_fails(
 
 def test_inventory_source_status_and_rows_have_family_query_versions(tmp_path: Path) -> None:
     fixture = json.loads((Path(__file__).parent / "fixtures" / "mock_inventory_arg.json").read_text())
-    graph = Normalizer().normalize(
+    from intelligence.inventory.normalization import normalize_os_inventory
+    from storage.datasets import DatasetStore as NeutralDatasetStore
+
+    observations, statuses = normalize_os_inventory(
         {
             "inventory_native_vm_os": fixture["inventory_native_vm_os"],
             "inventory_arc_os": fixture["inventory_arc_os"],
         },
-        datetime(2026, 8, 25, 10, tzinfo=UTC),
+        "2026-08-25T10:00:00+00:00",
         run_id="inventory-query-version-run",
         requested_scope={"subscription": ["sub-a", "sub-b"]},
     )
-    store = DatasetStore(tmp_path)
-    store.publish(graph, {}, {"runId": "inventory-query-version-run", "status": "completed"})
+    store = NeutralDatasetStore(tmp_path)
+    store.publish(
+        {
+            "inventory/os_observations": observations,
+            "inventory/source_status": statuses,
+        },
+        {},
+        {"runId": "inventory-query-version-run", "status": "completed"},
+    )
 
     statuses = store.read_dataset("inventory/source_status")
     observations = store.read_dataset("inventory/os_observations")
