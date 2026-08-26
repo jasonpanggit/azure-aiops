@@ -260,6 +260,25 @@ class ResourceObservation:
             "provenance_json": provenance_json,
         }
 
+    def to_api_dict(self) -> dict[str, Any]:
+        return {
+            "resource_id": self.resource_id,
+            "resource_name": self.resource_name,
+            "resource_type": self.resource_type,
+            "family": self.family,
+            "subscription_id": self.subscription_id,
+            "resource_group": self.resource_group,
+            "location": self.location,
+            "sku": self.sku,
+            "tier": self.tier,
+            "runtime": self.runtime,
+            "provisioning_state": self.provisioning_state,
+            "os_name": self.os_name,
+            "os_version": self.os_version,
+            "observed_at": self.observed_at,
+            "query_version": self.query_version,
+        }
+
 
 def encode_provider_payload(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -272,6 +291,14 @@ def decode_provider_payload(value: str) -> dict[str, Any]:
 
 def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _subscription_from_id(value: Any) -> str:
+    parts = str(value or "").split("/")
+    try:
+        return parts[parts.index("subscriptions") + 1]
+    except (ValueError, IndexError):
+        return ""
 
 
 @dataclass(frozen=True)

@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from .models import MachineObservation
+from .models import MachineObservation, ResourceObservation
 
 
 def normalize_os_inventory(
@@ -138,5 +138,33 @@ def _inventory_time(value: str) -> datetime:
         return datetime.min.replace(tzinfo=UTC)
 
 
-__all__ = ["normalize_os_inventory"]
+def normalize_paas_resources(
+    rows: list[dict],
+    observed: str,
+    *,
+    run_id: str,
+) -> list[dict]:
+    """Project non-VM/Arc generic Resources rows into ResourceObservation rows."""
+    observations: list[ResourceObservation] = []
+    for row in rows:
+        resource_type = str(row.get("type") or row.get("resource_type") or "").casefold()
+        if resource_type in {
+            "microsoft.compute/virtualmachines",
+            "microsoft.hybridcompute/machines",
+        }:
+            continue
+        if not str(row.get("id") or row.get("resource_id") or "").strip():
+            continue
+        observations.append(
+            ResourceObservation.from_provider_row(
+                dict(row),
+                family="paas",
+                observed_at=str(row.get("observed_at") or row.get("observedAt") or observed),
+                ingestion_run_id=run_id,
+                query_version=str(row.get("query_version") or "inventory-resources-v1"),
+            )
+        )
+    return [row.to_fabric_row() for row in observations]
 
+
+__all__ = ["normalize_os_inventory", "normalize_paas_resources"]
