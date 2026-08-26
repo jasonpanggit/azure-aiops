@@ -28,12 +28,15 @@ class InventoryFabricPublisher:
         run_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         logical_datasets = {name: list(rows) for name, rows in datasets.items()}
+        published_datasets: dict[str, list[dict[str, Any]]] = {}
         for logical_name, rows in logical_datasets.items():
             report = validate_inventory_dataset(logical_name, rows)
             if not report.passed:
                 raise ValueError(f"Inventory quality validation failed: {report.to_dict()}")
             contract = INVENTORY_FABRIC_CONTRACTS[logical_name]
             self.fabric_tables[contract.table_name] = list(rows)
+            published_datasets[logical_name] = list(rows)
+            published_datasets[contract.table_name] = list(rows)
 
         metadata = {
             "runId": "inventory-refresh",
@@ -46,7 +49,7 @@ class InventoryFabricPublisher:
             },
         }
         return self.store.publish(
-            logical_datasets,
+            published_datasets,
             dict(query_results or {}),
             metadata,
             ontology={},
@@ -54,4 +57,3 @@ class InventoryFabricPublisher:
 
 
 __all__ = ["InventoryFabricPublisher"]
-

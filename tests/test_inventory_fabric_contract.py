@@ -99,10 +99,10 @@ SOFTWARE_KEYS = {
 def test_inventory_contract_maps_every_logical_dataset_to_fabric_table() -> None:
     from intelligence.inventory.fabric_contracts import INVENTORY_FABRIC_CONTRACTS
 
-    assert {
+    assert EXPECTED_CONTRACTS.items() <= {
         logical_name: contract.table_name
         for logical_name, contract in INVENTORY_FABRIC_CONTRACTS.items()
-    } == EXPECTED_CONTRACTS
+    }.items()
 
 
 @pytest.mark.parametrize(

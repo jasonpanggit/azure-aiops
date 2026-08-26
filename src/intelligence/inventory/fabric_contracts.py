@@ -16,25 +16,6 @@ import pyarrow as pa
 from .models import SOURCE_STATES
 
 
-ASSESSMENT_DOMAIN_FIELDS = frozenset(
-    {
-        "advisor_recommendations",
-        "available_updates",
-        "cve_id",
-        "finding_id",
-        "health_status",
-        "metric_name",
-        "metric_value",
-        "missing_critical_updates",
-        "patch_count",
-        "policy_assignment_id",
-        "policy_definition_id",
-        "recommendation_id",
-        "vulnerability_count",
-    }
-)
-
-
 @dataclass(frozen=True)
 class InventoryFabricContract:
     logical_name: str
@@ -177,6 +158,35 @@ _SOFTWARE_STATUS_SCHEMA = pa.schema(
     ]
 )
 
+_RESOURCE_OBSERVATION_SCHEMA = pa.schema(
+    [
+        pa.field("tenant_id", pa.string(), nullable=False),
+        pa.field("subscription_id", pa.string(), nullable=False),
+        pa.field("resource_id", pa.string(), nullable=False),
+        pa.field("timestamp", pa.string(), nullable=False),
+        pa.field("change_version", pa.string(), nullable=False),
+        pa.field("ingestion_run_id", pa.string(), nullable=False),
+        pa.field("resource_name", pa.string(), nullable=False),
+        pa.field("resource_type", pa.string(), nullable=False),
+        pa.field("resource_group", pa.string(), nullable=False),
+        pa.field("location", pa.string(), nullable=False),
+        pa.field("family", pa.string(), nullable=False),
+        pa.field("sku", pa.string(), nullable=False),
+        pa.field("tier", pa.string(), nullable=False),
+        pa.field("runtime", pa.string(), nullable=False),
+        pa.field("provisioning_state", pa.string(), nullable=False),
+        pa.field("os_name", pa.string(), nullable=False),
+        pa.field("os_version", pa.string(), nullable=False),
+        pa.field("source_type", pa.string(), nullable=False),
+        pa.field("source_table", pa.string(), nullable=False),
+        pa.field("observed_at", pa.string(), nullable=False),
+        pa.field("query_version", pa.string(), nullable=False),
+        pa.field("provider_payload_json", pa.string(), nullable=False),
+        pa.field("tags_json", pa.string(), nullable=False),
+        pa.field("provenance_json", pa.string(), nullable=False),
+    ]
+)
+
 INVENTORY_FABRIC_CONTRACTS: dict[str, InventoryFabricContract] = {
     "inventory/os_observations": InventoryFabricContract(
         logical_name="inventory/os_observations",
@@ -247,6 +257,28 @@ INVENTORY_FABRIC_CONTRACTS: dict[str, InventoryFabricContract] = {
         ),
         identity_fields=("source_type",),
     ),
+    "inventory/resource_observations": InventoryFabricContract(
+        logical_name="inventory/resource_observations",
+        table_name="inventory_resource_observations",
+        schema=_RESOURCE_OBSERVATION_SCHEMA,
+        required_fields=(
+            "tenant_id",
+            "subscription_id",
+            "resource_id",
+            "timestamp",
+            "change_version",
+            "ingestion_run_id",
+            "resource_type",
+            "family",
+            "source_type",
+            "source_table",
+            "observed_at",
+            "query_version",
+            "provider_payload_json",
+            "provenance_json",
+        ),
+        identity_fields=("family", "resource_id"),
+    ),
 }
 
 INVENTORY_FABRIC_SCHEMAS_BY_TABLE = {
@@ -308,7 +340,7 @@ def validate_inventory_dataset(
             counts["source_state"] += 1
             failures.append(_failure(index, "source_state", str(state)))
 
-        assessment_fields = sorted(set(row) & ASSESSMENT_DOMAIN_FIELDS)
+        assessment_fields = sorted(set(row) - set(contract.schema.names))
         if assessment_fields:
             counts["assessment_fields"] += 1
             failures.append(_failure(index, "assessment_fields", ",".join(assessment_fields)))
@@ -330,7 +362,6 @@ def _failure(index: int, rule: str, detail: str) -> dict[str, Any]:
 
 
 __all__ = [
-    "ASSESSMENT_DOMAIN_FIELDS",
     "INVENTORY_FABRIC_CONTRACTS",
     "INVENTORY_FABRIC_SCHEMAS_BY_TABLE",
     "InventoryFabricContract",

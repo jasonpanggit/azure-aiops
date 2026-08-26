@@ -4,9 +4,11 @@ from typing import TYPE_CHECKING
 
 from .models import (
     InventoryEvidence,
+    InventoryNarrativeCitation,
     InventorySourceStatus,
     MachineObservation,
     OSGroup,
+    ResourceObservation,
     SoftwareGroup,
     SoftwareObservation,
     group_key,
@@ -26,11 +28,13 @@ def __getattr__(name: str):
 
 __all__ = [
     "InventoryEvidence",
+    "InventoryNarrativeCitation",
     "InventoryService",
     "InventorySnapshot",
     "InventorySourceStatus",
     "MachineObservation",
     "OSGroup",
+    "ResourceObservation",
     "SoftwareGroup",
     "SoftwareObservation",
     "group_key",

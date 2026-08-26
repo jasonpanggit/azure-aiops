@@ -6,7 +6,10 @@ produces only the fields that are safe and useful at the API boundary.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+import copy
+import hashlib
+import json
+from dataclasses import InitVar, asdict, dataclass, field
 from typing import Any
 
 MACHINE_SOURCE_TYPES = frozenset({"azure_vm", "arc"})
@@ -43,6 +46,232 @@ class InventoryEvidence:
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ResourceObservation:
+    """Lossless internal resource identity observation for Fabric publication."""
+
+    resource_id: str
+    resource_name: str
+    resource_type: str
+    family: str
+    tenant_id: str
+    subscription_id: str
+    resource_group: str
+    location: str
+    observed_at: str
+    ingestion_run_id: str
+    source_type: str
+    source_table: str
+    provider_payload: InitVar[dict[str, Any] | None]
+    query_version: str = "resource-observation-v1"
+    sku: str = ""
+    tier: str = ""
+    runtime: str = ""
+    provisioning_state: str = ""
+    os_name: str = ""
+    os_version: str = ""
+    tags: dict[str, Any] | None = None
+    provenance: dict[str, Any] | None = None
+    _provider_payload: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self, provider_payload: dict[str, Any] | None) -> None:
+        required = (
+            "resource_id",
+            "family",
+            "subscription_id",
+            "observed_at",
+            "ingestion_run_id",
+        )
+        for name in required:
+            if not _text(getattr(self, name)):
+                raise ValueError(f"Resource observation requires {name}")
+        object.__setattr__(self, "resource_id", _text(self.resource_id))
+        object.__setattr__(self, "resource_name", _text(self.resource_name))
+        object.__setattr__(self, "resource_type", _text(self.resource_type).casefold())
+        object.__setattr__(self, "family", _text(self.family).casefold())
+        object.__setattr__(self, "tenant_id", _text(self.tenant_id))
+        object.__setattr__(self, "subscription_id", _text(self.subscription_id))
+        object.__setattr__(self, "resource_group", _text(self.resource_group))
+        object.__setattr__(self, "location", _text(self.location))
+        object.__setattr__(self, "observed_at", _text(self.observed_at))
+        object.__setattr__(self, "ingestion_run_id", _text(self.ingestion_run_id))
+        object.__setattr__(self, "source_type", _text(self.source_type))
+        object.__setattr__(self, "source_table", _text(self.source_table))
+        object.__setattr__(self, "query_version", _text(self.query_version))
+        object.__setattr__(self, "sku", _text(self.sku))
+        object.__setattr__(self, "tier", _text(self.tier))
+        object.__setattr__(self, "runtime", _text(self.runtime))
+        object.__setattr__(self, "provisioning_state", _text(self.provisioning_state))
+        object.__setattr__(self, "os_name", _text(self.os_name))
+        object.__setattr__(self, "os_version", _text(self.os_version))
+        object.__setattr__(self, "_provider_payload", copy.deepcopy(dict(provider_payload or {})))
+        object.__setattr__(self, "tags", copy.deepcopy(dict(self.tags or {})))
+        object.__setattr__(self, "provenance", copy.deepcopy(dict(self.provenance or {})))
+
+    @property
+    def provider_payload(self) -> dict[str, Any]:
+        return copy.deepcopy(self._provider_payload)
+
+    @classmethod
+    def from_provider_row(
+        cls,
+        row: dict[str, Any],
+        *,
+        family: str,
+        observed_at: str,
+        ingestion_run_id: str,
+        query_version: str = "resource-observation-v1",
+        source_type: str = "arg",
+        source_table: str = "Resources",
+    ) -> ResourceObservation:
+        properties = row.get("properties") if isinstance(row.get("properties"), dict) else {}
+        sku = row.get("sku") if isinstance(row.get("sku"), dict) else {}
+        return cls(
+            resource_id=row.get("resource_id") or row.get("id") or "",
+            resource_name=row.get("name") or "",
+            resource_type=row.get("type") or row.get("resource_type") or "",
+            family=family,
+            tenant_id=row.get("tenant_id") or row.get("tenantId") or "",
+            subscription_id=row.get("subscription_id") or row.get("subscriptionId") or _subscription_from_id(row.get("id")),
+            resource_group=row.get("resource_group") or row.get("resourceGroup") or "",
+            location=row.get("location") or "",
+            observed_at=observed_at,
+            ingestion_run_id=ingestion_run_id,
+            source_type=source_type,
+            source_table=source_table,
+            provider_payload=properties,
+            query_version=query_version,
+            sku=str(sku.get("name") or row.get("sku") or ""),
+            tier=str(sku.get("tier") or (properties.get("currentSku") or {}).get("tier") or ""),
+            runtime=str(
+                (properties.get("siteConfig") or {}).get("linuxFxVersion")
+                or (properties.get("siteConfig") or {}).get("windowsFxVersion")
+                or ""
+            ),
+            provisioning_state=str(
+                properties.get("provisioningState")
+                or properties.get("state")
+                or properties.get("status")
+                or ""
+            ),
+            os_name=str(row.get("os_name") or row.get("osName") or properties.get("osName") or ""),
+            os_version=str(row.get("os_version") or row.get("osVersion") or properties.get("osVersion") or ""),
+            tags=row.get("tags") if isinstance(row.get("tags"), dict) else {},
+            provenance={
+                "source_id": str(row.get("id") or row.get("resource_id") or ""),
+                "source_table": source_table,
+                "query_version": query_version,
+            },
+        )
+
+    @classmethod
+    def from_machine_observation(
+        cls,
+        machine: MachineObservation,
+        *,
+        provider_payload: dict[str, Any] | None = None,
+        ingestion_run_id: str,
+    ) -> ResourceObservation:
+        return cls(
+            resource_id=machine.resource_id,
+            resource_name=machine.machine_name,
+            resource_type=(
+                "microsoft.hybridcompute/machines"
+                if machine.source_type == "arc"
+                else "microsoft.compute/virtualmachines"
+            ),
+            family="os",
+            tenant_id="",
+            subscription_id=machine.subscription_id,
+            resource_group=machine.resource_group,
+            location="",
+            observed_at=machine.observed_at,
+            ingestion_run_id=ingestion_run_id,
+            source_type=machine.source_type,
+            source_table="Resources",
+            provider_payload=provider_payload or {},
+            query_version=machine.query_version,
+            sku=machine.image_sku,
+            os_name=machine.os_name,
+            os_version=machine.os_version,
+            provisioning_state=machine.machine_status,
+            tags={},
+            provenance={"source_id": machine.resource_id},
+        )
+
+    @classmethod
+    def from_fabric_row(cls, row: dict[str, Any]) -> ResourceObservation:
+        payload = decode_provider_payload(str(row.get("provider_payload_json") or "{}"))
+        provenance = decode_provider_payload(str(row.get("provenance_json") or "{}"))
+        return cls(
+            resource_id=row.get("resource_id") or "",
+            resource_name=row.get("resource_name") or "",
+            resource_type=row.get("resource_type") or "",
+            family=row.get("family") or "",
+            tenant_id=row.get("tenant_id") or "",
+            subscription_id=row.get("subscription_id") or "",
+            resource_group=row.get("resource_group") or "",
+            location=row.get("location") or "",
+            observed_at=row.get("observed_at") or row.get("timestamp") or "",
+            ingestion_run_id=row.get("ingestion_run_id") or "",
+            source_type=row.get("source_type") or "",
+            source_table=row.get("source_table") or "",
+            provider_payload=payload,
+            query_version=row.get("query_version") or "",
+            sku=row.get("sku") or "",
+            tier=row.get("tier") or "",
+            runtime=row.get("runtime") or "",
+            provisioning_state=row.get("provisioning_state") or "",
+            os_name=row.get("os_name") or "",
+            os_version=row.get("os_version") or "",
+            tags=decode_provider_payload(str(row.get("tags_json") or "{}")),
+            provenance=provenance,
+        )
+
+    def to_fabric_row(self) -> dict[str, Any]:
+        provider_json = encode_provider_payload(self.provider_payload)
+        provenance_json = encode_provider_payload(self.provenance or {})
+        return {
+            "tenant_id": self.tenant_id or "unknown",
+            "subscription_id": self.subscription_id,
+            "resource_id": self.resource_id,
+            "timestamp": self.observed_at,
+            "change_version": _hash_text(f"{self.resource_id}|{provider_json}"),
+            "ingestion_run_id": self.ingestion_run_id,
+            "resource_name": self.resource_name,
+            "resource_type": self.resource_type,
+            "resource_group": self.resource_group,
+            "location": self.location,
+            "family": self.family,
+            "sku": self.sku,
+            "tier": self.tier,
+            "runtime": self.runtime,
+            "provisioning_state": self.provisioning_state,
+            "os_name": self.os_name,
+            "os_version": self.os_version,
+            "source_type": self.source_type,
+            "source_table": self.source_table,
+            "observed_at": self.observed_at,
+            "query_version": self.query_version,
+            "provider_payload_json": provider_json,
+            "tags_json": encode_provider_payload(self.tags or {}),
+            "provenance_json": provenance_json,
+        }
+
+
+def encode_provider_payload(payload: Mapping[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def decode_provider_payload(value: str) -> dict[str, Any]:
+    payload = json.loads(value or "{}")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 @dataclass(frozen=True)

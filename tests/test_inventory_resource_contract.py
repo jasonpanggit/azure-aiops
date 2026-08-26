@@ -66,12 +66,14 @@ def test_resource_observation_round_trips_nested_payload_via_jsonl_and_parquet(
         for row in PAYLOADS
     ]
     rows = [item.to_fabric_row() for item in observations]
+    from intelligence.inventory.fabric_publication import InventoryFabricPublisher
+
     store = DatasetStore(tmp_path)
     table_name = fabric_table_for_logical_name("inventory/resource_observations")
-    store.publish(
-        {"inventory/resource_observations": rows, table_name: rows},
-        {},
-        {"runId": "run-1", "status": "completed"},
+    InventoryFabricPublisher(store).publish(
+        {"inventory/resource_observations": rows},
+        query_results={},
+        run_metadata={"runId": "run-1", "status": "completed"},
     )
 
     jsonl_rows = store.read_dataset("inventory/resource_observations")
@@ -79,12 +81,17 @@ def test_resource_observation_round_trips_nested_payload_via_jsonl_and_parquet(
         (tmp_path / "current" / table_name).with_suffix(".parquet")
     ).to_pylist()
 
-    assert [ResourceObservation.from_fabric_row(row).provider_payload for row in jsonl_rows] == [
-        row["properties"] for row in PAYLOADS
-    ]
-    assert [ResourceObservation.from_fabric_row(row).provider_payload for row in parquet_rows] == [
-        row["properties"] for row in PAYLOADS
-    ]
+    jsonl_payloads = {
+        row["resource_id"]: ResourceObservation.from_fabric_row(row).provider_payload
+        for row in jsonl_rows
+    }
+    parquet_payloads = {
+        row["resource_id"]: ResourceObservation.from_fabric_row(row).provider_payload
+        for row in parquet_rows
+    }
+    expected = {row["id"]: row["properties"] for row in PAYLOADS}
+    assert jsonl_payloads == expected
+    assert parquet_payloads == expected
 
 
 def test_resource_observation_schema_has_identity_scope_projection_and_payload_columns() -> None:
@@ -212,3 +219,24 @@ def test_family_registry_rejects_duplicate_logical_and_fabric_tables() -> None:
                 ),
             ]
         )
+
+
+def test_default_family_registry_binds_current_families_to_fabric_contracts() -> None:
+    from intelligence.inventory.fabric_contracts import fabric_table_for_logical_name
+    from intelligence.inventory.registry import default_inventory_registry
+
+    registry = default_inventory_registry()
+    os_family = registry.family("os")
+    software_family = registry.family("software")
+    resource_family = registry.family("resource")
+
+    assert os_family.logical_dataset == "inventory/os_observations"
+    assert os_family.status_dataset == "inventory/source_status"
+    assert os_family.fabric_table == fabric_table_for_logical_name("inventory/os_observations")
+    assert software_family.logical_dataset == "inventory/software_observations"
+    assert software_family.status_dataset == "inventory/software_source_status"
+    assert software_family.fabric_table == fabric_table_for_logical_name(
+        "inventory/software_observations"
+    )
+    assert {"azure_vm", "arc", "logs"} <= registry.source_types
+    assert resource_family.raw_payload_internal_only is True
