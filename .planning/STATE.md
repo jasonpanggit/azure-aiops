@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 7
 current_phase_name: Unified Resource Inventory
 status: executing
-stopped_at: Phase 7 plan 02 complete — neutral DatasetStore extraction committed; ready for 07-03 publication safety and ownership inversion
-last_updated: "2026-08-26T06:09:48.000Z"
+stopped_at: Phase 7 plan 03 replanned for Fabric-backed inventory publication; ready to execute the new 07-03
+last_updated: "2026-08-26T06:34:26.000Z"
 last_activity: 2026-08-26
-last_activity_desc: Completed Phase 7 plan 02 neutral storage extraction. DatasetStore now lives in storage.datasets with mapping-based publish and caller-supplied ontology; Hermes keeps a compatibility graph-publish shim. Shared OneLake fs and run-lock helpers moved into storage so the neutral package has no Hermes imports.
+last_activity_desc: Operator pivoted Phase 7 after neutral storage extraction. Fabric/OneLake is now the unified inventory data platform and authoritative persistence boundary; 07-03 has been rewritten as the Fabric-backed ownership inversion plan.
 progress:
   total_phases: 9
   completed_phases: 1
@@ -78,6 +78,9 @@ Progress: ██░░░░░░░░ [█████████░] 92%
 
 Recent decisions affecting current work:
 
+- [Phase 7]: **Fabric pivot (2026-08-26)** — Fabric/OneLake is the unified inventory data platform and durable source of truth for inventory. Inventory acquisition and normalization still belong to the inventory domain, but publication targets governed Fabric-backed inventory tables/lakehouse datasets rather than a repo-local/Hermes generation root as the final architecture.
+- [Phase 7]: The original 07-03 was superseded and replaced. Execute only the new Fabric-backed 07-03 plan, which defines Fabric table contracts, OneLake persistence, Fabric quality gates, and inventory-owned publication/read compatibility before removing Hermes ownership.
+- [Phase 7]: Hermes remains a consumer: it performs discovery and semantic modelling from Fabric-backed unified inventory and must not manage inventory lifecycle or call ARG for inventory identity once the pivot is implemented.
 - [Phase 7]: Two publishers sharing one generation root also share `state/dataset_hashes.json`. A partial publish marks every absent dataset as removed (`storage.py:128`) and overwrites the hash baseline wholesale (`storage.py:143`), destroying Hermes incremental-change detection. Publication must merge-not-replace or namespace per domain — planned as 07-03 T1a, ahead of the tracer.
 - [Phase 7]: The `"hermes_arg_connector"` `source_engine` literal in `intelligence/inventory/models.py:208,219` is a frozen published dataset value protected by D-06. Decoupling greps must be import-anchored so no executor "cleans up" a published field value.
 - [Phase 7]: Inventory does NOT ride along with `_preserve_created_timestamps` / `_preserve_source_watermarks` — those iterate `graph.source_status`, while inventory status lives on the separate `graph.inventory_software_source_status` (`service.py:122`). The CONTEXT claim was wrong; 07-01 T2 verifies empirically and "no such behavior exists" is a valid recorded outcome rather than a manufactured passing test.
@@ -141,19 +144,21 @@ Recent decisions affecting current work:
 ### Roadmap Evolution
 
 - Phase 6 added: Software and OS Inventory Visibility — UI page extracting OS inventory (Azure VMs + Arc-enabled servers) and installed software (Arc Change Tracking & Inventory) from ARG, with OS EOL dates from official vendor sources.
-- Phase 7 added: Unified Resource Inventory — inventory becomes an independent domain owning its own acquisition, normalization, retention, status, and publication; generalizes to all resource families including PaaS; consumed by the semantic graph rather than owned by it.
+- Phase 7 added: Unified Resource Inventory — inventory becomes an independent domain owning acquisition, normalization, retention, and status while publishing to Fabric/OneLake as the unified data platform; generalizes to all resource families including PaaS; consumed by the semantic graph rather than owned by it.
 - Phase 6 UAT re-scoped (2026-08-26): entry gate waived; the five residual walkthroughs plus windows #9-#13 now close under Phase 7 exit criteria.
 - Phases 8 and 9 added (2026-08-26): operator directed that Hermes pivot to unified inventory for discovery and semantic modelling instead of calling ARG directly, and that web/API pivot to it for the UI. Scoped as Phase 8 (resource identity plane; Hermes drops ARG identity queries) and Phase 9 (API/agent-queries/web pivot) rather than folded into Phase 7.
 
 ### Pending Todos
 
-- Execute Phase 7 plan 03: fix publication hash-state safety and invert inventory publication ownership.
+- Execute the replanned Phase 7 plan 03: define Fabric-backed inventory contracts, publish OS/software inventory independently of Hermes, preserve current read contracts, and remove Hermes lifecycle ownership.
+- Replan 07-04 through 07-06 before execution so ResourceObservation, PaaS, availability, and read ports are all Fabric-backed.
 - Deferred to Phase 7 exit: authenticated Azure/ARG/LAW walkthrough, healthy/failed workspace refresh, unknown-OS lifecycle review, exact software/version search, EOL citation review, browser UX/accessibility.
 - Triage the pre-existing `web/src/app/compliance/page.test.tsx` failure so full-suite green is a usable signal during Phase 7.
 - Configure `APPROVED_SEARCH_API_ENDPOINT` / `APPROVED_SEARCH_API_KEY` if the third EOL source is operationally required.
 
 ### Blockers/Concerns
 
+- Phase 7: Existing 07-04 through 07-06 plans were written before the Fabric-as-unified-platform pivot and remain stale until replanned. 07-03 has been rewritten around Fabric.
 - Phase 7: Proceeding without a verified live inventory baseline. Live-only regressions introduced by the refactor cannot be distinguished from pre-existing Phase 6 defects. Accepted risk; mitigated by characterization tests rather than empirical comparison.
 - Phase 8: **Contract losslessness is the pivot's single point of failure.** If `ResourceObservation` cannot carry the full raw property bag and per-family watermark semantics, Hermes must keep its own ARG identity path and the pivot cannot complete. Resolve by auditing Hermes's actual reads into `properties` (normalize.py, network_normalize.py, identity specs) *before* fixing the contract shape.
 - Phase 9: Web page impact is unaudited. Pages surfacing resource identity (`services`, `search`, `investigate`, `twin`, `changes`) need review at plan time; the "most pages need no change" expectation rests on route contracts holding.

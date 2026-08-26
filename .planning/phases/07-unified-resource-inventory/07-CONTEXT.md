@@ -1,14 +1,14 @@
 # Phase 7: Unified Resource Inventory - Context
 
 **Gathered:** 2026-08-26
-**Status:** Ready for planning
+**Status:** Replanning required after Fabric pivot
 
 <domain>
 ## Phase Boundary
 
-Inventory becomes an independent domain that owns its own acquisition, normalization, retention, source status, and publication — so an inventory refresh no longer requires a semantic-graph sync run. It generalizes to a common resource observation contract covering PaaS, reports availability per family, and exposes one scope-enforced read port that other subsystems consume.
+Inventory becomes an independent domain that owns its own acquisition, normalization, retention, and source status, with Fabric/OneLake as the unified data platform and durable source of truth. An inventory refresh no longer requires a semantic-graph sync run. It generalizes to a common resource observation contract covering PaaS, reports availability per family, and exposes one scope-enforced read port that other subsystems consume.
 
-**In scope:** ownership inversion, shared storage extraction, `ResourceObservation` contract, family registry, per-family availability, PaaS family, internal read port, and repointing the single existing cross-domain inventory dataset read.
+**In scope:** ownership inversion, shared storage extraction, Fabric-backed inventory publication contracts, `ResourceObservation` contract, family registry, per-family availability, PaaS family, internal read port, and repointing the single existing cross-domain inventory dataset read.
 
 **Out of scope (deliberately deferred):**
 - Hermes dropping its ARG resource-identity queries, containment hierarchy ownership, watermark composition → **Phase 8**
@@ -21,8 +21,13 @@ Phase 7 delivers the *contract* that Phases 8 and 9 depend on. Getting the contr
 <decisions>
 ## Implementation Decisions
 
+### Fabric pivot (operator decision, 2026-08-26)
+- **D-00:** Fabric/OneLake is the unified inventory data platform. The neutral `DatasetStore` extraction from 07-02 remains useful shared infrastructure, but it is not the final inventory authority by itself.
+- **D-00a:** The original 07-03 DatasetStore-only ownership inversion was superseded and replaced with a Fabric-backed plan. Phase 7 plans 04 through 06 were still written before this pivot and must be replanned before execution.
+- **D-00b:** Inventory owns the pipeline lifecycle; Fabric owns the governed persistence/query boundary. Hermes, API, UI, and other subsystems consume inventory through inventory-owned read ports over Fabric-backed data, not by managing inventory writes or querying ARG independently for inventory identity.
+
 ### Ownership (the core correction driving this phase)
-- **D-01:** Hermes is a **consumer** of inventory, never its owner. Acquisition, normalization, retention, source status, and publication move into `src/intelligence/inventory/`.
+- **D-01:** Hermes is a **consumer** of inventory, never its owner. Acquisition, normalization, retention, and source status move into `src/intelligence/inventory/`; publication writes governed Fabric/OneLake inventory datasets through inventory-owned services.
 - **D-02:** Inventory must be independently runnable — it refreshes and publishes without a Hermes sync. This is what removes the coupling behind the current `provider_unavailable` 503.
 - **D-03:** Shared infrastructure (`DatasetStore`, generation/pointer/hash machinery in `storage.py`) is extracted to a **neutral module**. Inventory must not import Hermes for publication, and Hermes must not import inventory internals. Extraction must preserve `DatasetStore`'s public surface — 15 files depend on it.
 
@@ -124,7 +129,7 @@ A flattened `dict[str, str]` cannot express this. If Phase 7 locks that contract
 - `api/providers.py` `ProviderSpec` — existing registry seam; per-family availability should compose with it rather than bypass it.
 
 ### Established Patterns
-- Datasets are published as an immutable generation through a single publication path — preserve this; do not add a second write path.
+- Inventory datasets must publish through a single governed Fabric/OneLake path. Any local immutable-generation path remains a compatibility/staging mechanism until the Fabric-backed source of truth is implemented.
 - Inventory datasets currently ride inside `NormalizedGraph` as four bolt-on fields (`normalize.py:60-63`) published via `getattr` guards (`storage.py:90-101`). That bolt-on shape is structural evidence they don't belong to the graph — it is what this phase removes.
 - Scope enforcement, evidence envelopes, and freshness/source-status reporting are established Phase 6 conventions. New families must match them, not invent variants.
 - `_entity_type_for_resource()` (`normalize.py:863`) returns only `VirtualMachine`/`ArcServer`/`Resource` — every PaaS resource already lands in `entities/Resource`.
@@ -144,8 +149,8 @@ A flattened `dict[str, str]` cannot express this. If Phase 7 locks that contract
 ## Deferred Ideas
 
 - **Targeted PaaS query specs** (`_paas_specs()`) with explicit SKU/tier/runtime projection, and PaaS lifecycle/EOL via `EOLReviewService` — D-16, revisit when PaaS EOL signals are needed.
-- **Hermes drops ARG resource-identity queries**; inventory owns containment hierarchy and per-family watermarks — **Phase 8** (INV-11, INV-12).
-- **API provider rewiring, `agent_queries.py` migration, web page audit** — **Phase 9** (INV-09, INV-10).
+- **Hermes drops ARG resource-identity queries**; inventory owns containment hierarchy and per-family watermarks in Fabric-backed contracts — **Phase 8** (INV-11, INV-12).
+- **API provider rewiring, `agent_queries.py` migration, web page audit** — **Phase 9** (INV-09, INV-10), after Fabric-backed read ports are stable.
 - **Open question for Phase 8 planning:** does the semantic graph still publish `entities/*` for identity types, or do those become views over inventory? Determines whether `agent_queries.py` changes shape or only source.
 - **Pre-existing `web/src/app/compliance/page.test.tsx` failure** — unrelated to inventory; triage so full-suite green becomes a usable signal.
 
@@ -155,4 +160,5 @@ A flattened `dict[str, str]` cannot express this. If Phase 7 locks that contract
 
 *Phase: 07-unified-resource-inventory*
 *Context gathered: 2026-08-26*
+*Updated: 2026-08-26 after operator pivot to Fabric as the unified data platform.*
 *Source: design review conducted in-session (ownership correction, PaaS extension review, scope staging) rather than a separate discuss-phase run.*

@@ -12,7 +12,7 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
 - [ ] **Phase 4: Domain Coverage and Operational Twin** - Prove representative incident, exposure, vulnerability, and twin-discrepancy workflows with replayable views.
 - [ ] **Phase 5: Controlled Pilot Readiness** - Validate failure behavior, stale sources, authorization boundaries, rollout controls, and operator readiness.
 - [~] **Phase 6: Software and OS Inventory Visibility** - Deliver scoped, evidence-backed OS and installed-software inventory with lifecycle risk and export. *(code-complete; awaiting UAT sign-off)*
-- [ ] **Phase 7: Unified Resource Inventory** - Establish inventory as an independent domain covering every resource family including PaaS, consumed by the semantic graph and other subsystems rather than owned by them.
+- [ ] **Phase 7: Unified Resource Inventory** - Establish Fabric/OneLake-backed inventory as the unified data platform for every resource family including PaaS, consumed by the semantic graph and other subsystems rather than owned by them.
 - [ ] **Phase 8: Resource Identity Plane** - Extend inventory to own complete resource identity — all types, containment hierarchy, raw properties, and watermarks — so Hermes stops querying ARG for resource identity and consumes inventory for discovery and semantic modelling.
 - [ ] **Phase 9: Consumer Pivot** - Repoint API providers, agent queries, and affected web pages at the inventory read port so the UI is powered by unified inventory.
 
@@ -141,22 +141,24 @@ Plans:
 
 ### Phase 7: Unified Resource Inventory
 
-**Goal:** As a platform operator, I want one authoritative inventory covering every Azure resource family including PaaS, owned by the inventory domain itself, so that I can trust a single source of truth that the semantic graph and every other subsystem consumes rather than re-derives.
+**Goal:** As a platform operator, I want one authoritative Fabric/OneLake-backed inventory covering every Azure resource family including PaaS, owned by the inventory domain itself, so that I can trust a single governed source of truth that the semantic graph and every other subsystem consumes rather than re-derives.
 **Requirements**: INV-07, INV-08, INV-09, INV-10
 **Depends on:** Phase 6
-**Plans:** 6 plans
+**Plans:** 6 plans planned; 07-03 replanned after Fabric unified-data-platform pivot; 07-04 through 07-06 still require replan before execution
 Plans:
 
 - [ ] 07-01-PLAN.md — Contract-level characterization suite pinning dataset names, row shapes, and the three high-risk behaviors (hard precondition)
 - [ ] 07-02-PLAN.md — Extract DatasetStore and generation machinery to the neutral storage package, public surface preserved
-- [ ] 07-03-PLAN.md — Invert ownership: inventory acquires, normalizes, retains, statuses, and publishes independently of any graph sync
-- [ ] 07-04-PLAN.md — Add ResourceObservation with lossless properties passthrough and the family registry
-- [ ] 07-05-PLAN.md — Add the PaaS family and replace all-or-nothing availability with per-family availability
-- [ ] 07-06-PLAN.md — Define the scope-enforced read port, migrate the cross-domain consumer, and close Phase 7 exit criteria
+- [ ] 07-03-PLAN.md — Fabric-backed ownership inversion and inventory publication contracts
+- [!] 07-04-PLAN.md — Replan required to align `ResourceObservation` serialization with Fabric table/lakehouse contracts
+- [!] 07-05-PLAN.md — Replan required to add PaaS over Fabric-backed family availability
+- [!] 07-06-PLAN.md — Replan required to define read ports over Fabric-backed inventory and close exit criteria
 
 **UI hint:** yes
 
 **Context:** Inventory acquisition, normalization, retention, source status, and publication currently live inside the Hermes ARG connector, while the read model lives in `intelligence/inventory`. The dependency is already inverted — `hermes_arg_connector/inventory_normalize.py` imports its contracts from `intelligence.inventory.models`. Hermes must be a consumer of inventory, never its owner. This coupling is why inventory availability is gated on a semantic-graph sync run and why the inventory API returns `provider_unavailable` until one completes.
+
+**Fabric pivot (2026-08-26):** Fabric/OneLake is now the unified inventory data platform and durable source of truth. The 07-01 characterization baseline and 07-02 neutral storage extraction remain valid. 07-03 has been replanned so inventory writes governed Fabric-backed datasets/tables; 07-04 through 07-06 still need replan before execution so resource contracts, PaaS, availability, and read ports align with that Fabric-backed contract.
 
 PaaS resources are already ingested: `_entity_type_for_resource()` buckets every non-VM/Arc resource into `entities/Resource`. There is no acquisition gap for PaaS, only a projection, ownership, and read-model gap.
 
@@ -164,14 +166,14 @@ PaaS resources are already ingested: `_entity_type_for_resource()` buckets every
 
 **Success Criteria** (what must be TRUE):
 
-  1. Inventory refreshes and publishes its own datasets without a semantic-graph sync run, and the semantic graph reads inventory as a consumer rather than producing it.
+  1. Inventory refreshes and publishes its own Fabric/OneLake-backed datasets/tables without a semantic-graph sync run, and the semantic graph reads inventory as a consumer rather than producing it.
   2. Operators can inspect PaaS inventory grouped by resource type and SKU/tier, with the same scope enforcement, evidence, freshness, and pagination guarantees as OS and software inventory.
   3. A missing or degraded inventory family reports as partial for that family only, while every other family continues to serve.
   4. A single scope-enforced cross-family inventory read answers "what resources exist in this scope" for both the API and internal subsystems, with no consumer reading raw inventory datasets directly.
   5. Existing OS and software inventory behavior, dataset names, row shapes, and the failed-refresh retention rule are preserved without regression.
   6. Every consumer of `inventory/*` datasets reads through the inventory read port instead — specifically the one cross-domain read at `hermes_arg_connector/service.py:116` — with no direct dataset reads remaining outside the inventory domain. *(Broader consumer pivot — Hermes identity acquisition, API providers, web — is Phases 8 and 9.)*
 
-**Sequencing note:** Ownership inversion must precede family expansion. Extract shared dataset/generation machinery to a neutral module, move normalization and acquisition into the inventory domain, and make inventory publish its own datasets before adding the PaaS family or the generalized resource observation contract. Adding families first would deepen the coupling this phase removes. Consumer migration — including the Hermes side — comes last, once the read port is stable: **characterize → extract → invert → expand → migrate consumers**.
+**Sequencing note:** Ownership inversion must precede family expansion, but the inversion now targets Fabric/OneLake as the authoritative data platform. Extract shared dataset/generation machinery to a neutral module, define Fabric-backed inventory publication contracts, move normalization and acquisition into the inventory domain, and make inventory publish its own Fabric-backed datasets before adding the PaaS family or the generalized resource observation contract. Adding families first would deepen the coupling this phase removes. Consumer migration — including the Hermes side — comes last, once the read port is stable: **characterize → extract → Fabric-backed invert → expand → migrate consumers**.
 
 **Entry gate: WAIVED by operator decision (2026-08-26).** The prior gate required Phase 6 UAT against live Azure before starting. The operator waived it on the grounds that Phase 7 relocates the very pipeline that UAT would exercise, making a pre-Phase-7 run largely disposable. Phase 6 UAT is therefore **not cancelled — it is deferred and folded into Phase 7's exit criteria**, paid once against the final pipeline instead of twice.
 
