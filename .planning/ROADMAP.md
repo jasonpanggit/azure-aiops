@@ -116,7 +116,7 @@ Plans:
 | 4. Domain Coverage and Operational Twin | 0/TBD | Not started | - |
 | 5. Controlled Pilot Readiness | 0/TBD | Not started | - |
 | 6. Software and OS Inventory Visibility | 9/9 | Code-complete, UAT pending | - |
-| 7. Unified Resource Inventory | 5/6 | In Progress|  |
+| 7. Unified Resource Inventory | 6/6 | In Progress|  |
 | 8. Resource Identity Plane | 0/TBD | Not started | - |
 | 9. Consumer Pivot | 0/TBD | Not started | - |
 
@@ -144,7 +144,7 @@ Plans:
 **Goal:** As a platform operator, I want one authoritative Fabric/OneLake-backed inventory covering every Azure resource family including PaaS, owned by the inventory domain itself, so that I can trust a single governed source of truth that the semantic graph and every other subsystem consumes rather than re-derives.
 **Requirements**: INV-07, INV-08, INV-09, INV-10
 **Depends on:** Phase 6
-**Plans:** 5/6 plans executed planned; 07-03 through 07-06 replanned after Fabric unified-data-platform pivot and ready for execution starting at 07-03
+**Plans:** 6/6 plans executed planned; 07-03 through 07-06 replanned after Fabric unified-data-platform pivot and ready for execution starting at 07-03
 Plans:
 
 - [x] 07-01-PLAN.md — Contract-level characterization suite pinning dataset names, row shapes, and the three high-risk behaviors (hard precondition)
@@ -152,7 +152,7 @@ Plans:
 - [x] 07-03-PLAN.md — Fabric-backed ownership inversion and inventory publication contracts
 - [x] 07-04-PLAN.md — Fabric-aligned `ResourceObservation`, payload serialization, API redaction, and family registry
 - [x] 07-05-PLAN.md — PaaS family and per-family availability over Fabric-backed inventory contracts
-- [ ] 07-06-PLAN.md — Fabric-backed read port, direct-read/Hermes ownership guards, and Phase 7 exit evidence
+- [x] 07-06-PLAN.md — Fabric-backed read port, direct-read/Hermes ownership guards, and Phase 7 exit evidence
 
 **UI hint:** yes
 
