@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 1
 current_phase_name: Unified Resource Inventory
 status: executing
-stopped_at: Completed 07-03-PLAN.md
-last_updated: "2026-08-26T07:01:30.267Z"
+stopped_at: Completed 07-04-PLAN.md
+last_updated: "2026-08-26T07:07:05.806Z"
 last_activity: 2026-08-26
 last_activity_desc: Operator pivoted Phase 7 after neutral storage extraction. Fabric/OneLake is now the unified inventory data platform and authoritative persistence boundary; 07-03 through 07-06 have been replanned around Fabric-backed inventory contracts, PaaS, per-family availability, and read-port-only consumption.
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 19
-  completed_plans: 15
+  completed_plans: 16
 ---
 
 # Project State
@@ -32,7 +32,7 @@ Plan: 2 of 2 in current phase
 Status: Phase complete — ready for verification
 Last activity: 2026-08-23 — Created brownfield MVP roadmap with complete v1 requirement coverage.
 
-Progress: ██░░░░░░░░ [████████░░] 79%
+Progress: ██░░░░░░░░ [████████░░] 84%
 
 ## Performance Metrics
 
@@ -72,6 +72,7 @@ Progress: ██░░░░░░░░ [████████░░] 79%
 | Phase 07 P01 | 35min | 3 tasks | 7 files |
 | Phase 07 P02 | 8min | 2 tasks | 26 files |
 | Phase 07-unified-resource-inventory P03 | 11min | 5 tasks | 21 files |
+| Phase 07-unified-resource-inventory P04 | 7min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -143,6 +144,7 @@ Recent decisions affecting current work:
 - [Phase 7/8/9]: Split the system-wide pivot into three phases rather than one. Inverting ownership, redefining the resource contract, and rewiring consumers simultaneously — with no verified live baseline — is the failure mode the waived gate was meant to prevent.
 - [Phase ?]: Phase 7 Plan 03 selected new-fabric-names-with-adapter for inventory Fabric tables while preserving inventory/* compatibility aliases.
 - [Phase ?]: Phase 7 Plan 03 made DatasetStore compatibility/local staging while InventoryPipeline owns refresh and Fabric-backed publication.
+- [Phase ?]: Phase 7 Plan 04 stores ResourceObservation provider payloads as canonical provider_payload_json in Fabric while keeping API payloads redacted.
 
 ### Roadmap Evolution
 
@@ -177,6 +179,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-26T07:01:30.258Z
-Stopped at: Completed 07-03-PLAN.md
+Last session: 2026-08-26T07:07:05.783Z
+Stopped at: Completed 07-04-PLAN.md
 Resume file: None
