@@ -365,6 +365,7 @@ export type ErrorCode =
   | "ambiguous_subject"
   | "not_implemented"
   | "upstream_unavailable"
+  | "provider_unavailable"
   | "secret_unavailable"
   | "internal_error";
 

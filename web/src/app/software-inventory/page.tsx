@@ -10,6 +10,7 @@ import { useApi } from "@/hooks/useApi";
 import { downloadCsv, serializeCsv } from "@/lib/csv";
 import { useScope } from "@/lib/scope-context";
 import { inventoryApi } from "@/lib/services";
+import { ApiError } from "@/lib/types";
 import type {
   Envelope,
   InventorySourceStatus,
@@ -61,6 +62,36 @@ function safeFilenamePart(value: string): string {
   return value.trim().replace(/[^a-z0-9._-]+/gi, "_").replace(/^[._-]+|[._-]+$/g, "") || "software";
 }
 
+function isInventoryProviderUnavailable(error: Error | ApiError | null): error is ApiError {
+  return (
+    error instanceof ApiError &&
+    error.code === "provider_unavailable" &&
+    error.details?.capability === "inventory"
+  );
+}
+
+function inventoryUnavailableMessage(error: Error | ApiError): string {
+  if (!isInventoryProviderUnavailable(error)) return error.message;
+  return "The API has no active inventory snapshot. Run the ARG/Log Analytics inventory ingestion job with `uv run hermes-arg sync --config config.yaml`, or set `HERMES_INVENTORY_FIXTURE` for local demo data. Installed Software also requires server-owned Log Analytics workspace mappings for ConfigurationData.";
+}
+
+function InventorySetupHint({ error }: { error: Error | ApiError | null }) {
+  if (!isInventoryProviderUnavailable(error)) return null;
+  return (
+    <StatePanel
+      title="Inventory data is not loaded"
+      message="You do not need the Hermes semantic graph or operations agent. The Software Inventory page needs the ARG/Log Analytics inventory ingestion job to publish an inventory generation; installed software additionally needs ConfigurationData workspace mappings."
+      tone="error"
+      action={(
+        <div className="setup-hint">
+          <code>uv run hermes-arg sync --config config.yaml</code>
+          <span className="muted">Local demo alternative: set HERMES_INVENTORY_FIXTURE=tests/fixtures/mock_inventory_arg.json before starting the API.</span>
+        </div>
+      )}
+    />
+  );
+}
+
 function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Envelope<InventoryNarrative>>> }) {
   return (
     <section aria-label="Inventory risk narrative" className="detail-panel">
@@ -78,7 +109,7 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
         <StatePanel title="Loading risk narrative" message="Summarizing scoped inventory aggregates." tone="loading" />
       )}
       {narrative.error && (
-        <StatePanel title="Risk narrative unavailable" message={narrative.error.message} tone="error" />
+        <StatePanel title="Risk narrative unavailable" message={inventoryUnavailableMessage(narrative.error)} tone="error" />
       )}
       {narrative.data && (
         <>
@@ -345,6 +376,7 @@ export default function SoftwareInventoryPage() {
       </div>
 
       <NarrativePanel narrative={narrative} />
+      <InventorySetupHint error={inventory.error ?? softwareInventory.error ?? mappings.error ?? narrative.error} />
 
       {tab === "software" ? (
         <section id="installed-software-panel" role="tabpanel" aria-labelledby="installed-software-tab" tabIndex={0}>
@@ -396,7 +428,7 @@ export default function SoftwareInventoryPage() {
             <StatePanel title="Loading installed software" message="Reading ConfigurationData observations." tone="loading" />
           )}
           {softwareInventory.error && (
-            <StatePanel title="Installed software unavailable" message={softwareInventory.error.message} tone="error" />
+            <StatePanel title="Installed software unavailable" message={inventoryUnavailableMessage(softwareInventory.error)} tone="error" />
           )}
           {!softwareInventory.loading && !softwareInventory.error && softwareGroups.length === 0 && (
             <StatePanel title="No installed software observations" message="The authorized scope has no successful ConfigurationData rows." />
@@ -605,7 +637,7 @@ export default function SoftwareInventoryPage() {
 
           {inventory.loading && <StatePanel title="Loading OS inventory" message="Reading the active immutable generation." tone="loading" />}
           {inventory.error && (
-            <StatePanel title="OS inventory unavailable" message={inventory.error.message} tone="error" />
+            <StatePanel title="OS inventory unavailable" message={inventoryUnavailableMessage(inventory.error)} tone="error" />
           )}
           {!inventory.loading && !inventory.error && groups.length === 0 && (
             <StatePanel title="No OS observations" message="The authorized scope has no published OS inventory rows." />

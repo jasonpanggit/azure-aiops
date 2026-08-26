@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
+import { ApiError } from "@/lib/types";
 
 const { os, osGroup, software, softwareGroup, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } = vi.hoisted(() => ({
   os: vi.fn(),
@@ -319,5 +320,25 @@ describe("Software Inventory OS tracer", () => {
     expect(screen.getByText(/Log Analytics · ready/)).toBeInTheDocument();
     expect(screen.getByText("prod")).toBeInTheDocument();
     expect(screen.getByText("sub-a")).toBeInTheDocument();
+  });
+
+  it("explains how to load inventory when the API provider has no snapshot", async () => {
+    const unavailable = new ApiError(
+      503,
+      "provider_unavailable",
+      "The inventory provider is unavailable",
+      { capability: "inventory", provider_state: "unavailable" },
+    );
+    os.mockRejectedValue(unavailable);
+    software.mockRejectedValue(unavailable);
+    narrative.mockRejectedValue(unavailable);
+    mappings.mockRejectedValue(unavailable);
+
+    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+
+    expect(await screen.findByText("Inventory data is not loaded")).toBeInTheDocument();
+    expect(screen.getByText(/You do not need the Hermes semantic graph or operations agent/)).toBeInTheDocument();
+    expect(screen.getByText("uv run hermes-arg sync --config config.yaml")).toBeInTheDocument();
+    expect(screen.getByText(/HERMES_INVENTORY_FIXTURE=tests\/fixtures\/mock_inventory_arg.json/)).toBeInTheDocument();
   });
 });
