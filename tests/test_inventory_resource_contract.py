@@ -76,7 +76,7 @@ def test_resource_observation_round_trips_nested_payload_via_jsonl_and_parquet(
         run_metadata={"runId": "run-1", "status": "completed"},
     )
 
-    jsonl_rows = store.read_dataset("inventory/resource_observations")
+    jsonl_rows = store.read_dataset(table_name)
     parquet_rows = pq.read_table(
         (tmp_path / "current" / table_name).with_suffix(".parquet")
     ).to_pylist()
@@ -228,7 +228,7 @@ def test_default_family_registry_binds_current_families_to_fabric_contracts() ->
     registry = default_inventory_registry()
     os_family = registry.family("os")
     software_family = registry.family("software")
-    resource_family = registry.family("resource")
+    resource_family = registry.family("paas")
 
     assert os_family.logical_dataset == "inventory/os_observations"
     assert os_family.status_dataset == "inventory/source_status"
