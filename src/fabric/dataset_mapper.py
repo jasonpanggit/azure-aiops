@@ -234,7 +234,7 @@ class InventoryDatasetMapper:
         only bare local-path callers (e.g. CLI/tests) may omit it.
         """
         if fs is None:
-            from hermes_arg_connector.fs import resolve_fs
+            from storage.fs import resolve_fs
 
             fs, root = resolve_fs(str(snapshot))
         else:

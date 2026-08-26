@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from hermes_arg_connector.fs import join_root, resolve_root
+from storage.fs import join_root, resolve_root
 from ontology.subscription_connection import SubscriptionConnection, SyncState
 
 DEFAULT_STALE_AFTER_HOURS = 24

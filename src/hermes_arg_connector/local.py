@@ -22,7 +22,7 @@ from ontology.subscription_connection import (
 )
 
 from .config import ConnectorConfig
-from .fs import join_root
+from storage.fs import join_root
 from .service import IngestionService
 
 DEFAULT_LOCAL_CONNECTION_ID = "local-demo"

@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from hermes_arg_connector.fs import ONELAKE_HOST, is_onelake_uri
+from storage.fs import ONELAKE_HOST, is_onelake_uri
 
 try:  # pragma: no cover - azure-core is always installed alongside adlfs
     from azure.core.exceptions import HttpResponseError, ResourceNotFoundError

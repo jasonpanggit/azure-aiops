@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+
+from storage.fs import is_onelake_uri
 
 
 class ContextQueryService:
@@ -15,16 +16,16 @@ class ContextQueryService:
     )
 
     def __init__(self, output_dir: str) -> None:
-        self._is_local = urlparse(str(output_dir)).scheme not in ("abfss", "abfs", "az")
+        self._is_local = not is_onelake_uri(output_dir)
         if self._is_local:
             # Preserve the original local behaviour, including the symlink
             # containment checks in `_load` below.
             self.root = Path(output_dir).expanduser().resolve()
             self.current = self.root / "current"
         else:
-            # Remote (ADLS Gen2) root: no symlinks, delegate to DatasetStore's
+            # OneLake root: no symlinks, delegate to DatasetStore's
             # `current.json` pointer mechanism instead.
-            from .storage import DatasetStore
+            from storage.datasets import DatasetStore
 
             self._store = DatasetStore(output_dir)
 

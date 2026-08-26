@@ -107,9 +107,9 @@ def hermes_home() -> Path | str:
     ``abfss://<container>@<account>.dfs.core.windows.net/<path>`` URI to
     persist synced dataset snapshots in Azure Data Lake Storage Gen2 instead
     -- the same `DatasetStore`/`InventoryDatasetMapper` code path handles
-    both transparently (see `hermes_arg_connector.fs`).
+    both transparently (see `storage.fs`).
     """
-    from hermes_arg_connector.fs import resolve_root
+    from storage.fs import resolve_root
 
     return resolve_root(os.environ.get(ENV_HOME) or str(Path.home() / ".hermes"))
 
@@ -209,7 +209,7 @@ def _onboarding_service() -> SubscriptionOnboardingService:
 def _connection_dataset_dir(root: str, connection_id: str) -> str:
     """Mirror `ConnectionSyncCoordinator.connection_output_dir()` without
     constructing a full sync coordinator just to resolve a path."""
-    from hermes_arg_connector.fs import join_root
+    from storage.fs import join_root
 
     return join_root(root, "connections", _slug(connection_id))
 
@@ -262,7 +262,7 @@ def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
     so repeated calls (notably the health probe, hit every ~10s) don't each
     perform a fresh remote ADLS read.
     """
-    from hermes_arg_connector.storage import DatasetStore
+    from storage.datasets import DatasetStore
 
     root = hermes_home()
     cache_key = str(root)
@@ -917,7 +917,7 @@ def _runtime_metadata(
 
 def _load_inventory_service() -> Any:
     """Load inventory only from an active generation (or explicit fixture)."""
-    from hermes_arg_connector.storage import DatasetStore
+    from storage.datasets import DatasetStore
     from intelligence.inventory.mapping_repository import SoftwareMappingRepository
     from intelligence.inventory.service import InventoryService
 

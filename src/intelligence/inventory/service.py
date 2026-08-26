@@ -10,7 +10,7 @@ from typing import Any
 
 from api.evidence import Evidence
 from api.scope import Scope, scope_attributes
-from hermes_arg_connector.storage import DatasetStore
+from storage.datasets import DatasetStore
 from intelligence.lifecycle import EOLCatalog
 
 from .eol_review import EOLReviewService

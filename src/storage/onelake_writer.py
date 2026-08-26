@@ -10,7 +10,7 @@ from typing import Any
 from azure.core.exceptions import ResourceExistsError
 from azure.storage.filedatalake import DataLakeLeaseClient, DataLakeServiceClient
 
-from hermes_arg_connector.locking import RunLock
+from storage.locking import RunLock
 
 LAKEHOUSE_FOLDERS = (
     "bronze/resources",

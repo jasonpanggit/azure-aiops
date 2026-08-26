@@ -6,13 +6,13 @@ from datetime import UTC, datetime
 
 from .azure import AzureCliArgClient, AzureMcpClient
 from .config import ConnectorConfig
-from .locking import RunLock
 from .logs import AzureMonitorLogsClient
 from .normalize import Normalizer
 from .queries import QueryCatalog
 from .source import AzureResourceGraphSource
 from .state import StateStore
 from .storage import DatasetStore
+from storage.locking import RunLock
 
 
 class IngestionService:

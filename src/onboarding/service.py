@@ -13,7 +13,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from hermes_arg_connector.fs import resolve_root
+from storage.fs import resolve_root
 from ontology.subscription_connection import (
     BusinessServiceLinkage,
     CredentialReference,

@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from hermes_arg_connector.normalize import ENTITY_TYPES, NormalizedGraph
-from hermes_arg_connector.storage import DatasetStore
+from hermes_arg_connector.ontology import generate_ontology_metadata
 from onboarding.service import SubscriptionOnboardingService
+from storage.datasets import DatasetStore
 
 
 def publish_combined_snapshot(
@@ -102,8 +103,13 @@ def publish_combined_snapshot(
     )
     now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     run_id = f"activation-{uuid.uuid4()}"
+    datasets = {
+        **{f"entities/{entity_type}": rows for entity_type, rows in graph.entities.items()},
+        "relationships/relationships": graph.relationships,
+        "changes/resource_changes": graph.changes,
+    }
     return DatasetStore(target_root).publish(
-        graph,
+        datasets,
         {},
         {
             "runId": run_id,
@@ -114,6 +120,7 @@ def publish_combined_snapshot(
             "sourceConnectionIds": sorted(connection_ids),
             "sourceRunIds": sorted(source_runs),
         },
+        ontology=generate_ontology_metadata(graph.entities),
     )
 
 

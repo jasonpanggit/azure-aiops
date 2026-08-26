@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from api.scope import Scope, scope_attributes
-from hermes_arg_connector.storage import DatasetStore
+from hermes_arg_connector.ontology import generate_ontology_metadata
+from storage.datasets import DatasetStore
 
 from .materializer import materialize_graph
 from .models import AuditEvent, stable_id
@@ -36,7 +37,17 @@ class SituationStore:
         )
         for name, rows in generated.items():
             setattr(graph, name, rows)
-        return self.datasets.publish(graph, query_results, run_metadata)
+        datasets = {
+            f"situations/{name}": list(rows)
+            for name, rows in generated.items()
+        }
+        entities = getattr(graph, "entities", {})
+        return self.datasets.publish(
+            datasets,
+            query_results,
+            run_metadata,
+            ontology=generate_ontology_metadata(entities),
+        )
 
     def provider(self) -> SituationReadProvider:
         return SituationReadProvider(self.datasets)

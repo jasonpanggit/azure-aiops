@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 7
 current_phase_name: Unified Resource Inventory
 status: executing
-stopped_at: Phase 7 plan 01 complete — inventory characterization suite committed; ready for 07-02 storage extraction
-last_updated: "2026-08-26T06:02:02.000Z"
+stopped_at: Phase 7 plan 02 complete — neutral DatasetStore extraction committed; ready for 07-03 publication safety and ownership inversion
+last_updated: "2026-08-26T06:09:48.000Z"
 last_activity: 2026-08-26
-last_activity_desc: Completed Phase 7 plan 01 characterization suite. Added a single inventory refresh harness seam, golden published rows, failed-refresh retention tests, pagination/evidence/source-status assertions, and recorded that no inventory timestamp/watermark preservation behavior exists today.
+last_activity_desc: Completed Phase 7 plan 02 neutral storage extraction. DatasetStore now lives in storage.datasets with mapping-based publish and caller-supplied ontology; Hermes keeps a compatibility graph-publish shim. Shared OneLake fs and run-lock helpers moved into storage so the neutral package has no Hermes imports.
 progress:
   total_phases: 9
   completed_phases: 1
   total_plans: 18
-  completed_plans: 13
+  completed_plans: 14
 ---
 
 # Project State
@@ -70,6 +70,7 @@ Progress: ██░░░░░░░░ [█████████░] 92%
 | Phase 06 P08 | 7min | 2 tasks | 10 files |
 | Phase 06 P09 | 13min | 2 tasks | 8 files |
 | Phase 07 P01 | 35min | 3 tasks | 7 files |
+| Phase 07 P02 | 8min | 2 tasks | 26 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,8 @@ Recent decisions affecting current work:
 - [Phase 7]: Golden rows and key sets are captured as source literals, never derived from `to_dict()` of the object under test. A self-referential assertion moves with the refactor and can never fail.
 - [Phase 7]: 07-01 completed the contract characterization baseline. The test suite now pins the four published inventory dataset names, representative golden machine/software rows, source-status key shapes, group keys, evidence fields, failed-refresh retention, successful empty refresh, no pre-generation snapshot, and pagination behavior.
 - [Phase 7]: Empirical preservation finding from 07-01: inventory timestamp/watermark preservation does not exist today; `inventory/software_source_status` has no `watermark`, and inventory created/observed timestamps are regenerated per run. 07-03 task 2's preservation requirement is therefore dropped unless new behavior is intentionally introduced.
+- [Phase 7]: 07-02 moved immutable dataset publication into neutral `storage.datasets.DatasetStore`. The neutral store takes explicit dataset mappings and caller-supplied ontology metadata, and imports no Hermes modules. `hermes_arg_connector.storage.DatasetStore` remains as the graph-shaped compatibility shim for Hermes until ownership inversion.
+- [Phase 7]: Shared OneLake filesystem and run-lock helpers now live in `storage.fs`, `storage.onelake_fs`, and `storage.locking`; old Hermes paths are compatibility re-exports.
 - Build on existing FastAPI, Next.js, OneLake/Delta, Fabric, Entra, and Terraform foundations.
 - Sequence evidence and approval before any write adapter; keep remediation typed, allowlisted, bounded, and human-approved.
 - Treat Fabric Ontology as a projection and Azure services as systems of record.
@@ -144,7 +147,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- Execute Phase 7 plan 02: extract neutral DatasetStore storage without changing the 07-01 characterization assertions.
+- Execute Phase 7 plan 03: fix publication hash-state safety and invert inventory publication ownership.
 - Deferred to Phase 7 exit: authenticated Azure/ARG/LAW walkthrough, healthy/failed workspace refresh, unknown-OS lifecycle review, exact software/version search, EOL citation review, browser UX/accessibility.
 - Triage the pre-existing `web/src/app/compliance/page.test.tsx` failure so full-suite green is a usable signal during Phase 7.
 - Configure `APPROVED_SEARCH_API_ENDPOINT` / `APPROVED_SEARCH_API_KEY` if the third EOL source is operationally required.

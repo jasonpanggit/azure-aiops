@@ -11,6 +11,7 @@ import pytest
 
 from hermes_arg_connector.normalize import Normalizer
 from hermes_arg_connector.storage import DatasetStore
+from storage.datasets import DatasetStore as NeutralDatasetStore
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
 
@@ -53,6 +54,16 @@ def test_store_can_retain_raw_queries_when_explicitly_enabled(tmp_path: Path) ->
     DatasetStore(tmp_path, retain_raw_queries=True).publish(graph, payload, {"runId": "raw-run"})
 
     assert (tmp_path / "current/queries/resources.jsonl").exists()
+
+
+def test_generation_written_through_hermes_shim_reads_through_neutral_store(tmp_path: Path) -> None:
+    payload = json.loads(FIXTURE.read_text())
+    graph = Normalizer().normalize(payload, datetime(2026, 8, 17, tzinfo=UTC))
+
+    DatasetStore(tmp_path).publish(graph, payload, {"runId": "compat-run"})
+
+    rows = NeutralDatasetStore(tmp_path).read_dataset("entities/VirtualMachine")
+    assert rows[0]["id"].endswith("/virtualmachines/vm-prod-01")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not enforced on Windows")
