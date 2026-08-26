@@ -375,7 +375,7 @@ Nyquist validation is enabled because `.planning/config.json` has `"nyquist_vali
 
 ### Phase Decisions → Test Map
 
-There are no Phase 6 requirement IDs in `REQUIREMENTS.md`; the roadmap marks Phase 6 requirements as TBD. The locked decision IDs are therefore the implementation acceptance map. [VERIFIED: .planning/ROADMAP.md:115-124, quote: "`### Phase 6: Software and OS Inventory Visibility`" ... "`**Requirements**: TBD`"]
+Phase 6 is additive to the original v1 requirement set: the planning pass adds inventory-specific `INV-01` through `INV-06` IDs to `REQUIREMENTS.md`, maps them to this phase, and retains D-01 through D-16 as the detailed acceptance decisions. [VERIFIED: .planning/ROADMAP.md:115-124, updated planning traceability]
 
 | Decision | Behavior | Test type | Automated command | File exists? |
 |---|---|---|---|---|
@@ -468,32 +468,27 @@ The requested Phase 6 scope does not authorize acting on Phase 1 blockers. The c
 | A5 | AI web/LLM search can be supplied through an optional server-side adapter without changing the Foundry narration boundary. | Pattern 6/7 | D-14 may need a separate approved search integration and human checkpoint. |
 | A6 | Ambiguous software normalization mappings should be reviewable rather than silently merged. | Pattern 7; Pitfall 7 | Counts may remain fragmented until a mapping is approved, but silent false merges are worse. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Which Log Analytics workspace(s) contain CTI `ConfigurationData` for each subscription/connection?**
-   - What we know: CTI stores inventory in a connected workspace and the Logs API is workspace-ID based. [VERIFIED: Microsoft Learn, https://learn.microsoft.com/en-us/azure/azure-change-tracking-inventory/overview-monitoring-agent] [VERIFIED: Microsoft Learn, https://learn.microsoft.com/en-us/azure/azure-monitor/logs/api/overview]
-   - What's unclear: The current connection contract has subscription/tenant/credential but no workspace identifier. [VERIFIED: src/api/models.py:107-114, quote: "`subscription_id` ... `tenant_id` ... `credential` ... `metadata`"]
-   - Recommendation: Make workspace IDs explicit configuration and fail that source as unavailable when absent; do not discover arbitrary workspaces from browser input. [ASSUMED]
+1. **Which Log Analytics workspace(s) contain CTI `ConfigurationData` for each subscription/connection? — Resolved**
+   - Decision: Make workspace IDs explicit server-side connection configuration (supporting one or more workspaces), query only those workspaces, and report the software source as unavailable with actionable evidence when configuration is absent. Browser input never selects arbitrary workspaces. This is recorded in plans 06-02 and 06-03.
+   - Evidence: CTI stores inventory in a connected workspace and the Logs API is workspace-ID based. [VERIFIED: Microsoft Learn, https://learn.microsoft.com/en-us/azure/azure-change-tracking-inventory/overview-monitoring-agent] [VERIFIED: Microsoft Learn, https://learn.microsoft.com/en-us/azure/azure-monitor/logs/api/overview] The current connection contract has subscription/tenant/credential/metadata. [VERIFIED: src/api/models.py:107-114]
 
-2. **What native VM source will supply an EOL-matchable release version?**
-   - What we know: Official ARG examples expose `osType` and image-reference fields; Arc exposes `osName/osVersion/osSku`. [VERIFIED: Microsoft Learn, https://learn.microsoft.com/en-us/azure/virtual-machines/resource-graph-samples] [VERIFIED: Microsoft Learn, https://learn.microsoft.com/en-us/azure/azure-arc/servers/resource-graph-samples]
-   - What's unclear: Whether the pilot tenant has guest inventory for native VMs or only image metadata.
-   - Recommendation: Plan native rows with explicit unknown/review state and add fixture/tenant validation before claiming complete native EOL coverage. [ASSUMED]
+2. **What native VM source will supply an EOL-matchable release version? — Resolved**
+   - Decision: Use native VM image metadata and `osDisk.osType` when present, but never infer an installed release version from incomplete image data. Native rows without a defensible release remain `Unknown`/review-required; Arc rows use `osName`, `osVersion`, and `osSku`. The UI and tests explicitly preserve this state rather than claiming complete native EOL coverage. This is recorded in plans 06-01 and 06-03.
+   - Evidence: [VERIFIED: Microsoft Learn, https://learn.microsoft.com/en-us/azure/virtual-machines/resource-graph-samples] [VERIFIED: Microsoft Learn, https://learn.microsoft.com/en-us/azure/azure-arc/servers/resource-graph-samples]
 
-3. **Should catalog review updates use the existing Fabric metadata table, a governed JSON file, or a new durable store?**
-   - What we know: Existing sync persists `metadata_lifecycle_catalog`, while `EOLCatalog` loads from a file/default and validates rows. [VERIFIED: src/fabric/sync_service.py:611-660, quote: "`metadata.append({**base, **entry})`"] [VERIFIED: src/api/runtime.py:512-527, quote: "`EOLCatalog.from_file` ... `EOLCatalog.default`"]
-   - What's unclear: D-06 requires a static table read at request time, while an API confirmation needs durable mutation and concurrency.
-   - Recommendation: Choose one server-side authoritative store during planning, wrap it behind a catalog repository interface, and preserve the existing row schema/citations. [ASSUMED]
+3. **Should catalog review updates use the existing Fabric metadata table, a governed JSON file, or a new durable store? — Resolved**
+   - Decision: Keep the curated catalog as the request-time source of truth behind a server-owned catalog repository interface, backed by the existing governed lifecycle catalog persistence path. Operator confirmations use scoped mutation with optimistic revision checks, preserve row schema/citations, and emit audit events. No browser-writable JSON or parallel lifecycle schema is introduced. This is recorded in plan 06-05.
+   - Evidence: Existing sync persists `metadata_lifecycle_catalog`; `EOLCatalog` loads and validates rows. [VERIFIED: src/fabric/sync_service.py:611-660] [VERIFIED: src/api/runtime.py:512-527]
 
-4. **Which web/LLM search provider is approved for D-14?**
-   - What we know: The local GSD research environment had no configured search MCP/provider and the existing Foundry agent is a narration client, not a web-search implementation. [VERIFIED: environment/config probe 2026-08-25] [VERIFIED: src/operations/foundry_agent.py:205-212, quote: "`Invokes a Foundry prompt agent over the data-plane REST API`"]
-   - What's unclear: Whether the deployed environment has an approved web search capability.
-   - Recommendation: Keep a provider interface and an explicit unavailable state; require a human/configuration checkpoint before enabling external search. [ASSUMED]
+4. **Which web/LLM search provider is approved for D-14? — Resolved**
+   - Decision: Do not hard-code an external provider. Define a server-side `EOLCandidateResolver` interface with independently configured endoflife.date, bounded official-vendor HTTPS fetch, and approved web/LLM adapters. If the web/LLM adapter is not configured or fails, return an explicit unavailable/degraded candidate source while still showing other candidates; operator confirmation remains mandatory. This is recorded in plans 06-06 and 06-07.
+   - Evidence: No search provider is configured locally and the existing Foundry agent is a narration client. [VERIFIED: environment/config probe 2026-08-25] [VERIFIED: src/operations/foundry_agent.py:205-212]
 
-5. **What is the desired semantics for paid support tiers?**
-   - What we know: Existing lifecycle code has explicit `mainstream`/`extended` channels and does not infer paid support from dates. [VERIFIED: src/intelligence/lifecycle/eol_catalog.py:58-75, quote: "`default_support_channel` ... `mainstream` ... `extended`"]
-   - What's unclear: Whether Phase 6's badge should use mainstream EOL, extended EOL, or a per-connection support entitlement.
-   - Recommendation: Reuse the existing catalog support-channel field and show the channel in evidence; do not silently treat paid support as universally available. [VERIFIED: docs/LIFECYCLE_INTELLIGENCE.md:64-68, quote: "`paid Ubuntu ESM and RHEL ELS are never assumed`"]
+5. **What is the desired semantics for paid support tiers? — Resolved**
+   - Decision: Risk badges use the catalog's authoritative support channel and date; the UI displays that channel in evidence and does not infer paid support entitlement. Mainstream/extended semantics remain explicit, and unsupported entitlement is `Unknown`/review-required. This is recorded in plans 06-03 and 06-06.
+   - Evidence: [VERIFIED: src/intelligence/lifecycle/eol_catalog.py:58-75] [VERIFIED: docs/LIFECYCLE_INTELLIGENCE.md:64-68]
 
 ## Sources
 

@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 10
+open_count: 12
 waived_count: 0
 fixed_count: 1
-total_count: 11
-last_updated: 2026-08-25T15:59:08.032Z
+total_count: 13
+last_updated: 2026-08-25T16:25:30.658Z
 ---
 
 # Broken Windows Ledger
@@ -26,6 +26,8 @@ last_updated: 2026-08-25T15:59:08.032Z
 | 9 | 06 | unrun-verify | web/src/app/software-inventory/page.tsx |  | Manual browser walkthrough of /software-inventory was not run; automated page tests cover grouped rows, source warning, review flag, and drill-down. | open |  | 2026-08-25T15:24:07.515Z |  |
 | 10 | 06 | unrun-verify | web/src/app/software-inventory/page.tsx |  | End-of-phase human walkthrough still required: search exact software/version and inspect linked/unlinked environment-bearing details. | open |  | 2026-08-25T15:42:50.255Z |  |
 | 11 | 06 | unrun-verify | web/src/app/software-inventory/page.tsx |  | Human browser walkthrough of healthy and failed workspace refresh was not run in this non-interactive execution. | open |  | 2026-08-25T15:59:08.032Z |  |
+| 12 | 06 | unrun-verify | web/src/app/software-inventory/page.tsx |  | Authenticated browser walkthrough of unknown-OS lifecycle review, candidate inspection, explicit confirmation, refresh persistence, and stale-revision conflict was not run in this non-interactive executor. | open |  | 2026-08-25T16:14:01.600Z |  |
+| 13 | 06 | deviation | src/intelligence/inventory/eol_review.py |  | External web/LLM lifecycle provider remains explicitly unavailable until approved endpoint configuration is supplied. | open |  | 2026-08-25T16:25:30.658Z |  |
 
 ````json
 [
@@ -159,6 +161,30 @@ last_updated: 2026-08-25T15:59:08.032Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-25T15:59:08.032Z",
+    "resolved_at": null
+  },
+  {
+    "id": 12,
+    "kind": "unrun-verify",
+    "phase": "06",
+    "file": "web/src/app/software-inventory/page.tsx",
+    "line": null,
+    "description": "Authenticated browser walkthrough of unknown-OS lifecycle review, candidate inspection, explicit confirmation, refresh persistence, and stale-revision conflict was not run in this non-interactive executor.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-25T16:14:01.600Z",
+    "resolved_at": null
+  },
+  {
+    "id": 13,
+    "kind": "deviation",
+    "phase": "06",
+    "file": "src/intelligence/inventory/eol_review.py",
+    "line": null,
+    "description": "External web/LLM lifecycle provider remains explicitly unavailable until approved endpoint configuration is supplied.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-25T16:25:30.658Z",
     "resolved_at": null
   }
 ]
