@@ -1,0 +1,35 @@
+{
+  "computer_name": "",
+  "days_remaining": null,
+  "environment": "prod",
+  "evidence": [
+    {
+      "observed_at": "2026-08-25T09:58:00Z",
+      "query_version": "inventory-native-vm-os-v1",
+      "source_engine": "Azure Resource Graph",
+      "source_id": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/web-01",
+      "source_table": "Resources"
+    }
+  ],
+  "image_offer": "WindowsServer",
+  "image_publisher": "MicrosoftWindowsServer",
+  "image_sku": "2019-Datacenter",
+  "image_version": "latest",
+  "lifecycle_evidence": [],
+  "lifecycle_status": "Unknown",
+  "machine_name": "web-01",
+  "machine_status": "",
+  "observed_at": "2026-08-25T09:58:00Z",
+  "os_name": "Windows",
+  "os_type": "Windows",
+  "os_version": "Unknown",
+  "query_version": "inventory-native-vm-os-v1",
+  "resource_group": "rg-prod",
+  "resource_id": "/subscriptions/sub-a/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/web-01",
+  "review_required": false,
+  "source_status": "ready",
+  "source_type": "azure_vm",
+  "subscription_id": "sub-a",
+  "support_channel": "",
+  "support_end": null
+}

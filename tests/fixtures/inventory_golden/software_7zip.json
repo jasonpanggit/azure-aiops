@@ -1,0 +1,43 @@
+{
+  "canonical_identity": "7-Zip|19.00",
+  "canonical_name": "7-Zip",
+  "canonical_version": "19.00",
+  "computer": "web-01",
+  "environment": "prod",
+  "evidence": [
+    {
+      "observed_at": "2026-08-25T11:00:00Z",
+      "query_version": "inventory-software-v1",
+      "source_engine": "Azure Monitor Logs",
+      "source_id": "/SUBSCRIPTIONS/SUB-A/RESOURCEGROUPS/RG-PROD/PROVIDERS/MICROSOFT.COMPUTE/VIRTUALMACHINES/WEB-01",
+      "source_table": "ConfigurationData"
+    }
+  ],
+  "join_status": "linked",
+  "machine_name": "web-01",
+  "mapping_confidence": 0,
+  "mapping_id": "",
+  "mapping_method": "",
+  "mapping_provenance": null,
+  "mapping_revision": 0,
+  "mapping_source_timestamp": "",
+  "mapping_status": "",
+  "observed_at": "2026-08-25T11:00:00Z",
+  "publisher": "Igor Pavlov",
+  "raw_identity": {
+    "name": "7-Zip v19.00",
+    "version": "v19.00"
+  },
+  "raw_software_name": "7-Zip v19.00",
+  "raw_software_version": "v19.00",
+  "resource_group": "rg-prod",
+  "resource_id": "/SUBSCRIPTIONS/SUB-A/RESOURCEGROUPS/RG-PROD/PROVIDERS/MICROSOFT.COMPUTE/VIRTUALMACHINES/WEB-01",
+  "resource_join_status": "linked",
+  "software_name": "7-Zip",
+  "software_type": "Package",
+  "software_version": "19.00",
+  "source_computer_id": "agent-web-01",
+  "source_type": "azure_vm",
+  "subscription_id": "sub-a",
+  "time_generated": "2026-08-25T11:00:00Z"
+}

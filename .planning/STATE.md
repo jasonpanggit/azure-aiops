@@ -4,16 +4,16 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 7
 current_phase_name: Unified Resource Inventory
-status: planned
-stopped_at: Phase 7 planned and verified — 6 plans, 19 tasks, ready to execute
-last_updated: "2026-08-26T13:40:00.000Z"
+status: executing
+stopped_at: Phase 7 plan 01 complete — inventory characterization suite committed; ready for 07-02 storage extraction
+last_updated: "2026-08-26T06:02:02.000Z"
 last_activity: 2026-08-26
-last_activity_desc: Planned Phase 7 (6 plans, 19 tasks, 6 sequential waves). Plan-checker found 5 blockers + 5 should-fixes; all resolved and re-verified. Split 07-03 T1 into T1a (publication safety) and T1b (tracer).
+last_activity_desc: Completed Phase 7 plan 01 characterization suite. Added a single inventory refresh harness seam, golden published rows, failed-refresh retention tests, pagination/evidence/source-status assertions, and recorded that no inventory timestamp/watermark preservation behavior exists today.
 progress:
   total_phases: 9
   completed_phases: 1
   total_plans: 18
-  completed_plans: 12
+  completed_plans: 13
 ---
 
 # Project State
@@ -69,6 +69,7 @@ Progress: ██░░░░░░░░ [█████████░] 92%
 | Phase 06 P07 | 9min | 2 tasks | 13 files |
 | Phase 06 P08 | 7min | 2 tasks | 10 files |
 | Phase 06 P09 | 13min | 2 tasks | 8 files |
+| Phase 07 P01 | 35min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -81,6 +82,8 @@ Recent decisions affecting current work:
 - [Phase 7]: Inventory does NOT ride along with `_preserve_created_timestamps` / `_preserve_source_watermarks` — those iterate `graph.source_status`, while inventory status lives on the separate `graph.inventory_software_source_status` (`service.py:122`). The CONTEXT claim was wrong; 07-01 T2 verifies empirically and "no such behavior exists" is a valid recorded outcome rather than a manufactured passing test.
 - [Phase 7]: Characterization tests reach their driver only through a single named seam (`tests/inventory_harness.py`). Without it the suite is coupled to Hermes being the publisher and would need editing during the inversion — the D-05 failure mode.
 - [Phase 7]: Golden rows and key sets are captured as source literals, never derived from `to_dict()` of the object under test. A self-referential assertion moves with the refactor and can never fail.
+- [Phase 7]: 07-01 completed the contract characterization baseline. The test suite now pins the four published inventory dataset names, representative golden machine/software rows, source-status key shapes, group keys, evidence fields, failed-refresh retention, successful empty refresh, no pre-generation snapshot, and pagination behavior.
+- [Phase 7]: Empirical preservation finding from 07-01: inventory timestamp/watermark preservation does not exist today; `inventory/software_source_status` has no `watermark`, and inventory created/observed timestamps are regenerated per run. 07-03 task 2's preservation requirement is therefore dropped unless new behavior is intentionally introduced.
 - Build on existing FastAPI, Next.js, OneLake/Delta, Fabric, Entra, and Terraform foundations.
 - Sequence evidence and approval before any write adapter; keep remediation typed, allowlisted, bounded, and human-approved.
 - Treat Fabric Ontology as a projection and Azure services as systems of record.
@@ -141,8 +144,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- Write characterization tests pinning current inventory dataset names, row shapes, exact joins, source status, and the failed-refresh retention rule. **Hard precondition for Phase 7 step 1** — sole regression net now that the live-baseline gate is waived.
-- Plan Phase 7 (`gsd-plan-phase 7`).
+- Execute Phase 7 plan 02: extract neutral DatasetStore storage without changing the 07-01 characterization assertions.
 - Deferred to Phase 7 exit: authenticated Azure/ARG/LAW walkthrough, healthy/failed workspace refresh, unknown-OS lifecycle review, exact software/version search, EOL citation review, browser UX/accessibility.
 - Triage the pre-existing `web/src/app/compliance/page.test.tsx` failure so full-suite green is a usable signal during Phase 7.
 - Configure `APPROVED_SEARCH_API_ENDPOINT` / `APPROVED_SEARCH_API_KEY` if the third EOL source is operationally required.
