@@ -1,7 +1,7 @@
 # Phase 7 Fabric Pivot
 
 **Date:** 2026-08-26
-**Status:** 07-03 replanned; 07-04 through 07-06 pending replan
+**Status:** 07-03 through 07-06 replanned; remaining phase ready for execution starting at 07-03
 
 ## Decision
 
@@ -15,7 +15,7 @@ Inventory remains the owner of acquisition, normalization, retention, source sta
 - 07-02 neutral storage extraction remains valid shared infrastructure and compatibility work.
 - The original 07-03 was stale because it assumed the next move was DatasetStore-only ownership inversion.
 - 07-03 has been replaced with a Fabric-backed ownership inversion plan covering Fabric table/lakehouse contracts, Fabric sync/quality gates, source status and watermark semantics, and compatibility reads.
-- 07-04 through 07-06 remain stale until replanned around the Fabric-backed contract.
+- 07-04 through 07-06 have been replanned around the Fabric-backed contract: ResourceObservation serialization and family registry, PaaS/per-family availability, and the Fabric-backed read port with no direct external inventory reads or Hermes lifecycle ownership.
 
 ## Replan requirements
 
@@ -26,6 +26,6 @@ Inventory remains the owner of acquisition, normalization, retention, source sta
 5. Ensure PaaS and future resource families land in Fabric-backed inventory from the start.
 6. Define consumer read ports over Fabric-backed inventory rather than direct `inventory/*` dataset reads.
 
-## Blocked stale work
+## Execution readiness
 
-Do not execute any pre-pivot copy of `07-03-PLAN.md`. The current `07-03-PLAN.md` is the Fabric-backed replacement and is the next executable plan. Replan `07-04-PLAN.md` through `07-06-PLAN.md` before executing them.
+Do not execute any pre-pivot copy of Phase 7 plans. The current `07-03-PLAN.md` through `07-06-PLAN.md` are the Fabric-backed replacement sequence and are ready for execution in dependency order starting at `07-03-PLAN.md`.

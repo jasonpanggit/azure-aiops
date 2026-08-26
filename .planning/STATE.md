@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 7
 current_phase_name: Unified Resource Inventory
 status: executing
-stopped_at: Phase 7 plan 03 replanned for Fabric-backed inventory publication; ready to execute the new 07-03
+stopped_at: Phase 7 remaining plans replanned for Fabric-backed inventory; ready to execute starting at the new 07-03
 last_updated: "2026-08-26T06:34:26.000Z"
 last_activity: 2026-08-26
-last_activity_desc: Operator pivoted Phase 7 after neutral storage extraction. Fabric/OneLake is now the unified inventory data platform and authoritative persistence boundary; 07-03 has been rewritten as the Fabric-backed ownership inversion plan.
+last_activity_desc: Operator pivoted Phase 7 after neutral storage extraction. Fabric/OneLake is now the unified inventory data platform and authoritative persistence boundary; 07-03 through 07-06 have been replanned around Fabric-backed inventory contracts, PaaS, per-family availability, and read-port-only consumption.
 progress:
   total_phases: 9
   completed_phases: 1
@@ -150,15 +150,14 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- Execute the replanned Phase 7 plan 03: define Fabric-backed inventory contracts, publish OS/software inventory independently of Hermes, preserve current read contracts, and remove Hermes lifecycle ownership.
-- Replan 07-04 through 07-06 before execution so ResourceObservation, PaaS, availability, and read ports are all Fabric-backed.
+- Execute the replanned Phase 7 sequence starting at 07-03: define Fabric-backed inventory contracts, publish OS/software inventory independently of Hermes, preserve current read contracts, add Fabric-aligned ResourceObservation, add PaaS/per-family availability, and finish with Fabric-backed read-port-only consumption.
 - Deferred to Phase 7 exit: authenticated Azure/ARG/LAW walkthrough, healthy/failed workspace refresh, unknown-OS lifecycle review, exact software/version search, EOL citation review, browser UX/accessibility.
 - Triage the pre-existing `web/src/app/compliance/page.test.tsx` failure so full-suite green is a usable signal during Phase 7.
 - Configure `APPROVED_SEARCH_API_ENDPOINT` / `APPROVED_SEARCH_API_KEY` if the third EOL source is operationally required.
 
 ### Blockers/Concerns
 
-- Phase 7: Existing 07-04 through 07-06 plans were written before the Fabric-as-unified-platform pivot and remain stale until replanned. 07-03 has been rewritten around Fabric.
+- Phase 7: 07-03 through 07-06 have been replanned around the Fabric-as-unified-platform pivot and are ready for execution in dependency order starting at 07-03.
 - Phase 7: Proceeding without a verified live inventory baseline. Live-only regressions introduced by the refactor cannot be distinguished from pre-existing Phase 6 defects. Accepted risk; mitigated by characterization tests rather than empirical comparison.
 - Phase 8: **Contract losslessness is the pivot's single point of failure.** If `ResourceObservation` cannot carry the full raw property bag and per-family watermark semantics, Hermes must keep its own ARG identity path and the pivot cannot complete. Resolve by auditing Hermes's actual reads into `properties` (normalize.py, network_normalize.py, identity specs) *before* fixing the contract shape.
 - Phase 9: Web page impact is unaudited. Pages surfacing resource identity (`services`, `search`, `investigate`, `twin`, `changes`) need review at plan time; the "most pages need no change" expectation rests on route contracts holding.

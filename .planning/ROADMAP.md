@@ -144,21 +144,21 @@ Plans:
 **Goal:** As a platform operator, I want one authoritative Fabric/OneLake-backed inventory covering every Azure resource family including PaaS, owned by the inventory domain itself, so that I can trust a single governed source of truth that the semantic graph and every other subsystem consumes rather than re-derives.
 **Requirements**: INV-07, INV-08, INV-09, INV-10
 **Depends on:** Phase 6
-**Plans:** 6 plans planned; 07-03 replanned after Fabric unified-data-platform pivot; 07-04 through 07-06 still require replan before execution
+**Plans:** 6 plans planned; 07-03 through 07-06 replanned after Fabric unified-data-platform pivot and ready for execution starting at 07-03
 Plans:
 
 - [ ] 07-01-PLAN.md — Contract-level characterization suite pinning dataset names, row shapes, and the three high-risk behaviors (hard precondition)
 - [ ] 07-02-PLAN.md — Extract DatasetStore and generation machinery to the neutral storage package, public surface preserved
 - [ ] 07-03-PLAN.md — Fabric-backed ownership inversion and inventory publication contracts
-- [!] 07-04-PLAN.md — Replan required to align `ResourceObservation` serialization with Fabric table/lakehouse contracts
-- [!] 07-05-PLAN.md — Replan required to add PaaS over Fabric-backed family availability
-- [!] 07-06-PLAN.md — Replan required to define read ports over Fabric-backed inventory and close exit criteria
+- [ ] 07-04-PLAN.md — Fabric-aligned `ResourceObservation`, payload serialization, API redaction, and family registry
+- [ ] 07-05-PLAN.md — PaaS family and per-family availability over Fabric-backed inventory contracts
+- [ ] 07-06-PLAN.md — Fabric-backed read port, direct-read/Hermes ownership guards, and Phase 7 exit evidence
 
 **UI hint:** yes
 
 **Context:** Inventory acquisition, normalization, retention, source status, and publication currently live inside the Hermes ARG connector, while the read model lives in `intelligence/inventory`. The dependency is already inverted — `hermes_arg_connector/inventory_normalize.py` imports its contracts from `intelligence.inventory.models`. Hermes must be a consumer of inventory, never its owner. This coupling is why inventory availability is gated on a semantic-graph sync run and why the inventory API returns `provider_unavailable` until one completes.
 
-**Fabric pivot (2026-08-26):** Fabric/OneLake is now the unified inventory data platform and durable source of truth. The 07-01 characterization baseline and 07-02 neutral storage extraction remain valid. 07-03 has been replanned so inventory writes governed Fabric-backed datasets/tables; 07-04 through 07-06 still need replan before execution so resource contracts, PaaS, availability, and read ports align with that Fabric-backed contract.
+**Fabric pivot (2026-08-26):** Fabric/OneLake is now the unified inventory data platform and durable source of truth. The 07-01 characterization baseline and 07-02 neutral storage extraction remain valid. 07-03 through 07-06 have been replanned so inventory writes governed Fabric-backed datasets/tables, resource contracts serialize safely to Delta/Parquet/Fabric tables, PaaS and per-family availability land on those contracts, and read ports consume Fabric-backed inventory without Hermes lifecycle ownership.
 
 PaaS resources are already ingested: `_entity_type_for_resource()` buckets every non-VM/Arc resource into `entities/Resource`. There is no acquisition gap for PaaS, only a projection, ownership, and read-model gap.
 
