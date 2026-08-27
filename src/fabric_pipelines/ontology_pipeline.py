@@ -36,6 +36,10 @@ from .ontology_fabric_contracts import (
     ONTOLOGY_RELATIONSHIPS_CONTRACT,
     OntologyFabricContract,
 )
+from .relationship_suggestions_contract import (
+    ACCEPTED_SUGGESTION_STATUS,
+    accepted_suggestion_to_relationship_row,
+)
 
 #: Source tag recorded in this pipeline's Fabric run summary -- distinct from
 #: Hermes's own ingestion path so provenance is unambiguous about which arm
@@ -133,12 +137,102 @@ class OntologyOneLakePublisher:
 
 
 @dataclass(frozen=True)
+class RelationshipMergeResult:
+    """Outcome of unioning approved-suggestion relationship rows into the
+    deterministic ``RelationshipBuilder`` output.
+
+    ``conflicts`` records every case where an approved suggestion's content-
+    addressed ``resource_id`` (relationship id) collided with a
+    deterministically-derived relationship for the *same*
+    subject/predicate/object -- per the user's explicit requirement,
+    deterministic always wins in that case; the approved-suggestion version
+    is dropped from ``merged`` but the collision is still reported here so
+    it's visible (e.g. logged, or surfaced in the notebook's run summary)
+    rather than silently discarded."""
+
+    merged: list[dict[str, Any]]
+    approved_count: int
+    conflict_count: int
+    conflicts: list[dict[str, Any]]
+
+
+def merge_approved_relationship_suggestions(
+    deterministic_relationships: list[dict[str, Any]],
+    approved_suggestion_rows: Iterable[Mapping[str, Any]],
+    *,
+    run_id: str,
+) -> RelationshipMergeResult:
+    """Feedback-loop step: folds already-**accepted**
+    ``relationship_suggestions`` rows into the deterministic relationships
+    output, tagged with ``source="data_agent_suggested_approved"``
+    (``relationship_suggestions_contract.APPROVED_SUGGESTION_RELATIONSHIP_SOURCE``)
+    so provenance is never ambiguous.
+
+    This keeps the pipeline fully deterministic/idempotent: given the same
+    deterministic entities/relationships and the same set of accepted
+    suggestion rows, this always produces the same merged output (content-
+    addressed ``relationship_id``s, no randomness, no mutation of either
+    input). Re-running the notebook after a suggestion is accepted simply
+    adds that edge to the graph going forward; re-running it again is a
+    no-op (same accepted row -> same relationship row every time).
+
+    Conflict rule (explicit, non-negotiable per the user's design):
+    deterministic relationships always win. If an approved suggestion's
+    ``(subject_id, predicate, object_id)`` collides with a relationship
+    ``RelationshipBuilder`` already derived (same content-addressed
+    ``relationship_id``), the deterministic row is kept unchanged and the
+    approved-suggestion row is *not* added a second time -- but the
+    collision is recorded in the returned ``conflicts`` list so it's never
+    silently dropped."""
+    caller_expects_only_accepted = [
+        row for row in approved_suggestion_rows if str(row.get("status") or "") == ACCEPTED_SUGGESTION_STATUS
+    ]
+
+    by_relationship_id = {
+        str(row["resource_id"]): row for row in deterministic_relationships
+    }
+    merged = list(deterministic_relationships)
+    conflicts: list[dict[str, Any]] = []
+
+    for suggestion_row in caller_expects_only_accepted:
+        promoted = accepted_suggestion_to_relationship_row(
+            dict(suggestion_row), run_id=run_id
+        )
+        relationship_id = str(promoted["resource_id"])
+        existing = by_relationship_id.get(relationship_id)
+        if existing is not None:
+            conflicts.append(
+                {
+                    "relationship_id": relationship_id,
+                    "subject_id": promoted["subject_id"],
+                    "predicate": promoted["predicate"],
+                    "object_id": promoted["object_id"],
+                    "deterministic_source": existing.get("source"),
+                    "suggestion_id": suggestion_row.get("suggestion_id"),
+                    "resolution": "deterministic_kept",
+                }
+            )
+            continue
+        merged.append(promoted)
+        by_relationship_id[relationship_id] = promoted
+
+    return RelationshipMergeResult(
+        merged=merged,
+        approved_count=len(caller_expects_only_accepted),
+        conflict_count=len(conflicts),
+        conflicts=conflicts,
+    )
+
+
+@dataclass(frozen=True)
 class OntologyPipelineSummary:
     entity_count: int
     relationship_count: int
     entities_write: OntologyTableWrite
     relationships_write: OntologyTableWrite
     ontology_metadata: dict[str, Any]
+    approved_suggestions_merged: int = 0
+    approved_suggestions_conflicts: list[dict[str, Any]] = field(default_factory=list)
 
 
 def run(
@@ -148,15 +242,35 @@ def run(
     onelake: OneLakeWriter,
     timestamp: str = "",
     delta_writer: DeltaWriter | None = None,
+    approved_suggestion_rows: Iterable[Mapping[str, Any]] = (),
 ) -> OntologyPipelineSummary:
     """Notebook entrypoint: derives entities/relationships/ontology metadata
     from ``source_rows`` and writes the entity/relationship tables to the
     lakehouse via the shared Delta writer path, mirroring
     ``topology_pipeline``'s ``run``-shaped notebook cell contract (read via
-    Spark -> pure-Python derive -> write via Delta)."""
+    Spark -> pure-Python derive -> write via Delta).
+
+    ``approved_suggestion_rows`` closes the Data Agent feedback loop
+    (see ``docs/fabric-data-agent-relationship-suggestions.md``): pass in
+    the ``relationship_suggestions`` table's rows (typically read via
+    ``spark.read.table(...).collect()`` and converted to dicts in the
+    notebook cell) and any row already marked
+    ``status="accepted"`` by a human reviewer is folded into this run's
+    relationships output, tagged with a distinct ``source`` so it's never
+    confused with a deterministically-derived edge. Deterministic
+    relationships always win on conflict (see
+    ``merge_approved_relationship_suggestions``). Passing nothing (the
+    default) reproduces the exact deterministic-only behavior this pipeline
+    had before the feedback loop existed -- this parameter is purely
+    additive."""
     entities = derive_entities(source_rows, run_id=run_id, timestamp=timestamp)
     relationships = derive_relationships(entities, run_id)
     metadata = derive_ontology_metadata(entities)
+
+    merge_result = merge_approved_relationship_suggestions(
+        relationships, approved_suggestion_rows, run_id=run_id
+    )
+    relationships = merge_result.merged
 
     publisher = OntologyOneLakePublisher(
         onelake=onelake, delta_writer=delta_writer or DeltaWriter()
@@ -170,6 +284,8 @@ def run(
         entities_write=entities_write,
         relationships_write=relationships_write,
         ontology_metadata=metadata,
+        approved_suggestions_merged=merge_result.approved_count - merge_result.conflict_count,
+        approved_suggestions_conflicts=merge_result.conflicts,
     )
 
 
@@ -178,8 +294,10 @@ __all__ = [
     "OntologyOneLakePublisher",
     "OntologyPipelineSummary",
     "OntologyTableWrite",
+    "RelationshipMergeResult",
     "derive_entities",
     "derive_ontology_metadata",
     "derive_relationships",
+    "merge_approved_relationship_suggestions",
     "run",
 ]

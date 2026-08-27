@@ -96,6 +96,17 @@ def test_build_data_agent_definition_stages_lakehouse_datasource_and_instruction
     assert stage_config_payload["aiInstructions"] == RELATIONSHIP_SUGGESTION_INSTRUCTIONS
     assert "advisory" in RELATIONSHIP_SUGGESTION_INSTRUCTIONS.lower() or "suggest" in RELATIONSHIP_SUGGESTION_INSTRUCTIONS.lower()
 
+    # Discovered live during this session: a datasource with no selected
+    # table elements leaves the agent with nothing to query. Every
+    # datasource this builder produces must select at least one table.
+    assert datasource_payload["elements"], "datasource must select queryable tables"
+    selected_names = {
+        element["display_name"]
+        for element in datasource_payload["elements"]
+        if element["is_selected"]
+    }
+    assert {"ontology_entities", "ontology_relationships"} <= selected_names
+
 
 def test_parse_suggestions_extracts_json_lines_and_ignores_prose():
     response_text = "\n".join(

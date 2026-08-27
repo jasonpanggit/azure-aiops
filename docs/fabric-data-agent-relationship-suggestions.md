@@ -113,10 +113,77 @@ so this collision, while real, turned out not to be the actual blocker.
    via the existing `DeltaWriter` helper — never into
    `ontology_relationships`.
 5. A human reviews `relationship_suggestions` rows (`status =
-   "pending_review"`) and only promotes ones they've validated into the
-   deterministic graph by editing `relationship_builder.py`/
-   `ontology_pipeline.py`'s actual derivation logic — suggestions are never
-   auto-merged.
+   "pending_review"`) and sets `status = "accepted"` on the ones they've
+   validated. See "Feedback loop" below for how accepted rows flow back
+   into the deterministic pipeline — they are never auto-merged, and
+   hand-editing `relationship_builder.py`/`ontology_pipeline.py` is no
+   longer required to incorporate them.
+
+## Feedback loop: accepted suggestions → deterministic graph
+
+The last piece of this design closes the loop so a human-approved
+suggestion becomes part of the graph on the *next* pipeline run, without
+hand-editing code — while keeping the pipeline fully deterministic and
+re-runnable (idempotent), and without ever silently overwriting a
+deterministically-derived edge.
+
+**How it works end to end:**
+
+1. Data Agent suggests a candidate relationship (currently blocked live —
+   see the gap above; the portal chat UI is the fallback path today).
+2. A human reviews rows in `relationship_suggestions` and flips
+   `status` to `"accepted"` for the ones they trust (out of band — e.g. by
+   hand-editing the Delta table, or a future review UI; no such UI exists
+   yet, this is a manual step today).
+3. On the next `ontology_pipeline.run(...)` call, the caller passes the
+   accepted rows via the new `approved_suggestion_rows` parameter (e.g.
+   read straight from the `relationship_suggestions` Delta table, filtered
+   to `status == "accepted"` — the merge function itself also filters
+   defensively, so passing unfiltered rows is safe).
+4. `merge_approved_relationship_suggestions()`
+   (`src/fabric_pipelines/ontology_pipeline.py`) converts each accepted row
+   into a full `ontology_relationships`-shaped row via
+   `accepted_suggestion_to_relationship_row()`
+   (`src/fabric_pipelines/relationship_suggestions_contract.py`), which
+   reuses `RelationshipBuilder`'s own `_relationship_id()`/`stable_version`
+   content-addressing scheme (imported directly, not reimplemented) so the
+   promoted row gets exactly the `resource_id` a deterministic edge for the
+   same subject/predicate/object would get. This is what makes the merge
+   idempotent: re-running with the same accepted suggestion twice produces
+   the identical row both times, not a duplicate.
+5. Every promoted row is tagged `source = "data_agent_suggested_approved"`
+   (distinct from deterministic rows' own `source` values), so the two
+   provenances are never blurred in the authoritative `relationships`
+   output.
+6. **Deterministic wins on conflict, always.** If an accepted suggestion's
+   subject/predicate/object collides with an edge the deterministic
+   pipeline already derived (same content-addressed id), the deterministic
+   row is kept unchanged and the collision is recorded in
+   `RelationshipMergeResult.conflicts` (with the relationship id, both
+   sides' identifying info, and `resolution: "deterministic_kept"`) — never
+   silently dropped, never silently overwritten.
+7. `OntologyPipelineSummary` now reports `approved_suggestions_merged` and
+   `approved_suggestions_conflicts` alongside the existing entity/
+   relationship counts, so every pipeline run's summary makes the merge
+   outcome visible.
+
+**What's real vs. what's still manual:**
+
+| Step | Status |
+| --- | --- |
+| Promoting an accepted suggestion row into a relationship-shaped row with correct content-addressed id | **Real, unit-tested** (`test_relationship_suggestion_feedback_loop.py`) |
+| Idempotency (same accepted suggestion merges to the same row across reruns) | **Real, unit-tested** |
+| Deterministic-wins-on-conflict with explicit, non-silent reporting | **Real, unit-tested** |
+| `run()` accepting `approved_suggestion_rows` and folding them into published output | **Real, unit-tested**; existing callers unaffected since the parameter defaults to `()` |
+| Data Agent actually producing a suggestion to accept | **Not working** (see gap above) |
+| Human review UI for setting `status = "accepted"` | **Does not exist** — manual Delta table edit today |
+| End-to-end live proof (real agent suggestion → accepted → merged by a live notebook run) | **Not exercised** — blocked upstream by the Data Agent invocation gap, not by this merge logic |
+
+In short: the feedback loop's pipeline-side half (merge, provenance,
+conflict handling, idempotency) is fully built and verified. Its
+Data-Agent-side half remains blocked by the same live invocation issue
+documented above, so the loop has been proven piece-by-piece, not
+end-to-end against a real live suggestion.
 
 ## Summary
 
@@ -129,3 +196,5 @@ so this collision, while real, turned out not to be the actual blocker.
 | Actually invoking the agent to get suggestions | **Not working** — opaque server-side failure, undiagnosable from this REST surface; portal chat UI is the documented fallback |
 | Suggestions → `relationship_suggestions` staging table | Scaffolded (contract + parser + writer path exist and are unit-tested) but not exercised against a real agent response, since no real response was obtainable |
 | Auto-merge into `ontology_relationships` | **Deliberately not implemented** — by design, human-in-the-loop only |
+| Accepted-suggestion → deterministic-shaped relationship row promotion | **Real, unit-tested** (see "Feedback loop" above) |
+| `ontology_pipeline.run()` merging approved suggestions with provenance + conflict handling | **Real, unit-tested**; not yet exercised live end-to-end |
