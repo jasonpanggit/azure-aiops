@@ -7,14 +7,18 @@ table doesn't exist in the live lakehouse otherwise.
 
 Reuses this repo's own ``DeltaWriter``/``OneLakeWriter`` (Don't Hand-Roll --
 the same writer path ``scripts/seed-topology-fixtures.py`` already uses to
-publish fixtures to this exact lakehouse), and seeds rows already shaped the
-way ``ontology.entity_builder.EntityBuilder.build()`` consumes them
-(``tenant_id``/``subscription_id``/``resource_id``/``payload_json`` with
-tags and resourceType), covering the full Hermes ontology scope: a
-VirtualMachine (with Application/BusinessService/Owner/SupportTeam/
-Environment/Service tags), its PatchAssessment, and an AdvisorRecommendation
-targeting it -- enough to exercise belongsTo/assessedBy/impacts-analog
-predicates (``member_of``/``belongs_to``, ``evaluates``, ``affects``).
+publish fixtures to this exact lakehouse), and seeds the exact same
+comprehensive fixture (``tests/ontology_comparison_scenario.py``) the local
+Hermes-vs-Fabric parity test suite (``tests/test_hermes_fabric_ontology_
+comparison.py``) runs against -- so the live notebook's Delta-table output
+can be read back and diffed against a local run of the real
+``EntityBuilder``/``RelationshipBuilder`` on the identical input, proving
+live-Fabric parity rather than merely "the notebook executed". Covers the
+full Hermes ontology scope: every ``TAG_ENTITY_TYPES``/``RESOURCE_ENTITY_
+TYPES`` entity type and every relationship predicate ``RelationshipBuilder``
+infers (structural, tag-derived, subscription-connection lineage,
+management-group hierarchy, cost/patch/advisor edges, full network
+topology).
 
 This is a one-off operator script (not part of the automated test suite).
 
@@ -37,6 +41,7 @@ import yaml
 from azure.core.exceptions import ResourceNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 from fabric.auth import FabricAuthConfig, build_credential, build_delta_storage_options  # noqa: E402
 from fabric.fabric_client import FabricClient  # noqa: E402
@@ -44,99 +49,7 @@ from fabric.lakehouse_manager import LakehouseManager  # noqa: E402
 from fabric.workspace_manager import WorkspaceManager  # noqa: E402
 from storage.delta_writer import DeltaWriteMode, DeltaWriter  # noqa: E402
 from storage.onelake_writer import OneLakeWriter  # noqa: E402
-
-_TENANT_ID = "22222222-2222-2222-2222-222222222222"
-_SUBSCRIPTION_ID = "11111111-1111-1111-1111-111111111111"
-_VM_ID = (
-    f"/subscriptions/{_SUBSCRIPTION_ID}/resourcegroups/rg-ontology-fixture/"
-    "providers/microsoft.compute/virtualmachines/vm-fixture"
-)
-
-
-def _ontology_fixture_rows(timestamp: str) -> list[dict]:
-    """Returns raw-ARG-shaped inventory rows already in the envelope
-    ``EntityBuilder.build()`` expects (mirrors the shape asserted against in
-    ``tests/test_entity_builder.py``/``tests/test_ontology_pipeline.py``:
-    ``payload_json`` as a JSON string, tags/resourceType nested inside)."""
-    vm_payload = json.dumps(
-        {
-            "id": _VM_ID,
-            "name": "vm-fixture",
-            "tenantId": _TENANT_ID,
-            "subscriptionId": _SUBSCRIPTION_ID,
-            "resourceGroup": "rg-ontology-fixture",
-            "tags": {
-                "AppName": "Payments API",
-                "Environment": "Production",
-                "BusinessUnit": "Retail",
-                "CostCenter": "CC-42",
-                "Owner": "ops@example.com",
-                "SupportGroup": "SRE",
-                "Service": "Checkout",
-            },
-        },
-        sort_keys=True,
-    )
-    assessment_payload = json.dumps(
-        {
-            "targetResourceId": _VM_ID,
-            "tenantId": _TENANT_ID,
-            "subscriptionId": _SUBSCRIPTION_ID,
-        },
-        sort_keys=True,
-    )
-    recommendation_payload = json.dumps(
-        {
-            "targetResourceId": _VM_ID,
-            "tenantId": _TENANT_ID,
-            "subscriptionId": _SUBSCRIPTION_ID,
-        },
-        sort_keys=True,
-    )
-    return [
-        {
-            "tenant_id": _TENANT_ID,
-            "subscription_id": _SUBSCRIPTION_ID,
-            "resource_id": _VM_ID,
-            "timestamp": timestamp,
-            "change_version": "seed-ontology-fixture-1",
-            "ingestion_run_id": "seed-ontology-fixtures-1",
-            "entity_type": "VirtualMachine",
-            "name": "vm-fixture",
-            "resource_type": "microsoft.compute/virtualmachines",
-            "location": "eastus",
-            "payload_json": vm_payload,
-        },
-        {
-            "tenant_id": _TENANT_ID,
-            "subscription_id": _SUBSCRIPTION_ID,
-            "resource_id": f"{_VM_ID}/patchassessmentresults/latest",
-            "timestamp": timestamp,
-            "change_version": "seed-ontology-fixture-1",
-            "ingestion_run_id": "seed-ontology-fixtures-1",
-            "entity_type": "PatchAssessment",
-            "name": "latest",
-            "resource_type": "microsoft.compute/virtualmachines/patchassessmentresults",
-            "location": "eastus",
-            "payload_json": assessment_payload,
-        },
-        {
-            "tenant_id": _TENANT_ID,
-            "subscription_id": _SUBSCRIPTION_ID,
-            "resource_id": (
-                f"/subscriptions/{_SUBSCRIPTION_ID}/resourcegroups/rg-ontology-fixture/"
-                "providers/microsoft.advisor/recommendations/rec-fixture"
-            ),
-            "timestamp": timestamp,
-            "change_version": "seed-ontology-fixture-1",
-            "ingestion_run_id": "seed-ontology-fixtures-1",
-            "entity_type": "AdvisorRecommendation",
-            "name": "rec-fixture",
-            "resource_type": "microsoft.advisor/recommendations",
-            "location": "eastus",
-            "payload_json": recommendation_payload,
-        },
-    ]
+from ontology_comparison_scenario import ontology_comparison_scenario  # noqa: E402
 
 
 def main() -> int:
@@ -185,7 +98,19 @@ def main() -> int:
         storage_options_provider=lambda: build_delta_storage_options(credential),
     )
 
-    rows = _ontology_fixture_rows("2026-08-27T00:00:00Z")
+    rows = ontology_comparison_scenario()
+    # pyarrow.Table.from_pylist infers its schema from each row's own key
+    # set, so heterogeneous fixture rows (e.g. only the SubscriptionConnection
+    # row carries connection_id/connection_name/... fields) silently lose
+    # those extra columns for every other row -- and EntityBuilder never
+    # even sees them once round-tripped through Parquet/Delta. Union every
+    # row's keys and backfill missing ones with None so the written schema
+    # carries every field every row needs (same defensive-normalization
+    # spirit as seed-topology-fixtures.py's ``_drop_empty_lists``).
+    all_keys: set[str] = set()
+    for row in rows:
+        all_keys.update(row.keys())
+    rows = [{key: row.get(key) for key in all_keys} for row in rows]
     logical_name = "resources"
     # DeltaWriter.write() always uses schema_mode="merge" on overwrite, so a
     # stale column/type from a prior seed run would persist across re-seeds.
