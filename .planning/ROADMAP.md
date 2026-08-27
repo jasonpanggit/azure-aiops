@@ -117,7 +117,7 @@ Plans:
 | 5. Controlled Pilot Readiness | 0/TBD | Not started | - |
 | 6. Software and OS Inventory Visibility | 9/9 | Code-complete, UAT pending | - |
 | 7. Unified Resource Inventory | 6/6 | Implementation complete; live verification pending | - |
-| 8. Resource Identity Plane | 2/3 | In Progress|  |
+| 8. Resource Identity Plane | 3/3 | In Progress|  |
 | 9. Consumer Pivot | 0/TBD | Not started | - |
 
 ### Phase 6: Software and OS Inventory Visibility
@@ -202,12 +202,12 @@ The genuinely wide step is extracting `DatasetStore`/generation machinery, which
 **Goal:** As a platform operator, I want unified inventory to own the complete resource identity plane, so that the Hermes semantic graph performs graph construction, relationship modelling, and semantic traversal from inventory instead of querying ARG for resource identity itself.
 **Requirements**: INV-07, INV-08, INV-10, INV-11, INV-12
 **Depends on:** Phase 7
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans executed
 Plans:
 
 - [x] 08-01-PLAN.md — Extend inventory read port with containment hierarchy; prove lossless equivalence for Hermes's real normalizer read patterns
 - [x] 08-02-PLAN.md — Build the real Fabric-native topology-derivation pipeline (edges + NSG/flow-log network topology) and bind to Fabric IQ ontology
-- [ ] 08-03-PLAN.md — Run the Hermes-vs-Fabric viability comparison, produce the report, and execute the operator-approved retain/reduce/remove decision
+- [x] 08-03-PLAN.md — Run the Hermes-vs-Fabric viability comparison, produce the report, and execute the operator-approved retain/reduce/remove decision
 
 **UI hint:** no
 
