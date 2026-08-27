@@ -80,6 +80,50 @@ def _canonicalize_os_name(os_name: str) -> str:
     return os_name.strip() if os_name.strip() else "Unknown"
 
 
+def _extract_windows_version_from_sku(image_sku: str) -> str:
+    """Extract Windows Server version from Azure VM image SKU.
+    
+    Args:
+        image_sku: Image SKU string like "2016-Datacenter", "2019-Datacenter-gensecond", etc.
+        
+    Returns:
+        Canonical OS name like "Windows Server 2016" or "Unknown" if not extractable
+    """
+    if not image_sku:
+        return "Unknown"
+    
+    # Extract year from SKU (e.g., "2016" from "2016-Datacenter")
+    sku_lower = image_sku.strip().casefold()
+    
+    # Match common Windows Server SKU patterns
+    if "2025" in sku_lower:
+        return "Windows Server 2025"
+    elif "2022" in sku_lower:
+        return "Windows Server 2022"
+    elif "2019" in sku_lower:
+        return "Windows Server 2019"
+    elif "2016" in sku_lower:
+        return "Windows Server 2016"
+    elif "2012-r2" in sku_lower or "2012 r2" in sku_lower:
+        return "Windows Server 2012 R2"
+    elif "2012" in sku_lower:
+        return "Windows Server 2012"
+    elif "2008-r2" in sku_lower or "2008 r2" in sku_lower:
+        return "Windows Server 2008 R2"
+    elif "2008" in sku_lower:
+        return "Windows Server 2008"
+    
+    # Also check for client Windows versions
+    if "win11" in sku_lower or "windows-11" in sku_lower:
+        return "Windows 11"
+    elif "win10" in sku_lower or "windows-10" in sku_lower:
+        return "Windows 10"
+    elif "windows-7" in sku_lower or "win7" in sku_lower:
+        return "Windows 7"
+    
+    return "Unknown"
+
+
 def normalize_os_inventory(
     payload: Mapping[str, list[dict]],
     observed: str,
@@ -157,16 +201,25 @@ def _normalize_machine_row(
     if source_type == "azure_vm":
         properties = row.get("properties") if isinstance(row.get("properties"), Mapping) else {}
         os_type = str(row.get("osType") or row.get("os_type") or properties.get("osType") or "")
-        # For native VMs, we only have osType from image reference; installed OS is unknown
+        image_sku = str(row.get("imageSku") or "").strip()
+        
+        # For native VMs, extract version from image SKU
         canonical_os_name = _canonicalize_os_name(os_type) if os_type else "Unknown"
+        
+        # Extract version from SKU for Windows, otherwise Unknown
+        if canonical_os_name == "Windows" and image_sku:
+            os_version = _extract_windows_version_from_sku(image_sku)
+        else:
+            os_version = "Unknown"
+        
         row = {
             **row,
             "os_name": canonical_os_name,
-            "os_version": "Unknown",
+            "os_version": os_version,
             "os_type": os_type,
             "image_publisher": row.get("imagePublisher") or "",
             "image_offer": row.get("imageOffer") or "",
-            "image_sku": row.get("imageSku") or "",
+            "image_sku": image_sku,
             "image_version": row.get("imageVersion") or "",
         }
     else:
