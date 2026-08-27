@@ -28,6 +28,7 @@ class ConnectorConfig:
     connection_context: Mapping[str, str] = field(default_factory=dict)
     cost_management_enabled: bool = True
     cost_management_lookback_days: int = 30
+    identity_source: str = "arg"
 
     def __post_init__(self) -> None:
         # Keep OneLake URIs untouched; only resolve plain filesystem paths,
@@ -55,6 +56,8 @@ class ConnectorConfig:
             raise ValueError("max_pages must be positive")
         if self.cost_management_lookback_days < 1:
             raise ValueError("cost_management_lookback_days must be positive")
+        if self.identity_source not in ("arg", "inventory"):
+            raise ValueError("identity_source must be 'arg' or 'inventory'")
 
     @classmethod
     def load(cls, path: str | Path) -> ConnectorConfig:
@@ -89,6 +92,7 @@ class ConnectorConfig:
             max_query_workers=int(azure.get("max_query_workers") or 5),
             cost_management_enabled=bool(cost.get("enabled", True)),
             cost_management_lookback_days=int(cost.get("lookback_days") or 30),
+            identity_source=str(azure.get("identity_source") or "arg"),
         )
 
     @property

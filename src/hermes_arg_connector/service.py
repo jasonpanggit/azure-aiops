@@ -4,9 +4,11 @@ import logging
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from .azure import AzureCliArgClient, AzureMcpClient
 from .config import ConnectorConfig
+from .inventory_read_adapter import InventoryReadAdapter
 from .logs import AzureMonitorLogsClient
 from .normalize import Normalizer
 from .queries import QueryCatalog
@@ -26,6 +28,7 @@ class IngestionService:
         clock: Callable[[], datetime] | None = None,
         cost_source: CostActualsSource | None = None,
         logs_client: AzureMonitorLogsClient | None = None,
+        inventory_read_port: Any = None,
     ) -> None:
         self.config = config
         self.clock = clock or (lambda: datetime.now(UTC))
@@ -47,6 +50,10 @@ class IngestionService:
         )
         self.cost_source = cost_source
         self.logs_client = logs_client
+        # Only required when config.identity_source == "inventory" (Task 3).
+        # Left None otherwise -- no runtime behavior changes for the default
+        # "arg" source until 08-03's operator-gated cutover explicitly flips it.
+        self.inventory_read_port = inventory_read_port
 
     def run(self) -> dict:
         with RunLock(self.config.output_dir):
@@ -88,6 +95,8 @@ class IngestionService:
         cost_rows = self._fetch_cost_actuals(subscriptions, started)
         previous_changes = self.store.read_dataset("changes/resource_changes")
         normalization_payload = dict(query_results)
+        if self.config.identity_source == "inventory":
+            normalization_payload.update(self._identity_rows_from_inventory(subscriptions))
         normalization_payload["resource_changes"] = _merge_changes(
             previous_changes,
             query_results.get("resource_changes", []),
@@ -125,6 +134,22 @@ class IngestionService:
             }
         )
         return manifest
+
+    def _identity_rows_from_inventory(self, subscriptions: list[str]) -> dict[str, list[dict]]:
+        """Sources `resources`/`resource_containers` rows via the inventory
+        read port instead of `self.source.fetch()`, for those two specs only
+        (Task 3). All other specs (network_*, patch, advisor, cost, role,
+        changes) are untouched -- they are not yet inventory-owned."""
+        if self.inventory_read_port is None:
+            raise RuntimeError(
+                "identity_source='inventory' requires an inventory_read_port to be configured"
+            )
+        from api.scope import Scope
+
+        scope = Scope.from_mapping({"subscription": sorted(subscriptions)})
+        resource_rows = self.inventory_read_port.list_resources(scope, limit=10_000)["resources"]
+        containment_rows = self.inventory_read_port.list_containment(scope)
+        return InventoryReadAdapter.to_arg_rows(containment_rows, resource_rows)
 
     def _fetch_cost_actuals(self, subscriptions: list[str], started: datetime) -> list[dict]:
         """Fetch Cost Management actuals as a best-effort side channel.
