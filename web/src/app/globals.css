@@ -5290,3 +5290,47 @@ body.topology-fullscreen-open {
   opacity: 0.6;
   cursor: progress;
 }
+
+/* Inline drill-down: the detail table renders directly beneath the row that
+   opened it, so an operator never has to scroll past the whole group table to
+   find what they just clicked. */
+.inventory-page tr.is-expanded > td {
+  background: var(--color-surface-accent, #eef4fa);
+  border-bottom-color: transparent;
+}
+
+.inventory-page tr.detail-row > td {
+  padding: 0 0 14px;
+  background: var(--color-surface-accent, #eef4fa);
+}
+
+.inventory-page .inline-detail {
+  margin: 0 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border-subtle, #e3eaf1);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface, #fff);
+  box-shadow: var(--shadow-card);
+}
+
+.inventory-page .inline-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.inventory-page .inline-detail-header .muted {
+  font-size: 12px;
+}
+
+.inventory-page .inline-detail .table-scroll {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.inventory-page .inline-detail .table-footer {
+  margin-top: 10px;
+}

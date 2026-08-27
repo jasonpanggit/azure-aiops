@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
 import { downloadCsv, serializeCsv } from "@/lib/csv";
 import { formatDateTime } from "@/lib/format";
@@ -22,6 +23,7 @@ import type {
   OsInventoryMachine,
   PaasInventoryGroup,
   PaasInventoryResource,
+  Pagination,
   SoftwareInventoryGroup,
   SoftwareInventoryDetail,
   SoftwareInventoryMachine,
@@ -29,6 +31,16 @@ import type {
 } from "@/lib/types";
 
 type InventoryTab = "os" | "software" | "azure";
+
+// Page sizes for the server-paginated tables. Kept below the API's `limit`
+// cap (500) and small enough that a page fits on screen without the operator
+// hunting for the pagination controls.
+const OS_PAGE_SIZE = 50;
+const SOFTWARE_PAGE_SIZE = 50;
+const AZURE_PAGE_SIZE = 50;
+const AZURE_DETAIL_PAGE_SIZE = 25;
+const OS_DETAIL_PAGE_SIZE = 25;
+const SOFTWARE_DETAIL_PAGE_SIZE = 25;
 
 /**
  * Readable display names for Azure resource types.
@@ -234,7 +246,7 @@ export default function InventoryPage() {
   const [softwareSourceFilter, setSoftwareSourceFilter] = useState<"all" | "azure_vm" | "arc" | "unlinked">("all");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [detail, setDetail] = useState<OsInventoryMachine[]>([]);
-  const [detailGroup, setDetailGroup] = useState<OsInventoryGroup | null>(null);
+  const [, setDetailGroup] = useState<OsInventoryGroup | null>(null);
   const [softwareDetail, setSoftwareDetail] = useState<SoftwareInventoryMachine[]>([]);
   const [softwareDetailGroup, setSoftwareDetailGroup] = useState<SoftwareInventoryGroup | null>(null);
   const [softwareDetailEnvelope, setSoftwareDetailEnvelope] = useState<Envelope<SoftwareInventoryDetail> | null>(null);
@@ -253,6 +265,15 @@ export default function InventoryPage() {
   const [azureDetail, setAzureDetail] = useState<PaasInventoryResource[]>([]);
   const [azureDetailGroup, setAzureDetailGroup] = useState<PaasInventoryGroup | null>(null);
   const [azureDetailError, setAzureDetailError] = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailPagination, setDetailPagination] = useState<Pagination | null>(null);
+  const [detailPage, setDetailPage] = useState(0);
+  const [azureDetailLoading, setAzureDetailLoading] = useState(false);
+  const [azureDetailPagination, setAzureDetailPagination] = useState<Pagination | null>(null);
+  const [azureDetailPage, setAzureDetailPage] = useState(0);
+  const [azurePage, setAzurePage] = useState(0);
+  const [osPage, setOsPage] = useState(0);
+  const [softwarePage, setSoftwarePage] = useState(0);
   const [allResourcesExporting, setAllResourcesExporting] = useState(false);
   const [allResourcesError, setAllResourcesError] = useState<string | null>(null);
   const effectiveScope = useMemo(
@@ -262,14 +283,14 @@ export default function InventoryPage() {
     [scope, subscriptionFilter],
   );
   const scopeKey = useMemo(() => JSON.stringify(effectiveScope), [effectiveScope]);
-  const inventory = useApi(() => inventoryApi.os(effectiveScope), [scopeKey, refreshKey]);
-  const softwareInventory = useApi(() => inventoryApi.software(effectiveScope), [scopeKey, refreshKey]);
+  const inventory = useApi(() => inventoryApi.os(effectiveScope, osPage * OS_PAGE_SIZE, OS_PAGE_SIZE), [scopeKey, refreshKey, osPage]);
+  const softwareInventory = useApi(() => inventoryApi.software(effectiveScope, softwarePage * SOFTWARE_PAGE_SIZE, SOFTWARE_PAGE_SIZE), [scopeKey, refreshKey, softwarePage]);
   const narrative = useApi(() => inventoryApi.narrative(effectiveScope), [scopeKey, refreshKey]);
   const mappings = useApi(
     () => inventoryApi.mappings(effectiveScope),
     [scopeKey, refreshKey],
   );
-  const azureInventory = useApi(() => inventoryApi.paas(effectiveScope), [scopeKey, refreshKey]);
+  const azureInventory = useApi(() => inventoryApi.paas(effectiveScope, azurePage * AZURE_PAGE_SIZE, AZURE_PAGE_SIZE), [scopeKey, refreshKey, azurePage]);
 
   const azureGroups = useMemo(() => azureInventory.data?.data.groups ?? [], [azureInventory.data]);
   const azureProviders = useMemo(
@@ -332,37 +353,96 @@ export default function InventoryPage() {
   const softwarePartialSource = Object.values(softwareSourceStates).find((source) => source.state !== "ready");
   const mappingItems: SoftwareMapping[] = mappings.data?.data.mappings ?? [];
 
-  async function openGroup(group: OsInventoryGroup) {
-    setSelectedKey(group.key);
+  const loadOsGroup = useCallback(async (key: string, page: number) => {
     setDetailError(null);
-    setSoftwareDetailGroup(null);
-    setSoftwareDetailEnvelope(null);
+    setDetailLoading(true);
     try {
-      const response = await inventoryApi.osGroup(group.key, effectiveScope);
+      const response = await inventoryApi.osGroup(key, effectiveScope, page * OS_DETAIL_PAGE_SIZE, OS_DETAIL_PAGE_SIZE);
       setDetail(response.data.machines);
       setDetailGroup(response.data.group);
+      setDetailPagination(response.pagination ?? null);
     } catch (error) {
       setDetail([]);
       setDetailGroup(null);
+      setDetailPagination(null);
       setDetailError(error instanceof Error ? error.message : "Machine detail is unavailable.");
+    } finally {
+      setDetailLoading(false);
     }
+  }, [effectiveScope]);
+
+  function openGroup(group: OsInventoryGroup) {
+    setSelectedKey(group.key);
+    setSoftwareDetailGroup(null);
+    setSoftwareDetailEnvelope(null);
+    setDetailPage(0);
+    void loadOsGroup(group.key, 0);
   }
 
-  async function openSoftwareGroup(group: SoftwareInventoryGroup) {
-    setSelectedKey(group.key);
-    setDetailError(null);
+  function closeGroup() {
+    setSelectedKey(null);
+    setDetail([]);
     setDetailGroup(null);
+    setDetailPagination(null);
+    setDetailError(null);
+    setDetailPage(0);
+  }
+
+  const loadSoftwareGroup = useCallback(async (key: string, page: number) => {
+    setDetailError(null);
+    setDetailLoading(true);
     try {
-      const response = await inventoryApi.softwareGroup(group.key, effectiveScope);
+      const response = await inventoryApi.softwareGroup(key, effectiveScope, page * SOFTWARE_DETAIL_PAGE_SIZE, SOFTWARE_DETAIL_PAGE_SIZE);
       setSoftwareDetail(response.data.machines);
       setSoftwareDetailGroup(response.data.group);
       setSoftwareDetailEnvelope(response);
+      setDetailPagination(response.pagination ?? null);
     } catch (error) {
       setSoftwareDetail([]);
       setSoftwareDetailGroup(null);
+      setDetailPagination(null);
       setDetailError(error instanceof Error ? error.message : "Software detail is unavailable.");
+    } finally {
+      setDetailLoading(false);
     }
+  }, [effectiveScope]);
+
+  function openSoftwareGroup(group: SoftwareInventoryGroup) {
+    setSelectedKey(group.key);
+    setDetailGroup(null);
+    setDetailPage(0);
+    void loadSoftwareGroup(group.key, 0);
   }
+
+  function closeSoftwareGroup() {
+    setSelectedKey(null);
+    setSoftwareDetail([]);
+    setSoftwareDetailGroup(null);
+    setSoftwareDetailEnvelope(null);
+    setDetailPagination(null);
+    setDetailError(null);
+    setDetailPage(0);
+  }
+
+  // Scope changes re-query the server, so any page offset from the previous
+  // scope is meaningless and would land the operator on an empty page.
+  useEffect(() => {
+    setOsPage(0);
+    setSoftwarePage(0);
+    setAzurePage(0);
+    setSelectedKey(null);
+    setAzureSelectedKey(null);
+    setDetailPage(0);
+    setAzureDetailPage(0);
+  }, [scopeKey, refreshKey]);
+
+  // Reload the open OS/software drill-down on page change. Page 0 is already
+  // loaded by the open handlers, so skip it to avoid a duplicate request.
+  useEffect(() => {
+    if (!selectedKey || detailPage === 0) return;
+    if (tab === "software") void loadSoftwareGroup(selectedKey, detailPage);
+    else if (tab === "os") void loadOsGroup(selectedKey, detailPage);
+  }, [selectedKey, detailPage, tab, loadOsGroup, loadSoftwareGroup]);
 
   function exportSoftwareDetail() {
     if (!softwareDetailGroup || softwareDetail.length === 0) return;
@@ -400,19 +480,45 @@ export default function InventoryPage() {
     );
   }
 
-  async function openAzureGroup(group: PaasInventoryGroup) {
-    setAzureSelectedKey(group.key);
+  const loadAzureGroup = useCallback(async (key: string, page: number) => {
     setAzureDetailError(null);
+    setAzureDetailLoading(true);
     try {
-      const response = await inventoryApi.paasGroup(group.key, effectiveScope);
+      const response = await inventoryApi.paasGroup(key, effectiveScope, page * AZURE_DETAIL_PAGE_SIZE, AZURE_DETAIL_PAGE_SIZE);
       setAzureDetail(response.data.resources);
       setAzureDetailGroup(response.data.group);
+      setAzureDetailPagination(response.pagination ?? null);
     } catch (error) {
       setAzureDetail([]);
       setAzureDetailGroup(null);
+      setAzureDetailPagination(null);
       setAzureDetailError(error instanceof Error ? error.message : "Resource detail is unavailable.");
+    } finally {
+      setAzureDetailLoading(false);
     }
+  }, [effectiveScope]);
+
+  function openAzureGroup(group: PaasInventoryGroup) {
+    setAzureSelectedKey(group.key);
+    setAzureDetailPage(0);
+    void loadAzureGroup(group.key, 0);
   }
+
+  function closeAzureGroup() {
+    setAzureSelectedKey(null);
+    setAzureDetail([]);
+    setAzureDetailGroup(null);
+    setAzureDetailPagination(null);
+    setAzureDetailError(null);
+    setAzureDetailPage(0);
+  }
+
+  // Reload the open drill-down when its page changes. openAzureGroup already
+  // loads page 0, so skip that case to avoid a duplicate request.
+  useEffect(() => {
+    if (!azureSelectedKey || azureDetailPage === 0) return;
+    void loadAzureGroup(azureSelectedKey, azureDetailPage);
+  }, [azureSelectedKey, azureDetailPage, loadAzureGroup]);
 
   function exportAzureDetail() {
     if (!azureDetailGroup || azureDetail.length === 0) return;
@@ -693,8 +799,11 @@ export default function InventoryPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredSoftwareGroups.map((group) => (
-                    <tr key={group.key}>
+                  {filteredSoftwareGroups.map((group) => {
+                    const expanded = selectedKey === group.key;
+                    return (
+                    <Fragment key={group.key}>
+                    <tr aria-selected={expanded} className={expanded ? "is-expanded" : undefined}>
                       <td>
                         <strong>{group.software_name}</strong>
                         <span className="table-subtitle">{group.software_version}</span>
@@ -702,14 +811,93 @@ export default function InventoryPage() {
                       <td>{group.install_count}</td>
                       <td>{group.source_types.map((source) => source === "azure_vm" ? "Azure VM" : source === "arc" ? "Arc" : "Unlinked").join(", ")}</td>
                       <td>
-                        <button type="button" onClick={() => openSoftwareGroup(group)} aria-label={`View machines for ${group.software_name} ${group.software_version}`}>
-                          View machines
+                        <button
+                          type="button"
+                          onClick={() => (expanded ? closeSoftwareGroup() : openSoftwareGroup(group))}
+                          aria-expanded={expanded}
+                          aria-label={`View machines for ${group.software_name} ${group.software_version}`}
+                        >
+                          {expanded ? "Hide machines" : "View machines"}
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    {expanded && (
+                      <tr className="detail-row">
+                        <td colSpan={4}>
+                          {detailError ? (
+                            <StatePanel title="Software detail unavailable" message={detailError} tone="error" />
+                          ) : detailLoading ? (
+                            <StatePanel title="Loading machines" message="Reading ConfigurationData observations." tone="loading" />
+                          ) : softwareDetail.length === 0 ? (
+                            <StatePanel title="No machines" message="This software group has no rows in the authorized scope." />
+                          ) : (
+                            <section aria-label="Installed software machine details" className="inline-detail">
+                              <div className="inline-detail-header">
+                                <span className="muted">{softwareDetail.length} of {group.install_count} installations · exact server lookup</span>
+                                <div className="detail-actions">
+                                  <button type="button" onClick={exportSoftwareDetail}>Export CSV</button>
+                                  <button type="button" onClick={closeSoftwareGroup}>Close</button>
+                                </div>
+                              </div>
+                              {softwareDetailEnvelope && (
+                                <EvidenceBar
+                                  evidence={softwareDetailEnvelope.evidence}
+                                  sourceStatus={Object.fromEntries(
+                                    Object.entries(softwareDetailEnvelope.data.source_status).map(([source, status]) => [source, status.state]),
+                                  )}
+                                  warnings={softwareDetailEnvelope.warnings}
+                                />
+                              )}
+                              <div className="table-scroll">
+                                <table className="data-table detail-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Machine</th>
+                                      <th>Source / environment</th>
+                                      <th>Subscription / resource group</th>
+                                      <th>Canonical identity</th>
+                                      <th>Raw identity</th>
+                                      <th>Observed</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {softwareDetail.map((machine, index) => (
+                                      <tr key={`${machine.resource_id || machine.source_computer_id || machine.machine_name}-${index}`}>
+                                        <td><strong>{machine.machine_name}</strong><span className="table-subtitle">{machine.resource_id || machine.source_computer_id}</span></td>
+                                        <td>{machine.source_type ? sourceLabel(machine.source_type) : "Unlinked"}<span className="table-subtitle">{machine.environment}</span></td>
+                                        <td>{machine.subscription_id || "Unknown"}<span className="table-subtitle">{machine.resource_group || "Unknown"}</span></td>
+                                        <td>{machine.canonical_identity}<span className="table-subtitle">{machine.canonical_name} {machine.canonical_version}</span></td>
+                                        <td>{machine.raw_identity.name || "Unknown"}<span className="table-subtitle">{machine.raw_identity.version || "Unknown"} · {machine.join_status === "linked" ? "exact resource join" : "resource join unavailable"}</span></td>
+                                        <td>{formatDateTime(machine.observed_at)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                              <TablePagination
+                                pagination={detailPagination}
+                                pageRows={softwareDetail.length}
+                                page={detailPage}
+                                onPageChange={setDetailPage}
+                                label="installations"
+                              />
+                            </section>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                  );
+                  })}
                 </tbody>
               </table>
+              <TablePagination
+                pagination={softwareInventory.data?.pagination}
+                pageRows={softwareGroups.length}
+                page={softwarePage}
+                onPageChange={setSoftwarePage}
+                label="software titles"
+              />
             </section>
           )}
           {mappingError && <StatePanel title="Mapping decision unavailable" message={mappingError} tone="error" />}
@@ -749,60 +937,6 @@ export default function InventoryPage() {
                   </li>
                 ))}
               </ul>
-            </section>
-          )}
-          {softwareDetailGroup && (
-            <section aria-label="Installed software machine details" className="detail-panel">
-              <h2>{softwareDetailGroup.software_name} {softwareDetailGroup.software_version}</h2>
-              {softwareDetailEnvelope && (
-                <EvidenceBar
-                  evidence={softwareDetailEnvelope.evidence}
-                  sourceStatus={Object.fromEntries(
-                    Object.entries(softwareDetailEnvelope.data.source_status).map(([source, status]) => [source, status.state]),
-                  )}
-                  warnings={softwareDetailEnvelope.warnings}
-                />
-              )}
-              <p className="detail-context">
-                Exact server lookup · {softwareDetail.length} authorized machine{softwareDetail.length === 1 ? "" : "s"} ·
-                scope {Object.entries(softwareDetailEnvelope?.scope ?? {}).map(([key, values]) => `${key}: ${values.join(", ")}`).join(" · ") || "all authorized scope"}
-              </p>
-              <div className="detail-actions">
-                <button type="button" onClick={exportSoftwareDetail} disabled={softwareDetail.length === 0}>
-                  Export CSV ({softwareDetail.length} row{softwareDetail.length === 1 ? "" : "s"})
-                </button>
-                <span className="muted">Exports only the exact rows returned for this authorized lookup.</span>
-              </div>
-              {detailError ? (
-                <StatePanel title="Software detail unavailable" message={detailError} tone="error" />
-              ) : (
-                <div className="table-scroll">
-                <table className="data-table detail-table">
-                  <thead>
-                    <tr>
-                      <th>Machine</th>
-                      <th>Source / environment</th>
-                      <th>Subscription / resource group</th>
-                      <th>Canonical identity</th>
-                      <th>Raw identity</th>
-                      <th>Observed</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                  {softwareDetail.map((machine, index) => (
-                    <tr key={`${machine.resource_id || machine.source_computer_id || machine.machine_name}-${index}`}>
-                      <td><strong>{machine.machine_name}</strong><span className="table-subtitle">{machine.resource_id || machine.source_computer_id}</span></td>
-                      <td>{machine.source_type ? sourceLabel(machine.source_type) : "Unlinked"}<span className="table-subtitle">{machine.environment}</span></td>
-                      <td>{machine.subscription_id || "Unknown"}<span className="table-subtitle">{machine.resource_group || "Unknown"}</span></td>
-                      <td>{machine.canonical_identity}<span className="table-subtitle">{machine.canonical_name} {machine.canonical_version}</span></td>
-                      <td>{machine.raw_identity.name || "Unknown"}<span className="table-subtitle">{machine.raw_identity.version || "Unknown"} · {machine.join_status === "linked" ? "exact resource join" : "resource join unavailable"}</span></td>
-                      <td>{machine.observed_at}<span className="table-subtitle">{machine.time_generated}</span></td>
-                    </tr>
-                  ))}
-                  </tbody>
-                </table>
-                </div>
-              )}
             </section>
           )}
         </section>
@@ -905,8 +1039,11 @@ export default function InventoryPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredAzureGroups.map((group) => (
-                    <tr key={group.key} aria-selected={azureSelectedKey === group.key}>
+                  {filteredAzureGroups.map((group) => {
+                    const expanded = azureSelectedKey === group.key;
+                    return (
+                    <Fragment key={group.key}>
+                    <tr aria-selected={expanded} className={expanded ? "is-expanded" : undefined}>
                       <td>
                         <strong>{resourceTypeLabel(group.resource_type)}</strong>
                         <span className="table-subtitle">{group.resource_type}</span>
@@ -917,73 +1054,90 @@ export default function InventoryPage() {
                       <td>
                         <button
                           type="button"
-                          onClick={() => openAzureGroup(group)}
+                          onClick={() => (expanded ? closeAzureGroup() : openAzureGroup(group))}
+                          aria-expanded={expanded}
                           aria-label={`View resources for ${resourceTypeLabel(group.resource_type)}`}
                         >
-                          View resources
+                          {expanded ? "Hide resources" : "View resources"}
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    {expanded && (
+                      <tr className="detail-row">
+                        <td colSpan={5}>
+                          {azureDetailError ? (
+                            <StatePanel title="Azure resource detail unavailable" message={azureDetailError} tone="error" />
+                          ) : azureDetailLoading ? (
+                            <StatePanel title="Loading resources" message="Reading the active immutable generation." tone="loading" />
+                          ) : azureDetail.length === 0 ? (
+                            <StatePanel title="No resources" message="This resource type has no rows in the authorized scope." />
+                          ) : (
+                            <section aria-label="Azure resource detail" className="inline-detail">
+                              <div className="inline-detail-header">
+                                <span className="muted">{azureDetail.length} of {group.resource_count} resources</span>
+                                <div className="detail-actions">
+                                  <button type="button" onClick={exportAzureDetail}>Export CSV</button>
+                                  <button type="button" onClick={closeAzureGroup}>Close</button>
+                                </div>
+                              </div>
+                              <div className="table-scroll">
+                                <table className="detail-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Resource</th>
+                                      <th>Resource group</th>
+                                      <th>Location</th>
+                                      <th>SKU / tier</th>
+                                      <th>State</th>
+                                      <th>Observed</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {azureDetail.map((resource) => (
+                                      <tr key={resource.resource_id}>
+                                        <td>
+                                          <strong>{resource.resource_name}</strong>
+                                        </td>
+                                        <td>{resource.resource_group || "—"}</td>
+                                        <td>{resource.location || "—"}</td>
+                                        <td>{resource.sku || resource.tier ? `${resource.sku || "—"} / ${resource.tier || "—"}` : "—"}</td>
+                                        <td>
+                                          <StatusBadge
+                                            label={resource.provisioning_state || "Unknown"}
+                                            tone={provisioningTone(resource.provisioning_state)}
+                                            compact
+                                          />
+                                        </td>
+                                        <td>{formatDateTime(resource.observed_at)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                              <TablePagination
+                                pagination={azureDetailPagination}
+                                pageRows={azureDetail.length}
+                                page={azureDetailPage}
+                                onPageChange={setAzureDetailPage}
+                                label="resources"
+                              />
+                            </section>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                  );
+                  })}
                 </tbody>
               </table>
-            </section>
-          )}
-
-          {azureDetailError && <StatePanel title="Azure resource detail unavailable" message={azureDetailError} tone="error" />}
-
-          {azureDetailGroup && azureDetail.length > 0 && (
-            <section aria-label="Azure resource detail" className="detail-panel">
-              <div className="card-header">
-                <h2>{resourceTypeLabel(azureDetailGroup.resource_type)}</h2>
-                <div className="detail-actions">
-                  <button type="button" onClick={exportAzureDetail}>Export CSV</button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAzureDetailGroup(null);
-                      setAzureDetail([]);
-                      setAzureSelectedKey(null);
-                    }}
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-              <div className="table-scroll">
-                <table className="detail-table">
-                  <thead>
-                    <tr>
-                      <th>Resource</th>
-                      <th>Resource group</th>
-                      <th>Location</th>
-                      <th>SKU / tier</th>
-                      <th>State</th>
-                      <th>Observed</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {azureDetail.map((resource) => (
-                      <tr key={resource.resource_id}>
-                        <td>
-                          <strong>{resource.resource_name}</strong>
-                        </td>
-                        <td>{resource.resource_group || "—"}</td>
-                        <td>{resource.location || "—"}</td>
-                        <td>{resource.sku || resource.tier ? `${resource.sku || "—"} / ${resource.tier || "—"}` : "—"}</td>
-                        <td>
-                          <StatusBadge
-                            label={resource.provisioning_state || "Unknown"}
-                            tone={provisioningTone(resource.provisioning_state)}
-                            compact
-                          />
-                        </td>
-                        <td>{formatDateTime(resource.observed_at)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <TablePagination
+                pagination={azureInventory.data?.pagination}
+                pageRows={azureGroups.length}
+                page={azurePage}
+                onPageChange={setAzurePage}
+                label="resource types"
+              />
             </section>
           )}
         </section>
@@ -1096,8 +1250,11 @@ export default function InventoryPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredGroups.map((group) => (
-                    <tr key={group.key}>
+                  {filteredGroups.map((group) => {
+                    const expanded = selectedKey === group.key;
+                    return (
+                    <Fragment key={group.key}>
+                    <tr aria-selected={expanded} className={expanded ? "is-expanded" : undefined}>
                       <td>
                         <strong>{group.os_name}</strong>
                         <span className="table-subtitle">{group.os_version}</span>
@@ -1109,8 +1266,13 @@ export default function InventoryPage() {
                         {group.support_end && <span className="table-subtitle">ends {group.support_end}</span>}
                       </td>
                       <td>
-                        <button type="button" onClick={() => openGroup(group)} aria-label={`View machines for ${group.os_name} ${group.os_version}`}>
-                          View machines
+                        <button
+                          type="button"
+                          onClick={() => (expanded ? closeGroup() : openGroup(group))}
+                          aria-expanded={expanded}
+                          aria-label={`View machines for ${group.os_name} ${group.os_version}`}
+                        >
+                          {expanded ? "Hide machines" : "View machines"}
                         </button>
                         {group.review_required && (
                           <button type="button" onClick={() => openLifecycleReview(group)}>
@@ -1119,9 +1281,71 @@ export default function InventoryPage() {
                         )}
                       </td>
                     </tr>
-                  ))}
+                    {expanded && (
+                      <tr className="detail-row">
+                        <td colSpan={5}>
+                          {detailError ? (
+                            <StatePanel title="Machine detail unavailable" message={detailError} tone="error" />
+                          ) : detailLoading ? (
+                            <StatePanel title="Loading machines" message="Reading the active immutable generation." tone="loading" />
+                          ) : detail.length === 0 ? (
+                            <StatePanel title="No machines" message="This OS group has no rows in the authorized scope." />
+                          ) : (
+                            <section aria-label="OS machine details" className="inline-detail">
+                              <div className="inline-detail-header">
+                                <span className="muted">{detail.length} of {group.machine_count} machines</span>
+                                <div className="detail-actions">
+                                  <button type="button" onClick={closeGroup}>Close</button>
+                                </div>
+                              </div>
+                              <div className="table-scroll">
+                                <table className="data-table detail-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Machine</th>
+                                      <th>Source / environment</th>
+                                      <th>Subscription / resource group</th>
+                                      <th>Lifecycle</th>
+                                      <th>Observed / evidence</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {detail.map((machine) => (
+                                      <tr key={machine.resource_id}>
+                                        <td><strong>{machine.machine_name}</strong><span className="table-subtitle">{machine.resource_id}</span></td>
+                                        <td>{sourceLabel(machine.source_type)}<span className="table-subtitle">{machine.environment}</span></td>
+                                        <td>{machine.subscription_id}<span className="table-subtitle">{machine.resource_group}</span></td>
+                                        <td><StatusBadge label={machine.review_required ? "EOL date needs review" : machine.lifecycle_status} tone={machine.review_required ? "unknown" : lifecycleTone({ ...machine, key: machine.resource_id, machine_count: 1, source_types: [machine.source_type] })} /></td>
+                                        <td>{formatDateTime(machine.observed_at)}<span className="table-subtitle">{machine.evidence.map((item) => `${item.source_engine} / ${item.source_table}`).join(" · ") || "Evidence retained by API envelope"}</span></td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                              <TablePagination
+                                pagination={detailPagination}
+                                pageRows={detail.length}
+                                page={detailPage}
+                                onPageChange={setDetailPage}
+                                label="machines"
+                              />
+                            </section>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                  );
+                  })}
                 </tbody>
               </table>
+              <TablePagination
+                pagination={inventory.data?.pagination}
+                pageRows={groups.length}
+                page={osPage}
+                onPageChange={setOsPage}
+                label="OS groups"
+              />
             </section>
           )}
 
@@ -1181,40 +1405,6 @@ export default function InventoryPage() {
                     </form>
                   )}
                 </>
-              )}
-            </section>
-          )}
-
-          {selectedKey && (
-            <section aria-label="OS machine details" className="detail-panel">
-              <h2>{detailGroup ? `${detailGroup.os_name} ${detailGroup.os_version}` : "Machine details"}</h2>
-              {detailError ? (
-                <StatePanel title="Machine detail unavailable" message={detailError} tone="error" />
-              ) : (
-                <div className="table-scroll">
-                <table className="data-table detail-table">
-                  <thead>
-                    <tr>
-                      <th>Machine</th>
-                      <th>Source / environment</th>
-                      <th>Subscription / resource group</th>
-                      <th>Lifecycle</th>
-                      <th>Observed / evidence</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                  {detail.map((machine) => (
-                    <tr key={machine.resource_id}>
-                      <td><strong>{machine.machine_name}</strong><span className="table-subtitle">{machine.resource_id}</span></td>
-                      <td>{sourceLabel(machine.source_type)}<span className="table-subtitle">{machine.environment}</span></td>
-                      <td>{machine.subscription_id}<span className="table-subtitle">{machine.resource_group}</span></td>
-                      <td><StatusBadge label={machine.review_required ? "EOL date needs review" : machine.lifecycle_status} tone={machine.review_required ? "unknown" : lifecycleTone({ ...machine, key: machine.resource_id, machine_count: 1, source_types: [machine.source_type] })} /></td>
-                      <td>{machine.observed_at}<span className="table-subtitle">{machine.evidence.map((item) => `${item.source_engine} / ${item.source_table}`).join(" · ") || "Evidence retained by API envelope"}</span></td>
-                    </tr>
-                  ))}
-                  </tbody>
-                </table>
-                </div>
               )}
             </section>
           )}

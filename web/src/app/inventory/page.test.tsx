@@ -310,7 +310,7 @@ describe("Inventory OS tracer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /View machines for Windows Server 2019/ }));
     expect(await screen.findByText("web-01")).toBeInTheDocument();
-    expect(osGroup).toHaveBeenCalledWith("Windows Server|2019", {});
+    expect(osGroup).toHaveBeenCalledWith("Windows Server|2019", {}, 0, 25);
   });
 
   it("renders canonical installed software and exact linked details", async () => {
@@ -321,7 +321,7 @@ describe("Inventory OS tracer", () => {
     fireEvent.click(screen.getByRole("button", { name: /View machines for 7-Zip 19.00/ }));
     expect(await screen.findByText(/exact resource join/)).toBeInTheDocument();
     expect(screen.getByText("7-Zip v19.00")).toBeInTheDocument();
-    expect(softwareGroup).toHaveBeenCalledWith("7-Zip|19.00", {});
+    expect(softwareGroup).toHaveBeenCalledWith("7-Zip|19.00", {}, 0, 25);
   });
 
   it("shows all EOL candidate citations and confirms an explicit choice", async () => {
@@ -376,11 +376,27 @@ describe("Inventory OS tracer", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /View machines for 7-Zip 19.00/ }));
 
-    expect(await screen.findByRole("button", { name: "Export CSV (1 row)" })).toBeInTheDocument();
-    expect(screen.getByText(/Exports only the exact rows returned/)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Export CSV" })).toBeInTheDocument();
+    expect(screen.getByText(/1 of 1 installations/)).toBeInTheDocument();
     expect(screen.getByText(/Log Analytics · ready/)).toBeInTheDocument();
     expect(screen.getByText("prod")).toBeInTheDocument();
     expect(screen.getByText("sub-a")).toBeInTheDocument();
+  });
+
+  it("advances the OS group table to the next page and refetches at the new offset", async () => {
+    os.mockResolvedValue({
+      ...envelope(collection),
+      pagination: { offset: 0, limit: 50, total: 120, next_offset: 50 },
+    });
+
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+
+    expect(await screen.findByText(/of 120 OS groups/)).toBeInTheDocument();
+    expect(os).toHaveBeenCalledWith(expect.anything(), 0, 50);
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    await waitFor(() => expect(os).toHaveBeenCalledWith(expect.anything(), 50, 50));
   });
 
   it("lists Azure resources by type and drills into a group", async () => {
@@ -400,7 +416,31 @@ describe("Inventory OS tracer", () => {
     expect(paasGroup).toHaveBeenCalledWith(
       "microsoft.app:containerapps|Unknown|Unknown",
       expect.anything(),
+      0,
+      25,
     );
+  });
+
+  it("renders the drill-down inline beneath the group row it was opened from", async () => {
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Azure Inventory" }));
+    const toggle = await screen.findByRole("button", { name: /View resources for Container Apps/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(toggle);
+
+    const detailCell = await screen.findByText("app-1");
+    const groupRow = toggle.closest("tr");
+    const detailRow = detailCell.closest("tr.detail-row")?.parentElement?.closest("tr.detail-row")
+      ?? detailCell.closest("table")?.closest("tr.detail-row");
+
+    // The detail must be the row immediately after the group row, not appended
+    // to the end of the page.
+    expect(groupRow).not.toBeNull();
+    expect(detailRow).not.toBeNull();
+    expect(groupRow?.nextElementSibling).toBe(detailRow);
+    expect(screen.getByRole("button", { name: /View resources for Container Apps/ })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("exports every in-scope resource, following API pagination across pages", async () => {
