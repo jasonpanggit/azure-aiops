@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 08
 current_phase_name: resource-identity-plane
 status: executing
-stopped_at: Completed 08-01-PLAN.md
-last_updated: "2026-08-27T03:39:16.143Z"
+stopped_at: Completed 08-02-PLAN.md
+last_updated: "2026-08-27T04:10:20.168Z"
 last_activity: 2026-08-27
 last_activity_desc: Phase 08 execution started
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 23
-  completed_plans: 19
+  completed_plans: 20
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-08-23)
 ## Current Position
 
 Phase: 08 (resource-identity-plane) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-08-27 — Phase 08 execution started
 
-Progress: ██░░░░░░░░ [████████░░] 83%
+Progress: ██░░░░░░░░ [█████████░] 87%
 
 ## Performance Metrics
 
@@ -76,6 +76,7 @@ Progress: ██░░░░░░░░ [████████░░] 83%
 | Phase 07-unified-resource-inventory P05 | 8min | 3 tasks | 9 files |
 | Phase 07-unified-resource-inventory P06 | 8min | 3 tasks | 7 files |
 | Phase 08 P01 | 45min | 3 tasks | 7 files |
+| Phase 08 P02 | 55min | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -146,6 +147,7 @@ Recent decisions affecting current work:
 - [Phase 7]: Sequence is characterize → extract → invert → expand → migrate consumers; consumer migration includes the Hermes side.
 - [Phase 8/9]: Inventory owns the resource **identity** plane (what exists, type, location, tags, containment, raw properties); assessment domains (patch/vuln/policy/advisor/metrics/health) keep their own planes and join by resource ID. Prevents inventory becoming a god module.
 - [Phase 8]: `ResourceObservation` must preserve the full raw property bag and watermark semantics, designed from Hermes's real read patterns rather than UI needs — otherwise Hermes cannot drop its ARG identity path.
+- [Phase 8]: Operator direction (2026-08-27) is to treat Hermes removal as the default hypothesis because Fabric/Fabric IQ and Foundry cover governed graph access and grounded AI assessment. Hermes remains only if the reproducible Phase 8 comparison demonstrates material unique operator value.
 - [Phase 9]: API pivot is mostly wiring — routers already depend on `ProviderSpec` providers, not datasets; no router reads `read_dataset`/`entities/` directly. `agent_queries.py` is the exception.
 - [Phase 7/8/9]: Split the system-wide pivot into three phases rather than one. Inverting ownership, redefining the resource contract, and rewiring consumers simultaneously — with no verified live baseline — is the failure mode the waived gate was meant to prevent.
 - [Phase ?]: Phase 7 Plan 03 selected new-fabric-names-with-adapter for inventory Fabric tables while preserving inventory/* compatibility aliases.
@@ -156,6 +158,9 @@ Recent decisions affecting current work:
 - [Phase ?]: Containment derived in-process from existing ResourceObservation fields; no persisted containment table, no separate ResourceContainers acquisition path
 - [Phase ?]: Management-group ancestry left None (not fabricated) since ResourceObservation lacks it yet
 - [Phase ?]: identity_source flag defaults to arg; IngestionService only requires inventory_read_port when flipped to inventory
+- [Phase ?]: 08-02 checkpoint: Fabric-native compute architecture = fabric-hosted-notebook (genuine Fabric Spark notebook, demoable, not Python-writer extension)
+- [Phase ?]: 08-02 checkpoint: NSG Flow Logs/Traffic Analytics = fixture only (no live provisioning; flag allowed-vs-observed as fixture-only in 08-03 comparison report)
+- [Phase ?]: 08-02 checkpoint: Traversal mechanism = fabric-iq-native (no azure-kusto-data, no KQL/Gremlin, ontology-binding step is both registration and traversal surface)
 
 ### Roadmap Evolution
 
@@ -190,6 +195,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-27T03:39:16.133Z
-Stopped at: Completed 08-01-PLAN.md
+Last session: 2026-08-27T04:10:20.153Z
+Stopped at: Completed 08-02-PLAN.md
 Resume file: None
