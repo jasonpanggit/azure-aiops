@@ -25,9 +25,16 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Callable
 from typing import Any
 
 NOTEBOOK_DISPLAY_NAME = "topology_pipeline_notebook"
+
+#: Second Fabric-hosted notebook item: the full operational-context-graph
+#: (entity/relationship) pipeline, mirroring the topology notebook's
+#: compute-architecture decision but covering the full Hermes ontology
+#: scope rather than only network topology.
+ONTOLOGY_NOTEBOOK_DISPLAY_NAME = "ontology_pipeline_notebook"
 
 #: The notebook's own top-level cells: read inventory-shaped rows from the
 #: existing lakehouse tables via Spark, call this package's pure functions,
@@ -72,6 +79,52 @@ _NOTEBOOK_CELLS: tuple[str, ...] = (
     ),
 )
 
+#: The operational-context-graph notebook's own top-level cells: read
+#: inventory-shaped rows from the existing lakehouse tables via Spark, call
+#: ``ontology_pipeline``'s pure functions (which themselves call the
+#: existing ``EntityBuilder``/``RelationshipBuilder``/
+#: ``generate_ontology_metadata``), then write results back via the same
+#: Delta path this repo's DeltaWriter/OneLakeWriter already write through.
+_ONTOLOGY_NOTEBOOK_CELLS: tuple[str, ...] = (
+    (
+        "# Fabric-hosted Spark notebook: operational-context-graph derivation\n"
+        "# Reproduces ontology.entity_builder.EntityBuilder and\n"
+        "# ontology.relationship_builder.RelationshipBuilder's full deterministic\n"
+        "# entity/relationship inference (Application, BusinessService,\n"
+        "# VirtualMachine, PatchAssessment, AdvisorRecommendation, ... plus\n"
+        "# belongsTo/assessedBy/impacts/dependsOn, ...) against inventory-owned\n"
+        "# identity data. This cell installs no new dependencies -- it imports\n"
+        "# the same pure functions already unit-tested outside Fabric\n"
+        "# (fabric_pipelines/ontology packages).\n"
+    ),
+    (
+        "from fabric_pipelines.ontology_pipeline import (\n"
+        "    derive_entities,\n"
+        "    derive_ontology_metadata,\n"
+        "    derive_relationships,\n"
+        ")\n"
+    ),
+    (
+        "# Read inventory-owned resource rows from the Lakehouse (Spark-native\n"
+        "# read; no direct ARG query -- this mirrors the topology pipeline's\n"
+        "# D-04a compute-architecture decision for the full ontology scope).\n"
+        "source_rows = spark.read.table('inventory_resources').toJSON().map(lambda r: __import__('json').loads(r)).collect()\n"
+        "run_id = spark.conf.get('spark.app.id', 'ontology-pipeline-run')\n"
+        "observed = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()\n"
+    ),
+    (
+        "entity_rows = derive_entities(source_rows, run_id=run_id, timestamp=observed)\n"
+        "relationship_rows = derive_relationships(entity_rows, run_id)\n"
+        "ontology_metadata = derive_ontology_metadata(entity_rows)\n"
+    ),
+    (
+        "entities_df = spark.createDataFrame(entity_rows)\n"
+        "relationships_df = spark.createDataFrame(relationship_rows)\n"
+        "entities_df.write.format('delta').mode('overwrite').saveAsTable('ontology_entities')\n"
+        "relationships_df.write.format('delta').mode('overwrite').saveAsTable('ontology_relationships')\n"
+    ),
+)
+
 
 def _build_notebook_source(
     *,
@@ -79,6 +132,7 @@ def _build_notebook_source(
     workspace_id: str = "",
     lakehouse_id: str = "",
     lakehouse_name: str = "",
+    cells: tuple[str, ...] = _NOTEBOOK_CELLS,
 ) -> str:
     """Renders ``_NOTEBOOK_CELLS`` in Fabric's ``.py`` notebook-source format
     (NOT plain Python, NOT ipynb JSON): a ``# Fabric notebook source``
@@ -142,7 +196,7 @@ def _build_notebook_source(
         "# META }",
         "",
     ]
-    for source in _NOTEBOOK_CELLS:
+    for source in cells:
         lines.append("# CELL ********************")
         lines.append("")
         lines.extend(source.splitlines())
@@ -163,6 +217,8 @@ def build_notebook_definition(
     workspace_id: str = "",
     lakehouse_id: str = "",
     lakehouse_name: str = "",
+    display_name: str = NOTEBOOK_DISPLAY_NAME,
+    cells: tuple[str, ...] = _NOTEBOOK_CELLS,
 ) -> dict[str, Any]:
     """Returns the Fabric item ``definition`` payload for the notebook.
 
@@ -176,8 +232,13 @@ def build_notebook_definition(
     When ``lakehouse_id`` is supplied, the same ``dependencies`` entry also
     gets a ``"lakehouse": {...}`` block attaching that Lakehouse item as the
     notebook's default lakehouse -- required for the unqualified
-    ``spark.read.table(...)``/``.saveAsTable(...)`` calls in
-    ``_NOTEBOOK_CELLS`` to resolve against a metastore catalog at all.
+    ``spark.read.table(...)``/``.saveAsTable(...)`` calls in ``cells``
+    to resolve against a metastore catalog at all.
+
+    ``display_name``/``cells`` default to the topology-pipeline notebook's
+    own content so existing callers are unaffected; the ontology pipeline
+    notebook is built by passing ``display_name=ONTOLOGY_NOTEBOOK_DISPLAY_NAME,
+    cells=_ONTOLOGY_NOTEBOOK_CELLS`` (see ``build_ontology_notebook_definition``).
     """
     return {
         "parts": [
@@ -188,15 +249,37 @@ def build_notebook_definition(
                     workspace_id=workspace_id,
                     lakehouse_id=lakehouse_id,
                     lakehouse_name=lakehouse_name,
+                    cells=cells,
                 ),
             ),
             _part(
                 ".platform",
-                {"metadata": {"type": "Notebook", "displayName": NOTEBOOK_DISPLAY_NAME}},
+                {"metadata": {"type": "Notebook", "displayName": display_name}},
                 payload_type="InlineBase64",
             ),
         ]
     }
+
+
+def build_ontology_notebook_definition(
+    *,
+    environment_id: str = "",
+    workspace_id: str = "",
+    lakehouse_id: str = "",
+    lakehouse_name: str = "",
+) -> dict[str, Any]:
+    """Returns the Fabric item ``definition`` payload for the
+    operational-context-graph (entity/relationship) notebook -- the same
+    ``.py`` notebook-source format as ``build_notebook_definition``, just
+    with ``_ONTOLOGY_NOTEBOOK_CELLS`` and its own display name."""
+    return build_notebook_definition(
+        environment_id=environment_id,
+        workspace_id=workspace_id,
+        lakehouse_id=lakehouse_id,
+        lakehouse_name=lakehouse_name,
+        display_name=ONTOLOGY_NOTEBOOK_DISPLAY_NAME,
+        cells=_ONTOLOGY_NOTEBOOK_CELLS,
+    )
 
 
 class NotebookManager:
@@ -262,9 +345,16 @@ def ensure_notebook(
     environment_id: str = "",
     lakehouse_id: str = "",
     lakehouse_name: str = "",
+    definition_builder: Callable[..., dict[str, Any]] = build_notebook_definition,
 ) -> dict[str, Any]:
-    """Idempotent create-or-update of the topology-pipeline notebook item."""
-    definition = build_notebook_definition(
+    """Idempotent create-or-update of a Fabric notebook item.
+
+    ``definition_builder`` defaults to the topology-pipeline notebook's own
+    ``build_notebook_definition``; pass
+    ``build_ontology_notebook_definition`` to deploy the operational-
+    context-graph notebook instead (mirrors this function's existing
+    shape rather than introducing a second manager)."""
+    definition = definition_builder(
         environment_id=environment_id,
         workspace_id=manager.workspace_id if (environment_id or lakehouse_id) else "",
         lakehouse_id=lakehouse_id,
@@ -292,7 +382,9 @@ def _text_part(path: str, text: str) -> dict[str, str]:
 
 __all__ = [
     "NOTEBOOK_DISPLAY_NAME",
+    "ONTOLOGY_NOTEBOOK_DISPLAY_NAME",
     "NotebookManager",
     "build_notebook_definition",
+    "build_ontology_notebook_definition",
     "ensure_notebook",
 ]
