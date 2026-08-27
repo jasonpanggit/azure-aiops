@@ -168,12 +168,17 @@ class OntologyValidator:
             object_id = str(row.get("object_id") or "").strip().casefold()
             if subject not in known or object_id not in known:
                 dangling += 1
-            else:
+            elif row.get("lifecycle_status") == "active":
+                # Only active relationships must agree with the *current*
+                # entity_type. A retired relationship's subject_type/object_type
+                # reflects the type at the time it was captured; the referenced
+                # entity may have since been reclassified (e.g. ManagedIdentity
+                # <-> Resource), which is expected and not a data-quality defect.
                 if row.get("subject_type") != entity_types.get(subject):
                     invalid_relationships += 1
                 if row.get("object_type") != entity_types.get(object_id):
                     invalid_relationships += 1
-                if row.get("lifecycle_status") == "active" and (
+                if (
                     entity_lifecycle.get(subject) != "active"
                     or entity_lifecycle.get(object_id) != "active"
                 ):

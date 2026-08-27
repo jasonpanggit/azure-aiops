@@ -7,13 +7,15 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
 import { contextApi } from "@/lib/services";
+import { useScope } from "@/lib/scope-context";
 
 /** Business service operating view with semantic context, risk, and blast radius. */
 export default function ServiceDetailPage({ params }: { params: { name: string } }) {
   const name = decodeURIComponent(params.name);
-  const context = useApi(() => contextApi.businessService(name), [name]);
-  const risk = useApi(() => contextApi.risk(name), [name]);
-  const impact = useApi(() => contextApi.impact(name), [name]);
+  const { scope } = useScope();
+  const context = useApi(() => contextApi.businessService(name, scope), [name, scope]);
+  const risk = useApi(() => contextApi.risk(name, scope), [name, scope]);
+  const impact = useApi(() => contextApi.impact(name, scope), [name, scope]);
   const error = context.error ?? risk.error ?? impact.error;
 
   if (error) {
@@ -26,12 +28,15 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
       <PageHeader
         eyebrow="Business service"
         title={name}
-        description="Operational context, aggregated risk, and dependency impact for this business capability."
+        description="What is affected in this business capability, which evidence supports it, and where ownership or dependency context is still missing."
         actions={<Link className="button button-primary" href={`/copilot?service=${encodeURIComponent(name)}`}>Ask Copilot</Link>}
       />
       <EvidenceBar
         evidence={[...(context.data?.evidence ?? []), ...(risk.data?.evidence ?? []), ...(impact.data?.evidence ?? [])]}
         knowledgeVersion={context.data?.knowledge_version}
+        graphFreshness={context.data?.data?.graph_freshness}
+        liveObservedAt={context.data?.data?.live_observed_at}
+        sourceStatus={context.data?.data?.source_status}
         warnings={[...(context.data?.warnings ?? []), ...(risk.data?.warnings ?? []), ...(impact.data?.warnings ?? [])]}
       />
       {context.loading || risk.loading || impact.loading ? (

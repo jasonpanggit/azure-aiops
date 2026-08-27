@@ -9,12 +9,15 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-from hermes_arg_connector.azure import AzureResourceGraphClient
+from hermes_arg_connector.azure import (
+    AzureCostManagementClient,
+    AzureResourceGraphClient,
+)
 from hermes_arg_connector.config import ConnectorConfig
-from hermes_arg_connector.fs import join_root
+from storage.fs import join_root
 from hermes_arg_connector.logs import AzureMonitorLogsClient, LogsQueryLimits
 from hermes_arg_connector.service import IngestionService
-from hermes_arg_connector.source import AzureResourceGraphSource
+from hermes_arg_connector.source import AzureResourceGraphSource, CostActualsSource
 from ontology.subscription_connection import SubscriptionConnection
 
 from .credentials import CredentialResolver, SecretWriter, default_secret_provider
@@ -84,12 +87,23 @@ def build_connection_ingestion(
     )
     logs_client = None
     if scoped.workspaces_for_connection(connection.connection_id):
-        credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
         logs_client = AzureMonitorLogsClient(
-            credential_resolver.build(connection.credential),
+            (resolver or CredentialResolver(provider=default_secret_provider())).build(
+                connection.credential
+            ),
             limits=LogsQueryLimits(timeout_seconds=scoped.command_timeout_seconds),
         )
-    return IngestionService(scoped, source=source, logs_client=logs_client)
+    cost_source = (
+        CostActualsSource(cost=build_connection_cost_client(scoped, connection, resolver))
+        if scoped.cost_management_enabled
+        else None
+    )
+    return IngestionService(
+        scoped,
+        source=source,
+        cost_source=cost_source,
+        logs_client=logs_client,
+    )
 
 
 def build_connection_arg_client(
@@ -103,6 +117,19 @@ def build_connection_arg_client(
         credential_resolver.build(connection.credential),
         page_size=config.page_size,
         max_pages=config.max_pages,
+        timeout=config.command_timeout_seconds,
+    )
+
+
+def build_connection_cost_client(
+    config: ConnectorConfig,
+    connection: SubscriptionConnection,
+    resolver: CredentialResolver | None = None,
+) -> AzureCostManagementClient:
+    """Build a Cost Management client authenticated with one connection SPN."""
+    credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
+    return AzureCostManagementClient(
+        credential_resolver.build(connection.credential),
         timeout=config.command_timeout_seconds,
     )
 
@@ -140,6 +167,7 @@ def _slug(value: str) -> str:
 
 __all__ = [
     "build_connection_arg_client",
+    "build_connection_cost_client",
     "build_connection_ingestion",
     "build_onboarding_service",
     "connection_context",

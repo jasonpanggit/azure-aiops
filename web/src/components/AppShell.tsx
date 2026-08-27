@@ -9,17 +9,24 @@ import { ScopeSelector } from "./ScopeSelector";
 
 const PRIMARY_NAV = [
   { href: "/", label: "Home", short: "H" },
+  { href: "/investigate", label: "Investigate", short: "I" },
+  { href: "/agents", label: "Agents", short: "AG" },
   { href: "/situations", label: "Situations", short: "S" },
   { href: "/services", label: "Services", short: "SV" },
   { href: "/network", label: "Topology", short: "T" },
+  { href: "/twin", label: "Twin", short: "TW" },
+  { href: "/compliance", label: "Compliance", short: "C" },
   { href: "/exposure", label: "Exposure", short: "E" },
   { href: "/software-inventory", label: "Software Inventory", short: "SI" },
-  { href: "/changes", label: "Changes", short: "C" },
+  { href: "/changes", label: "Changes", short: "CH" },
   { href: "/remediation", label: "Remediation", short: "R" },
+  { href: "/finops", label: "FinOps", short: "F" },
+  { href: "/identity", label: "Identity", short: "ID" },
 ] as const;
 
 const WORKBENCH_NAV = [
   { href: "/copilot", label: "Copilot", short: "AI" },
+  { href: "/governance", label: "Governance", short: "G" },
   { href: "/connections", label: "Data & integrations", short: "D" },
   { href: "/admin", label: "Administration", short: "A" },
 ] as const;

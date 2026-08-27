@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from azure.core.exceptions import ResourceExistsError
+from azure.core.exceptions import HttpResponseError, ResourceExistsError
 from azure.storage.filedatalake import DataLakeLeaseClient, DataLakeServiceClient
 
 from storage.locking import RunLock
@@ -148,8 +148,25 @@ class OneLakeWriter:
             file_client.create_file()
         except ResourceExistsError:
             pass
+        except HttpResponseError as error:
+            # The lock file already exists and is currently leased (e.g. by an
+            # orphaned lease from a crashed/interrupted prior run). It's safe
+            # to leave the existing file in place; the lease acquire/break
+            # logic below handles recovery.
+            if getattr(error, "error_code", "") != "LeaseIdMissing":
+                raise
         lease = DataLakeLeaseClient(file_client)
-        lease.acquire(lease_duration=-1)
+        try:
+            lease.acquire(lease_duration=-1)
+        except HttpResponseError as error:
+            # A prior run crashed/was interrupted while holding the lease,
+            # leaving it orphaned indefinitely (lease_duration=-1 never
+            # expires on its own). Break it and retry once rather than
+            # requiring manual intervention.
+            if getattr(error, "error_code", "") != "LeaseIdMissing":
+                raise
+            lease.break_lease(lease_break_period=0)
+            lease.acquire(lease_duration=-1)
         try:
             yield
         finally:

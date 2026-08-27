@@ -13,7 +13,11 @@ from .fabric_publication import InventoryFabricPublisher
 from .models import SoftwareObservation
 from .normalization import normalize_os_inventory, normalize_paas_resources
 from .software_normalization import normalize_configuration_data
-from .sources.arg import inventory_os_specs, inventory_resource_specs
+from .sources.arg import (
+    inventory_log_analytics_workspace_specs,
+    inventory_os_specs,
+    inventory_resource_specs,
+)
 from .sources.logs import fetch_software_inventory
 
 
@@ -53,8 +57,8 @@ class InventoryPipeline:
     def _refresh_locked(self) -> InventoryRefreshResult:
         started = self.clock().astimezone(UTC).replace(microsecond=0)
         subscriptions = list(getattr(self.config, "subscriptions", ()))
-        discovered = self.source.list_subscriptions()
         if not subscriptions:
+            discovered = self.source.list_subscriptions()
             subscriptions = [
                 str(item.get("subscriptionId") or item.get("id") or "")
                 for item in discovered
@@ -63,7 +67,8 @@ class InventoryPipeline:
         if not subscriptions:
             raise RuntimeError("No Azure subscriptions were returned by Azure inventory source")
 
-        specs = [*inventory_os_specs(), *inventory_resource_specs()]
+        law_specs = inventory_log_analytics_workspace_specs()
+        specs = [*inventory_os_specs(), *inventory_resource_specs(), *law_specs]
         query_results = self.source.fetch(specs, subscriptions)
         requested_scope = {"subscription": sorted(subscriptions)}
         for spec in specs:
@@ -80,11 +85,17 @@ class InventoryPipeline:
             run_id=run_id,
             requested_scope=requested_scope,
         )
+        discovered_law_workspaces = [
+            row
+            for row in query_results.get("inventory_log_analytics_workspaces", [])
+            if row.get("workspaceId")
+        ]
         software_rows, software_status = fetch_software_inventory(
             self.config,
             self.logs_client,
             subscriptions,
             started,
+            discovered_workspaces=discovered_law_workspaces,
         )
         software_observations = normalize_configuration_data(
             software_rows,

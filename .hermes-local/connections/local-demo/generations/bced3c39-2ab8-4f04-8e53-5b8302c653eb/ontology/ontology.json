@@ -1,0 +1,426 @@
+{
+  "entityTypes": {
+    "AdvisorRecommendation": {
+      "dataset": "entities/AdvisorRecommendation",
+      "key": "id",
+      "properties": {
+        "application_name": "string",
+        "business_service_name": "string",
+        "category": "string",
+        "connection_health_status": "string",
+        "connection_id": "string",
+        "connection_name": "string",
+        "cost_center": "string",
+        "createdTimestamp": "string",
+        "criticality": "string",
+        "displayName": "string",
+        "environment_name": "string",
+        "id": "string",
+        "impact": "string",
+        "lastObservedTimestamp": "string",
+        "name": "string",
+        "owner_name": "string",
+        "problem": "string",
+        "properties": "string(json)",
+        "schemaVersion": "string",
+        "solution": "string",
+        "sourceId": "string",
+        "sourceSystem": "string",
+        "subscriptionId": "string",
+        "support_team_name": "string",
+        "targetResourceId": "string",
+        "tenantId": "string"
+      }
+    },
+    "ArcServer": {
+      "dataset": "entities/ArcServer",
+      "key": "id",
+      "properties": {
+        "application_name": "string",
+        "business_service_name": "string",
+        "connection_health_status": "string",
+        "connection_id": "string",
+        "connection_name": "string",
+        "cost_center": "string",
+        "createdTimestamp": "string",
+        "criticality": "string",
+        "displayName": "string",
+        "entityType": "string",
+        "environment_name": "string",
+        "id": "string",
+        "lastObservedTimestamp": "string",
+        "location": "string",
+        "name": "string",
+        "osName": "string",
+        "osVersion": "string",
+        "owner_name": "string",
+        "properties": "string(json)",
+        "resourceGroup": "string",
+        "resourceType": "string",
+        "schemaVersion": "string",
+        "sourceId": "string",
+        "sourceSystem": "string",
+        "status": "string",
+        "subscriptionId": "string",
+        "support_team_name": "string",
+        "tags": "string(json)",
+        "tenantId": "string"
+      }
+    },
+    "AzureFirewall": {
+      "dataset": "entities/AzureFirewall",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "FirewallPolicy": {
+      "dataset": "entities/FirewallPolicy",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "FirewallRule": {
+      "dataset": "entities/FirewallRule",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "FirewallRuleCollection": {
+      "dataset": "entities/FirewallRuleCollection",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "LoadBalancer": {
+      "dataset": "entities/LoadBalancer",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "ManagementGroup": {
+      "dataset": "entities/ManagementGroup",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "NetworkGateway": {
+      "dataset": "entities/NetworkGateway",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "NetworkInterface": {
+      "dataset": "entities/NetworkInterface",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "NetworkSecurityGroup": {
+      "dataset": "entities/NetworkSecurityGroup",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "NetworkSecurityRule": {
+      "dataset": "entities/NetworkSecurityRule",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "PatchAssessment": {
+      "dataset": "entities/PatchAssessment",
+      "key": "id",
+      "properties": {
+        "application_name": "string",
+        "availablePatchCountByClassification": "string(json)",
+        "business_service_name": "string",
+        "connection_health_status": "string",
+        "connection_id": "string",
+        "connection_name": "string",
+        "cost_center": "string",
+        "createdTimestamp": "string",
+        "criticality": "string",
+        "displayName": "string",
+        "environment_name": "string",
+        "errorDetails": "string(json)",
+        "id": "string",
+        "lastModifiedDateTime": "string",
+        "lastObservedTimestamp": "string",
+        "name": "string",
+        "owner_name": "string",
+        "properties": "string(json)",
+        "schemaVersion": "string",
+        "sourceId": "string",
+        "sourceSystem": "string",
+        "status": "string",
+        "subscriptionId": "string",
+        "support_team_name": "string",
+        "targetResourceId": "string",
+        "tenantId": "string"
+      }
+    },
+    "PatchAssessmentDetail": {
+      "dataset": "entities/PatchAssessmentDetail",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "PatchInstallation": {
+      "dataset": "entities/PatchInstallation",
+      "key": "id",
+      "properties": {
+        "application_name": "string",
+        "business_service_name": "string",
+        "classifications": "string(json)",
+        "connection_health_status": "string",
+        "connection_id": "string",
+        "connection_name": "string",
+        "cost_center": "string",
+        "createdTimestamp": "string",
+        "criticality": "string",
+        "displayName": "string",
+        "environment_name": "string",
+        "errorDetails": "string(json)",
+        "id": "string",
+        "kbId": "string",
+        "lastModifiedDateTime": "string",
+        "lastObservedTimestamp": "string",
+        "name": "string",
+        "owner_name": "string",
+        "properties": "string(json)",
+        "publishedDateTime": "string",
+        "schemaVersion": "string",
+        "sourceId": "string",
+        "sourceSystem": "string",
+        "status": "string",
+        "subscriptionId": "string",
+        "support_team_name": "string",
+        "targetResourceId": "string",
+        "tenantId": "string",
+        "updateName": "string"
+      }
+    },
+    "PrivateDnsZone": {
+      "dataset": "entities/PrivateDnsZone",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "PrivateEndpoint": {
+      "dataset": "entities/PrivateEndpoint",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "Resource": {
+      "dataset": "entities/Resource",
+      "key": "id",
+      "properties": {
+        "application_name": "string",
+        "business_service_name": "string",
+        "connection_health_status": "string",
+        "connection_id": "string",
+        "connection_name": "string",
+        "cost_center": "string",
+        "createdTimestamp": "string",
+        "criticality": "string",
+        "displayName": "string",
+        "entityType": "string",
+        "environment_name": "string",
+        "id": "string",
+        "lastObservedTimestamp": "string",
+        "location": "string",
+        "name": "string",
+        "owner_name": "string",
+        "properties": "string(json)",
+        "resourceGroup": "string",
+        "resourceType": "string",
+        "schemaVersion": "string",
+        "sourceId": "string",
+        "sourceSystem": "string",
+        "subscriptionId": "string",
+        "support_team_name": "string",
+        "tags": "string(json)",
+        "tenantId": "string"
+      }
+    },
+    "ResourceGroup": {
+      "dataset": "entities/ResourceGroup",
+      "key": "id",
+      "properties": {
+        "application_name": "string",
+        "business_service_name": "string",
+        "connection_health_status": "string",
+        "connection_id": "string",
+        "connection_name": "string",
+        "cost_center": "string",
+        "createdTimestamp": "string",
+        "criticality": "string",
+        "displayName": "string",
+        "environment_name": "string",
+        "id": "string",
+        "lastObservedTimestamp": "string",
+        "location": "string",
+        "name": "string",
+        "owner_name": "string",
+        "schemaVersion": "string",
+        "sourceId": "string",
+        "sourceSystem": "string",
+        "subscriptionId": "string",
+        "support_team_name": "string",
+        "tags": "string(json)",
+        "tenantId": "string"
+      }
+    },
+    "Route": {
+      "dataset": "entities/Route",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "RouteTable": {
+      "dataset": "entities/RouteTable",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "Subnet": {
+      "dataset": "entities/Subnet",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "Subscription": {
+      "dataset": "entities/Subscription",
+      "key": "id",
+      "properties": {
+        "application_name": "string",
+        "business_service_name": "string",
+        "connection_health_status": "string",
+        "connection_id": "string",
+        "connection_name": "string",
+        "cost_center": "string",
+        "createdTimestamp": "string",
+        "criticality": "string",
+        "displayName": "string",
+        "environment_name": "string",
+        "id": "string",
+        "lastObservedTimestamp": "string",
+        "managementGroupAncestorsChain": "string(json)",
+        "name": "string",
+        "owner_name": "string",
+        "schemaVersion": "string",
+        "sourceId": "string",
+        "sourceSystem": "string",
+        "state": "string",
+        "subscriptionId": "string",
+        "support_team_name": "string",
+        "tags": "string(json)",
+        "tenantId": "string"
+      }
+    },
+    "VNet": {
+      "dataset": "entities/VNet",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "VNetPeering": {
+      "dataset": "entities/VNetPeering",
+      "key": "id",
+      "properties": {
+        "id": "string"
+      }
+    },
+    "VirtualMachine": {
+      "dataset": "entities/VirtualMachine",
+      "key": "id",
+      "properties": {
+        "application_name": "string",
+        "business_service_name": "string",
+        "connection_health_status": "string",
+        "connection_id": "string",
+        "connection_name": "string",
+        "cost_center": "string",
+        "createdTimestamp": "string",
+        "criticality": "string",
+        "displayName": "string",
+        "entityType": "string",
+        "environment_name": "string",
+        "id": "string",
+        "lastObservedTimestamp": "string",
+        "location": "string",
+        "name": "string",
+        "osType": "string",
+        "owner_name": "string",
+        "properties": "string(json)",
+        "resourceGroup": "string",
+        "resourceType": "string",
+        "schemaVersion": "string",
+        "sourceId": "string",
+        "sourceSystem": "string",
+        "subscriptionId": "string",
+        "support_team_name": "string",
+        "tags": "string(json)",
+        "tenantId": "string",
+        "vmSize": "string"
+      }
+    }
+  },
+  "expansion": {
+    "contextSystem": "Microsoft Fabric Ontology",
+    "sourceOfTruth": "Azure Resource Graph and Azure operational services",
+    "strategy": "additive entity types and source assertions"
+  },
+  "name": "HermesAzureOperationalContext",
+  "relationshipTypes": {
+    "assessedBy": {
+      "description": "Resource has a patch assessment",
+      "properties": [
+        "confidence",
+        "source",
+        "createdTimestamp",
+        "lastObservedTimestamp",
+        "assertionState"
+      ]
+    },
+    "belongsTo": {
+      "description": "Administrative containment",
+      "properties": [
+        "confidence",
+        "source",
+        "createdTimestamp",
+        "lastObservedTimestamp",
+        "assertionState"
+      ]
+    },
+    "impacts": {
+      "description": "Recommendation or finding impacts a resource",
+      "properties": [
+        "confidence",
+        "source",
+        "createdTimestamp",
+        "lastObservedTimestamp",
+        "assertionState"
+      ]
+    }
+  },
+  "schemaVersion": "1.0.0"
+}

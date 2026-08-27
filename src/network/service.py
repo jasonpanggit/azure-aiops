@@ -151,9 +151,11 @@ class NetworkIntelligenceService:
         snapshot: NetworkSnapshot,
         *,
         policy: NetworkDesignPolicy | None = None,
+        semantic_relationships: Iterable[Mapping[str, Any]] = (),
     ) -> None:
         self.snapshot = snapshot
         self.policy = policy if policy is not None else NetworkDesignPolicy()
+        self.semantic_relationships = tuple(dict(row) for row in semantic_relationships)
         self._topology: NetworkTopology | None = None
         self._gaps: tuple[NetworkGap, ...] | None = None
         self._findings: tuple[RuleFinding, ...] | None = None
@@ -165,14 +167,19 @@ class NetworkIntelligenceService:
         *,
         policy: NetworkDesignPolicy | None = None,
         policy_path: str | None = None,
+        semantic_relationships: Iterable[Mapping[str, Any]] = (),
     ) -> NetworkIntelligenceService:
         resolved = policy if policy is not None else load_design_policy(policy_path)
-        return cls(load_network_snapshot(rows), policy=resolved)
+        return cls(
+            load_network_snapshot(rows),
+            policy=resolved,
+            semantic_relationships=semantic_relationships,
+        )
 
     @property
     def topology(self) -> NetworkTopology:
         if self._topology is None:
-            self._topology = TopologyBuilder().build(self.snapshot)
+            self._topology = TopologyBuilder().build(self.snapshot, self.semantic_relationships)
         return self._topology
 
     @property

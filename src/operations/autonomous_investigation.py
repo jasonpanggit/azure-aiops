@@ -1,0 +1,563 @@
+"""Autonomous multi-agent operational investigation orchestration.
+
+This layer coordinates specialized, deterministic agents over the governed tool
+registry. Agents never access providers directly and never expose hidden
+chain-of-thought; they publish tool calls, evidence, findings, disagreements,
+human decisions, and evaluation metrics into an auditable task ledger.
+"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import time
+import uuid
+from collections import OrderedDict
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
+
+from api.scope import Scope
+from operations.tools import (
+    STATUS_DENIED,
+    STATUS_EMPTY,
+    STATUS_OK,
+    STATUS_UNAVAILABLE,
+    call_tool,
+)
+
+AGENT_TIMEOUT_SECONDS = 8.0
+MAX_RETRIES = 1
+MAX_LEDGER_ENTRIES = 1_000
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+@dataclass(frozen=True)
+class AgentDefinition:
+    id: str
+    name: str
+    role: str
+    tools: tuple[str, ...]
+    keywords: tuple[str, ...]
+    depends_on: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "role": self.role,
+            "tools": list(self.tools),
+            "keywords": list(self.keywords),
+            "depends_on": list(self.depends_on),
+        }
+
+
+AGENTS: tuple[AgentDefinition, ...] = (
+    AgentDefinition("network", "Network Agent", "Investigates topology, traffic paths, firewall/NSG gaps, and blast radius.", ("network_topology", "firewall_nsg_gaps"), ("network", "traffic", "firewall", "nsg", "route", "blast", "hub")),
+    AgentDefinition("vulnerability", "Vulnerability Agent", "Investigates CVE exposure, reachability, exploitability, and affected services.", ("cve_exposure", "risk_context"), ("cve", "vulnerab", "exploit", "exposure", "risk")),
+    AgentDefinition("patch", "Patch Agent", "Investigates patch priorities, KB remediation, and validation expectations.", ("cve_exposure", "remediation_plans"), ("patch", "kb", "update", "sla")),
+    AgentDefinition("incident", "Incident Agent", "Investigates incident timeline, root-cause candidates, unknowns, and validation steps.", ("incidents",), ("incident", "outage", "alert", "root cause", "timeline")),
+    AgentDefinition("change", "Change Agent", "Investigates recent changes and correlates them to operational symptoms.", ("incidents", "search"), ("change", "changed", "deployment", "configuration")),
+    AgentDefinition("governance", "Governance Agent", "Investigates owners, scope, approvals, exceptions, and policy/accountability context.", ("business_service_context", "application_context", "risk_context"), ("owner", "approval", "governance", "policy", "scope", "exception")),
+    AgentDefinition("remediation", "Remediation Agent", "Investigates safe remediation options, rollback, validation, and governed handoff.", ("remediation_opportunities", "remediation_plans"), ("remediat", "fix", "mitigat", "rollback", "plan")),
+    AgentDefinition("executive_summary", "Executive Summary Agent", "Synthesizes grounded findings into business impact, decisions, and recommended plan.", (), ("executive", "summary", "decision"), ("network", "vulnerability", "patch", "incident", "change", "governance", "remediation")),
+)
+
+
+def agent_catalog() -> list[dict[str, Any]]:
+    return [agent.to_dict() for agent in AGENTS]
+
+
+def _extract_subject(objective: str) -> str:
+    import re
+
+    quoted = re.findall(r"[\"“]([^\"”]{2,100})[\"”]", objective)
+    if quoted:
+        return quoted[0].strip()
+    candidates = re.findall(r"\b([A-Z][A-Za-z0-9_-]*(?:\s+[A-Z][A-Za-z0-9_-]*)*)\b", objective)
+    stop = {"what", "which", "how", "why", "who", "when", "where", "cve", "kb", "prod", "uat"}
+    candidates = [item for item in candidates if item.casefold() not in stop and not any(part.casefold() in stop for part in item.split())]
+    return max(candidates, key=len) if candidates else ""
+
+
+def _select_agents(objective: str) -> list[AgentDefinition]:
+    lowered = objective.casefold()
+    selected = [agent for agent in AGENTS if agent.id != "executive_summary" and any(marker in lowered for marker in agent.keywords)]
+    if not selected:
+        selected = [agent for agent in AGENTS if agent.id in {"network", "vulnerability", "incident", "remediation", "governance"}]
+    executive = next(agent for agent in AGENTS if agent.id == "executive_summary")
+    return selected + [executive]
+
+
+def _tool_args(tool: str, objective: str, subject: str) -> dict[str, Any]:
+    if tool in {"business_service_context", "application_context"}:
+        return {"name": subject} if subject else {}
+    if tool in {"risk_context", "impact_context"}:
+        return {"subject": subject} if subject else {}
+    if tool == "cve_exposure":
+        return {"business_service": subject} if subject else {}
+    if tool == "search":
+        return {"query": objective}
+    return {}
+
+
+def _rows(data: Any) -> list[dict[str, Any]]:
+    """Best-effort extraction of record rows from a tool payload."""
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    if isinstance(data, dict):
+        for key in ("gaps", "rule_findings", "exposures", "incidents", "plans", "opportunities", "results", "items"):
+            value = data.get(key)
+            if isinstance(value, list):
+                rows = [row for row in value if isinstance(row, dict)]
+                if rows:
+                    return rows
+    return []
+
+
+def _label(row: Mapping[str, Any]) -> str:
+    for key in ("cve_id", "kb_id", "incident_id", "title", "name", "finding_id", "gap_id", "plan_id", "id"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _severity_breakdown(rows: list[dict[str, Any]]) -> str:
+    """Count rows by severity so the finding states risk, not just volume."""
+    counts: dict[str, int] = {}
+    for row in rows:
+        for key in ("severity", "priority", "risk_level", "status"):
+            value = row.get(key)
+            if isinstance(value, str) and value.strip():
+                counts[value.strip().casefold()] = counts.get(value.strip().casefold(), 0) + 1
+                break
+    if not counts:
+        return ""
+    order = {"critical": 0, "high": 1, "error": 1, "medium": 2, "warning": 2, "low": 3, "info": 4}
+    ranked = sorted(counts.items(), key=lambda item: (order.get(item[0], 5), -item[1]))
+    return ", ".join(f"{count} {name}" for name, count in ranked[:4])
+
+
+def _examples(rows: list[dict[str, Any]], limit: int = 3) -> str:
+    labels: list[str] = []
+    for row in rows:
+        label = _label(row)
+        if label and label not in labels:
+            labels.append(label)
+        if len(labels) >= limit:
+            break
+    if not labels:
+        return ""
+    suffix = f" (+{len(rows) - len(labels)} more)" if len(rows) > len(labels) else ""
+    return ", ".join(labels) + suffix
+
+
+def _summarize_tool(tool: str, result: Any) -> str:
+    """Describe what a tool actually observed, not merely how many rows it returned.
+
+    Findings name the affected subjects and their severity mix so an operator can
+    judge risk without opening the raw ledger.
+    """
+    if result.status != STATUS_OK:
+        return result.warning or f"{tool} status: {result.status}"
+
+    data = result.data
+    rows = _rows(data)
+    if not rows:
+        if isinstance(data, dict) and data:
+            summary = data.get("summary")
+            if isinstance(summary, Mapping) and summary:
+                detail = ", ".join(f"{key}={value}" for key, value in list(summary.items())[:4])
+                return f"{tool}: {detail}"
+            return f"{tool} returned scoped context ({len(data)} fields) with no enumerable records"
+        return f"{tool} observed no scoped records"
+
+    parts = [f"{tool}: {len(rows)} scoped record{'s' if len(rows) != 1 else ''}"]
+    severity = _severity_breakdown(rows)
+    if severity:
+        parts.append(f"severity {severity}")
+    examples = _examples(rows)
+    if examples:
+        parts.append(f"including {examples}")
+    return " — ".join(parts)
+
+
+def _agent_run(agent: AgentDefinition, objective: str, *, context: Any, scope: Scope) -> dict[str, Any]:
+    started = time.monotonic()
+    subject = _extract_subject(objective)
+    calls: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    status = STATUS_EMPTY
+
+    if agent.id == "executive_summary":
+        return {
+            "agent_id": agent.id,
+            "agent_name": agent.name,
+            "status": "waiting_for_inputs",
+            "started_at": _now(),
+            "completed_at": _now(),
+            "duration_ms": 0,
+            "tool_calls": [],
+            "findings": [],
+            "evidence": [],
+            "confidence": "medium",
+            "hidden_reasoning_exposed": False,
+        }
+
+    for tool in agent.tools:
+        args = _tool_args(tool, objective, subject)
+        result = call_tool(tool, args, context=context, scope=scope)
+        attempts = 1
+        if result.status == STATUS_UNAVAILABLE:
+            for _ in range(MAX_RETRIES):
+                retry = call_tool(tool, args, context=context, scope=scope)
+                attempts += 1
+                if retry.status != STATUS_UNAVAILABLE:
+                    result = retry
+                    break
+        call = {"tool": tool, "arguments": args, "status": result.status, "warning": result.warning, "attempts": attempts}
+        calls.append(call)
+        evidence.extend(item.to_dict() for item in result.evidence)
+        findings.append(
+            {
+                "finding_id": f"{agent.id}:{tool}:{len(findings) + 1}",
+                "agent_id": agent.id,
+                "summary": _summarize_tool(tool, result),
+                "status": result.status,
+                "confidence": "high" if result.status == STATUS_OK and result.evidence else "medium" if result.status == STATUS_OK else "unknown",
+                "evidence_count": len(result.evidence),
+                "unsupported": result.status == STATUS_OK and not result.evidence,
+            }
+        )
+        if result.status == STATUS_OK:
+            status = STATUS_OK
+        elif status != STATUS_OK and result.status in {STATUS_UNAVAILABLE, STATUS_DENIED}:
+            status = "partial"
+
+    return {
+        "agent_id": agent.id,
+        "agent_name": agent.name,
+        "status": status,
+        "started_at": _now(),
+        "completed_at": _now(),
+        "duration_ms": round((time.monotonic() - started) * 1000, 2),
+        "tool_calls": calls,
+        "findings": findings,
+        "evidence": evidence,
+        "confidence": _agent_confidence(findings),
+        "hidden_reasoning_exposed": False,
+    }
+
+
+def _agent_confidence(findings: list[dict[str, Any]]) -> str:
+    if any(item["confidence"] == "high" for item in findings):
+        return "high"
+    if any(item["confidence"] == "medium" for item in findings):
+        return "medium"
+    return "unknown"
+
+
+def _reconcile(agent_runs: list[dict[str, Any]]) -> dict[str, Any]:
+    findings = [finding for run in agent_runs for finding in run.get("findings", [])]
+    evidence = [item for run in agent_runs for item in run.get("evidence", [])]
+    missing = [call for run in agent_runs for call in run.get("tool_calls", []) if call.get("status") == STATUS_UNAVAILABLE]
+    stale = [item for item in evidence if item.get("freshness") == "stale"]
+    unsupported = [finding for finding in findings if finding.get("unsupported")]
+    statuses = {finding.get("status") for finding in findings}
+    disagreements = []
+    if STATUS_OK in statuses and (STATUS_UNAVAILABLE in statuses or STATUS_DENIED in statuses):
+        disagreements.append("Some agents reached evidence-backed findings while others could not access required providers.")
+    if STATUS_EMPTY in statuses and STATUS_OK in statuses:
+        disagreements.append("At least one agent found no scoped records while another found operational evidence.")
+    return {
+        "conflicts": disagreements,
+        "stale_evidence": stale,
+        "missing_providers": missing,
+        "unsupported_conclusions": unsupported,
+        "evidence_count": len(evidence),
+        "reconciled_confidence": "high" if evidence and not missing and not unsupported else "medium" if evidence else "unknown",
+    }
+
+
+def _deterministic_plan(agent_runs: list[dict[str, Any]], reconciliation: dict[str, Any]) -> str:
+    """Derive next actions from what the agents actually observed."""
+    steps: list[str] = []
+    missing = {str(call.get("tool")) for call in reconciliation.get("missing_providers", []) if call.get("tool")}
+    if missing:
+        steps.append(f"Restore or re-authorize {', '.join(sorted(missing))} before relying on this synthesis")
+    if reconciliation.get("unsupported_conclusions"):
+        steps.append(f"Reject or re-evidence {len(reconciliation['unsupported_conclusions'])} unsupported finding(s)")
+    if reconciliation.get("stale_evidence"):
+        steps.append(f"Refresh {len(reconciliation['stale_evidence'])} stale evidence item(s)")
+
+    by_agent = {run.get("agent_id"): run for run in agent_runs}
+    if (run := by_agent.get("vulnerability")) and run.get("status") == STATUS_OK:
+        steps.append("Triage CVE exposure by severity and confirm reachability before patching")
+    if (run := by_agent.get("network")) and run.get("status") == STATUS_OK:
+        steps.append("Close firewall/NSG gaps that widen blast radius")
+    if (run := by_agent.get("incident")) and run.get("status") == STATUS_OK:
+        steps.append("Correlate the incident timeline against recent changes to isolate root cause")
+    if (run := by_agent.get("remediation")) and run.get("status") == STATUS_OK:
+        steps.append("Validate the proposed remediation plan and its rollback path")
+
+    steps.append("Assign an accountable owner, then approve governed remediation only after validation")
+    return " ".join(f"{index}. {step}." for index, step in enumerate(steps, start=1))
+
+
+def _synthesis(
+    objective: str,
+    agent_runs: list[dict[str, Any]],
+    reconciliation: dict[str, Any],
+    *,
+    foundry_agent: Any = None,
+) -> dict[str, Any]:
+    """Build the operator-facing conclusion.
+
+    The deterministic synthesis is always produced so the ledger stays complete
+    and auditable. When a Foundry prompt agent is configured it narrates the
+    already-collected, already-scoped evidence; narration never invents facts
+    and never fails the investigation.
+    """
+    evidence_backed = [
+        finding
+        for run in agent_runs
+        for finding in run.get("findings", [])
+        if finding.get("status") == STATUS_OK and finding.get("evidence_count", 0) > 0
+    ]
+    unknowns = [call.get("tool") for run in agent_runs for call in run.get("tool_calls", []) if call.get("status") in {STATUS_UNAVAILABLE, STATUS_DENIED}]
+    headlines = [finding.get("summary", "") for finding in evidence_backed[:6] if finding.get("summary")]
+
+    summary = f"{len(evidence_backed)} evidence-backed findings were produced for: {objective}"
+    if headlines:
+        summary = f"{summary}. Key observations: " + "; ".join(headlines)
+
+    synthesis: dict[str, Any] = {
+        "summary": summary,
+        "recommended_plan": _deterministic_plan(agent_runs, reconciliation),
+        "required_decision": "Accept the synthesis, reject unsupported findings, or request more evidence before approving remediation.",
+        "unresolved_questions": sorted({item for item in unknowns if item}),
+        "confidence": reconciliation["reconciled_confidence"],
+        "narration": "",
+        "narrated_by": "",
+        "llm_calls": 0,
+    }
+
+    if foundry_agent is None:
+        return synthesis
+
+    grounding = {
+        "objective": objective,
+        "findings": headlines,
+        "reconciliation": {
+            "conflicts": reconciliation.get("conflicts", []),
+            "evidence_count": reconciliation.get("evidence_count", 0),
+            "missing_providers": [call.get("tool") for call in reconciliation.get("missing_providers", [])],
+            "unsupported_conclusions": len(reconciliation.get("unsupported_conclusions", [])),
+        },
+        "deterministic_plan": synthesis["recommended_plan"],
+    }
+    try:
+        answer = foundry_agent.answer(
+            question=(
+                "Summarize this operational investigation for a service owner. "
+                "Use only the supplied findings. State business impact and the most "
+                "important next action. Do not invent resources, CVEs, or owners."
+            ),
+            context=grounding,
+        )
+    except Exception as exc:  # noqa: BLE001 - narration is optional; never fail the investigation.
+        synthesis["narration_warning"] = f"Foundry narration unavailable: {exc.__class__.__name__}"
+        return synthesis
+
+    text = getattr(answer, "text", "") or ""
+    if text.strip():
+        synthesis["narration"] = text.strip()
+        synthesis["narrated_by"] = getattr(answer, "agent_name", "") or "foundry"
+        synthesis["llm_calls"] = 1
+    return synthesis
+
+
+def _evaluate(started: float, agent_runs: list[dict[str, Any]], reconciliation: dict[str, Any], scope: Scope, llm_calls: int = 0) -> dict[str, Any]:
+    tool_calls = [call for run in agent_runs for call in run.get("tool_calls", [])]
+    grounded = [finding for run in agent_runs for finding in run.get("findings", []) if finding.get("evidence_count", 0) > 0]
+    return {
+        "groundedness": round(len(grounded) / max(1, sum(len(run.get("findings", [])) for run in agent_runs)), 3),
+        "scope_isolation": "enforced" if scope.to_dict() else "unrestricted_admin_scope",
+        "tool_correctness": round(sum(call.get("status") != STATUS_DENIED for call in tool_calls) / max(1, len(tool_calls)), 3),
+        "convergence": "converged_with_open_questions" if reconciliation["missing_providers"] else "converged",
+        "latency_ms": round((time.monotonic() - started) * 1000, 2),
+        "cost": {"tool_calls": len(tool_calls), "agent_runs": len(agent_runs), "llm_calls": llm_calls},
+    }
+
+
+def _resolve_foundry_agent(context: Any) -> Any:
+    """Return the configured Foundry prompt agent, or ``None`` when unavailable.
+
+    Narration is optional: a missing or misconfigured agent must degrade to the
+    deterministic synthesis rather than fail the investigation.
+    """
+    provider = getattr(context, "foundry_agent", None)
+    if not callable(provider):
+        return None
+    try:
+        return provider()
+    except Exception:  # noqa: BLE001 - degrade to deterministic synthesis.
+        return None
+
+
+def run_autonomous_investigation(
+    objective: str,
+    *,
+    context: Any,
+    scope: Scope,
+    principal_subject: str,
+    timeout_seconds: float = AGENT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    selected = _select_agents(objective)
+    independent = [agent for agent in selected if not agent.depends_on and agent.id != "executive_summary"]
+    agent_runs: list[dict[str, Any]] = []
+    stop_reason = ""
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(6, max(1, len(independent))))
+    futures = {
+        executor.submit(_agent_run, agent, objective, context=context, scope=scope): agent
+        for agent in independent
+    }
+    try:
+        try:
+            completed = list(concurrent.futures.as_completed(futures, timeout=timeout_seconds))
+        except TimeoutError:
+            completed = [future for future in futures if future.done()]
+        for future in completed:
+            try:
+                agent_runs.append(future.result(timeout=0))
+            except Exception as exc:  # noqa: BLE001 - record agent failure in the ledger.
+                agent_runs.append(_failed_run(futures[future], f"failed: {exc.__class__.__name__}"))
+        unfinished = [agent for future, agent in futures.items() if not future.done()]
+        if unfinished:
+            stop_reason = f"timeout after {timeout_seconds}s; unfinished agents: {', '.join(agent.id for agent in unfinished)}"
+            for future in futures:
+                future.cancel()
+            for agent in unfinished:
+                agent_runs.append(_failed_run(agent, "timed out before completing"))
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    agent_runs.sort(key=lambda row: row["agent_id"])
+    reconciliation = _reconcile(agent_runs)
+    executive = next(agent for agent in selected if agent.id == "executive_summary")
+    executive_run = _agent_run(executive, objective, context=context, scope=scope)
+
+    # Synthesis is computed once: it may issue a Foundry narration call, and the
+    # executive run must publish exactly the same conclusion the ledger reports.
+    synthesis = _synthesis(objective, agent_runs, reconciliation, foundry_agent=_resolve_foundry_agent(context))
+    executive_run = {
+        **executive_run,
+        "status": STATUS_OK,
+        "findings": [
+            {
+                "finding_id": "executive_summary:synthesis",
+                "agent_id": executive.id,
+                "summary": synthesis["summary"],
+                "status": STATUS_OK,
+                "confidence": reconciliation["reconciled_confidence"],
+                "evidence_count": reconciliation["evidence_count"],
+            }
+        ],
+    }
+    agent_runs.append(executive_run)
+    ledger_id = f"mai-{uuid.uuid4().hex[:12]}"
+    return {
+        "ledger_id": ledger_id,
+        "objective": objective,
+        "scope": scope.to_dict(),
+        "created_by": principal_subject,
+        "created_at": _now(),
+        "updated_at": _now(),
+        "status": "needs_human_review" if reconciliation["missing_providers"] or reconciliation["unsupported_conclusions"] else "synthesized",
+        "selected_agents": [agent.to_dict() for agent in selected],
+        "agent_runs": agent_runs,
+        "reconciliation": reconciliation,
+        "synthesis": synthesis,
+        "human_controls": {"available_actions": ["request_more_evidence", "accept_finding", "reject_finding", "assign_owner", "approve_plan", "stop_investigation"]},
+        "decisions": [],
+        "approvals": [],
+        "outcome": "",
+        "stop_reason": stop_reason,
+        "evaluation": _evaluate(started, agent_runs, reconciliation, scope, int(synthesis.get("llm_calls", 0))),
+    }
+
+
+def _failed_run(agent: AgentDefinition, reason: str) -> dict[str, Any]:
+    return {
+        "agent_id": agent.id,
+        "agent_name": agent.name,
+        "status": STATUS_UNAVAILABLE,
+        "started_at": _now(),
+        "completed_at": _now(),
+        "duration_ms": 0,
+        "tool_calls": [],
+        "findings": [
+            {
+                "finding_id": f"{agent.id}:failure",
+                "agent_id": agent.id,
+                "summary": f"{agent.name} {reason}",
+                "status": STATUS_UNAVAILABLE,
+                "confidence": "unknown",
+                "evidence_count": 0,
+            }
+        ],
+        "evidence": [],
+        "confidence": "unknown",
+        "hidden_reasoning_exposed": False,
+    }
+
+
+@dataclass
+class InvestigationLedgerStore:
+    """Bounded principal-scoped ledger store for autonomous investigations."""
+
+    max_entries: int = MAX_LEDGER_ENTRIES
+    ledgers: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
+
+    def add(self, ledger: dict[str, Any]) -> dict[str, Any]:
+        self.ledgers[ledger["ledger_id"]] = ledger
+        self.ledgers.move_to_end(ledger["ledger_id"])
+        while len(self.ledgers) > self.max_entries:
+            self.ledgers.popitem(last=False)
+        return ledger
+
+    def get(self, ledger_id: str, principal_subject: str) -> dict[str, Any] | None:
+        ledger = self.ledgers.get(ledger_id)
+        if ledger is None or ledger.get("created_by") != principal_subject:
+            return None
+        return ledger
+
+    def record_decision(self, ledger_id: str, principal_subject: str, action: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        ledger = self.get(ledger_id, principal_subject)
+        if ledger is None:
+            return None
+        decision = {"at": _now(), "action": action, "payload": payload}
+        ledger["decisions"].append(decision)
+        if action == "approve_plan":
+            ledger["approvals"].append(decision)
+        if action == "stop_investigation":
+            ledger["status"] = "stopped"
+            ledger["stop_reason"] = str(payload.get("reason") or "Stopped by human operator")
+        elif action in {"accept_finding", "reject_finding", "assign_owner", "request_more_evidence"}:
+            ledger["status"] = "human_review_in_progress"
+        ledger["updated_at"] = _now()
+        return ledger
+
+
+_LEDGER_STORE = InvestigationLedgerStore()
+
+
+def ledger_store() -> InvestigationLedgerStore:
+    return _LEDGER_STORE

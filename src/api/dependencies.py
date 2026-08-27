@@ -37,12 +37,43 @@ class ApiContext:
     # out of band. A provider (rather than an instance) lets the process pick up
     # a new snapshot without a restart.
     semantic_provider: Callable[[], SemanticEngine] | None = None
+    # Optional hybrid graph + live-state provider. It is selected only for
+    # resource reads with an explicit subscription scope during migration.
+    hybrid_resource_provider: (
+        Callable[[str, list[str]], dict[str, Any]] | None
+    ) = None
+    hybrid_search_provider: Callable[[str, list[str]], dict[str, Any]] | None = None
+    hybrid_business_service_provider: (
+        Callable[[str, list[str]], dict[str, Any]] | None
+    ) = None
+    hybrid_impact_provider: Callable[[str, list[str]], dict[str, Any]] | None = None
+    hybrid_risk_provider: Callable[[str, list[str]], dict[str, Any]] | None = None
+    hybrid_network_provider: Callable[[list[str]], Any] | None = None
+    hybrid_vulnerability_provider: Callable[[list[str]], Any] | None = None
+    hybrid_incident_provider: Callable[[list[str]], Any] | None = None
+    hybrid_remediation_provider: Callable[[list[str]], Any] | None = None
+    hybrid_patching_provider: Callable[[list[str]], Any] | None = None
     # Same rationale for the intelligence engines: they are projections of a
     # snapshot, so they are resolved per request rather than pinned at startup.
     incident_provider: Callable[[], Any] | None = None
     remediation_provider: Callable[[], Any] | None = None
     network_provider: Callable[[], Any] | None = None
     vulnerability_provider: Callable[[], Any] | None = None
+    # Patch remediation is the read projection (what's installable) plus the
+    # guarded trigger path. It is resolved per request like the other
+    # projections so a fresh snapshot is picked up without a restart.
+    patching_provider: Callable[[], Any] | None = None
+    # Enterprise governance: FinOps, identity risk, and SPN governance are all
+    # projections of the same ontology snapshot, so they follow the per-request
+    # resolution rule above rather than being pinned at startup.
+    governance_provider: Callable[[], Any] | None = None
+    # Enterprise settings are a user-submitted mutation rather than a snapshot
+    # projection, so like risk exceptions they use a direct store handle.
+    settings_store: Any | None = None
+    # The network design policy (rule-based, UI-editable) is likewise a
+    # user-submitted mutation, not a snapshot projection, and is applied to
+    # every rebuilt NetworkIntelligenceService via the same store handle.
+    network_policy_store: Any | None = None
     # Best-effort live lookup for a single CVE id directly from NVD, used when
     # the CVE isn't already tied to a snapshot finding (e.g. a user searching
     # for a CVE the current environment hasn't observed yet). Returns None on
@@ -60,6 +91,9 @@ class ApiContext:
     # with the Copilot degrading to retrieval-only answers.
     foundry_agent_provider: Callable[[], Any] | None = None
     provider_runtime: ProviderRuntime | None = None
+    # Durable situation/evidence read model, resolved per request like the
+    # semantic snapshot so a newly synchronized generation is visible.
+    situation_provider: Callable[[], Any] | None = None
     # OS inventory is a read-only projection of the active immutable generation.
     inventory_provider: Callable[[], Any] | None = None
 

@@ -355,6 +355,87 @@ class TestConnectionScope:
         by_id = {item["id"]: item for item in payload["resources"]}
         assert by_id[target.casefold()]["entity_type"] == "AttachedWorkload"
 
+    def test_container_apps_internal_lb_links_to_its_backend_subnet_and_environment(self) -> None:
+        """The ACA internal LB has IP-only backends and a tag-only owner, not ARM refs.
+
+        Without the subnet/tag fallback this node has no edges and is a dead
+        end on the canvas; with it, the LB attaches to the subnet its AKS-style
+        backend members live in and to the Container Apps environment that
+        owns it.
+        """
+        vnet = "/subscriptions/sub-a/resourcegroups/me_env_rg/providers/microsoft.network/virtualnetworks/v"
+        subnet = f"{vnet}/subnets/legion"
+        env = "/subscriptions/sub-a/resourcegroups/app-rg/providers/microsoft.app/managedenvironments/cae"
+        lb = "/subscriptions/sub-a/resourcegroups/me_env_rg/providers/microsoft.network/loadbalancers/capp-svc-lb"
+        rows = [
+            {"entity_type": "VNet", "resource_id": vnet, "name": "v", "payload_json": {"subnetIds": [subnet]}},
+            {"entity_type": "Subnet", "resource_id": subnet, "name": "legion", "payload_json": {"vnetId": vnet}},
+            {
+                "entity_type": "LoadBalancer",
+                "resource_id": lb,
+                "name": "capp-svc-lb",
+                "payload_json": {
+                    "subnetId": "",
+                    "vnetId": "",
+                    "backendResourceIds": [],
+                    "tags": {"aca-managed-env-id": env},
+                    "properties": {
+                        "backendAddressPools": [
+                            {
+                                "properties": {
+                                    "loadBalancerBackendAddresses": [
+                                        {"properties": {"subnet": {"id": subnet}}}
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                },
+            },
+        ]
+        payload = build_topology(load_network_snapshot(rows)).to_dict()
+        by_id = {item["id"]: item for item in payload["resources"]}
+        assert env.casefold() in by_id
+        assert by_id[env.casefold()]["entity_type"] == "ContainerAppEnvironment"
+        assert any(
+            item["source"] == lb.casefold()
+            and item["target"] == subnet.casefold()
+            and item["relationship_type"] == "load_balances"
+            for item in payload["relationships"]
+        )
+        assert any(
+            item["source"] == env.casefold()
+            and item["target"] == lb.casefold()
+            and item["relationship_type"] == "hosts"
+            for item in payload["relationships"]
+        )
+
+    def test_load_balancers_with_the_same_name_are_disambiguated(self) -> None:
+        """Azure lets unrelated LBs across resource groups share a name; the canvas must not."""
+        lb_a = "/subscriptions/sub-a/resourcegroups/rg-one/providers/microsoft.network/loadbalancers/capp-svc-lb"
+        lb_b = "/subscriptions/sub-a/resourcegroups/rg-two/providers/microsoft.network/loadbalancers/capp-svc-lb"
+        rows = [
+            {
+                "entity_type": "LoadBalancer",
+                "resource_id": lb_a,
+                "name": "capp-svc-lb",
+                "resource_group": "rg-one",
+                "payload_json": {},
+            },
+            {
+                "entity_type": "LoadBalancer",
+                "resource_id": lb_b,
+                "name": "capp-svc-lb",
+                "resource_group": "rg-two",
+                "payload_json": {},
+            },
+        ]
+        payload = build_topology(load_network_snapshot(rows)).to_dict()
+        by_id = {item["id"]: item for item in payload["resources"]}
+        assert by_id[lb_a.casefold()]["name"] != by_id[lb_b.casefold()]["name"]
+        assert "rg-one" in by_id[lb_a.casefold()]["name"]
+        assert "rg-two" in by_id[lb_b.casefold()]["name"]
+
     def test_private_dns_zone_is_linked_to_a_vnet_only_once(self) -> None:
         """A zone that both links to and serves a VNet must not draw two edges."""
         payload = _topology().to_dict()

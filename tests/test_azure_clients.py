@@ -7,6 +7,7 @@ import httpx
 
 from hermes_arg_connector.azure import (
     AzureCliArgClient,
+    AzureCostManagementClient,
     AzureMcpClient,
     AzureResourceGraphClient,
     CommandResult,
@@ -135,3 +136,96 @@ def test_resource_graph_client_uses_connection_credential_and_subscription_scope
     assert credential.scopes == ["https://management.azure.com/.default"]
     assert requests[0]["headers"]["Authorization"] == "Bearer connection-token"
     assert requests[0]["json"]["subscriptions"] == ["connection-subscription"]
+
+
+def test_cost_management_client_queries_daily_actual_costs() -> None:
+    class Token:
+        token = "connection-token"
+
+    class Credential:
+        def __init__(self) -> None:
+            self.scopes: list[str] = []
+
+        def get_token(self, scope: str):
+            self.scopes.append(scope)
+            return Token()
+
+    requests: list[dict] = []
+
+    def requester(method: str, url: str, **kwargs):
+        requests.append({"method": method, "url": url, **kwargs})
+        return httpx.Response(
+            200,
+            json={
+                "properties": {
+                    "columns": [
+                        {"name": "PreTaxCost"},
+                        {"name": "UsageDate"},
+                        {"name": "Currency"},
+                        {"name": "ResourceId"},
+                        {"name": "ResourceGroupName"},
+                        {"name": "ServiceName"},
+                    ],
+                    "rows": [
+                        [
+                            12.34,
+                            "20260823",
+                            "AUD",
+                            "/subscriptions/sub-1/resourceGroups/rg/providers/x/y",
+                            "rg",
+                            "Virtual Machines",
+                        ]
+                    ],
+                }
+            },
+        )
+
+    rows = AzureCostManagementClient(Credential(), requester=requester).query_actual_costs(
+        ["sub-1"]
+    )
+
+    assert rows[0]["usageDate"] == "2026-08-23"
+    assert rows[0]["cost"] == 12.34
+    assert rows[0]["currency"] == "AUD"
+    assert rows[0]["serviceName"] == "Virtual Machines"
+    assert requests[0]["json"]["type"] == "ActualCost"
+    assert requests[0]["json"]["dataset"]["granularity"] == "Daily"
+    assert requests[0]["url"].endswith(
+        "/subscriptions/sub-1/providers/Microsoft.CostManagement/query"
+    )
+
+
+def test_cost_management_client_retries_throttled_requests() -> None:
+    class Token:
+        token = "connection-token"
+
+    class Credential:
+        def get_token(self, scope: str):
+            return Token()
+
+    responses = [
+        httpx.Response(429, json={"error": {"code": "429"}}, headers={"Retry-After": "0"}),
+        httpx.Response(
+            200,
+            json={
+                "properties": {
+                    "columns": [{"name": "PreTaxCost"}, {"name": "UsageDate"}],
+                    "rows": [[1.23, "20260824"]],
+                }
+            },
+        ),
+    ]
+    sleeps: list[float] = []
+
+    def requester(method: str, url: str, **kwargs):
+        return responses.pop(0)
+
+    rows = AzureCostManagementClient(
+        Credential(),
+        requester=requester,
+        retry_sleep=sleeps.append,
+    ).query_actual_costs(["sub-1"])
+
+    assert rows[0]["cost"] == 1.23
+    assert rows[0]["usageDate"] == "2026-08-24"
+    assert sleeps == [0.0]

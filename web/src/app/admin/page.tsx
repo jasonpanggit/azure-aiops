@@ -38,8 +38,8 @@ export default function AdministrationPage() {
     <div className="page-container">
       <PageHeader
         eyebrow="Governance"
-        title="Administration"
-        description="Manage trust, access, operating context, and approval boundaries behind workbench decisions."
+        title="What configuration governs this workbench?"
+        description="Review the operator access, operating context, and control boundaries behind evidence-backed decisions."
       />
       <div className="admin-grid">
         <article className="card">

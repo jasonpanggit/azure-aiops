@@ -1,0 +1,268 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { EvidenceBar } from "@/components/ui/EvidenceBar";
+import { MetricCard } from "@/components/ui/MetricCard";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { RiskGauge } from "@/components/ui/RiskGauge";
+import { StatePanel } from "@/components/ui/StatePanel";
+import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { StructuredData } from "@/components/ui/StructuredData";
+import { useScope } from "@/lib/scope-context";
+import { twinApi } from "@/lib/services";
+import type {
+  Envelope,
+  TwinComparison,
+  TwinExport,
+  TwinScenarioResult,
+  TwinSnapshot,
+  TwinTraversal,
+} from "@/lib/types";
+
+const SCENARIOS = [
+  "firewall_failure",
+  "route_change",
+  "subscription_outage",
+  "cve_exploitation",
+  "patch_deployment",
+  "architecture_remediation",
+] as const;
+
+function entityCount(snapshot: Envelope<TwinSnapshot> | null, kind: string): number {
+  return snapshot?.data.entities.filter((entity) => entity.kind === kind).length ?? 0;
+}
+
+function firstResource(snapshot: Envelope<TwinSnapshot> | null): string {
+  const resource = snapshot?.data.entities.find((entity) => entity.kind === "resource");
+  return resource?.id.replace(/^resource:/, "") ?? "";
+}
+
+function riskScore(snapshot: Envelope<TwinSnapshot> | null): number {
+  const point = snapshot?.data.temporal.risk_trend[0];
+  return typeof point?.risk_score === "number" ? point.risk_score : 0;
+}
+
+/** Current and historical operating-state twin for impact, scenario, and traversal analysis. */
+export default function OperationalTwinPage() {
+  const { scope } = useScope();
+  const [snapshot, setSnapshot] = useState<Envelope<TwinSnapshot> | null>(null);
+  const [comparison, setComparison] = useState<Envelope<TwinComparison> | null>(null);
+  const [scenarioType, setScenarioType] = useState<(typeof SCENARIOS)[number]>("firewall_failure");
+  const [scenario, setScenario] = useState<Envelope<TwinScenarioResult> | null>(null);
+  const [traversal, setTraversal] = useState<Envelope<TwinTraversal> | null>(null);
+  const [exported, setExported] = useState<Envelope<TwinExport> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+    Promise.allSettled([twinApi.graph(scope), twinApi.compare(scope)]).then(([graphResult, compareResult]) => {
+      if (!active) return;
+      if (graphResult.status === "fulfilled") {
+        setSnapshot(graphResult.value);
+      } else {
+        setError(graphResult.reason instanceof Error ? graphResult.reason.message : "Unable to load operational twin");
+      }
+      if (compareResult.status === "fulfilled") setComparison(compareResult.value);
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [scope]);
+
+  const selectedResource = useMemo(() => firstResource(snapshot), [snapshot]);
+
+  useEffect(() => {
+    if (!selectedResource) return;
+    let active = true;
+    Promise.allSettled([
+      twinApi.scenario(scenarioType, selectedResource, scope),
+      twinApi.traverse(selectedResource, scope),
+      twinApi.export(scope),
+    ]).then(([scenarioResult, traversalResult, exportResult]) => {
+      if (!active) return;
+      if (scenarioResult.status === "fulfilled") setScenario(scenarioResult.value);
+      if (traversalResult.status === "fulfilled") setTraversal(traversalResult.value);
+      if (exportResult.status === "fulfilled") setExported(exportResult.value);
+    });
+    return () => {
+      active = false;
+    };
+  }, [scenarioType, scope, selectedResource]);
+
+  const risk = riskScore(snapshot);
+
+  return (
+    <main className="page-container twin-workspace" aria-label="Operational Digital Twin">
+      <PageHeader
+        eyebrow="Operational Digital Twin"
+        title="Current and historical model of operational reality"
+        description="A request-time twin that connects semantic relationships with live topology, vulnerabilities, incidents, and governed remediation outcomes."
+        actions={
+          <div className="mode-toggle" aria-label="Twin actions">
+            <button type="button" onClick={() => void twinApi.graph(scope).then(setSnapshot)}>
+              Refresh current state
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const payload = JSON.stringify(exported?.data ?? snapshot?.data ?? {}, null, 2);
+                if (typeof navigator !== "undefined") void navigator.clipboard?.writeText(payload);
+              }}
+            >
+              Copy export
+            </button>
+          </div>
+        }
+      />
+
+      {error ? <StatePanel title="Twin unavailable" message={error} tone="error" /> : null}
+      {loading ? <StatePanel title="Loading twin" message="Composing live operational state with semantic graph context." tone="loading" /> : null}
+      {snapshot ? (
+        <EvidenceBar
+          evidence={snapshot.evidence}
+          knowledgeVersion={snapshot.knowledge_version}
+          warnings={snapshot.warnings}
+          liveObservedAt={snapshot.live_observed_at}
+          sourceStatus={snapshot.source_status}
+        />
+      ) : null}
+
+      <div className="predeploy-summary">
+        <section className="card">
+          <div className="card-header">
+            <h2>Risk trend</h2>
+          </div>
+          <div className="card-body risk-gauge-body">
+            <RiskGauge score={risk} label="Scenario-weighted risk" detail="Current twin risk signal" />
+          </div>
+        </section>
+        <section className="metric-grid" aria-label="Twin summary">
+          <MetricCard label="Entities" value={snapshot?.data.entities.length ?? 0} detail="Canonical current-state nodes" />
+          <MetricCard label="Dependencies" value={snapshot?.data.relationships.length ?? 0} detail="Semantic and topology links" />
+          <MetricCard label="Changes" value={snapshot?.data.temporal.change_history.length ?? 0} detail="Temporal events in the latest revision" />
+        </section>
+      </div>
+
+      <section className="workspace-grid twin-grid">
+        <section className="card">
+          <div className="card-header"><div><h2>Twin model</h2><p>Canonical entities, relationships, versions, provenance, and confidence.</p></div><StatusBadge label={`${snapshot?.data.confidence ?? "unknown"} confidence`} tone={statusTone(snapshot?.data.confidence)} /></div>
+          <div className="card-body">
+          <div className="entity-pill-row" aria-label="Twin entity counts">
+            {["business_service", "application", "environment", "subscription", "resource", "vulnerability", "incident", "remediation", "owner"].map((kind) => (
+              <span key={kind} className="entity-pill">
+                {kind.replace("_", " ")} <strong>{entityCount(snapshot, kind)}</strong>
+              </span>
+            ))}
+          </div>
+          <p className="muted">
+            Version {snapshot?.data.version ?? "unknown"} is derived at request time; Hermes supplies the semantic model while operational state remains live.
+          </p>
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="card-header"><div><h2>Business impact traversal</h2><p>Resource to application, service, owner, and consequence.</p></div></div>
+          <div className="card-body">
+          {traversal ? (
+            <>
+              <p className="panel-lead">{traversal.data.resource_id}</p>
+              <ol className="timeline-list">
+                {traversal.data.path.map((entity) => (
+                  <li key={entity.id}>
+                    <strong>{entity.kind.replace("_", " ")}</strong>
+                    <span>{entity.name}</span>
+                  </li>
+                ))}
+              </ol>
+              <p className="muted">Consequence: {traversal.data.business_consequence.join(" -> ")}</p>
+            </>
+          ) : (
+            <p className="muted">No resource traversal is available for the current scope.</p>
+          )}
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="card-header"><div><h2>Temporal view</h2><p>Current state, previous revision, change history, and risk trend.</p></div></div>
+          <div className="card-body">
+          <p className="panel-lead">{comparison?.data.summary ?? "No comparison loaded."}</p>
+          <ol className="timeline-list">
+            {(snapshot?.data.timeline ?? []).slice(0, 6).map((event, index) => (
+              <li key={`${event.type}-${event.timestamp}-${index}`}>
+                <strong>{event.type.replaceAll("_", " ")}</strong>
+                <span>{event.summary}</span>
+                <small>{event.timestamp}</small>
+              </li>
+            ))}
+          </ol>
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="card-header"><div><h2>Scenario analysis</h2><p>Impact of failure, exploitation, patching, and architecture changes.</p></div></div>
+          <div className="card-body">
+          <label className="field-label" htmlFor="scenario">
+            Scenario
+          </label>
+          <select id="scenario" value={scenarioType} onChange={(event) => setScenarioType(event.target.value as (typeof SCENARIOS)[number])}>
+            {SCENARIOS.map((item) => (
+              <option key={item} value={item}>
+                {item.replaceAll("_", " ")}
+              </option>
+            ))}
+          </select>
+          <p className="panel-lead">{scenario?.data.likely_impact ?? "Select a scenario to estimate impact."}</p>
+          <div className="split-kpis">
+            <MetricCard label="Risk delta" value={scenario?.data.risk_delta ?? 0} detail="Estimated change" />
+            <MetricCard label="Impacted" value={scenario?.data.impacted_entities.length ?? 0} detail="Related twin entities" />
+          </div>
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="card-header"><div><h2>Dependency evolution</h2><p>Relationship count changes by dependency type.</p></div></div>
+          <div className="card-body">
+          <div className="compact-table" role="table" aria-label="Dependency evolution">
+            {(snapshot?.data.temporal.dependency_evolution ?? []).slice(0, 8).map((row) => (
+              <div className="compact-row" role="row" key={String(row.relationship_type)}>
+                <span>{String(row.relationship_type).replaceAll("_", " ")}</span>
+                <strong>{String(row.current_count)} current</strong>
+                <small>{String(row.previous_count)} prior</small>
+              </div>
+            ))}
+          </div>
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="card-header"><div><h2>Copilot grounding context</h2><p>Time-aware questions agents can answer from the twin.</p></div></div>
+          <div className="card-body">
+          <div className="recommended-action-list">
+            {[
+              "Which business services are affected if this route changes?",
+              "What changed since the previous twin revision?",
+              "Simulate CVE exploitation for internet-reachable resources.",
+              "Draft a validation checklist for the selected remediation.",
+            ].map((question) => (
+              <span key={question}>{question}</span>
+            ))}
+          </div>
+          </div>
+        </section>
+      </section>
+
+      <section className="workspace-grid">
+        <section className="card">
+          <div className="card-header"><div><h2>Raw twin export</h2><p>Serializable twin state for audit, API consumers, and Copilot tooling.</p></div></div>
+          <div className="card-body">
+          <StructuredData value={exported?.data ?? snapshot?.data ?? {}} />
+          </div>
+        </section>
+      </section>
+    </main>
+  );
+}

@@ -1,0 +1,456 @@
+"use client";
+
+import { EvidenceBar } from "@/components/ui/EvidenceBar";
+import { MetricCard } from "@/components/ui/MetricCard";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { StatePanel } from "@/components/ui/StatePanel";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { useApi } from "@/hooks/useApi";
+import { formatDateTime, titleize } from "@/lib/format";
+import { useScope } from "@/lib/scope-context";
+import { governanceApi } from "@/lib/services";
+
+function rotationTone(status: string): "critical" | "warning" | "success" | "neutral" {
+  if (status === "expired") return "critical";
+  if (status === "expiring_soon") return "warning";
+  if (status === "healthy") return "success";
+  return "neutral";
+}
+
+/** Blast radius is a count per scope breadth; render it compactly. */
+function blastRadius(radius: Record<string, number>): string {
+  const entries = Object.entries(radius ?? {});
+  if (entries.length === 0) return "None observed";
+  return entries.map(([key, value]) => `${value} ${titleize(key).toLowerCase()}`).join(", ");
+}
+
+export default function IdentityPage() {
+  const { scope } = useScope();
+
+  const summary = useApi(() => governanceApi.identitySummary(scope), [scope]);
+  const principals = useApi(() => governanceApi.identityPrincipals(scope), [scope]);
+  const owners = useApi(() => governanceApi.subscriptionOwners(scope), [scope]);
+  const stale = useApi(() => governanceApi.staleAccess(scope), [scope]);
+  const nonHuman = useApi(() => governanceApi.nonHumanIdentities(scope), [scope]);
+  const spn = useApi(() => governanceApi.spnCredentials(scope), [scope]);
+
+  const loading = summary.loading || principals.loading || spn.loading;
+  const error = summary.error ?? principals.error ?? spn.error;
+
+  const totals = summary.data?.data;
+  const spnSummary = spn.data?.data.summary;
+
+  // The API warns when identity data has never synced. Surfacing that is
+  // essential: an empty table must never read as "no privileged access".
+  const warnings = [
+    ...(summary.data?.warnings ?? []),
+    ...(principals.data?.warnings ?? []),
+  ];
+
+  return (
+    <div className="page-container">
+      <PageHeader
+        eyebrow="Access governance"
+        title="Who has access, and how wide is it?"
+        description="Review observed RBAC assignments, subscription owners, non-human identities, and credential coverage within the authorized scope."
+        metadata={
+          <>
+            <span>Derived from observed RBAC assignments</span>
+            <span>Scope-limited to your subscriptions</span>
+          </>
+        }
+      />
+
+      <EvidenceBar
+        evidence={[...(summary.data?.evidence ?? []), ...(spn.data?.evidence ?? [])]}
+        knowledgeVersion={summary.data?.knowledge_version}
+        warnings={warnings}
+      />
+
+      {error ? (
+        <StatePanel
+          title="Identity intelligence is unavailable"
+          message={
+            error.message ??
+            "No governance response was returned. Sync a subscription connection first."
+          }
+          tone="error"
+        />
+      ) : loading ? (
+        <StatePanel
+          title="Reading access assignments"
+          message="Resolving role assignments, definitions, and credential posture."
+          tone="loading"
+        />
+      ) : (
+        <>
+          <div className="metric-grid">
+            <MetricCard
+              label="Principals with access"
+              value={totals?.principal_count ?? 0}
+              detail={`${totals?.assignment_count ?? 0} role assignments observed`}
+            />
+            <MetricCard
+              label="Privileged principals"
+              value={totals?.privileged_principal_count ?? 0}
+              detail="Hold owner-equivalent or wildcard permissions"
+              tone={(totals?.privileged_principal_count ?? 0) > 0 ? "critical" : "success"}
+            />
+            <MetricCard
+              label="Stale assignments"
+              value={totals?.stale_assignment_count ?? 0}
+              detail={`Unchanged for over ${totals?.stale_threshold_days ?? 90} days`}
+              tone={(totals?.stale_assignment_count ?? 0) > 0 ? "warning" : "success"}
+            />
+            <MetricCard
+              label="Non-human identities"
+              value={totals?.non_human_principal_count ?? 0}
+              detail="Service principals and managed identities"
+            />
+          </div>
+
+          <section className="card">
+            <div className="card-header">
+              <div>
+                <h2>Principals and blast radius</h2>
+                <p>
+                  Each principal&apos;s widest scope determines how far a
+                  compromise of that identity would reach.
+                </p>
+              </div>
+            </div>
+            <div className="card-body">
+              {(principals.data?.data.principals.length ?? 0) === 0 ? (
+                <StatePanel
+                  title="No principals observed"
+                  message="No role assignment has been synced for the subscriptions in scope. This is not evidence that no access exists."
+                />
+              ) : (
+                <div className="table-scroll">
+                  <table className="operations-table">
+                    <thead>
+                      <tr>
+                        <th>Principal</th>
+                        <th>Type</th>
+                        <th>Roles</th>
+                        <th>Widest scope</th>
+                        <th>Blast radius</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {principals.data?.data.principals.map((row) => (
+                        <tr key={row.principal_id}>
+                          <td>
+                            <span className="table-primary-link">
+                              <span className="table-wrap">{row.principal_id}</span>
+                            </span>
+                            <div className="table-secondary">
+                              {row.assignment_count} assignment
+                              {row.assignment_count === 1 ? "" : "s"}
+                            </div>
+                          </td>
+                          <td>{titleize(row.principal_type || "unknown")}</td>
+                          <td>
+                            <div className="table-wrap">
+                              {(row.roles?.length ?? 0) > 0 ? row.roles.join(", ") : "Unresolved"}
+                            </div>
+                          </td>
+                          <td>
+                            {titleize(row.widest_scope_breadth || "unknown")}
+                            <div className="table-secondary">
+                              <span className="table-wrap">{row.widest_scope}</span>
+                            </div>
+                          </td>
+                          <td>{blastRadius(row.blast_radius)}</td>
+                          <td>
+                            {row.privileged && (
+                              <StatusBadge label="privileged" tone="critical" compact />
+                            )}
+                            {row.stale && (
+                              <StatusBadge label="stale" tone="warning" compact />
+                            )}
+                            {!row.privileged && !row.stale && (
+                              <StatusBadge label="standard" tone="success" compact />
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <div>
+                <h2>Subscription owners</h2>
+                <p>Principals holding owner rights over a whole subscription.</p>
+              </div>
+            </div>
+            <div className="card-body">
+              {(owners.data?.data.owners.length ?? 0) === 0 ? (
+                <StatePanel
+                  title="No subscription owners observed"
+                  message="No owner-scoped assignment was found in the synced data for this scope."
+                />
+              ) : (
+                <div className="table-scroll">
+                  <table className="operations-table">
+                    <thead>
+                      <tr>
+                        <th>Principal</th>
+                        <th>Type</th>
+                        <th>Subscription</th>
+                        <th>Assigned</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {owners.data?.data.owners.map((row, index) => (
+                        <tr key={`${row.principal_id}-${row.scope}-${index}`}>
+                          <td>
+                            <span className="table-wrap">{row.principal_id}</span>
+                          </td>
+                          <td>{titleize(row.principal_type || "unknown")}</td>
+                          <td>
+                            <span className="table-wrap">{row.subscription_id}</span>
+                          </td>
+                          <td>{formatDateTime(row.assigned_on)}</td>
+                          <td>
+                            <StatusBadge
+                              label={row.stale ? "stale" : "current"}
+                              tone={row.stale ? "warning" : "success"}
+                              compact
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <div>
+                <h2>Stale access</h2>
+                <p>
+                  Assignments unchanged past the review threshold, privileged
+                  ones first.
+                </p>
+              </div>
+            </div>
+            <div className="card-body">
+              {(stale.data?.data.assignments.length ?? 0) === 0 ? (
+                <StatePanel
+                  title="No stale access"
+                  message="Every observed assignment has changed within the review window."
+                />
+              ) : (
+                <div className="table-scroll">
+                  <table className="operations-table">
+                    <thead>
+                      <tr>
+                        <th>Principal</th>
+                        <th>Role</th>
+                        <th>Scope</th>
+                        <th>Last changed</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stale.data?.data.assignments.map((row, index) => (
+                        <tr key={`${row.assignment_id}-${index}`}>
+                          <td>
+                            <span className="table-wrap">{row.principal_id}</span>
+                          </td>
+                          <td>{row.role || "Unresolved"}</td>
+                          <td>
+                            <span className="table-wrap">{row.scope}</span>
+                          </td>
+                          <td>{formatDateTime(row.last_changed)}</td>
+                          <td>
+                            <StatusBadge
+                              label={row.privileged ? "privileged" : "standard"}
+                              tone={row.privileged ? "critical" : "neutral"}
+                              compact
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <div>
+                <h2>Non-human identities</h2>
+                <p>Service principals and managed identities holding access.</p>
+              </div>
+            </div>
+            <div className="card-body">
+              {(nonHuman.data?.data.identities.length ?? 0) === 0 ? (
+                <StatePanel
+                  title="No non-human identities observed"
+                  message="No service principal or managed identity was found in the synced data for this scope."
+                />
+              ) : (
+                <div className="table-scroll">
+                  <table className="operations-table">
+                    <thead>
+                      <tr>
+                        <th>Identity</th>
+                        <th>Type</th>
+                        <th>Assignments</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {nonHuman.data?.data.identities.map((row, index) => (
+                        <tr key={`${row.principal_id}-${index}`}>
+                          <td>
+                            <span className="table-primary-link">
+                              {row.name || row.principal_id}
+                            </span>
+                            {row.resource_id && (
+                              <div className="table-secondary">
+                                <span className="table-wrap">{row.resource_id}</span>
+                              </div>
+                            )}
+                          </td>
+                          <td>{titleize(row.principal_type || "unknown")}</td>
+                          <td>{row.assignment_count ?? "Unresolved"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <div>
+                <h2>Service principal governance</h2>
+                <p>
+                  Credential owner, scope, rotation status, and expiry for every
+                  onboarding connection.
+                </p>
+              </div>
+            </div>
+            <div className="card-body">
+              <div className="metric-grid">
+                <MetricCard
+                  label="Credentials"
+                  value={spnSummary?.credential_count ?? 0}
+                  detail="Across all onboarded connections in scope"
+                />
+                <MetricCard
+                  label="Expired"
+                  value={spnSummary?.expired_count ?? 0}
+                  detail="Past their recorded expiry"
+                  tone={(spnSummary?.expired_count ?? 0) > 0 ? "critical" : "success"}
+                />
+                <MetricCard
+                  label="Expiring soon"
+                  value={spnSummary?.expiring_soon_count ?? 0}
+                  detail={`Within ${spnSummary?.expiry_warning_days ?? 30} days`}
+                  tone={
+                    (spnSummary?.expiring_soon_count ?? 0) > 0 ? "warning" : "success"
+                  }
+                />
+                <MetricCard
+                  label="Unknown expiry"
+                  value={spnSummary?.unknown_expiry_count ?? 0}
+                  detail="No expiry recorded, so rotation cannot be verified"
+                  tone={
+                    (spnSummary?.unknown_expiry_count ?? 0) > 0 ? "warning" : "success"
+                  }
+                />
+              </div>
+
+              {(spn.data?.data.credentials.length ?? 0) === 0 ? (
+                <StatePanel
+                  title="No credentials in scope"
+                  message="No onboarding connection is visible under the current scope selection."
+                />
+              ) : (
+                <div className="table-scroll">
+                  <table className="operations-table">
+                    <thead>
+                      <tr>
+                        <th>Connection</th>
+                        <th>Client ID</th>
+                        <th>Rotation</th>
+                        <th>Expires</th>
+                        <th>Assignments</th>
+                        <th>Issues</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {spn.data?.data.credentials.map((row, index) => (
+                        <tr key={row.credential_id || index}>
+                          <td>
+                            <span className="table-primary-link">
+                              {row.connection_name || row.connection_id}
+                            </span>
+                            <div className="table-secondary">
+                              <span className="table-wrap">{row.subscription_id}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <span className="table-wrap">{row.client_id || "—"}</span>
+                          </td>
+                          <td>
+                            <StatusBadge
+                              label={titleize(row.rotation_status)}
+                              tone={rotationTone(row.rotation_status)}
+                              compact
+                            />
+                          </td>
+                          <td>
+                            {row.expires_at ? formatDateTime(row.expires_at) : "Not recorded"}
+                            {row.days_to_expiry !== null && (
+                              <div className="table-secondary">
+                                {row.days_to_expiry} days
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            {row.observed_assignment_count === null ? (
+                              <span title="Role assignments reference the service principal object id, which is not recorded for this credential.">
+                                Not resolvable
+                              </span>
+                            ) : (
+                              row.observed_assignment_count
+                            )}
+                          </td>
+                          <td>
+                            {(row.issues?.length ?? 0) === 0 ? (
+                              <StatusBadge label="none" tone="success" compact />
+                            ) : (
+                              <div className="table-wrap">{row.issues.join("; ")}</div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+        </>
+      )}
+    </div>
+  );
+}

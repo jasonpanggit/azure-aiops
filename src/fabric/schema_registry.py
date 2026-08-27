@@ -73,6 +73,19 @@ SCHEMAS: dict[str, pa.Schema] = {
     "bronze_subscriptions": pa.schema(_ENTITY),
     "bronze_resourcegroups": pa.schema(_ENTITY),
     "bronze_advisor": pa.schema(_ENTITY),
+    "bronze_cost_actuals": pa.schema(
+        [
+            *_ENTITY,
+            pa.field("usage_date", pa.string(), nullable=False),
+            pa.field("cost", pa.float64(), nullable=False),
+            pa.field("currency", pa.string(), nullable=False),
+            pa.field("target_resource_id", pa.string(), nullable=False),
+            pa.field("resource_group", pa.string(), nullable=False),
+            pa.field("service_name", pa.string(), nullable=False),
+            pa.field("billing_period_start", pa.string(), nullable=False),
+            pa.field("billing_period_end", pa.string(), nullable=False),
+        ]
+    ),
     "bronze_patchassessment": pa.schema(_ENTITY),
     "bronze_patchassessmentdetail": pa.schema(_ENTITY),
     "bronze_patchinstallation": pa.schema(_ENTITY),
@@ -95,6 +108,19 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("available_updates", pa.int64(), nullable=False),
             pa.field("missing_critical_updates", pa.int64(), nullable=False),
             pa.field("missing_security_updates", pa.int64(), nullable=False),
+        ]
+    ),
+    "silver_cost_actuals": pa.schema(
+        [
+            *_ENTITY,
+            pa.field("usage_date", pa.string(), nullable=False),
+            pa.field("cost", pa.float64(), nullable=False),
+            pa.field("currency", pa.string(), nullable=False),
+            pa.field("target_resource_id", pa.string(), nullable=False),
+            pa.field("resource_group", pa.string(), nullable=False),
+            pa.field("service_name", pa.string(), nullable=False),
+            pa.field("billing_period_start", pa.string(), nullable=False),
+            pa.field("billing_period_end", pa.string(), nullable=False),
         ]
     ),
     "silver_patch_installations": pa.schema(

@@ -13,31 +13,33 @@ says so rather than overstating confidence.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
-from .design import NetworkDesignPolicy
-from .models import NetworkSnapshot
+from .design import (
+    RULE_APPROVED_PEERINGS_ONLY,
+    RULE_BIDIRECTIONAL_PEERING,
+    RULE_DOCUMENTED_DEPENDENCIES,
+    RULE_HUB_FIREWALL_PRESENT,
+    RULE_INTERNET_VIA_FIREWALL,
+    RULE_NO_ORPHAN_FIREWALL_RULES,
+    RULE_NSG_ON_EVERY_SUBNET,
+    RULE_NSG_OVERRIDE_DEFAULT_OUTBOUND,
+    RULE_PRIVATE_DNS_ZONE_LINK,
+    RULE_PRIVATE_ENDPOINTS_PREFERRED,
+    NetworkDesignPolicy,
+    PolicyRule,
+)
+from .models import PRIVATE_LINK_RESOURCE_TYPES, NetworkSnapshot
 from .topology import NetworkTopology
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 #: ARM resource-type fragments that should normally sit behind Private Link.
-PRIVATE_LINK_CANDIDATES: dict[str, str] = {
-    "microsoft.storage/storageaccounts": "Storage",
-    "microsoft.keyvault/vaults": "Key Vault",
-    "microsoft.sql/servers": "Azure SQL",
-    "microsoft.dbforpostgresql/servers": "PostgreSQL",
-    "microsoft.dbforpostgresql/flexibleservers": "PostgreSQL",
-    "microsoft.dbformysql/servers": "MySQL",
-    "microsoft.dbformysql/flexibleservers": "MySQL",
-    "microsoft.documentdb/databaseaccounts": "Cosmos DB",
-    "microsoft.containerregistry/registries": "Container Registry",
-    "microsoft.servicebus/namespaces": "Service Bus",
-    "microsoft.eventhub/namespaces": "Event Hubs",
-    "microsoft.web/sites": "App Service",
-    "microsoft.cognitiveservices/accounts": "Azure AI Services",
-}
+#: Re-exported from :mod:`.models` so the loader and the analyzer agree on
+#: exactly which resources are Private Link candidates.
+PRIVATE_LINK_CANDIDATES: dict[str, str] = PRIVATE_LINK_RESOURCE_TYPES
 
 
 @dataclass(frozen=True)
@@ -107,23 +109,57 @@ class NetworkGapAnalyzer:
         }
 
     def analyze(self) -> tuple[NetworkGap, ...]:
+        """Runs every enabled policy rule through its registered check.
+
+        Rules drive the analysis rather than a fixed call list, so a rule the
+        customer disables is genuinely skipped and a rule with no backing
+        check is reported as unevaluated instead of silently passing.
+        """
         gaps: list[NetworkGap] = []
-        gaps.extend(self._firewall_bypass())
-        gaps.extend(self._missing_udr())
-        gaps.extend(self._missing_nsg())
-        gaps.extend(self._missing_private_endpoint())
-        gaps.extend(self._unapproved_peering())
-        gaps.extend(self._asymmetric_peering())
-        gaps.extend(self._dns_dependency())
-        gaps.extend(self._orphan_firewall_rules())
-        gaps.extend(self._undocumented_dependencies())
-        gaps.extend(self._public_ip_on_spoke())
-        gaps.extend(self._missing_hub_firewall())
+        for rule in self._evaluable_rules():
+            gaps.extend(self._CHECKS[rule.rule_id](self))
         return tuple(
             sorted(
                 gaps,
                 key=lambda item: (SEVERITY_ORDER.get(item.severity, 9), item.category, item.resource_id),
             )
+        )
+
+    def _evaluable_rules(self) -> list[PolicyRule]:
+        """Enabled rules that have a registered check, in policy order.
+
+        Rules absent from the policy fall back to the built-in defaults so a
+        policy that never mentions a rule still gets the shipped behaviour.
+        """
+        declared = {rule.rule_id: rule for rule in self.policy.rules}
+        ordered: list[PolicyRule] = []
+        for rule_id in self._CHECKS:
+            rule = declared.get(rule_id)
+            if rule is None:
+                rule = PolicyRule(rule_id=rule_id, name=rule_id)
+            if rule.enabled:
+                ordered.append(rule)
+        return ordered
+
+    @classmethod
+    def evaluable_rule_ids(cls) -> tuple[str, ...]:
+        """Rule ids this analyzer has a check for.
+
+        Lets callers distinguish a rule that is genuinely enforced from one
+        that is merely stored.
+        """
+        return tuple(cls._CHECKS)
+
+    def unevaluated_rules(self) -> tuple[PolicyRule, ...]:
+        """Enabled rules the analyzer has no check for.
+
+        Surfaced so the UI can say "not evaluated" rather than implying a
+        custom rule is enforced when nothing inspects it.
+        """
+        return tuple(
+            rule
+            for rule in self.policy.rules
+            if rule.enabled and rule.rule_id not in self._CHECKS
         )
 
     def _spoke_vnet_ids(self) -> set[str]:
@@ -138,6 +174,14 @@ class NetworkGapAnalyzer:
             for item in self.topology.classifications
             if item.vnet_id not in hubs and not self.policy.is_exempt_vnet(item.name)
         }
+
+    def _egress_via_firewall(self) -> list[NetworkGap]:
+        """The firewall-egress rule: bypass, missing UDR, and public IPs.
+
+        All three describe the same intent -- internet traffic must traverse
+        the hub firewall -- so they are enabled and disabled together.
+        """
+        return self._firewall_bypass() + self._missing_udr() + self._public_ip_on_spoke()
 
     def _firewall_bypass(self) -> list[NetworkGap]:
         """A spoke subnet with no default route to the firewall egresses directly."""
@@ -279,12 +323,93 @@ class NetworkGapAnalyzer:
         return gaps
 
     def _missing_private_endpoint(self) -> list[NetworkGap]:
-        """PaaS services the design requires behind Private Link but are not.
+        """PaaS resources that should be reached through Private Link but are not.
 
-        Reported per *required service kind* rather than per resource, since
-        the resource inventory of PaaS services lives outside the network
-        snapshot — this states clearly what it can and cannot see.
+        Audits the observed resource inventory: every Private Link candidate
+        in the estate is checked for a private endpoint that targets it. The
+        rule's optional ``services`` parameter narrows the scope; with no
+        parameters every candidate service is in scope, which is what "should
+        be used when possible" means.
+
+        ``require_private_endpoint_for_services`` remains honoured for
+        back-compat, and additionally reports a required service kind that has
+        no endpoint anywhere -- a claim that holds even when the resource
+        itself was never observed.
         """
+        return self._unprotected_resources() + self._missing_service_kinds()
+
+    def _in_scope_services(self) -> set[str]:
+        """Service labels the private-endpoint rule applies to.
+
+        Empty means every Private Link candidate. Scope can be narrowed from
+        either the rule's ``services`` parameter or the legacy policy field.
+        """
+        rule = self.policy.rule(RULE_PRIVATE_ENDPOINTS_PREFERRED)
+        declared: list[str] = []
+        if rule is not None:
+            raw = rule.parameters.get("services") if rule.parameters else None
+            if isinstance(raw, str):
+                declared = [raw]
+            elif isinstance(raw, (list, tuple)):
+                declared = [str(item) for item in raw]
+        declared.extend(self.policy.require_private_endpoint_for_services)
+        return {item.strip().casefold() for item in declared if str(item).strip()}
+
+    def _private_endpoint_targets(self) -> set[str]:
+        return {
+            endpoint.target_resource_id.casefold()
+            for endpoint in self.snapshot.private_endpoints
+            if endpoint.target_resource_id
+        }
+
+    def _unprotected_resources(self) -> list[NetworkGap]:
+        """Observed PaaS resources with no private endpoint pointing at them."""
+        scope = self._in_scope_services()
+        protected = self._private_endpoint_targets()
+        gaps: list[NetworkGap] = []
+
+        for resource in self.snapshot.private_link_resources:
+            label = resource.service_kind or resource.resource_type
+            if scope and label.casefold() not in scope:
+                continue
+            if resource.resource_id.casefold() in protected:
+                continue
+            gaps.append(
+                NetworkGap(
+                    gap_id=_gap_id("missing_private_endpoint", resource.resource_id),
+                    category="missing_private_endpoint",
+                    severity="high",
+                    title=f"{label} resource has no private endpoint",
+                    detail=(
+                        f"'{resource.name}' ({label}) is reachable over its public "
+                        "endpoint because no private endpoint in any connected "
+                        "subscription targets it."
+                    ),
+                    resource_id=resource.resource_id,
+                    resource_name=resource.name,
+                    resource_type=resource.resource_type,
+                    evidence={
+                        "service_kind": label,
+                        "public_network_access": resource.public_network_access,
+                        "observed_private_endpoints": len(self.snapshot.private_endpoints),
+                    },
+                    recommendation=(
+                        f"Create a private endpoint for '{resource.name}' and disable "
+                        "its public network access."
+                    ),
+                    basis=(
+                        "observed resource inventory joined against private endpoint "
+                        "target resource IDs"
+                    ),
+                    connection_id=resource.connection_id,
+                    subscription_id=resource.subscription_id,
+                    environment=resource.environment,
+                )
+            )
+        return gaps
+
+    def _missing_service_kinds(self) -> list[NetworkGap]:
+        """Required service kinds with no private endpoint anywhere in the estate."""
         required = self.policy.require_private_endpoint_for_services
         if not required:
             return []
@@ -764,9 +889,83 @@ class NetworkGapAnalyzer:
             )
         return gaps
 
+    def _nsg_missing_outbound_override(self) -> list[NetworkGap]:
+        """An NSG relies solely on Azure's default allow-internet-outbound rule.
+
+        Azure permits every NSG to send traffic to the internet unless an
+        operator adds an explicit, higher-priority outbound rule. A gap is
+        raised when no such explicit rule exists ahead of the default
+        ``AllowInternetOutBound`` rule (priority 65001), because that means
+        egress was never a reviewed decision -- it is whatever Azure allows
+        by default.
+        """
+        if not self.policy.rule_enabled(RULE_NSG_OVERRIDE_DEFAULT_OUTBOUND):
+            return []
+        gaps: list[NetworkGap] = []
+        for nsg in self.snapshot.nsgs:
+            outbound = nsg.ordered_rules(direction="Outbound")
+            has_override = any(
+                not rule.is_default
+                and rule.priority < 65001
+                and rule.destination_spec.is_internet
+                for rule in outbound
+            )
+            if has_override:
+                continue
+            gaps.append(
+                NetworkGap(
+                    gap_id=_gap_id("nsg_default_outbound", nsg.resource_id),
+                    category="nsg_default_outbound",
+                    severity="high",
+                    title="NSG has no explicit rule overriding default internet outbound",
+                    detail=(
+                        f"NSG '{nsg.name}' has no explicit outbound rule at a priority lower "
+                        "than Azure's default AllowInternetOutBound rule (65001), so every "
+                        "attached subnet or NIC can reach the internet under Azure's silent "
+                        "default rather than a reviewed policy."
+                    ),
+                    resource_id=nsg.resource_id,
+                    resource_name=nsg.name,
+                    resource_type="NetworkSecurityGroup",
+                    evidence={
+                        "outbound_rule_count": len(outbound),
+                        "outbound_rule_priorities": [rule.priority for rule in outbound],
+                        "subnet_ids": list(nsg.subnet_ids),
+                        "nic_ids": list(nsg.nic_ids),
+                    },
+                    recommendation=(
+                        "Add an explicit outbound rule (priority < 65001) that allows or "
+                        "denies internet-bound traffic deliberately, instead of relying on "
+                        "the default AllowInternetOutBound rule."
+                    ),
+                    basis="NSG outbound rule priorities against Azure's default security rules",
+                    connection_id=nsg.connection_id,
+                    subscription_id=nsg.subscription_id,
+                    environment=nsg.environment,
+                )
+            )
+        return gaps
+
     def _vnet_name(self, vnet_id: str) -> str:
         vnet = self._vnets.get(str(vnet_id or "").casefold())
         return vnet.name if vnet else ""
+
+    #: Maps a policy rule id to the check that enforces it. Adding a rule to
+    #: this table is the only thing needed to make it evaluable; ``analyze()``
+    #: iterates the registry rather than a hard-coded call list, and any rule
+    #: absent from it is reported through ``unevaluated_rules()``.
+    _CHECKS: ClassVar[dict[str, Callable[[NetworkGapAnalyzer], list[NetworkGap]]]] = {
+        RULE_INTERNET_VIA_FIREWALL: _egress_via_firewall,
+        RULE_NSG_ON_EVERY_SUBNET: _missing_nsg,
+        RULE_PRIVATE_ENDPOINTS_PREFERRED: _missing_private_endpoint,
+        RULE_APPROVED_PEERINGS_ONLY: _unapproved_peering,
+        RULE_BIDIRECTIONAL_PEERING: _asymmetric_peering,
+        RULE_PRIVATE_DNS_ZONE_LINK: _dns_dependency,
+        RULE_NO_ORPHAN_FIREWALL_RULES: _orphan_firewall_rules,
+        RULE_DOCUMENTED_DEPENDENCIES: _undocumented_dependencies,
+        RULE_HUB_FIREWALL_PRESENT: _missing_hub_firewall,
+        RULE_NSG_OVERRIDE_DEFAULT_OUTBOUND: _nsg_missing_outbound_override,
+    }
 
 
 def analyze_gaps(

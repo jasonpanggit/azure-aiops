@@ -248,8 +248,16 @@ def _numeric_id(value: str) -> str:
 
 
 def _part(path: str, payload: dict[str, Any]) -> dict[str, str]:
+    # Do NOT sort_keys here: Fabric's Ontology import requires the
+    # polymorphism discriminator ("sourceType") to be the first property of
+    # sourceTableProperties objects, or import fails with
+    # ALMOperationImportFailed ("metadata property is ... not the first
+    # property in the deserialized JSON object"). Payload dicts are built in
+    # a fixed, deterministic key order in code, so relying on Python's
+    # guaranteed dict insertion order keeps encoding stable for
+    # _definitions_equal comparisons while satisfying that requirement.
     encoded = base64.b64encode(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(payload, separators=(",", ":")).encode()
     ).decode()
     return {"path": path, "payload": encoded, "payloadType": "InlineBase64"}
 

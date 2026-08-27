@@ -35,6 +35,10 @@ ENTITY_TYPES = (
     "PatchAssessmentDetail",
     "PatchInstallation",
     "AdvisorRecommendation",
+    "CostActual",
+    "RoleAssignment",
+    "RoleDefinition",
+    "ManagedIdentity",
     *_NETWORK_ENTITY_TYPES,
 )
 
@@ -44,6 +48,8 @@ class NormalizedGraph:
     entities: dict[str, list[dict]] = field(default_factory=lambda: {name: [] for name in ENTITY_TYPES})
     relationships: list[dict] = field(default_factory=list)
     changes: list[dict] = field(default_factory=list)
+    # Phase 1 projections are carried alongside the established graph so the
+    # immutable generation remains the single publication path.
     situations: list[dict] = field(default_factory=list)
     evidence: list[dict] = field(default_factory=list)
     links: list[dict] = field(default_factory=list)
@@ -66,7 +72,14 @@ class Normalizer:
             if str(value or "").strip()
         }
 
-    def normalize(self, payload: dict[str, list[dict]], observed_at: datetime, *, run_id: str = "normalization", requested_scope: dict[str, list[str]] | None = None) -> NormalizedGraph:
+    def normalize(
+        self,
+        payload: dict[str, list[dict]],
+        observed_at: datetime,
+        *,
+        run_id: str = "normalization",
+        requested_scope: dict[str, list[str]] | None = None,
+    ) -> NormalizedGraph:
         observed = _iso(observed_at)
         context = self.connection_context
         graph = NormalizedGraph()
@@ -144,7 +157,62 @@ class Normalizer:
             if target:
                 _add_edge(edge_index, entity["id"], "impacts", target, "arg:AdvisorResources", observed, 0.98)
 
-        graph.changes = [_change(row, observed) for row in payload.get("resource_changes", []) if not _failed_provider_row(row)]
+        for row in payload.get("cost_actuals", []):
+            entity = _cost_actual(row, observed)
+            entity_index["CostActual"][entity["id"]] = entity
+            target = entity.get("targetResourceId", "")
+            if target:
+                _add_edge(
+                    edge_index,
+                    target,
+                    "incursCost",
+                    entity["id"],
+                    "azure:CostManagement",
+                    observed,
+                    1.0,
+                )
+
+        for row in payload.get("role_assignments", []):
+            entity = _role_assignment(row, observed)
+            entity_index["RoleAssignment"][entity["id"]] = entity
+            # The assignment scope is the resource/RG/subscription the grant
+            # applies to, which is what makes blast radius computable.
+            target = entity.get("assignmentScope", "")
+            if target:
+                _add_edge(
+                    edge_index,
+                    entity["id"],
+                    "grantsAccessTo",
+                    target,
+                    "arg:AuthorizationResources",
+                    observed,
+                    0.98,
+                )
+
+        for row in payload.get("role_definitions", []):
+            entity = _role_definition(row, observed)
+            entity_index["RoleDefinition"][entity["id"]] = entity
+
+        for row in payload.get("managed_identities", []):
+            entity = _managed_identity(row, observed)
+            entity_index["ManagedIdentity"][entity["id"]] = entity
+            rg_id = _resource_group_key(row)
+            if rg_id:
+                _add_edge(
+                    edge_index,
+                    entity["id"],
+                    "belongsTo",
+                    rg_id,
+                    "arg:Resources",
+                    observed,
+                    1.0,
+                )
+
+        graph.changes = [
+            _change(row, observed)
+            for row in payload.get("resource_changes", [])
+            if not _failed_provider_row(row)
+        ]
         self._normalize_network(payload, observed, entity_index, edge_index)
         if context:
             for entity_type in ENTITY_TYPES:
@@ -167,14 +235,40 @@ class Normalizer:
             ),
             key=lambda item: item["relationshipId"],
         )
+        # Keep situation/evidence projections on the same normalized graph. The
+        # optional import avoids coupling the legacy entity normalizer to the
+        # API layer and preserves the single immutable publication path.
         from situations.materializer import materialize_graph, normalize_signal_families
+
         signal_payloads = dict(payload)
         if "arg_activity_log" not in signal_payloads and "arg" not in signal_payloads:
-            signal_payloads["arg_activity_log"] = [{"id": row.get("id"), "resource_id": row.get("targetResourceId"), "observed_at": row.get("changedAt") or observed, "watermark": row.get("changedAt") or observed, "assertion": row.get("changeType") or "resource changed"} for row in graph.changes]
-        signal_evidence, source_statuses = normalize_signal_families(signal_payloads, run_id=run_id, ingested_at=observed, requested_scope=requested_scope)
+            signal_payloads["arg_activity_log"] = [
+                {
+                    "id": row.get("id"),
+                    "resource_id": row.get("targetResourceId"),
+                    "observed_at": row.get("changedAt") or observed,
+                    "watermark": row.get("changedAt") or observed,
+                    "assertion": row.get("changeType") or "resource changed",
+                }
+                for row in graph.changes
+            ]
+        signal_evidence, source_statuses = normalize_signal_families(
+            signal_payloads,
+            run_id=run_id,
+            ingested_at=observed,
+            requested_scope=requested_scope,
+        )
         if payload.get("resource_changes") and "arg_activity_log" not in payload and "arg" not in payload:
-            signal_evidence = [item for item in signal_evidence if item.source_family != "arg_activity_log"]
-        generated = materialize_graph(graph, run_id, ingested_at=observed, additional_evidence=signal_evidence, source_statuses=source_statuses)
+            signal_evidence = [
+                item for item in signal_evidence if item.source_family != "arg_activity_log"
+            ]
+        generated = materialize_graph(
+            graph,
+            run_id,
+            ingested_at=observed,
+            additional_evidence=signal_evidence,
+            source_statuses=source_statuses,
+        )
         graph.situations = generated["situations"]
         graph.evidence = generated["evidence"]
         graph.links = generated["links"]
@@ -507,6 +601,129 @@ def _advisor(row: dict, observed: str) -> dict:
     return entity
 
 
+def _cost_actual(row: dict, observed: str) -> dict:
+    subscription_id = str(row.get("subscriptionId") or _subscription_from_id(row.get("resourceId")) or "")
+    usage_date = str(row.get("usageDate") or "")
+    resource_id = _lower(row.get("resourceId"))
+    service_name = str(row.get("serviceName") or "")
+    resource_group = str(row.get("resourceGroup") or "")
+    source_key = resource_id or f"/subscriptions/{subscription_id}/cost/{service_name}/{resource_group}".lower()
+    digest = hashlib.sha256(
+        f"{subscription_id}|{usage_date}|{source_key}|{service_name}|{resource_group}".encode()
+    ).hexdigest()[:24]
+    entity = _base(
+        {
+            "id": f"costactual://{subscription_id}/{usage_date}/{digest}",
+            "name": f"{usage_date} {service_name or resource_id or subscription_id}",
+            "subscriptionId": subscription_id,
+            "properties": row.get("properties") or {},
+        },
+        observed,
+        "azure:CostManagement",
+    )
+    entity.update(
+        {
+            "usageDate": usage_date,
+            "cost": _float(row.get("cost")),
+            "currency": str(row.get("currency") or ""),
+            "targetResourceId": resource_id,
+            "resourceId": resource_id,
+            "resourceGroup": resource_group,
+            "serviceName": service_name,
+            "billingPeriodStart": str(row.get("billingPeriodStart") or usage_date),
+            "billingPeriodEnd": str(row.get("billingPeriodEnd") or usage_date),
+            "sourceSystem": "azure:CostManagement",
+            "properties": row.get("properties") or row,
+        }
+    )
+    return entity
+
+
+def _role_assignment(row: dict, observed: str) -> dict:
+    """A single RBAC grant: who, what role, over which scope."""
+    entity = _base(row, observed, "arg:AuthorizationResources")
+    props = row.get("properties") or {}
+    role_definition_id = _lower(props.get("roleDefinitionId"))
+    entity.update(
+        {
+            "principalId": str(props.get("principalId") or ""),
+            # principalType is "User", "Group", "ServicePrincipal", or
+            # "ManagedIdentity" -- the axis identity risk reports on.
+            "principalType": str(props.get("principalType") or ""),
+            "roleDefinitionId": role_definition_id,
+            "assignmentScope": _lower(props.get("scope")),
+            "createdOn": str(props.get("createdOn") or ""),
+            "updatedOn": str(props.get("updatedOn") or ""),
+            "properties": props,
+        }
+    )
+    return entity
+
+
+def _role_definition(row: dict, observed: str) -> dict:
+    """A role's name and permissions, used to classify a grant as privileged."""
+    entity = _base(row, observed, "arg:AuthorizationResources")
+    props = row.get("properties") or {}
+    permissions = props.get("permissions")
+    actions: list[str] = []
+    if isinstance(permissions, list):
+        for permission in permissions:
+            if isinstance(permission, dict):
+                actions.extend(str(action) for action in permission.get("actions") or ())
+    role_name = str(props.get("roleName") or "")
+    entity.update(
+        {
+            "roleName": role_name,
+            "displayName": role_name or entity["displayName"],
+            "roleType": str(props.get("type") or ""),
+            "description": str(props.get("description") or ""),
+            "actions": actions,
+            "properties": props,
+        }
+    )
+    return entity
+
+
+def _managed_identity(row: dict, observed: str) -> dict:
+    """A user-assigned managed identity."""
+    entity = _base(row, observed, "arg:Resources")
+    props = row.get("properties") or {}
+    entity.update(
+        {
+            "principalId": str(props.get("principalId") or ""),
+            "clientId": str(props.get("clientId") or ""),
+            "location": str(row.get("location") or ""),
+            "resourceGroup": str(row.get("resourceGroup") or ""),
+            "tags": row.get("tags") or {},
+            "properties": props,
+        }
+    )
+    return entity
+
+
+def _change(row: dict, observed: str) -> dict:
+    props = row.get("properties") or {}
+    attrs = props.get("changeAttributes") or {}
+    return {
+        "id": _lower(row.get("id") or row.get("name")),
+        "targetResourceId": _lower(props.get("targetResourceId")),
+        "changeType": str(props.get("changeType") or ""),
+        "changedAt": str(attrs.get("timestamp") or ""),
+        "properties": props,
+        "sourceSystem": "arg:ResourceChanges",
+        "lastObservedTimestamp": observed,
+    }
+
+
+def _entity_type_for_resource(row: dict) -> str:
+    resource_type = _lower(row.get("type"))
+    if resource_type == "microsoft.compute/virtualmachines":
+        return "VirtualMachine"
+    if resource_type == "microsoft.hybridcompute/machines":
+        return "ArcServer"
+    return "Resource"
+
+
 def _subscription_key(row: dict) -> str:
     subscription = str(row.get("subscriptionId") or _subscription_from_id(row.get("id")) or "unknown").lower()
     return f"/subscriptions/{subscription}"
@@ -570,6 +787,16 @@ def _lower(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _float(value: Any) -> float:
+    if value is None or isinstance(value, bool):
+        return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if number != number else number  # noqa: PLR0124 - NaN check
+
+
 def _iso(value: datetime) -> str:
     return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -578,9 +805,60 @@ def _failed_provider_row(row: Mapping[str, Any]) -> bool:
     return str(row.get("status") or "").casefold() in {"failed", "unavailable"}
 
 
-def _source_statuses(rows: list[dict[str, Any]], *, run_id: str, observed_at: str, requested_scope: dict[str, list[str]] | None) -> list[dict[str, Any]]:
+def _source_statuses(
+    rows: list[dict[str, Any]],
+    *,
+    run_id: str,
+    observed_at: str,
+    requested_scope: dict[str, list[str]] | None,
+) -> list[dict[str, Any]]:
     from situations.models import SourceStatus
+
     failed = next((row for row in rows if _failed_provider_row(row)), None)
-    timestamps = [str(row.get("changedAt") or row.get("observed_at") or row.get("watermark") or ((row.get("properties") or {}).get("changeAttributes") or {}).get("timestamp") or "") for row in rows if not _failed_provider_row(row)]
-    status = SourceStatus(source_family="arg_activity_log", run_id=run_id, status="failed" if failed else "succeeded", observed_at=max(timestamps, default=observed_at), ingested_at=observed_at, watermark="" if failed else max(timestamps, default=""), query_version=str((rows[0] if rows else {}).get("query_version") or "1.0.0"), requested_scope=requested_scope or {}, provider_status=str((failed or {}).get("status") or "ok"), freshness="unknown" if failed else "fresh", availability="unavailable" if failed else "available", quality="degraded" if failed else "complete", error=str((failed or {}).get("error") or ""))
+    timestamps = [
+        str(
+            row.get("changedAt")
+            or row.get("observed_at")
+            or row.get("watermark")
+            or ((row.get("properties") or {}).get("changeAttributes") or {}).get("timestamp")
+            or ""
+        )
+        for row in rows
+        if not _failed_provider_row(row)
+    ]
+    watermark = max(timestamps, default="")
+    status = SourceStatus(
+        source_family="arg_activity_log",
+        run_id=run_id,
+        status="failed" if failed else "succeeded",
+        observed_at=max(timestamps, default=observed_at),
+        ingested_at=observed_at,
+        watermark="" if failed else watermark,
+        query_version=str((rows[0] if rows else {}).get("query_version") or "1.0.0"),
+        requested_scope=requested_scope or {},
+        provider_status=str((failed or {}).get("status") or "ok"),
+        freshness="unknown" if failed else "fresh",
+        availability="unavailable" if failed else "available",
+        quality="degraded" if failed else "complete",
+        error=str((failed or {}).get("error") or ""),
+    )
     return [status.to_dict()]
+
+
+def normalize_evidence_payloads(
+    payloads: Mapping[str, list[dict[str, Any]]],
+    *,
+    run_id: str,
+    ingested_at: datetime | str,
+    requested_scope: dict[str, list[str]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Expose the common Phase 1 envelope at the established normalizer boundary."""
+    from situations.materializer import normalize_signal_families
+
+    evidence, statuses = normalize_signal_families(
+        payloads,
+        run_id=run_id,
+        ingested_at=ingested_at,
+        requested_scope=requested_scope,
+    )
+    return [item.to_dict() for item in evidence], [item.to_dict() for item in statuses]

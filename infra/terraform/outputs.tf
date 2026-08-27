@@ -53,15 +53,7 @@ output "entra_web_client_id" {
   value       = var.entra_web_client_id
 }
 
-output "postgres_server_fqdn" {
-  description = "PostgreSQL Flexible Server hostname used by the API."
-  value       = azurerm_postgresql_flexible_server.hermes.fqdn
-}
 
-output "adls_account_name" {
-  description = "ADLS Gen2 storage account holding dataset snapshots."
-  value       = azurerm_storage_account.hermes_data.name
-}
 
 output "fabric_workspace_id" {
   description = "Fabric workspace ID, or null when Fabric is disabled."

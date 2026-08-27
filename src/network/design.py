@@ -12,7 +12,7 @@ which is materially different from "the design is satisfied".
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +40,108 @@ def _bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().casefold() in {"true", "1", "yes", "on"}
+
+
+#: Built-in rule identifiers. Kept as constants so gap-analysis code and the
+#: API/UI agree on a stable id regardless of how a customer edits the name
+#: or description of the rule.
+RULE_INTERNET_VIA_FIREWALL = "internet-via-firewall"
+RULE_NSG_OVERRIDE_DEFAULT_OUTBOUND = "nsg-override-default-outbound"
+RULE_PRIVATE_ENDPOINTS_PREFERRED = "private-endpoints-preferred"
+RULE_NSG_ON_EVERY_SUBNET = "nsg-on-every-subnet"
+RULE_APPROVED_PEERINGS_ONLY = "approved-peerings-only"
+RULE_BIDIRECTIONAL_PEERING = "bidirectional-peering"
+RULE_PRIVATE_DNS_ZONE_LINK = "private-dns-zone-link"
+RULE_NO_ORPHAN_FIREWALL_RULES = "no-orphan-firewall-rules"
+RULE_DOCUMENTED_DEPENDENCIES = "documented-dependencies"
+RULE_HUB_FIREWALL_PRESENT = "hub-firewall-present"
+
+
+@dataclass(frozen=True)
+class PolicyRule:
+    """A single, independently toggleable enforcement rule.
+
+    The rule list is the extensibility seam: new rules are added here (and a
+    matching check in ``gaps.py`` or ``tightening.py``) without changing the
+    document schema, so the UI can list, enable/disable, and edit any rule
+    generically instead of the backend hard-coding one boolean field per
+    rule.
+    """
+
+    rule_id: str
+    name: str
+    description: str = ""
+    category: str = "custom"
+    severity: str = "high"
+    enabled: bool = True
+    parameters: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rule_id": self.rule_id,
+            "name": self.name,
+            "description": self.description,
+            "category": self.category,
+            "severity": self.severity,
+            "enabled": self.enabled,
+            "parameters": dict(self.parameters),
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> PolicyRule | None:
+        if not isinstance(value, dict):
+            return None
+        rule_id = str(value.get("rule_id") or value.get("id") or "").strip()
+        name = str(value.get("name") or "").strip()
+        if not rule_id or not name:
+            return None
+        parameters = value.get("parameters")
+        return cls(
+            rule_id=rule_id,
+            name=name,
+            description=str(value.get("description") or "").strip(),
+            category=str(value.get("category") or "custom").strip() or "custom",
+            severity=str(value.get("severity") or "high").strip() or "high",
+            enabled=_bool(value.get("enabled"), True),
+            parameters=dict(parameters) if isinstance(parameters, dict) else {},
+        )
+
+
+def default_policy_rules() -> tuple[PolicyRule, ...]:
+    """The rules a fresh design policy starts with.
+
+    Both encode a customer's stated intent so the seeding here is only a
+    starting point -- every field remains editable through the policy API,
+    and additional rules can be appended without touching this shape.
+    """
+    return (
+        PolicyRule(
+            rule_id=RULE_INTERNET_VIA_FIREWALL,
+            name="Internet access must traverse the firewall",
+            description=(
+                "Every spoke subnet's default route (0.0.0.0/0) must send traffic to the "
+                "hub firewall's private IP. A subnet with no route table, no default "
+                "route, or a default route to anything else can reach the internet "
+                "directly, bypassing inspection."
+            ),
+            category="egress_control",
+            severity="high",
+            enabled=True,
+        ),
+        PolicyRule(
+            rule_id=RULE_NSG_OVERRIDE_DEFAULT_OUTBOUND,
+            name="NSGs must override the default allow-internet-outbound rule",
+            description=(
+                "Every NSG must carry an explicit outbound rule, at a priority lower than "
+                "Azure's default AllowInternetOutBound rule (65001), that governs traffic to "
+                "the internet -- so egress is a deliberate, reviewed decision rather than "
+                "Azure's silent default allow."
+            ),
+            category="nsg_hardening",
+            severity="high",
+            enabled=True,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -84,7 +186,22 @@ class NetworkDesignPolicy:
         "routeserversubnet",
     )
     exempt_vnet_names: tuple[str, ...] = ()
+    #: Extensible, user-editable enforcement rules (starts with the two
+    #: rules the customer asked for: internet-via-firewall and NSG override
+    #: of the default outbound-allow rule). Additional rules append here.
+    rules: tuple[PolicyRule, ...] = field(default_factory=default_policy_rules)
+    #: Tracks whether the policy document explicitly supplied a rule list.
+    #: Default seed rules alone do not constitute a declared design.
+    rules_declared: bool = False
     source_path: str = ""
+
+    def rule(self, rule_id: str) -> PolicyRule | None:
+        return next((item for item in self.rules if item.rule_id == rule_id), None)
+
+    def rule_enabled(self, rule_id: str, *, default: bool = True) -> bool:
+        """Whether a named rule is enabled, defaulting on if never declared."""
+        found = self.rule(rule_id)
+        return found.enabled if found is not None else default
 
     @property
     def is_declared(self) -> bool:
@@ -102,6 +219,8 @@ class NetworkDesignPolicy:
             or self.approved_peerings
             or self.require_private_endpoint_for_services
             or self.exempt_vnet_names
+            or self.rules_declared
+            or self.rules != default_policy_rules()
         )
 
     def is_exempt_subnet(self, name: str) -> bool:
@@ -153,6 +272,8 @@ class NetworkDesignPolicy:
             ],
             "exempt_subnet_names": list(self.exempt_subnet_names),
             "exempt_vnet_names": list(self.exempt_vnet_names),
+            "rules": [item.to_dict() for item in self.rules],
+            "rules_declared": self.rules_declared,
         }
 
     @classmethod
@@ -176,6 +297,13 @@ class NetworkDesignPolicy:
                     )
 
         defaults = cls()
+
+        rules_by_id: dict[str, PolicyRule] = {rule.rule_id: rule for rule in defaults.rules}
+        for item in data.get("rules") or []:
+            parsed = PolicyRule.from_mapping(item)
+            if parsed is not None:
+                rules_by_id[parsed.rule_id] = parsed
+
         return cls(
             name=str(data.get("name") or "").strip(),
             description=str(data.get("description") or "").strip(),
@@ -211,6 +339,8 @@ class NetworkDesignPolicy:
             exempt_subnet_names=_strings(data.get("exempt_subnet_names"))
             or defaults.exempt_subnet_names,
             exempt_vnet_names=_strings(data.get("exempt_vnet_names")),
+            rules=tuple(rules_by_id.values()),
+            rules_declared="rules" in data,
             source_path=source_path,
         )
 
@@ -247,3 +377,105 @@ def _parse(text: str, path: Path) -> Any:
     except ImportError:  # pragma: no cover - yaml is a declared dependency
         return json.loads(text)
     return yaml.safe_load(text)
+
+
+#: Persisted policy document name, following the same convention as
+#: ``state/enterprise_settings.json``.
+POLICY_DOCUMENT = "state/network_design_policy.json"
+
+
+class NetworkDesignPolicyValidationError(ValueError):
+    """Raised when a policy update would leave the policy unusable."""
+
+
+def validate_policy_update(changes: dict[str, Any]) -> None:
+    """Rejects a subset of malformed edits before they are ever persisted.
+
+    Anything shaped like a policy (dict) is accepted; ``from_mapping`` already
+    defaults every unrecognized or missing field, so validation here only
+    needs to catch structurally broken input a UI form should never submit.
+    """
+    if not isinstance(changes, dict):
+        raise NetworkDesignPolicyValidationError("Policy update must be a JSON object")
+    rules = changes.get("rules")
+    if rules is not None:
+        if not isinstance(rules, list):
+            raise NetworkDesignPolicyValidationError("rules must be a list")
+        seen: set[str] = set()
+        for item in rules:
+            if not isinstance(item, dict):
+                raise NetworkDesignPolicyValidationError("Each rule must be an object")
+            rule_id = str(item.get("rule_id") or item.get("id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not rule_id or not name:
+                raise NetworkDesignPolicyValidationError(
+                    "Each rule requires a rule_id and a name"
+                )
+            if rule_id in seen:
+                raise NetworkDesignPolicyValidationError(f"Duplicate rule_id: {rule_id}")
+            seen.add(rule_id)
+    remove_ids = changes.get("remove_rule_ids")
+    if remove_ids is not None and not isinstance(remove_ids, list):
+        raise NetworkDesignPolicyValidationError("remove_rule_ids must be a list")
+
+
+class NetworkDesignPolicyStore:
+    """Reads and writes the UI-editable network design policy document.
+
+    Same shape as :class:`~intelligence.governance.settings.EnterpriseSettingsStore`:
+    a single revision-checked document, defaulted on read, validated on
+    write, with an in-memory fallback when no document store is configured
+    (correct for a single-process local run, never reached in a deployed
+    replica with OneLake configured).
+    """
+
+    def __init__(self, documents: Any = None) -> None:
+        self._documents = documents
+        self._memory: dict[str, Any] | None = None
+
+    def read(self) -> NetworkDesignPolicy:
+        if self._documents is None:
+            return NetworkDesignPolicy.from_mapping(self._memory or {})
+        payload = self._documents.read(POLICY_DOCUMENT)
+        stored = payload.get("policy")
+        return NetworkDesignPolicy.from_mapping(stored if isinstance(stored, dict) else {})
+
+    def update(self, changes: dict[str, Any]) -> NetworkDesignPolicy:
+        """Applies a partial update and returns the full effective policy."""
+        validate_policy_update(changes)
+        current = self.read().to_dict()
+        merged = {**current, **changes}
+        # Rules replace by rule_id rather than requiring the whole list to be
+        # resubmitted, so a UI toggling one rule's ``enabled`` flag does not
+        # need to round-trip every other rule first.
+        if "rules" in changes:
+            existing_rules = {item["rule_id"]: item for item in current.get("rules") or []}
+            for item in changes["rules"]:
+                if isinstance(item, dict) and item.get("rule_id"):
+                    existing_rules[str(item["rule_id"])] = item
+            merged["rules"] = list(existing_rules.values())
+        # ``remove_rule_ids`` is a write-only instruction, not a policy field:
+        # it deletes rules by id (e.g. a custom rule an architect added and
+        # later wants removed) and must never be persisted itself.
+        remove_ids = changes.get("remove_rule_ids")
+        if remove_ids:
+            to_remove = {str(item) for item in remove_ids}
+            merged["rules"] = [
+                item
+                for item in merged.get("rules") or []
+                if str(item.get("rule_id")) not in to_remove
+            ]
+        merged.pop("remove_rule_ids", None)
+
+        if self._documents is None:
+            self._memory = merged
+            return NetworkDesignPolicy.from_mapping(merged)
+
+        payload = self._documents.read(POLICY_DOCUMENT)
+        revision = int(payload.get("revision") or 0)
+        self._documents.write(
+            POLICY_DOCUMENT,
+            {"policy": merged, "revision": revision + 1},
+            expected_revision=revision,
+        )
+        return NetworkDesignPolicy.from_mapping(merged)

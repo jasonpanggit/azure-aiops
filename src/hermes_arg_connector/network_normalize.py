@@ -551,19 +551,48 @@ def normalize_load_balancer(base: dict, row: dict, observed: str) -> dict:
             frontend_ips.append(private)
 
     backends: list[str] = []
+    backend_subnets: list[str] = []
     for pool in _list(props.get("backendAddressPools")):
         pool_props = pool.get("properties") or {}
         backends.extend(_ref_ids(pool_props.get("backendIPConfigurations")))
         for address in _list(pool_props.get("loadBalancerBackendAddresses")):
-            address_props = address.get("properties") or {}
+            address_props = address.get("properties") or address
             ref = _ref_id(address_props.get("networkInterfaceIPConfiguration"))
             if ref:
                 backends.append(ref)
+            # Managed backends (e.g. AKS/ACA node pools behind an internal LB)
+            # are addressed by IP + subnet rather than a NIC IP-config ID, so
+            # there is no per-member resource to link to. Falling back to the
+            # subnet at least anchors the LB inside the topology instead of
+            # leaving it with no backend edge at all.
+            backend_subnet_ref = _ref_id(address_props.get("subnet"))
+            if backend_subnet_ref:
+                backend_subnets.append(backend_subnet_ref)
 
     waf_config = props.get("webApplicationFirewallConfiguration") or {}
     waf_enabled = bool(waf_config.get("enabled")) or bool(props.get("firewallPolicy"))
 
     vnet_id = subnet_id.split("/subnets/", 1)[0] if "/subnets/" in subnet_id else ""
+    if not vnet_id and backend_subnets:
+        # A public-only frontend (no subnet) leaves the LB with no VNet
+        # anchor at all; anchor it to whichever VNet its backends live in.
+        first_backend_subnet = backend_subnets[0]
+        vnet_id = (
+            first_backend_subnet.split("/subnets/", 1)[0]
+            if "/subnets/" in first_backend_subnet
+            else vnet_id
+        )
+    if not subnet_id and backend_subnets:
+        subnet_id = backend_subnets[0]
+
+    # Azure Container Apps (and similarly PaaS-managed LBs) stamp the owning
+    # resource onto the LB via a tag rather than a first-class ARM reference,
+    # so the only way to attach this LB to its managed environment/app is to
+    # read the tag back out.
+    tags = row.get("tags") or {}
+    managed_resource_id = _text(
+        tags.get("aca-managed-env-id") or tags.get("managed-by-resource-id") or ""
+    )
 
     return {
         **base,
@@ -574,6 +603,8 @@ def normalize_load_balancer(base: dict, row: dict, observed: str) -> dict:
         "frontendIps": frontend_ips,
         "publicIps": sorted(set(public_ips)),
         "backendResourceIds": sorted(set(backends)),
+        "backendSubnetIds": sorted(set(backend_subnets)),
         "wafEnabled": waf_enabled,
+        "managedResourceId": managed_resource_id,
         "properties": props,
     }

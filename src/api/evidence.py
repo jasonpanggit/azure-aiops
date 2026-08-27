@@ -141,6 +141,10 @@ class Envelope:
         }
         if self.knowledge_version:
             body["knowledge_version"] = self.knowledge_version
+        if isinstance(self.data, Mapping):
+            for key in ("graph_freshness", "live_observed_at", "source_status"):
+                if key in self.data:
+                    body[key] = self.data[key]
         if self.pagination is not None:
             body["pagination"] = dict(self.pagination)
         warnings = list(dict.fromkeys((*_truncation_warnings(self.data), *self.warnings)))

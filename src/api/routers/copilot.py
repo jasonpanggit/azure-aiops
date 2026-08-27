@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field
 
 from operations.foundry_agent import FoundryAgentError
 from operations.investigation import (
-    MAX_TOOL_CALLS,
     conversation_store,
     run_investigation,
     tool_catalog,
@@ -134,7 +133,18 @@ def ask(payload: CopilotRequest, context: Context, scope: ReadScope) -> dict[str
     warnings: list[str] = []
 
     try:
-        retrieved = context.semantic().search(question)
+        subscription_ids = list(scope.values("subscription"))
+        live_search = question.casefold().strip().startswith("show list of") and (
+            "vm" in question.casefold() or "server" in question.casefold()
+        )
+        if (
+            context.hybrid_search_provider is not None
+            and subscription_ids
+            and live_search
+        ):
+            retrieved = context.hybrid_search_provider(question, subscription_ids)
+        else:
+            retrieved = context.semantic().search(question)
     except ApiError:
         raise
     except (LookupError, ValueError) as exc:

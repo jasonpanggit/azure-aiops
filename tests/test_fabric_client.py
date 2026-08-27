@@ -122,6 +122,69 @@ def test_fabric_client_follows_continuation_uri() -> None:
     assert calls[-1] == "https://api.fabric.microsoft.com/v1/next-page"
 
 
+def test_fabric_client_does_not_strip_embedded_continuation_token_from_uri() -> None:
+    """continuationUri (as returned by e.g. GET .../lakehouses/{id}/tables)
+    already embeds its own continuationToken query string. Requesting it with
+    an empty params dict would make httpx replace that query string
+    entirely, stripping the token and causing the same page to be re-fetched
+    forever instead of advancing.
+    """
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if "continuationToken=embedded-token" in str(request.url):
+            return httpx.Response(200, request=request, json={"data": [{"name": "t2"}]})
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "data": [{"name": "t1"}],
+                "continuationUri": (
+                    "https://api.fabric.microsoft.com/v1/workspaces/w/lakehouses/l/tables"
+                    "?continuationToken=embedded-token"
+                ),
+            },
+        )
+
+    client = FabricClient(
+        FakeCredential(),
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _: None,
+    )
+
+    rows = list(client.iter_items("/workspaces/w/lakehouses/l/tables"))
+
+    assert [row["name"] for row in rows] == ["t1", "t2"]
+    assert calls[1].endswith("continuationToken=embedded-token")
+
+
+def test_fabric_client_paginates_data_keyed_responses() -> None:
+    """GET .../lakehouses/{id}/tables returns items under "data" rather than
+    "value" (unlike most other Fabric list endpoints). iter_items must not
+    silently yield zero results for this response shape.
+    """
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        token = request.url.params.get("continuationToken")
+        if not token:
+            return httpx.Response(
+                200,
+                request=request,
+                json={"data": [{"name": "t1"}], "continuationToken": "next"},
+            )
+        return httpx.Response(200, request=request, json={"data": [{"name": "t2"}]})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    client = FabricClient(FakeCredential(), http_client=http, sleep=lambda _: None)
+
+    rows = list(client.iter_items("/workspaces/w/lakehouses/l/tables"))
+
+    assert [row["name"] for row in rows] == ["t1", "t2"]
+
+
 def test_fabric_client_follows_completed_operation_location() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/lakehouses"):
@@ -150,11 +213,56 @@ def test_fabric_client_follows_completed_operation_location() -> None:
     assert result["id"] == "l1"
 
 
+def test_fabric_client_follows_operation_location_on_analysis_windows_net() -> None:
+    """Long-running Fabric item operations (e.g. creating an Ontology item)
+    return a 202 Location on a regional Power BI/Fabric backend cluster host
+    such as "wabi-west-us3-a-primary-redirect.analysis.windows.net", not on
+    api.fabric.microsoft.com itself. That legitimate operation-tracking host
+    must be trusted, not rejected as a cross-origin URL.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ontologies"):
+            return httpx.Response(
+                202,
+                request=request,
+                headers={
+                    "Location": (
+                        "https://wabi-west-us3-a-primary-redirect.analysis.windows.net"
+                        "/v1/operations/op1"
+                    ),
+                    "Retry-After": "0",
+                },
+            )
+        if "/operations/op1" in request.url.path:
+            return httpx.Response(
+                200,
+                request=request,
+                headers={"Location": "https://api.fabric.microsoft.com/v1/workspaces/w1/ontologies/o1"},
+                json={"status": "Succeeded"},
+            )
+        return httpx.Response(200, request=request, json={"id": "o1", "displayName": "Ontology"})
+
+    client = FabricClient(
+        FakeCredential(),
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _: None,
+    )
+
+    result = client.request("POST", "/workspaces/w1/ontologies", json_body={"displayName": "Ontology"})
+
+    assert result["id"] == "o1"
+
+
 @pytest.mark.parametrize(
     "url",
     (
         "https://attacker.invalid/steal",
         "http://api.fabric.microsoft.com/v1/workspaces",
+        # Must be rejected as a suffix match, not a substring match: hosts
+        # like these are not actually subdomains of analysis.windows.net.
+        "https://evil-analysis.windows.net.attacker.invalid/steal",
+        "https://notanalysis.windows.net/steal",
     ),
 )
 def test_fabric_client_rejects_untrusted_absolute_request_urls(url: str) -> None:

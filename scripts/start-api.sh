@@ -26,9 +26,6 @@ HERMES_LOCAL_SEED="${HERMES_LOCAL_SEED:-0}"
 case "$HERMES_LOCAL_SEED" in
   0|false|False|no|No)
     HERMES_RUNTIME_MODE="${HERMES_RUNTIME_MODE:-production}"
-    if [ -z "${HERMES_DATABASE_URL:-}" ]; then
-      HERMES_DATABASE_URL="postgresql://hermes:hermes@127.0.0.1:5432/hermes"
-    fi
     ;;
   *)
     HERMES_RUNTIME_MODE=demo
@@ -36,7 +33,6 @@ case "$HERMES_LOCAL_SEED" in
     HERMES_LOCAL_FIXTURE="${HERMES_LOCAL_FIXTURE:-tests/fixtures/mock_arg_responses.json}"
     HERMES_LOCAL_CONNECTION_ID="${HERMES_LOCAL_CONNECTION_ID:-local-spn}"
     HERMES_LOCAL_AUTO_SYNC="${HERMES_LOCAL_AUTO_SYNC:-1}"
-    unset HERMES_DATABASE_URL
     ;;
 esac
 
@@ -52,9 +48,6 @@ for az_dir in /opt/homebrew/bin /usr/local/bin; do
 done
 
 export HERMES_API_AUTH HERMES_API_TOKENS HERMES_API_CORS_ORIGINS HERMES_HOME HERMES_RUNTIME_MODE PATH
-if [ -n "${HERMES_DATABASE_URL:-}" ]; then
-  export HERMES_DATABASE_URL
-fi
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}src"
 
 case "$HERMES_LOCAL_SEED" in

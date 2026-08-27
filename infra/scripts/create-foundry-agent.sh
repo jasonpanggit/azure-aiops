@@ -37,7 +37,7 @@ token=$(curl -sS --fail-with-body \
   --data-urlencode 'scope=https://ai.azure.com/.default' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
 
-body=$(
+create_body=$(
   FOUNDRY_AGENT_NAME="$FOUNDRY_AGENT_NAME" \
   FOUNDRY_AGENT_MODEL="$FOUNDRY_AGENT_MODEL" \
   FOUNDRY_AGENT_PROMPT="$FOUNDRY_AGENT_PROMPT" \
@@ -58,22 +58,60 @@ print(json.dumps({
 PY
 )
 
+# The versions endpoint takes only "definition" -- the agent identity (name)
+# already exists, so name/description are not accepted there.
+version_body=$(
+  FOUNDRY_AGENT_MODEL="$FOUNDRY_AGENT_MODEL" \
+  FOUNDRY_AGENT_PROMPT="$FOUNDRY_AGENT_PROMPT" \
+  python3 - <<'PY'
+import json, os
+
+print(json.dumps({
+    "definition": {
+        "kind": "prompt",
+        "model": os.environ["FOUNDRY_AGENT_MODEL"],
+        "instructions": os.environ["FOUNDRY_AGENT_PROMPT"],
+    },
+}))
+PY
+)
+
 echo "create-foundry-agent: upserting '${FOUNDRY_AGENT_NAME}' on ${endpoint}"
 
 # Foundry can return 404/409 briefly while a freshly created project
 # propagates, so retry rather than failing the apply on a timing artefact.
+#
+# A 409 on the create call means the agent name already exists (true for
+# every re-run after the first apply). That is not a timing artefact --
+# switch to adding a new version on the existing agent instead of retrying
+# the same create call, which would otherwise conflict forever.
 attempt=1
 max_attempts=8
+mode="create"
 while true; do
+  if [[ "${mode}" == "create" ]]; then
+    url="${endpoint}/agents?api-version=${API_VERSION}"
+    body="${create_body}"
+  else
+    url="${endpoint}/agents/${FOUNDRY_AGENT_NAME}/versions?api-version=${API_VERSION}"
+    body="${version_body}"
+  fi
+
   http_status=$(curl -sS -o /tmp/foundry-agent-response.json -w '%{http_code}' \
-    -X POST "${endpoint}/agents?api-version=${API_VERSION}" \
+    -X POST "${url}" \
     -H "Authorization: Bearer ${token}" \
     -H 'Content-Type: application/json' \
     -d "${body}") || http_status=000
 
   if [[ "${http_status}" == 2* ]]; then
-    echo "create-foundry-agent: done (HTTP ${http_status})"
+    echo "create-foundry-agent: done (HTTP ${http_status}, ${mode})"
     exit 0
+  fi
+
+  if [[ "${mode}" == "create" && "${http_status}" == "409" ]]; then
+    echo "create-foundry-agent: agent already exists, adding a new version instead"
+    mode="version"
+    continue
   fi
 
   if (( attempt >= max_attempts )); then

@@ -135,9 +135,7 @@ class EntraJwtAuthenticator:
         # (e.g. "api://<client-id>") or the bare application (client) ID GUID,
         # depending on tenant/token configuration. Accept both forms so
         # validation doesn't reject legitimately-issued tokens.
-        bare_audience = self.audience
-        if bare_audience.startswith("api://"):
-            bare_audience = bare_audience[len("api://") :]
+        bare_audience = self.audience.removeprefix("api://")
         self.valid_audiences = {self.audience, bare_audience}
         self.issuer = (
             f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"

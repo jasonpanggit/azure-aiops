@@ -216,12 +216,37 @@ variable "entra_grants_json" {
 variable "akv_bootstrap_secrets_json" {
   description = "JSON map of Key Vault secret names to secret-backed environment variable names."
   type        = string
-  default     = "{\"hermes-database-url\":\"HERMES_DATABASE_URL\"}"
+  default     = "{}"
 
   validation {
     condition     = can(jsondecode(var.akv_bootstrap_secrets_json))
     error_message = "akv_bootstrap_secrets_json must be valid JSON."
   }
+}
+
+variable "nvd_api_key" {
+  description = <<-EOT
+    NVD API key used to enrich CVE detail (description, CVSS) from the
+    National Vulnerability Database. Without it, NVD's anonymous rate limit
+    (5 requests/30s) throttles CVE detail lookups, causing them to fail with
+    "CVE not found" in the UI. Leave empty to disable enrichment.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "refresh_trigger_secret" {
+  description = <<-EOT
+    Shared secret checked against the x-hermes-trigger-secret header on
+    POST /api/v1/inventory/refresh. This endpoint is called by the Fabric
+    Data Pipeline's Web activity on a schedule to run inventory
+    acquisition + normalization + OneLake publication. Leave empty to
+    disable the endpoint (it returns 503 until configured).
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "api_external_ingress" {
@@ -327,3 +352,21 @@ variable "fabric_lakehouse_name" {
   type        = string
   default     = "operational_context_graph"
 }
+
+variable "alert_email_addresses" {
+  description = <<-EOT
+    Email addresses notified by Azure Monitor when platform observability
+    alert rules fire (API/UI availability, provider health, discovery
+    freshness). Empty by default so this is opt-in per environment; the pilot
+    deployment must set at least one address before go-live.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "alert_provider_stale_threshold_hours" {
+  description = "Hours a required provider may stay stale before the freshness alert fires."
+  type        = number
+  default     = 6
+}
+

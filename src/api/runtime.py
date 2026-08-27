@@ -18,6 +18,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ from fabric.config import FabricRuntimeConfig, OntologyRuntimeConfig
 from fabric.dataset_mapper import InventoryDatasetMapper
 from fabric.runtime import FabricRuntime, build_runtime
 from hermes_arg_connector.config import ConnectorConfig
+from hermes_arg_connector.queries import QuerySpec
+from intelligence.governance import EnterpriseSettingsStore
 from intelligence.incident.incident_intelligence import IncidentIntelligence
 from intelligence.incidents.incident_engine import IncidentEngine
 from intelligence.vulnerability.connector import (
@@ -34,29 +37,35 @@ from intelligence.vulnerability.connector import (
     MsrcKbLookupConnector,
     NvdCveEnrichmentConnector,
 )
+from intelligence.vulnerability.enrichment_cache import EnrichmentCache
 from intelligence.vulnerability.models import RiskException
 from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 
 _LOGGER = logging.getLogger(__name__)
 
-# KB->CVE (MSRC) and CVE->detail (NVD) lookups are best-effort external
-# enrichment. `_load_vulnerability_service()` is rebuilt on every request (see
-# `build_context()` below), so results are memoized with a TTL to avoid an
-# external API call storm and to respect NVD's rate limits. A single process
-# cache is deliberately simple; failures never break the endpoint, they just
-# fall back to the `KB-<kbId>` proxy identifier used before this connector
-# existed.
-_KB_CVE_CACHE_TTL_SECONDS = 6 * 60 * 60
-_kb_cve_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
-_cve_detail_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+from storage.fs import is_onelake_uri
+from network.design import NetworkDesignPolicyStore
 from network.flow import FlowQuery
+from network.models import PRIVATE_LINK_RESOURCE_TYPES
 from network.service import NetworkIntelligenceService
 from onboarding.credentials import KeyVaultSecretWriter
 from onboarding.registry import ConnectionRegistry
-from onboarding.runtime import build_onboarding_service
+from onboarding.runtime import build_connection_arg_client, build_onboarding_service
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
 from operations.foundry_agent import FoundryPromptAgent
+from operations.patching import (
+    InMemoryPatchRunStore,
+    PatchingService,
+    UnconfiguredPatchExecutionAdapter,
+)
+from semantic.hybrid_query import HybridQueryService
+from semantic.live_operations import (
+    LiveRemediationPlanner,
+    live_incident_engine,
+    live_vulnerability_service,
+)
+from semantic.live_provider import ConnectionScopedLiveResourceProvider
 from semantic.semantic_engine import SemanticEngine
 from storage.onelake_documents import OneLakeDocumentStore
 
@@ -66,6 +75,7 @@ from .auth import (
     StaticTokenAuthenticator,
 )
 from .dependencies import ApiContext
+from .governance_snapshot import GovernanceSnapshot
 from .providers import ProviderRuntime, ProviderSpec, ProviderValue
 from .rbac import Authorizer, Grant, Principal
 from .telemetry import ApiTelemetry
@@ -89,6 +99,8 @@ ENV_PROVIDER_STALE_HOURS = "HERMES_PROVIDER_STALE_HOURS"
 ENV_FOUNDRY_PROJECT_ENDPOINT = "FOUNDRY_PROJECT_ENDPOINT"
 ENV_APPROVED_SEARCH_API_ENDPOINT = "APPROVED_SEARCH_API_ENDPOINT"
 ENV_APPROVED_SEARCH_API_KEY = "APPROVED_SEARCH_API_KEY"
+# Opt-in switch for real Azure patch execution. Absent it, patch runs refuse.
+ENV_PATCH_EXECUTION = "HERMES_PATCH_EXECUTION"
 
 AUTH_GATEWAY = "gateway"
 AUTH_ENTRA = "entra"
@@ -103,11 +115,11 @@ _foundry_agent: Any = _UNSET
 def hermes_home() -> Path | str:
     """Root for all persisted state: connection dataset snapshots.
 
-    Plain paths use the local disk (the default for development). Set to an
-    ``abfss://<container>@<account>.dfs.core.windows.net/<path>`` URI to
-    persist synced dataset snapshots in Azure Data Lake Storage Gen2 instead
-    -- the same `DatasetStore`/`InventoryDatasetMapper` code path handles
-    both transparently (see `storage.fs`).
+    Plain paths use the local disk (the default for development). Set to a
+    ``abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>/Files/<path>``
+    URI to persist synced dataset snapshots in OneLake instead -- the same
+    `DatasetStore`/`InventoryDatasetMapper` code path handles both
+    transparently (see `hermes_arg_connector.fs`).
     """
     from storage.fs import resolve_root
 
@@ -243,7 +255,7 @@ def _load_ontology_rows() -> tuple[list[dict], list[dict], str]:
 
 # `_load_snapshot_tables()` is invoked by `/health` on every liveness/readiness
 # probe (every ~10s) as well as by every semantic/network/vulnerability route.
-# It performs a real ADLS read (list connections, open each manifest, map each
+# It performs a real OneLake read (list connections, open each manifest, map each
 # dataset) which can easily exceed the Container Apps probe's 1s timeout under
 # real network latency, causing repeated probe failures and a
 # CrashLoopBackOff that silently reverts traffic to an older revision. Cache
@@ -254,13 +266,19 @@ def _load_ontology_rows() -> tuple[list[dict], list[dict], str]:
 _SNAPSHOT_TABLES_CACHE_TTL_SECONDS = 30
 _snapshot_tables_cache: dict[str, tuple[float, tuple[list[dict[str, list[dict]]], str]]] = {}
 
+# Scoped network requests bypass the persisted snapshot and query ARG live, so
+# without a cache every page load costs a round trip. Keyed by root *and*
+# subscription set, since rows fetched for one scope must never serve another.
+_HYBRID_NETWORK_CACHE_TTL_SECONDS = 30
+_hybrid_network_cache: dict[tuple[str, tuple[str, ...]], tuple[float, list[dict]]] = {}
+
 
 def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
     """Load the mapped datasets for every registered synced connection.
 
     Cached per `HERMES_HOME` root with a short TTL (see module docstring above)
     so repeated calls (notably the health probe, hit every ~10s) don't each
-    perform a fresh remote ADLS read.
+    perform a fresh remote OneLake read.
     """
     from storage.datasets import DatasetStore
 
@@ -327,10 +345,14 @@ def _load_semantic_snapshot() -> SemanticEngine | None:
 
 
 def _load_network_service() -> NetworkIntelligenceService | None:
-    entities, _relationships, _freshness = _load_ontology_rows()
+    entities, relationships, _freshness = _load_ontology_rows()
     if not entities:
         return None
-    return NetworkIntelligenceService.from_rows(entities)
+    return NetworkIntelligenceService.from_rows(
+        entities,
+        policy=_network_policy_store().read(),
+        semantic_relationships=relationships,
+    )
 
 
 def _load_incident_engine() -> IncidentEngine | None:
@@ -360,6 +382,38 @@ def _load_incident_engine() -> IncidentEngine | None:
     )
 
 
+# KB->CVE (MSRC) and CVE->detail (NVD) lookups are best-effort external
+# enrichment. `_load_vulnerability_service()` is rebuilt on every request (see
+# `build_context()` below), so results are memoized with a TTL to avoid an
+# external API call storm and to respect NVD's rate limits.
+#
+# The caches are backed by OneLake (see `EnrichmentCache`) whenever
+# HERMES_HOME points at Fabric, so they survive restarts and are shared by
+# every replica instead of each one cold-starting its own copy and
+# multiplying load on rate-limited public feeds. A local home keeps them
+# purely in memory. Failures never break the endpoint.
+_KB_CVE_CACHE_TTL_SECONDS = 6 * 60 * 60
+
+
+@cache
+def _enrichment_cache_for(name: str, root: str) -> EnrichmentCache:
+    return EnrichmentCache(
+        f"cache/{name}.json",
+        store=OneLakeDocumentStore(root) if is_onelake_uri(root) else None,
+        ttl_seconds=_KB_CVE_CACHE_TTL_SECONDS,
+    )
+
+
+def _enrichment_cache(name: str) -> EnrichmentCache:
+    """One durable cache per feed, reused per process.
+
+    Keyed by the resolved `HERMES_HOME` as well as the feed name: the root is
+    read from the environment on every call, and entries cached under one
+    root must never be served for another.
+    """
+    return _enrichment_cache_for(name, str(hermes_home()))
+
+
 def _resolve_kb_to_cves(kb_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
     """Resolve KB ids to real CVE ids via the public MSRC Security Update
     Guide feed, memoized with a TTL so repeated requests don't re-query MSRC
@@ -368,13 +422,13 @@ def _resolve_kb_to_cves(kb_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
     empty dict entirely on any network failure, so callers can safely fall
     back to the `KB-<kbId>` proxy identifier.
     """
-    now = time.monotonic()
     resolved: dict[str, tuple[str, ...]] = {}
     to_fetch: list[str] = []
+    cache = _enrichment_cache("msrc_kb_cve")
     for kb_id in kb_ids:
-        cached = _kb_cve_cache.get(kb_id)
-        if cached and now - cached[0] < _KB_CVE_CACHE_TTL_SECONDS:
-            resolved[kb_id] = cached[1]
+        hit, value = cache.get(kb_id)
+        if hit:
+            resolved[kb_id] = tuple(value or ())
         else:
             to_fetch.append(kb_id)
     if to_fetch:
@@ -384,22 +438,24 @@ def _resolve_kb_to_cves(kb_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
             _LOGGER.warning("MSRC KB-to-CVE lookup failed; falling back to KB proxy ids", exc_info=True)
             updates = ()
         fetched_kbs = {update.kb_id for update in updates}
+        pending: dict[str, Any] = {}
         for update in updates:
-            _kb_cve_cache[update.kb_id] = (now, update.cve_ids)
+            pending[update.kb_id] = list(update.cve_ids)
             resolved[update.kb_id] = update.cve_ids
         for kb_id in to_fetch:
             if kb_id not in fetched_kbs:
-                _kb_cve_cache[kb_id] = (now, ())
+                pending[kb_id] = []
                 resolved[kb_id] = ()
+        cache.set_many(pending)
     return resolved
 
 
 # Failed enrichment lookups (e.g. NVD 429 rate-limiting) are cached for a
 # much shorter TTL than successes: long enough that the background refresh
 # thread doesn't hammer a throttled upstream every cycle, short enough that
-# real recovery is picked up well within a work day. `_cve_detail_cache`
-# stores `{}` as the cached row for a negatively-cached id so callers keep
-# their existing "no detail available" behavior for free.
+# real recovery is picked up well within a work day. An empty dict is stored
+# as the cached row for a negatively-cached id so callers keep their existing
+# "no detail available" behavior for free.
 _NEGATIVE_CACHE_TTL_SECONDS = 15 * 60
 
 
@@ -409,22 +465,22 @@ def _resolve_cve_details(cve_ids: tuple[str, ...]) -> list[dict[str, Any]]:
     returns no rows (and never raises) if it is unset or the request fails,
     so enrichment is always optional.
     """
-    now = time.monotonic()
     rows: list[dict[str, Any]] = []
     to_fetch: list[str] = []
+    cache = _enrichment_cache("nvd_cve_detail")
     for cve_id in cve_ids:
-        cached = _cve_detail_cache.get(cve_id)
-        if cached is None:
-            to_fetch.append(cve_id)
+        found, value, age = cache.get_entry(cve_id)
+        # Negative entries (an empty row) expire far sooner than successful
+        # ones, so a throttled upstream is retried within the hour rather
+        # than being written off for a whole day.
+        ttl = _KB_CVE_CACHE_TTL_SECONDS if (found and value) else _NEGATIVE_CACHE_TTL_SECONDS
+        if found and age < ttl:
+            if value:
+                rows.append(value)
             continue
-        cached_at, cached_row = cached
-        ttl = _KB_CVE_CACHE_TTL_SECONDS if cached_row else _NEGATIVE_CACHE_TTL_SECONDS
-        if now - cached_at < ttl:
-            if cached_row:
-                rows.append(cached_row)
-        else:
-            to_fetch.append(cve_id)
+        to_fetch.append(cve_id)
     if to_fetch:
+        pending: dict[str, Any] = {}
         try:
             cves = NvdCveEnrichmentConnector().fetch_cves(tuple(to_fetch))
         except Exception:
@@ -435,20 +491,20 @@ def _resolve_cve_details(cve_ids: tuple[str, ...]) -> list[dict[str, Any]]:
             # the ~30s background refresh doesn't retry an upstream that
             # just told us to back off.
             for cve_id in to_fetch:
-                _cve_detail_cache[cve_id] = (now, {})
+                pending[cve_id] = {}
             cves = ()
         for cve in cves:
             row = cve.to_dict()
-            _cve_detail_cache[cve.cve_id] = (now, row)
+            pending[cve.cve_id] = row
             rows.append(row)
+        cache.set_many(pending)
     return rows
 
 
 # EPSS scores drift slowly (FIRST.org publishes new scores roughly daily) and
 # the KEV catalog changes even less often, so both share the same long TTL
-# used for the other public-feed enrichments above.
-_epss_cache: dict[str, tuple[float, dict[str, float]]] = {}
-_kev_cache: tuple[float, dict[str, dict[str, str]]] | None = None
+# used for the other public-feed enrichments above, and the same durable
+# OneLake backing.
 
 
 def _resolve_epss_scores(cve_ids: tuple[str, ...]) -> dict[str, dict[str, float]]:
@@ -456,13 +512,13 @@ def _resolve_epss_scores(cve_ids: tuple[str, ...]) -> dict[str, dict[str, float]
     FIRST.org, memoized with a TTL. Returns an empty dict (never raises) on
     any network failure so EPSS enrichment is always optional.
     """
-    now = time.monotonic()
     scores: dict[str, dict[str, float]] = {}
     to_fetch: list[str] = []
+    cache = _enrichment_cache("epss_scores")
     for cve_id in cve_ids:
-        cached = _epss_cache.get(cve_id)
-        if cached and now - cached[0] < _KB_CVE_CACHE_TTL_SECONDS:
-            scores[cve_id] = cached[1]
+        hit, value = cache.get(cve_id)
+        if hit:
+            scores[cve_id] = dict(value or {})
         else:
             to_fetch.append(cve_id)
     if to_fetch:
@@ -471,10 +527,12 @@ def _resolve_epss_scores(cve_ids: tuple[str, ...]) -> dict[str, dict[str, float]
         except Exception:
             _LOGGER.warning("EPSS score lookup failed; CVEs will be surfaced without EPSS", exc_info=True)
             fetched = {}
+        pending: dict[str, Any] = {}
         for cve_id in to_fetch:
             row = fetched.get(cve_id, {"epss_score": 0.0, "epss_percentile": 0.0})
-            _epss_cache[cve_id] = (now, row)
+            pending[cve_id] = row
             scores[cve_id] = row
+        cache.set_many(pending)
     return scores
 
 
@@ -483,16 +541,19 @@ def _resolve_kev_catalog() -> dict[str, dict[str, str]]:
     dict (never raises) on any network failure so KEV enrichment is always
     optional; every CVE is simply treated as not-known-exploited.
     """
-    global _kev_cache
-    now = time.monotonic()
-    if _kev_cache is not None and now - _kev_cache[0] < _KB_CVE_CACHE_TTL_SECONDS:
-        return _kev_cache[1]
+    cache = _enrichment_cache("cisa_kev")
+    hit, value = cache.get("catalog")
+    if hit:
+        return dict(value or {})
+    found, stale, _age = cache.get_entry("catalog")
     try:
         catalog = KevCatalogConnector().fetch_catalog()
     except Exception:
         _LOGGER.warning("CISA KEV catalog lookup failed; KEV status will be unavailable", exc_info=True)
-        catalog = _kev_cache[1] if _kev_cache is not None else {}
-    _kev_cache = (now, catalog)
+        # Serve the expired catalog rather than nothing: a stale KEV listing
+        # is far more useful than treating every CVE as not-exploited.
+        return dict(stale or {}) if found else {}
+    cache.set("catalog", catalog)
     return catalog
 
 
@@ -597,76 +658,68 @@ def _load_vulnerability_service() -> VulnerabilityIntelligenceService | None:
     return _build_vulnerability_service(tables, freshness)
 
 
-# Local development keeps exceptions in memory. Production configures
-# HERMES_DATABASE_URL, which switches these helpers to a shared PostgreSQL table
-# so exceptions survive restarts and remain consistent across replicas.
+# Risk exceptions are user-submitted mutations that must survive both a
+# provider rebuild and a container restart, and must be consistent across
+# replicas. They are persisted as a single OneLake document whenever
+# HERMES_HOME points at Fabric; a local (development) home keeps them in
+# memory, which is sufficient for a single-process run.
 _risk_exception_store: dict[str, RiskException] = {}
-_RISK_EXCEPTION_DDL = """
-CREATE TABLE IF NOT EXISTS risk_exceptions (
-    exception_id TEXT PRIMARY KEY,
-    payload JSONB NOT NULL
-)
-"""
+_RISK_EXCEPTION_DOCUMENT = "state/risk_exceptions.json"
 
 
-def _risk_exception_dsn() -> str:
-    return os.environ.get("HERMES_DATABASE_URL", "").strip()
+def _risk_exception_documents() -> Any:
+    """Return the OneLake document store, or None for a local home."""
+    root = hermes_home()
+    if not is_onelake_uri(root):
+        return None
+    return OneLakeDocumentStore(str(root))
 
 
-def _risk_exception_connection():
-    import psycopg
+def _read_risk_exceptions() -> tuple[Any, dict[str, Any], int]:
+    documents = _risk_exception_documents()
+    payload = documents.read(_RISK_EXCEPTION_DOCUMENT) if documents else {}
+    entries = payload.get("exceptions")
+    return (
+        documents,
+        dict(entries) if isinstance(entries, dict) else {},
+        int(payload.get("revision") or 0),
+    )
 
-    return psycopg.connect(_risk_exception_dsn())
 
-
-def _ensure_risk_exception_table(connection: Any) -> None:
-    with connection.cursor() as cursor:
-        cursor.execute(_RISK_EXCEPTION_DDL)
+def _write_risk_exceptions(
+    documents: Any, entries: dict[str, Any], revision: int
+) -> None:
+    documents.write(
+        _RISK_EXCEPTION_DOCUMENT,
+        {"exceptions": entries, "revision": revision + 1},
+        expected_revision=revision,
+    )
 
 
 def list_risk_exceptions() -> list[RiskException]:
-    if _risk_exception_dsn():
-        with _risk_exception_connection() as connection:
-            _ensure_risk_exception_table(connection)
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT payload FROM risk_exceptions ORDER BY exception_id"
-                )
-                rows = cursor.fetchall()
-        return [
-            RiskException(**(json.loads(payload) if isinstance(payload, str) else payload))
-            for (payload,) in rows
-        ]
-    return list(_risk_exception_store.values())
+    documents, entries, _revision = _read_risk_exceptions()
+    if documents is None:
+        return list(_risk_exception_store.values())
+    return [RiskException(**entries[key]) for key in sorted(entries)]
 
 
 def add_risk_exception(exception: RiskException) -> None:
-    if _risk_exception_dsn():
-        with _risk_exception_connection() as connection:
-            _ensure_risk_exception_table(connection)
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "INSERT INTO risk_exceptions (exception_id, payload) "
-                    "VALUES (%s, %s::jsonb) "
-                    "ON CONFLICT (exception_id) DO UPDATE SET payload = EXCLUDED.payload",
-                    (exception.exception_id, json.dumps(exception.to_dict())),
-                )
+    documents, entries, revision = _read_risk_exceptions()
+    if documents is None:
+        _risk_exception_store[exception.exception_id] = exception
         return
-    _risk_exception_store[exception.exception_id] = exception
+    entries[exception.exception_id] = exception.to_dict()
+    _write_risk_exceptions(documents, entries, revision)
 
 
 def revoke_risk_exception(exception_id: str) -> bool:
-    if _risk_exception_dsn():
-        with _risk_exception_connection() as connection:
-            _ensure_risk_exception_table(connection)
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "DELETE FROM risk_exceptions WHERE exception_id = %s",
-                    (exception_id,),
-                )
-                removed = cursor.rowcount > 0
-        return removed
-    return _risk_exception_store.pop(exception_id, None) is not None
+    documents, entries, revision = _read_risk_exceptions()
+    if documents is None:
+        return _risk_exception_store.pop(exception_id, None) is not None
+    if entries.pop(exception_id, None) is None:
+        return False
+    _write_risk_exceptions(documents, entries, revision)
+    return True
 
 
 
@@ -832,7 +885,9 @@ def _fabric_runtime_from_environment() -> FabricRuntime | None:
 
 def _fabric_network_service(runtime: FabricRuntime) -> NetworkIntelligenceService:
     snapshot = runtime.service.semantic_snapshot()
-    return NetworkIntelligenceService.from_rows(snapshot["entities"])
+    return NetworkIntelligenceService.from_rows(
+        snapshot["entities"], policy=_network_policy_store().read()
+    )
 
 
 def _fabric_vulnerability_service(
@@ -915,68 +970,6 @@ def _runtime_metadata(
     }
 
 
-def _load_inventory_service() -> Any:
-    """Load inventory only from an active generation (or explicit fixture)."""
-    from storage.datasets import DatasetStore
-    from intelligence.inventory.mapping_repository import SoftwareMappingRepository
-    from intelligence.inventory.service import InventoryService
-
-    eol_review = _load_eol_review_service()
-    root = hermes_home()
-    mapping_repository = SoftwareMappingRepository(
-        document_store=OneLakeDocumentStore(str(root)),
-        document_name="state/software_mappings.json",
-    )
-    fixture = os.environ.get("HERMES_INVENTORY_FIXTURE", "").strip()
-    if fixture:
-        return InventoryService.from_fixture(
-            fixture,
-            eol_review=eol_review,
-            mapping_repository=mapping_repository,
-        )
-    return InventoryService.from_store(
-        DatasetStore(root),
-        eol_review=eol_review,
-        mapping_repository=mapping_repository,
-    )
-
-def _load_eol_review_service() -> Any:
-    """Build lifecycle review from server-owned catalog and provider state."""
-    from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
-    from intelligence.inventory.eol_review import (
-        ApprovedSearchApiLifecycleProvider,
-        CandidateResolver,
-        EOLReviewService,
-        UnavailableLifecycleSearchProvider,
-    )
-
-    root = hermes_home()
-    document_store = OneLakeDocumentStore(str(root))
-    endpoint = os.environ.get(ENV_APPROVED_SEARCH_API_ENDPOINT, "").strip()
-    credential = os.environ.get(ENV_APPROVED_SEARCH_API_KEY, "").strip()
-    if endpoint:
-        try:
-            search_provider = ApprovedSearchApiLifecycleProvider(
-                endpoint, credential=credential
-            )
-        except ValueError:
-            _LOGGER.warning("approved_lifecycle_provider_invalid_endpoint")
-            search_provider = UnavailableLifecycleSearchProvider()
-    else:
-        # The existing Foundry client is narration-only, not web search.
-        # External search stays disabled until an approved contract exists.
-        if os.environ.get(ENV_FOUNDRY_PROJECT_ENDPOINT, "").strip():
-            _LOGGER.info("foundry_lifecycle_search_not_configured")
-        search_provider = UnavailableLifecycleSearchProvider()
-    return EOLReviewService(
-        repository=LocalEOLCatalogRepository(
-            document_store=document_store,
-            document_name="state/eol_catalog.json",
-        ),
-        resolver=CandidateResolver(web_search_fetch=search_provider.resolve),
-    )
-
-
 def _build_provider_runtime(
     onboarding: SubscriptionOnboardingService,
 ) -> ProviderRuntime:
@@ -1039,6 +1032,9 @@ def _build_provider_runtime(
     if use_fabric:
         loaders: dict[str, Callable[[], Any]] = {
             "semantic": lambda: with_fabric(lambda item: item.semantic_engine()),
+            "semantic_graph": lambda: with_fabric(
+                lambda item: item.semantic_graph_engine()
+            ),
             "network": lambda: with_fabric(_fabric_network_service),
             "vulnerability": lambda: with_fabric(_fabric_vulnerability_service),
             "incidents": lambda: with_fabric(_fabric_incident_engine),
@@ -1069,16 +1065,40 @@ def _build_provider_runtime(
         name: ProviderSpec(loader=loader, configured=True, required=True)
         for name, loader in loaders.items()
     }
-    specs["inventory"] = ProviderSpec(
-        loader=_load_inventory_service,
-        configured=True,
-        required=False,
-    )
     specs["copilot"] = ProviderSpec(
         loader=_load_foundry_agent,
         configured=foundry_configured,
         required=False,
     )
+    # Inventory is optional for readiness but never synthesized as an empty
+    # estate. The service reads only the active immutable generation.
+    specs["inventory"] = ProviderSpec(
+        loader=_load_inventory_service,
+        configured=True,
+        required=False,
+    )
+    # FinOps/identity/SPN governance is a projection of the same ontology
+    # snapshot as the other providers above, always configured (it reads
+    # from whatever has synced) but never required for overall readiness:
+    # a deployment with no identity data synced yet must not be reported
+    # as degraded on /health, since the governance routes already surface
+    # their own honest "unavailable, not yet synced" state per-request.
+    specs["governance"] = ProviderSpec(
+        loader=_load_governance_snapshot,
+        configured=True,
+        required=False,
+    )
+    # Patch remediation projects the same vulnerability snapshot into
+    # patchable inventory and owns the guarded trigger path. It is never
+    # required for readiness: a deployment with no execution adapter still
+    # serves the inventory read and reports the missing capability per-request.
+    _vulnerability_loader = loaders.get("vulnerability")
+    if _vulnerability_loader is not None:
+        specs["patching"] = ProviderSpec(
+            loader=lambda: _load_patching_service(_vulnerability_loader),
+            configured=True,
+            required=False,
+        )
     return ProviderRuntime(
         specs,
         metadata_loader=lambda: _runtime_metadata(onboarding, fabric),
@@ -1089,10 +1109,319 @@ def _build_provider_runtime(
     )
 
 
+# Patch runs are operator-submitted mutations, not snapshot projections, so
+# they use a process-level store handle like risk exceptions. The store is
+# shared across provider rebuilds so a rebuild never loses run history.
+_patch_run_store = InMemoryPatchRunStore()
+
+
+def _patch_execution_adapter() -> Any:
+    """Resolve the configured execution backend.
+
+    Defaults to the refusing adapter: triggering real Azure writes must be an
+    explicit deployment decision, never an accident of configuration. Setting
+    ``HERMES_PATCH_EXECUTION=azure`` opts a deployment in to live ARM calls,
+    and even then a missing or unusable credential falls back to refusing
+    rather than failing at import time.
+    """
+    mode = (os.environ.get(ENV_PATCH_EXECUTION) or "").strip().casefold()
+    if mode not in {"azure", "arm", "azure-arm"}:
+        return UnconfiguredPatchExecutionAdapter()
+    try:
+        from azure.identity import DefaultAzureCredential
+
+        from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
+
+        return AzureArmPatchExecutionAdapter(DefaultAzureCredential())
+    except Exception:  # noqa: BLE001 - refusing is the safe outcome here
+        _LOGGER.warning(
+            "%s requested Azure patch execution but no usable credential was "
+            "available; patch runs will refuse.",
+            ENV_PATCH_EXECUTION,
+        )
+        return UnconfiguredPatchExecutionAdapter()
+
+
+def _load_patching_service(vulnerability_loader: Callable[[], Any]) -> Any | None:
+    """Project the current vulnerability snapshot into patchable inventory."""
+    raw = vulnerability_loader()
+    service = raw.instance if isinstance(raw, ProviderValue) else raw
+    if service is None:
+        return None
+    return PatchingService(
+        service,
+        store=_patch_run_store,
+        adapter=_patch_execution_adapter(),
+    )
+
+
+def _load_governance_snapshot() -> GovernanceSnapshot | None:
+    """Build the scoped governance view from synced ontology rows.
+
+    Returns None when nothing has been synced, so the governance routes report
+    the capability as unavailable rather than returning empty results a UI
+    would render as "no cost waste and no privileged access".
+    """
+    entities, _relationships, freshness = _load_ontology_rows()
+    if not entities:
+        return None
+    return GovernanceSnapshot(
+        entities,
+        observed_at=freshness,
+        connections=_governance_connections(),
+    )
+
+
+def _governance_connections() -> list[dict[str, Any]]:
+    """Connection registry rows for SPN governance.
+
+    Reads the registry directly rather than resolving credentials: governance
+    reports on credential *metadata* (owner, scope, expiry, use) and must never
+    need the secret itself, so a Key Vault outage cannot break this view.
+    """
+    try:
+        onboarding = _onboarding_service()
+        connections = onboarding.registry.list(include_disabled=True)
+    except Exception:
+        _LOGGER.exception("governance_connection_load_failed")
+        return []
+    return [
+        connection.to_dict() if hasattr(connection, "to_dict") else dict(connection)
+        for connection in connections
+    ]
+
+
+def _settings_store() -> EnterpriseSettingsStore:
+    """Settings persisted to OneLake when available, in memory otherwise."""
+    root = hermes_home()
+    documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
+    return EnterpriseSettingsStore(documents)
+
+
+#: Module-level so every provider closure that builds a NetworkIntelligenceService
+#: (local, fabric, hybrid) shares one store and observes the same edits.
+_NETWORK_POLICY_STORE: NetworkDesignPolicyStore | None = None
+
+
+def _network_policy_store() -> NetworkDesignPolicyStore:
+    global _NETWORK_POLICY_STORE
+    if _NETWORK_POLICY_STORE is None:
+        root = hermes_home()
+        documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
+        _NETWORK_POLICY_STORE = NetworkDesignPolicyStore(documents)
+    return _NETWORK_POLICY_STORE
+
+
+def _load_situation_provider() -> Any:
+    """Read the durable Phase 1 projection from the active generation."""
+    from storage.datasets import DatasetStore
+    from situations.store import SituationReadProvider
+
+    return SituationReadProvider(DatasetStore(hermes_home()))
+
+
+def _load_inventory_service() -> Any:
+    """Load inventory only from an active generation (or explicit fixture)."""
+    from storage.datasets import DatasetStore
+    from intelligence.inventory.mapping_repository import SoftwareMappingRepository
+    from intelligence.inventory.service import InventoryService
+
+    eol_review = _load_eol_review_service()
+    root = hermes_home()
+    mapping_repository = SoftwareMappingRepository(
+        document_store=OneLakeDocumentStore(str(root)),
+        document_name="state/software_mappings.json",
+    )
+    fixture = os.environ.get("HERMES_INVENTORY_FIXTURE", "").strip()
+    if fixture:
+        return InventoryService.from_fixture(
+            fixture,
+            eol_review=eol_review,
+            mapping_repository=mapping_repository,
+        )
+    return InventoryService.from_store(
+        DatasetStore(root),
+        eol_review=eol_review,
+        mapping_repository=mapping_repository,
+    )
+
+
+def _load_eol_review_service() -> Any:
+    """Build the request-time catalog/review provider from server-owned state."""
+    from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
+    from intelligence.inventory.eol_review import (
+        ApprovedSearchApiLifecycleProvider,
+        CandidateResolver,
+        EOLReviewService,
+        UnavailableLifecycleSearchProvider,
+    )
+
+    root = hermes_home()
+    document_store = OneLakeDocumentStore(str(root))
+    endpoint = os.environ.get(ENV_APPROVED_SEARCH_API_ENDPOINT, "").strip()
+    credential = os.environ.get(ENV_APPROVED_SEARCH_API_KEY, "").strip()
+    if endpoint:
+        try:
+            search_provider = ApprovedSearchApiLifecycleProvider(
+                endpoint, credential=credential
+            )
+        except ValueError:
+            _LOGGER.warning("approved_lifecycle_provider_invalid_endpoint")
+            search_provider = UnavailableLifecycleSearchProvider()
+    else:
+        # FOUNDRY_PROJECT_ENDPOINT is intentionally not treated as a web
+        # search provider: the existing Foundry client is narration-only.
+        # External search remains disabled until an approved search contract
+        # is explicitly configured.
+        if os.environ.get(ENV_FOUNDRY_PROJECT_ENDPOINT, "").strip():
+            _LOGGER.info("foundry_lifecycle_search_not_configured")
+        search_provider = UnavailableLifecycleSearchProvider()
+    return EOLReviewService(
+        repository=LocalEOLCatalogRepository(
+            base_catalog=None,
+            document_store=document_store,
+            document_name="state/eol_catalog.json",
+        ),
+        resolver=CandidateResolver(web_search_fetch=search_provider.resolve),
+    )
+
+
 def build_context() -> ApiContext:
     """Assemble the default context from the environment."""
     onboarding = _onboarding_service()
     providers = _build_provider_runtime(onboarding)
+    arg_config = (
+        ConnectorConfig.load(os.environ[ENV_ARG_CONFIG])
+        if os.environ.get(ENV_ARG_CONFIG, "").strip()
+        else ConnectorConfig(output_dir=hermes_home())
+    )
+    live_resources = ConnectionScopedLiveResourceProvider(
+        lambda: onboarding.registry.list(include_disabled=False),
+        lambda connection: build_connection_arg_client(
+            arg_config, connection, onboarding.resolver
+        ),
+        # The default bound suits single-resource lookups. Network topology
+        # reads the whole network plane of every connected subscription, which
+        # exceeds 100 rows in any real estate.
+        max_rows=50_000,
+    )
+
+    def hybrid_resource(resource_id: str, subscription_ids: list[str]) -> dict[str, Any]:
+        return HybridQueryService(
+            providers.get("semantic_graph"),
+            live_resources,
+        ).resource_context(resource_id, subscription_ids=subscription_ids)
+
+    def hybrid_search(query: str, subscription_ids: list[str]) -> dict[str, Any]:
+        return HybridQueryService(
+            providers.get("semantic_graph"),
+            live_resources,
+        ).search(query, subscription_ids=subscription_ids)
+
+    def hybrid_business_service(
+        service: str, subscription_ids: list[str]
+    ) -> dict[str, Any]:
+        return HybridQueryService(
+            providers.get("semantic_graph"),
+            live_resources,
+        ).service_context(
+            service,
+            subject_type="BusinessService",
+            subscription_ids=subscription_ids,
+        )
+
+    def hybrid_impact(subject: str, subscription_ids: list[str]) -> dict[str, Any]:
+        graph = providers.get("semantic_graph")
+        result = graph.get_impact_context(subject)
+        result["source_status"] = {"semantic-graph": "ok"}
+        return result
+
+    def hybrid_risk(subject: str, subscription_ids: list[str]) -> dict[str, Any]:
+        graph = providers.get("semantic_graph")
+        result = graph.get_risk_context(subject)
+        try:
+            vulnerability = hybrid_vulnerability(subscription_ids)
+            live_summary = vulnerability.summary() if vulnerability is not None else {}
+        except (RuntimeError, ValueError, TypeError, AttributeError):
+            live_summary = {}
+        result["source_status"] = {
+            "semantic-graph": "ok",
+            "live-vulnerability": "ok" if live_summary else "unavailable",
+        }
+        result["live_vulnerability_summary"] = live_summary
+        if not live_summary:
+            result["warnings"] = [
+                "Live vulnerability observations are unavailable; risk is graph-only."
+            ]
+        return result
+
+    def hybrid_network(subscription_ids: list[str]) -> NetworkIntelligenceService:
+        # Cached per (root, subscription set): every scoped network route hits
+        # this path, and each miss is a live ARG round trip. The TTL matches
+        # the snapshot-table cache so freshness behaviour is consistent.
+        cache_key = (str(hermes_home()), tuple(sorted(subscription_ids)))
+        now = time.time()
+        cached = _hybrid_network_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _HYBRID_NETWORK_CACHE_TTL_SECONDS:
+            rows = cached[1]
+        else:
+            # Private Link candidates are fetched alongside the network plane
+            # so private-endpoint coverage can be judged per resource rather
+            # than per service kind.
+            paas_types = ", ".join(
+                f"'{name}'" for name in sorted(PRIVATE_LINK_RESOURCE_TYPES)
+            )
+            observation = live_resources.query(
+                QuerySpec(
+                    name="live_network_resources",
+                    table="Resources",
+                    query=(
+                        "Resources "
+                        "| where type startswith 'microsoft.network/' "
+                        f"or tolower(type) in ({paas_types}) "
+                        "| project id, name, type, tenantId, subscriptionId, "
+                        "resourceGroup, location, tags, properties, observed_at=now()"
+                    ),
+                    incremental=False,
+                ),
+                subscription_ids=subscription_ids,
+            )
+            rows = list(observation.rows)
+            _hybrid_network_cache[cache_key] = (now, rows)
+        return NetworkIntelligenceService.from_rows(
+            rows, policy=_network_policy_store().read()
+        )
+
+    def hybrid_vulnerability(
+        subscription_ids: list[str],
+    ) -> VulnerabilityIntelligenceService | None:
+        graph = providers.get("semantic_graph")
+        try:
+            network = hybrid_network(subscription_ids)
+        except (RuntimeError, ValueError):
+            network = None
+        return live_vulnerability_service(
+            live_resources,
+            subscription_ids=subscription_ids,
+            semantic=graph,
+            network=network,
+            build_service=_build_vulnerability_service,
+        )
+
+    def hybrid_incidents(subscription_ids: list[str]) -> Any:
+        return live_incident_engine(live_resources, subscription_ids=subscription_ids)
+
+    def hybrid_remediation(subscription_ids: list[str]) -> LiveRemediationPlanner:
+        return LiveRemediationPlanner(hybrid_vulnerability(subscription_ids))
+
+    def hybrid_patching(subscription_ids: list[str]) -> PatchingService | None:
+        service = hybrid_vulnerability(subscription_ids)
+        if service is None:
+            return None
+        return PatchingService(
+            service, store=_patch_run_store, adapter=_patch_execution_adapter()
+        )
+
     return ApiContext(
         onboarding=onboarding,
         authenticator=build_authenticator(),
@@ -1102,15 +1431,30 @@ def build_context() -> ApiContext:
         # connection is picked up on the next request without restarting the
         # API, per the provider contracts in `dependencies.py`.
         semantic_provider=lambda: providers.get("semantic", optional=True),
+        hybrid_resource_provider=hybrid_resource,
+        hybrid_search_provider=hybrid_search,
+        hybrid_business_service_provider=hybrid_business_service,
+        hybrid_impact_provider=hybrid_impact,
+        hybrid_risk_provider=hybrid_risk,
+        hybrid_network_provider=hybrid_network,
+        hybrid_vulnerability_provider=hybrid_vulnerability,
+        hybrid_incident_provider=hybrid_incidents,
+        hybrid_remediation_provider=hybrid_remediation,
+        hybrid_patching_provider=hybrid_patching,
         incident_provider=lambda: providers.get("incidents", optional=True),
         remediation_provider=lambda: providers.get("remediation", optional=True),
         network_provider=lambda: providers.get("network", optional=True),
         vulnerability_provider=lambda: providers.get("vulnerability", optional=True),
+        patching_provider=lambda: providers.get("patching", optional=True),
+        governance_provider=_load_governance_snapshot,
+        settings_store=_settings_store(),
+        network_policy_store=_network_policy_store(),
         vulnerability_live_lookup=_lookup_live_cve,
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,
         risk_exception_revoke=revoke_risk_exception,
         foundry_agent_provider=_load_foundry_agent,
-        inventory_provider=lambda: providers.get("inventory", optional=True),
         provider_runtime=providers,
+        situation_provider=_load_situation_provider,
+        inventory_provider=lambda: providers.get("inventory", optional=True),
     )

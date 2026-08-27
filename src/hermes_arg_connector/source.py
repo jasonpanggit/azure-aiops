@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
-from .azure import AzureCliArgClient, AzureMcpClient
+from .azure import AzureCliArgClient, AzureCostManagementClient, AzureMcpClient
 
 
 @dataclass
@@ -41,5 +42,40 @@ class AzureResourceGraphSource:
                 try:
                     results[name] = future.result()
                 except Exception as exc:  # noqa: BLE001 - preserve provider failure as data
-                    results[name] = [{"status": "failed", "provider_status": "failed", "error": str(exc)[:2048]}]
+                    results[name] = [
+                        {
+                            "status": "failed",
+                            "provider_status": "failed",
+                            "error": str(exc)[:2048],
+                        }
+                    ]
         return results
+
+
+@dataclass
+class CostActualsSource:
+    """Fetches Azure Cost Management actuals, independent of ARG discovery.
+
+    Cost Management is a distinct Azure API/service (billing) with its own
+    throttling and outage characteristics. It is intentionally kept as a
+    separate adapter from :class:`AzureResourceGraphSource` (semantic graph
+    discovery) so ingestion can treat it as an optional, best-effort side
+    channel rather than a dependency of graph discovery.
+    """
+
+    cost: AzureCostManagementClient | None = None
+
+    def fetch(
+        self,
+        subscription_ids: list[str],
+        *,
+        end: datetime,
+        lookback: timedelta,
+    ) -> list[dict]:
+        if self.cost is None:
+            return []
+        return self.cost.query_actual_costs(
+            subscription_ids,
+            end=end,
+            lookback=lookback,
+        )

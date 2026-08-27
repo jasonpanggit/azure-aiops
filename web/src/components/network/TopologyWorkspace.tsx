@@ -33,6 +33,32 @@ function buildFindingSeverityMap(
   return map;
 }
 
+/** Full gap/rule-finding records grouped by resource id, so the detail drawer
+ * can show what actually caused a node's severity badge, not just its color. */
+function buildFindingsByResource(
+  gaps: NetworkGap[],
+  ruleFindings: RuleFinding[]
+): Map<string, { gaps: NetworkGap[]; ruleFindings: RuleFinding[] }> {
+  const map = new Map<string, { gaps: NetworkGap[]; ruleFindings: RuleFinding[] }>();
+  const entry = (resourceId: string) => {
+    let value = map.get(resourceId);
+    if (!value) {
+      value = { gaps: [], ruleFindings: [] };
+      map.set(resourceId, value);
+    }
+    return value;
+  };
+  for (const gap of gaps) {
+    if (!gap.resource_id) continue;
+    entry(gap.resource_id).gaps.push(gap);
+  }
+  for (const finding of ruleFindings) {
+    if (!finding.control_id) continue;
+    entry(finding.control_id).ruleFindings.push(finding);
+  }
+  return map;
+}
+
 // Cytoscape needs a DOM, and pulls in a sizeable layout engine, so it is loaded
 // client-side only and kept out of the initial route bundle.
 const TopologyGraph = dynamic(() => import("@/components/network/TopologyGraph"), {
@@ -68,6 +94,10 @@ export function TopologyWorkspace({
 
   const findingSeverityByResource = useMemo(
     () => buildFindingSeverityMap(gaps, ruleFindings),
+    [gaps, ruleFindings]
+  );
+  const findingsByResource = useMemo(
+    () => buildFindingsByResource(gaps, ruleFindings),
     [gaps, ruleFindings]
   );
 
@@ -208,7 +238,12 @@ export function TopologyWorkspace({
           onReady={handleGraphReady}
           findingSeverityByResource={showFindings ? findingSeverityByResource : undefined}
         />
-        <TopologyDetailDrawer node={selection.node} edge={selection.edge} onClose={clearSelection} />
+        <TopologyDetailDrawer
+          node={selection.node}
+          edge={selection.edge}
+          onClose={clearSelection}
+          findings={selection.node ? findingsByResource.get(selection.node.id) : undefined}
+        />
       </div>
 
       {counts && (

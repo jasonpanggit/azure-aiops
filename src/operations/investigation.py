@@ -139,9 +139,16 @@ def _plan(question: str) -> list[tuple[str, dict[str, Any]]]:
         add("firewall_nsg_gaps", {})
 
     if "cve" in lowered or "vulnerab" in lowered or "patch" in lowered or "kb" in lowered:
-        add("cve_exposure", {"business_service": subject} if subject else {})
-        if subject:
-            add("risk_context", {"subject": subject})
+        import re
+
+        cve_ids = re.findall(r"\bCVE-\d{4}-\d{4,7}\b", question, flags=re.IGNORECASE)
+        if cve_ids:
+            add("cve_detail", {"cve_id": cve_ids[0]})
+            add("cve_attack_path", {"cve_id": cve_ids[0]})
+        else:
+            add("cve_exposure", {"business_service": subject} if subject else {})
+            if subject:
+                add("risk_context", {"subject": subject})
 
     if "incident" in lowered or "outage" in lowered or "what changed" in lowered:
         import re

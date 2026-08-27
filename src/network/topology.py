@@ -141,6 +141,7 @@ class NetworkTopology:
     unresolved_peer_vnet_ids: tuple[str, ...] = ()
     connection_ids: tuple[str, ...] = ()
     snapshot: NetworkSnapshot = field(default_factory=NetworkSnapshot)
+    semantic_relationships: tuple[dict[str, Any], ...] = ()
 
     @property
     def hubs(self) -> tuple[HubClassification, ...]:
@@ -209,7 +210,11 @@ class TopologyBuilder:
         self.hub_score_threshold = hub_score_threshold
         self.many_peerings_threshold = many_peerings_threshold
 
-    def build(self, snapshot: NetworkSnapshot) -> NetworkTopology:
+    def build(
+        self,
+        snapshot: NetworkSnapshot,
+        semantic_relationships: tuple[dict[str, Any], ...] = (),
+    ) -> NetworkTopology:
         vnets = {vnet.resource_id: vnet for vnet in snapshot.vnets}
         links = self._stitch_peerings(snapshot, vnets)
         peer_counts = self._peer_counts(links)
@@ -232,6 +237,7 @@ class TopologyBuilder:
             unresolved_peer_vnet_ids=tuple(unresolved),
             connection_ids=snapshot.connection_ids(),
             snapshot=snapshot,
+            semantic_relationships=semantic_relationships,
         )
 
     def _stitch_peerings(
@@ -625,7 +631,29 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
     nodes.extend(_resource_node(gateway) for gateway in snapshot.gateways)
     nodes.extend(_resource_node(lb) for lb in snapshot.load_balancers)
     nodes.extend(_attached_workload_nodes(snapshot))
+    nodes = _disambiguate_duplicate_names(nodes)
     return sorted(nodes, key=lambda node: (node["entity_type"], node["name"], node["id"]))
+
+
+def _disambiguate_duplicate_names(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Appends a resource-group suffix to nodes that share an identical name.
+
+    Azure lets unrelated resources reuse the same name across resource
+    groups/subscriptions - most commonly the ``capp-svc-lb`` internal load
+    balancer that every Container Apps managed environment creates. Without a
+    disambiguator, the canvas renders indistinguishable nodes that the user
+    can only tell apart by clicking each one.
+    """
+    counts: dict[str, int] = {}
+    for node in nodes:
+        counts[node["name"]] = counts.get(node["name"], 0) + 1
+    for node in nodes:
+        if counts.get(node["name"], 0) <= 1:
+            continue
+        suffix = node["resource_group"] or (node["subscription_id"][:8] if node["subscription_id"] else "")
+        if suffix:
+            node["name"] = f"{node['name']} ({suffix})"
+    return nodes
 
 
 #: Workloads a NIC or private endpoint attaches to are not network resources, so
@@ -659,6 +687,9 @@ def _attached_workload_nodes(snapshot: NetworkSnapshot) -> list[dict[str, Any]]:
     for endpoint in snapshot.private_endpoints:
         if endpoint.target_resource_id:
             targets.setdefault(endpoint.target_resource_id, endpoint.connection_id)
+    for lb in snapshot.load_balancers:
+        if lb.managed_resource_id:
+            targets.setdefault(lb.managed_resource_id, lb.connection_id)
 
     nodes: list[dict[str, Any]] = []
     for resource_id, connection_id in targets.items():
@@ -738,6 +769,23 @@ def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
             add(resource.subnet_id, resource.resource_id, "hosts", label=label)
             return
         add(resource.vnet_id, resource.resource_id, "hosts", label=label)
+
+    predicate_map = {
+        "attachedto": "attached_to",
+        "loadbalances": "load_balances",
+        "hosts": "hosts",
+    }
+    for semantic in topology.semantic_relationships:
+        predicate = str(semantic.get("predicate") or "").casefold()
+        relationship_type = predicate_map.get(predicate)
+        if relationship_type:
+            add(
+                str(semantic.get("subject_id") or ""),
+                str(semantic.get("object_id") or ""),
+                relationship_type,
+                label=relationship_type.replace("_", " "),
+                details={"source": "hermes_semantic_graph", "confidence": semantic.get("confidence")},
+            )
 
     for vnet in snapshot.vnets:
         for subnet_id in vnet.subnet_ids:
@@ -825,11 +873,16 @@ def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
         for circuit_id in gateway.connected_circuit_ids:
             add(gateway.resource_id, circuit_id, "connects_to", label="connects to circuit")
 
-    for lb in snapshot.load_balancers:
-        add_hosted(lb, "hosts load balancer")
-        add(lb.resource_id, lb.subnet_id, "attached_to", label="attached to subnet")
-        for backend_id in lb.backend_resource_ids:
-            add(lb.resource_id, backend_id, "load_balances", label="load balances")
+    if not topology.semantic_relationships:
+        for lb in snapshot.load_balancers:
+            add_hosted(lb, "hosts load balancer")
+            add(lb.resource_id, lb.subnet_id, "attached_to", label="attached to subnet")
+            for backend_id in lb.backend_resource_ids:
+                add(lb.resource_id, backend_id, "load_balances", label="load balances")
+            for backend_subnet_id in lb.backend_subnet_ids:
+                add(lb.resource_id, backend_subnet_id, "load_balances", label="load balances subnet")
+            if lb.managed_resource_id:
+                add(lb.managed_resource_id, lb.resource_id, "hosts", label="uses internal load balancer")
 
     for service in topology.shared_services:
         for consumer_id in service.consumer_vnet_ids:

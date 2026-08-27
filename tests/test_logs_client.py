@@ -46,6 +46,7 @@ def test_configuration_data_client_uses_logs_query_api_and_fixed_kql() -> None:
     rows = AzureMonitorLogsClient(credential, requester=requester).query("workspace-1")
 
     assert rows == [{"ConfigDataType": "Software", "SoftwareName": "7-Zip"}]
+    assert LOGS_QUERY_SCOPE == "https://api.loganalytics.io/.default"
     assert credential.scopes == [LOGS_QUERY_SCOPE]
     assert requests[0]["method"] == "POST"
     assert requests[0]["url"].endswith("/v1/workspaces/workspace-1/query")

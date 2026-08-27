@@ -134,7 +134,6 @@ def test_cli_subscriptions_without_command_shows_usage(capsys) -> None:
 
 
 def test_cli_local_seeds_file_backed_api_snapshot(tmp_path, monkeypatch, capsys) -> None:
-    monkeypatch.setenv("HERMES_DATABASE_URL", "postgresql://should-not-be-used")
     home = tmp_path / "hermes-local"
     fixture = Path("tests/fixtures/mock_arg_responses.json")
 
@@ -150,7 +149,6 @@ def test_cli_local_seeds_file_backed_api_snapshot(tmp_path, monkeypatch, capsys)
 
 
 def test_cli_local_spn_injects_env_backed_connection(tmp_path, monkeypatch, capsys) -> None:
-    monkeypatch.setenv("HERMES_DATABASE_URL", "postgresql://should-not-be-used")
     monkeypatch.setenv("AZURE_SUBSCRIPTION_ID", SUBSCRIPTION)
     monkeypatch.setenv("AZURE_TENANT_ID", TENANT)
     monkeypatch.setenv("AZURE_CLIENT_ID", CLIENT)

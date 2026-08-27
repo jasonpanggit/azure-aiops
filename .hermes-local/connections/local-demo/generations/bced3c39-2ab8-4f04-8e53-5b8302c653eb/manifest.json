@@ -1,0 +1,159 @@
+{
+  "changedDatasets": [
+    "changes/resource_changes",
+    "entities/AdvisorRecommendation",
+    "entities/ArcServer",
+    "entities/AzureFirewall",
+    "entities/FirewallPolicy",
+    "entities/FirewallRule",
+    "entities/FirewallRuleCollection",
+    "entities/LoadBalancer",
+    "entities/ManagementGroup",
+    "entities/NetworkGateway",
+    "entities/NetworkInterface",
+    "entities/NetworkSecurityGroup",
+    "entities/NetworkSecurityRule",
+    "entities/PatchAssessment",
+    "entities/PatchAssessmentDetail",
+    "entities/PatchInstallation",
+    "entities/PrivateDnsZone",
+    "entities/PrivateEndpoint",
+    "entities/Resource",
+    "entities/ResourceGroup",
+    "entities/Route",
+    "entities/RouteTable",
+    "entities/Subnet",
+    "entities/Subscription",
+    "entities/VNet",
+    "entities/VNetPeering",
+    "entities/VirtualMachine",
+    "ontology/ontology",
+    "relationships/relationships"
+  ],
+  "contentHash": "9577d2f829ea948163db620d809c46ac3d1404790ccaa9d60aee631a6285b5e2",
+  "datasets": {
+    "changes/resource_changes": {
+      "contentHash": "9edfb85ba6fd4937145212b9f8cac76033842dacd90aa47c6e14f2c74bf5e1b5",
+      "rowCount": 1
+    },
+    "entities/AdvisorRecommendation": {
+      "contentHash": "2fa92d811dcf9f9d1f236c6597ea4c1cfd22f0ec93596f95967bb610a68fa55b",
+      "rowCount": 1
+    },
+    "entities/ArcServer": {
+      "contentHash": "8d791abd9ca8e7f33c6cff44db65878bddda2233a1a406441b04eafc3697f2e5",
+      "rowCount": 1
+    },
+    "entities/AzureFirewall": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/FirewallPolicy": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/FirewallRule": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/FirewallRuleCollection": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/LoadBalancer": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/ManagementGroup": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/NetworkGateway": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/NetworkInterface": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/NetworkSecurityGroup": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/NetworkSecurityRule": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/PatchAssessment": {
+      "contentHash": "775fa945af3c4407fadd642d27de391dd4cb0af0b9876309fee5a81dc662b109",
+      "rowCount": 2
+    },
+    "entities/PatchAssessmentDetail": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/PatchInstallation": {
+      "contentHash": "147c2296cc2044219e00bcdf9fd52bc392e63d4788c168f489e567d93b005f11",
+      "rowCount": 1
+    },
+    "entities/PrivateDnsZone": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/PrivateEndpoint": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/Resource": {
+      "contentHash": "2e7ff1ad552af97977b37ef4cdc9f3fa7e88fa052de08febe9d5eab39e8e8ed9",
+      "rowCount": 1
+    },
+    "entities/ResourceGroup": {
+      "contentHash": "bfedf3b9315ff896dc25ebeee50b3d69112cf9a18681610defe012dde0a48083",
+      "rowCount": 1
+    },
+    "entities/Route": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/RouteTable": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/Subnet": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/Subscription": {
+      "contentHash": "3c5dd958ae339680e6b042da37043eab4e17361026077a3fcbe0e8cac0f3140c",
+      "rowCount": 1
+    },
+    "entities/VNet": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/VNetPeering": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/VirtualMachine": {
+      "contentHash": "72180a527badc7133c520ecda1f6abf800ec204694558991edfb909aa53e8f4c",
+      "rowCount": 1
+    },
+    "ontology/ontology": {
+      "contentHash": "6247c01627e2779a3d5bace78eb1b1020790c9e20f765ca6f52673842d2a3c38",
+      "rowCount": 1
+    },
+    "relationships/relationships": {
+      "contentHash": "a714b7171b78fe6446d384a51bca64d55a0cdd2b3fce1e23a2f4d76b8a96e082",
+      "rowCount": 8
+    }
+  },
+  "queryVersion": "1.0.0",
+  "runId": "bced3c39-2ab8-4f04-8e53-5b8302c653eb",
+  "startedAt": "2026-08-21T16:18:19Z",
+  "status": "completed",
+  "subscriptions": [
+    "00000000-0000-0000-0000-000000000002"
+  ]
+}

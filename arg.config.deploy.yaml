@@ -1,0 +1,23 @@
+azure:
+  # Pinned explicitly so the deployed inventory-refresh trigger endpoint
+  # never needs to shell out to the azmcp CLI for subscription discovery
+  # (that binary has heavy native dependencies -- ICU, dbus, msalruntime --
+  # that make it a fragile hard runtime dependency for a scheduled
+  # Fabric-triggered production run). Update this list if the environment's
+  # in-scope subscriptions change.
+  subscriptions: ["a87a8e64-a52a-4aa8-a760-5e8919d23cd1"]
+  management_groups: []
+  tenant_id: "ffc83107-fcc0-4d2e-8798-d582da36505e"
+  mcp_command: ["azmcp"]
+  page_size: 1000
+  max_pages: 1000
+  command_timeout_seconds: 60
+  max_query_workers: 6
+  change_overlap_minutes: 10
+  cost_management:
+    enabled: true
+    lookback_days: 30
+
+storage:
+  output_dir: "./data"
+  retain_raw_queries: false

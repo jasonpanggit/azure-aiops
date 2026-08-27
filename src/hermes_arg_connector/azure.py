@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import subprocess  # nosec B404
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
 
 import httpx
@@ -198,6 +201,185 @@ class AzureResourceGraphClient:
             if not skip_token:
                 return rows
         raise RuntimeError(f"ARG query '{spec.name}' exceeded max_pages={self.max_pages}")
+
+
+class AzureCostManagementClient:
+    """Query Azure Cost Management actual-cost data for a subscription."""
+
+    endpoint_template = (
+        "https://management.azure.com/subscriptions/{subscription_id}/providers/"
+        "Microsoft.CostManagement/query"
+    )
+    api_version = "2023-11-01"
+
+    def __init__(
+        self,
+        credential: Any,
+        *,
+        timeout: int = 60,
+        requester: HttpRequester | None = None,
+        max_retries: int = 3,
+        retry_sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.credential = credential
+        self.timeout = timeout
+        self.requester = requester or httpx.request
+        if max_retries < 0:
+            raise ValueError("Cost Management max_retries cannot be negative")
+        self.max_retries = max_retries
+        self.retry_sleep = retry_sleep
+
+    def query_actual_costs(
+        self,
+        subscription_ids: list[str],
+        *,
+        end: datetime | None = None,
+        lookback: timedelta = timedelta(days=30),
+    ) -> list[dict[str, Any]]:
+        if not subscription_ids:
+            raise ValueError("Cost Management query requires at least one subscription scope")
+        if lookback.days < 1:
+            raise ValueError("Cost Management lookback must be at least one day")
+
+        token = self.credential.get_token("https://management.azure.com/.default")
+        access_token = getattr(token, "token", "")
+        if not access_token:
+            raise RuntimeError("Azure AD returned an empty access token for Cost Management")
+
+        end_date = (end or datetime.now(UTC)).astimezone(UTC).date()
+        start_date = end_date - lookback + timedelta(days=1)
+        rows: list[dict[str, Any]] = []
+        for subscription_id in subscription_ids:
+            rows.extend(
+                self._query_subscription(
+                    str(subscription_id),
+                    access_token=access_token,
+                    start=start_date,
+                    end=end_date,
+                )
+            )
+        return rows
+
+    def _query_subscription(
+        self,
+        subscription_id: str,
+        *,
+        access_token: str,
+        start: date,
+        end: date,
+    ) -> list[dict[str, Any]]:
+        response = self._request_with_retry(
+            subscription_id,
+            access_token=access_token,
+            start=start,
+            end=end,
+        )
+        if response.is_error:
+            detail = response.text.strip() or f"HTTP {response.status_code}"
+            raise RuntimeError(
+                f"Cost Management query for subscription '{subscription_id}' failed: {detail}"
+            )
+        payload = response.json()
+        properties = payload.get("properties") if isinstance(payload, dict) else None
+        if not isinstance(properties, dict):
+            raise TypeError("Cost Management returned an invalid payload")
+        columns = [
+            str(column.get("name") or "")
+            for column in properties.get("columns") or []
+            if isinstance(column, dict)
+        ]
+        raw_rows = properties.get("rows") or []
+        if not isinstance(raw_rows, list):
+            raise TypeError("Cost Management returned an invalid rows payload")
+        return [
+            _cost_row(subscription_id, columns, raw)
+            for raw in raw_rows
+            if isinstance(raw, list)
+        ]
+
+    def _request_with_retry(
+        self,
+        subscription_id: str,
+        *,
+        access_token: str,
+        start: date,
+        end: date,
+    ) -> httpx.Response:
+        response: httpx.Response | None = None
+        for attempt in range(self.max_retries + 1):
+            response = self.requester(
+                "POST",
+                self.endpoint_template.format(subscription_id=subscription_id),
+                params={"api-version": self.api_version},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "type": "ActualCost",
+                    "timeframe": "Custom",
+                    "timePeriod": {
+                        "from": start.isoformat(),
+                        "to": end.isoformat(),
+                    },
+                    "dataset": {
+                        "granularity": "Daily",
+                        "aggregation": {
+                            "cost": {
+                                "name": "PreTaxCost",
+                                "function": "Sum",
+                            }
+                        },
+                        "grouping": [
+                            {"type": "Dimension", "name": "ResourceId"},
+                            {"type": "Dimension", "name": "ResourceGroupName"},
+                            {"type": "Dimension", "name": "ServiceName"},
+                        ],
+                    },
+                },
+                timeout=self.timeout,
+            )
+            if response.status_code not in {429, 503} or attempt >= self.max_retries:
+                return response
+            self.retry_sleep(_retry_delay(response, attempt))
+        if response is None:
+            raise RuntimeError("Cost Management request was not attempted")
+        return response
+
+
+def _cost_row(subscription_id: str, columns: list[str], raw: list[Any]) -> dict[str, Any]:
+    values = {name: raw[index] for index, name in enumerate(columns) if index < len(raw)}
+    return {
+        "subscriptionId": subscription_id,
+        "usageDate": _cost_usage_date(values.get("UsageDate")),
+        "cost": values.get("PreTaxCost") or values.get("Cost") or 0,
+        "currency": str(values.get("Currency") or ""),
+        "resourceId": str(values.get("ResourceId") or ""),
+        "resourceGroup": str(values.get("ResourceGroupName") or ""),
+        "serviceName": str(values.get("ServiceName") or ""),
+        "billingPeriodStart": values.get("BillingPeriodStartDate") or "",
+        "billingPeriodEnd": values.get("BillingPeriodEndDate") or "",
+        "properties": values,
+    }
+
+
+def _cost_usage_date(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    return text
+
+
+def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(float(retry_after), 0.0)
+        except ValueError:
+            pass
+    return min(2.0**attempt, 30.0)
 
 
 def _load_json(text: str, source: str) -> dict:

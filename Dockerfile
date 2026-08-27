@@ -37,7 +37,9 @@ ENV PYTHONUNBUFFERED=1 \
     HERMES_RUNTIME_MODE=production \
     HERMES_LOCAL_SEED=0 \
     HERMES_API_HOST=0.0.0.0 \
-    HERMES_API_PORT=8080
+    HERMES_API_PORT=8080 \
+    HERMES_ARG_CONFIG=/app/config.yaml \
+    HERMES_FABRIC_CONFIG=/app/fabric.config.yaml
 
 # `az` is a hard runtime dependency of the ARG extraction path, and the
 # Resource Graph extension must be baked in: a scheduled sync must never
@@ -58,6 +60,13 @@ LABEL source_cache_bust="${SOURCE_CACHE_BUST}"
 COPY --from=builder /app/.venv /app/.venv
 COPY src/ /app/src/
 COPY skills/ /app/skills/
+# Baked-in default connector configs so the inventory-refresh trigger endpoint
+# (POST /api/v1/inventory/refresh, called by the Fabric Data Pipeline Web
+# activity) has a config to load without needing a mounted volume. Neither
+# file contains secrets -- the ARG service-principal secret is supplied via
+# AZURE_CLIENT_SECRET at runtime, not stored in these YAML files.
+COPY arg.config.deploy.yaml /app/config.yaml
+COPY fabric.config.deploy.yaml /app/fabric.config.yaml
 
 # The API writes connection registries and synced datasets under HERMES_HOME.
 RUN useradd --create-home --uid 10001 hermes \

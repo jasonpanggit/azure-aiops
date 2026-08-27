@@ -6,6 +6,7 @@ from network_scenario import network_rows
 
 from network import (
     NetworkDesignPolicy,
+    NetworkIntelligenceService,
     NetworkScope,
     NetworkSecurityGroup,
     NetworkSecurityRule,
@@ -244,11 +245,107 @@ class TestDesignPolicy:
         assert policy.declares_hub("vnet-hub")
         assert policy.peering_is_approved("vnet-hub", "vnet-prod")
 
+    def test_explicit_rule_policy_is_declared(self) -> None:
+        policy = NetworkDesignPolicy.from_mapping(
+            {
+                "rules": [
+                    {
+                        "rule_id": "internet-via-firewall",
+                        "name": "Internet access must traverse the firewall",
+                        "enabled": False,
+                    }
+                ]
+            }
+        )
+        assert policy.is_declared
+        assert not policy.rule_enabled("internet-via-firewall")
+
     def test_missing_policy_file_is_not_an_error(self) -> None:
         from network import load_design_policy
 
         policy = load_design_policy("/nonexistent/network-design.yaml")
         assert not policy.is_declared
+
+
+class TestPolicyRules:
+    def test_default_policy_has_the_two_seed_rules(self) -> None:
+        policy = NetworkDesignPolicy()
+        assert policy.rule_enabled("internet-via-firewall")
+        assert policy.rule_enabled("nsg-override-default-outbound")
+        assert policy.rule("internet-via-firewall") is not None
+        assert policy.rule("nonexistent-rule") is None
+
+    def test_disabling_firewall_rule_suppresses_firewall_bypass_gaps(self) -> None:
+        enabled = build_service(network_rows())
+        assert [gap for gap in enabled.gaps if gap.category == "firewall_bypass"]
+
+        policy = NetworkDesignPolicy.from_mapping(
+            {"rules": [{"rule_id": "internet-via-firewall", "name": "x", "enabled": False}]}
+        )
+        assert not policy.rule_enabled("internet-via-firewall")
+        disabled = NetworkIntelligenceService.from_rows(network_rows(), policy=policy)
+        assert not [gap for gap in disabled.gaps if gap.category == "firewall_bypass"]
+        assert not [gap for gap in disabled.gaps if gap.category == "missing_udr"]
+
+    def test_from_mapping_merges_overrides_with_built_in_defaults(self) -> None:
+        policy = NetworkDesignPolicy.from_mapping(
+            {"rules": [{"rule_id": "internet-via-firewall", "name": "x", "enabled": False}]}
+        )
+        # The un-overridden built-in rule is still present and still enabled.
+        assert policy.rule_enabled("nsg-override-default-outbound")
+        assert len(policy.rules) == 2
+
+    def test_nsg_without_an_outbound_override_is_a_gap(self) -> None:
+        snapshot = _rule(direction="Inbound")
+        gaps = [
+            gap
+            for gap in NetworkIntelligenceService(snapshot).gaps
+            if gap.category == "nsg_default_outbound"
+        ]
+        assert gaps
+        assert gaps[0].severity == "high"
+
+    def test_nsg_with_an_explicit_outbound_override_is_not_a_gap(self) -> None:
+        override = NetworkSecurityRule(
+            resource_id="/nsg/a/securityrules/deny-internet-out",
+            name="deny-internet-out",
+            nsg_id="/nsg/a",
+            priority=100,
+            direction="Outbound",
+            access="Deny",
+            protocol="*",
+            source_address="*",
+            destination_address="Internet",
+            destination_port="*",
+        )
+        nsg = NetworkSecurityGroup(
+            resource_id="/nsg/a",
+            name="a",
+            subnet_ids=("/vnet/a/subnets/s",),
+            rules=(override,),
+        )
+        gaps = [
+            gap
+            for gap in NetworkIntelligenceService(NetworkSnapshot(nsgs=(nsg,))).gaps
+            if gap.category == "nsg_default_outbound"
+        ]
+        assert not gaps
+
+    def test_disabling_nsg_rule_suppresses_the_gap(self) -> None:
+        policy = NetworkDesignPolicy.from_mapping(
+            {
+                "rules": [
+                    {"rule_id": "nsg-override-default-outbound", "name": "x", "enabled": False}
+                ]
+            }
+        )
+        snapshot = _rule(direction="Inbound")
+        gaps = [
+            gap
+            for gap in NetworkIntelligenceService(snapshot, policy=policy).gaps
+            if gap.category == "nsg_default_outbound"
+        ]
+        assert not gaps
 
 
 class TestScoping:
@@ -297,3 +394,97 @@ class TestSummary:
         assert summary["rule_finding_count"] > 0
         assert summary["intended_design_declared"] is False
         assert summary["cross_subscription_peering_count"] > 0
+
+
+class TestRuleRegistry:
+    """Every rule drives its own check, and unbacked rules say so."""
+
+    def _paas_rows(self):
+        rows = network_rows()
+        for name, kind in (
+            ("stpayments", "microsoft.storage/storageaccounts"),
+            ("kv-payments", "microsoft.keyvault/vaults"),
+        ):
+            resource_group = "rg-prod"
+            rows.append(
+                {
+                    "tenant_id": "tenant-1",
+                    "subscription_id": "sub-prod",
+                    "resource_id": (
+                        f"/subscriptions/sub-prod/resourcegroups/{resource_group}"
+                        f"/providers/{kind}/{name}"
+                    ),
+                    "entity_type": "Resource",
+                    "name": name,
+                    "type": kind,
+                    "timestamp": "2024-06-01T00:00:00+00:00",
+                    "connection_id": "conn-prod",
+                    "publicNetworkAccess": "Enabled",
+                }
+            )
+        return rows
+
+    def test_paas_resources_are_projected_onto_the_snapshot(self) -> None:
+        service = NetworkIntelligenceService.from_rows(self._paas_rows())
+        kinds = {
+            item.service_kind for item in service.snapshot.private_link_resources
+        }
+        assert kinds == {"Storage", "Key Vault"}
+
+    def test_resource_without_a_private_endpoint_is_flagged(self) -> None:
+        service = NetworkIntelligenceService.from_rows(self._paas_rows())
+        flagged = {
+            gap.resource_name
+            for gap in service.gaps
+            if gap.category == "missing_private_endpoint"
+        }
+        # The storage account is already targeted by pe-storage; the key vault is not.
+        assert "kv-payments" in flagged
+        assert "stpayments" not in flagged
+
+    def test_disabling_the_rule_suppresses_its_gaps(self) -> None:
+        policy = NetworkDesignPolicy.from_mapping(
+            {
+                "rules": [
+                    {
+                        "rule_id": "private-endpoints-preferred",
+                        "name": "Private endpoints should be used when possible",
+                        "enabled": False,
+                    }
+                ]
+            }
+        )
+        service = NetworkIntelligenceService.from_rows(self._paas_rows(), policy=policy)
+        assert not [
+            gap for gap in service.gaps if gap.category == "missing_private_endpoint"
+        ]
+
+    def test_rule_parameters_narrow_the_scope(self) -> None:
+        policy = NetworkDesignPolicy.from_mapping(
+            {
+                "rules": [
+                    {
+                        "rule_id": "private-endpoints-preferred",
+                        "name": "Private endpoints",
+                        "parameters": {"services": ["Storage"]},
+                    }
+                ]
+            }
+        )
+        service = NetworkIntelligenceService.from_rows(self._paas_rows(), policy=policy)
+        assert not [
+            gap for gap in service.gaps if gap.resource_name == "kv-payments"
+        ]
+
+    def test_a_rule_with_no_check_is_reported_as_unevaluated(self) -> None:
+        from network.gaps import NetworkGapAnalyzer
+
+        policy = NetworkDesignPolicy.from_mapping(
+            {"rules": [{"rule_id": "bring-your-own-rule", "name": "Custom"}]}
+        )
+        service = NetworkIntelligenceService.from_rows(network_rows(), policy=policy)
+        analyzer = NetworkGapAnalyzer(service.snapshot, service.topology, policy)
+        assert [rule.rule_id for rule in analyzer.unevaluated_rules()] == [
+            "bring-your-own-rule"
+        ]
+        assert "bring-your-own-rule" not in NetworkGapAnalyzer.evaluable_rule_ids()

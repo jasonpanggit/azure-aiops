@@ -101,4 +101,27 @@ describe("networkApi", () => {
     expect(url.pathname).toBe("/api/v1/network/firewall-bypass");
     expect(url.searchParams.getAll("subscription")).toEqual(["sub-a"]);
   });
+
+  it("requests the design policy under the current scope", async () => {
+    const spy = captureFetch({ rules: [] });
+    await networkApi.policy({ subscription: ["sub-a"] });
+    const url = calledUrl(spy);
+    expect(url.pathname).toBe("/api/v1/network/policy");
+    expect(url.searchParams.getAll("subscription")).toEqual(["sub-a"]);
+  });
+
+  it("sends a PATCH with the rule changes when updating the design policy", async () => {
+    const spy = captureFetch({ rules: [] });
+    await networkApi.updatePolicy({
+      rules: [{ rule_id: "internet-via-firewall", name: "x", enabled: false }],
+    });
+    const apiCall = spy.mock.calls.find(([input]) => String(input).includes("/api/v1/"));
+    expect(apiCall).toBeDefined();
+    const [input, init] = apiCall as [RequestInfo | URL, RequestInit];
+    expect(String(input)).toContain("/api/v1/network/policy");
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      rules: [{ rule_id: "internet-via-firewall", name: "x", enabled: false }],
+    });
+  });
 });

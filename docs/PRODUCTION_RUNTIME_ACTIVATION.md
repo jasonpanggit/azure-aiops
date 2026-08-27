@@ -11,8 +11,7 @@ Resource Graph discovery. Production mode never loads fixture or mock data.
 | --- | --- |
 | `HERMES_RUNTIME_MODE=production` | Disables direct fixture/local snapshot providers. |
 | `HERMES_LOCAL_SEED=0` | Prevents local fixture seeding. |
-| `HERMES_HOME` | ADLS root for connection registry state and isolated discovery generations. |
-| `HERMES_DATABASE_URL` | PostgreSQL connection registry store. |
+| `HERMES_HOME` | OneLake root (`abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>/Files/hermes`) holding the connection registry, risk exceptions, cached CVE enrichment, and isolated discovery generations. |
 | `HERMES_API_AUTH=entra` | Validates browser access tokens directly against Entra JWKS. |
 | `HERMES_ENTRA_TENANT_ID` | Entra tenant allowed to issue API tokens. |
 | `HERMES_ENTRA_AUDIENCE` | Exact API audience expected in the token `aud` claim. |
@@ -32,23 +31,23 @@ Resource Graph discovery. Production mode never loads fixture or mock data.
 
 The Container App identity requires:
 
-- `Storage Blob Data Contributor` on the ADLS account.
 - Key Vault secret read/write access for connection credential references.
-- `Contributor` on the Fabric workspace and access to its capacity/Lakehouse.
+- `Contributor` on the Fabric workspace and access to its capacity/Lakehouse;
+  this also grants the OneLake read/write that `HERMES_HOME` needs.
 - `Azure AI User`/Foundry Agent Consumer access to the Foundry project.
-- Network reachability to private ADLS, Key Vault, PostgreSQL, Fabric, and
-  Foundry endpoints.
+- Network reachability to private Key Vault, OneLake, Fabric, and Foundry
+  endpoints.
 
 ### Startup secret synchronization
 
 The API image runs `api.akv_bootstrap` before Uvicorn starts. When enabled, it
 uses the API Container App's user-assigned managed identity (`AZURE_CLIENT_ID`)
-and writes only the allowlisted `HERMES_AKV_BOOTSTRAP_SECRETS` mappings. The
-default deployment mapping is:
+and writes only the allowlisted `HERMES_AKV_BOOTSTRAP_SECRETS` mappings.
 
-```json
-{"hermes-database-url":"HERMES_DATABASE_URL"}
-```
+The default deployment maps nothing (`{}`), because no secret-backed
+environment variable is required now that all durable state lives in OneLake
+and is reached with the managed identity. Add entries here only when a new
+secret-backed variable is introduced.
 
 Values are read from Container Apps secret-backed environment variables, are
 never logged, and are not rewritten when unchanged. A missing secret is

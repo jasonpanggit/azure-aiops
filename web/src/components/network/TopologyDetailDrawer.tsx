@@ -6,6 +6,7 @@ import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { shortName, type TopologyEdgeData, type TopologyNodeData } from "@/lib/network-graph";
 import { networkApi } from "@/lib/services";
+import type { NetworkGap, RuleFinding } from "@/lib/types";
 
 const KIND_LABEL: Record<string, string> = {
   hub: "Connectivity hub VNet",
@@ -25,13 +26,16 @@ interface TopologyDetailDrawerProps {
   node: TopologyNodeData | null;
   edge: TopologyEdgeData | null;
   onClose: () => void;
+  /** Open gaps/rule findings for the selected node's resource id, so a red/orange
+   * badge on the canvas can be explained rather than just colour-coded. */
+  findings?: { gaps: NetworkGap[]; ruleFindings: RuleFinding[] };
 }
 
 /**
  * Side drawer describing the element selected on the topology canvas. Hub
  * dependants are fetched lazily so the canvas itself stays cheap to render.
  */
-export function TopologyDetailDrawer({ node, edge, onClose }: TopologyDetailDrawerProps) {
+export function TopologyDetailDrawer({ node, edge, onClose, findings }: TopologyDetailDrawerProps) {
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const open = Boolean(node || edge);
 
@@ -67,13 +71,13 @@ export function TopologyDetailDrawer({ node, edge, onClose }: TopologyDetailDraw
         </button>
       </div>
       <div className="topology-drawer-body">
-        {node ? <NodeDetail node={node} /> : <EdgeDetail edge={edge!} />}
+        {node ? <NodeDetail node={node} findings={findings} /> : <EdgeDetail edge={edge!} />}
       </div>
     </aside>
   );
 }
 
-function NodeDetail({ node }: { node: TopologyNodeData }) {
+function NodeDetail({ node, findings }: { node: TopologyNodeData; findings?: { gaps: NetworkGap[]; ruleFindings: RuleFinding[] } }) {
   const heading = node.entityType ? titleize(node.entityType) : node.serviceKind ? titleize(node.serviceKind) : titleize(node.kind);
   return (
     <>
@@ -112,9 +116,58 @@ function NodeDetail({ node }: { node: TopologyNodeData }) {
         </section>
       )}
 
+      <OpenFindings findings={findings} />
+
       <NodeSpecificDetails node={node} />
       {node.kind === "hub" && <HubDependents vnetId={node.id} />}
     </>
+  );
+}
+
+const SEVERITY_TONE: Record<string, "critical" | "warning" | "info"> = {
+  critical: "critical",
+  high: "warning",
+  medium: "warning",
+  low: "info",
+};
+
+/** Renders the actual open gap/rule-finding records behind a node's severity
+ * badge, so clicking a red-dotted node explains why it is flagged. */
+function OpenFindings({ findings }: { findings?: { gaps: NetworkGap[]; ruleFindings: RuleFinding[] } }) {
+  const gaps = findings?.gaps ?? [];
+  const ruleFindings = findings?.ruleFindings ?? [];
+  if (gaps.length === 0 && ruleFindings.length === 0) return null;
+
+  return (
+    <section className="topology-detail-section">
+      <h3>Open findings ({gaps.length + ruleFindings.length})</h3>
+      <div className="topology-finding-list">
+        {gaps.map((gap) => (
+          <article key={gap.gap_id} className="topology-finding-item">
+            <div className="topology-finding-header">
+              <StatusBadge label={titleize(gap.severity)} tone={SEVERITY_TONE[gap.severity] ?? "info"} compact />
+              <strong>{gap.title}</strong>
+            </div>
+            <span>{gap.detail}</span>
+            {gap.recommendation && <small>Recommendation: {gap.recommendation}</small>}
+            {gap.basis && <small className="muted">Basis: {gap.basis}</small>}
+          </article>
+        ))}
+        {ruleFindings.map((finding) => (
+          <article key={finding.finding_id} className="topology-finding-item">
+            <div className="topology-finding-header">
+              <StatusBadge label={titleize(finding.severity)} tone={SEVERITY_TONE[finding.severity] ?? "info"} compact />
+              <strong>{finding.title}</strong>
+            </div>
+            <span>
+              {finding.control} · {finding.rule_name}
+            </span>
+            <small>{finding.detail}</small>
+            {finding.recommendation && <small>Recommendation: {finding.recommendation}</small>}
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

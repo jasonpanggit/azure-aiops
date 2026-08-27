@@ -53,6 +53,9 @@ ARM_CLIENT_SECRET="$(read_env AZURE_CLIENT_SECRET)"
 ENTRA_WEB_CLIENT_ID="$(read_env NEXT_PUBLIC_ENTRA_CLIENT_ID)"
 ENTRA_API_AUDIENCE="$(read_env HERMES_ENTRA_API_AUDIENCE)"
 ENTRA_GRANTS_JSON="$(read_env HERMES_ENTRA_GRANTS_JSON)"
+# Optional: without it, the deployed API's CVE enrichment hits NVD's
+# anonymous rate limit (5 req/30s) and CVE detail lookups fail.
+NVD_API_KEY="$(read_env NVD_API_KEY)"
 
 for var in ARM_SUBSCRIPTION_ID ARM_TENANT_ID ARM_CLIENT_ID ARM_CLIENT_SECRET ENTRA_WEB_CLIENT_ID ENTRA_API_AUDIENCE ENTRA_GRANTS_JSON; do
   if [[ -z "${!var}" ]]; then
@@ -81,6 +84,9 @@ tf_vars=(
 )
 if [[ -n "${deployer_object_id}" ]]; then
   tf_vars+=(-var "deployer_object_id=${deployer_object_id}")
+fi
+if [[ -n "${NVD_API_KEY}" ]]; then
+  tf_vars+=(-var "nvd_api_key=${NVD_API_KEY}")
 fi
 
 command="${1:-plan}"

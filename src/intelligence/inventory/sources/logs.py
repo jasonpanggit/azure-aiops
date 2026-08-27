@@ -9,11 +9,29 @@ def fetch_software_inventory(
     logs_client: Any,
     subscriptions: list[str],
     started: datetime,
+    *,
+    discovered_workspaces: list[dict] | None = None,
 ) -> tuple[list[dict], dict]:
-    """Fetch ConfigurationData only from server-owned workspace mappings."""
+    """Fetch ConfigurationData from every Log Analytics workspace in scope.
+
+    Workspace IDs are discovered dynamically via ARG (``discovered_workspaces``,
+    subscription-wide ``microsoft.operationalinsights/workspaces``) so newly
+    created or renamed workspaces are picked up automatically. A static
+    ``config.workspaces_for_connection()`` mapping, if configured, is merged in
+    as an explicit override/addition -- this keeps existing tests and any
+    intentional allowlisting working without requiring discovery.
+    """
 
     connection_id = str(getattr(config, "connection_context", {}).get("connection_id") or "")
-    workspaces = config.workspaces_for_connection(connection_id)
+    configured = config.workspaces_for_connection(connection_id)
+    discovered = tuple(
+        dict.fromkeys(
+            str(row.get("workspaceId") or "").strip()
+            for row in (discovered_workspaces or [])
+            if str(row.get("workspaceId") or "").strip()
+        )
+    )
+    workspaces = tuple(dict.fromkeys((*discovered, *configured)))
     requested_scope = {"subscription": sorted(subscriptions)}
     query_version = "inventory-software-v1"
     if not workspaces:
@@ -23,7 +41,7 @@ def fetch_software_inventory(
             "observed_at": started.astimezone().replace(microsecond=0).isoformat(),
             "query_version": query_version,
             "row_count": 0,
-            "error": "No Log Analytics workspace is configured for this connection",
+            "error": "No Log Analytics workspace was discovered or configured for this connection",
             "workspace_count": 0,
             "requested_scope": requested_scope,
         }

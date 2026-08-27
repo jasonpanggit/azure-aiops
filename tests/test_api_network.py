@@ -22,6 +22,7 @@ from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
+from network.design import NetworkDesignPolicyStore
 from network.service import build_service
 from onboarding.service import SubscriptionOnboardingService
 
@@ -39,7 +40,7 @@ def _principals() -> dict[str, Principal]:
     }
 
 
-def _client(tmp_path, *, with_network: bool = True) -> TestClient:
+def _client(tmp_path, *, with_network: bool = True, network_policy_store=None) -> TestClient:
     service = build_service(network_rows()) if with_network else None
     context = ApiContext(
         onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
@@ -47,6 +48,7 @@ def _client(tmp_path, *, with_network: bool = True) -> TestClient:
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
         network_provider=(lambda: service),
+        network_policy_store=network_policy_store,
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -219,3 +221,163 @@ class TestUnavailableSnapshot:
 class TestAuthentication:
     def test_anonymous_access_is_refused(self, client):
         assert client.get("/api/v1/network/topology").status_code == 401
+
+
+class TestPolicy:
+    def test_read_reports_defaults_when_no_store_is_configured(self, tmp_path):
+        client = _client(tmp_path, network_policy_store=None)
+        response = client.get("/api/v1/network/policy", headers=_auth())
+        assert response.status_code == 200
+        body = response.json()
+        rule_ids = {rule["rule_id"] for rule in body["data"]["rules"]}
+        assert "internet-via-firewall" in rule_ids
+        assert "nsg-override-default-outbound" in rule_ids
+        assert body["warnings"]
+
+    def test_read_marks_rules_the_analyzer_cannot_evaluate(self, tmp_path):
+        client = _client(tmp_path, network_policy_store=NetworkDesignPolicyStore())
+        client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={
+                "rules": [
+                    {"rule_id": "bring-your-own-rule", "name": "Custom", "enabled": True}
+                ]
+            },
+        )
+        body = client.get("/api/v1/network/policy", headers=_auth()).json()
+        rules = {rule["rule_id"]: rule for rule in body["data"]["rules"]}
+        assert rules["bring-your-own-rule"]["evaluated"] is False
+        assert rules["internet-via-firewall"]["evaluated"] is True
+        assert body["data"]["unevaluated_rule_ids"] == ["bring-your-own-rule"]
+        # A rule nothing inspects must be called out, not silently accepted.
+        assert any("not evaluated" in warning for warning in body["warnings"])
+
+    def test_read_with_a_configured_store_has_no_warning(self, tmp_path):
+        client = _client(tmp_path, network_policy_store=NetworkDesignPolicyStore())
+        response = client.get("/api/v1/network/policy", headers=_auth())
+        assert response.status_code == 200
+        assert response.json().get("warnings", []) == []
+
+    def test_write_requires_admin(self, tmp_path):
+        client = _client(tmp_path, network_policy_store=NetworkDesignPolicyStore())
+        response = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(SCOPED_TOKEN),
+            json={"rules": [{"rule_id": "internet-via-firewall", "name": "x", "enabled": False}]},
+        )
+        assert response.status_code == 403
+
+    def test_write_updates_and_persists_a_rule_toggle(self, tmp_path):
+        store = NetworkDesignPolicyStore()
+        client = _client(tmp_path, network_policy_store=store)
+        response = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={"rules": [{"rule_id": "internet-via-firewall", "name": "x", "enabled": False}]},
+        )
+        assert response.status_code == 200
+        rules = {r["rule_id"]: r for r in response.json()["data"]["rules"]}
+        assert rules["internet-via-firewall"]["enabled"] is False
+        # The other built-in rule is untouched by a partial update.
+        assert rules["nsg-override-default-outbound"]["enabled"] is True
+        # Persisted, so a second read reflects the change.
+        follow_up = client.get("/api/v1/network/policy", headers=_auth())
+        assert follow_up.json()["data"]["rules"] == response.json()["data"]["rules"]
+
+    def test_write_without_a_store_reports_provider_unavailable(self, tmp_path):
+        client = _client(tmp_path, network_policy_store=None)
+        response = client.patch(
+            "/api/v1/network/policy", headers=_auth(), json={"rules": []}
+        )
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "provider_unavailable"
+
+    def test_write_rejects_a_rule_without_a_name(self, tmp_path):
+        client = _client(tmp_path, network_policy_store=NetworkDesignPolicyStore())
+        response = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={"rules": [{"rule_id": "internet-via-firewall"}]},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "invalid_request"
+
+    def test_write_adds_a_custom_rule(self, tmp_path):
+        client = _client(tmp_path, network_policy_store=NetworkDesignPolicyStore())
+        response = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={
+                "rules": [
+                    {
+                        "rule_id": "no-public-storage-endpoints",
+                        "name": "No public storage endpoints",
+                        "category": "custom",
+                        "severity": "medium",
+                        "enabled": True,
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 200
+        rule_ids = {r["rule_id"] for r in response.json()["data"]["rules"]}
+        assert "no-public-storage-endpoints" in rule_ids
+        # Built-in rules remain untouched.
+        assert "internet-via-firewall" in rule_ids
+        assert response.json()["data"]["is_declared"] is True
+
+    def test_write_removes_a_custom_rule(self, tmp_path):
+        store = NetworkDesignPolicyStore()
+        client = _client(tmp_path, network_policy_store=store)
+        client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={
+                "rules": [
+                    {
+                        "rule_id": "no-public-storage-endpoints",
+                        "name": "No public storage endpoints",
+                        "category": "custom",
+                        "severity": "medium",
+                        "enabled": True,
+                    }
+                ]
+            },
+        )
+        response = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={"remove_rule_ids": ["no-public-storage-endpoints"]},
+        )
+        assert response.status_code == 200
+        rule_ids = {r["rule_id"] for r in response.json()["data"]["rules"]}
+        assert "no-public-storage-endpoints" not in rule_ids
+        # Persisted removal.
+        follow_up = client.get("/api/v1/network/policy", headers=_auth())
+        follow_up_ids = {r["rule_id"] for r in follow_up.json()["data"]["rules"]}
+        assert "no-public-storage-endpoints" not in follow_up_ids
+
+    def test_write_removing_a_builtin_rule_is_a_noop(self, tmp_path):
+        """Built-in rules are re-seeded on every read, so "deleting" one is a
+        no-op rather than an error -- the UI hides the delete affordance for
+        built-ins accordingly, but the API must not blow up if asked anyway."""
+        client = _client(tmp_path, network_policy_store=NetworkDesignPolicyStore())
+        response = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={"remove_rule_ids": ["internet-via-firewall"]},
+        )
+        assert response.status_code == 200
+        rule_ids = {r["rule_id"] for r in response.json()["data"]["rules"]}
+        assert "internet-via-firewall" in rule_ids
+
+    def test_write_rejects_a_non_list_remove_rule_ids(self, tmp_path):
+        client = _client(tmp_path, network_policy_store=NetworkDesignPolicyStore())
+        response = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={"remove_rule_ids": "internet-via-firewall"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "invalid_request"

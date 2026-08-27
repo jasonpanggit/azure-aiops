@@ -12,12 +12,14 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Body, Query
 
+from network.design import NetworkDesignPolicy, NetworkDesignPolicyValidationError
 from network.flow import FlowQuery
+from network.gaps import NetworkGapAnalyzer
 from network.service import NetworkIntelligenceService, NetworkScope
 
-from ..dependencies import Context, Page, ReadScope
+from ..dependencies import Context, Page, ReadScope, WritePrincipal
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope
@@ -29,7 +31,11 @@ SOURCE_TABLE = "ontology_entities"
 
 
 def _service(context: Context, scope: Scope) -> NetworkIntelligenceService:
-    service = context.resolve_provider("network")
+    subscription_ids = list(scope.values("subscription"))
+    if context.hybrid_network_provider is not None and subscription_ids:
+        service = context.hybrid_network_provider(subscription_ids)
+    else:
+        service = context.resolve_provider("network")
     return service.scoped(_network_scope(scope))
 
 
@@ -231,5 +237,96 @@ def network_summary(context: Context, scope: ReadScope) -> dict[str, Any]:
     return envelope(
         analysis.summary(),
         evidence=_evidence(service),
+        scope=scope.to_dict(),
+    )
+
+
+def _policy_payload(policy: NetworkDesignPolicy) -> tuple[dict[str, Any], list[str]]:
+    """Serialises a policy, marking which rules the analyzer actually checks.
+
+    Evaluability is a property of the analyzer, not of the stored policy, so
+    it is annotated at the edge. Without it the UI cannot distinguish a rule
+    that is enforced from one that is merely stored.
+    """
+    evaluable = set(NetworkGapAnalyzer.evaluable_rule_ids())
+    payload = policy.to_dict()
+    payload["rules"] = [
+        {**rule, "evaluated": rule.get("rule_id") in evaluable}
+        for rule in payload.get("rules", [])
+    ]
+    unevaluated = [
+        rule["rule_id"]
+        for rule in payload["rules"]
+        if rule.get("enabled") and not rule["evaluated"]
+    ]
+    payload["unevaluated_rule_ids"] = unevaluated
+    return payload, unevaluated
+
+
+@router.get("/policy", summary="Read the rule-based network design policy")
+def read_policy(context: Context, scope: ReadScope) -> dict[str, Any]:
+    """The editable rule set gap analysis is checked against.
+
+    Rules ship with sensible defaults (e.g. "internet egress must traverse
+    the firewall") so a deployment with no store configured still reports a
+    usable policy rather than an empty one.
+    """
+    store = context.network_policy_store
+    policy = store.read() if store is not None else NetworkDesignPolicy()
+    # Whether a rule is actually inspected is a property of the analyzer, not
+    # of the stored policy. Surfacing it here stops the UI from claiming a
+    # custom rule is enforced when nothing evaluates it.
+    payload, unevaluated = _policy_payload(policy)
+    return envelope(
+        payload,
+        evidence=Evidence(
+            source_engine="network.NetworkDesignPolicyStore",
+            source_table="network_design_policy",
+            confidence=CONFIDENCE_HIGH,
+        ),
+        scope=scope.to_dict(),
+        warnings=(
+            []
+            if store is not None
+            else ["Policy is not persisted in this deployment; defaults are shown"]
+        )
+        + (
+            [
+                f"{len(unevaluated)} enabled rule(s) have no gap check and are not "
+                "evaluated: " + ", ".join(unevaluated)
+            ]
+            if unevaluated
+            else []
+        ),
+    )
+
+
+@router.patch("/policy", summary="Update the rule-based network design policy")
+def update_policy(
+    principal: WritePrincipal,
+    context: Context,
+    scope: ReadScope,
+    changes: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    store = context.network_policy_store
+    if store is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Policy cannot be updated because no policy store is configured",
+            {"capability": "network_policy", "provider_state": "unavailable"},
+        )
+    try:
+        policy = store.update(changes)
+    except NetworkDesignPolicyValidationError as exc:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST, str(exc), {"section": sorted(changes)}
+        ) from exc
+    return envelope(
+        _policy_payload(policy)[0],
+        evidence=Evidence(
+            source_engine="network.NetworkDesignPolicyStore",
+            source_table="network_design_policy",
+            confidence=CONFIDENCE_HIGH,
+        ),
         scope=scope.to_dict(),
     )

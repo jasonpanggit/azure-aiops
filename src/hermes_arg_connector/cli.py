@@ -10,7 +10,6 @@ from .config import ConnectorConfig
 from .normalize import Normalizer
 from .schedule import install_schedule
 from .service import IngestionService
-from .storage import DatasetStore
 
 
 def register_cli(parser: argparse.ArgumentParser) -> None:
@@ -24,6 +23,16 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
         help="Run the standalone resource catalog refresh",
     )
     refresh_parser.add_argument("--config", default="config.yaml")
+    refresh_parser.add_argument(
+        "--fabric-config",
+        default="",
+        help="Optional Fabric config used to publish inventory tables to OneLake",
+    )
+    refresh_parser.add_argument(
+        "--connection-id",
+        default="",
+        help="Connection whose server-owned Log Analytics workspace mappings should be queried",
+    )
 
     query = actions.add_parser("query", help="Query the normalized operational context")
     query.add_argument("question")
@@ -168,37 +177,14 @@ def cli_command(args: argparse.Namespace) -> int:
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
     if action == "inventory-refresh":
-        from .azure import AzureCliArgClient, AzureMcpClient
-        from .logs import AzureMonitorLogsClient
-        from .source import AzureResourceGraphSource
-        from intelligence.inventory.pipeline import InventoryPipeline
+        from .inventory_refresh import run_inventory_refresh
 
-        config = ConnectorConfig.load(args.config)
-        source = AzureResourceGraphSource(
-            mcp=AzureMcpClient(
-                command_prefix=config.azure_mcp_command,
-                timeout=config.command_timeout_seconds,
-            ),
-            arg=AzureCliArgClient(
-                page_size=config.page_size,
-                max_pages=config.max_pages,
-                timeout=config.command_timeout_seconds,
-            ),
-            tenant_id=config.tenant_id,
-            max_workers=config.max_query_workers,
-            management_group_ids=config.management_groups,
+        manifest = run_inventory_refresh(
+            args.config,
+            fabric_config_path=args.fabric_config,
+            connection_id=args.connection_id,
         )
-        logs_client = None
-        if config.logs_workspaces:
-            from azure.identity import DefaultAzureCredential
-
-            logs_client = AzureMonitorLogsClient(DefaultAzureCredential())
-        result = InventoryPipeline(
-            config,
-            source=source,
-            logs_client=logs_client,
-        ).refresh()
-        print(json.dumps(result.manifest, indent=2, sort_keys=True))
+        print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
     if action == "query":
         result = ContextQueryService(Path(args.output_dir).expanduser().resolve()).answer(args.question)

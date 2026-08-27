@@ -34,7 +34,6 @@ def _clean_env(monkeypatch, tmp_path):
         "HERMES_API_TOKENS",
         "HERMES_API_GATEWAY_GRANTS",
         "HERMES_CONNECTION_KEY_VAULT",
-        "HERMES_DATABASE_URL",
         "HERMES_ENTRA_AUDIENCE",
         "HERMES_ENTRA_TENANT_ID",
     ):

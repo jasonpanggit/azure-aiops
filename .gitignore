@@ -10,7 +10,6 @@ data/
 live-data/
 sample-data/
 mock-fabric-lakehouse/
-.hermes-local/
 
 # Terraform local state and secrets — never commit, state contains resource
 # secrets and tfvars may contain deployment overrides.
@@ -20,5 +19,12 @@ infra/terraform/terraform.tfstate.backup
 infra/terraform/*.tfvars
 infra/terraform/*.tfvars.json
 
+# hermes
+#.hermes/
+#.hermes-local/
+
 # playwright test artifacts
 .playwright-mcp/
+
+# github
+#.github/

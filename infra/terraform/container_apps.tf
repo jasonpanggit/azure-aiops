@@ -69,9 +69,20 @@ resource "azurerm_container_app" "api" {
     identity = azurerm_user_assigned_identity.apps.id
   }
 
-  secret {
-    name  = "hermes-database-url"
-    value = "postgresql://${azurerm_postgresql_flexible_server.hermes.administrator_login}:${random_password.postgres.result}@${azurerm_postgresql_flexible_server.hermes.fqdn}:5432/${azurerm_postgresql_flexible_server_database.hermes.name}?sslmode=require"
+  dynamic "secret" {
+    for_each = var.nvd_api_key != "" ? [var.nvd_api_key] : []
+    content {
+      name  = "nvd-api-key"
+      value = secret.value
+    }
+  }
+
+  dynamic "secret" {
+    for_each = var.refresh_trigger_secret != "" ? [var.refresh_trigger_secret] : []
+    content {
+      name  = "refresh-trigger-secret"
+      value = secret.value
+    }
   }
 
   ingress {
@@ -121,9 +132,13 @@ resource "azurerm_container_app" "api" {
         value = local.web_base_url
       }
 
+      # All durable state lives in OneLake, so HERMES_HOME points at the
+      # Fabric lakehouse. Fabric is therefore required in production; with
+      # var.enable_fabric = false the API falls back to container-local disk,
+      # which does not survive a revision.
       env {
         name  = "HERMES_HOME"
-        value = "abfss://${azurerm_storage_container.hermes_data.name}@${azurerm_storage_account.hermes_data.name}.dfs.core.windows.net/"
+        value = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/hermes" : "/tmp/hermes"
       }
 
       env {
@@ -166,27 +181,22 @@ resource "azurerm_container_app" "api" {
         value = "24"
       }
 
-      env {
-        name        = "HERMES_DATABASE_URL"
-        secret_name = "hermes-database-url"
-      }
-
-      env {
-        name  = "AZURE_STORAGE_ACCOUNT"
-        value = azurerm_storage_account.hermes_data.name
-      }
-
       # Lets the onboarding API store submitted client secrets in Key Vault
-      # instead of the PostgreSQL registry; requires Key Vault Secrets Officer
-      # (write) on azurerm_role_assignment.kv_apps below.
+      # instead of the OneLake connection registry; requires Key Vault Secrets
+      # Officer (write) on azurerm_role_assignment.kv_apps below.
       env {
         name  = "HERMES_CONNECTION_KEY_VAULT"
         value = local.key_vault_name
       }
 
+      # Only enable the bootstrap sync when there is actually something to
+      # sync -- akv_bootstrap.py raises at startup if enabled with an empty
+      # secret map, which would crash the API. Since the persistence pivot to
+      # OneLake there is no longer a default secret (previously the Postgres
+      # connection string), so this is opt-in per environment.
       env {
         name  = "HERMES_AKV_BOOTSTRAP_ENABLED"
-        value = "true"
+        value = var.akv_bootstrap_secrets_json == "{}" ? "false" : "true"
       }
 
       env {
@@ -219,6 +229,22 @@ resource "azurerm_container_app" "api" {
         value = azurerm_application_insights.main.connection_string
       }
 
+      dynamic "env" {
+        for_each = var.nvd_api_key != "" ? [1] : []
+        content {
+          name        = "NVD_API_KEY"
+          secret_name = "nvd-api-key"
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.refresh_trigger_secret != "" ? [1] : []
+        content {
+          name        = "HERMES_REFRESH_TRIGGER_SECRET"
+          secret_name = "refresh-trigger-secret"
+        }
+      }
+
       liveness_probe {
         transport = "HTTP"
         port      = 8080
@@ -226,7 +252,7 @@ resource "azurerm_container_app" "api" {
         # The knowledge snapshot is built at startup; probing too early would
         # restart the container mid-load.
         initial_delay = 20
-        # /health can trigger a real ADLS read (see _load_snapshot_tables);
+        # /health can trigger a real OneLake read (see _load_snapshot_tables);
         # the default 1s timeout was too tight under real network latency and
         # caused CrashLoopBackOff even on a healthy container. Widen the
         # timeout and tolerate more consecutive failures before restarting.
@@ -248,9 +274,7 @@ resource "azurerm_container_app" "api" {
 
   depends_on = [
     azurerm_role_assignment.acr_pull,
-    azurerm_role_assignment.hermes_data,
     azurerm_role_assignment.kv_apps,
-    azurerm_postgresql_flexible_server_firewall_rule.azure_services,
   ]
 }
 

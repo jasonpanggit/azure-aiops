@@ -108,3 +108,32 @@ export async function refreshAccessToken(): Promise<string | null> {
     return null;
   }
 }
+
+/**
+ * Signs the current user fully out of MSAL (clearing the cached session and
+ * account) and immediately redirects back into an interactive sign-in.
+ *
+ * Called when the API rejects a request as unauthenticated even after a
+ * forced token refresh -- e.g. the account's Entra session itself has
+ * expired or been revoked, not just the cached access token. A silent
+ * refresh cannot recover from that; only a fresh interactive login can, so
+ * this forces one instead of leaving the user stuck behind a permanent
+ * "bearer token is required" error.
+ */
+export async function forceReauthentication(): Promise<void> {
+  if (!isMsalConfigured) return;
+
+  const instance = getMsalInstance();
+  const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
+  try {
+    await instance.logoutRedirect({
+      account,
+      postLogoutRedirectUri: typeof window !== "undefined" ? window.location.href : undefined,
+    });
+  } catch {
+    // logoutRedirect navigates the page away on success; if it throws before
+    // navigating, fall back to a hard reload so the app re-renders into the
+    // sign-in prompt rather than staying stuck showing stale 401s.
+    if (typeof window !== "undefined") window.location.reload();
+  }
+}

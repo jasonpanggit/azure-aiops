@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hmac
+import os
 import re
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from intelligence.inventory.eol_repository import (
     CatalogRevisionConflict,
@@ -80,6 +82,62 @@ def _lifecycle_evidence(service: InventoryService) -> Evidence:
         timestamp=service.observed_at,
         confidence="high",
     )
+
+
+@router.post(
+    "/inventory/refresh",
+    summary="Trigger an inventory acquisition/publication run",
+)
+def trigger_inventory_refresh(request: Request) -> dict[str, Any]:
+    """Run one inventory refresh synchronously and return its manifest.
+
+    Inventory remains the sole owner of acquisition/normalization/publication;
+    this endpoint only exposes an authenticated trigger over the same
+    `InventoryPipeline` refresh used by the `inventory-refresh` CLI, so a
+    Fabric Data Pipeline (Web activity + schedule trigger) can invoke it as a
+    real, schedulable Fabric-native artifact without duplicating acquisition
+    or normalization logic inside Fabric.
+
+    Authenticated separately from the Entra principal flow via a shared
+    secret (``HERMES_REFRESH_TRIGGER_SECRET``), because a Fabric Web activity
+    calling this endpoint on a schedule is a system-to-system caller, not an
+    interactive/gateway-authenticated user -- minting and refreshing an Entra
+    app-role token for that one activity adds real operational fragility for
+    no security benefit over a dedicated, rotatable trigger secret.
+    """
+    expected = os.environ.get("HERMES_REFRESH_TRIGGER_SECRET", "").strip()
+    if not expected:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "HERMES_REFRESH_TRIGGER_SECRET is not configured for this deployment",
+            {"capability": "inventory", "provider_state": "unconfigured"},
+        )
+    provided = request.headers.get("x-hermes-trigger-secret", "")
+    if not hmac.compare_digest(provided, expected):
+        raise ApiError(ErrorCode.UNAUTHENTICATED, "Invalid trigger secret")
+
+    config_path = os.environ.get("HERMES_ARG_CONFIG", "").strip()
+    if not config_path:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "HERMES_ARG_CONFIG is not configured for this deployment",
+            {"capability": "inventory", "provider_state": "unconfigured"},
+        )
+    fabric_config_path = os.environ.get("HERMES_FABRIC_CONFIG", "").strip()
+    from hermes_arg_connector.inventory_refresh import run_inventory_refresh
+
+    try:
+        manifest = run_inventory_refresh(
+            config_path,
+            fabric_config_path=fabric_config_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - surfaced as a structured API error
+        raise ApiError(
+            ErrorCode.INTERNAL,
+            f"Inventory refresh failed: {exc}",
+            {"capability": "inventory"},
+        ) from exc
+    return {"status": "completed", "manifest": manifest}
 
 
 @router.get("/inventory/os", summary="Grouped operating-system inventory")

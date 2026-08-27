@@ -33,8 +33,9 @@ The API runtime reads both real synced data and fixture snapshots through the
 same `InventoryDatasetMapper` and Semantic Knowledge Layer.
 
 Set `HERMES_LOCAL_SEED=0` when you intentionally want the live Azure-backed
-local path instead. In that mode, `scripts/start-api.sh` preserves the existing
-Postgres registry default and live connection sync behavior.
+local path instead. In that mode, `scripts/start-api.sh` uses the OneLake-backed
+registry (or a local directory when `HERMES_HOME` is a path) and live connection
+sync behavior.
 
 You can also seed without starting the server:
 

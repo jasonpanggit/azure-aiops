@@ -18,7 +18,7 @@ def test_relative_output_dir_resolves_from_config_directory(tmp_path: Path) -> N
 
 def test_remote_output_dir_is_preserved_as_uri(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
-    root = "abfss://hermes@account.dfs.core.windows.net/discovery"
+    root = "abfss://ws-hermes@onelake.dfs.fabric.microsoft.com/lakehouse/Files/discovery"
     config.write_text(f"storage:\n  output_dir: {root}\n")
 
     loaded = ConnectorConfig.load(config)

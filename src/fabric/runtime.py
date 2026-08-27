@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import MethodType
-from typing import Any, Callable
+from typing import Any
 
 from ontology.ontology_manager import OntologyManager
 from ontology.ontology_publisher import OntologyPublisher
@@ -15,6 +16,7 @@ from .config import FabricRuntimeConfig
 from .data_quality import DataQualityValidator
 from .fabric_client import FabricClient
 from .lakehouse_manager import LakehouseManager
+from .sql_endpoint import build_sql_reader
 from .sync_service import FabricSyncService
 from .workspace_manager import WorkspaceManager
 
@@ -98,6 +100,38 @@ class FabricRuntime:
         object.__setattr__(self, "_semantic", engine)
         object.__setattr__(self, "_semantic_version", version)
         return engine
+
+    def semantic_graph_engine(self):
+        """Build the graph-only semantic engine for live-source composition."""
+        from semantic.semantic_engine import SemanticEngine
+
+        snapshot = self.service.semantic_graph_snapshot()
+        return SemanticEngine.from_graph_rows(
+            **snapshot,
+            max_results=(
+                self.config.semantic.max_results if self.config is not None else 50
+            ),
+            max_traversal_nodes=(
+                self.config.semantic.max_traversal_nodes
+                if self.config is not None
+                else 500
+            ),
+            max_traversal_depth=(
+                self.config.semantic.max_traversal_depth
+                if self.config is not None
+                else 32
+            ),
+            max_source_rows=(
+                self.config.semantic.max_source_rows
+                if self.config is not None
+                else 50000
+            ),
+            max_serialized_bytes=(
+                self.config.semantic.max_serialized_bytes
+                if self.config is not None
+                else 1_000_000
+            ),
+        )
 
     def operations_agent(self):
         from agents.operations import OperationsAgent
@@ -442,8 +476,37 @@ def build_runtime(config: FabricRuntimeConfig) -> FabricRuntime:
         ontology_name=config.ontology.ontology_name,
         patch_policies=config.patch_policies,
         lifecycle_catalog=lifecycle_catalog,
+        sql_reader=_build_lakehouse_sql_reader(lakehouse, credential, config),
     )
     return FabricRuntime(config, workspace, lakehouse, service)
+
+
+def _build_lakehouse_sql_reader(
+    lakehouse: dict, credential: Any, config: FabricRuntimeConfig
+):
+    """Build the optional SQL-endpoint read accelerator for this lakehouse.
+
+    Fabric returns the SQL analytics endpoint in the lakehouse's
+    ``properties.sqlEndpointProperties``. It is provisioned asynchronously,
+    so a freshly created lakehouse may not expose one yet; in that case (and
+    when no ODBC driver is installed) this returns ``None`` and reads fall
+    back to the Delta path.
+    """
+    if not config.sql_endpoint_enabled:
+        return None
+    properties = (lakehouse.get("properties") or {}).get("sqlEndpointProperties") or {}
+    server = str(properties.get("connectionString") or "").strip()
+    database = str(properties.get("id") or lakehouse.get("displayName") or "").strip()
+    if not server or not database:
+        return None
+    return build_sql_reader(
+        {
+            "server": server,
+            "database": database,
+            "schema": config.table_schema or "dbo",
+        },
+        credential,
+    )
 
 
 def _lifecycle_catalog(config: FabricRuntimeConfig) -> tuple[dict[str, Any], ...]:

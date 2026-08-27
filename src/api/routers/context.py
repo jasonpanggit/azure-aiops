@@ -137,6 +137,11 @@ def _respond(
         ),
         scope=scope.to_dict(),
         knowledge_version=str(context.get("knowledge_version") or ""),
+        warnings=(
+            context.get("warnings", [])
+            if isinstance(context.get("warnings"), list)
+            else []
+        ),
     )
 
 
@@ -158,7 +163,15 @@ def search(
         ),
     ),
 ) -> dict[str, Any]:
-    result = context.semantic().search(q)
+    subscription_ids = list(scope.values("subscription"))
+    normalized_query = q.casefold().strip()
+    live_search = normalized_query.startswith("show list of") and (
+        "vm" in normalized_query or "server" in normalized_query
+    )
+    if context.hybrid_search_provider is not None and subscription_ids and live_search:
+        result = context.hybrid_search_provider(q, subscription_ids)
+    else:
+        result = context.semantic().search(q)
     visible = _scoped(result, scope)
     return envelope(
         visible,
@@ -178,7 +191,11 @@ def search(
 def business_service_context(
     name: str, context: Context, scope: ReadScope
 ) -> dict[str, Any]:
-    result = context.semantic().get_service_context(name, subject_type="BusinessService")
+    subscription_ids = list(scope.values("subscription"))
+    if context.hybrid_business_service_provider is not None and subscription_ids:
+        result = context.hybrid_business_service_provider(name, subscription_ids)
+    else:
+        result = context.semantic().get_service_context(name, subject_type="BusinessService")
     return _respond(
         result,
         scope,
@@ -250,7 +267,11 @@ def subscription_connection_context(
 def resource_context(
     resource_id: str, context: Context, scope: ReadScope
 ) -> dict[str, Any]:
-    result = context.semantic().get_resource_context(resource_id)
+    subscription_ids = list(scope.values("subscription"))
+    if context.hybrid_resource_provider is not None and subscription_ids:
+        result = context.hybrid_resource_provider(resource_id, subscription_ids)
+    else:
+        result = context.semantic().get_resource_context(resource_id)
     return _respond(
         result,
         scope,
@@ -262,7 +283,11 @@ def resource_context(
 
 @router.get("/risk/{subject}", summary="Aggregated risk for a subject")
 def risk_context(subject: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    result = context.semantic().get_risk_context(subject)
+    subscription_ids = list(scope.values("subscription"))
+    if context.hybrid_risk_provider is not None and subscription_ids:
+        result = context.hybrid_risk_provider(subject, subscription_ids)
+    else:
+        result = context.semantic().get_risk_context(subject)
     return _respond(
         result,
         scope,
@@ -274,7 +299,11 @@ def risk_context(subject: str, context: Context, scope: ReadScope) -> dict[str, 
 
 @router.get("/impact/{subject}", summary="Blast radius for a subject")
 def impact_context(subject: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    result = context.semantic().get_impact_context(subject)
+    subscription_ids = list(scope.values("subscription"))
+    if context.hybrid_impact_provider is not None and subscription_ids:
+        result = context.hybrid_impact_provider(subject, subscription_ids)
+    else:
+        result = context.semantic().get_impact_context(subject)
     return _respond(
         result,
         scope,

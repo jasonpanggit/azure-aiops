@@ -1,0 +1,169 @@
+{
+  "changedDatasets": [
+    "situations/audit_events",
+    "situations/situations",
+    "situations/source_status"
+  ],
+  "contentHash": "56f187ec39bba8de6767f68a03fc6e99de6119aa153ab9434b9c0e495af92160",
+  "datasets": {
+    "changes/resource_changes": {
+      "contentHash": "19f5f48ca1e5f8aaa9fd97c000bc702d3ec3a85daedfd9f30dfd785ce993519f",
+      "rowCount": 528
+    },
+    "entities/AdvisorRecommendation": {
+      "contentHash": "428601b4780804466284e760bdbf56fb21851c87db2d3905b5f73de0bfdac250",
+      "rowCount": 150
+    },
+    "entities/ArcServer": {
+      "contentHash": "3c4d0b5160dc5ebce83bf7faf5308b857a48403906e29b14f74bb74f60ec48d7",
+      "rowCount": 1
+    },
+    "entities/AzureFirewall": {
+      "contentHash": "57e66f7ce51414416dcc63ecab314728eb32fa2ef4735f16a29766d2d1937129",
+      "rowCount": 1
+    },
+    "entities/CostActual": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/FirewallPolicy": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/FirewallRule": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/FirewallRuleCollection": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/LoadBalancer": {
+      "contentHash": "d39acb01e90bedfb90ce1b9aa0771ea3e7dece228b91685f7e696cd3c2c1d1ad",
+      "rowCount": 2
+    },
+    "entities/ManagedIdentity": {
+      "contentHash": "3f11ff63fbe11aa471009691a6a887ae983735f28ee3339202914e2792f5da15",
+      "rowCount": 4
+    },
+    "entities/ManagementGroup": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/NetworkGateway": {
+      "contentHash": "3293ac8e29ee31e0429726ea588f5178a849f0339cbefbdd4bd783d51d448e94",
+      "rowCount": 1
+    },
+    "entities/NetworkInterface": {
+      "contentHash": "a60eb598c041b8ba859eee25c5b7782aea7d635be56b9dd7cbb9f50e5fbd4abf",
+      "rowCount": 3
+    },
+    "entities/NetworkSecurityGroup": {
+      "contentHash": "b9a8eb7d8f2e3e41794d1861be215daec4cc1c113731d18536543ee930be8f6e",
+      "rowCount": 7
+    },
+    "entities/NetworkSecurityRule": {
+      "contentHash": "7a51a90cc3ea550ddf38ceefbfedc615cf54dae0a108dd36fc1a3df0a0475797",
+      "rowCount": 46
+    },
+    "entities/PatchAssessment": {
+      "contentHash": "7d4095be2121a44d9a5226c642184ef899c0bd7e27cf9d2f3c7e9b6f6c04ab79",
+      "rowCount": 2
+    },
+    "entities/PatchAssessmentDetail": {
+      "contentHash": "5817c0612af5033c6305f2ce52e71943535d48d8cb088fc5fa88b97696043452",
+      "rowCount": 5
+    },
+    "entities/PatchInstallation": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/PrivateDnsZone": {
+      "contentHash": "01c19ad90ff8c80402eedc45dc3cadf36bd06676f56d5c3c40abe5267b163f9e",
+      "rowCount": 3
+    },
+    "entities/PrivateEndpoint": {
+      "contentHash": "ac0328928cbdebd930b3988adcc5ec5af88b5a822b65e0ef4058b64cb2064499",
+      "rowCount": 2
+    },
+    "entities/Resource": {
+      "contentHash": "a0471879e2e67ad04c94d180d96096b15030e3dcaf069932e98a5efe540c5442",
+      "rowCount": 91
+    },
+    "entities/ResourceGroup": {
+      "contentHash": "33406965333f4196b0b69f65b1249cec93b40013239dcf6c9e1938427d1764c8",
+      "rowCount": 8
+    },
+    "entities/RoleAssignment": {
+      "contentHash": "5f384d4a1e8b051a73dc9b1b9b7c13ae359f1d49dd8ae4515760246b2f637183",
+      "rowCount": 62
+    },
+    "entities/RoleDefinition": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/Route": {
+      "contentHash": "37fd51e6a83c66ee2db230a0723c9f7da40d926efbef57790a09695de5f2ee3f",
+      "rowCount": 1
+    },
+    "entities/RouteTable": {
+      "contentHash": "0114dd70770eb9a540a6ba1edfa92bfe8e74ee860f0e37309bb562537f4123c3",
+      "rowCount": 1
+    },
+    "entities/Subnet": {
+      "contentHash": "781bae42b8111abf380dcf768a310225eacdbf2617a72c9805da890c21a9c69f",
+      "rowCount": 8
+    },
+    "entities/Subscription": {
+      "contentHash": "63eaa43dec4ac9b881ee831d3b062b80b94afee1302c6927dab725f04b7773c3",
+      "rowCount": 1
+    },
+    "entities/VNet": {
+      "contentHash": "57e8719cadcafccee623988469aac3b8cb7c356fe09f426d688647b1db063692",
+      "rowCount": 2
+    },
+    "entities/VNetPeering": {
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rowCount": 0
+    },
+    "entities/VirtualMachine": {
+      "contentHash": "056fc9548afbdf997fa3b80bb4af76e7b50ddd935bf4dd70648e5f06b3235bd2",
+      "rowCount": 1
+    },
+    "ontology/ontology": {
+      "contentHash": "e514e837f0fcaeb89bc839f36e9536969679fa18666dfbc4cb317a1c046662e1",
+      "rowCount": 1
+    },
+    "relationships/relationships": {
+      "contentHash": "3813c739f1495cf827c6e8377c97b23b08b49a4ef4573c3ba5dcf2b85ea7e1ef",
+      "rowCount": 339
+    },
+    "situations/audit_events": {
+      "contentHash": "77c74dd08c57daa61e26e75c55f5995415894834b95d7cf9f1f2707157425c52",
+      "rowCount": 1152
+    },
+    "situations/evidence": {
+      "contentHash": "caa053d270ddce0dbf3fa48173b3ee980c1a0501350bf558b3a9e13fbe0ec910",
+      "rowCount": 528
+    },
+    "situations/links": {
+      "contentHash": "ac48bbeaaafa21b76ab043c52dd27f0d3b315a3b124b72df426ba97448e8d172",
+      "rowCount": 576
+    },
+    "situations/situations": {
+      "contentHash": "ab3c0c859f224fd0b2cea7d3221c0d128fb0dc1dccd9657c30c8f0b7791e136f",
+      "rowCount": 48
+    },
+    "situations/source_status": {
+      "contentHash": "7c774217ea4696001558dd7a5366a54c9259d8b440a668251bbb6463ae50c2fe",
+      "rowCount": 6
+    }
+  },
+  "queryVersion": "1.0.0",
+  "runId": "46f73077-9121-48e0-b989-7710cb8868b7",
+  "startedAt": "2026-08-25T14:32:49Z",
+  "status": "completed",
+  "subscriptions": [
+    "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+  ]
+}

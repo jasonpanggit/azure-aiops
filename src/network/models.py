@@ -40,6 +40,26 @@ NETWORK_ENTITY_TYPES: tuple[str, ...] = (
     "SharedService",
 )
 
+#: ARM resource types that should normally be reached through Private Link,
+#: mapped to a human-facing service name. These arrive from ARG under the
+#: ontology's generic ``Resource`` entity type, so they are matched by ARM
+#: type rather than entity type.
+PRIVATE_LINK_RESOURCE_TYPES: dict[str, str] = {
+    "microsoft.storage/storageaccounts": "Storage",
+    "microsoft.keyvault/vaults": "Key Vault",
+    "microsoft.sql/servers": "Azure SQL",
+    "microsoft.dbforpostgresql/servers": "PostgreSQL",
+    "microsoft.dbforpostgresql/flexibleservers": "PostgreSQL",
+    "microsoft.dbformysql/servers": "MySQL",
+    "microsoft.dbformysql/flexibleservers": "MySQL",
+    "microsoft.documentdb/databaseaccounts": "Cosmos DB",
+    "microsoft.containerregistry/registries": "Container Registry",
+    "microsoft.servicebus/namespaces": "Service Bus",
+    "microsoft.eventhub/namespaces": "Event Hubs",
+    "microsoft.web/sites": "App Service",
+    "microsoft.cognitiveservices/accounts": "Azure AI Services",
+}
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -745,7 +765,9 @@ class LoadBalancingResource(NetworkResource):
     frontend_ips: tuple[str, ...] = ()
     public_ips: tuple[str, ...] = ()
     backend_resource_ids: tuple[str, ...] = ()
+    backend_subnet_ids: tuple[str, ...] = ()
     waf_enabled: bool = False
+    managed_resource_id: str = ""
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -756,6 +778,10 @@ class LoadBalancingResource(NetworkResource):
         object.__setattr__(
             self, "backend_resource_ids", tuple(_lower(x) for x in _tuple(self.backend_resource_ids))
         )
+        object.__setattr__(
+            self, "backend_subnet_ids", tuple(_lower(x) for x in _tuple(self.backend_subnet_ids))
+        )
+        object.__setattr__(self, "managed_resource_id", _lower(self.managed_resource_id))
 
     @property
     def is_internet_facing(self) -> bool:
@@ -770,7 +796,9 @@ class LoadBalancingResource(NetworkResource):
             "frontend_ips": list(self.frontend_ips),
             "public_ips": list(self.public_ips),
             "backend_resource_ids": list(self.backend_resource_ids),
+            "backend_subnet_ids": list(self.backend_subnet_ids),
             "waf_enabled": self.waf_enabled,
+            "managed_resource_id": self.managed_resource_id,
         }
 
 
@@ -808,6 +836,39 @@ class SharedService(NetworkResource):
 
 
 @dataclass(frozen=True)
+class PrivateLinkResource(NetworkResource):
+    """A PaaS resource that should normally sit behind Private Link.
+
+    Carried on the network snapshot so private-endpoint coverage can be
+    reported per *resource* rather than per service kind. Sourced from the
+    same synced ARG rows as everything else -- the ontology already retains
+    every resource type, so this is a projection, not a new ingestion.
+    """
+
+    entity_type: str = "PrivateLinkResource"
+    service_kind: str = ""
+    resource_type: str = ""
+    public_network_access: str = ""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        object.__setattr__(self, "resource_type", _lower(self.resource_type))
+
+    @property
+    def allows_public_access(self) -> bool:
+        """Whether Azure reports public network access as explicitly enabled."""
+        return self.public_network_access.strip().casefold() == "enabled"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **super().to_dict(),
+            "service_kind": self.service_kind,
+            "resource_type": self.resource_type,
+            "public_network_access": self.public_network_access,
+        }
+
+
+@dataclass(frozen=True)
 class NetworkSnapshot:
     """The complete network estate assembled across every connection."""
 
@@ -825,6 +886,7 @@ class NetworkSnapshot:
     gateways: tuple[NetworkGateway, ...] = ()
     load_balancers: tuple[LoadBalancingResource, ...] = ()
     shared_services: tuple[SharedService, ...] = ()
+    private_link_resources: tuple[PrivateLinkResource, ...] = ()
     # The most recent observation across the ingested rows. Drives API
     # freshness banding: an empty value means "unknown", never "fresh".
     observed_at: str = ""
@@ -848,6 +910,7 @@ class NetworkSnapshot:
             "gateways": len(self.gateways),
             "load_balancers": len(self.load_balancers),
             "shared_services": len(self.shared_services),
+            "private_link_resources": len(self.private_link_resources),
         }
 
     @property

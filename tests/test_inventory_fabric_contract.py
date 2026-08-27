@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
+from deltalake import DeltaTable
 
 from intelligence.inventory.models import SOURCE_STATES
-
 
 EXPECTED_CONTRACTS = {
     "inventory/os_observations": "inventory_os_observations",
@@ -117,8 +120,8 @@ def test_inventory_contract_maps_every_logical_dataset_to_fabric_table() -> None
 def test_inventory_contract_schemas_cover_characterized_row_keys(
     logical_name: str, expected_fields: set[str]
 ) -> None:
-    from intelligence.inventory.fabric_contracts import contract_for_logical_name
     from fabric.schema_registry import schema_for
+    from intelligence.inventory.fabric_contracts import contract_for_logical_name
 
     contract = contract_for_logical_name(logical_name)
 
@@ -205,10 +208,11 @@ def test_inventory_contract_rejects_duplicate_identity_and_assessment_fields() -
 
 
 def test_standalone_inventory_refresh_publishes_os_rows_without_hermes_sync(tmp_path) -> None:
+    from inventory_harness import refresh_inventory
+
     from hermes_arg_connector.storage import DatasetStore
     from intelligence.inventory.fabric_contracts import fabric_table_for_logical_name
     from intelligence.inventory.service import InventoryService
-    from inventory_harness import refresh_inventory
 
     manifest = refresh_inventory(tmp_path)
     store = DatasetStore(tmp_path)
@@ -218,4 +222,60 @@ def test_standalone_inventory_refresh_publishes_os_rows_without_hermes_sync(tmp_
     assert store.read_dataset("inventory/os_observations")
     assert manifest["fabricTables"]["inventory/os_observations"] == fabric_table_for_logical_name(
         "inventory/os_observations"
+    )
+
+
+def test_inventory_refresh_writes_arg_and_law_rows_to_onelake_delta_tables(tmp_path) -> None:
+    from inventory_harness import _InventorySource, _LogsSource
+
+    from hermes_arg_connector.config import ConnectorConfig
+    from intelligence.inventory.fabric_publication import InventoryFabricPublisher
+    from intelligence.inventory.onelake_publication import InventoryOneLakePublisher
+    from intelligence.inventory.pipeline import InventoryPipeline
+    from storage.datasets import DatasetStore
+    from storage.onelake_writer import OneLakeWriter
+
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "mock_inventory_arg.json").read_text())
+    software_rows = json.loads(
+        (Path(__file__).parent / "fixtures" / "mock_configurationdata.json").read_text()
+    )
+    lakehouse_root = tmp_path / "lakehouse"
+    config = ConnectorConfig(
+        output_dir=tmp_path / "compat",
+        subscriptions=("sub-a", "sub-b"),
+        connection_context={"connection_id": "connection-1"},
+        logs_workspaces={"connection-1": "workspace-1"},
+        cost_management_enabled=False,
+    )
+    publisher = InventoryFabricPublisher(
+        DatasetStore(config.output_dir),
+        onelake=InventoryOneLakePublisher(
+            OneLakeWriter("workspace", "lakehouse", local_root=lakehouse_root)
+        ),
+    )
+
+    result = InventoryPipeline(
+        config,
+        source=_InventorySource(fixture),
+        logs_client=_LogsSource(software_rows),
+        publisher=publisher,
+    ).refresh()
+
+    assert set(result.manifest["fabricTableWrites"]) >= {
+        "inventory_os_observations",
+        "inventory_software_observations",
+        "inventory_resource_observations",
+        "inventory_software_source_status",
+    }
+    assert (
+        DeltaTable(str(lakehouse_root / "Tables" / "inventory_os_observations"))
+        .to_pyarrow_table()
+        .num_rows
+        > 0
+    )
+    assert (
+        DeltaTable(str(lakehouse_root / "Tables" / "inventory_software_observations"))
+        .to_pyarrow_table()
+        .num_rows
+        > 0
     )

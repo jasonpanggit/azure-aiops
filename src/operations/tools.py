@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from api.errors import ApiError
@@ -114,7 +114,7 @@ class ToolSpec:
     name: str
     description: str
     parameters: Mapping[str, str]
-    handler: Callable[["ToolContext", Mapping[str, Any]], ToolResult]
+    handler: Callable[[ToolContext, Mapping[str, Any]], ToolResult]
 
 
 @dataclass
@@ -152,6 +152,23 @@ def _provider_result(
     is reported as ``unavailable`` rather than propagating a 503 out of the
     tool-calling loop or, worse, being swallowed into an empty result.
     """
+    subscription_ids = list(tool_context.scope.values("subscription"))
+    hybrid_provider = None
+    hybrid_names = {"incidents": "hybrid_incident_provider"}
+    if subscription_ids:
+        hybrid_provider = getattr(
+            tool_context.context,
+            hybrid_names.get(name, f"hybrid_{name}_provider"),
+            None,
+        )
+    if callable(hybrid_provider):
+        try:
+            return loader(hybrid_provider(subscription_ids))
+        except (LookupError, ValueError) as exc:
+            return ToolResult(status=STATUS_EMPTY, warning=str(exc) or "No matching context")
+        except (RuntimeError, TypeError, AttributeError) as exc:
+            _LOGGER.warning("tool_hybrid_provider_failed provider=%s error=%s", name, exc)
+            return ToolResult(status=STATUS_UNAVAILABLE, warning=f"The live {name} provider failed to answer")
     try:
         provider = tool_context.context.resolve_provider(name)
     except ApiError as exc:
@@ -162,7 +179,7 @@ def _provider_result(
         return loader(provider)
     except (LookupError, ValueError) as exc:
         return ToolResult(status=STATUS_EMPTY, warning=str(exc) or "No matching context")
-    except Exception as exc:  # pragma: no cover - defensive; engines raise narrowly
+    except (RuntimeError, TypeError, AttributeError) as exc:
         _LOGGER.warning("tool_provider_failed provider=%s error=%s", name, exc)
         if tool_context.context.provider_runtime is not None:
             tool_context.context.provider_runtime.record_failure(name, exc)
@@ -405,6 +422,64 @@ def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> To
     return _provider_result(tool_context, "vulnerability", run)
 
 
+def _tool_cve_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    """Full CVE detail: CVSS/EPSS/KEV, affected servers/applications/business
+    services, and recommended patch -- the same ontology-derived blast radius
+    shown on the CVE detail page, so the Copilot can explain a specific CVE's
+    reach instead of only the aggregate exposure list."""
+    cve_id = str(args.get("cve_id") or "").strip()
+    if not cve_id:
+        return ToolResult(status=STATUS_EMPTY, warning="A CVE id is required")
+
+    def run(vulnerability: Any) -> ToolResult:
+        detail = vulnerability.cve_detail(cve_id, tool_context.scope)
+        if not detail:
+            return ToolResult(status=STATUS_EMPTY)
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(detail),
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.VulnerabilityIntelligenceService",
+                    source_table="vulnerability_projection",
+                    resource_id=cve_id,
+                    timestamp=str(getattr(vulnerability, "freshness", "") or ""),
+                    confidence=CONFIDENCE_HIGH,
+                ),
+            ),
+        )
+
+    return _provider_result(tool_context, "vulnerability", run)
+
+
+def _tool_cve_attack_path(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    """Multi-hop attack path graph for a CVE: which reachable resources and
+    business services chain from this CVE through the ontology graph."""
+    cve_id = str(args.get("cve_id") or "").strip()
+    if not cve_id:
+        return ToolResult(status=STATUS_EMPTY, warning="A CVE id is required")
+
+    def run(vulnerability: Any) -> ToolResult:
+        graph = vulnerability.attack_path(cve_id, tool_context.scope)
+        if not graph:
+            return ToolResult(status=STATUS_EMPTY)
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(graph),
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.VulnerabilityIntelligenceService",
+                    source_table="ontology_relationships",
+                    resource_id=cve_id,
+                    timestamp=str(getattr(vulnerability, "freshness", "") or ""),
+                    confidence=CONFIDENCE_MEDIUM,
+                ),
+            ),
+        )
+
+    return _provider_result(tool_context, "vulnerability", run)
+
+
 def _tool_incidents(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     incident_id = str(args.get("incident_id") or "").strip()
 
@@ -591,6 +666,18 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             handler=_tool_cve_exposure,
         ),
         ToolSpec(
+            name="cve_detail",
+            description="Full detail for a single CVE: CVSS/EPSS/KEV signals, affected servers, applications, and business services, and recommended patch.",
+            parameters={"cve_id": "CVE identifier, e.g. CVE-2024-12345"},
+            handler=_tool_cve_detail,
+        ),
+        ToolSpec(
+            name="cve_attack_path",
+            description="Multi-hop attack path graph for a CVE: reachable resources and business services through the dependency graph.",
+            parameters={"cve_id": "CVE identifier, e.g. CVE-2024-12345"},
+            handler=_tool_cve_attack_path,
+        ),
+        ToolSpec(
             name="incidents",
             description="Correlated incidents, or a single incident's detail/timeline/root cause by id.",
             parameters={"incident_id": "Optional incident id for full detail"},
@@ -631,7 +718,7 @@ def call_tool(name: str, args: Mapping[str, Any], *, context: Any, scope: Scope)
     tool_context = ToolContext(context=context, scope=scope)
     try:
         return spec.handler(tool_context, args)
-    except Exception as exc:  # pragma: no cover - defensive: handlers are narrow
+    except (LookupError, ValueError, RuntimeError, TypeError, AttributeError) as exc:
         _LOGGER.warning("tool_call_failed tool=%s error=%s", name, exc)
         return ToolResult(status=STATUS_UNAVAILABLE, warning=f"{name} failed to answer")
 

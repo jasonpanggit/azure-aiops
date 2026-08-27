@@ -1,4 +1,4 @@
-import { getAccessToken, refreshAccessToken } from "./auth";
+import { forceReauthentication, getAccessToken, refreshAccessToken } from "./auth";
 import { ApiError, type ApiErrorBody, type Envelope } from "./types";
 
 /**
@@ -144,6 +144,16 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
         } catch (cause) {
           throw new ApiError(0, "unknown", "Network request failed", { cause: String(cause) }, correlationId);
         }
+      }
+
+      // Still unauthenticated after a forced silent refresh (or no fresh
+      // token could be acquired at all): the account's underlying Entra
+      // session itself has expired or been revoked, which a silent refresh
+      // can never recover from. Force the user out and back into an
+      // interactive sign-in instead of leaving them stuck behind a
+      // permanent "bearer token is required" error on every page.
+      if (response.status === 401) {
+        void forceReauthentication();
       }
     }
   }

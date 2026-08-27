@@ -14,6 +14,11 @@ azure:
   # assessments, installations, and Advisor recommendations.
   max_query_workers: 6
   change_overlap_minutes: 10
+  cost_management:
+    # Query Microsoft.CostManagement ActualCost during discovery so FinOps can
+    # show billed spend rather than only Advisor savings opportunities.
+    enabled: true
+    lookback_days: 30
 
 storage:
   output_dir: "./data"

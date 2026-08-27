@@ -21,7 +21,16 @@ from ..scope import Scope, scope_attributes
 router = APIRouter(prefix="/api/v1", tags=["operations"])
 
 
-def _require(context: Context, attribute: str, capability: str) -> Any:
+def _require(context: Context, attribute: str, capability: str, scope: Scope) -> Any:
+    subscription_ids = list(scope.values("subscription"))
+    if subscription_ids:
+        if capability == "incidents" and context.hybrid_incident_provider is not None:
+            return context.hybrid_incident_provider(subscription_ids)
+        if (
+            capability == "remediation"
+            and context.hybrid_remediation_provider is not None
+        ):
+            return context.hybrid_remediation_provider(subscription_ids)
     return context.resolve_provider(capability)
 
 
@@ -56,7 +65,7 @@ def _filter_rows(rows: Any, scope: Scope) -> Any:
 
 @router.get("/incidents", summary="Correlated incidents")
 def list_incidents(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
-    engine = _require(context, "incident_provider", "incidents")
+    engine = _require(context, "incident_provider", "incidents", scope)
     report = engine.report()
     incidents = _filter_rows(report.get("incidents"), scope)
     visible = incidents[page.offset : page.offset + page.limit]
@@ -83,7 +92,7 @@ def list_incidents(context: Context, scope: ReadScope, page: Page) -> dict[str, 
 def incident_detail(
     incident_id: str, context: Context, scope: ReadScope
 ) -> dict[str, Any]:
-    engine = _require(context, "incident_provider", "incidents")
+    engine = _require(context, "incident_provider", "incidents", scope)
     detail = engine.incident(incident_id)
     if not detail:
         raise ApiError(
@@ -116,7 +125,7 @@ def incident_detail(
 
 @router.get("/remediation-plans", summary="Remediation plans")
 def remediation_plans(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
-    planner = _require(context, "remediation_provider", "remediation")
+    planner = _require(context, "remediation_provider", "remediation", scope)
     plans = planner.generate_plans()
     visible = _filter_rows(plans.get("plans"), scope)
     if not isinstance(visible, list):
@@ -147,7 +156,7 @@ def remediation_plans(context: Context, scope: ReadScope, page: Page) -> dict[st
 def remediation_opportunities(
     context: Context, scope: ReadScope, page: Page
 ) -> dict[str, Any]:
-    planner = _require(context, "remediation_provider", "remediation")
+    planner = _require(context, "remediation_provider", "remediation", scope)
     result = planner.identify_opportunities()
     opportunities = _filter_rows(result.get("opportunities"), scope)
     if not isinstance(opportunities, list):

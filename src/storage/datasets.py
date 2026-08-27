@@ -76,8 +76,9 @@ class DatasetStore:
         query_results: dict[str, list[dict]],
         run_metadata: dict[str, Any],
         *,
-        ontology: dict[str, Any],
+        ontology: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        datasets = dict(datasets)
         if self.retain_raw_queries:
             datasets.update(
                 {f"queries/{name}": _sorted_rows(rows) for name, rows in sorted(query_results.items())}
@@ -85,10 +86,12 @@ class DatasetStore:
         _validate_dataset_names(datasets)
 
         old_hashes = self._load_hashes()
-        new_hashes: dict[str, str] = {}
+        new_hashes: dict[str, str] = dict(old_hashes)
         changed: list[str] = []
         details: dict[str, dict[str, Any]] = {}
-        prepared: dict[str, list[dict]] = {}
+        prepared: dict[str, list[dict]] = self._current_datasets(
+            name for name in old_hashes if name != "ontology/ontology"
+        )
 
         for name, rows in sorted(datasets.items()):
             stable_rows = _sorted_rows(rows)
@@ -99,12 +102,19 @@ class DatasetStore:
             if old_hashes.get(name) != digest:
                 changed.append(name)
 
+        active_ontology = self._current_ontology()
+        if ontology is None:
+            ontology = active_ontology or {}
         ontology_hash = _semantic_hash([ontology])
         new_hashes["ontology/ontology"] = ontology_hash
         details["ontology/ontology"] = {"rowCount": 1, "contentHash": ontology_hash}
         if old_hashes.get("ontology/ontology") != ontology_hash:
             changed.append("ontology/ontology")
-        changed.extend(sorted(set(old_hashes) - set(new_hashes)))
+        for name, rows in prepared.items():
+            details.setdefault(
+                name,
+                {"rowCount": len(rows), "contentHash": new_hashes.get(name, _semantic_hash(rows))},
+            )
 
         overall = hashlib.sha256(json.dumps(new_hashes, sort_keys=True).encode()).hexdigest()
         manifest = {
@@ -122,6 +132,36 @@ class DatasetStore:
             _atomic_text(self.hash_path, json.dumps(new_hashes, indent=2, sort_keys=True) + "\n")
         self._cleanup_generations(keep=3)
         return manifest
+
+    def _current_datasets(self, names: object) -> dict[str, list[dict]]:
+        datasets: dict[str, list[dict]] = {}
+        for name in sorted(set(names)):
+            datasets[name] = self.read_dataset(name)
+        return datasets
+
+    def _current_ontology(self) -> dict[str, Any] | None:
+        if self.is_remote:
+            generation = self.current_generation()
+            if generation is None:
+                return None
+            path = f"{generation}/ontology/ontology.json"
+            if not self.fs.exists(path):
+                return None
+            try:
+                with self.fs.open(path, "rt") as handle:
+                    payload = json.loads(handle.read())
+            except (OSError, json.JSONDecodeError):
+                return None
+            return payload if isinstance(payload, dict) else None
+
+        path = self.current / "ontology" / "ontology.json"
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def read_dataset(self, name: str) -> list[dict]:
         if self.is_remote:

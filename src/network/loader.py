@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .models import (
+    PRIVATE_LINK_RESOURCE_TYPES,
     AzureFirewall,
     FirewallPolicy,
     FirewallRule,
@@ -24,6 +25,7 @@ from .models import (
     NetworkSnapshot,
     PrivateDnsZone,
     PrivateEndpoint,
+    PrivateLinkResource,
     Route,
     RouteTable,
     Subnet,
@@ -99,6 +101,37 @@ def _tag_lookup(tags: Mapping[str, str], *names: str) -> str:
     return ""
 
 
+def _load_balancer_backend_subnets(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    properties = payload.get("properties")
+    if not isinstance(properties, Mapping):
+        return ()
+    subnet_ids: list[str] = []
+    pools = properties.get("backendAddressPools")
+    if not isinstance(pools, list):
+        return ()
+    for pool in pools:
+        if not isinstance(pool, Mapping):
+            continue
+        pool_properties = pool.get("properties")
+        if not isinstance(pool_properties, Mapping):
+            continue
+        addresses = pool_properties.get("loadBalancerBackendAddresses")
+        if not isinstance(addresses, list):
+            continue
+        for address in addresses:
+            if not isinstance(address, Mapping):
+                continue
+            address_properties = address.get("properties")
+            if not isinstance(address_properties, Mapping):
+                address_properties = address
+            subnet = address_properties.get("subnet")
+            if isinstance(subnet, Mapping):
+                subnet_id = subnet.get("id")
+                if subnet_id:
+                    subnet_ids.append(str(subnet_id))
+    return tuple(dict.fromkeys(subnet_ids))
+
+
 def _common(row: Mapping[str, Any]) -> dict[str, Any]:
     """Extracts the fields every :class:`NetworkResource` carries."""
     payload = _payload(row)
@@ -157,7 +190,11 @@ def _entity_type(row: Mapping[str, Any]) -> str:
 
 def _resource_type(row: Mapping[str, Any]) -> str:
     payload = _payload(row)
-    return str(_get(row, payload, "resource_type", "resourceType", default="") or "").strip().casefold()
+    # ARG rows carry the ARM type as `type`; ontology rows normalise it to
+    # `resource_type`. Both are accepted so PaaS rows match either way.
+    return str(
+        _get(row, payload, "resource_type", "resourceType", "type", default="") or ""
+    ).strip().casefold()
 
 
 class NetworkSnapshotLoader:
@@ -170,11 +207,18 @@ class NetworkSnapshotLoader:
 
     def load(self, rows: Iterable[Mapping[str, Any]]) -> NetworkSnapshot:
         buckets: dict[str, list[Mapping[str, Any]]] = {}
+        # PaaS resources are collected by ARM type rather than entity type: the
+        # ontology normalises them to a generic "Resource" and live ARG rows
+        # carry no entity type at all. Without this the estate's Private Link
+        # candidates would be invisible to gap analysis.
+        private_link_rows: list[Mapping[str, Any]] = []
         observed = ""
         for row in rows:
             entity_type = _entity_type(row)
             if entity_type:
                 buckets.setdefault(entity_type, []).append(row)
+            if _resource_type(row) in PRIVATE_LINK_RESOURCE_TYPES:
+                private_link_rows.append(row)
             seen = _observed_at(row)
             observed = max(observed, seen)
 
@@ -231,6 +275,9 @@ class NetworkSnapshotLoader:
             ),
             gateways=tuple(self._gateway(row) for row in gateway_rows),
             load_balancers=tuple(self._load_balancer(row) for row in balancer_rows),
+            private_link_resources=tuple(
+                self._private_link_resource(row) for row in private_link_rows
+            ),
             observed_at=observed,
         )
 
@@ -466,6 +513,12 @@ class NetworkSnapshotLoader:
         entity_type = _entity_type(row)
         if entity_type in ("", "LoadBalancer", "Resource"):
             entity_type = LOAD_BALANCER_KIND_BY_RESOURCE_TYPE.get(_resource_type(row), "LoadBalancer")
+        backend_subnet_ids = _strings(_get(row, payload, "backendSubnetIds", "backend_subnet_ids"))
+        if not backend_subnet_ids:
+            backend_subnet_ids = _load_balancer_backend_subnets(payload)
+        managed_resource_id = _get(row, payload, "managedResourceId", "managed_resource_id", default="")
+        if not managed_resource_id:
+            managed_resource_id = _tag_lookup(_tags(row, payload), "aca-managed-env-id", "managed-by-resource-id")
         return LoadBalancingResource(
             **common,
             entity_type=entity_type,
@@ -477,7 +530,29 @@ class NetworkSnapshotLoader:
             backend_resource_ids=_strings(
                 _get(row, payload, "backendResourceIds", "backend_resource_ids")
             ),
+            backend_subnet_ids=backend_subnet_ids,
             waf_enabled=_bool(_get(row, payload, "wafEnabled", "waf_enabled")),
+            managed_resource_id=managed_resource_id,
+        )
+
+    def _private_link_resource(self, row: Mapping[str, Any]) -> PrivateLinkResource:
+        payload = _payload(row)
+        common = _common(row)
+        resource_type = _resource_type(row)
+        return PrivateLinkResource(
+            **common,
+            service_kind=PRIVATE_LINK_RESOURCE_TYPES.get(resource_type, ""),
+            resource_type=resource_type,
+            public_network_access=str(
+                _get(
+                    row,
+                    payload,
+                    "publicNetworkAccess",
+                    "public_network_access",
+                    default="",
+                )
+                or ""
+            ),
         )
 
 

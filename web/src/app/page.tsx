@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { SituationTable } from "@/components/SituationTable";
-import { CopilotLauncher } from "@/components/ui/CopilotLauncher";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -32,6 +33,7 @@ export default function Home() {
   const { scope } = useScope();
   const [state, setState] = useState<DashboardState>({ errors: [] });
   const [loading, setLoading] = useState(true);
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -78,6 +80,18 @@ export default function Home() {
     ...(state.vulnerabilities?.evidence ?? []),
     ...(state.network?.evidence ?? []),
   ];
+  const exposureCount = state.vulnerabilities?.data.internet_exposed_count ?? 0;
+  const gapCount = state.network?.data.gap_count ?? 0;
+  const postureScore = Math.max(0, Math.min(100, 100 - criticalSituations * 18 - exposureCount * 7 - gapCount * 4));
+  const postureLabel = postureScore >= 80 ? "Controlled" : postureScore >= 60 ? "Needs attention" : "Elevated";
+  const postureTone = postureScore >= 80 ? "success" : postureScore >= 60 ? "warning" : "critical";
+  const scopeLabel =
+    scope.business_service?.[0] ??
+    scope.application?.[0] ??
+    scope.environment?.[0] ??
+    scope.subscription_connection?.[0] ??
+    scope.subscription?.[0] ??
+    "All authorized environments";
 
   return (
     <div className="page-container">
@@ -86,9 +100,12 @@ export default function Home() {
         title="What needs attention now"
         description="Prioritized operational risk across services, applications, environments, subscriptions, and resources."
         actions={
-          <Link className="button button-primary" href="/situations">
-            Open Situation queue
-          </Link>
+          <>
+            <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot what needs attention" />
+            <Link className="button button-primary" href="/situations">
+              Open Situation queue
+            </Link>
+          </>
         }
       />
 
@@ -100,6 +117,37 @@ export default function Home() {
         />
       ) : (
         <>
+          <section className={`command-center-hero command-center-${postureTone}`} aria-label="Operational posture">
+            <div className="command-center-glow" aria-hidden="true" />
+            <div className="command-center-copy">
+              <div className="command-center-kicker">
+                <span className="live-pulse" /> Live operational posture
+              </div>
+              <h2>
+                Your environment is <strong>{postureLabel.toLowerCase()}</strong>
+              </h2>
+              <p>
+                A single view of service health, exploitable exposure, network controls, and evidence confidence across the selected operating scope.
+              </p>
+              <div className="command-center-actions">
+                <Link className="button button-light" href={criticalSituations ? "/situations" : "/investigate"}>
+                  {criticalSituations ? "Investigate top situation" : "Run an investigation"}
+                </Link>
+                <span className="command-center-updated">Scope: {scopeLabel}</span>
+              </div>
+            </div>
+            <div className="posture-orbit" aria-label={`Posture score ${postureScore} out of 100`}>
+              <div className="posture-orbit-ring" />
+              <div className="posture-score">{postureScore}</div>
+              <div className="posture-score-label">posture score</div>
+            </div>
+            <div className="command-center-facts">
+              <div><span>Priority situations</span><strong>{situations.length}</strong></div>
+              <div><span>Reachable exposure</span><strong>{exposureCount}</strong></div>
+              <div><span>Evidence signals</span><strong>{evidence.length}</strong></div>
+            </div>
+          </section>
+
           <EvidenceBar
             evidence={evidence}
             knowledgeVersion={state.situations?.knowledge_version}
@@ -111,11 +159,14 @@ export default function Home() {
             ]}
           />
 
-          <CopilotLauncher
+          <CopilotDrawer
+            open={copilotOpen}
+            onClose={() => setCopilotOpen(false)}
+            contextLabel="Operations overview"
             starterQuestions={[
-              "what needs attention right now",
-              "which services have the highest risk",
-              "what should be fixed first",
+              { label: "What needs attention right now?", tool: "incidents", toolArguments: {} },
+              { label: "Which services have the highest risk?", tool: "cve_exposure", toolArguments: {} },
+              { label: "What should be fixed first?", tool: "remediation_opportunities", toolArguments: {} },
             ]}
           />
 
@@ -199,27 +250,31 @@ export default function Home() {
                 </div>
               </div>
               <div className="card-body service-risk-list">
-                {Array.from(
-                  situations.reduce((totals, situation) => {
-                    for (const service of situation.businessServices.length
-                      ? situation.businessServices
-                      : ["Unmapped service"]) {
-                      totals.set(service, (totals.get(service) ?? 0) + 1);
-                    }
-                    return totals;
-                  }, new Map<string, number>())
-                )
-                  .sort((left, right) => right[1] - left[1])
-                  .slice(0, 5)
-                  .map(([service, count]) => (
+                {(() => {
+                  const totals = Array.from(
+                    situations.reduce((acc, situation) => {
+                      for (const service of situation.businessServices.length
+                        ? situation.businessServices
+                        : ["Unmapped service"]) {
+                        acc.set(service, (acc.get(service) ?? 0) + 1);
+                      }
+                      return acc;
+                    }, new Map<string, number>())
+                  )
+                    .sort((left, right) => right[1] - left[1])
+                    .slice(0, 5);
+                  const maxCount = Math.max(1, ...totals.map(([, count]) => count));
+                  return totals.map(([service, count]) => (
                     <div className="service-risk-row" key={service}>
+                      <div className="service-risk-bar" style={{ width: `${(count / maxCount) * 100}%` }} aria-hidden />
                       <div>
                         <strong>{service}</strong>
                         <span>{count} active situation{count === 1 ? "" : "s"}</span>
                       </div>
                       <StatusBadge label={count > 1 ? "Elevated risk" : "Monitor"} tone={count > 1 ? "high" : "warning"} />
                     </div>
-                  ))}
+                  ));
+                })()}
                 {situations.length === 0 && <span className="muted">No service risk is currently correlated.</span>}
               </div>
             </article>

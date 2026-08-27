@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CopilotLauncher } from "@/components/ui/CopilotLauncher";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -13,14 +14,15 @@ import { titleize } from "@/lib/format";
 import { presentVerdict } from "@/lib/flow-verdict";
 import { useScope } from "@/lib/scope-context";
 import { networkApi } from "@/lib/services";
-import type { FlowResult, RuleFinding } from "@/lib/types";
+import type { FlowResult, NetworkPolicyRule, NetworkSeverity, RuleFinding } from "@/lib/types";
 
-type NetworkTab = "flow" | "topology" | "gaps" | "rules";
+type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
 
 /** Network decision workspace for cross-environment reachability, inspection, and rule analysis. */
 export default function NetworkPage() {
   const { scope } = useScope();
   const [tab, setTab] = useState<NetworkTab>("flow");
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const topology = useApi(() => networkApi.topology(scope), [scope]);
   const gaps = useApi(() => networkApi.gaps(scope), [scope]);
   const findings = useApi(() => networkApi.ruleFindings(scope), [scope]);
@@ -44,6 +46,7 @@ export default function NetworkPage() {
         eyebrow="Network intelligence"
         title="Topology & traffic paths"
         description="Ask whether one environment can reach another, identify every deciding control, and expose paths that bypass inspection."
+        actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about network paths" />}
         metadata={
           <>
             <span>{summary?.connection_count ?? 0} subscription connections</span>
@@ -57,10 +60,6 @@ export default function NetworkPage() {
         evidence={evidence}
         knowledgeVersion={topology.data?.knowledge_version}
         warnings={warnings}
-      />
-
-      <CopilotLauncher
-        starterQuestions={["can UAT reach PROD", "which services depend on the hub firewall", "show inspection bypass paths"]}
       />
 
       <div className="metric-grid network-metrics">
@@ -106,6 +105,7 @@ export default function NetworkPage() {
             ["topology", "Topology"],
             ["gaps", "Inspection gaps"],
             ["rules", "Rule findings"],
+            ["policy", "Design policy"],
           ] as Array<[NetworkTab, string]>
         ).map(([value, label]) => (
           <button
@@ -157,6 +157,30 @@ export default function NetworkPage() {
           error={findings.error}
         />
       )}
+      {tab === "policy" && <DesignPolicyWorkspace />}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Network topology"
+        starterQuestions={[
+          {
+            label: "Can UAT reach PROD?",
+            tool: "traffic_flow",
+            toolArguments: { source: "UAT", destination: "PROD" },
+          },
+          ...(topology.data?.data.topology.hubs[0]
+            ? [
+                {
+                  label: `What depends on ${topology.data.data.topology.hubs[0].name}?`,
+                  tool: "hub_dependents",
+                  toolArguments: { vnet_id: topology.data.data.topology.hubs[0].vnet_id },
+                },
+              ]
+            : []),
+          { label: "Show inspection bypass paths.", tool: "firewall_nsg_gaps", toolArguments: {} },
+        ]}
+      />
     </div>
   );
 }
@@ -456,4 +480,266 @@ function ruleListItem(finding: RuleFinding): FindingListItem {
     recommendation: finding.recommendation,
     basis: "Observed Azure control configuration",
   };
+}
+
+/** Built-in rule ids that ship as defaults (mirrors `src/network/design.py`'s
+ * `RULE_INTERNET_VIA_FIREWALL` / `RULE_NSG_OVERRIDE_DEFAULT_OUTBOUND`). These are
+ * re-seeded on every read, so deleting them server-side is a no-op — the UI hides
+ * the delete affordance for them rather than offering an action that silently
+ * does nothing. */
+const BUILTIN_RULE_IDS = new Set(["internet-via-firewall", "nsg-override-default-outbound"]);
+
+const NEW_RULE_SEVERITIES: NetworkSeverity[] = ["low", "medium", "high", "critical"];
+
+interface NewRuleForm {
+  rule_id: string;
+  name: string;
+  description: string;
+  category: string;
+  severity: NetworkSeverity;
+}
+
+const EMPTY_NEW_RULE: NewRuleForm = { rule_id: "", name: "", description: "", category: "custom", severity: "medium" };
+
+/** Editable rule-based network design policy. Gap analysis is checked against
+ * this policy, so toggling, adding, or deleting a rule here immediately changes
+ * what the "Inspection gaps" tab reports on the next load — there is no
+ * separate publish step. */
+function DesignPolicyWorkspace() {
+  const { scope } = useScope();
+  const policy = useApi(() => networkApi.policy(scope), [scope]);
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [removed, setRemoved] = useState<Set<string>>(new Set());
+  const [added, setAdded] = useState<NetworkPolicyRule[]>([]);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState("");
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newRule, setNewRule] = useState<NewRuleForm>(EMPTY_NEW_RULE);
+  const [addError, setAddError] = useState("");
+
+  function toggleRule(rule: NetworkPolicyRule) {
+    const nextEnabled = !(pending[rule.rule_id] ?? rule.enabled);
+    setSavingId(rule.rule_id);
+    setSaveError("");
+    networkApi
+      .updatePolicy({
+        rules: [
+          {
+            rule_id: rule.rule_id,
+            name: rule.name,
+            description: rule.description,
+            category: rule.category,
+            severity: rule.severity,
+            enabled: nextEnabled,
+            parameters: rule.parameters,
+          },
+        ],
+      })
+      .then(() => {
+        setPending((current) => ({ ...current, [rule.rule_id]: nextEnabled }));
+      })
+      .catch((reason: unknown) => setSaveError(reason instanceof Error ? reason.message : "Updating the policy failed"))
+      .finally(() => setSavingId(null));
+  }
+
+  function deleteRule(rule: NetworkPolicyRule) {
+    setSavingId(rule.rule_id);
+    setSaveError("");
+    networkApi
+      .updatePolicy({ remove_rule_ids: [rule.rule_id] })
+      .then(() => {
+        setRemoved((current) => new Set(current).add(rule.rule_id));
+        setAdded((current) => current.filter((item) => item.rule_id !== rule.rule_id));
+      })
+      .catch((reason: unknown) => setSaveError(reason instanceof Error ? reason.message : "Deleting the rule failed"))
+      .finally(() => setSavingId(null));
+  }
+
+  function submitNewRule() {
+    const rule_id = newRule.rule_id.trim();
+    const name = newRule.name.trim();
+    if (!rule_id || !name) {
+      setAddError("Rule id and name are required.");
+      return;
+    }
+    setAddError("");
+    setSavingId(rule_id);
+    const rule: NetworkPolicyRule = {
+      rule_id,
+      name,
+      description: newRule.description.trim(),
+      category: newRule.category.trim() || "custom",
+      severity: newRule.severity,
+      enabled: true,
+      parameters: {},
+    };
+    networkApi
+      .updatePolicy({ rules: [rule] })
+      .then(() => {
+        setAdded((current) => [...current.filter((item) => item.rule_id !== rule_id), rule]);
+        setRemoved((current) => {
+          const next = new Set(current);
+          next.delete(rule_id);
+          return next;
+        });
+        setNewRule(EMPTY_NEW_RULE);
+        setShowAddForm(false);
+      })
+      .catch((reason: unknown) => setAddError(reason instanceof Error ? reason.message : "Adding the rule failed"))
+      .finally(() => setSavingId(null));
+  }
+
+  if (policy.loading) {
+    return <StatePanel title="Loading design policy" message="Fetching the rule-based network design policy." tone="loading" />;
+  }
+  if (policy.error) {
+    return <StatePanel title="Design policy is unavailable" message={policy.error.message} tone="error" />;
+  }
+
+  const serverRules = policy.data?.data.rules ?? [];
+  const byId = new Map(serverRules.map((rule) => [rule.rule_id, rule]));
+  for (const rule of added) byId.set(rule.rule_id, rule);
+  const rules = Array.from(byId.values()).filter((rule) => !removed.has(rule.rule_id));
+
+  return (
+    <section className="network-workspace card">
+      <div className="card-header">
+        <div>
+          <h2>Rule-based network design policy</h2>
+          <p>
+            Rules define what gap analysis checks for. Disabling a rule stops it from producing findings; it does not
+            change the observed topology.
+          </p>
+        </div>
+        <button type="button" className="button" onClick={() => setShowAddForm((current) => !current)}>
+          {showAddForm ? "Cancel" : "Add rule"}
+        </button>
+      </div>
+      {saveError && <div className="callout callout-critical">{saveError}</div>}
+      {policy.data?.warnings && policy.data.warnings.length > 0 && (
+        <div className="callout callout-warning">{policy.data.warnings.join(" ")}</div>
+      )}
+      {showAddForm && (
+        <form
+          className="policy-add-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitNewRule();
+          }}
+        >
+          {addError && <div className="callout callout-critical">{addError}</div>}
+          <div className="policy-add-form-grid">
+            <label>
+              Rule id
+              <input
+                type="text"
+                value={newRule.rule_id}
+                onChange={(event) => setNewRule((current) => ({ ...current, rule_id: event.target.value }))}
+                placeholder="e.g. no-public-storage-endpoints"
+                required
+              />
+            </label>
+            <label>
+              Name
+              <input
+                type="text"
+                value={newRule.name}
+                onChange={(event) => setNewRule((current) => ({ ...current, name: event.target.value }))}
+                placeholder="Human-readable rule name"
+                required
+              />
+            </label>
+            <label>
+              Category
+              <input
+                type="text"
+                value={newRule.category}
+                onChange={(event) => setNewRule((current) => ({ ...current, category: event.target.value }))}
+                placeholder="custom"
+              />
+            </label>
+            <label>
+              Severity
+              <select
+                value={newRule.severity}
+                onChange={(event) => setNewRule((current) => ({ ...current, severity: event.target.value as NetworkSeverity }))}
+              >
+                {NEW_RULE_SEVERITIES.map((severity) => (
+                  <option key={severity} value={severity}>
+                    {titleize(severity)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label className="policy-add-form-description">
+            Description
+            <textarea
+              value={newRule.description}
+              onChange={(event) => setNewRule((current) => ({ ...current, description: event.target.value }))}
+              placeholder="What does this rule check for?"
+              rows={2}
+            />
+          </label>
+          <button type="submit" className="button button-primary" disabled={savingId === newRule.rule_id.trim()}>
+            {savingId === newRule.rule_id.trim() ? "Saving…" : "Save rule"}
+          </button>
+        </form>
+      )}
+      <div className="finding-list">
+        {rules.length === 0 && (
+          <StatePanel title="No policy rules declared" message="No design rules are configured for this estate." />
+        )}
+        {rules.map((rule) => {
+          const enabled = pending[rule.rule_id] ?? rule.enabled;
+          const isBuiltin = BUILTIN_RULE_IDS.has(rule.rule_id);
+          return (
+            <article className="finding-row" key={rule.rule_id}>
+              <StatusBadge label={rule.severity} tone={statusTone(rule.severity)} compact />
+              <div>
+                <h3>{rule.name}</h3>
+                <span>{titleize(rule.category)}</span>
+                <p>{rule.description}</p>
+              </div>
+              <div className="recommendation-line">
+                <label className={`policy-switch${enabled ? " is-enabled" : ""}${savingId === rule.rule_id ? " is-saving" : ""}`}>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={enabled}
+                    disabled={savingId === rule.rule_id}
+                    onChange={() => toggleRule(rule)}
+                    aria-label={`${enabled ? "Disable" : "Enable"} ${rule.name}`}
+                  />
+                  <span className="policy-switch-track" aria-hidden="true">
+                    <span className="policy-switch-thumb" />
+                  </span>
+                  <span className="policy-switch-label">
+                    {savingId === rule.rule_id ? "Saving…" : enabled ? "Enabled" : "Disabled"}
+                  </span>
+                </label>
+                <span className="policy-switch-hint">
+                  {rule.evaluated === false
+                    ? "No gap check implements this rule — it is not evaluated"
+                    : enabled
+                      ? "Rule is checked during gap analysis"
+                      : "Rule is excluded from gap analysis"}
+                </span>
+                {!isBuiltin && (
+                  <button
+                    type="button"
+                    className="button button-quiet button-danger policy-delete-btn"
+                    disabled={savingId === rule.rule_id}
+                    onClick={() => deleteRule(rule)}
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
 }

@@ -66,6 +66,45 @@ def test_generation_written_through_hermes_shim_reads_through_neutral_store(tmp_
     assert rows[0]["id"].endswith("/virtualmachines/vm-prod-01")
 
 
+def test_partial_publish_retains_absent_datasets_and_ontology(tmp_path: Path) -> None:
+    payload = json.loads(FIXTURE.read_text())
+    graph = Normalizer().normalize(payload, datetime(2026, 8, 17, tzinfo=UTC))
+    store = DatasetStore(tmp_path)
+    store.publish(graph, payload, {"runId": "full-run"})
+
+    partial = NeutralDatasetStore(tmp_path).publish(
+        {"inventory/os_observations": [{"resource_id": "inventory-only"}]},
+        {},
+        {"runId": "partial-run"},
+    )
+
+    assert NeutralDatasetStore(tmp_path).read_dataset("entities/VirtualMachine")
+    assert NeutralDatasetStore(tmp_path).read_dataset("relationships/relationships")
+    assert NeutralDatasetStore(tmp_path).read_dataset("inventory/os_observations") == [
+        {"resource_id": "inventory-only"}
+    ]
+    ontology_files = list((tmp_path / "current/ontology").glob("ontology.json"))
+    assert len(ontology_files) == 1
+    assert json.loads(ontology_files[0].read_text())["entityTypes"]
+    assert "entities/VirtualMachine" not in partial["changedDatasets"]
+
+
+def test_partial_publish_preserves_hash_baseline_for_next_full_publish(tmp_path: Path) -> None:
+    payload = json.loads(FIXTURE.read_text())
+    graph = Normalizer().normalize(payload, datetime(2026, 8, 17, tzinfo=UTC))
+    store = DatasetStore(tmp_path)
+    first = store.publish(graph, payload, {"runId": "full-run-1"})
+    NeutralDatasetStore(tmp_path).publish(
+        {"inventory/os_observations": [{"resource_id": "inventory-only"}]},
+        {},
+        {"runId": "partial-run"},
+    )
+
+    second = store.publish(graph, payload, {"runId": "full-run-2"})
+
+    assert second["changedDatasets"] == first["changedDatasets"]
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not enforced on Windows")
 def test_store_uses_owner_only_permissions(tmp_path: Path) -> None:
     payload = json.loads(FIXTURE.read_text())

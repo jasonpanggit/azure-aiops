@@ -164,6 +164,13 @@ class SoftwareMappingDecisionRequest(ApiModel):
     reason: str = Field("", max_length=1024)
 
 
+class SoftwareMappingPathDecisionRequest(ApiModel):
+    """Decision payload for the mapping-id-in-path route aliases."""
+
+    expected_revision: int = Field(ge=0)
+    reason: str = Field("", max_length=1024)
+
+
 class ScopeModel(ApiModel):
     """Cross-subscription scope selector."""
 
@@ -218,8 +225,65 @@ class RiskExceptionCreateRequest(ApiModel):
         "", description="ISO-8601 expiry; omit for an exception with no expiry"
     )
 
-class SoftwareMappingPathDecisionRequest(ApiModel):
-    """Decision payload for the mapping-id-in-path route aliases."""
 
-    expected_revision: int = Field(ge=0)
-    reason: str = Field("", max_length=1024)
+# --------------------------------------------------------------------------
+# Pre-deployment change assessment
+# --------------------------------------------------------------------------
+
+
+class ChangeAssessmentRequest(ApiModel):
+    """Submit a proposed change for pre-deployment impact assessment.
+
+    ``payload`` is the raw artifact from the source system (a Terraform JSON
+    plan, a Bicep what-if result, an ARM diff, or a pull-request description).
+    It is accepted unvalidated by design: the ingestion layer is defensive and
+    reports what it could not read as declared unknowns, which is more useful
+    to a reviewer than a rejected submission.
+    """
+
+    source: str = Field(
+        min_length=1,
+        description=(
+            "One of: terraform_plan | bicep_what_if | arm_diff | "
+            "github_pull_request | azure_devops"
+        ),
+    )
+    payload: dict[str, Any] = Field(
+        description="Raw change artifact from the source system"
+    )
+    change_id: str = Field("", description="Caller-supplied change identifier; generated when omitted")
+
+
+# --------------------------------------------------------------------------
+# Patch remediation
+# --------------------------------------------------------------------------
+
+
+class PatchRunCreateRequest(ApiModel):
+    """Trigger patch installation or an AKS node image upgrade on one target.
+
+    ``patch_ids`` is an explicit operator selection, not a hint: the service
+    rejects any id that is not in the target's observed available-patch list,
+    so a stale or hand-crafted request cannot widen the blast radius.
+    """
+
+    target_id: str = Field(min_length=1, description="Resource id of the VM, Arc server, or AKS node pool host")
+    patch_ids: list[str] = Field(
+        min_length=1,
+        description="Selected patch/KB ids, or a single node image version for AKS",
+    )
+    reason: str = Field(min_length=1, description="Change justification recorded on the run")
+    approved_by: str = Field("", description="Approver identity; defaults to the caller")
+    reboot_setting: str = Field(
+        "IfRequired", description="One of: IfRequired | Never | Always"
+    )
+    node_pool: str = Field(
+        "",
+        description=(
+            "AKS agent pool to upgrade. Required when the target reports "
+            "requires_node_pool, so an upgrade never rolls the whole cluster."
+        ),
+    )
+    dry_run: bool = Field(
+        False, description="Validate and record the run without submitting it to Azure"
+    )

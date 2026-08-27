@@ -7,47 +7,71 @@ export interface EvidenceBarProps {
   knowledgeVersion?: string;
   warnings?: string[];
   fallbackTimestamp?: string;
+  graphFreshness?: string;
+  liveObservedAt?: string;
+  sourceStatus?: Record<string, string>;
   durableEvidence?: DurableEvidence[];
   durableSourceStatus?: DurableSourceStatus[];
 }
 
-/** Makes evidence confidence, provenance, freshness, and warnings visible beside the decision surface. */
+/** Makes evidence confidence, provenance, freshness, and warnings visible beside the decision surface,
+ * rendered as a lightweight left-to-right chain (source → freshness → confidence) so the provenance
+ * story reads as a connected sequence rather than a flat badge list. */
 export function EvidenceBar({
   evidence = [],
   knowledgeVersion,
   warnings = [],
   fallbackTimestamp,
+  graphFreshness,
+  liveObservedAt,
+  sourceStatus = {},
   durableEvidence = [],
   durableSourceStatus = [],
 }: EvidenceBarProps) {
   const latest = evidence[0];
   const timestamp = latest?.timestamp || fallbackTimestamp;
   const confidence = latest?.confidence || "unknown";
+  const tone = statusTone(confidence);
+  const segments = [
+    latest?.source_engine
+      ? { key: "source", label: "Source", value: latest.source_engine, title: `${latest.source_engine}${latest.source_table ? ` · ${latest.source_table}` : ""}` }
+      : null,
+    { key: "updated", label: "Updated", value: relativeTime(timestamp) },
+    knowledgeVersion ? { key: "knowledge", label: "Knowledge", value: knowledgeVersion } : null,
+    graphFreshness ? { key: "graph", label: "Graph", value: relativeTime(graphFreshness) } : null,
+    liveObservedAt ? { key: "live", label: "Live", value: relativeTime(liveObservedAt) } : null,
+  ].filter((segment): segment is { key: string; label: string; value: string; title?: string } => segment !== null);
 
   return (
-    <aside className="evidence-bar" aria-label="Data trust and provenance">
+    <aside className={`evidence-bar evidence-bar-${tone}`} aria-label="Data trust and provenance">
       <div className="evidence-bar-primary">
-        <StatusBadge label={`${confidence} confidence`} tone={statusTone(confidence)} compact />
-        <span>
-          <strong>Updated</strong> {relativeTime(timestamp)}
-        </span>
-        {latest?.source_engine && (
-          <span title={`${latest.source_engine}${latest.source_table ? ` · ${latest.source_table}` : ""}`}>
-            <strong>Source</strong> {latest.source_engine}
+        <StatusBadge label={`${confidence} confidence`} tone={tone} compact />
+        {segments.map((segment, index) => (
+          <span className="evidence-chain-step" key={segment.key}>
+            {index > 0 && <span className="evidence-chain-arrow" aria-hidden>›</span>}
+            <span title={segment.title}>
+              <strong>{segment.label}</strong> {segment.value}
+            </span>
           </span>
-        )}
-        {knowledgeVersion && (
-          <span>
-            <strong>Knowledge</strong> {knowledgeVersion}
-          </span>
-        )}
+        ))}
       </div>
       {timestamp && <time dateTime={timestamp}>{formatDateTime(timestamp)}</time>}
+      {Object.keys(sourceStatus).length > 0 && (
+        <div aria-label="Live source status">
+          {Object.entries(sourceStatus).map(([source, status]) => (
+            <span key={source}><strong>{source}</strong> {status}</span>
+          ))}
+        </div>
+      )}
       {durableEvidence.length > 0 && (
         <div className="evidence-trust-grid" aria-label="Durable evidence trust details">
           {durableEvidence.map((item) => (
             <span key={item.evidence_id}>
-              <strong>{item.source_family}</strong> {item.source_object_id} · {item.quality} · {item.availability} · {item.freshness} · {item.ingestion_status} · watermark {item.watermark || "unknown"} · observed {item.observed_at} · ingested {item.ingested_at} · {item.provenance?.source_system ? String(item.provenance.source_system) : "provenance recorded"} · confidence {item.confidence || "unknown"}
+              <strong>{item.source_family}</strong> {item.source_object_id} · {item.quality} ·{" "}
+              {item.availability} · {item.freshness} · {item.ingestion_status} · watermark{" "}
+              {item.watermark || "unknown"} · observed {item.observed_at} · ingested {item.ingested_at} ·{" "}
+              {item.provenance?.source_system ? String(item.provenance.source_system) : "provenance recorded"} · confidence{" "}
+              {item.confidence || "unknown"}
             </span>
           ))}
         </div>
@@ -56,7 +80,12 @@ export function EvidenceBar({
         <div className="evidence-trust-grid" aria-label="Durable source status details">
           {durableSourceStatus.map((source) => (
             <span key={source.source_family}>
-              <strong>{source.source_family}</strong> · status {source.status || "unknown"} · provider {source.provider_status || "unknown"} · availability {source.availability || "unknown"} · quality {source.quality || "unknown"} · freshness {source.freshness || "unknown"} · observed {source.observed_at || "unknown"} · ingested {source.ingested_at || "unknown"} · watermark {source.watermark || "unknown"} · query version {source.query_version || "unknown"} · requested scope {JSON.stringify(source.requested_scope)}{source.error ? ` · provider error ${source.error}` : ""}
+              <strong>{source.source_family}</strong> · status {source.status || "unknown"} · provider{" "}
+              {source.provider_status || "unknown"} · availability {source.availability || "unknown"} · quality{" "}
+              {source.quality || "unknown"} · freshness {source.freshness || "unknown"} · observed{" "}
+              {source.observed_at || "unknown"} · ingested {source.ingested_at || "unknown"} · watermark{" "}
+              {source.watermark || "unknown"} · query version {source.query_version || "unknown"} · requested scope{" "}
+              {JSON.stringify(source.requested_scope)}{source.error ? ` · provider error ${source.error}` : ""}
             </span>
           ))}
         </div>

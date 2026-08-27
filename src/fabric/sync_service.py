@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,6 +27,8 @@ from .dataset_mapper import (
 from .lakehouse_manager import LakehouseManager
 from .schema_registry import schema_for
 from .telemetry import FabricMetrics
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ class FabricSyncService:
         lifecycle_catalog: tuple[dict[str, Any], ...] = (),
         rollback_sleep=time.sleep,
         clock=time.monotonic,
+        sql_reader=None,
     ) -> None:
         self.source_root = Path(source_root).resolve()
         self.onelake = onelake
@@ -88,6 +92,10 @@ class FabricSyncService:
         self.lifecycle_catalog = tuple(dict(row) for row in lifecycle_catalog)
         self.rollback_sleep = rollback_sleep
         self.clock = clock
+        # Optional read accelerator. When present, aggregate reads (freshness
+        # watermarks) are pushed down to the Lakehouse SQL endpoint instead of
+        # materializing whole Delta tables. Writes always go through Delta.
+        self.sql_reader = sql_reader
 
     def sync(
         self,
@@ -224,6 +232,9 @@ class FabricSyncService:
                 table_name, rows = item
                 layer, logical_name = table_name.split("_", 1)
                 mode = (
+                    DeltaWriteMode.APPEND
+                    if table_name == "metadata_audit_events"
+                    else
                     DeltaWriteMode.MERGE
                     if table_name
                     in {
@@ -239,7 +250,9 @@ class FabricSyncService:
                     table_uri,
                     rows,
                     mode=mode,
-                    key_columns=("event_id",) if table_name == "metadata_audit_events" else ("resource_id",),
+                    key_columns=("event_id",)
+                    if table_name == "metadata_audit_events"
+                    else ("resource_id",),
                     partition_by=self.partitioning.columns_for(table_name),
                     schema=schema_for(table_name),
                 )
@@ -367,6 +380,7 @@ class FabricSyncService:
     # provider is marked unavailable.
     _FRESHNESS_WATERMARK_TABLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("silver", "compliance", ("timestamp",)),
+        ("silver", "cost_actuals", ("usage_date", "timestamp")),
         ("silver", "patch_findings", ("timestamp",)),
         ("silver", "patch_installations", ("timestamp",)),
         ("silver", "patch_history", ("observed_at", "timestamp")),
@@ -384,8 +398,21 @@ class FabricSyncService:
         `_FRESHNESS_WATERMARK_TABLES` that is actually present, so
         `SemanticEngine.freshness` never lags behind data intelligence
         engines will validate against it.
+
+        When a SQL endpoint reader is configured this runs as one aggregate
+        query per table (a single row each). Otherwise it falls back to
+        reading each Delta table in full, which is correct but downloads
+        every row purely to compute a maximum.
         """
         watermark = floor
+        if self.sql_reader is not None:
+            try:
+                return self._sql_freshness_watermark(floor)
+            except Exception:
+                _LOGGER.warning(
+                    "fabric_sql_watermark_failed; falling back to Delta reads",
+                    exc_info=True,
+                )
         for layer, name, fields in self._FRESHNESS_WATERMARK_TABLES:
             uri = self.onelake.table_uri(layer, name)
             if self.delta.version(uri) is None:
@@ -400,8 +427,25 @@ class FabricSyncService:
                     watermark = value
         return watermark
 
+    def _sql_freshness_watermark(self, floor: str) -> str:
+        """Compute the watermark with one aggregate query per present table."""
+        watermark = floor
+        for layer, name, fields in self._FRESHNESS_WATERMARK_TABLES:
+            table = f"{layer}_{name}"
+            if not self.sql_reader.table_exists(table):
+                continue
+            value = self.sql_reader.max_timestamp(table, fields)
+            if value and value > watermark:
+                watermark = value
+        return watermark
+
     def semantic_snapshot(self) -> dict[str, Any]:
-        """Internal knowledge snapshot; agent tools must use SemanticEngine instead."""
+        """Legacy compatibility projection for snapshot-based consumers.
+
+        New API and modeler flows must use :meth:`semantic_graph_snapshot` and
+        request-time live providers; this method is retained for existing
+        intelligence providers during the migration.
+        """
 
         def read(layer: str, name: str) -> list[dict[str, Any]]:
             uri = self.onelake.table_uri(layer, name)
@@ -492,6 +536,50 @@ class FabricSyncService:
             "security": security,
             "cost": cost,
             "knowledge_version": public_version,
+            "freshness": freshness,
+            "ontology_synchronized_at": str(
+                latest.get("timestamp") or entity_watermark
+            ),
+        }
+
+    def semantic_graph_snapshot(self) -> dict[str, Any]:
+        """Return only the durable ontology graph for semantic-model consumers.
+
+        Mutable inventory and operational facts remain in their authoritative
+        source systems and are intentionally excluded from this projection.
+        """
+
+        def read(layer: str, name: str) -> list[dict[str, Any]]:
+            uri = self.onelake.table_uri(layer, name)
+            return self.delta.read(uri) if self.delta.version(uri) is not None else []
+
+        states = [row for row in self.status() if row.get("status") == "completed"]
+        latest = max(states, key=lambda row: str(row.get("timestamp") or ""), default={})
+        entities = read("ontology", "entities")
+        relationships = read("ontology", "relationships")
+        entity_watermark = max(
+            (str(row.get("timestamp") or "") for row in entities), default=""
+        )
+        raw_version = str(
+            latest.get("source_run_id")
+            or latest.get("change_version")
+            or max(
+                (str(row.get("ingestion_run_id") or "") for row in entities),
+                default="",
+            )
+        )
+        knowledge_version = (
+            f"semantic-{_hash_json(raw_version)[:16]}"
+            if raw_version
+            else "semantic-unversioned"
+        )
+        freshness = self._global_freshness_watermark(
+            str(latest.get("watermark") or latest.get("timestamp") or entity_watermark)
+        )
+        return {
+            "entities": entities,
+            "relationships": relationships,
+            "knowledge_version": knowledge_version,
             "freshness": freshness,
             "ontology_synchronized_at": str(
                 latest.get("timestamp") or entity_watermark

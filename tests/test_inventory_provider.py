@@ -394,14 +394,18 @@ def test_software_logs_source_failure_is_distinct_from_empty_success() -> None:
 
 
 class _InventorySource:
-    def __init__(self, rows: list[dict]) -> None:
+    def __init__(self, rows: list[dict], law_workspaces: list[dict] | None = None) -> None:
         self.rows = rows
+        self.law_workspaces = law_workspaces or []
 
     def list_subscriptions(self) -> list[dict]:
         return [{"subscriptionId": "sub-a"}]
 
     def fetch(self, specs, subscription_ids: list[str]) -> dict[str, list[dict]]:
-        return {"inventory_native_vm_os": self.rows}
+        return {
+            "inventory_native_vm_os": self.rows,
+            "inventory_log_analytics_workspaces": self.law_workspaces,
+        }
 
 
 class _LogsSource:
@@ -422,6 +426,7 @@ def _ingestion(
     logs: _LogsSource,
     *,
     workspaces: dict[str, str | tuple[str, ...]] | None = None,
+    law_workspaces: list[dict] | None = None,
 ) -> InventoryPipeline:
     if workspaces is None:
         workspaces = {"connection-1": "workspace-1"}
@@ -435,7 +440,7 @@ def _ingestion(
     )
     return InventoryPipeline(
         config,
-        source=_InventorySource(inventory[:1]),
+        source=_InventorySource(inventory[:1], law_workspaces),
         logs_client=logs,
         clock=lambda: datetime.fromisoformat("2026-08-25T12:00:00+00:00"),
     )
@@ -532,6 +537,49 @@ def test_missing_workspace_mapping_is_unavailable_and_never_queries_arbitrary_id
     assert loaded is not None
     assert loaded.software_source_status()["logs"]["state"] == "unavailable"
     assert loaded.snapshot.software_observations == ()
+
+
+def test_dynamic_law_discovery_queries_arg_discovered_workspace(tmp_path: Path) -> None:
+    logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:1]
+    logs = _LogsSource({"discovered-ws": logs_rows})
+    ingestion = _ingestion(
+        tmp_path,
+        logs,
+        workspaces={},
+        law_workspaces=[{"workspaceId": "discovered-ws", "name": "law-a"}],
+    )
+
+    ingestion.refresh()
+    loaded = InventoryService.from_store(DatasetStore(tmp_path))
+
+    assert logs.calls == ["discovered-ws"]
+    assert loaded is not None
+    status = loaded.software_source_status()["logs"]
+    assert status["state"] == "ready"
+    assert status["workspace_count"] == 1
+
+
+def test_discovered_and_configured_workspaces_are_merged_without_duplicates(
+    tmp_path: Path,
+) -> None:
+    logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:1]
+    logs = _LogsSource({"workspace-1": logs_rows, "discovered-ws": []})
+    ingestion = _ingestion(
+        tmp_path,
+        logs,
+        workspaces={"connection-1": "workspace-1"},
+        law_workspaces=[
+            {"workspaceId": "discovered-ws"},
+            {"workspaceId": "workspace-1"},
+        ],
+    )
+
+    ingestion.refresh()
+    loaded = InventoryService.from_store(DatasetStore(tmp_path))
+
+    assert logs.calls == ["discovered-ws", "workspace-1"]
+    assert loaded is not None
+    assert loaded.software_source_status()["logs"]["workspace_count"] == 2
 
 
 def test_workspace_configuration_is_validated_and_server_owned(tmp_path: Path) -> None:

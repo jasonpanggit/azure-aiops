@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { CopilotLauncher } from "@/components/ui/CopilotLauncher";
+import { PatchInventory } from "@/components/exposure/PatchInventory";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -17,9 +19,11 @@ export default function ExposurePage() {
   const { scope } = useScope();
   const [query, setQuery] = useState("");
   const [reachableOnly, setReachableOnly] = useState(false);
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const summary = useApi(() => vulnerabilityApi.summary(scope), [scope]);
   const exposures = useApi(() => vulnerabilityApi.exposures(scope), [scope]);
   const patches = useApi(() => vulnerabilityApi.patchPriorities(scope), [scope]);
+  const servers = useApi(() => vulnerabilityApi.serverExposures(scope), [scope]);
   const sla = useApi(() => vulnerabilityApi.slaCompliance(scope), [scope]);
 
   const filteredPatches = useMemo(() => {
@@ -45,38 +49,73 @@ export default function ExposurePage() {
     });
   }, [exposures.data, query, reachableOnly]);
 
+  const filteredServers = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return (servers.data?.data ?? []).filter((server) => {
+      if (reachableOnly && !server.reachable) return false;
+      if (!normalized) return true;
+      return [
+        server.name,
+        server.server_id,
+        server.inventory_kind,
+        server.resource_type,
+        server.business_service,
+        server.application,
+        server.environment,
+        server.owner,
+        server.region,
+        server.network_exposure,
+        ...server.cve_ids,
+        ...server.missing_kbs,
+      ].some((value) => String(value ?? "").toLowerCase().includes(normalized));
+    });
+  }, [servers.data, query, reachableOnly]);
+
   const bestPatch = patches.data?.data[0];
-  const error = summary.error ?? exposures.error ?? patches.error;
-  const loading = summary.loading || exposures.loading || patches.loading;
+  const serverInventoryCounts = useMemo(() => {
+    return (servers.data?.data ?? []).reduce<Record<string, number>>((counts, server) => {
+      counts[server.inventory_kind] = (counts[server.inventory_kind] ?? 0) + 1;
+      return counts;
+    }, {});
+  }, [servers.data]);
+  const serverInventorySummary = Object.entries(serverInventoryCounts)
+    .map(([kind, count]) => `${kind}: ${count}`)
+    .join(" · ");
+  const error = summary.error ?? exposures.error ?? patches.error ?? servers.error;
+  const loading = summary.loading || exposures.loading || patches.loading || servers.loading;
 
   return (
     <div className="page-container">
       <PageHeader
         eyebrow="Exposure management"
-        title="Vulnerability exposure"
-        description="Start with the patch KBs that reduce the most reachable business risk, then drill into the highest-priority CVEs those updates address."
+        title="Which exposure should be reduced first?"
+        description="Prioritize observed vulnerability exposure by reachability, affected services, exploit signals, and the patch evidence available in this scope."
+        actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about exposure" />}
         metadata={
           <>
             <span>{summary.data?.data.affected_business_service_count ?? 0} affected business services</span>
             <span>{summary.data?.data.affected_server_count ?? 0} affected servers</span>
+            <span>{serverInventorySummary || "Server inventory grouped by host"}</span>
             <span>Patch recommendations are advisory</span>
           </>
         }
       />
 
       <EvidenceBar
-        evidence={[...(summary.data?.evidence ?? []), ...(exposures.data?.evidence ?? []), ...(patches.data?.evidence ?? [])]}
+        evidence={[
+          ...(summary.data?.evidence ?? []),
+          ...(exposures.data?.evidence ?? []),
+          ...(patches.data?.evidence ?? []),
+          ...(servers.data?.evidence ?? []),
+        ]}
         knowledgeVersion={summary.data?.knowledge_version}
         warnings={[
           ...(summary.data?.warnings ?? []),
           ...(exposures.data?.warnings ?? []),
           ...(patches.data?.warnings ?? []),
+          ...(servers.data?.warnings ?? []),
         ]}
         fallbackTimestamp={summary.data?.data.freshness}
-      />
-
-      <CopilotLauncher
-        starterQuestions={["which CVEs affect Payroll", "what should be patched first", "servers with failed patches"]}
       />
 
       <div className="metric-grid exposure-metrics">
@@ -93,9 +132,9 @@ export default function ExposurePage() {
           tone={(summary.data?.data.internet_exposed_count ?? 0) > 0 ? "critical" : "success"}
         />
         <MetricCard
-          label="Reachable servers"
-          value={summary.data?.data.reachable_server_count ?? "—"}
-          detail="Affected hosts reachable over observed network paths"
+          label="Exposed inventory"
+          value={servers.data?.pagination?.total ?? servers.data?.data.length ?? "—"}
+          detail={serverInventorySummary || "Azure VM, Arc-enabled server, and AKS node exposure"}
           tone={(summary.data?.data.reachable_server_count ?? 0) > 0 ? "warning" : "success"}
         />
         <MetricCard
@@ -235,13 +274,81 @@ export default function ExposurePage() {
           message="Combining KB patch state, CVE intelligence, network reachability, and business service criticality."
           tone="loading"
         />
-      ) : filteredPatches.length === 0 && filteredCves.length === 0 ? (
+      ) : filteredServers.length === 0 && filteredPatches.length === 0 && filteredCves.length === 0 ? (
         <StatePanel
           title="No exposure matches these filters"
           message="Adjust the search or reachability filter. Results reflect the current operating context."
         />
       ) : (
         <div className="exposure-landing-sections">
+          <section className="card queue-card">
+            <div className="card-header">
+              <div>
+                <h2>Server-centric exposure inventory</h2>
+                <p>Read-only inventory grouped by compute host across Azure VMs, Arc-enabled servers, and AKS nodes with observed exposure and patch evidence.</p>
+              </div>
+            </div>
+            {filteredServers.length === 0 ? (
+              <div className="card-body">
+                <p className="muted">No server exposures match the current filters.</p>
+              </div>
+            ) : (
+              <div className="table-scroll">
+                <table className="operations-table exposure-table">
+                  <thead>
+                    <tr>
+                      <th>Server</th>
+                      <th>Inventory</th>
+                      <th>Exposure</th>
+                      <th>Scope</th>
+                      <th>Open findings</th>
+                      <th>Patch evidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredServers.map((server) => (
+                      <tr key={server.server_id}>
+                        <td>
+                          <strong>{server.name || server.server_id}</strong>
+                          <div className="table-secondary">{server.server_id}</div>
+                        </td>
+                        <td>
+                          <StatusBadge label={server.inventory_kind} tone="neutral" />
+                          <div className="table-secondary">{server.resource_type || "Inventory type unavailable"}</div>
+                        </td>
+                        <td>
+                          <StatusBadge
+                            label={server.internet_exposed ? "Internet exposed" : server.reachable ? "Reachable" : "No path observed"}
+                            tone={server.internet_exposed ? "critical" : server.reachable ? "warning" : "neutral"}
+                          />
+                          <div className="table-secondary">{server.network_exposure || "unknown"} exposure</div>
+                        </td>
+                        <td>
+                          <strong>{server.business_service || "Unassigned service"}</strong>
+                          <div className="table-secondary">
+                            {[server.application, server.environment, server.region, server.owner].filter(Boolean).join(" · ") || "No scope metadata"}
+                          </div>
+                        </td>
+                        <td>
+                          <strong>{server.cve_count} CVEs</strong>
+                          <div className="table-secondary">
+                            {server.critical_count} critical · {server.overdue_count} overdue · max {server.max_days_open}d open
+                          </div>
+                        </td>
+                        <td>
+                          <strong>{server.missing_kbs.slice(0, 2).join(", ") || "No KB"}</strong>
+                          <div className="table-secondary">{server.cve_ids.slice(0, 3).join(", ") || "No CVE id"}</div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <PatchInventory scope={scope} query={query} />
+
           <section className="card queue-card">
             <div className="card-header">
               <div>
@@ -394,6 +501,17 @@ export default function ExposurePage() {
           </section>
         </div>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Vulnerability exposure"
+        starterQuestions={[
+          { label: "Which CVEs affect our highest-risk service?", tool: "cve_exposure", toolArguments: {} },
+          { label: "What should be patched first?", tool: "cve_exposure", toolArguments: {} },
+          { label: "Which servers have failed patches?", tool: "cve_exposure", toolArguments: {} },
+        ]}
+      />
     </div>
   );
 }

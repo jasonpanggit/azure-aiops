@@ -62,12 +62,13 @@ class DeltaWriter:
         key_columns: tuple[str, ...] = ("resource_id",),
         partition_by: tuple[str, ...] = (),
         schema: pa.Schema | None = None,
+        required_columns: frozenset[str] | tuple[str, ...] | None = REQUIRED_COLUMNS,
     ) -> DeltaWriteResult:
         normalized = [dict(row) for row in rows]
         if not normalized and schema is None:
             return DeltaWriteResult(rows_processed=0, skipped=True)
-        if normalized:
-            self._validate_columns(normalized)
+        if normalized and required_columns:
+            self._validate_columns(normalized, frozenset(required_columns))
         self._refresh_storage_options()
         write_mode = DeltaWriteMode(mode)
         uri = str(table_uri)
@@ -119,7 +120,8 @@ class DeltaWriter:
     ) -> DeltaWriteResult:
         processed_count = len(rows)
         exists = self.exists(uri)
-        if mode is DeltaWriteMode.OVERWRITE and exists:
+        supports_version_compare = bool(rows) and {"resource_id", "change_version"} <= set(rows[0])
+        if mode is DeltaWriteMode.OVERWRITE and exists and supports_version_compare:
             table = DeltaTable(uri, storage_options=self.storage_options)
             current = table.to_pyarrow_table(columns=["resource_id", "change_version"])
             current_versions = sorted(
@@ -226,12 +228,12 @@ class DeltaWriter:
             version=table.version(),
         )
 
-    def _validate_columns(self, rows: list[dict[str, Any]]) -> None:
-        missing = sorted(self.REQUIRED_COLUMNS - set(rows[0]))
+    def _validate_columns(self, rows: list[dict[str, Any]], required_columns: frozenset[str]) -> None:
+        missing = sorted(required_columns - set(rows[0]))
         if missing:
             raise ValueError("Delta row is missing required columns: " + ", ".join(missing))
         for index, row in enumerate(rows[1:], start=1):
-            row_missing = sorted(self.REQUIRED_COLUMNS - set(row))
+            row_missing = sorted(required_columns - set(row))
             if row_missing:
                 raise ValueError(
                     f"Delta row {index} is missing required columns: " + ", ".join(row_missing)

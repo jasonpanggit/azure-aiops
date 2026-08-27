@@ -2,12 +2,13 @@
 
 ## 1. Source strategy
 
-Hermes Operations Graph (HOG) federates and projects authoritative context; it does not replace the listed systems.
+Hermes Operations Graph (HOG) federates authoritative observations with a
+durable semantic graph; it does not replace or snapshot the listed systems.
 
 | Information | Authority | What HOG retains |
 |---|---|---|
-| Azure resource existence/configuration | Azure Resource Graph (ARG) | Stable ID, selected properties, observation time, source link. |
-| Logs/metrics/traces | Azure Monitor, LAW, App Insights, OpenTelemetry destination | Aggregate evidence/reference only. |
+| Azure resource existence/configuration | Azure Resource Graph (ARG) | Semantic identity/relationship evidence; current values are queried live. |
+| Logs/metrics/traces | Azure Monitor, LAW, App Insights, OpenTelemetry destination | Relationship evidence and references; raw/current telemetry stays in the source. |
 | Security operations incidents | Microsoft Sentinel / approved ITSM process | Incident projection and links. |
 | Cloud security findings | Defender for Cloud | Finding identity/status and affected-resource link. |
 | Patch assessment/install state | Azure Update Manager | Patch identity and compact machine relationship/status. |
@@ -15,7 +16,11 @@ Hermes Operations Graph (HOG) federates and projects authoritative context; it d
 | CMDB/service portfolio/ITSM | ServiceNow, where designated | Approved service/team/incident/runbook references; no CMDB mirror. |
 | Engineering/delivery | Azure DevOps | Team/repository/pipeline/work-item/runbook references. |
 
-Every adapter uses allowlisted fields, native stable IDs, incremental/scheduled query where supported, a successful-observation watermark, and a deep link/API locator. Raw payload retention is prohibited unless separately approved.
+Every adapter uses allowlisted fields, native stable IDs, scoped live reads or
+targeted relationship evidence, a source observation timestamp, and a deep
+link/API locator. Raw payload retention is prohibited unless separately
+approved. Full reconciliation may publish the durable semantic graph, but it
+must not become the UI's source of current operational values.
 
 ## 2. Azure Resource Graph (ARG)
 

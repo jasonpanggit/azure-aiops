@@ -2,6 +2,10 @@
 
 ## Python API
 
+The semantic API is graph-first. It resolves durable semantic relationships and
+does not imply that mutable source values are current. Hybrid APIs explicitly
+request live observations and return separate graph and source freshness.
+
 Create an engine from a governed Fabric runtime:
 
 ```python
@@ -105,12 +109,33 @@ uv run hermes-arg semantic \
     "level": "Critical",
     "factors": {}
   },
-  "freshness": "2026-08-17T00:00:00Z",
-  "knowledge_version": "semantic-08872d02644f1f55"
+  "graph_version": "semantic-08872d02644f1f55",
+  "graph_freshness": "2026-08-17T00:00:00Z",
+  "live_observed_at": null,
+  "source_status": {}
 }
 ```
 
-Responses never include Azure resource IDs, tenant/subscription IDs, raw payloads, lineage, semantic metadata, or ingestion IDs.
+Graph-only responses have `live_observed_at: null`. Hybrid responses populate
+`live_observed_at` and `source_status` for each queried provider. Responses
+never include raw payloads, tenant/subscription IDs, lineage, semantic
+metadata, or ingestion IDs.
+
+The legacy snapshot-backed provider is compatibility-only for unscoped/demo
+reads. Scoped workbench reads use the hybrid path: durable graph context plus
+request-time authoritative observations, with separate graph and live freshness
+metadata. Current live sources are:
+
+- Azure Resource Graph `Resources` for resource, search, business-service, and
+  network topology state.
+- Azure Resource Graph `patchassessmentresources` and
+  `patchinstallationresources` for vulnerability exposure and patch remediation
+  planning.
+- Azure Resource Graph `alertsmanagementresources` for active incident/alert
+  queues.
+
+Where an authoritative live source is not configured, the API returns an
+explicit `source_status`/warning instead of treating a stale snapshot as current.
 
 Unknown risk is represented explicitly with `score=null`, `level="Unknown"`, and an empty factor map. It is never converted to zero or Low.
 

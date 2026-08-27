@@ -76,4 +76,35 @@ def inventory_resource_specs() -> list[InventoryQuerySpec]:
     ]
 
 
-__all__ = ["InventoryQuerySpec", "inventory_os_specs", "inventory_resource_specs"]
+def inventory_log_analytics_workspace_specs() -> list[InventoryQuerySpec]:
+    """Discover Log Analytics workspaces in scope, for dynamic LAW enumeration.
+
+    Software inventory (ConfigurationData) has no ARG projection of its own --
+    it must be queried per-workspace through the Logs Query API. Rather than
+    relying on a static, hand-maintained connection -> workspace mapping, this
+    spec lets the pipeline discover every workspace visible in the connection's
+    subscription scope via ARG (the same mechanism already used for VM/Arc OS
+    discovery) and feed each discovered ``customerId`` to the Logs client.
+    """
+    return [
+        InventoryQuerySpec(
+            "inventory_log_analytics_workspaces",
+            "Resources",
+            (
+                "Resources "
+                "| where type =~ 'microsoft.operationalinsights/workspaces' "
+                "| project id, name, subscriptionId, resourceGroup, "
+                "workspaceId=tostring(properties.customerId) "
+                "| order by id asc"
+            ),
+            version="inventory-law-workspaces-v1",
+        )
+    ]
+
+
+__all__ = [
+    "InventoryQuerySpec",
+    "inventory_log_analytics_workspace_specs",
+    "inventory_os_specs",
+    "inventory_resource_specs",
+]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -9,10 +10,12 @@ from .config import ConnectorConfig
 from .logs import AzureMonitorLogsClient
 from .normalize import Normalizer
 from .queries import QueryCatalog
-from .source import AzureResourceGraphSource
+from .source import AzureResourceGraphSource, CostActualsSource
 from .state import StateStore
 from .storage import DatasetStore
 from storage.locking import RunLock
+
+logger = logging.getLogger(__name__)
 
 
 class IngestionService:
@@ -21,6 +24,7 @@ class IngestionService:
         config: ConnectorConfig,
         source=None,
         clock: Callable[[], datetime] | None = None,
+        cost_source: CostActualsSource | None = None,
         logs_client: AzureMonitorLogsClient | None = None,
     ) -> None:
         self.config = config
@@ -41,6 +45,7 @@ class IngestionService:
             max_workers=config.max_query_workers,
             management_group_ids=config.management_groups,
         )
+        self.cost_source = cost_source
         self.logs_client = logs_client
 
     def run(self) -> dict:
@@ -55,8 +60,14 @@ class IngestionService:
         since = _parse_time(previous_watermark)
 
         subscriptions = list(self.config.subscriptions)
-        discovered = self.source.list_subscriptions()
         if not subscriptions:
+            # Only fall back to Azure MCP subscription discovery when no
+            # subscriptions are pinned in config -- a deployment that pins an
+            # explicit subscription list must not have a hard runtime
+            # dependency on the azmcp CLI, which is a heavy, fragile native
+            # binary (ICU/dbus/msalruntime shared-library requirements) that
+            # a scheduled Fabric-triggered run should not need at all.
+            discovered = self.source.list_subscriptions()
             subscriptions = [
                 str(item.get("subscriptionId") or item.get("id") or "")
                 for item in discovered
@@ -74,12 +85,14 @@ class IngestionService:
                 row.setdefault("query_version", spec.version)
                 row.setdefault("requested_scope", {"subscription": sorted(subscriptions)})
                 row.setdefault("provider_status", "ok")
+        cost_rows = self._fetch_cost_actuals(subscriptions, started)
         previous_changes = self.store.read_dataset("changes/resource_changes")
         normalization_payload = dict(query_results)
         normalization_payload["resource_changes"] = _merge_changes(
             previous_changes,
             query_results.get("resource_changes", []),
         )
+        normalization_payload["cost_actuals"] = cost_rows
         run_id = str(uuid.uuid4())
         graph = Normalizer(self.config.connection_context).normalize(
             normalization_payload,
@@ -113,6 +126,30 @@ class IngestionService:
         )
         return manifest
 
+    def _fetch_cost_actuals(self, subscriptions: list[str], started: datetime) -> list[dict]:
+        """Fetch Cost Management actuals as a best-effort side channel.
+
+        Cost Management is a distinct Azure API with its own throughput limits
+        and failure modes; it is not part of Azure Resource Graph discovery.
+        A Cost Management outage or throttling must never fail or block the
+        semantic graph sync, so this step is isolated and always degrades to
+        an empty result rather than raising.
+        """
+        if not self.config.cost_management_enabled or self.cost_source is None:
+            return []
+        try:
+            return self.cost_source.fetch(
+                subscriptions,
+                end=started,
+                lookback=self.config.cost_management_lookback,
+            )
+        except Exception:
+            logger.warning(
+                "Cost Management fetch failed; continuing discovery without cost actuals",
+                exc_info=True,
+            )
+            return []
+
 
 def _merge_changes(previous: list[dict], current: list[dict]) -> list[dict]:
     merged: dict[str, dict] = {}
@@ -126,15 +163,23 @@ def _merge_changes(previous: list[dict], current: list[dict]) -> list[dict]:
 
 
 def _preserve_created_timestamps(graph, store: DatasetStore) -> None:
-    prior_evidence = {row.get("evidence_id"): row for row in store.read_dataset("situations/evidence")}
+    prior_evidence = {
+        row.get("evidence_id"): row for row in store.read_dataset("situations/evidence")
+    }
     for evidence in graph.evidence:
         previous = prior_evidence.get(evidence.get("evidence_id"))
         if previous and previous.get("ingested_at"):
             evidence["ingested_at"] = previous["ingested_at"]
-    evidence_times = {row.get("evidence_id"): row.get("ingested_at") for row in graph.evidence if row.get("evidence_id")}
+    evidence_times = {
+        row.get("evidence_id"): row.get("ingested_at")
+        for row in graph.evidence
+        if row.get("evidence_id")
+    }
     for event in graph.audit_events:
-        if event.get("action") == "evidence.ingested" and event.get("evidence_ids"):
-            event["timestamp"] = evidence_times.get(event["evidence_ids"][0], event.get("timestamp"))
+        if event.get("action") == "evidence.ingested":
+            evidence_ids = event.get("evidence_ids") or []
+            if evidence_ids and evidence_ids[0] in evidence_times:
+                event["timestamp"] = evidence_times[evidence_ids[0]]
     for entity_type, entities in graph.entities.items():
         prior = {row.get("id"): row for row in store.read_dataset(f"entities/{entity_type}")}
         for entity in entities:
@@ -152,7 +197,9 @@ def _preserve_created_timestamps(graph, store: DatasetStore) -> None:
 
 
 def _preserve_source_watermarks(graph, store: DatasetStore) -> None:
-    previous = {row.get("source_family"): row for row in store.read_dataset("situations/source_status")}
+    previous = {
+        row.get("source_family"): row for row in store.read_dataset("situations/source_status")
+    }
     for status in graph.source_status:
         if status.get("status") != "succeeded":
             status["watermark"] = ""

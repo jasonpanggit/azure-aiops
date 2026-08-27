@@ -104,6 +104,37 @@ def test_incremental_sync_is_case_canonical_and_retires_missing_records():
     assert retired["retired_at"] == "2026-08-19T01:00:00Z"
 
 
+def test_retired_relationship_with_reclassified_endpoint_type_passes_validation():
+    """A resource's entity_type can change between syncs (e.g. Resource ->
+    ManagedIdentity as ARM enriches the record). A relationship captured
+    against the *old* type that later gets retired (because it's no longer
+    reported) must not be treated as a data-quality defect purely because its
+    stale subject_type/object_type no longer matches the entity's *current*
+    type -- only active relationships must agree with the live entity_type.
+    """
+    previous_a = entity("a", entity_type="Resource")
+    previous_b = entity("b", entity_type="Resource")
+    stale_edge = relationship("edge", "a", "b")
+
+    reclassified_b = entity("b", entity_type="ManagedIdentity")
+    current_a = entity("a", entity_type="Resource")
+
+    result = OntologyGraphSynchronizer(SyncValidator()).synchronize(
+        [current_a, reclassified_b],
+        [],
+        previous_entities=[previous_a, previous_b],
+        previous_relationships=[stale_edge],
+        ontology_version="2",
+        timestamp="2026-08-19T01:00:00Z",
+    )
+
+    retired_edge = next(
+        row for row in result.relationships if row["resource_id"] == "edge"
+    )
+    assert retired_edge["lifecycle_status"] == "retired"
+    assert retired_edge["object_type"] == "Resource"  # stale, unchanged
+
+
 def test_sync_fails_closed_before_returning_an_invalid_graph():
     with pytest.raises(ValueError, match="ontology graph"):
         OntologyGraphSynchronizer(SyncValidator()).synchronize(

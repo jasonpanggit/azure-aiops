@@ -243,8 +243,18 @@ class ProviderRuntime:
         return self.health(refresh=False)
 
     def get(self, name: str, *, optional: bool = False) -> Any:
-        """Resolve a current provider, refreshing first when the interval elapsed."""
-        self.refresh()
+        """Resolve the current provider instance from the last completed refresh.
+
+        Never blocks a request thread behind loader I/O: the dedicated
+        background timer thread (see `_start_background_refresh` in
+        `api.app`) is the only caller that performs blocking refreshes.
+        Here we opportunistically nudge a refresh with `blocking=False`
+        (a no-op if the timer is already running or not yet due) purely so
+        a request arriving right after startup does not need to wait a
+        full `refresh_interval_seconds` for the timer's next tick, then
+        immediately serve whatever the last completed refresh published.
+        """
+        self.refresh(blocking=False)
         with self._state_lock:
             instance = self._instances.get(name)
             if instance is not None:

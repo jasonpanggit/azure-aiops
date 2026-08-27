@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 import httpx
 
-LOGS_QUERY_SCOPE = "https://api.loganalytics.azure.com/.default"
+LOGS_QUERY_SCOPE = "https://api.loganalytics.io/.default"
 CONFIGURATION_DATA_QUERY = """
 ConfigurationData
 | where ConfigDataType == "Software"

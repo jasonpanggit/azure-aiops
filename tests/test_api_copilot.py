@@ -251,3 +251,123 @@ def test_extracts_text_from_supported_response_shapes(payload):
 
 def test_extracting_text_from_an_empty_response_yields_nothing():
     assert _extract_text({"output": []}) == ""
+
+
+# ---------------------------------------------------------------------------
+# Reliability: retry with backoff and circuit breaker
+# ---------------------------------------------------------------------------
+
+
+class _FakeTokenProvider:
+    def token(self) -> str:
+        return "fake-token"
+
+
+def _make_agent(**kwargs):
+    return FoundryPromptAgent(
+        project_endpoint="https://example.services.ai.azure.com/api/projects/ops",
+        agent_name="operations-copilot",
+        token_provider=_FakeTokenProvider(),
+        sleep=lambda _seconds: None,
+        **kwargs,
+    )
+
+
+def test_transient_failure_is_retried_then_succeeds(monkeypatch):
+    from operations import foundry_agent as module
+
+    calls = {"count": 0}
+
+    def fake_post_once(self, url, payload):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise module._RetryableFoundryError("transient")
+        return {"output_text": "ok"}
+
+    monkeypatch.setattr(module.FoundryPromptAgent, "_post_once", fake_post_once)
+    agent = _make_agent(max_retries=3)
+    result = agent._post("/agents/x/responses", {})
+
+    assert result == {"output_text": "ok"}
+    assert calls["count"] == 3
+
+
+def test_transient_failure_exhausts_retries_and_raises(monkeypatch):
+    from operations import foundry_agent as module
+
+    def fake_post_once(self, url, payload):
+        raise module._RetryableFoundryError("still down")
+
+    monkeypatch.setattr(module.FoundryPromptAgent, "_post_once", fake_post_once)
+    agent = _make_agent(max_retries=2)
+
+    with pytest.raises(FoundryAgentError):
+        agent._post("/agents/x/responses", {})
+
+
+def test_circuit_breaker_opens_after_repeated_failures(monkeypatch):
+    from operations import foundry_agent as module
+
+    def fake_post_once(self, url, payload):
+        raise module._RetryableFoundryError("down")
+
+    monkeypatch.setattr(module.FoundryPromptAgent, "_post_once", fake_post_once)
+    agent = _make_agent(
+        max_retries=0,
+        circuit_breaker=module._CircuitBreaker(failure_threshold=2, reset_seconds=60.0),
+    )
+
+    with pytest.raises(FoundryAgentError):
+        agent._post("/agents/x/responses", {})
+    with pytest.raises(FoundryAgentError):
+        agent._post("/agents/x/responses", {})
+
+    # Third call should short-circuit without hitting the network at all.
+    call_count_before = 0
+
+    def unexpected_post_once(self, url, payload):
+        nonlocal call_count_before
+        call_count_before += 1
+        raise AssertionError("should not perform network I/O while breaker is open")
+
+    monkeypatch.setattr(module.FoundryPromptAgent, "_post_once", unexpected_post_once)
+    with pytest.raises(module.FoundryCircuitOpenError):
+        agent._post("/agents/x/responses", {})
+    assert call_count_before == 0
+
+
+def test_circuit_breaker_resets_after_window_elapses(monkeypatch):
+    from operations import foundry_agent as module
+
+    clock = {"now": 0.0}
+    breaker = module._CircuitBreaker(
+        failure_threshold=1, reset_seconds=10.0, clock=lambda: clock["now"]
+    )
+    breaker.record_failure()
+    assert breaker.is_open
+
+    clock["now"] = 5.0
+    with pytest.raises(module.FoundryCircuitOpenError):
+        breaker.before_call()
+
+    clock["now"] = 11.0
+    breaker.before_call()  # Reset window elapsed: allowed through.
+    breaker.record_success()
+    assert not breaker.is_open
+
+
+def test_non_retryable_http_error_raises_immediately(monkeypatch):
+    from operations import foundry_agent as module
+
+    calls = {"count": 0}
+
+    def fake_post_once(self, url, payload):
+        calls["count"] += 1
+        raise FoundryAgentError("bad request")
+
+    monkeypatch.setattr(module.FoundryPromptAgent, "_post_once", fake_post_once)
+    agent = _make_agent(max_retries=3)
+
+    with pytest.raises(FoundryAgentError):
+        agent._post("/agents/x/responses", {})
+    assert calls["count"] == 1, "non-retryable errors must not be retried"

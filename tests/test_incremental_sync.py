@@ -25,6 +25,17 @@ FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
 
 def _source_snapshot(root: Path) -> None:
     payload = json.loads(FIXTURE.read_text())
+    payload["cost_actuals"] = [
+        {
+            "subscriptionId": "sub-1",
+            "usageDate": "2026-08-17",
+            "cost": 42.5,
+            "currency": "AUD",
+            "resourceId": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-prod",
+            "resourceGroup": "rg-prod",
+            "serviceName": "Virtual Machines",
+        }
+    ]
     graph = Normalizer().normalize(payload, datetime(2026, 8, 17, tzinfo=UTC))
     DatasetStore(root).publish(
         graph,
@@ -53,6 +64,7 @@ def test_incremental_sync_writes_bronze_silver_ontology_and_state(tmp_path: Path
     second = service.sync()
 
     resources = _delta_rows(lakehouse / "Tables/bronze_resources")
+    costs = _delta_rows(lakehouse / "Tables/silver_cost_actuals")
     states = _delta_rows(lakehouse / "Tables/metadata_ingestion_state")
     assert first.status == "completed"
     assert second.status == "completed"
@@ -68,6 +80,9 @@ def test_incremental_sync_writes_bronze_silver_ontology_and_state(tmp_path: Path
     assert {row["status"] for row in states} == {"completed"}
     assert all(row["watermark"] == "2026-08-17T00:30:00Z" for row in states)
     assert (lakehouse / "Tables/silver_vm_inventory/_delta_log").is_dir()
+    assert costs[0]["cost"] == 42.5
+    assert costs[0]["currency"] == "AUD"
+    assert costs[0]["usage_date"] == "2026-08-17"
     assert (lakehouse / "Tables/ontology_entities/_delta_log").is_dir()
     assert (lakehouse / "Files/ontology/metadata/catalog.json").is_file()
 
@@ -632,7 +647,6 @@ def test_inventory_generation_publishes_successful_family_when_arc_fails(
 def test_inventory_source_status_and_rows_have_family_query_versions(tmp_path: Path) -> None:
     fixture = json.loads((Path(__file__).parent / "fixtures" / "mock_inventory_arg.json").read_text())
     from intelligence.inventory.normalization import normalize_os_inventory
-    from storage.datasets import DatasetStore as NeutralDatasetStore
 
     observations, statuses = normalize_os_inventory(
         {
@@ -643,6 +657,8 @@ def test_inventory_source_status_and_rows_have_family_query_versions(tmp_path: P
         run_id="inventory-query-version-run",
         requested_scope={"subscription": ["sub-a", "sub-b"]},
     )
+    from storage.datasets import DatasetStore as NeutralDatasetStore
+
     store = NeutralDatasetStore(tmp_path)
     store.publish(
         {
@@ -663,6 +679,7 @@ def test_inventory_source_status_and_rows_have_family_query_versions(tmp_path: P
         "inventory-native-vm-os-v1",
         "inventory-arc-os-v1",
     }
+
 
 def test_registration_failure_rolls_back_business_tables(tmp_path: Path) -> None:
     source = tmp_path / "source"
@@ -710,7 +727,7 @@ def test_registration_failure_rolls_back_business_tables(tmp_path: Path) -> None
 
 def test_mapper_reads_remote_snapshot_via_provided_filesystem(tmp_path: Path) -> None:
     """Regression test: `InventoryDatasetMapper.load()` must use the caller's
-    `fs` for remote (ADLS) snapshots instead of re-resolving the already
+    `fs` for remote (OneLake) snapshots instead of re-resolving the already
     fsspec-resolved path as a local filesystem. Previously this silently
     returned an empty snapshot (no error) because a bare `container/path`
     string with no `abfss://` scheme resolves to the *local* filesystem,
@@ -718,7 +735,7 @@ def test_mapper_reads_remote_snapshot_via_provided_filesystem(tmp_path: Path) ->
     """
     import fsspec
 
-    remote_root = f"abfss://hermes-data@example.dfs.core.windows.net/connections/demo-{uuid4().hex}"
+    remote_root = f"abfss://ws-hermes@onelake.dfs.fabric.microsoft.com/lakehouse/Files/hermes/connections/demo-{uuid4().hex}"
     store = DatasetStore(remote_root)
     memory_fs = fsspec.filesystem("memory")
     store.fs = memory_fs  # swap the real ADLS backend for an in-memory one

@@ -1,36 +1,34 @@
-# Hermes Azure Resource Graph Connector
+# Azure AI Operations Platform
 
-First end-to-end slice of Hermes Operations Graph: discover Azure subscriptions through Azure MCP, query Azure Resource Graph, normalize operational entities and relationships, write Fabric-aligned JSONL/Parquet datasets, and expose read-only agent questions.
+An AI-powered operations platform for Azure that enables operators to move from detected situations to evidence-backed, auditable, human-approved remediation without losing context or control. Built on existing Azure Resource Graph, Fabric Ontology, FastAPI, Entra, and Next.js foundations.
 
-Production discovery through Fabric ontology activation and deployed provider
-validation is documented in
-[`docs/PRODUCTION_RUNTIME_ACTIVATION.md`](docs/PRODUCTION_RUNTIME_ACTIVATION.md).
+**Core Value:** Operators detect Azure incidents, receive cited evidence and recommendations, approve bounded remediation actions, observe durable execution, and maintain full audit trails.
+
+**Status:** Phase 7 (Unified Resource Inventory) - Planning stage. See [`.planning/STATE.md`](.planning/STATE.md) for roadmap and current progress.
+
+For existing ARG connector capabilities and Hermes integration, see [`docs/PRODUCTION_RUNTIME_ACTIVATION.md`](docs/PRODUCTION_RUNTIME_ACTIVATION.md).
 
 ## What is implemented
 
-- Azure MCP subscription discovery through pinned `@azure/mcp`.
-- ARG extraction for:
-  - `Resources`
-  - `ResourceContainers`
-  - `ResourceChanges`
-  - `PatchAssessmentResources`
-  - Advisor recommendations from `advisorresources`
-- Normalized entities:
-  - Subscription
-  - Resource Group
-  - Resource
-  - Virtual Machine
-  - Arc Server
-  - Patch Assessment
-  - Advisor Recommendation
-- Relationships: `belongsTo`, `assessedBy`, and `impacts`, each with confidence, source, created timestamp, and last-observed timestamp.
-- Atomic JSONL and Parquet publication.
-- Automatic ontology metadata generation.
-- Incremental `ResourceChanges` watermarking and accumulated change history.
-- Content hashes, change detection, and idempotent dataset publication.
-- On-demand CLI, Hermes cron scheduling, and a read-only Hermes agent tool.
+### Foundation Layer (Phase 1+)
+- **Durable situation records** with lifecycle, severity, priority, scope, and ownership
+- **Evidence foundation** from Azure Resource Graph, Activity Log, Monitor, Defender, Policy, and vulnerability feeds
+- **Normalized entities and relationships** with source traceability and freshness signals
+- **Audit trail primitives** for immutable event logging
+- **Authorization boundaries** enforced via Entra/RBAC scope
 
-See `docs/architecture.md` for the Mermaid architecture diagram and `IMPLEMENTATION_SUMMARY.md` for the executed verification results.
+### ARG Connector (Brownfield Foundation)
+The existing Hermes Azure Resource Graph connector provides:
+- Azure MCP subscription discovery
+- ARG extraction and normalization for Resources, ResourceContainers, ResourceChanges, PatchAssessmentResources, and Advisor recommendations
+- Normalized entities: Subscription, Resource Group, Resource, Virtual Machine, Arc Server, Patch Assessment, Advisor Recommendation
+- Relationships with confidence, source, timestamps
+- Atomic JSONL/Parquet publication with idempotent behavior
+- Incremental watermarking and accumulated change history
+- OneLake/Delta persistence and Fabric Ontology projection
+- Read-only agent queries and Hermes plugin integration
+
+See `docs/architecture.md` for architecture diagram and `IMPLEMENTATION_SUMMARY.md` for verification results.
 
 ## Important Azure MCP boundary
 
@@ -39,27 +37,61 @@ The preinstalled Azure MCP executable is used for Azure subscription discovery. 
 ## Prerequisites
 
 - Python 3.11+
-- `uv`
-- Node.js and `npx`
-- Azure CLI with the Resource Graph extension/command available
-- An Azure identity authenticated for both Azure MCP and Azure CLI
-- Read permissions for the configured subscriptions and ARG tables
+- `uv` (Python package manager)
+- Node.js 18+ and `npm`
+- Azure CLI with Resource Graph extension
+- Docker (for containerized deployments)
+- An Azure identity authenticated for Azure MCP and Azure CLI
+- Read permissions for configured subscriptions and ARG tables
 
 Authenticate with your normal enterprise-approved Azure CLI flow before running. No credentials are stored by this project.
 
-## Setup
+## Project Structure
+
+```
+.
+├── .planning/                      # GSD planning artifacts (roadmap, requirements, state)
+├── .github/                        # GitHub configuration and workflows
+├── src/
+│   ├── hermes_arg_connector/       # ARG ingestion and connector CLI
+│   ├── fabric/                     # Fabric/OneLake persistence and authentication
+│   ├── storage/                    # Delta, Parquet, OneLake writers
+│   ├── ontology/                   # Fabric Ontology creation and updates
+│   ├── semantic/                   # Semantic Knowledge Layer (operations context)
+│   ├── agents/                     # Agent reasoning and orchestration
+│   ├── api/                        # FastAPI backend for situations, evidence, approvals
+│   ├── operations/                 # Operations execution and verification
+│   ├── intelligence/               # Intelligence modules (patch, lifecycle, incident, change, predictive)
+│   ├── network/                    # Network and dependency graph
+│   └── onboarding/                 # Discovery and onboarding workflows
+├── web/                            # Next.js frontend (situations, evidence, recommendations, approvals)
+├── tests/                          # Test suite (no live Azure credentials required)
+├── docs/                           # Architecture, runbooks, and API documentation
+├── infra/                          # Infrastructure and deployment templates
+├── skills/                         # Hermes skill plugins
+├── live-data/                      # Local runtime data (datasets, state, cache)
+├── pyproject.toml                  # Python project definition
+├── config.example.yaml             # ARG connector configuration template
+└── fabric.*.example.yaml           # Fabric persistence configuration templates
+```
+
+## Getting Started
+
+### 1. Install dependencies
 
 ```bash
 uv sync --extra test
+cd web && npm install && cd ..
 cp config.example.yaml config.yaml
 ```
 
-Edit only the project-local `config.yaml`:
+### 2. Configure ARG connector
+
+Edit `config.yaml` with your Azure subscription and storage preferences:
 
 ```yaml
 azure:
-  # Empty means all subscriptions returned by Azure MCP.
-  subscriptions: []
+  subscriptions: []  # Empty = all subscriptions from Azure MCP
   tenant_id: ""
   mcp_command: ["azmcp"]
   page_size: 1000
@@ -68,253 +100,66 @@ azure:
   max_query_workers: 5
   change_overlap_minutes: 10
 storage:
-  output_dir: "./data"
+  output_dir: "./live-data"
   retain_raw_queries: false
 ```
 
-Preinstall, pin, and verify Azure MCP during image/deployment creation. Scheduled runs must not download npm packages. A development environment can explicitly set `mcp_command` to a pinned `npx` command, but production should use the preinstalled `azmcp` executable.
+### 3. Run ARG ingestion
 
-## Run on demand
-
+**On demand:**
 ```bash
 uv run hermes-arg sync --config config.yaml
 ```
 
-The command prints a manifest containing row counts, semantic hashes, changed datasets, run ID, and subscription scope.
+**Scheduled (via Hermes cron):**
+```bash
+uv run hermes-arg schedule --config config.yaml --schedule "every 30m"
+```
 
-## Schedule with Hermes
-
-Reuse the existing durable Hermes scheduler:
+### 4. Sync to Fabric (optional)
 
 ```bash
-uv run hermes-arg schedule \
-  --config config.yaml \
-  --schedule "every 30m"
+cp fabric.config.example.yaml fabric.config.yaml
+# Edit fabric.config.yaml with workspace and Lakehouse IDs
+uv run hermes-arg fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
 ```
 
-This installs a restricted wrapper at `$HERMES_HOME/scripts/azure-resource-graph-sync.sh` and creates a script-only, local-delivery Hermes cron job. It does not create another polling framework.
-
-Inspect or operate the job with:
-
-```bash
-hermes cron list
-hermes cron status
-```
-
-## Query operational context
-
-```bash
-uv run hermes-arg query "Show me all VMs." --output-dir data
-uv run hermes-arg query "Show me non-compliant servers." --output-dir data
-uv run hermes-arg query "Show servers approaching OS EOL." --output-dir data
-uv run hermes-arg query "Show patch failures." --output-dir data
-```
-
-The query surface returns concise operational fields and intentionally excludes full raw Azure `properties` documents.
-
-OS-EOL answers are evidence-based: this slice returns servers linked to matching Advisor recommendations. An empty result means no matching current recommendation was found; it is not proof that every operating system is supported.
-
-## Hermes plugin integration
-
-The repository root contains `plugin.yaml` and `__init__.py`. The plugin registers:
-
-- CLI command: `hermes azure-graph`
-- Primary read-only reasoning tool: `operations_analysis`
-- Toolset: `azure_operational_context`
-
-The plugin depends on `pyarrow` and `PyYAML`; install the Python project into the same Hermes environment or package it as part of deployment. Hermes manifest dependency metadata documents these dependencies but does not substitute for environment provisioning.
-
-Enable only the `azure_operational_context` toolset for agents that need this data. The tool is read-only.
-
-Set `HERMES_FABRIC_CONFIG` on the Hermes gateway to the single trusted Fabric runtime configuration. Its operator-managed `source_data_root` remains subject to the trusted-root and symlink-boundary checks; the semantic agent schema cannot supply paths, credentials, workspace IDs, or Lakehouse IDs. Plugin discovery/tool registration remains available without importing PyArrow or PyYAML; ingestion CLI commands require the declared dependencies.
-
-## Sample dataset
-
-The deterministic mock ARG response is:
-
-`tests/fixtures/mock_arg_responses.json`
-
-Generate sample JSONL/Parquet and ontology outputs:
-
-```bash
-uv run hermes-arg sample \
-  --fixture tests/fixtures/mock_arg_responses.json \
-  --output-dir sample-data
-```
-
-## Output layout
-
-```text
-<data-root>/
-├── current -> generations/<run-id>/
-├── generations/
-│   └── <run-id>/
-│   ├── changes/resource_changes.{jsonl,parquet}
-│   ├── entities/<EntityType>.{jsonl,parquet}
-│   ├── ontology/ontology.json
-│   ├── relationships/relationships.{jsonl,parquet}
-│   └── manifest.json
-└── state/
-    ├── dataset_hashes.json
-    ├── run.lock
-    └── state.json
-```
-
-`changes/resource_changes` retains accumulated, deduplicated incremental history. Entity and relationship datasets are the Fabric-aligned projection. Raw `queries/` datasets are disabled by default because source properties can be sensitive; set `retain_raw_queries: true` only in a separately governed data root.
-
-## Incremental and idempotent behavior
-
-1. `state/state.json` supplies the maximum successfully observed `ResourceChanges` timestamp.
-2. The next resource-change query applies a configurable overlap before that watermark to tolerate delayed events.
-3. New change rows merge by stable source ID into retained change history.
-4. All datasets receive semantic content hashes that exclude run-only timestamps.
-5. A complete owner-only generation is written before an atomic `current` symlink switch; semantic `changedDatasets` remains empty when only observation timestamps advance.
-6. A cross-process writer lock rejects overlapping cron/on-demand runs, and state advances only after every query, normalization, and generation publication step succeeds.
-
-Full inventory-style tables are refreshed each run because ARG remains authoritative. `ResourceChanges` provides event history and change evidence rather than replacing reconciliation.
-
-## Tests
+### 5. Run tests
 
 ```bash
 uv run --extra test pytest
 ```
 
-Test layers:
+No live Azure credentials required; tests use mock fixtures.
 
-- Query catalog and incremental filters: `tests/test_queries.py`
-- Azure MCP/ARG command adapters and pagination: `tests/test_azure_clients.py`
-- Entity and relationship normalization: `tests/test_normalize.py`
-- JSONL/Parquet/ontology publication and idempotency: `tests/test_storage.py`
-- Mock end-to-end ingestion and incremental history: `tests/test_service.py`
-- Agent questions and response minimization: `tests/test_agent_queries.py`
-- Hermes plugin and cron command integration: `tests/test_plugin_schedule.py`
-- Fabric REST/authentication: `tests/test_fabric_client.py`
-- OneLake folders/files: `tests/test_onelake_writer.py`
-- Delta overwrite/append/merge/retry: `tests/test_delta_tables.py`
-- Incremental/replay/recovery/registration: `tests/test_incremental_sync.py`
-- Data quality: `tests/test_data_quality.py`
+## Important Azure MCP Boundary
 
-No live Azure credentials are required by the automated tests.
+The preinstalled Azure MCP executable is used for Azure subscription discovery. Its current command surface does not provide a general arbitrary Azure Resource Graph query operation. The required ARG queries therefore use the installed Azure CLI command `az graph query`. This is a narrow subprocess adapter—not a custom Azure SDK wrapper—and is isolated behind `AzureCliArgClient` so it can be replaced if Azure MCP adds arbitrary ARG support in the future.
 
-## Repository structure
+## Data Layers
 
-```text
-.
-├── __init__.py                     # Hermes directory-plugin entry point
-├── hermes_plugin.py                # Import-friendly plugin facade
-├── plugin.yaml                     # Hermes plugin manifest
-├── pyproject.toml
-├── config.example.yaml
-├── fabric.config.example.yaml
-├── fabric.service-principal.example.yaml
-├── fabric.local.example.yaml
-├── src/hermes_arg_connector/
-│   ├── agent_queries.py
-│   ├── azure.py
-│   ├── cli.py
-│   ├── config.py
-│   ├── locking.py
-│   ├── normalize.py
-│   ├── ontology.py
-│   ├── plugin.py
-│   ├── queries.py
-│   ├── schedule.py
-│   ├── service.py
-│   ├── source.py
-│   ├── state.py
-│   └── storage.py
-├── src/fabric/
-│   ├── auth.py
-│   ├── fabric_client.py
-│   ├── workspace_manager.py
-│   ├── lakehouse_manager.py
-│   ├── data_quality.py
-│   ├── dataset_mapper.py
-│   ├── sync_service.py
-│   ├── telemetry.py
-│   └── commands.py
-├── src/storage/
-│   ├── onelake_writer.py
-│   ├── delta_writer.py
-│   ├── parquet_writer.py
-│   └── partitioning.py
-├── tests/
-│   ├── fixtures/mock_arg_responses.json
-│   ├── test_config.py
-│   └── test_*.py
-├── docs/architecture.md
-└── IMPLEMENTATION_SUMMARY.md
-```
+### 1. ARG Ingestion and Normalization
+Raw resource and change data from Azure Resource Graph are queried, normalized, deduplicated, and published as JSONL/Parquet datasets with full provenance and freshness signals. See `src/hermes_arg_connector/` and `src/storage/`.
 
-## Microsoft Fabric OneLake persistence
+### 2. Fabric Ontology and OneLake Persistence
+Normalized datasets sync to Microsoft Fabric Lakehouse via OneLake, building queryable Delta tables. The Fabric Ontology item creates a semantic authority for entities and relationships.
 
-The connector can persist every normalized generation into queryable Delta tables in a Fabric Lakehouse.
-
-Configuration templates:
-
+**Configuration templates:**
 - `fabric.config.example.yaml` — managed identity
 - `fabric.service-principal.example.yaml` — service principal, secret from environment
 - `fabric.local.example.yaml` — local Delta mock with no cloud calls
 
-Run the required command through the operator CLI (it is intentionally not exposed as an agent tool):
-
+**Operator commands:**
 ```bash
-uv run hermes-arg fabric \
-  "Sync Azure inventory to OneLake" \
-  --config fabric.config.yaml
-```
-
-Other supported commands:
-
-```text
-Refresh inventory lakehouse
-Show ingestion status
-Show last Fabric sync
-Validate inventory data
-```
-
-Set `HERMES_FABRIC_CONFIG` to the trusted configuration path for Hermes agent use. The agent schema cannot override credentials, source roots, workspace IDs, or Lakehouse IDs.
-
-Fabric persistence artifacts:
-
-- `src/fabric/auth.py`, `fabric_client.py`, `workspace_manager.py`, `lakehouse_manager.py`
-- `src/storage/onelake_writer.py`, `delta_writer.py`, `parquet_writer.py`, `partitioning.py`
-- `docs/fabric-architecture.md` — architecture diagram
-- `docs/fabric-data-flow.md` — data-flow diagram and table layout
-- `docs/FABRIC_RUNBOOK.md` — operations, replay, and recovery
-- `docs/LOCAL_DEVELOPMENT.md` — mock Fabric development
-
-The persistence slice remains limited to Fabric-native operational storage and synchronization; the completed read-only Semantic Knowledge Layer above Fabric Ontology is documented below. Multi-agent orchestration, Copilot experiences, remediation workflows, and autonomous actions remain intentionally out of scope.
-
-## Microsoft Fabric Operational Context Graph
-
-Every Fabric synchronization builds tenant-scoped entities, discovers structural and tag-derived relationships, versions and soft-retires graph records, writes typed OneLake Delta projections, and creates or incrementally updates a Fabric Ontology item through the public definition API. Fabric Ontology—not a custom graph database—is the semantic authority.
-
-```bash
-uv run hermes-arg fabric "Sync operational ontology" --config fabric.config.yaml
+uv run hermes-arg fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
 uv run hermes-arg ontology "Who owns this VM?" --entity vm-prod-01 --config fabric.config.yaml
 uv run hermes-arg ontology "What applications are affected by patch failures?" --config fabric.config.yaml
 ```
 
-Operator-level Ontology and Semantic Layer CLIs remain available, while agents receive evidence-backed reasoning through `operations_analysis`. See:
+See `src/fabric/`, `src/storage/`, and `docs/FABRIC_INTEGRATION.md`.
 
-- `docs/ontology-architecture.md`
-- `docs/ontology-model.md`
-- `docs/FABRIC_ONTOLOGY_DEPLOYMENT.md`
-- `docs/ONTOLOGY_RUNBOOK.md`
-
-## Production notes
-
-- Restrict Azure RBAC to read-only access at the narrowest subscription scope.
-- Treat generated raw query datasets as operationally sensitive; protect the data root with the same controls as Azure inventory.
-- ARG writers use an owner-only local lock. Fabric sync uses the same local lock in mock mode and an infinite OneLake file lease in cloud mode. Failures before the publication boundary roll Delta tables back; after catalog/registration commit, graph tables are retained for idempotent Ontology publication retry so a published definition is never left pointing at rolled-back data.
-- Preinstall a pinned Azure MCP build and test before upgrades.
-- Monitor cron run history and the generated manifest/state files.
-- Live Fabric Ontology publication and binding must be validated in a credentialed tenant before rollout; AI reasoning, copilots, and remediation remain outside this slice.
-
-## Semantic Knowledge Layer
-
-The Semantic Layer is the primary operational knowledge interface for future agents. It assembles safe application, service, resource, subscription, ownership, compliance, patching, dependency, impact, risk, lifecycle, cost, security, and health context over Fabric Ontology.
+### 3. Semantic Knowledge Layer
+The Semantic Layer assembles safe application, service, resource, subscription, ownership, compliance, patching, dependency, impact, risk, lifecycle, cost, security, and health context over Fabric Ontology. Agents receive evidence-backed reasoning through `operations_analysis`.
 
 ```bash
 uv run hermes-arg semantic \
@@ -323,39 +168,261 @@ uv run hermes-arg semantic \
   --config fabric.config.yaml
 ```
 
-The plugin exposes only `operations_analysis` for read-only agent reasoning. It consumes the Semantic Knowledge Layer internally; direct Semantic, Azure dataset, Delta, Ontology traversal, Fabric mutation, and remediation tools are not registered for agents.
+See `src/semantic/` and `docs/semantic-architecture.md`.
 
-Operations Agent documentation:
+### 4. Operations Intelligence
+The platform includes specialized intelligence modules for:
+- **Patch Intelligence:** Workflow, scoring, prioritization, and compliance
+- **Lifecycle Intelligence:** Risk, modernization, exposure, and end-of-support
+- **Incident Causality:** Change correlation and causal scoring
+- **Predictive Operations:** Forecasts and debt analysis
+- **Remediation Planning:** Workflow, approval, risk, rollback simulation
 
-- `docs/operations-agent-architecture.md` — architecture, workflows, health model, recommendations, and incident examples
-- `docs/OPERATIONS_AGENT_RUNBOOK.md` — deployment, telemetry, smoke tests, and troubleshooting
-- `docs/PATCH_INTELLIGENCE.md` — patch workflow, scoring, prioritization, queries, and reports
-- `docs/PATCH_INTELLIGENCE_RUNBOOK.md` — patch intelligence deployment and operations
-- `docs/PATCH_INTELLIGENCE_CONFIG.md` — governed input and runtime configuration
-- `docs/patch-intelligence-architecture.html` — interactive architecture diagram
-- `docs/LIFECYCLE_INTELLIGENCE.md` — lifecycle workflow, risk, modernization, exposure, and reports
-- `docs/LIFECYCLE_INTELLIGENCE_RUNBOOK.md` — lifecycle deployment, catalog updates, monitoring, and recovery
-- `docs/LIFECYCLE_INTELLIGENCE_CONFIG.md` — catalog, thresholds, matching, bounds, and authorization
-- `docs/lifecycle-intelligence-architecture.html` — interactive lifecycle architecture diagram
-- `docs/INCIDENT_CAUSALITY.md` — incident correlation workflow, causal scoring, patterns, and reports
-- `docs/INCIDENT_CAUSALITY_CONFIG.md` — governed inputs, bounds, and runtime configuration
-- `docs/INCIDENT_CAUSALITY_RUNBOOK.md` — verification, monitoring, and troubleshooting
-- `docs/incident-causality-architecture.html` — interactive incident causality architecture diagram
-- `docs/CHANGE_INTELLIGENCE.md` — change, drift, risk, incident contribution, and reports
-- `docs/CHANGE_INTELLIGENCE_CONFIG.md` — governed change sources and runtime bounds
-- `docs/CHANGE_INTELLIGENCE_RUNBOOK.md` — operational verification and troubleshooting
-- `docs/change-intelligence-architecture.html` — interactive change intelligence architecture diagram
-- `docs/PREDICTIVE_OPERATIONS.md` — predictive features, horizons, debt, explainability, and reports
-- `docs/PREDICTIVE_OPERATIONS_CONFIG.md` — governed predictive inputs and runtime bounds
-- `docs/PREDICTIVE_OPERATIONS_RUNBOOK.md` — forecast verification and troubleshooting
-- `docs/predictive-operations-architecture.html` — interactive predictive architecture diagram
-- `docs/REMEDIATION_PLANNING.md` — planning workflow, approval, risk, rollback, simulation, prioritization, and examples
-- `docs/REMEDIATION_PLANNING_CONFIG.md` — governed action catalog, approval policy, and runtime bounds
-- `docs/REMEDIATION_PLANNING_RUNBOOK.md` — operations, catalog promotion, monitoring, and testing
-- `docs/remediation-planning-architecture.html` — interactive remediation planning architecture diagram
+See `src/intelligence/` and corresponding runbooks in `docs/`.
 
-- `docs/semantic-architecture.md`
-- `docs/SEMANTIC_API.md`
-- `docs/OPERATIONS_API.md` — HTTP Operations API: auth, RBAC, scope model, evidence envelope, endpoint inventory, and error codes
-- `docs/RISK_SCORING.md`
-- `docs/SEMANTIC_RUNBOOK.md`
+### 5. API and Frontend
+- **FastAPI backend** (`src/api/`): REST endpoints for situations, evidence, recommendations, approvals, and execution
+- **Next.js frontend** (`web/`): Web UI for operators to investigate, approve, and monitor remediation
+
+## Development Workflow
+
+### Running the ARG connector in development
+
+```bash
+# One-time setup
+uv sync --extra test
+cp config.example.yaml config.yaml
+
+# Run once
+uv run hermes-arg sync --config config.yaml
+
+# Or schedule
+uv run hermes-arg schedule --config config.yaml --schedule "every 30m"
+
+# Query the ontology
+uv run hermes-arg query "Show me all VMs." --output-dir live-data
+uv run hermes-arg query "Show me non-compliant servers." --output-dir live-data
+```
+
+### Running the web frontend
+
+```bash
+cd web
+npm run dev
+# Open http://localhost:3000
+```
+
+### Running tests
+
+```bash
+uv run --extra test pytest -v
+```
+
+Test coverage spans ARG extraction, normalization, storage, Fabric sync, Hermes plugin integration, and data quality—all without live Azure credentials.
+
+## Hermes Plugin Integration
+
+The repository registers as a Hermes plugin (`plugin.yaml`, `__init__.py`):
+- **CLI commands:** `hermes azure-graph`, `hermes-arg fabric`, `hermes-arg ontology`, `hermes-arg semantic`
+- **Agent tool:** `operations_analysis` (read-only reasoning over operational context)
+- **Toolset:** `azure_operational_context` (evidence and graph queries)
+
+Set `HERMES_FABRIC_CONFIG` to the trusted Fabric configuration path. The agent schema cannot supply paths, credentials, workspace IDs, or Lakehouse IDs—all are operator-managed.
+
+## Production Notes
+
+- Restrict Azure RBAC to read-only access at the narrowest subscription scope
+- Treat generated raw query datasets as operationally sensitive; protect the data root with the same controls as Azure inventory
+- ARG writers use an owner-only local lock; Fabric sync uses OneLake file leases in cloud mode
+- Preinstall a pinned Azure MCP build and test before upgrades
+- Monitor cron run history and the generated manifest/state files
+- Validate Fabric Ontology publication and binding in a credentialed tenant before rollout
+
+## Documentation Index
+
+**Architecture and Design:**
+- `docs/architecture.md` — ARG connector architecture
+- `docs/fabric-architecture.md` — Fabric persistence architecture
+- `docs/ontology-architecture.md` — Ontology and semantic authority design
+- `docs/semantic-architecture.md` — Semantic Knowledge Layer design
+- `docs/operations-agent-architecture.md` — operations reasoning workflows
+
+**Runbooks and Operations:**
+- `docs/FABRIC_RUNBOOK.md` — operations, replay, recovery
+- `docs/LOCAL_DEVELOPMENT.md` — mock Fabric development
+- `docs/OPERATIONS_AGENT_RUNBOOK.md` — deployment, telemetry, troubleshooting
+- `docs/PATCH_INTELLIGENCE_RUNBOOK.md` — patch intelligence deployment
+- `docs/LIFECYCLE_INTELLIGENCE_RUNBOOK.md` — lifecycle intelligence operations
+- `docs/INCIDENT_CAUSALITY_RUNBOOK.md` — incident correlation verification
+- `docs/CHANGE_INTELLIGENCE_RUNBOOK.md` — change tracking verification
+- `docs/PREDICTIVE_OPERATIONS_RUNBOOK.md` — forecast verification
+- `docs/REMEDIATION_PLANNING_RUNBOOK.md` — remediation operations and testing
+- `docs/SEMANTIC_RUNBOOK.md` — Semantic Layer operations
+
+**APIs and Configuration:**
+- `docs/OPERATIONS_API.md` — HTTP Operations API, RBAC, error codes
+- `docs/SEMANTIC_API.md` — Semantic Knowledge Layer API
+- `docs/PATCH_INTELLIGENCE_CONFIG.md` — patch intelligence configuration
+- `docs/LIFECYCLE_INTELLIGENCE_CONFIG.md` — lifecycle intelligence configuration
+- `docs/INCIDENT_CAUSALITY_CONFIG.md` — incident correlation configuration
+- `docs/CHANGE_INTELLIGENCE_CONFIG.md` — change tracking configuration
+- `docs/PREDICTIVE_OPERATIONS_CONFIG.md` — predictive operations configuration
+- `docs/REMEDIATION_PLANNING_CONFIG.md` — remediation action catalog and policy
+
+**References:**
+- `docs/IMPLEMENTATION_SUMMARY.md` — ARG connector verification results
+- `REPOSITORY_STRUCTURE.md` — detailed directory layout
+- `ARCHITECTURE.md` — project-level architecture overview
+
+## End-to-end architecture
+
+The platform is a Python service and Next.js workbench organized around immutable,
+scope-aware data snapshots. Azure services remain the systems of record. The
+connector acquires provider data, canonicalizes it, publishes a complete
+generation, and exposes that generation to the Fabric projection, semantic
+readers, API, agents, and UI.
+
+```text
+Azure MCP ── subscription discovery ──┐
+Azure CLI `az graph query` ───────────┼─> IngestionService
+Azure Monitor Logs / ConfigurationData ┘       │
+                                              v
+                                   Normalizer + inventory normalization
+                                              │
+                                              v
+                              DatasetStore immutable generation
+                              JSONL + Parquet + manifest + current pointer
+                                  │                         │
+                                  │                         └─> Hermes context queries
+                                  v
+                         FabricSyncService / DeltaWriter
+                                  │
+                                  v
+                    OneLake Delta tables + persistent Ontology
+                        + cached inventory projection
+                                  │
+                                  v
+                         SemanticEngine / provider runtime
+                                  │
+                         ┌────────┴────────┐
+                         v                 v
+                    FastAPI API       Hermes agents
+                         │             (read-only tools)
+                         v
+                    Next.js web workbench
+```
+
+### Data sources and discovery
+
+- **Azure MCP** (`AzureMcpClient`) discovers the subscriptions available to the
+  configured identity. It is not currently the general-purpose ARG query
+  interface.
+- **Azure Resource Graph** is queried through the installed Azure CLI command
+  `az graph query`, isolated behind `AzureCliArgClient`. The query catalog covers
+  resource containers, resources, changes, patch assessments, advisor data, and
+  other configured ARG families.
+- **Azure Monitor Logs** supplies `ConfigurationData` for installed software.
+  `IngestionService` queries only server-owned workspace mappings for the active
+  connection; browser-selected workspaces are not accepted.
+- **Cost Management** is an optional, best-effort side channel. Its failure
+  degrades cost data to an empty result and does not block discovery.
+
+`IngestionService` coordinates subscription resolution, query execution,
+watermarks, independent source status, normalization, and publication. The
+normalizer emits canonical entities and relationships, while
+`inventory_normalize.py` performs exact resource-ID joins for software and
+preserves raw software identity and unlinked rows rather than inferring joins
+from hostnames.
+
+### Unified resource inventory and semantic modelling
+
+The current implementation publishes inventory observations alongside the
+established graph in the same immutable generation:
+
+- `inventory/os_observations` contains normalized machine observations.
+- `inventory/software_observations` contains normalized installed-software
+  observations.
+- `inventory/source_status` and `inventory/software_source_status` retain
+  readiness, partial, degraded, or unavailable source state.
+- A failed software refresh retains the last published software rows while
+  keeping the source status degraded or unavailable; a successful empty result
+  remains distinguishable from a failed refresh.
+
+`DatasetStore` writes JSONL and Parquet datasets under a run-specific
+`generations/` directory, writes a manifest and content hashes, and atomically
+activates the generation. Local storage uses a directory symlink; OneLake
+storage uses a `current.json` generation pointer because OneLake does not
+provide the local symlink behavior. The store retains the most recent three
+generations. These mechanisms provide a consistent read snapshot and make
+freshness, watermarks, and source status available to consumers.
+
+`FabricSyncService` maps the active inventory snapshot into validated OneLake
+Delta tables using `InventoryDatasetMapper`, `DeltaWriter`, and `OneLakeWriter`.
+OneLake is the persistent analytical layer for the Fabric Ontology and the
+cached inventory that the Unified Resource Inventory publishes. The service
+also validates and synchronizes ontology entities and relationships, retaining
+removed records as retired records. Fabric/OneLake is therefore the durable
+query and cache layer, not the Azure system of record or the owner of inventory
+acquisition.
+
+`SemanticEngine` is a read-only knowledge interface over the Fabric Ontology
+projection. It indexes entities, relationships, inventory, compliance, security,
+and cost rows and applies bounded traversal, validation, caching, freshness, and
+telemetry. Assessment domains such as patching, vulnerability, policy, advisor,
+metrics, and health retain their own data planes and join to inventory by
+resource ID; inventory owns resource identity facts such as type, location,
+tags, containment, and raw properties.
+
+### API, web, and agents
+
+The FastAPI application in `src/api/` authenticates requests, enforces Entra/RBAC
+scope, routes to providers, and translates failures into stable error responses.
+Successful responses use an envelope containing `data`, `evidence`, and `scope`.
+The inventory router resolves the server-side `InventoryService` provider and
+serves OS groups, OS detail, lifecycle review/confirmation, software groups,
+software mappings, and deterministic inventory narrative data.
+
+The Next.js 14 App Router application in `web/` is an operator workbench. MSAL
+provides browser authentication when configured; local development can use the
+explicit dev-token path. Typed API clients send scope and correlation
+information to the backend. Fluent UI components render health, search,
+investigation, inventory, approvals, and other API-backed views. The web layer
+does not query Azure or Fabric directly and does not fabricate unavailable
+capabilities.
+
+Hermes integration is provided by `plugin.yaml`, `__init__.py`, and
+`src/hermes_arg_connector/plugin.py`. The `operations_analysis` tool and the
+`azure_operational_context` toolset provide read-only operational reasoning.
+Current context-query helpers read the published snapshot and support a bounded
+set of operational questions; they are not a write or remediation authority.
+Agents consume governed context and cannot supply storage paths, workspace IDs,
+Lakehouse IDs, or credentials through their tool schema.
+
+### Ownership boundaries and delivery status
+
+The code currently has a single ingestion/publish path: ARG discovery,
+ConfigurationData enrichment, normalization, and inventory projection are
+coordinated by `IngestionService`, then published by `DatasetStore`. The
+following boundaries are the approved evolution of that path:
+
+- **Phase 7 — Unified Resource Inventory:** extract inventory into an
+  independent domain that owns acquisition, normalization, retention, status,
+  and publication into the persistent OneLake/Fabric cache, and generalize it
+  to resource families including PaaS.
+  The characterization tests and extraction/inversion work for this boundary
+  are planned; the current co-located projection is not evidence that the
+  extraction is complete.
+- **Phase 8 — Resource identity plane:** migrate Hermes discovery and semantic
+  modelling to the inventory resource contract. `ResourceObservation` must be
+  lossless for raw properties and per-family watermarks. Until that contract
+  and migration are implemented, Hermes still contains its existing ARG
+  connector path.
+- **Phase 9 — API, agents, and web pivot:** rewire consumers to the unified
+  inventory provider. Existing API routers already resolve providers, but the
+  consumer migration and the full web impact review are planned rather than
+  complete.
+
+Remediation remains a separate, human-approved capability. The inventory and
+semantic layers provide evidence and context; they do not themselves execute
+Azure changes. Live Azure walkthroughs and final end-to-end verification remain
+deployment/test activities, not claims of the local fixture test suite.

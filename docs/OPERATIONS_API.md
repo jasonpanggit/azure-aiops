@@ -60,9 +60,9 @@ connection; set `HERMES_LOCAL_AUTO_SYNC=0` to skip that sync. Without SPN
 values, startup falls back to a fixture-backed `.hermes-local` snapshot.
 
 Set `HERMES_LOCAL_SEED=0` for the existing live Azure-backed local development
-mode with the Postgres registry default. Live subscription onboarding and sync
-still use `build_connection_ingestion()` and the Azure Resource Graph client
-path.
+mode, which uses the OneLake-backed registry. Live subscription onboarding and
+sync still use `build_connection_ingestion()` and the Azure Resource Graph
+client path.
 
 The subscription onboarding route accepts either a pre-existing `secret_ref` or
 a one-time `credential.client_secret`. When `client_secret` is supplied,

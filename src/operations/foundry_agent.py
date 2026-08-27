@@ -27,6 +27,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,6 +37,9 @@ ENV_PROJECT_ENDPOINT = "FOUNDRY_PROJECT_ENDPOINT"
 ENV_AGENT_NAME = "FOUNDRY_AGENT_NAME"
 ENV_API_VERSION = "FOUNDRY_API_VERSION"
 ENV_TIMEOUT = "FOUNDRY_TIMEOUT_SECONDS"
+ENV_MAX_RETRIES = "FOUNDRY_MAX_RETRIES"
+ENV_CIRCUIT_THRESHOLD = "FOUNDRY_CIRCUIT_BREAKER_THRESHOLD"
+ENV_CIRCUIT_RESET_SECONDS = "FOUNDRY_CIRCUIT_BREAKER_RESET_SECONDS"
 
 # The Foundry "projects (new)" data plane is versioned with the literal string
 # `v1`, not a date. See the Microsoft quickstart sample for prompt agents.
@@ -50,6 +54,22 @@ FOUNDRY_SCOPE = "https://ai.azure.com/.default"
 # clock skew and in-flight request latency.
 _TOKEN_RENEWAL_MARGIN_SECONDS = 300.0
 
+# Reliability defaults (SLO-driven; see docs/pilot/RELIABILITY.md). Retries
+# are bounded and only cover transient network/5xx failures -- a malformed
+# response or an empty answer is a content problem, not a transport one, and
+# retrying it would not help. The circuit breaker exists so a Foundry outage
+# degrades every request to retrieval-only immediately (bounded latency)
+# instead of every concurrent request separately paying the full retry/
+# timeout budget against a dependency that is already down.
+DEFAULT_MAX_RETRIES = 2
+DEFAULT_RETRY_BACKOFF_SECONDS = 0.5
+DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 5
+DEFAULT_CIRCUIT_BREAKER_RESET_SECONDS = 60.0
+
+# HTTP status codes worth retrying: request-rate/backpressure and transient
+# upstream failures. 4xx client errors (bad prompt, auth) are not retried.
+_RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+
 
 class FoundryAgentError(RuntimeError):
     """The Foundry agent could not produce an answer."""
@@ -57,6 +77,69 @@ class FoundryAgentError(RuntimeError):
 
 class FoundryAgentNotConfigured(FoundryAgentError):
     """No Foundry agent is configured for this deployment."""
+
+
+class FoundryCircuitOpenError(FoundryAgentError):
+    """The circuit breaker is open; the Foundry call was short-circuited."""
+
+
+class _RetryableFoundryError(FoundryAgentError):
+    """A transient failure worth retrying (network error or 5xx/429)."""
+
+
+class _CircuitBreaker:
+    """Minimal open/closed circuit breaker guarding the Foundry endpoint.
+
+    Half-open probing is intentionally omitted: the reset window itself acts
+    as the probe interval, and the next call after it elapses is allowed
+    through and re-opens the circuit immediately on failure. This keeps the
+    breaker's behavior easy to reason about and test without a third state.
+    """
+
+    def __init__(
+        self,
+        *,
+        failure_threshold: int = DEFAULT_CIRCUIT_BREAKER_THRESHOLD,
+        reset_seconds: float = DEFAULT_CIRCUIT_BREAKER_RESET_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._failure_threshold = max(1, failure_threshold)
+        self._reset_seconds = max(0.0, reset_seconds)
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._opened_at = 0.0
+
+    def before_call(self) -> None:
+        with self._lock:
+            if self._failures < self._failure_threshold:
+                return
+            elapsed = self._clock() - self._opened_at
+            if elapsed < self._reset_seconds:
+                raise FoundryCircuitOpenError(
+                    "Foundry agent circuit breaker is open after repeated "
+                    "failures; degrading to retrieval-only"
+                )
+            # Reset window elapsed: allow one probing call through by
+            # resetting the failure count. A renewed failure re-opens it.
+            self._failures = 0
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._failures = 0
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self._failure_threshold:
+                self._opened_at = self._clock()
+
+    @property
+    def is_open(self) -> bool:
+        with self._lock:
+            if self._failures < self._failure_threshold:
+                return False
+            return (self._clock() - self._opened_at) < self._reset_seconds
 
 
 @dataclass(frozen=True)
@@ -136,6 +219,10 @@ class FoundryPromptAgent:
         api_version: str = DEFAULT_API_VERSION,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         token_provider: _TokenProvider | None = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
+        circuit_breaker: _CircuitBreaker | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         endpoint = str(project_endpoint or "").strip().rstrip("/")
         name = str(agent_name or "").strip()
@@ -148,6 +235,10 @@ class FoundryPromptAgent:
         self.api_version = api_version or DEFAULT_API_VERSION
         self.timeout_seconds = timeout_seconds
         self._tokens = token_provider or _TokenProvider()
+        self.max_retries = max(0, max_retries)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
+        self._breaker = circuit_breaker or _CircuitBreaker()
+        self._sleep = sleep
 
     @classmethod
     def from_env(cls) -> FoundryPromptAgent | None:
@@ -164,18 +255,37 @@ class FoundryPromptAgent:
             timeout = float(os.environ.get(ENV_TIMEOUT, "") or DEFAULT_TIMEOUT_SECONDS)
         except ValueError:
             timeout = DEFAULT_TIMEOUT_SECONDS
+        try:
+            max_retries = int(os.environ.get(ENV_MAX_RETRIES, "") or DEFAULT_MAX_RETRIES)
+        except ValueError:
+            max_retries = DEFAULT_MAX_RETRIES
+        try:
+            circuit_threshold = int(
+                os.environ.get(ENV_CIRCUIT_THRESHOLD, "")
+                or DEFAULT_CIRCUIT_BREAKER_THRESHOLD
+            )
+        except ValueError:
+            circuit_threshold = DEFAULT_CIRCUIT_BREAKER_THRESHOLD
+        try:
+            circuit_reset = float(
+                os.environ.get(ENV_CIRCUIT_RESET_SECONDS, "")
+                or DEFAULT_CIRCUIT_BREAKER_RESET_SECONDS
+            )
+        except ValueError:
+            circuit_reset = DEFAULT_CIRCUIT_BREAKER_RESET_SECONDS
         return cls(
             project_endpoint=endpoint,
             agent_name=agent_name,
             api_version=os.environ.get(ENV_API_VERSION, "").strip()
             or DEFAULT_API_VERSION,
             timeout_seconds=timeout,
+            max_retries=max_retries,
+            circuit_breaker=_CircuitBreaker(
+                failure_threshold=circuit_threshold, reset_seconds=circuit_reset
+            ),
         )
 
-    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self.project_endpoint}{path}"
-        separator = "&" if "?" in url else "?"
-        url = f"{url}{separator}api-version={self.api_version}"
+    def _post_once(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -190,18 +300,49 @@ class FoundryPromptAgent:
                 body = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
+            if exc.code in _RETRYABLE_HTTP_STATUS:
+                raise _RetryableFoundryError(
+                    f"Foundry agent request failed with HTTP {exc.code}: {detail}"
+                ) from exc
             raise FoundryAgentError(
                 f"Foundry agent request failed with HTTP {exc.code}: {detail}"
             ) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
-            raise FoundryAgentError(
-                "Foundry agent endpoint is unreachable"
-            ) from exc
+            raise _RetryableFoundryError("Foundry agent endpoint is unreachable") from exc
         try:
             parsed = json.loads(body or "{}")
         except json.JSONDecodeError as exc:
             raise FoundryAgentError("Foundry agent returned a malformed response") from exc
         return parsed if isinstance(parsed, dict) else {}
+
+    def _post(self, path: str, payload: dict[str, Any], *, versioned: bool = True) -> dict[str, Any]:
+        url = f"{self.project_endpoint}{path}"
+        if versioned:
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}api-version={self.api_version}"
+
+        # Short-circuit before doing any network I/O when the breaker is
+        # open, so an ongoing Foundry outage costs one dict lookup instead of
+        # a full timeout per concurrent request.
+        self._breaker.before_call()
+
+        attempt = 0
+        while True:
+            try:
+                result = self._post_once(url, payload)
+            except _RetryableFoundryError as exc:
+                attempt += 1
+                if attempt > self.max_retries:
+                    self._breaker.record_failure()
+                    raise FoundryAgentError(str(exc)) from exc
+                self._sleep(self.retry_backoff_seconds * (2 ** (attempt - 1)))
+                continue
+            except FoundryAgentError:
+                self._breaker.record_failure()
+                raise
+            else:
+                self._breaker.record_success()
+                return result
 
     def validate_access(self) -> None:
         """Verify the configured identity can acquire a Foundry data-plane token."""
@@ -217,8 +358,12 @@ class FoundryPromptAgent:
         """
         prompt = _build_prompt(question=question, context=context)
         response = self._post(
-            f"/agents/{self.agent_name}/responses",
-            {"input": [{"role": "user", "content": prompt}], "stream": False},
+            "/openai/v1/responses",
+            {
+                "agent_reference": {"type": "agent_reference", "name": self.agent_name},
+                "input": [{"role": "user", "content": prompt}],
+            },
+            versioned=False,
         )
         text = _extract_text(response)
         if not text:

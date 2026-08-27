@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 from storage.datasets import DatasetStore
 
 from .fabric_contracts import INVENTORY_FABRIC_CONTRACTS, validate_inventory_dataset
+from .onelake_publication import InventoryOneLakePublisher
 
 
 @dataclass
@@ -18,7 +20,9 @@ class InventoryFabricPublisher:
     """
 
     store: DatasetStore
+    onelake: InventoryOneLakePublisher | None = None
     fabric_tables: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    table_writes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def publish(
         self,
@@ -35,6 +39,16 @@ class InventoryFabricPublisher:
                 raise ValueError(f"Inventory quality validation failed: {report.to_dict()}")
             contract = INVENTORY_FABRIC_CONTRACTS[logical_name]
             self.fabric_tables[contract.table_name] = list(rows)
+            if self.onelake is not None:
+                write = self.onelake.publish_table(contract, rows)
+                self.table_writes[contract.table_name] = {
+                    "tableUri": write.table_uri,
+                    "rowsProcessed": write.result.rows_processed,
+                    "rowsAdded": write.result.rows_added,
+                    "rowsRemoved": write.result.rows_removed,
+                    "skipped": write.result.skipped,
+                    "version": write.result.version,
+                }
             if logical_name != "inventory/resource_observations":
                 published_datasets[logical_name] = list(rows)
             published_datasets[contract.table_name] = list(rows)
@@ -48,6 +62,7 @@ class InventoryFabricPublisher:
                 logical_name: INVENTORY_FABRIC_CONTRACTS[logical_name].table_name
                 for logical_name in logical_datasets
             },
+            "fabricTableWrites": dict(self.table_writes),
         }
         return self.store.publish(
             published_datasets,

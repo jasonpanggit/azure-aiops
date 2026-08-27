@@ -3,12 +3,14 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
-from urllib.parse import urlparse
 
 import yaml
+
+from storage.fs import is_onelake_uri
 
 
 @dataclass(frozen=True)
@@ -26,11 +28,13 @@ class ConnectorConfig:
     max_query_workers: int = 5
     connection_context: Mapping[str, str] = field(default_factory=dict)
     logs_workspaces: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    cost_management_enabled: bool = True
+    cost_management_lookback_days: int = 30
 
     def __post_init__(self) -> None:
-        # Keep URI-shaped roots (e.g. abfss://...) untouched; only resolve
-        # plain filesystem paths, since Path() would mangle a URI's "//".
-        if urlparse(str(self.output_dir)).scheme in ("abfss", "abfs", "az"):
+        # Keep OneLake URIs untouched; only resolve plain filesystem paths,
+        # since Path() would mangle a URI's "//".
+        if is_onelake_uri(self.output_dir):
             object.__setattr__(self, "output_dir", str(self.output_dir).rstrip("/"))
         else:
             object.__setattr__(
@@ -69,22 +73,29 @@ class ConnectorConfig:
             raise ValueError("page_size must be between 1 and 1000")
         if self.max_pages < 1:
             raise ValueError("max_pages must be positive")
+        if self.cost_management_lookback_days < 1:
+            raise ValueError("cost_management_lookback_days must be positive")
 
     @classmethod
     def load(cls, path: str | Path) -> ConnectorConfig:
         config_path = Path(path).expanduser().resolve()
         payload: dict[str, Any] = yaml.safe_load(config_path.read_text()) or {}
         azure = payload.get("azure") or {}
-        raw_workspaces = azure.get("logs_workspaces") or azure.get(
-            "log_analytics_workspaces"
-        ) or (payload.get("logs") or {}).get("workspaces") or {}
+        cost = azure.get("cost_management") or {}
+        logs = payload.get("logs") or {}
+        raw_workspaces = (
+            azure.get("logs_workspaces")
+            or azure.get("log_analytics_workspaces")
+            or logs.get("workspaces")
+            or {}
+        )
         if not isinstance(raw_workspaces, dict):
             raise TypeError(
                 "azure.logs_workspaces must be a mapping of connection IDs to workspace IDs"
             )
         storage = payload.get("storage") or {}
         raw_output_dir = str(storage.get("output_dir") or "./data")
-        if urlparse(raw_output_dir).scheme in ("abfss", "abfs", "az"):
+        if is_onelake_uri(raw_output_dir):
             output_dir: Path | str = raw_output_dir
         else:
             output_path = Path(raw_output_dir).expanduser()
@@ -115,7 +126,13 @@ class ConnectorConfig:
                 )
                 for connection_id, workspace_ids in raw_workspaces.items()
             },
+            cost_management_enabled=bool(cost.get("enabled", True)),
+            cost_management_lookback_days=int(cost.get("lookback_days") or 30),
         )
+
+    @property
+    def cost_management_lookback(self) -> timedelta:
+        return timedelta(days=self.cost_management_lookback_days)
 
     def workspaces_for_connection(self, connection_id: str) -> tuple[str, ...]:
         """Return only the server-configured workspaces for one connection."""

@@ -112,6 +112,10 @@ class FabricRuntimeConfig:
     registration_attempts: int = 20
     write_workers: int = 4
     table_schema: str = ""
+    # Read acceleration via the Lakehouse SQL analytics endpoint. Enabled by
+    # default and degrades silently to Delta reads when the endpoint or an
+    # ODBC driver is unavailable.
+    sql_endpoint_enabled: bool = True
     ontology: OntologyRuntimeConfig = field(default_factory=OntologyRuntimeConfig)
     patch_policies: tuple[PatchPolicyRuntimeConfig, ...] = field(default_factory=tuple)
     patch_intelligence: PatchIntelligenceRuntimeConfig = field(
@@ -245,6 +249,7 @@ class FabricRuntimeConfig:
             registration_attempts=int(fabric.get("registration_attempts") or 20),
             write_workers=int(fabric.get("write_workers") or 4),
             table_schema=str(fabric.get("table_schema") or ""),
+            sql_endpoint_enabled=bool(fabric.get("sql_endpoint_enabled", True)),
             ontology=OntologyRuntimeConfig(
                 enabled=bool(ontology_payload.get("enabled", True)),
                 ontology_id=str(ontology_payload.get("ontology_id") or ""),

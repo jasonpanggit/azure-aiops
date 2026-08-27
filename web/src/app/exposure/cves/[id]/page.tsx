@@ -3,14 +3,30 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AttackPathGraphView } from "@/components/ui/AttackPathGraphView";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CvssRadarChart } from "@/components/ui/CvssRadarChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
+import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { RiskGauge } from "@/components/ui/RiskGauge";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
 import { vulnerabilityApi } from "@/lib/services";
+import type { CveDetail } from "@/lib/types";
+
+/** Blends CVSS severity, real-world exploitation likelihood (EPSS), and CISA KEV status into a single
+ * 0-100 composite score. CVSS alone measures theoretical severity; EPSS measures observed exploitation
+ * probability; KEV confirms active exploitation. Combining them gives a more actionable single number
+ * than any one signal alone, while remaining fully explainable in the gauge's detail text. */
+function compositeExploitScore(cve: CveDetail["cve"]): number {
+  const cvssComponent = ((cve.cvss?.base_score ?? 0) / 10) * 55;
+  const epssComponent = (cve.epss_score ?? 0) * 30;
+  const kevComponent = cve.is_known_exploited ? 15 : 0;
+  return Math.round(Math.min(100, cvssComponent + epssComponent + kevComponent));
+}
 
 /** CVE drilldown connecting affected services, reachable hosts, paths, owners, and patch guidance. */
 export default function CveDetailPage({ params }: { params: { id: string } }) {
@@ -25,6 +41,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
     [params.id, scope]
   );
   const [acceptRiskOpen, setAcceptRiskOpen] = useState(false);
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [approvedBy, setApprovedBy] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
@@ -94,6 +111,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
         description={data.cve.title || data.cve.description}
         actions={
           <>
+            <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about this CVE" />
             <button className="button" onClick={() => setAcceptRiskOpen((open) => !open)}>
               {acceptedFindings.length ? "Manage risk acceptance" : "Accept risk"}
             </button>
@@ -123,6 +141,39 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
         knowledgeVersion={detail.data.knowledge_version}
         warnings={detail.data.warnings}
       />
+
+      <div className="predeploy-summary cve-hero">
+        <section className="card">
+          <div className="card-header">
+            <h2>Composite exploit risk</h2>
+          </div>
+          <div className="card-body risk-gauge-body">
+            <RiskGauge
+              score={compositeExploitScore(data.cve)}
+              label="Exploitability"
+              detail={
+                data.cve.is_known_exploited
+                  ? "CISA KEV listed — actively exploited in the wild"
+                  : "Weighted from CVSS severity, EPSS likelihood, and KEV status"
+              }
+            />
+          </div>
+        </section>
+        <section className="metric-grid cve-hero-metrics">
+          <MetricCard
+            label="Business impact"
+            value={data.affected_business_services.length}
+            detail={data.affected_business_services.join(", ") || "No service mapping available"}
+            tone={data.affected_business_services.length > 0 ? "warning" : "success"}
+          />
+          <MetricCard
+            label="Reachable servers"
+            value={data.affected_servers.length}
+            detail={`${data.findings.filter((finding) => finding.reachable).length} findings show a live network path`}
+            tone={data.findings.some((finding) => finding.reachable) ? "critical" : "success"}
+          />
+        </section>
+      </div>
 
       {acceptedFindings.length > 0 && (
         <section className="card">
@@ -167,7 +218,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
                 {submitting ? "Submitting…" : "Submit exception"}
               </button>
               <button className="button" onClick={() => setAcceptRiskOpen(false)} disabled={submitting}>
-                Cancel
+                Keep reviewing CVE
               </button>
             </div>
           </div>
@@ -175,13 +226,6 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
       )}
 
       <section className="cve-summary-grid">
-        <article className="card">
-          <div className="card-header"><h2>Business impact</h2></div>
-          <div className="card-body">
-            <strong className="large-value">{data.affected_business_services.length}</strong>
-            <p className="muted">{data.affected_business_services.join(", ") || "No service mapping available"}</p>
-          </div>
-        </article>
         <article className="card">
           <div className="card-header"><h2>Recommended patch</h2></div>
           <div className="card-body">
@@ -246,6 +290,14 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
             <p className="muted">
               EPSS score{data.cve.epss_percentile ? ` · ${(data.cve.epss_percentile * 100).toFixed(0)}th percentile` : ""}
             </p>
+            {typeof data.cve.epss_percentile === "number" && (
+              <div className="epss-percentile-track" title={`${(data.cve.epss_percentile * 100).toFixed(0)}th percentile among all scored CVEs`}>
+                <div
+                  className="epss-percentile-fill"
+                  style={{ width: `${Math.min(100, data.cve.epss_percentile * 100)}%` }}
+                />
+              </div>
+            )}
             {data.cve.is_known_exploited ? (
               <p className="muted">
                 <StatusBadge label="CISA KEV" tone="critical" compact />{" "}
@@ -340,6 +392,29 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
           </table>
         </div>
       </section>
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel={data.cve.cve_id}
+        starterQuestions={[
+          {
+            label: `Explain ${data.cve.cve_id} and how it could impact our systems`,
+            tool: "cve_detail",
+            toolArguments: { cve_id: data.cve.cve_id },
+          },
+          {
+            label: `What is the blast radius of ${data.cve.cve_id} across dependent services?`,
+            tool: "cve_attack_path",
+            toolArguments: { cve_id: data.cve.cve_id },
+          },
+          {
+            label: `When does ${data.cve.cve_id} need to be patched and who owns that?`,
+            tool: "cve_detail",
+            toolArguments: { cve_id: data.cve.cve_id },
+          },
+        ]}
+      />
     </div>
   );
 }

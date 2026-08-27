@@ -309,3 +309,15 @@ class TestEvidence:
         assert body["warnings"] == [
             "Results are truncated; narrow the scope or use pagination for a complete view."
         ]
+
+    def test_envelope_promotes_hybrid_freshness_metadata(self):
+        body = envelope(
+            {
+                "graph_freshness": "graph-time",
+                "live_observed_at": "live-time",
+                "source_status": {"azure-resource-graph": "ok"},
+            }
+        )
+        assert body["graph_freshness"] == "graph-time"
+        assert body["live_observed_at"] == "live-time"
+        assert body["source_status"]["azure-resource-graph"] == "ok"

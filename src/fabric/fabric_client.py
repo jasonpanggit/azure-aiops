@@ -17,6 +17,12 @@ class TokenCredential(Protocol):
 class FabricClient:
     SCOPE = "https://api.fabric.microsoft.com/.default"
     TRANSIENT_STATUS: ClassVar[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
+    #: Long-running Fabric item operations (e.g. creating an Ontology item)
+    #: return a 202 Location on a regional Power BI/Fabric backend cluster
+    #: (e.g. "wabi-west-us3-a-primary-redirect.analysis.windows.net"), not on
+    #: api.fabric.microsoft.com itself. Trust that suffix in addition to the
+    #: configured API origin so polling those URLs isn't rejected.
+    TRUSTED_HOST_SUFFIXES: ClassVar[tuple[str, ...]] = (".analysis.windows.net",)
 
     def __init__(
         self,
@@ -70,20 +76,39 @@ class FabricClient:
         *,
         params: Mapping[str, object] | None = None,
     ) -> Iterator[dict[str, Any]]:
-        query = dict(params or {})
+        base_path = path
+        query: Mapping[str, object] | None = dict(params or {})
         next_path = path
         while True:
             page = self.request("GET", next_path, params=query)
-            for item in page.get("value") or []:
+            # Most Fabric list endpoints paginate under "value", but some
+            # (e.g. GET .../lakehouses/{id}/tables) use "data" instead. Accept
+            # either so pagination doesn't silently yield zero items.
+            items = page.get("value")
+            if items is None:
+                items = page.get("data")
+            for item in items or []:
                 if isinstance(item, dict):
                     yield item
             token = page.get("continuationToken")
             continuation_uri = page.get("continuationUri")
             if continuation_uri:
+                # continuationUri is a fully-formed absolute URL that already
+                # embeds its own continuationToken query string. Pass
+                # params=None (not {}) -- httpx replaces the URL's existing
+                # query string with whatever `params` is given, even an empty
+                # dict, which would strip the embedded token and re-fetch the
+                # same page forever.
                 next_path = str(continuation_uri)
-                query = {}
+                query = None
             elif token:
-                query["continuationToken"] = token
+                # Always paginate from the original path when following a
+                # bare continuationToken. Reusing a previous continuationUri
+                # as next_path here would append a second, conflicting
+                # continuationToken query param and cause the server to
+                # repeat/loop pages.
+                next_path = base_path
+                query = {"continuationToken": token}
             else:
                 return
 
@@ -155,9 +180,12 @@ class FabricClient:
         candidate = httpx.URL(value)
         if not candidate.is_absolute_url:
             candidate = httpx.URL(f"{self.base_url}/{value.lstrip('/')}")
+        host = str(candidate.host or "").casefold()
+        is_trusted_origin = self._url_origin(candidate) == self._origin
+        is_trusted_suffix = host.endswith(self.TRUSTED_HOST_SUFFIXES)
         if (
             candidate.scheme != "https"
-            or self._url_origin(candidate) != self._origin
+            or not (is_trusted_origin or is_trusted_suffix)
             or candidate.username
             or candidate.password
         ):

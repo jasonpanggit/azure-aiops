@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from intelligence.inventory.sources.arg import inventory_os_specs
-
 
 @dataclass(frozen=True)
 class QuerySpec:
@@ -119,7 +117,6 @@ class QueryCatalog:
                 f"| {projection}",
                 False,
             ),
-            *inventory_os_specs(),
             *_identity_specs(projection),
             *_network_specs(projection),
         ]

@@ -280,6 +280,9 @@ class RelationshipBuilder:
         for recommendation in by_type["AdvisorRecommendation"]:
             target = _target(recommendation)
             connect(recommendation, "affects", by_id.get(target), "advisor")
+        for actual in by_type["CostActual"]:
+            target = _target(actual)
+            connect(by_id.get(target), "incurs_cost", actual, "cost_management")
         for assessment in by_type["PatchAssessment"]:
             target = _target(assessment)
             connect(assessment, "evaluates", by_id.get(target), "patch_assessment")
@@ -446,6 +449,36 @@ class RelationshipBuilder:
             payload = _payload(balancer)
             connect(balancer, "attachedTo", ref(payload.get("subnetId")), "network", _pick(payload, "sku", "frontendIps", "publicIps", "wafEnabled"))
             link_each(balancer, "loadBalances", payload.get("backendResourceIds"))
+            backend_subnets = payload.get("backendSubnetIds") or payload.get("backend_subnet_ids") or ()
+            if not backend_subnets:
+                properties = payload.get("properties")
+                pools = properties.get("backendAddressPools") if isinstance(properties, Mapping) else ()
+                backend_subnets = [
+                    address_properties.get("subnet", {}).get("id")
+                    for pool in pools or ()
+                    if isinstance(pool, Mapping)
+                    for pool_properties in (pool.get("properties") or {},)
+                    if isinstance(pool_properties, Mapping)
+                    for address in (pool_properties.get("loadBalancerBackendAddresses") or ())
+                    if isinstance(address, Mapping)
+                    for address_properties in (address.get("properties") or address,)
+                    if isinstance(address_properties, Mapping)
+                    and isinstance(address_properties.get("subnet"), Mapping)
+                    and address_properties["subnet"].get("id")
+                ]
+            link_each(balancer, "loadBalances", backend_subnets)
+            tags = payload.get("tags") or balancer.get("tags") or {}
+            if isinstance(tags, Mapping):
+                managed_resource_id = next(
+                    (
+                        str(value)
+                        for key, value in tags.items()
+                        if str(key).casefold() in {"aca-managed-env-id", "managed-by-resource-id"}
+                        and value
+                    ),
+                    "",
+                )
+                connect(ref(managed_resource_id), "hosts", balancer, "network", {"source": "tags"})
 
 
 def _relationship_id(subject: str, predicate: str, obj: str) -> str:

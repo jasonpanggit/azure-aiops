@@ -1,9 +1,9 @@
 """Durable registry of subscription connections.
 
 Persistence is secret-free by construction: only ``secret_ref`` pointers are
-written to disk/database. Storage is pluggable (see :mod:`onboarding.store`):
-a single JSON file for local dev by default, or Postgres when
-``HERMES_DATABASE_URL`` is set -- same code path either way.
+written to storage. Storage is pluggable (see :mod:`onboarding.store`):
+a single JSON file for local dev, or a OneLake document when ``HERMES_HOME``
+points at Fabric -- same code path either way.
 """
 
 from __future__ import annotations

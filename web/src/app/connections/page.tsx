@@ -302,7 +302,7 @@ export default function ConnectionsPage() {
               <FormField label="Cost center" value={form.costCenter} onChange={(value) => update("costCenter", value)} />
             </div>
             <div className="form-actions">
-              <button type="button" className="button" onClick={() => setShowOnboarding(false)}>Cancel</button>
+              <button type="button" className="button" onClick={() => setShowOnboarding(false)}>Close onboarding form</button>
               <button type="submit" className="button button-primary" disabled={submitting}>{submitting ? "Onboarding…" : "Add subscription"}</button>
             </div>
           </div>
@@ -389,7 +389,7 @@ export default function ConnectionsPage() {
                     setEditForm(EMPTY_EDIT_FORM);
                   }}
                 >
-                  Cancel
+                  Discard connection edits
                 </button>
                 <button type="submit" className="button button-primary" disabled={editSubmitting || !editForm.name.trim()}>
                   {editSubmitting ? "Saving…" : "Save changes"}

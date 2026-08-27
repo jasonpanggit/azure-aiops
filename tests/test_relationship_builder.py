@@ -50,6 +50,60 @@ def test_application_dependencies_are_discovered_from_dependency_tags():
     } == {"Identity API", "Ledger API"}
 
 
+def test_container_apps_load_balancer_relationships_are_discovered_from_metadata():
+    subnet_id = "/subscriptions/sub-1/resourceGroups/net/providers/Microsoft.Network/virtualNetworks/v/subnets/aca"
+    environment_id = "/subscriptions/sub-1/resourceGroups/apps/providers/Microsoft.App/managedEnvironments/cae"
+    load_balancer_id = "/subscriptions/sub-1/resourceGroups/net/providers/Microsoft.Network/loadBalancers/capp-svc-lb"
+    entities = EntityBuilder().build(
+        [
+            resource(
+                resource_id=subnet_id,
+                entity_type="Subnet",
+                resource_type="microsoft.network/subnets",
+                name="aca",
+                payload_json='{"vnetId":"/subscriptions/sub-1/resourceGroups/net/providers/Microsoft.Network/virtualNetworks/v"}',
+            ),
+            resource(
+                resource_id=environment_id,
+                entity_type="Resource",
+                resource_type="microsoft.app/managedenvironments",
+                name="cae",
+                payload_json="{}",
+            ),
+            resource(
+                resource_id=load_balancer_id,
+                entity_type="LoadBalancer",
+                resource_type="microsoft.network/loadbalancers",
+                name="capp-svc-lb",
+                payload_json=(
+                    '{"tags":{"aca-managed-env-id":"'
+                    + environment_id
+                    + '"},"properties":{"backendAddressPools":[{"properties":'
+                    '{"loadBalancerBackendAddresses":[{"properties":{"subnet":{"id":"'
+                    + subnet_id
+                    + '"}}}]}}]}}'
+                ),
+            ),
+        ],
+        "run-aca",
+    )
+
+    relationships = RelationshipBuilder().build(entities, "run-aca")
+
+    assert any(
+        row["subject_id"] == load_balancer_id.casefold()
+        and row["predicate"] == "loadBalances"
+        and row["object_id"] == subnet_id.casefold()
+        for row in relationships
+    )
+    assert any(
+        row["subject_id"] == environment_id.casefold()
+        and row["predicate"] == "hosts"
+        and row["object_id"] == load_balancer_id.casefold()
+        for row in relationships
+    )
+
+
 def test_management_group_hierarchy_is_discovered():
     management_group = resource(
         resource_id="/providers/microsoft.management/managementgroups/mg-root",

@@ -635,8 +635,12 @@ def test_connection_ingestion_still_uses_live_arg_client(tmp_path, monkeypatch) 
         lambda config, candidate, resolver=None: built.append((config, candidate)) or FakeArgClient(),
     )
 
-    ingestion = build_connection_ingestion(ConnectorConfig(output_dir=tmp_path), connection)
+    ingestion = build_connection_ingestion(
+        ConnectorConfig(output_dir=tmp_path, cost_management_enabled=False),
+        connection,
+    )
 
     assert ingestion.source.arg.__class__ is FakeArgClient
     assert ingestion.source.mcp is None
+    assert ingestion.cost_source is None
     assert built[0][1] is connection

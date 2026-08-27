@@ -1105,6 +1105,9 @@ export interface NetworkPolicyRule {
   severity: NetworkSeverity;
   enabled: boolean;
   parameters: Record<string, unknown>;
+  /** Whether the analyzer has a gap check for this rule. Absent on older
+   * API responses, in which case evaluability is unknown. */
+  evaluated?: boolean;
 }
 
 /** The full design policy gap analysis is checked against. */

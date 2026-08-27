@@ -21,7 +21,7 @@ def test_resolve_epss_scores_fetches_and_caches(monkeypatch):
             return {"CVE-2024-1": {"epss_score": 0.9, "epss_percentile": 0.95}}
 
     monkeypatch.setattr(runtime, "EpssScoreConnector", _FakeConnector)
-    runtime._epss_cache.clear()
+    runtime._enrichment_cache_for.cache_clear()
 
     first = runtime._resolve_epss_scores(("CVE-2024-1",))
     assert first["CVE-2024-1"]["epss_score"] == 0.9
@@ -38,7 +38,7 @@ def test_resolve_epss_scores_defaults_on_connector_failure(monkeypatch):
             raise RuntimeError("network down")
 
     monkeypatch.setattr(runtime, "EpssScoreConnector", _FailingConnector)
-    runtime._epss_cache.clear()
+    runtime._enrichment_cache_for.cache_clear()
 
     scores = runtime._resolve_epss_scores(("CVE-2024-2",))
     assert scores["CVE-2024-2"] == {"epss_score": 0.0, "epss_percentile": 0.0}
@@ -53,7 +53,7 @@ def test_resolve_kev_catalog_fetches_and_caches(monkeypatch):
             return {"CVE-2024-3": {"kev_date_added": "2024-01-01", "kev_due_date": "2024-01-15", "kev_ransomware_use": "Known"}}
 
     monkeypatch.setattr(runtime, "KevCatalogConnector", _FakeConnector)
-    runtime._kev_cache = None
+    runtime._enrichment_cache_for.cache_clear()
 
     first = runtime._resolve_kev_catalog()
     assert first["CVE-2024-3"]["kev_ransomware_use"] == "Known"
@@ -69,6 +69,6 @@ def test_resolve_kev_catalog_returns_empty_on_failure(monkeypatch):
             raise RuntimeError("network down")
 
     monkeypatch.setattr(runtime, "KevCatalogConnector", _FailingConnector)
-    runtime._kev_cache = None
+    runtime._enrichment_cache_for.cache_clear()
 
     assert runtime._resolve_kev_catalog() == {}

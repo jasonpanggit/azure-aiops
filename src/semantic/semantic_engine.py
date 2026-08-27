@@ -200,6 +200,31 @@ class SemanticEngine:
             **kwargs,
         )
 
+    @classmethod
+    def from_graph_rows(
+        cls,
+        *,
+        entities: list[dict[str, Any]],
+        relationships: list[dict[str, Any]],
+        knowledge_version: str = "",
+        freshness: str = "",
+        ontology_synchronized_at: str = "",
+        **kwargs,
+    ) -> SemanticEngine:
+        """Build a graph-only engine without operational source snapshots."""
+        return cls.from_rows(
+            entities=entities,
+            relationships=relationships,
+            knowledge_version=knowledge_version,
+            freshness=freshness,
+            ontology_synchronized_at=ontology_synchronized_at,
+            inventory=[],
+            compliance=[],
+            security=[],
+            cost=[],
+            **kwargs,
+        )
+
     def get_application_context(self, application: str) -> dict[str, Any]:
         return self._cached_context(
             "application",

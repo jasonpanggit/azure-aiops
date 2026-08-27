@@ -28,6 +28,15 @@ ENTITY_FILES = (
     "PatchAssessmentDetail",
     "PatchInstallation",
     "AdvisorRecommendation",
+    "CostActual",
+    # Identity governance entities. Role assignments and definitions come from
+    # the authorizationresources ARG table, managed identities from Resources.
+    # Without their own typed files they would be collapsed into the generic
+    # entity file and lose the principal/role/scope fields identity risk needs.
+    "RoleAssignment",
+    "RoleDefinition",
+    "ManagedIdentity",
+    "Situation",
     # Network topology entities, including the sub-resources (subnets, NSG
     # rules, routes, peerings) that only ever exist in their own typed file.
     # Without these the ontology has no VNet internals, so the topology graph
@@ -47,6 +56,10 @@ ONTOLOGY_ENTITY_TYPES = (
     "PatchAssessment",
     "PatchInstallation",
     "AdvisorRecommendation",
+    "CostActual",
+    "RoleAssignment",
+    "RoleDefinition",
+    "ManagedIdentity",
     "LifecycleProduct",
     "Application",
     "Service",
@@ -106,6 +119,9 @@ ONTOLOGY_ENTITY_TYPES = (
     "PatchSupersedence",
     "VulnerabilityFinding",
     "VulnerabilityExposure",
+    "SubscriptionConnection",
+    "ConnectionHealth",
+    "MissingUpdate",
 )
 
 #: Entity types that can appear as the object of a network containment edge.
@@ -176,6 +192,12 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     ("BlastRadius", "hasDependencyChain", "DependencyChain"),
     ("Incident", "hasEvent", "OperationalEvent"),
     ("Incident", "hasProbableCause", "RootCause"),
+    ("Tenant", "owns", "SubscriptionConnection"),
+    ("Subscription", "contains", "SubscriptionConnection"),
+    ("SubscriptionConnection", "has_health", "ConnectionHealth"),
+    ("SubscriptionConnection", "mapped_to", "Environment"),
+    ("SubscriptionConnection", "supports", "BusinessService"),
+    ("SubscriptionConnection", "runs", "Application"),
     *(("ResourceGroup", "contains", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *((asset, "member_of", "Application") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *(("Application", "hosted_on", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
@@ -183,6 +205,7 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     *((asset, "provides", "Service") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *((asset, "owned_by", "Owner") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *(("AdvisorRecommendation", "affects", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
+    *(("Resource", "incurs_cost", "CostActual"), ("VirtualMachine", "incurs_cost", "CostActual"), ("ArcServer", "incurs_cost", "CostActual"), ("KubernetesCluster", "incurs_cost", "CostActual")),
     *(("PatchAssessment", "evaluates", asset) for asset in ("VirtualMachine", "ArcServer")),
     *(("PatchInstallation", "records_installation_for", asset) for asset in ("VirtualMachine", "ArcServer")),
     # Network topology (Prompt 16)
@@ -297,6 +320,14 @@ class InventoryDatasetMapper:
                 _entity_row(row, "AdvisorRecommendation", ingestion_run_id)
                 for row in entities["AdvisorRecommendation"]
             ],
+            "bronze_cost_actuals": [
+                _cost_actual_row(row, ingestion_run_id, subscription_tenants)
+                for row in entities["CostActual"]
+            ],
+            "silver_cost_actuals": [
+                _cost_actual_row(row, ingestion_run_id, subscription_tenants)
+                for row in entities["CostActual"]
+            ],
             "bronze_patchassessment": [
                 _entity_row(row, "PatchAssessment", ingestion_run_id)
                 for row in entities["PatchAssessment"]
@@ -344,10 +375,18 @@ class InventoryDatasetMapper:
             ],
             "silver_resource_relationships": relationship_rows,
             "silver_situations": [_situation_row(row, ingestion_run_id) for row in situations],
-            "silver_situation_evidence": [_situation_evidence_row(row, ingestion_run_id) for row in situation_evidence],
-            "silver_situation_links": [_situation_link_row(row, ingestion_run_id) for row in situation_links],
-            "metadata_audit_events": [_audit_event_row(row, ingestion_run_id) for row in audit_events],
-            "metadata_source_status": [_source_status_row(row, ingestion_run_id) for row in source_status],
+            "silver_situation_evidence": [
+                _situation_evidence_row(row, ingestion_run_id) for row in situation_evidence
+            ],
+            "silver_situation_links": [
+                _situation_link_row(row, ingestion_run_id) for row in situation_links
+            ],
+            "metadata_audit_events": [
+                _audit_event_row(row, ingestion_run_id) for row in audit_events
+            ],
+            "metadata_source_status": [
+                _source_status_row(row, ingestion_run_id) for row in source_status
+            ],
             "ontology_entities": graph.entities,
             "ontology_relationships": graph.relationships,
             "ontology_application_context": graph.views["application_context"],
@@ -382,11 +421,19 @@ class InventoryDatasetMapper:
             ]
         for relationship_type in ONTOLOGY_RELATIONSHIP_TYPES:
             datasets.setdefault(ontology_relationship_table(*relationship_type), [])
-        situation_entity_rows = [_situation_ontology_entity(row, ingestion_run_id) for row in situations]
+        situation_entity_rows = [
+            _situation_ontology_entity(row, ingestion_run_id) for row in situations
+        ]
         datasets["ontology_entities"].extend(situation_entity_rows)
         datasets["ontology_situation_entities"] = situation_entity_rows
-        known_types = {row["resource_id"]: str(row.get("entity_type") or "Resource") for row in datasets["ontology_entities"]}
-        situation_relationships = [_situation_ontology_relationship(row, situations, known_types, ingestion_run_id) for row in situation_links]
+        known_types = {
+            row["resource_id"]: str(row.get("entity_type") or "Resource")
+            for row in datasets["ontology_entities"]
+        }
+        situation_relationships = [
+            _situation_ontology_relationship(row, situations, known_types, ingestion_run_id)
+            for row in situation_links
+        ]
         situation_relationships = [row for row in situation_relationships if row]
         datasets["ontology_relationships"].extend(situation_relationships)
         datasets["ontology_rel_situation_affects_resource"] = situation_relationships
@@ -441,6 +488,29 @@ def _asset_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
         "os_version": str(row.get("osVersion") or ""),
         "vm_size": str(row.get("vmSize") or ""),
     }
+
+
+def _cost_actual_row(
+    row: dict[str, Any],
+    run_id: str,
+    subscription_tenants: dict[str, str],
+) -> dict[str, Any]:
+    result = _entity_row(row, "CostActual", run_id)
+    if not result["tenant_id"]:
+        result["tenant_id"] = subscription_tenants.get(result["subscription_id"].casefold(), "")
+    result.update(
+        {
+            "usage_date": str(row.get("usageDate") or ""),
+            "cost": float(row.get("cost") or 0),
+            "currency": str(row.get("currency") or ""),
+            "target_resource_id": str(row.get("targetResourceId") or "").casefold(),
+            "resource_group": str(row.get("resourceGroup") or ""),
+            "service_name": str(row.get("serviceName") or ""),
+            "billing_period_start": str(row.get("billingPeriodStart") or ""),
+            "billing_period_end": str(row.get("billingPeriodEnd") or ""),
+        }
+    )
+    return result
 
 
 def _compliance_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
@@ -593,30 +663,20 @@ def _change_row(
     }
 
 
-def _source_status_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
-    requested_scope = row.get("requested_scope") or {}
-    subscriptions = requested_scope.get("subscription") if isinstance(requested_scope, dict) else []
-    source_family = str(row.get("source_family") or "unknown")
-    resource_id = f"source-status://{source_family}/{row.get("run_id") or run_id}".casefold()
+def _base(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    resource_id = str(row.get("id") or row.get("sourceId") or "").casefold()
+    semantic = {
+        key: value
+        for key, value in row.items()
+        if key not in {"createdTimestamp", "lastObservedTimestamp", "ingestion_run_id"}
+    }
     return {
-        "tenant_id": "unknown",
-        "subscription_id": str((subscriptions or ["unknown"])[0]),
+        "tenant_id": str(row.get("tenantId") or ""),
+        "subscription_id": str(row.get("subscriptionId") or _subscription_from_id(resource_id)),
         "resource_id": resource_id,
-        "timestamp": str(row.get("ingested_at") or row.get("observed_at") or "unknown"),
-        "change_version": _version(row),
+        "timestamp": str(row.get("lastObservedTimestamp") or ""),
+        "change_version": _version(semantic),
         "ingestion_run_id": run_id,
-        "source_family": source_family,
-        "status": str(row.get("status") or "unknown"),
-        "observed_at": str(row.get("observed_at") or ""),
-        "ingested_at": str(row.get("ingested_at") or ""),
-        "watermark": str(row.get("watermark") or ""),
-        "query_version": str(row.get("query_version") or ""),
-        "requested_scope_json": _canonical(requested_scope),
-        "provider_status": str(row.get("provider_status") or ""),
-        "freshness": str(row.get("freshness") or "unknown"),
-        "availability": str(row.get("availability") or "unknown"),
-        "quality": str(row.get("quality") or "unknown"),
-        "error": str(row.get("error") or ""),
     }
 
 
@@ -824,25 +884,6 @@ def _situation_ontology_relationship(
         "retired_at": "",
         "ontology_version": "1",
     }
-
-
-def _base(row: dict[str, Any], run_id: str) -> dict[str, Any]:
-    resource_id = str(row.get("id") or row.get("sourceId") or "").casefold()
-    semantic = {
-        key: value
-        for key, value in row.items()
-        if key not in {"createdTimestamp", "lastObservedTimestamp", "ingestion_run_id"}
-    }
-    return {
-        "tenant_id": str(row.get("tenantId") or ""),
-        "subscription_id": str(row.get("subscriptionId") or _subscription_from_id(resource_id)),
-        "resource_id": resource_id,
-        "timestamp": str(row.get("lastObservedTimestamp") or ""),
-        "change_version": _version(semantic),
-        "ingestion_run_id": run_id,
-    }
-
-
 def _version(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode()).hexdigest()
 

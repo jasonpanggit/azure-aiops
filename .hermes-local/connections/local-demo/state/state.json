@@ -1,0 +1,10 @@
+{
+  "contentHash": "9577d2f829ea948163db620d809c46ac3d1404790ccaa9d60aee631a6285b5e2",
+  "lastRunId": "bced3c39-2ab8-4f04-8e53-5b8302c653eb",
+  "lastSuccessfulRun": "2026-08-21T16:18:19Z",
+  "resourceChangesWatermark": "2026-08-17T00:30:00Z",
+  "subscriptions": [
+    "00000000-0000-0000-0000-000000000002"
+  ],
+  "watermarkVersion": 2
+}

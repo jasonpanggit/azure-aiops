@@ -69,8 +69,8 @@ export default function ServicesPage() {
     <div className="page-container">
       <PageHeader
         eyebrow="Service operations"
-        title="Business services"
-        description="A service-centered operating model that connects ownership, environments, subscriptions, active risk, and technical dependencies."
+        title="Which services need attention?"
+        description="Compare business services by ownership, scope, active situations, and evidence coverage before opening a service brief."
       />
       <EvidenceBar
         evidence={[...(connections.data?.evidence ?? []), ...(incidents.data?.evidence ?? [])]}
