@@ -4914,3 +4914,379 @@ body.topology-fullscreen-open {
     padding: 14px;
   }
 }
+
+/* ==========================================================================
+   Inventory page visual treatment
+   Scoped to .inventory-page so shared components elsewhere are unaffected.
+   ========================================================================== */
+
+.inventory-page {
+  --inventory-accent: #0f6cbd;
+  --inventory-accent-deep: #0a4c86;
+}
+
+/* --- Tabs: pill switcher with an animated active indicator --------------- */
+
+.inventory-page .tab-list {
+  position: relative;
+  gap: 2px;
+  padding: 5px;
+  background: linear-gradient(145deg, #eaf0f6 0%, #f4f7fa 100%);
+  border-color: #d5dee7;
+  box-shadow: inset 0 1px 2px rgb(16 37 63 / 6%);
+}
+
+.inventory-page .tab-list [role="tab"] {
+  position: relative;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 20px;
+  font-size: 13.5px;
+  letter-spacing: .01em;
+  transition: color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.inventory-page .tab-list [role="tab"]:hover:not([aria-selected="true"]) {
+  color: var(--inventory-accent-deep);
+  background: rgb(255 255 255 / 60%);
+}
+
+.inventory-page .tab-list [role="tab"][aria-selected="true"] {
+  color: #fff;
+  background: linear-gradient(135deg, var(--inventory-accent) 0%, var(--inventory-accent-deep) 100%);
+  box-shadow: 0 4px 12px rgb(15 108 189 / 32%);
+  transform: translateY(-1px);
+}
+
+.inventory-page .tab-list [role="tab"]:focus-visible {
+  outline: 2px solid var(--inventory-accent);
+  outline-offset: 2px;
+}
+
+/* --- Metric cards: stronger hierarchy, accent gradient rail -------------- */
+
+.inventory-page .metric-grid {
+  gap: 14px;
+}
+
+.inventory-page .metric-card {
+  background: linear-gradient(150deg, #fff 0%, #f7fbff 100%);
+  border-radius: var(--radius-lg);
+}
+
+.inventory-page .metric-card::before {
+  width: 4px;
+  background: linear-gradient(180deg, var(--inventory-accent) 0%, #4aa3e8 100%);
+}
+
+.inventory-page .metric-card::after {
+  position: absolute;
+  top: -38px;
+  right: -38px;
+  width: 108px;
+  height: 108px;
+  content: "";
+  background: radial-gradient(circle, rgb(15 108 189 / 9%) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.inventory-page .metric-card:hover {
+  box-shadow: 0 14px 32px rgb(16 37 63 / 14%);
+  transform: translateY(-3px);
+}
+
+/* --- Dashboard panels: header accent + depth ---------------------------- */
+
+.inventory-page .inventory-dashboard,
+.inventory-page .detail-panel {
+  padding: 20px;
+  border-radius: var(--radius-lg);
+}
+
+.inventory-page .inventory-dashboard .card-header,
+.inventory-page .detail-panel .card-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.inventory-page .inventory-dashboard .card-header h2,
+.inventory-page .detail-panel .card-header h2 {
+  position: relative;
+  margin: 0;
+  padding-left: 12px;
+  font-size: 15px;
+}
+
+.inventory-page .inventory-dashboard .card-header h2::before,
+.inventory-page .detail-panel .card-header h2::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 4px;
+  height: 15px;
+  content: "";
+  background: linear-gradient(180deg, var(--inventory-accent) 0%, #4aa3e8 100%);
+  border-radius: 999px;
+  transform: translateY(-50%);
+}
+
+/* --- Ranked bars: gradient fill with grow-in animation ------------------- */
+
+.inventory-page .inventory-bar-row {
+  padding: 3px 0;
+  font-size: 13px;
+}
+
+.inventory-page .inventory-bar-row > span:first-child {
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.inventory-page .inventory-bar-row strong {
+  color: var(--inventory-accent-deep);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.inventory-page .inventory-bar {
+  height: 14px;
+  background: linear-gradient(90deg, var(--inventory-accent) 0%, #4aa3e8 100%);
+  box-shadow: 0 1px 3px rgb(15 108 189 / 30%);
+  transform-origin: left center;
+  animation: inventory-bar-grow 520ms cubic-bezier(.22, .8, .3, 1) both;
+}
+
+.inventory-page .inventory-bar-expired {
+  background: linear-gradient(90deg, var(--color-critical) 0%, #e0644f 100%);
+}
+
+.inventory-page .inventory-bar-expiring {
+  background: linear-gradient(90deg, var(--color-warning) 0%, #d9a441 100%);
+}
+
+.inventory-page .inventory-bar-supported {
+  background: linear-gradient(90deg, var(--color-success) 0%, #4bb04b 100%);
+}
+
+.inventory-page .inventory-bar-review {
+  background: linear-gradient(90deg, var(--color-text-muted) 0%, #a4aeb9 100%);
+}
+
+@keyframes inventory-bar-grow {
+  from {
+    opacity: .35;
+    transform: scaleX(0);
+  }
+
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+/* --- Filters: elevated toolbar ------------------------------------------ */
+
+.inventory-page .inventory-filters {
+  padding: 15px 16px;
+  background: linear-gradient(145deg, #fbfdff 0%, #f4f8fc 100%);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.inventory-page .inventory-filters label {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.inventory-page .inventory-filters input,
+.inventory-page .inventory-filters select {
+  min-height: 38px;
+  font-size: 13px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.inventory-page .inventory-filters input:focus,
+.inventory-page .inventory-filters select:focus {
+  border-color: var(--inventory-accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(15 108 189 / 15%);
+}
+
+/* --- Tables: sticky headers, zebra rows, accent hover ------------------- */
+
+.inventory-page .data-table-wrap,
+.inventory-page .table-scroll {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.inventory-page .data-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--color-text-secondary);
+  font-size: 10.5px;
+  font-weight: 700;
+  background: linear-gradient(180deg, #f3f7fb 0%, #eaf1f7 100%);
+  border-bottom: 2px solid #d5dee7;
+}
+
+.inventory-page .data-table tbody tr {
+  transition: background 130ms ease, box-shadow 130ms ease;
+}
+
+.inventory-page .data-table tbody tr:nth-child(even) td {
+  background: #fcfdfe;
+}
+
+.inventory-page .data-table tbody tr:hover td {
+  background: var(--color-brand-subtle);
+  box-shadow: inset 3px 0 0 var(--inventory-accent);
+}
+
+.inventory-page .data-table tbody tr[aria-selected="true"] td {
+  background: var(--color-brand-subtle);
+  box-shadow: inset 3px 0 0 var(--inventory-accent-deep);
+}
+
+.inventory-page .data-table td strong {
+  color: var(--color-text);
+  font-size: 13.5px;
+}
+
+/* Numeric-looking columns align cleanly */
+.inventory-page .data-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.inventory-page .data-table button,
+.inventory-page .detail-actions button {
+  font-weight: 650;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.inventory-page .data-table button:hover,
+.inventory-page .detail-actions button:hover {
+  color: #fff;
+  background: var(--inventory-accent);
+  border-color: var(--inventory-accent);
+  transform: translateY(-1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inventory-page .inventory-bar {
+    animation: none;
+  }
+
+  .inventory-page .tab-list [role="tab"],
+  .inventory-page .metric-card,
+  .inventory-page .data-table tbody tr,
+  .inventory-page .data-table button,
+  .inventory-page .detail-actions button {
+    transition: none;
+  }
+
+  .inventory-page .metric-card:hover,
+  .inventory-page .tab-list [role="tab"][aria-selected="true"],
+  .inventory-page .data-table button:hover,
+  .inventory-page .detail-actions button:hover {
+    transform: none;
+  }
+}
+
+/* Drill-down detail tables share the inventory table treatment. Without
+   these rules `.detail-table` inherits no spacing at all and its columns
+   collide, unlike the `.data-table` group listings above it. */
+.inventory-page .detail-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.inventory-page .detail-table th,
+.inventory-page .detail-table td {
+  padding: 10px 16px;
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.inventory-page .detail-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--color-text-secondary);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #f3f7fb 0%, #eaf1f7 100%);
+  border-bottom: 2px solid #d5dee7;
+}
+
+.inventory-page .detail-table tbody tr {
+  transition: background 130ms ease, box-shadow 130ms ease;
+}
+
+.inventory-page .detail-table tbody tr:nth-child(even) td {
+  background: #fcfdfe;
+}
+
+.inventory-page .detail-table tbody tr:hover td {
+  background: var(--color-brand-subtle);
+  box-shadow: inset 3px 0 0 var(--inventory-accent);
+}
+
+.inventory-page .detail-table tbody td {
+  border-bottom: 1px solid var(--color-border-subtle, #eef2f6);
+}
+
+/* Full-resource export affordance on the Azure tab. Kept visually distinct
+   from the group drill-down so operators can tell the estate-wide export
+   apart from the per-type one. */
+.inventory-page .inventory-export-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  border: 1px solid var(--color-border-subtle, #e3eaf1);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, #f7fafd 0%, #eef4fa 100%);
+  box-shadow: var(--shadow-card);
+}
+
+.inventory-page .inventory-export-bar > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.inventory-page .inventory-export-bar strong {
+  font-size: 13px;
+}
+
+.inventory-page .inventory-export-bar .muted {
+  font-size: 12px;
+}
+
+.inventory-page .inventory-export-bar button {
+  flex-shrink: 0;
+}
+
+.inventory-page .inventory-export-bar button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}

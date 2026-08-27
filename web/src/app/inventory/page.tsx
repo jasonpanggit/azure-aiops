@@ -8,23 +8,109 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { downloadCsv, serializeCsv } from "@/lib/csv";
+import { formatDateTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { inventoryApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
 import type {
   Envelope,
+  FlatInventoryResource,
   InventorySourceStatus,
   InventoryNarrative,
   LifecycleReview,
   OsInventoryGroup,
   OsInventoryMachine,
+  PaasInventoryGroup,
+  PaasInventoryResource,
   SoftwareInventoryGroup,
   SoftwareInventoryDetail,
   SoftwareInventoryMachine,
   SoftwareMapping,
 } from "@/lib/types";
 
-type InventoryTab = "os" | "software";
+type InventoryTab = "os" | "software" | "azure";
+
+/**
+ * Readable display names for Azure resource types.
+ * ARG lowercases type names, so they cannot be reliably re-split
+ * programmatically ("networksecuritygroups" has no casing to key on).
+ * Known types are mapped explicitly; unknown types fall back to the
+ * raw leaf segment so nothing is ever mislabelled.
+ */
+const RESOURCE_TYPE_LABELS: Record<string, string> = {
+  "microsoft.alertsmanagement/smartdetectoralertrules": "Smart Detector Alert Rules",
+  "microsoft.app/agents": "Container App Agents",
+  "microsoft.app/containerapps": "Container Apps",
+  "microsoft.app/jobs": "Container App Jobs",
+  "microsoft.app/managedenvironments": "Container App Environments",
+  "microsoft.cognitiveservices/accounts": "Cognitive Services Accounts",
+  "microsoft.cognitiveservices/accounts/projects": "Cognitive Services Projects",
+  "microsoft.compute/disks": "Managed Disks",
+  "microsoft.compute/virtualmachines": "Virtual Machines",
+  "microsoft.compute/virtualmachines/extensions": "VM Extensions",
+  "microsoft.containerregistry/registries": "Container Registries",
+  "microsoft.dbforpostgresql/flexibleservers": "PostgreSQL Flexible Servers",
+  "microsoft.documentdb/databaseaccounts": "Cosmos DB Accounts",
+  "microsoft.eventgrid/systemtopics": "Event Grid System Topics",
+  "microsoft.fabric/capacities": "Fabric Capacities",
+  "microsoft.hybridcompute/machines": "Arc-enabled Servers",
+  "microsoft.hybridcompute/machines/extensions": "Arc Machine Extensions",
+  "microsoft.hybridcompute/machines/runcommands": "Arc Run Commands",
+  "microsoft.insights/actiongroups": "Action Groups",
+  "microsoft.insights/components": "Application Insights",
+  "microsoft.insights/datacollectionendpoints": "Data Collection Endpoints",
+  "microsoft.insights/datacollectionrules": "Data Collection Rules",
+  "microsoft.insights/scheduledqueryrules": "Scheduled Query Rules",
+  "microsoft.keyvault/vaults": "Key Vaults",
+  "microsoft.maintenance/maintenanceconfigurations": "Maintenance Configurations",
+  "microsoft.managedidentity/userassignedidentities": "User-assigned Identities",
+  "microsoft.network/azurefirewalls": "Azure Firewalls",
+  "microsoft.network/bastionhosts": "Bastion Hosts",
+  "microsoft.network/loadbalancers": "Load Balancers",
+  "microsoft.network/networkinterfaces": "Network Interfaces",
+  "microsoft.network/networksecuritygroups": "Network Security Groups",
+  "microsoft.network/networkwatchers": "Network Watchers",
+  "microsoft.network/privatednszones": "Private DNS Zones",
+  "microsoft.network/privatednszones/virtualnetworklinks": "Private DNS Zone Links",
+  "microsoft.network/privateendpoints": "Private Endpoints",
+  "microsoft.network/publicipaddresses": "Public IP Addresses",
+  "microsoft.network/routetables": "Route Tables",
+  "microsoft.network/virtualnetworks": "Virtual Networks",
+  "microsoft.operationalinsights/workspaces": "Log Analytics Workspaces",
+  "microsoft.operationsmanagement/solutions": "Management Solutions",
+  "microsoft.portal/dashboards": "Portal Dashboards",
+  "microsoft.storage/storageaccounts": "Storage Accounts",
+  "microsoft.web/serverfarms": "App Service Plans",
+  "microsoft.web/sites": "App Services",
+  "microsoft.sql/servers": "SQL Servers",
+  "microsoft.sql/servers/databases": "SQL Databases",
+};
+
+function resourceTypeLabel(resourceType: string): string {
+  const known = RESOURCE_TYPE_LABELS[resourceType.toLowerCase()];
+  if (known) return known;
+  const leaf = (resourceType.split("/").pop() ?? resourceType).trim();
+  if (!leaf) return resourceType;
+  // Unknown type: surface the leaf with camelCase/separators respected,
+  // rather than guessing at word boundaries and risking a wrong label.
+  const spaced = leaf.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[-_]/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/** Provider namespace, e.g. "microsoft.app/containerapps" -> "App". */
+function providerLabel(resourceType: string): string {
+  const namespace = resourceType.split("/")[0] ?? "";
+  const provider = namespace.replace(/^microsoft\./i, "");
+  return provider ? provider.replace(/\b\w/g, (c) => c.toUpperCase()) : "Azure";
+}
+
+function provisioningTone(state: string): "success" | "warning" | "critical" | "unknown" {
+  const value = state.toLowerCase();
+  if (value === "succeeded") return "success";
+  if (["failed", "canceled", "cancelled"].includes(value)) return "critical";
+  if (!value) return "unknown";
+  return "warning";
+}
 
 function lifecycleLabel(group: OsInventoryGroup): string {
   return group.review_required ? "EOL date needs review" : group.lifecycle_status;
@@ -161,6 +247,14 @@ export default function InventoryPage() {
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const [mappingError, setMappingError] = useState<string | null>(null);
   const [mappingSubmitting, setMappingSubmitting] = useState<string | null>(null);
+  const [azureSearch, setAzureSearch] = useState("");
+  const [azureProviderFilter, setAzureProviderFilter] = useState("all");
+  const [azureSelectedKey, setAzureSelectedKey] = useState<string | null>(null);
+  const [azureDetail, setAzureDetail] = useState<PaasInventoryResource[]>([]);
+  const [azureDetailGroup, setAzureDetailGroup] = useState<PaasInventoryGroup | null>(null);
+  const [azureDetailError, setAzureDetailError] = useState<string | null>(null);
+  const [allResourcesExporting, setAllResourcesExporting] = useState(false);
+  const [allResourcesError, setAllResourcesError] = useState<string | null>(null);
   const effectiveScope = useMemo(
     () => subscriptionFilter === "all"
       ? scope
@@ -174,6 +268,28 @@ export default function InventoryPage() {
   const mappings = useApi(
     () => inventoryApi.mappings(effectiveScope),
     [scopeKey, refreshKey],
+  );
+  const azureInventory = useApi(() => inventoryApi.paas(effectiveScope), [scopeKey, refreshKey]);
+
+  const azureGroups = useMemo(() => azureInventory.data?.data.groups ?? [], [azureInventory.data]);
+  const azureProviders = useMemo(
+    () => Array.from(new Set(azureGroups.map((group) => providerLabel(group.resource_type)))).sort(),
+    [azureGroups],
+  );
+  const filteredAzureGroups = useMemo(
+    () => azureGroups.filter((group) => {
+      const haystack = `${group.resource_type} ${group.sku} ${group.tier}`.toLowerCase();
+      return (
+        haystack.includes(azureSearch.toLowerCase()) &&
+        (azureProviderFilter === "all" || providerLabel(group.resource_type) === azureProviderFilter)
+      );
+    }),
+    [azureGroups, azureProviderFilter, azureSearch],
+  );
+  const azureResourceTotal = filteredAzureGroups.reduce((total, group) => total + group.resource_count, 0);
+  const azureTopGroups = useMemo(
+    () => [...filteredAzureGroups].sort((a, b) => b.resource_count - a.resource_count).slice(0, 5),
+    [filteredAzureGroups],
   );
 
   const groups = useMemo(() => inventory.data?.data.groups ?? [], [inventory.data]);
@@ -190,6 +306,12 @@ export default function InventoryPage() {
   );
   const totalMachines = filteredGroups.reduce((total, group) => total + group.machine_count, 0);
   const reviewCount = filteredGroups.filter((group) => group.review_required).length;
+  const machinesInBucket = (bucket: ReturnType<typeof riskBucket>) =>
+    filteredGroups
+      .filter((group) => riskBucket(group) === bucket)
+      .reduce((total, group) => total + group.machine_count, 0);
+  const expiredCount = machinesInBucket("expired");
+  const expiringCount = machinesInBucket("expiring");
   const sourceStates: Record<string, InventorySourceStatus> = inventory.data?.data.source_status ?? {};
   const partialSource = Object.values(sourceStates).find((source) => source.state !== "ready");
   const softwareGroups = useMemo(() => softwareInventory.data?.data.groups ?? [], [softwareInventory.data]);
@@ -278,6 +400,100 @@ export default function InventoryPage() {
     );
   }
 
+  async function openAzureGroup(group: PaasInventoryGroup) {
+    setAzureSelectedKey(group.key);
+    setAzureDetailError(null);
+    try {
+      const response = await inventoryApi.paasGroup(group.key, effectiveScope);
+      setAzureDetail(response.data.resources);
+      setAzureDetailGroup(response.data.group);
+    } catch (error) {
+      setAzureDetail([]);
+      setAzureDetailGroup(null);
+      setAzureDetailError(error instanceof Error ? error.message : "Resource detail is unavailable.");
+    }
+  }
+
+  function exportAzureDetail() {
+    if (!azureDetailGroup || azureDetail.length === 0) return;
+    const rows = azureDetail.map((resource) => ({
+      resource_name: resource.resource_name,
+      resource_type: resource.resource_type,
+      resource_id: resource.resource_id,
+      subscription_id: resource.subscription_id,
+      resource_group: resource.resource_group,
+      location: resource.location,
+      sku: resource.sku,
+      tier: resource.tier,
+      provisioning_state: resource.provisioning_state,
+      observed_at: resource.observed_at,
+    }));
+    const columns = [
+      "resource_name",
+      "resource_type",
+      "resource_id",
+      "subscription_id",
+      "resource_group",
+      "location",
+      "sku",
+      "tier",
+      "provisioning_state",
+      "observed_at",
+    ] as const;
+    downloadCsv(
+      serializeCsv(rows, columns),
+      `azure-inventory-${safeFilenamePart(azureDetailGroup.resource_type)}.csv`,
+    );
+  }
+
+  async function exportAllResources() {
+    setAllResourcesExporting(true);
+    setAllResourcesError(null);
+    try {
+      // The API caps `limit` at 500, so page until the envelope stops
+      // handing back a next offset rather than assuming one page holds
+      // every resource as the estate grows.
+      const collected: FlatInventoryResource[] = [];
+      let offset = 0;
+      for (let guard = 0; guard < 100; guard += 1) {
+        const response = await inventoryApi.resources(effectiveScope, offset, 500);
+        collected.push(...response.data.resources);
+        const next = response.pagination?.next_offset;
+        if (next === null || next === undefined) break;
+        offset = next;
+      }
+      if (collected.length === 0) {
+        setAllResourcesError("No resources are in scope to export.");
+        return;
+      }
+      const columns = [
+        "family",
+        "resource_name",
+        "resource_type",
+        "resource_id",
+        "subscription_id",
+        "resource_group",
+        "environment",
+      ] as const;
+      const rows = collected.map((resource) => ({
+        family: resource.family,
+        resource_name: resource.resource_name,
+        resource_type: resource.resource_type,
+        resource_id: resource.resource_id,
+        subscription_id: resource.subscription_id,
+        resource_group: resource.resource_group,
+        environment: resource.environment,
+      }));
+      downloadCsv(serializeCsv(rows, columns), "azure-inventory-all-resources.csv");
+    } catch (error) {
+      setAllResourcesError(
+        error instanceof Error ? inventoryUnavailableMessage(error) : "Resource export is unavailable.",
+      );
+    } finally {
+      setAllResourcesExporting(false);
+    }
+  }
+
   async function openLifecycleReview(group: OsInventoryGroup) {
     setReviewGroup(group);
     setReview(null);
@@ -332,11 +548,11 @@ export default function InventoryPage() {
   }
 
   return (
-    <main className="page-shell">
+    <main className="page-shell inventory-page">
       <PageHeader
         eyebrow="Inventory"
         title="Inventory"
-        description="Find authorized operating-system and installed-software coverage across native Azure VMs and Arc-enabled servers."
+        description="Find authorized operating-system, installed-software, and Azure resource coverage across native Azure VMs, Arc-enabled servers, and platform services."
         metadata={
           inventory.data && (
             <EvidenceBar
@@ -373,24 +589,46 @@ export default function InventoryPage() {
         >
           Installed Software
         </button>
+        <button
+          id="azure-inventory-tab"
+          type="button"
+          role="tab"
+          aria-selected={tab === "azure"}
+          aria-controls="azure-inventory-panel"
+          tabIndex={tab === "azure" ? 0 : -1}
+          onClick={() => setTab("azure")}
+        >
+          Azure Inventory
+        </button>
       </div>
 
-      <NarrativePanel narrative={narrative} />
-      <InventorySetupHint error={inventory.error ?? softwareInventory.error ?? mappings.error ?? narrative.error} />
+      {tab !== "azure" && <NarrativePanel narrative={narrative} />}
+      <InventorySetupHint
+        error={
+          tab === "azure"
+            ? azureInventory.error
+            : inventory.error ?? softwareInventory.error ?? mappings.error ?? narrative.error
+        }
+      />
 
       {tab === "software" ? (
         <section id="installed-software-panel" role="tabpanel" aria-labelledby="installed-software-tab" tabIndex={0}>
           <section aria-label="Installed software summary" className="metric-grid">
             <MetricCard label="Software groups" value={filteredSoftwareGroups.length} detail="Canonical name and version" />
             <MetricCard label="Installations" value={softwareTotal} detail="Authorized current rows" />
-            <MetricCard label="Unlinked rows" value={unlinkedSoftware} detail="Exact resource join required" />
+            <MetricCard
+              label="Unlinked rows"
+              value={unlinkedSoftware}
+              detail="Exact resource join required"
+              tone={unlinkedSoftware > 0 ? "warning" : "success"}
+            />
           </section>
           <section aria-label="Installed software dashboard" className="inventory-dashboard">
             <div className="card-header"><h2>Top software by install count</h2><span className="muted">{filteredSoftwareGroups.length} shown</span></div>
-            {filteredSoftwareGroups.slice(0, 5).map((group) => (
+            {filteredSoftwareGroups.slice(0, 5).map((group, _index, ranked) => (
               <div className="inventory-bar-row" key={group.key}>
                 <span>{group.software_name} {group.software_version}</span>
-                <div className="inventory-bar" style={{ width: `${softwareTotal ? Math.max(4, (group.install_count / softwareTotal) * 100) : 0}%` }} aria-hidden="true" />
+                <div className="inventory-bar" style={{ width: `${ranked[0]?.install_count ? Math.max(6, (group.install_count / ranked[0].install_count) * 100) : 0}%` }} aria-hidden="true" />
                 <strong>{group.install_count}</strong>
               </div>
             ))}
@@ -568,12 +806,204 @@ export default function InventoryPage() {
             </section>
           )}
         </section>
+      ) : tab === "azure" ? (
+        <section id="azure-inventory-panel" role="tabpanel" aria-labelledby="azure-inventory-tab" tabIndex={0}>
+          <section aria-label="Azure inventory summary" className="metric-grid">
+            <MetricCard label="Resource types" value={filteredAzureGroups.length} detail="Grouped by type, SKU, and tier" />
+            <MetricCard label="Azure resources" value={azureResourceTotal} detail="Authorized current rows" />
+            <MetricCard label="Providers" value={azureProviders.length} detail="Distinct Azure resource providers" />
+          </section>
+
+          <div className="inventory-export-bar">
+            <div>
+              <strong>Full resource export</strong>
+              <span className="muted">
+                Every in-scope resource across OS and platform families, for topology, policy, and audit joins.
+              </span>
+            </div>
+            <button type="button" onClick={exportAllResources} disabled={allResourcesExporting}>
+              {allResourcesExporting ? "Preparing export…" : "Export all resources (CSV)"}
+            </button>
+          </div>
+          {allResourcesError && (
+            <StatePanel title="Resource export unavailable" message={allResourcesError} tone="error" />
+          )}
+
+          <section aria-label="Azure inventory dashboard" className="inventory-dashboard">
+            <div className="card-header">
+              <h2>Top resource types by count</h2>
+              <span className="muted">{filteredAzureGroups.length} shown</span>
+            </div>
+            {azureTopGroups.map((group) => {
+              const peak = azureTopGroups[0]?.resource_count ?? 0;
+              return (
+                <div className="inventory-bar-row" key={group.key}>
+                  <span>{resourceTypeLabel(group.resource_type)}</span>
+                  <div
+                    className="inventory-bar"
+                    style={{ width: `${peak ? Math.max(6, (group.resource_count / peak) * 100) : 0}%` }}
+                    aria-hidden="true"
+                  />
+                  <strong>{group.resource_count}</strong>
+                </div>
+              );
+            })}
+          </section>
+
+          <div className="inventory-filters" aria-label="Azure inventory filters">
+            <label>
+              Search resources
+              <input
+                value={azureSearch}
+                onChange={(event) => setAzureSearch(event.target.value)}
+                placeholder="Type, SKU, or tier"
+              />
+            </label>
+            <label>
+              Provider
+              <select value={azureProviderFilter} onChange={(event) => setAzureProviderFilter(event.target.value)}>
+                <option value="all">All providers</option>
+                {azureProviders.map((provider) => (
+                  <option key={provider} value={provider}>{provider}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Subscription
+              <select value={subscriptionFilter} onChange={(event) => setSubscriptionFilter(event.target.value)}>
+                <option value="all">All authorized subscriptions</option>
+                {(scope.subscription ?? []).map((subscription) => (
+                  <option key={subscription} value={subscription}>{subscription}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {azureInventory.loading && (
+            <StatePanel title="Loading Azure inventory" message="Reading the active immutable generation." tone="loading" />
+          )}
+          {azureInventory.error && (
+            <StatePanel title="Azure inventory unavailable" message={inventoryUnavailableMessage(azureInventory.error)} tone="error" />
+          )}
+          {!azureInventory.loading && !azureInventory.error && azureGroups.length === 0 && (
+            <StatePanel title="No Azure resources" message="The authorized scope has no published Azure resource inventory rows." />
+          )}
+          {!azureInventory.loading && !azureInventory.error && azureGroups.length > 0 && filteredAzureGroups.length === 0 && (
+            <StatePanel title="No matching Azure resources" message="Adjust the search, provider, or subscription filters." />
+          )}
+
+          {filteredAzureGroups.length > 0 && (
+            <section aria-label="Azure inventory groups" className="data-table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Resource type</th>
+                    <th>Provider</th>
+                    <th>SKU / tier</th>
+                    <th>Resources</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredAzureGroups.map((group) => (
+                    <tr key={group.key} aria-selected={azureSelectedKey === group.key}>
+                      <td>
+                        <strong>{resourceTypeLabel(group.resource_type)}</strong>
+                        <span className="table-subtitle">{group.resource_type}</span>
+                      </td>
+                      <td>{providerLabel(group.resource_type)}</td>
+                      <td>{group.sku || group.tier ? `${group.sku || "—"} / ${group.tier || "—"}` : "—"}</td>
+                      <td>{group.resource_count}</td>
+                      <td>
+                        <button
+                          type="button"
+                          onClick={() => openAzureGroup(group)}
+                          aria-label={`View resources for ${resourceTypeLabel(group.resource_type)}`}
+                        >
+                          View resources
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          )}
+
+          {azureDetailError && <StatePanel title="Azure resource detail unavailable" message={azureDetailError} tone="error" />}
+
+          {azureDetailGroup && azureDetail.length > 0 && (
+            <section aria-label="Azure resource detail" className="detail-panel">
+              <div className="card-header">
+                <h2>{resourceTypeLabel(azureDetailGroup.resource_type)}</h2>
+                <div className="detail-actions">
+                  <button type="button" onClick={exportAzureDetail}>Export CSV</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAzureDetailGroup(null);
+                      setAzureDetail([]);
+                      setAzureSelectedKey(null);
+                    }}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+              <div className="table-scroll">
+                <table className="detail-table">
+                  <thead>
+                    <tr>
+                      <th>Resource</th>
+                      <th>Resource group</th>
+                      <th>Location</th>
+                      <th>SKU / tier</th>
+                      <th>State</th>
+                      <th>Observed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {azureDetail.map((resource) => (
+                      <tr key={resource.resource_id}>
+                        <td>
+                          <strong>{resource.resource_name}</strong>
+                        </td>
+                        <td>{resource.resource_group || "—"}</td>
+                        <td>{resource.location || "—"}</td>
+                        <td>{resource.sku || resource.tier ? `${resource.sku || "—"} / ${resource.tier || "—"}` : "—"}</td>
+                        <td>
+                          <StatusBadge
+                            label={resource.provisioning_state || "Unknown"}
+                            tone={provisioningTone(resource.provisioning_state)}
+                            compact
+                          />
+                        </td>
+                        <td>{formatDateTime(resource.observed_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </section>
       ) : (
         <section id="os-inventory-panel" role="tabpanel" aria-labelledby="os-inventory-tab" tabIndex={0}>
           <section aria-label="OS inventory summary" className="metric-grid">
             <MetricCard label="OS groups" value={groups.length} detail="Authorized OS identities" />
             <MetricCard label="Machines" value={totalMachines} detail="After scope filtering" />
-            <MetricCard label="Needs review" value={reviewCount} detail="Unknown lifecycle mapping" />
+            <MetricCard
+              label="At risk"
+              value={expiredCount + expiringCount}
+              detail={`${expiredCount} expired · ${expiringCount} expiring within 90 days`}
+              tone={expiredCount > 0 ? "critical" : expiringCount > 0 ? "warning" : "success"}
+            />
+            <MetricCard
+              label="Needs review"
+              value={reviewCount}
+              detail="Unknown lifecycle mapping"
+              tone={reviewCount > 0 ? "warning" : "success"}
+            />
           </section>
           <section aria-label="OS inventory dashboard" className="inventory-dashboard">
             <div className="card-header"><h2>EOL risk distribution</h2><span className="muted">{totalMachines} machines</span></div>
@@ -588,10 +1018,10 @@ export default function InventoryPage() {
               );
             })}
             <div className="card-header inventory-chart-secondary"><h2>Top OS versions</h2></div>
-            {filteredGroups.slice(0, 5).map((group) => (
+            {filteredGroups.slice(0, 5).map((group, _index, ranked) => (
               <div className="inventory-bar-row" key={group.key}>
                 <span>{group.os_name} {group.os_version}</span>
-                <div className="inventory-bar" style={{ width: `${totalMachines ? Math.max(4, (group.machine_count / totalMachines) * 100) : 0}%` }} aria-hidden="true" />
+                <div className={`inventory-bar inventory-bar-${riskBucket(group)}`} style={{ width: `${ranked[0]?.machine_count ? Math.max(6, (group.machine_count / ranked[0].machine_count) * 100) : 0}%` }} aria-hidden="true" />
                 <strong>{group.machine_count}</strong>
               </div>
             ))}

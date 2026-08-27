@@ -203,6 +203,27 @@ export const inventoryApi = {
     query.set("limit", String(limit));
     return apiRequest<SoftwareInventoryDetail>(`/inventory/software/${encodeURIComponent(key)}`, { query });
   },
+  paas: (scope: ScopeSelection = {}, offset = 0, limit = 200) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<import("./types").PaasInventoryCollection>("/inventory/paas", { query });
+  },
+  paasGroup: (key: string, scope: ScopeSelection = {}, offset = 0, limit = 200) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<import("./types").PaasInventoryDetail>(
+      `/inventory/paas/${encodeURIComponent(key)}`,
+      { query },
+    );
+  },
+  resources: (scope: ScopeSelection = {}, offset = 0, limit = 500) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<import("./types").FlatResourceCollection>("/inventory/resources", { query });
+  },
   narrative: (scope: ScopeSelection = {}) =>
     apiRequest<InventoryNarrative>("/inventory/narrative", {
       query: scopeToSearchParams(scope),
@@ -468,6 +489,13 @@ export const networkApi = {
   updatePolicy: (changes: Record<string, unknown>) =>
     apiRequest<NetworkDesignPolicy>("/network/policy", {
       method: "PATCH",
+      body: changes,
+    }),
+
+  previewPolicy: (changes: Record<string, unknown>, scope: ScopeSelection = {}) =>
+    apiRequest<{ policy: NetworkDesignPolicy; gaps: NetworkGap[]; summary: NetworkSummary }>("/network/policy/preview", {
+      method: "POST",
+      query: scopeToSearchParams(scope),
       body: changes,
     }),
 };

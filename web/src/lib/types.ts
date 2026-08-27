@@ -139,6 +139,77 @@ export interface OsInventoryDetail {
   requested_scope: Record<string, string[]>;
 }
 
+export interface PaasInventoryGroup {
+  key: string;
+  resource_type: string;
+  sku: string;
+  tier: string;
+  resource_count: number;
+}
+
+export interface PaasInventoryResource {
+  resource_id: string;
+  resource_name: string;
+  resource_type: string;
+  family: string;
+  tenant_id: string;
+  subscription_id: string;
+  resource_group: string;
+  location: string;
+  sku: string;
+  tier: string;
+  runtime: string;
+  provisioning_state: string;
+  os_name: string;
+  os_version: string;
+  observed_at: string;
+  query_version: string;
+  tags: Record<string, string>;
+}
+
+export interface PaasInventoryCollection {
+  groups: PaasInventoryGroup[];
+  source_status: Record<string, InventorySourceStatus>;
+  observed_at: string;
+  query_version: string;
+  generation_id: string;
+  requested_scope: Record<string, string[]>;
+}
+
+export interface PaasInventoryDetail {
+  group: PaasInventoryGroup;
+  resources: PaasInventoryResource[];
+  source_status: Record<string, InventorySourceStatus>;
+  observed_at: string;
+  query_version: string;
+  generation_id: string;
+  requested_scope: Record<string, string[]>;
+}
+
+export interface FlatInventoryResource {
+  family: string;
+  resource_id: string;
+  resource_name: string;
+  resource_type: string;
+  subscription_id: string;
+  resource_group: string;
+  environment: string;
+}
+
+export interface InventoryFamilyAvailability {
+  family: string;
+  state: InventorySourceState;
+  row_count: number;
+  logical_dataset: string;
+}
+
+export interface FlatResourceCollection {
+  resources: FlatInventoryResource[];
+  family_availability: Record<string, InventoryFamilyAvailability>;
+  requested_scope: Record<string, string[]>;
+  query_version: string;
+}
+
 export interface InventoryNarrativeCitation {
   source_engine: string;
   source_table: string;

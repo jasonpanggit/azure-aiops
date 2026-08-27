@@ -1,13 +1,16 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 import { ApiError } from "@/lib/types";
 
-const { os, osGroup, software, softwareGroup, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } = vi.hoisted(() => ({
+const { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } = vi.hoisted(() => ({
   os: vi.fn(),
   osGroup: vi.fn(),
   software: vi.fn(),
   softwareGroup: vi.fn(),
+  paas: vi.fn(),
+  paasGroup: vi.fn(),
+  resources: vi.fn(),
   narrative: vi.fn(),
   lifecycleReview: vi.fn(),
   confirmLifecycle: vi.fn(),
@@ -16,7 +19,13 @@ const { os, osGroup, software, softwareGroup, narrative, lifecycleReview, confir
   rejectMapping: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } }));
+vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } }));
+
+const { downloadCsv } = vi.hoisted(() => ({ downloadCsv: vi.fn() }));
+vi.mock("@/lib/csv", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/csv")>()),
+  downloadCsv,
+}));
 
 import InventoryPage from "./page";
 
@@ -61,7 +70,59 @@ const collection = {
 
 describe("Inventory OS tracer", () => {
   beforeEach(() => {
+    downloadCsv.mockClear();
     os.mockResolvedValue(envelope(collection));
+    resources.mockResolvedValue({
+      ...envelope({ resources: [], family_availability: {}, requested_scope: {}, query_version: "inventory-resources-v1" }),
+      pagination: { offset: 0, limit: 500, total: 0, next_offset: null },
+    });
+    paas.mockResolvedValue(envelope({
+      groups: [{
+        key: "microsoft.app:containerapps|Unknown|Unknown",
+        resource_type: "microsoft.app/containerapps",
+        sku: "",
+        tier: "",
+        resource_count: 5,
+      }],
+      source_status: {},
+      observed_at: "2026-08-25T10:00:00Z",
+      query_version: "inventory-resources-v1",
+      generation_id: "gen-1",
+      requested_scope: {},
+    }));
+    paasGroup.mockResolvedValue(envelope({
+      group: {
+        key: "microsoft.app:containerapps|Unknown|Unknown",
+        resource_type: "microsoft.app/containerapps",
+        sku: "",
+        tier: "",
+        resource_count: 5,
+      },
+      resources: [{
+        resource_id: "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.App/containerApps/app-1",
+        resource_name: "app-1",
+        resource_type: "microsoft.app/containerapps",
+        family: "paas",
+        tenant_id: "tenant-1",
+        subscription_id: "sub-1",
+        resource_group: "rg-1",
+        location: "australiaeast",
+        sku: "",
+        tier: "",
+        runtime: "",
+        provisioning_state: "Succeeded",
+        os_name: "",
+        os_version: "",
+        observed_at: "2026-08-25T10:00:00Z",
+        query_version: "inventory-resources-v1",
+        tags: {},
+      }],
+      source_status: {},
+      observed_at: "2026-08-25T10:00:00Z",
+      query_version: "inventory-resources-v1",
+      generation_id: "gen-1",
+      requested_scope: {},
+    }));
     osGroup.mockResolvedValue(envelope({
       group: collection.groups[0],
       machines: [{
@@ -304,10 +365,10 @@ describe("Inventory OS tracer", () => {
     expect(screen.queryByRole("button", { name: /View machines for Windows Server 2019/ })).not.toBeInTheDocument();
   });
 
-  it("keeps the two-tab boundary and shows authorized export context for exact lookup", async () => {
+  it("keeps the three-tab boundary and shows authorized export context for exact lookup", async () => {
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
-    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    expect(screen.getAllByRole("tab")).toHaveLength(3);
     expect(screen.getByRole("tab", { name: "OS Inventory" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
     expect(screen.getByRole("tab", { name: "Installed Software" })).toHaveAttribute("aria-selected", "true");
@@ -320,6 +381,80 @@ describe("Inventory OS tracer", () => {
     expect(screen.getByText(/Log Analytics · ready/)).toBeInTheDocument();
     expect(screen.getByText("prod")).toBeInTheDocument();
     expect(screen.getByText("sub-a")).toBeInTheDocument();
+  });
+
+  it("lists Azure resources by type and drills into a group", async () => {
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Azure Inventory" }));
+    expect(screen.getByRole("tab", { name: "Azure Inventory" })).toHaveAttribute("aria-selected", "true");
+
+    expect(await screen.findAllByText("Container Apps")).not.toHaveLength(0);
+    expect(screen.getByText("microsoft.app/containerapps")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: /View resources for Container Apps/ }));
+
+    expect(await screen.findByText("app-1")).toBeInTheDocument();
+    expect(screen.getByText("australiaeast")).toBeInTheDocument();
+    expect(screen.getByText("Succeeded")).toBeInTheDocument();
+    expect(paasGroup).toHaveBeenCalledWith(
+      "microsoft.app:containerapps|Unknown|Unknown",
+      expect.anything(),
+    );
+  });
+
+  it("exports every in-scope resource, following API pagination across pages", async () => {
+    // The API caps `limit` at 500, so the export must keep requesting until
+    // next_offset is null rather than shipping only the first page.
+    resources
+      .mockResolvedValueOnce({
+        ...envelope({
+          resources: [{
+            family: "paas",
+            resource_id: "/subscriptions/sub-a/app-1",
+            resource_name: "app-1",
+            resource_type: "microsoft.app/containerapps",
+            subscription_id: "sub-a",
+            resource_group: "rg-1",
+            environment: "prod",
+          }],
+          family_availability: {},
+          requested_scope: {},
+          query_version: "inventory-resources-v1",
+        }),
+        pagination: { offset: 0, limit: 500, total: 2, next_offset: 500 },
+      })
+      .mockResolvedValueOnce({
+        ...envelope({
+          resources: [{
+            family: "os",
+            resource_id: "/subscriptions/sub-a/vm1",
+            resource_name: "vm1",
+            resource_type: "microsoft.compute/virtualmachines",
+            subscription_id: "sub-a",
+            resource_group: "rg-2",
+            environment: "dev",
+          }],
+          family_availability: {},
+          requested_scope: {},
+          query_version: "inventory-resources-v1",
+        }),
+        pagination: { offset: 500, limit: 500, total: 2, next_offset: null },
+      });
+
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+    fireEvent.click(screen.getByRole("tab", { name: "Azure Inventory" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Export all resources/ }));
+
+    await waitFor(() => expect(downloadCsv).toHaveBeenCalled());
+    expect(resources).toHaveBeenCalledTimes(2);
+    expect(resources).toHaveBeenLastCalledWith(expect.anything(), 500, 500);
+
+    const [csv, filename] = downloadCsv.mock.calls[0];
+    expect(filename).toBe("azure-inventory-all-resources.csv");
+    // Both pages must survive into the export, not just the first.
+    expect(csv).toContain("app-1");
+    expect(csv).toContain("vm1");
   });
 
   it("explains how to load inventory when the API provider has no snapshot", async () => {
