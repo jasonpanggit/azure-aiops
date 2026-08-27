@@ -822,18 +822,169 @@ textarea:focus-visible {
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
+  min-height: 70px;
   padding: 17px 19px;
   border-bottom: 1px solid var(--color-border);
 }
 
+.card-header h2,
+.card-header h3 {
+  margin: 0;
+}
+
 .card-header p {
-  margin-top: 3px;
+  max-width: 60ch;
+  margin: 4px 0 0;
   color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .card-body {
   padding: 19px;
 }
+
+.visual-card-kicker {
+  flex: 0 0 auto;
+  min-height: 24px;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  line-height: 1.4;
+  color: var(--color-info);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  background: var(--color-info-subtle);
+  border-radius: 999px;
+}
+
+.operations-chart,
+.coverage-chart {
+  min-width: 0;
+}
+
+.operations-chart-bars {
+  display: grid;
+  gap: 14px;
+}
+
+.operations-chart-row {
+  display: grid;
+  gap: 5px;
+}
+
+.operations-chart-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.operations-chart-label strong {
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.operations-chart-track {
+  height: 9px;
+  overflow: hidden;
+  background: var(--color-surface-muted);
+  border-radius: 999px;
+}
+
+.operations-chart-track span {
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  border-radius: inherit;
+  transition: width 300ms ease;
+}
+
+.chart-caption {
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.chart-empty {
+  display: grid;
+  min-height: 170px;
+  place-items: center;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.coverage-chart {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  align-items: center;
+  gap: 12px;
+}
+
+.coverage-chart-graphic {
+  position: relative;
+  width: 180px;
+  height: 170px;
+}
+
+.coverage-chart-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.coverage-chart-total {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  align-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+.coverage-chart-total strong {
+  font-size: 27px;
+  line-height: 1;
+}
+
+.coverage-chart-total span {
+  margin-top: 4px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+
+.chart-legend {
+  display: grid;
+  gap: 12px;
+}
+
+.chart-legend > div {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.chart-legend strong {
+  color: var(--color-text);
+  font-size: 16px;
+}
+
+.chart-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.chart-legend-success { background: var(--color-success); }
+.chart-legend-warning { background: var(--color-warning); }
 
 .metric-grid {
   display: grid;
@@ -845,6 +996,7 @@ textarea:focus-visible {
 .metric-card {
   position: relative;
   min-height: 124px;
+  box-sizing: border-box;
   padding: 17px 18px;
   overflow: hidden;
   background: linear-gradient(145deg, #fff 0%, #fbfdff 100%);
@@ -923,9 +1075,11 @@ textarea:focus-visible {
   align-items: center;
   gap: 6px;
   min-height: 24px;
+  box-sizing: border-box;
   padding: 3px 8px;
   font-size: 11px;
   font-weight: 600;
+  line-height: 1.35;
   color: var(--color-text-secondary);
   white-space: nowrap;
   background: var(--color-surface-muted);
@@ -1224,11 +1378,13 @@ textarea:focus-visible {
 .button {
   display: inline-flex;
   min-height: 34px;
+  box-sizing: border-box;
   align-items: center;
   justify-content: center;
   padding: 6px 12px;
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.25;
   cursor: pointer;
   background: var(--color-surface);
   border: 1px solid var(--color-border-strong);
@@ -1270,6 +1426,12 @@ textarea:focus-visible {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-top: 22px;
+}
+
+.dashboard-visual-card {
+  background:
+    radial-gradient(circle at 100% 0, rgb(15 108 189 / 7%), transparent 13rem),
+    var(--color-surface);
 }
 
 .table-scroll {
@@ -1687,8 +1849,11 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 30px;
+  box-sizing: border-box;
   padding: 7px 10px;
   font-size: 12px;
+  line-height: 1.3;
   color: var(--color-text-secondary);
   background: var(--color-surface-subtle);
   border: 1px solid var(--color-border);
@@ -4236,6 +4401,48 @@ body.topology-fullscreen-open {
   gap: 14px;
 }
 
+.copilot-boundary-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 19px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.copilot-boundary-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.copilot-boundary-details > summary::after {
+  color: var(--color-text-muted);
+  content: "⌄";
+  font-size: 16px;
+}
+
+.copilot-boundary-details:not([open]) > summary::after {
+  content: "›";
+}
+
+.copilot-boundary-details > summary span {
+  display: grid;
+  gap: 3px;
+}
+
+.copilot-boundary-details > summary strong {
+  font-size: 14px;
+}
+
+.copilot-boundary-details > summary small {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.copilot-boundary-details .card-body {
+  padding-top: 0;
+}
+
 .copilot-boundary dt {
   font-size: 11px;
   font-weight: 700;
@@ -4494,6 +4701,14 @@ body.topology-fullscreen-open {
 
   .metric-grid {
     grid-template-columns: 1fr;
+  }
+
+  .coverage-chart {
+    grid-template-columns: 1fr;
+  }
+
+  .coverage-chart-graphic {
+    margin: 0 auto;
   }
 
   .split-kpis {
@@ -4850,11 +5065,16 @@ body.topology-fullscreen-open {
 
 .data-table button,
 .detail-actions button {
-  min-height: 32px;
+  display: inline-flex;
+  min-height: 34px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
   padding: 6px 10px;
   color: var(--color-brand);
   font-size: 12px;
   font-weight: 650;
+  line-height: 1.25;
   cursor: pointer;
   background: var(--color-surface);
   border: 1px solid var(--color-border-strong);

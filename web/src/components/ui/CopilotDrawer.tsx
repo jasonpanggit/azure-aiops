@@ -155,7 +155,7 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
             <span className="copilot-mark">AI</span>
             <div>
               <h2>Operations Copilot</h2>
-              {contextLabel && <p>Context: {contextLabel}</p>}
+              {contextLabel && <p>{contextLabel}</p>}
             </div>
           </div>
           <div className="copilot-drawer-header-actions">
@@ -177,7 +177,7 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
         <div className="copilot-drawer-body">
           {turns.length === 0 && (
             <div className="copilot-drawer-welcome">
-              <p>Evidence-backed answers grounded in the same governed context and dependency graph as this page.</p>
+              <p>Ask about this view. Answers stay scoped, grounded, and reviewable.</p>
               <div className="copilot-prompts">
                 {starterQuestions.map((prompt) => (
                   <button
@@ -199,7 +199,7 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
               <div className={`copilot-answer${turn.error ? " copilot-answer-error" : ""}`}>
                 <div className="copilot-answer-label">
                   <span className="copilot-mark">AI</span>
-                  <strong>Operations Copilot</strong>
+                  <strong>Copilot</strong>
                   {turn.narration && <StatusBadge label={turn.narration.model || turn.narration.agent_name} tone="success" compact />}
                 </div>
                 {turn.error ? (
@@ -209,8 +209,7 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
                     {turn.narration && <MarkdownLite text={turn.narration.text} />}
                     {!turn.narration && turn.toolCalls?.some((call) => call.status === "ok") && (
                       <p className="copilot-fallback-note">
-                        No narration model is configured in this environment — showing the governed tool results
-                        directly below.
+                        Showing governed tool results directly because narration is unavailable.
                       </p>
                     )}
                     {turn.toolCalls?.length ? (
@@ -231,7 +230,7 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
                         ))}
                       </div>
                     ) : (
-                      !turn.narration && <p>No matching operational context was found in this scope.</p>
+                      !turn.narration && <p>No matching context was found in this scope.</p>
                     )}
                   </>
                 )}
@@ -258,7 +257,7 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
             rows={2}
           />
           <button type="button" className="button button-primary" onClick={() => ask(question)} disabled={loading || !question.trim()}>
-            Ask
+            Send
           </button>
         </div>
       </aside>
