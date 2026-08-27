@@ -237,9 +237,12 @@ Plans:
 
 The exception is `hermes_arg_connector/agent_queries.py`, which reads `entities/VirtualMachine`, `entities/ArcServer`, and `entities/PatchAssessment` directly. Its server/VM reads are identity-plane and move to the read port; its `PatchAssessment` reads stay with the patch domain.
 
+The `/agents` page is not merely a static stub: `web/src/app/agents/page.tsx` calls `/api/v1/agents/catalog` and `/api/v1/agents/investigations`, and `src/api/routers/multi_agent.py` backs those routes with the deterministic `operations.autonomous_investigation` orchestrator. However, the specialist agents are currently in-process deterministic roles over governed tools, while Foundry is only an optional single `FoundryPromptAgent` narrator for already-collected evidence. Phase 9 planning should evaluate whether the agent surface remains deterministic with optional Foundry narration, becomes a Foundry prompt-agent/connected-agent deployment, or uses Foundry prompt agents only for selected specialist synthesis. Any option must preserve scoped evidence, visible uncertainty, no hidden chain-of-thought, human ledger controls, and degradation when Foundry is unavailable. Microsoft Foundry guidance favors prompt agents for managed no-code/low-code agents, hosted agents for custom orchestration, toolboxes/MCP for governed tools, and new Agent Service workflows over deprecated classic connected agents.
+
 **Success Criteria** (what must be TRUE):
 
   1. API providers serving resource identity resolve through the inventory read port, with route contracts unchanged.
   2. `agent_queries.py` reads servers and VMs from the read port rather than `entities/*`, while patch assessment reads remain with the patch domain.
   3. Web pages surfacing resource identity are audited and confirmed to render from unified inventory, with per-family availability surfaced rather than an all-or-nothing outage.
-  4. No consumer anywhere reads raw `inventory/*` or identity `entities/*` datasets directly.
+  4. The `/agents` page and `/api/v1/agents/*` routes have an explicit Phase 9 implementation decision: retain deterministic in-process specialists with optional Foundry narration, integrate Foundry prompt agents as specialist synthesizers, or migrate to Foundry-managed agent orchestration. The selected path is tested against evidence grounding, scope isolation, audit ledger behavior, human controls, latency/timeouts, and Foundry-unavailable fallback.
+  5. No consumer anywhere reads raw `inventory/*` or identity `entities/*` datasets directly.
