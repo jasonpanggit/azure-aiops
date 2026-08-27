@@ -28,3 +28,4 @@ infra/terraform/*.tfvars.json
 
 # github
 #.github/
+dist/

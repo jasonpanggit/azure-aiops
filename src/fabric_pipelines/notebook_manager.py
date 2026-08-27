@@ -73,28 +73,123 @@ _NOTEBOOK_CELLS: tuple[str, ...] = (
 )
 
 
-def build_notebook_definition() -> dict[str, Any]:
-    """Returns the Fabric item ``definition`` payload for the notebook."""
-    notebook = {
-        "nbformat": 4,
-        "nbformat_minor": 5,
-        "cells": [
-            {
-                "cell_type": "code",
-                "source": source.splitlines(keepends=True),
-                "metadata": {},
-                "outputs": [],
-                "execution_count": None,
-            }
-            for source in _NOTEBOOK_CELLS
-        ],
-        "metadata": {
-            "language_info": {"name": "python"},
-        },
-    }
+def _build_notebook_source(
+    *,
+    environment_id: str = "",
+    workspace_id: str = "",
+    lakehouse_id: str = "",
+    lakehouse_name: str = "",
+) -> str:
+    """Renders ``_NOTEBOOK_CELLS`` in Fabric's ``.py`` notebook-source format
+    (NOT plain Python, NOT ipynb JSON): a ``# Fabric notebook source``
+    prologue, a notebook-level ``# META`` block, then one ``# CELL`` marker
+    per cell with its own per-cell ``# META`` trailer. This is the format
+    Fabric's item-definition API actually requires for a ``.py`` notebook
+    part -- submitting raw ipynb JSON under a ``.py`` path name fails with
+    ``PyToIPynbFailure: prologue is invalid``.
+
+    When ``environment_id`` is provided, the notebook-level ``dependencies``
+    entry attaches that Environment item as the notebook's default Spark
+    environment, so on-demand runs get a session with this repo's own
+    packages (``fabric_pipelines``, ``hermes_arg_connector``, ``storage``)
+    pre-installed rather than failing with an import error.
+
+    When ``lakehouse_id`` is provided, the notebook-level ``dependencies``
+    entry also attaches that Lakehouse item as the notebook's default
+    lakehouse, which is what makes unqualified ``spark.read.table(...)`` /
+    ``.saveAsTable(...)`` calls in ``_NOTEBOOK_CELLS`` resolve against it --
+    without a default lakehouse, Fabric's Spark session has no metastore
+    catalog to resolve those table names against."""
+    dependency_block_lines: list[str] = []
+    if lakehouse_id:
+        dependency_block_lines.extend(
+            [
+                '# META     "lakehouse": {',
+                f'# META       "default_lakehouse": "{lakehouse_id}",',
+                f'# META       "default_lakehouse_name": "{lakehouse_name}",',
+                f'# META       "default_lakehouse_workspace_id": "{workspace_id}"',
+                "# META     }" + ("," if environment_id else ""),
+            ]
+        )
+    if environment_id:
+        dependency_block_lines.extend(
+            [
+                '# META     "environment": {',
+                f'# META       "environmentId": "{environment_id}",',
+                f'# META       "workspaceId": "{workspace_id}"',
+                "# META     }",
+            ]
+        )
+    dependencies_lines: list[str]
+    if dependency_block_lines:
+        dependencies_lines = [
+            '# META   "dependencies": {',
+            *dependency_block_lines,
+            "# META   }",
+        ]
+    else:
+        dependencies_lines = ['# META   "dependencies": {}']
+    lines = [
+        "# Fabric notebook source",
+        "",
+        "# METADATA ********************",
+        "",
+        "# META {",
+        '# META   "kernel_info": {',
+        '# META     "name": "synapse_pyspark"',
+        "# META   },",
+        *dependencies_lines,
+        "# META }",
+        "",
+    ]
+    for source in _NOTEBOOK_CELLS:
+        lines.append("# CELL ********************")
+        lines.append("")
+        lines.extend(source.splitlines())
+        lines.append("")
+        lines.append("# METADATA ********************")
+        lines.append("")
+        lines.append("# META {")
+        lines.append('# META   "language": "python",')
+        lines.append('# META   "language_group": "synapse_pyspark"')
+        lines.append("# META }")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def build_notebook_definition(
+    *,
+    environment_id: str = "",
+    workspace_id: str = "",
+    lakehouse_id: str = "",
+    lakehouse_name: str = "",
+) -> dict[str, Any]:
+    """Returns the Fabric item ``definition`` payload for the notebook.
+
+    When ``environment_id`` is supplied, the notebook source's own
+    notebook-level ``# META`` block is given a ``"dependencies": {
+    "environment": {...}}`` entry -- this is how Fabric attaches a default
+    Spark environment (and therefore this repo's own installed packages) to
+    a notebook, distinct from the ``.platform`` part (which only carries
+    item-kind/display-name metadata, not environment attachment).
+
+    When ``lakehouse_id`` is supplied, the same ``dependencies`` entry also
+    gets a ``"lakehouse": {...}`` block attaching that Lakehouse item as the
+    notebook's default lakehouse -- required for the unqualified
+    ``spark.read.table(...)``/``.saveAsTable(...)`` calls in
+    ``_NOTEBOOK_CELLS`` to resolve against a metastore catalog at all.
+    """
     return {
         "parts": [
-            _part("notebook-content.py", notebook, payload_type="InlineBase64"),
+            _text_part(
+                "notebook-content.py",
+                _build_notebook_source(
+                    environment_id=environment_id,
+                    workspace_id=workspace_id,
+                    lakehouse_id=lakehouse_id,
+                    lakehouse_name=lakehouse_name,
+                ),
+            ),
             _part(
                 ".platform",
                 {"metadata": {"type": "Notebook", "displayName": NOTEBOOK_DISPLAY_NAME}},
@@ -164,9 +259,17 @@ def ensure_notebook(
     *,
     display_name: str = NOTEBOOK_DISPLAY_NAME,
     item_id: str = "",
+    environment_id: str = "",
+    lakehouse_id: str = "",
+    lakehouse_name: str = "",
 ) -> dict[str, Any]:
     """Idempotent create-or-update of the topology-pipeline notebook item."""
-    definition = build_notebook_definition()
+    definition = build_notebook_definition(
+        environment_id=environment_id,
+        workspace_id=manager.workspace_id if (environment_id or lakehouse_id) else "",
+        lakehouse_id=lakehouse_id,
+        lakehouse_name=lakehouse_name,
+    )
     item = manager.resolve(item_id=item_id, display_name=display_name)
     if item is None:
         created = manager.create(display_name, definition)
@@ -178,6 +281,13 @@ def ensure_notebook(
 def _part(path: str, payload: dict[str, Any], *, payload_type: str) -> dict[str, str]:
     encoded = base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
     return {"path": path, "payload": encoded, "payloadType": payload_type}
+
+
+def _text_part(path: str, text: str) -> dict[str, str]:
+    """Like ``_part`` but for a raw-text definition part (the notebook's
+    ``.py`` source), which must NOT be JSON-encoded first."""
+    encoded = base64.b64encode(text.encode()).decode()
+    return {"path": path, "payload": encoded, "payloadType": "InlineBase64"}
 
 
 __all__ = [

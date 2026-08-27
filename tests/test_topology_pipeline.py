@@ -201,7 +201,11 @@ def test_notebook_definition_authors_genuine_fabric_hosted_notebook_item():
     assert ".platform" in part_paths
 
     content_part = next(p for p in definition["parts"] if p["path"] == "notebook-content.py")
-    decoded = json.loads(base64.b64decode(content_part["payload"]))
-    cell_sources = "".join("".join(cell["source"]) for cell in decoded["cells"])
-    assert "derive_edges" in cell_sources
-    assert "join_flow_logs_with_nsg_rules" in cell_sources
+    decoded = base64.b64decode(content_part["payload"]).decode()
+    # Must be Fabric's ".py notebook source" format, not raw ipynb JSON --
+    # submitting ipynb JSON under a ".py" path fails with Fabric's
+    # PyToIPynbFailure ("prologue is invalid").
+    assert decoded.startswith("# Fabric notebook source\n")
+    assert "# CELL ********************" in decoded
+    assert "derive_edges" in decoded
+    assert "join_flow_logs_with_nsg_rules" in decoded
