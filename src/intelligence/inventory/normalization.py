@@ -1,127 +1,164 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
 from .models import MachineObservation, ResourceObservation
 
+#: Sentinel used when a source carries no usable operating-system signal.
+UNKNOWN = "Unknown"
 
-# Windows OS version to canonical product name mapping
-# Based on Windows Server release versions: https://learn.microsoft.com/en-us/windows-server/get-started/windows-server-release-info
-_WINDOWS_VERSION_MAP = {
-    "10.0.14393": "Windows Server 2016",      # RTM
-    "10.0.17763": "Windows Server 2019",      # RTM
-    "10.0.20348": "Windows Server 2022",      # RTM
-    "10.0.26100": "Windows Server 2025",      # RTM
-    "6.3.9600": "Windows Server 2012 R2",     # RTM
-    "6.2.9200": "Windows Server 2012",        # RTM
-    "6.1.7601": "Windows Server 2008 R2",     # SP1
-    "6.0.6003": "Windows Server 2008",        # SP2
+#: Product name used for every Windows Server release.
+#:
+#: The lifecycle catalog is keyed on ``(product, version)`` pairs such as
+#: ``("Windows Server", "2016")``. Normalization must emit exactly that shape or
+#: :meth:`EOLCatalog.classify_product` falls through to ``Unknown`` and the UI
+#: renders "EOL date needs review" for machines we can actually classify.
+_WINDOWS_SERVER = "Windows Server"
+
+#: Windows Server ``major.minor.build`` numbers to their catalog version.
+#:
+#: Build numbers are stable per release, so an Arc agent reporting
+#: ``10.0.14393.9140`` is unambiguously Windows Server 2016.
+#: https://learn.microsoft.com/en-us/windows-server/get-started/windows-server-release-info
+_WINDOWS_BUILD_VERSIONS = {
+    "10.0.14393": "2016",
+    "10.0.17763": "2019",
+    "10.0.20348": "2022",
+    "10.0.26100": "2025",
+    "6.3.9600": "2012 R2",
+    "6.2.9200": "2012",
+    "6.1.7601": "2008 R2",
+    "6.0.6003": "2008",
 }
 
+#: Windows Server release years, newest first so "2012 R2" wins over "2012".
+_WINDOWS_RELEASES = ("2025", "2022", "2019", "2016", "2012 R2", "2012", "2008 R2", "2008")
 
-def _canonicalize_windows_version(version_str: str) -> str:
-    """Map Windows version numbers to canonical product names.
-    
-    Args:
-        version_str: Version string like "10.0.14393.9140" or "Windows Server 2016"
-        
-    Returns:
-        Canonical OS name like "Windows Server 2016" or "Unknown" if not mappable
-    """
-    if not version_str or version_str.casefold() in {"unknown", ""}:
-        return "Unknown"
-    
-    # Already a canonical name
-    if version_str.casefold().startswith("windows server"):
-        return version_str
-    
-    # Extract major.minor.build from version string (e.g., "10.0.14393" from "10.0.14393.9140")
-    parts = version_str.split(".")
+#: Ubuntu codenames used in Azure marketplace offers to their catalog version.
+_UBUNTU_CODENAMES = {
+    "noble": "24.04 LTS",
+    "jammy": "22.04 LTS",
+    "focal": "20.04 LTS",
+}
+
+#: Canonical catalog product names keyed by the token a source reports.
+_LINUX_PRODUCTS = (
+    ("red hat enterprise linux", "Red Hat Enterprise Linux"),
+    ("redhat", "Red Hat Enterprise Linux"),
+    ("rhel", "Red Hat Enterprise Linux"),
+    ("ubuntu", "Ubuntu"),
+    ("debian", "Debian"),
+    ("centos", "CentOS"),
+    ("sles", "SLES"),
+    ("suse", "SLES"),
+)
+
+
+def _clean(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _is_unknown(value: str) -> bool:
+    return not value or value.casefold() == "unknown"
+
+
+def _windows_release(*candidates: str) -> str:
+    """Return the catalog version for the first candidate naming a release."""
+    for candidate in candidates:
+        text = _clean(candidate).casefold()
+        if not text:
+            continue
+        # Normalize "2012-r2"/"2012_r2" so the "2012 R2" token matches.
+        text = re.sub(r"[-_]", " ", text)
+        for release in _WINDOWS_RELEASES:
+            if release.casefold() in text:
+                return release
+    return ""
+
+
+def _windows_build_release(version: str) -> str:
+    """Return the catalog version for a Windows ``major.minor.build`` string."""
+    parts = _clean(version).split(".")
     if len(parts) >= 3:
-        major_minor_build = ".".join(parts[:3])
-        if major_minor_build in _WINDOWS_VERSION_MAP:
-            return _WINDOWS_VERSION_MAP[major_minor_build]
-    
-    return "Unknown"
+        return _WINDOWS_BUILD_VERSIONS.get(".".join(parts[:3]), "")
+    return ""
 
 
-def _canonicalize_os_name(os_name: str) -> str:
-    """Standardize OS name capitalization and format.
-    
-    Args:
-        os_name: Raw OS name from ARG (e.g., "windows", "Windows", "linux")
-        
-    Returns:
-        Canonical OS name (e.g., "Windows", "Linux", "Unknown")
+def _ubuntu_version(*candidates: str) -> str:
+    """Return the catalog version for Ubuntu, which is keyed with an LTS suffix."""
+    for candidate in candidates:
+        text = _clean(candidate).casefold()
+        if not text:
+            continue
+        for codename, version in _UBUNTU_CODENAMES.items():
+            if codename in text:
+                return version
+        # Accept "22.04", "22_04-lts-gen2", and "22.04 LTS" alike.
+        match = re.search(r"(\d{2})[._](\d{2})", text)
+        if match:
+            release = f"{match.group(1)}.{match.group(2)}"
+            return f"{release} LTS" if int(match.group(1)) % 2 == 0 else release
+    return ""
+
+
+def _major_version(*candidates: str) -> str:
+    """Return the leading major version number, used by RHEL and Debian."""
+    for candidate in candidates:
+        match = re.search(r"\d+", _clean(candidate))
+        if match:
+            return match.group(0)
+    return ""
+
+
+def canonicalize_os(
+    *,
+    os_name: str = "",
+    os_version: str = "",
+    os_type: str = "",
+    image_publisher: str = "",
+    image_offer: str = "",
+    image_sku: str = "",
+) -> tuple[str, str]:
+    """Resolve raw source fields into a catalog-aligned ``(product, version)``.
+
+    Azure exposes the operating system through different fields depending on the
+    source: native VMs carry marketplace image coordinates, while Arc machines
+    report agent telemetry. Both are reduced here to the same ``(product,
+    version)`` vocabulary the lifecycle catalog is keyed on, so EOL dates
+    resolve regardless of which source observed the machine.
     """
-    if not os_name:
-        return "Unknown"
-    
-    normalized = os_name.strip().casefold()
-    if normalized.startswith("windows"):
-        return "Windows"
-    elif normalized.startswith("linux"):
-        return "Linux"
-    elif normalized.startswith("ubuntu"):
-        return "Ubuntu"
-    elif normalized.startswith("rhel") or normalized.startswith("red hat"):
-        return "RHEL"
-    elif normalized.startswith("debian"):
-        return "Debian"
-    elif normalized.startswith("centos"):
-        return "CentOS"
-    elif normalized.startswith("sles"):
-        return "SLES"
-    elif normalized.startswith("mac") or normalized.startswith("darwin"):
-        return "macOS"
-    
-    return os_name.strip() if os_name.strip() else "Unknown"
+    name = _clean(os_name)
+    version = _clean(os_version)
+    haystack = " ".join(
+        part for part in (name, version, os_type, image_publisher, image_offer, image_sku) if part
+    ).casefold()
 
+    if "windows" in haystack:
+        release = (
+            _windows_build_release(version)
+            or _windows_release(version, name, os_type, image_sku, image_offer)
+        )
+        # Client Windows is not in the server lifecycle catalog; keep the raw
+        # signal so the group stays reviewable rather than mislabelled.
+        if not release and re.search(r"windows\s*(10|11|7)\b", haystack):
+            client = re.search(r"windows\s*(10|11|7)\b", haystack)
+            return f"Windows {client.group(1)}", version or UNKNOWN
+        return _WINDOWS_SERVER, release or UNKNOWN
 
-def _extract_windows_version_from_sku(image_sku: str) -> str:
-    """Extract Windows Server version from Azure VM image SKU.
-    
-    Args:
-        image_sku: Image SKU string like "2016-Datacenter", "2019-Datacenter-gensecond", etc.
-        
-    Returns:
-        Canonical OS name like "Windows Server 2016" or "Unknown" if not extractable
-    """
-    if not image_sku:
-        return "Unknown"
-    
-    # Extract year from SKU (e.g., "2016" from "2016-Datacenter")
-    sku_lower = image_sku.strip().casefold()
-    
-    # Match common Windows Server SKU patterns
-    if "2025" in sku_lower:
-        return "Windows Server 2025"
-    elif "2022" in sku_lower:
-        return "Windows Server 2022"
-    elif "2019" in sku_lower:
-        return "Windows Server 2019"
-    elif "2016" in sku_lower:
-        return "Windows Server 2016"
-    elif "2012-r2" in sku_lower or "2012 r2" in sku_lower:
-        return "Windows Server 2012 R2"
-    elif "2012" in sku_lower:
-        return "Windows Server 2012"
-    elif "2008-r2" in sku_lower or "2008 r2" in sku_lower:
-        return "Windows Server 2008 R2"
-    elif "2008" in sku_lower:
-        return "Windows Server 2008"
-    
-    # Also check for client Windows versions
-    if "win11" in sku_lower or "windows-11" in sku_lower:
-        return "Windows 11"
-    elif "win10" in sku_lower or "windows-10" in sku_lower:
-        return "Windows 10"
-    elif "windows-7" in sku_lower or "win7" in sku_lower:
-        return "Windows 7"
-    
-    return "Unknown"
+    for token, product in _LINUX_PRODUCTS:
+        if token in haystack:
+            if product == "Ubuntu":
+                release = _ubuntu_version(version, image_sku, image_offer, name)
+            else:
+                release = _major_version(version, image_sku, name)
+            return product, release or UNKNOWN
+
+    if name and not _is_unknown(name):
+        return name, version or UNKNOWN
+    return UNKNOWN, version or UNKNOWN
 
 
 def normalize_os_inventory(
@@ -202,48 +239,46 @@ def _normalize_machine_row(
         properties = row.get("properties") if isinstance(row.get("properties"), Mapping) else {}
         os_type = str(row.get("osType") or row.get("os_type") or properties.get("osType") or "")
         image_sku = str(row.get("imageSku") or "").strip()
-        
-        # For native VMs, extract version from image SKU
-        canonical_os_name = _canonicalize_os_name(os_type) if os_type else "Unknown"
-        
-        # Extract version from SKU for Windows, otherwise Unknown
-        if canonical_os_name == "Windows" and image_sku:
-            os_version = _extract_windows_version_from_sku(image_sku)
-        else:
-            os_version = "Unknown"
-        
+        image_offer = str(row.get("imageOffer") or "")
+        image_publisher = str(row.get("imagePublisher") or "")
+        # Native VMs expose the OS through marketplace image coordinates and
+        # may also carry osName/osVersion when the row came from a snapshot.
+        os_name, os_version = canonicalize_os(
+            os_name=str(row.get("osName") or properties.get("osName") or ""),
+            os_version=str(row.get("osVersion") or properties.get("osVersion") or ""),
+            os_type=os_type,
+            image_publisher=image_publisher,
+            image_offer=image_offer,
+            image_sku=image_sku,
+        )
+
         row = {
             **row,
-            "os_name": canonical_os_name,
+            "os_name": os_name,
             "os_version": os_version,
             "os_type": os_type,
-            "image_publisher": row.get("imagePublisher") or "",
-            "image_offer": row.get("imageOffer") or "",
+            "image_publisher": image_publisher,
+            "image_offer": image_offer,
             "image_sku": image_sku,
             "image_version": row.get("imageVersion") or "",
         }
     else:
-        # Arc machines have actual installed OS info from agent telemetry
+        # Arc machines have actual installed OS info from agent telemetry.
         properties = row.get("properties") if isinstance(row.get("properties"), Mapping) else {}
-        raw_os_name = str(row.get("osName") or properties.get("osName") or "").strip()
-        raw_os_version = str(row.get("osVersion") or properties.get("osVersion") or "").strip()
-        
-        # Canonicalize OS name
-        canonical_os_name = _canonicalize_os_name(raw_os_name)
-        
-        # For Windows, map version numbers to product names; for others, keep raw version
-        if canonical_os_name == "Windows":
-            canonical_os_version = _canonicalize_windows_version(raw_os_version)
-        else:
-            canonical_os_version = raw_os_version if raw_os_version else "Unknown"
-        
+        os_sku = str(row.get("osSku") or properties.get("osSku") or "")
+        os_name, os_version = canonicalize_os(
+            os_name=str(row.get("osName") or properties.get("osName") or ""),
+            os_version=str(row.get("osVersion") or properties.get("osVersion") or ""),
+            os_type=os_sku,
+        )
+
         row = {
             **row,
-            "os_name": canonical_os_name,
-            "os_version": canonical_os_version,
+            "os_name": os_name,
+            "os_version": os_version,
             "computer_name": row.get("computerName") or properties.get("computerName") or "",
             "machine_status": row.get("status") or properties.get("status") or "",
-            "os_type": row.get("osSku") or properties.get("osSku") or "",
+            "os_type": os_sku,
         }
     row["source_type"] = source_type
     row["observed_at"] = str(row.get("observed_at") or row.get("observedAt") or observed)
@@ -308,4 +343,4 @@ def normalize_paas_resources(
     return [row.to_fabric_row() for row in observations]
 
 
-__all__ = ["normalize_os_inventory", "normalize_paas_resources"]
+__all__ = ["canonicalize_os", "normalize_os_inventory", "normalize_paas_resources"]

@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from api.scope import Scope
 from hermes_arg_connector.config import ConnectorConfig
-from intelligence.inventory.software_normalization import normalize_configuration_data
-from storage.datasets import DatasetStore
 from intelligence.inventory import InventoryService, MachineObservation
-from intelligence.inventory.normalization import normalize_os_inventory
+from intelligence.inventory.normalization import canonicalize_os, normalize_os_inventory
 from intelligence.inventory.pipeline import InventoryPipeline
+from intelligence.inventory.software_normalization import normalize_configuration_data
 from intelligence.inventory.sources.arg import inventory_os_specs
-from intelligence.lifecycle import EOLCatalog
+from intelligence.lifecycle import EOLCatalog, LifecycleStatus
+from storage.datasets import DatasetStore
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_inventory_arg.json"
 SOFTWARE_FIXTURE = Path(__file__).parent / "fixtures" / "mock_configurationdata.json"
@@ -138,12 +138,13 @@ def test_generated_inventory_rows_preserve_source_identity_and_image_uncertainty
 
     native = next(row for row in observations if row["source_type"] == "azure_vm")
     arc = next(row for row in observations if row["source_type"] == "arc")
-    assert native["os_version"] == "Unknown"
+    assert native["os_name"] == "Windows Server"
+    assert native["os_version"] == "2019"
     assert native["image_sku"] == "2019-Datacenter"
     assert native["image_version"] == "latest"
     assert native["environment"] == "prod"
     assert arc["os_name"] == "Ubuntu"
-    assert arc["os_version"] == "22.04"
+    assert arc["os_version"] == "22.04 LTS"
     assert arc["environment"] == "prod"
     assert native["resource_id"].startswith("/subscriptions/sub-a/")
     assert native["evidence"][0]["query_version"] == "inventory-native-vm-os-v1"
@@ -161,7 +162,12 @@ def test_generated_inventory_rows_preserve_source_identity_and_image_uncertainty
     assert loaded is not None
     result = loaded.detail("Windows Server|2019", Scope.from_mapping({"subscription": ["sub-a"]}))
     assert result is not None
-    assert [row["source_type"] for row in result["data"]["machines"]] == ["arc"]
+    # Both the native VM (image SKU "2019-Datacenter") and the Arc machine
+    # resolve to the same lifecycle group, so both sources appear in the detail.
+    assert sorted(row["source_type"] for row in result["data"]["machines"]) == [
+        "arc",
+        "azure_vm",
+    ]
 
 
 def test_inventory_latest_state_deduplicates_by_exact_source_and_resource() -> None:
@@ -644,3 +650,76 @@ def test_unsupported_inventory_citation_is_not_rendered() -> None:
 
     assert len(citations) == 1
     assert citations[0]["source_table"] == "Resources"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # Native VM: the OS is only discoverable from the marketplace image SKU.
+        (
+            {
+                "os_type": "Windows",
+                "image_publisher": "MicrosoftWindowsServer",
+                "image_offer": "WindowsServer",
+                "image_sku": "2016-datacenter-gensecond",
+            },
+            ("Windows Server", "2016"),
+        ),
+        # Arc: the agent reports a build number instead of a release year.
+        (
+            {
+                "os_name": "windows",
+                "os_version": "10.0.14393.9140",
+                "os_type": "Windows Server 2016 Datacenter",
+            },
+            ("Windows Server", "2016"),
+        ),
+        ({"os_name": "Ubuntu", "os_version": "22.04"}, ("Ubuntu", "22.04 LTS")),
+        (
+            {
+                "os_type": "Linux",
+                "image_publisher": "Canonical",
+                "image_offer": "0001-com-ubuntu-server-jammy",
+                "image_sku": "22_04-lts-gen2",
+            },
+            ("Ubuntu", "22.04 LTS"),
+        ),
+        (
+            {"os_name": "RHEL", "os_version": "8.9"},
+            ("Red Hat Enterprise Linux", "8"),
+        ),
+    ],
+)
+def test_canonicalize_os_emits_lifecycle_catalog_keys(
+    raw: dict[str, str], expected: tuple[str, str]
+) -> None:
+    """Normalization must emit the ``(product, version)`` pair the catalog is keyed on.
+
+    Regression guard: the catalog lookup is an exact match, so emitting
+    ``("Windows", "Windows Server 2016")`` silently degraded every machine to
+    "EOL date needs review" even though the release was well known.
+    """
+    assert canonicalize_os(**raw) == expected
+
+    product, version = expected
+    classification = EOLCatalog.default().classify_product(
+        product, version, now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    assert classification.support_end is not None
+    assert classification.status is not LifecycleStatus.UNKNOWN
+
+
+def test_both_sources_for_one_machine_agree_on_lifecycle_group() -> None:
+    """A VM seen as both a native VM and an Arc machine must land in one group."""
+    native = canonicalize_os(
+        os_type="Windows",
+        image_publisher="MicrosoftWindowsServer",
+        image_offer="WindowsServer",
+        image_sku="2016-datacenter-gensecond",
+    )
+    arc = canonicalize_os(
+        os_name="windows",
+        os_version="10.0.14393.9140",
+        os_type="Windows Server 2016 Datacenter",
+    )
+    assert native == arc

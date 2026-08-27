@@ -4,15 +4,14 @@ import json
 import re
 from pathlib import Path
 
+from inventory_harness import refresh_inventory
+
 from api.evidence import envelope
 from api.routers.inventory import _evidence
 from api.scope import Scope
 from hermes_arg_connector.storage import DatasetStore
 from intelligence.inventory.models import SOURCE_STATES, SOURCE_TYPES, group_key
 from intelligence.inventory.service import InventoryService
-
-from inventory_harness import refresh_inventory
-
 
 GOLDEN_ROOT = Path(__file__).parent / "fixtures" / "inventory_golden"
 EXPECTED_INVENTORY_DATASETS = {
@@ -126,11 +125,13 @@ def test_inventory_contract_end_to_end_from_refresh_to_api_envelope(tmp_path: Pa
     assert sorted(store.read_dataset("inventory/software_source_status")[0]) == EXPECTED_SOFTWARE_STATUS_KEYS
 
     collection = service.collection(Scope.from_mapping({"subscription": ["sub-a"]}))
-    assert collection["total"] == 3
+    # The native VM's image SKU ("2019-Datacenter") resolves to the same
+    # lifecycle group as the Arc machine, so there is no phantom
+    # "Windows|Unknown" group for a machine whose release is well known.
+    assert collection["total"] == 2
     assert {group["key"] for group in collection["data"]["groups"]} == {
-        "Ubuntu|22.04",
+        "Ubuntu|22.04 LTS",
         "Windows Server|2019",
-        "Windows|Unknown",
     }
     assert collection["data"]["source_status"]["azure_vm"]["row_count"] == 1
 
@@ -144,7 +145,7 @@ def test_inventory_contract_end_to_end_from_refresh_to_api_envelope(tmp_path: Pa
     )
     assert body["evidence"][0]["source_table"] == "inventory/os_observations"
     assert body["knowledge_version"] == "1.0.0"
-    assert body["pagination"]["total"] == 3
+    assert body["pagination"]["total"] == 2
 
 
 def test_group_keys_status_evidence_and_pagination_are_contractual(
