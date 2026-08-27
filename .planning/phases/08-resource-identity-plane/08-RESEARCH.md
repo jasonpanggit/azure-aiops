@@ -450,6 +450,7 @@ The topology pipeline's `topology_entities`/`topology_edges` tables should follo
    - What we know: No Cosmos DB Gremlin usage exists in the repo (not searched for directly this session but no signal of it in dependencies or fabric config). `pyproject.toml` has no `azure-kusto-data` dependency, meaning no KQL client is wired up today.
    - What's unclear: Which of these three paths Fabric IQ's own documented traversal capability actually supports out of the box versus what requires standing up a parallel KQL/Eventhouse item.
    - Recommendation: This is squarely a "verify against Microsoft Learn Fabric IQ docs" item the planner must resolve with live documentation lookup before locking a specific technical approach — do not let the plan default to KQL graph-match without confirming Fabric IQ doesn't already expose an equivalent traversal API natively.
+   - **(DEFERRED TO CHECKPOINT: 08-02 decision checkpoint "Traversal mechanism for Fabric IQ-bound topology data", placed before Task 2/`ontology_binding.py`)** — no external documentation-retrieval tool was reachable this session (see Assumptions Log preamble), so this cannot be silently resolved by the planner; the operator picks the traversal mechanism explicitly at execution time, with an instruction in the checkpoint to check current Microsoft Learn Fabric IQ docs first if tooling is available then.
 
 ## Environment Availability
 
