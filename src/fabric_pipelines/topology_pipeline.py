@@ -201,7 +201,20 @@ def derive_edges(
         for backend in balancer.get("backendResourceIds", []):
             link(balancer["id"], "loadBalances", backend, 0.9)
 
-    return list(entities.values()), list(edges.values())
+    # Port of ``normalize.normalize()``'s ``known_entity_ids`` dangling-edge
+    # filter (src/hermes_arg_connector/normalize.py:225-236). Without this,
+    # any edge whose subject/object was never actually emitted as an entity
+    # (e.g. a reference to a resource type outside this pipeline's coverage)
+    # would be written straight to the topology_edges Delta table / Fabric IQ
+    # ontology by the notebook path, unlike Hermes's engine which always
+    # drops such edges before publication (CR-01, 08-REVIEW.md).
+    known_entity_ids = set(entities.keys())
+    filtered_edges = [
+        edge
+        for edge in edges.values()
+        if edge["subjectId"] in known_entity_ids and edge["objectId"] in known_entity_ids
+    ]
+    return list(entities.values()), filtered_edges
 
 
 def _add_edge(

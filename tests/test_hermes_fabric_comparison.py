@@ -162,12 +162,12 @@ def test_non_accepted_edge_state_stays_explicit_in_both_arms():
 
 def test_dangling_edge_dropped_consistently_by_both_arms():
     """An edge whose endpoint is missing from the emitted entity set must be
-    dropped by both arms -- not silently kept in one arm only. This mirrors
-    ``_add_edge``'s existing dangling-endpoint behavior and specifically
-    exercises the divergence discovered between ``Normalizer.normalize()``
-    (filters internally) and ``derive_edges()`` (does not filter on its
-    own) -- both must show the *same effective* result once the shared
-    comparison harness applies its own known-entity-set filter."""
+    dropped by both arms -- not silently kept in one arm only. Following the
+    CR-01 fix (08-REVIEW.md), ``derive_edges()`` now ports the same
+    ``known_entity_ids`` filter ``Normalizer.normalize()`` applies internally,
+    so both arms drop dangling edges before the harness's own filter even
+    runs, and the harness filter finds nothing further to drop in either
+    case."""
     root_id = NSG_ID.lower()
     scenario = topology_comparison_scenario()
 
@@ -181,16 +181,16 @@ def test_dangling_edge_dropped_consistently_by_both_arms():
     fabric_entity_ids = {str(entity["entity_id"]) for entity in entities}
     fabric_raw_edges = [edge_view_from_camel_case(edge) for edge in edges]
 
-    # Confirmed divergence (08-03 research): derive_edges() itself does not
-    # drop the belongsTo edge to the never-emitted resource-group container,
-    # while Normalizer.normalize() already filtered it out internally.
+    # Post-CR-01 fix: derive_edges() now filters dangling edges internally,
+    # the same as Normalizer.normalize() always has -- neither arm's raw
+    # output should contain a dangling edge to the unemitted resource-group
+    # container any more.
     fabric_has_dangling_before_filter = any(
         edge.subject_id not in fabric_entity_ids or edge.object_id not in fabric_entity_ids
         for edge in fabric_raw_edges
     )
-    assert fabric_has_dangling_before_filter, (
-        "expected derive_edges() to emit at least one dangling belongsTo edge "
-        "to the unemitted resource-group container before harness filtering"
+    assert fabric_has_dangling_before_filter is False, (
+        "derive_edges() should no longer emit dangling edges after the CR-01 fix"
     )
 
     hermes_filtered, hermes_dropped_any = filter_dangling_edges(
@@ -200,11 +200,10 @@ def test_dangling_edge_dropped_consistently_by_both_arms():
         fabric_raw_edges, fabric_entity_ids
     )
 
-    # Normalizer.normalize() already dropped it internally, so re-applying
-    # the harness filter finds nothing further to drop; derive_edges()'s
-    # raw output still had it, so the harness filter does the dropping here.
+    # Both arms now filter internally, so re-applying the harness filter
+    # finds nothing further to drop in either case.
     assert hermes_dropped_any is False
-    assert fabric_dropped_any is True
+    assert fabric_dropped_any is False
 
     # Once both arms pass through the shared harness filter, neither
     # arm's *comparable* edge set contains a dangling edge -- consistent

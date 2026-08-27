@@ -241,12 +241,12 @@ def _missing_evidence(edges: list[EdgeView]) -> list[str]:
 
 def _scope_violations(edges: list[EdgeView], entity_ids: set[str]) -> list[str]:
     """An edge referencing an entity outside the authorized/emitted scope
-    (i.e. neither endpoint recorded) would be an unscoped read leaking into
+    (i.e. either endpoint not recorded) would be an unscoped read leaking into
     the result -- flagged explicitly rather than silently included."""
     return [
         edge.relationship_id
         for edge in edges
-        if edge.subject_id not in entity_ids and edge.object_id not in entity_ids
+        if edge.subject_id not in entity_ids or edge.object_id not in entity_ids
     ]
 
 
