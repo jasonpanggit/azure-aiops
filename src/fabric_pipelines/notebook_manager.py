@@ -35,6 +35,12 @@ NOTEBOOK_DISPLAY_NAME = "topology_pipeline_notebook"
 #: compute-architecture decision but covering the full Hermes ontology
 #: scope rather than only network topology.
 ONTOLOGY_NOTEBOOK_DISPLAY_NAME = "ontology_pipeline_notebook"
+VULNERABILITY_NOTEBOOK_DISPLAY_NAME = "vulnerability_pipeline_notebook"
+LIFECYCLE_NOTEBOOK_DISPLAY_NAME = "lifecycle_pipeline_notebook"
+PATCH_NOTEBOOK_DISPLAY_NAME = "patch_pipeline_notebook"
+CHANGE_NOTEBOOK_DISPLAY_NAME = "change_pipeline_notebook"
+PREDEPLOY_NOTEBOOK_DISPLAY_NAME = "predeploy_pipeline_notebook"
+IMPACT_CONTEXT_NOTEBOOK_DISPLAY_NAME = "impact_context_pipeline_notebook"
 
 #: The notebook's own top-level cells: read inventory-shaped rows from the
 #: existing lakehouse tables via Spark, call this package's pure functions,
@@ -124,6 +130,19 @@ _ONTOLOGY_NOTEBOOK_CELLS: tuple[str, ...] = (
         "relationships_df.write.format('delta').mode('overwrite').saveAsTable('ontology_relationships')\n"
     ),
 )
+
+
+def _pipeline_cells(module_name: str, function_name: str = "run") -> tuple[str, ...]:
+    return (
+        f"# Fabric-hosted Spark notebook: {module_name}\n"
+        "# Reads governed Lakehouse tables and calls the same pure Python\n"
+        "# pipeline entrypoint exercised by local tests. No direct Azure ARG/LAW\n"
+        "# acquisition is performed here.\n",
+        f"from fabric_pipelines.{module_name} import {function_name}\n",
+        "# Workspace-specific table reads are intentionally configured by the\n"
+        "# deployment/runbook; call the imported function with row dictionaries\n"
+        "# loaded from the Lakehouse and write its result table back with Spark.\n",
+    )
 
 
 def _build_notebook_source(
@@ -282,6 +301,54 @@ def build_ontology_notebook_definition(
     )
 
 
+def build_vulnerability_notebook_definition(**kwargs: Any) -> dict[str, Any]:
+    return build_notebook_definition(
+        **kwargs,
+        display_name=VULNERABILITY_NOTEBOOK_DISPLAY_NAME,
+        cells=_pipeline_cells("vulnerability_pipeline"),
+    )
+
+
+def build_lifecycle_notebook_definition(**kwargs: Any) -> dict[str, Any]:
+    return build_notebook_definition(
+        **kwargs,
+        display_name=LIFECYCLE_NOTEBOOK_DISPLAY_NAME,
+        cells=_pipeline_cells("lifecycle_pipeline"),
+    )
+
+
+def build_patch_notebook_definition(**kwargs: Any) -> dict[str, Any]:
+    return build_notebook_definition(
+        **kwargs,
+        display_name=PATCH_NOTEBOOK_DISPLAY_NAME,
+        cells=_pipeline_cells("patch_pipeline"),
+    )
+
+
+def build_change_notebook_definition(**kwargs: Any) -> dict[str, Any]:
+    return build_notebook_definition(
+        **kwargs,
+        display_name=CHANGE_NOTEBOOK_DISPLAY_NAME,
+        cells=_pipeline_cells("change_pipeline"),
+    )
+
+
+def build_predeploy_notebook_definition(**kwargs: Any) -> dict[str, Any]:
+    return build_notebook_definition(
+        **kwargs,
+        display_name=PREDEPLOY_NOTEBOOK_DISPLAY_NAME,
+        cells=_pipeline_cells("predeploy_pipeline"),
+    )
+
+
+def build_impact_context_notebook_definition(**kwargs: Any) -> dict[str, Any]:
+    return build_notebook_definition(
+        **kwargs,
+        display_name=IMPACT_CONTEXT_NOTEBOOK_DISPLAY_NAME,
+        cells=_pipeline_cells("impact_context_builder", "build_graph"),
+    )
+
+
 class NotebookManager:
     """Thin manager over Fabric's generic Items API, scoped to Notebook
     items -- mirrors ``LakehouseManager``/``OntologyManager``'s
@@ -383,8 +450,20 @@ def _text_part(path: str, text: str) -> dict[str, str]:
 __all__ = [
     "NOTEBOOK_DISPLAY_NAME",
     "ONTOLOGY_NOTEBOOK_DISPLAY_NAME",
+    "VULNERABILITY_NOTEBOOK_DISPLAY_NAME",
+    "LIFECYCLE_NOTEBOOK_DISPLAY_NAME",
+    "PATCH_NOTEBOOK_DISPLAY_NAME",
+    "CHANGE_NOTEBOOK_DISPLAY_NAME",
+    "PREDEPLOY_NOTEBOOK_DISPLAY_NAME",
+    "IMPACT_CONTEXT_NOTEBOOK_DISPLAY_NAME",
     "NotebookManager",
     "build_notebook_definition",
     "build_ontology_notebook_definition",
+    "build_vulnerability_notebook_definition",
+    "build_lifecycle_notebook_definition",
+    "build_patch_notebook_definition",
+    "build_change_notebook_definition",
+    "build_predeploy_notebook_definition",
+    "build_impact_context_notebook_definition",
     "ensure_notebook",
 ]
