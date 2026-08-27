@@ -202,7 +202,11 @@ The genuinely wide step is extracting `DatasetStore`/generation machinery, which
 **Goal:** As a platform operator, I want unified inventory to own the complete resource identity plane, so that the Hermes semantic graph performs graph construction, relationship modelling, and semantic traversal from inventory instead of querying ARG for resource identity itself.
 **Requirements**: INV-07, INV-08, INV-10, INV-11, INV-12
 **Depends on:** Phase 7
-**Plans:** TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 08-01-PLAN.md — Extend inventory read port with containment hierarchy; prove lossless equivalence for Hermes's real normalizer read patterns
+- [ ] 08-02-PLAN.md — Build the real Fabric-native topology-derivation pipeline (edges + NSG/flow-log network topology) and bind to Fabric IQ ontology
+- [ ] 08-03-PLAN.md — Run the Hermes-vs-Fabric viability comparison, produce the report, and execute the operator-approved retain/reduce/remove decision
 **UI hint:** no
 
 **Context:** `queries.py:build()` issues ~20 deterministic ARG query specs, then `Normalizer` maps known payloads into known entity/relationship rows and ontology metadata is generated from emitted row shapes. That is coded acquisition and normalization, not autonomous/self-learning discovery. Hermes independently queries `Resources` and `ResourceContainers` for the same resource identity that inventory owns, then normalizes it into 14+ `ENTITY_TYPES`. That duplicate acquisition path is what this phase removes; Hermes remains only if it adds graph-specific value such as relationship inference, topology modelling, confidence/provenance modelling, bounded traversal, semantic query APIs, and agent-safe context packaging.
@@ -217,6 +221,7 @@ The genuinely wide step is extracting `DatasetStore`/generation machinery, which
   4. Inventory exposes per-family freshness and watermarks sufficient for incremental sync, with no regression to full refresh.
   5. Hermes builds and traverses the semantic graph from the inventory read port, with its ARG resource-identity queries removed and no separate "discovery agent" role preserved unless it adds graph-specific inference or context-packaging value.
   6. Assessment domains and relationship modelling are unchanged, joining to inventory by resource ID.
+  7. A real Fabric-native Spark/KQL pipeline is built that reproduces Hermes's current relationship/topology construction (entity/edge derivation from ARG identity data, plus NSG+flow-log-derived network topology) directly against the Fabric lakehouse and exposes it through Fabric IQ ontology, and the same blast-radius scenarios are run against its output for the viability comparison — the gate must be decided from an actual working Fabric pipeline, not a documentation-based estimate.
 
 **Primary risk:** criteria 3 and 4. If `ResourceObservation` projects a lossy subset of `properties`, or cannot express watermark semantics, Hermes must retain its own ARG path and the pivot fails. **Design the contract from Hermes's real read patterns, not from what the inventory UI displays.** See `07-RESEARCH.md` §7.3.
 
