@@ -117,7 +117,7 @@ Plans:
 | 5. Controlled Pilot Readiness | 0/TBD | Not started | - |
 | 6. Software and OS Inventory Visibility | 9/9 | Code-complete, UAT pending | - |
 | 7. Unified Resource Inventory | 6/6 | Implementation complete; live verification pending | - |
-| 8. Resource Identity Plane | 0/TBD | Not started | - |
+| 8. Resource Identity Plane | 1/3 | In Progress|  |
 | 9. Consumer Pivot | 0/TBD | Not started | - |
 
 ### Phase 6: Software and OS Inventory Visibility
@@ -202,11 +202,13 @@ The genuinely wide step is extracting `DatasetStore`/generation machinery, which
 **Goal:** As a platform operator, I want unified inventory to own the complete resource identity plane, so that the Hermes semantic graph performs graph construction, relationship modelling, and semantic traversal from inventory instead of querying ARG for resource identity itself.
 **Requirements**: INV-07, INV-08, INV-10, INV-11, INV-12
 **Depends on:** Phase 7
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 Plans:
-- [ ] 08-01-PLAN.md — Extend inventory read port with containment hierarchy; prove lossless equivalence for Hermes's real normalizer read patterns
+
+- [x] 08-01-PLAN.md — Extend inventory read port with containment hierarchy; prove lossless equivalence for Hermes's real normalizer read patterns
 - [ ] 08-02-PLAN.md — Build the real Fabric-native topology-derivation pipeline (edges + NSG/flow-log network topology) and bind to Fabric IQ ontology
 - [ ] 08-03-PLAN.md — Run the Hermes-vs-Fabric viability comparison, produce the report, and execute the operator-approved retain/reduce/remove decision
+
 **UI hint:** no
 
 **Context:** `queries.py:build()` issues ~20 deterministic ARG query specs, then `Normalizer` maps known payloads into known entity/relationship rows and ontology metadata is generated from emitted row shapes. That is coded acquisition and normalization, not autonomous/self-learning discovery. Hermes independently queries `Resources` and `ResourceContainers` for the same resource identity that inventory owns, then normalizes it into 14+ `ENTITY_TYPES`. That duplicate acquisition path is what this phase removes; Hermes remains only if it adds graph-specific value such as relationship inference, topology modelling, confidence/provenance modelling, bounded traversal, semantic query APIs, and agent-safe context packaging.

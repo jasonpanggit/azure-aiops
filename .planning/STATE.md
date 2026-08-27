@@ -2,17 +2,17 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 7
-current_phase_name: Unified Resource Inventory
-status: paused
-stopped_at: "PAUSED for architecture pivot: Fabric to become the unified data platform (owns ingestion/ETL/cataloguing from ARG, LAW, etc.; web/API/Hermes become pure consumers). See .planning/phases/07-unified-resource-inventory/.continue-here.md and .planning/HANDOFF.json before resuming. Prior state: Fabric inventory pipeline deployed to OneLake; ARG-backed tables published, LAW software table remains degraded because the target workspace has no ConfigurationData table."
-last_updated: "2026-08-26T06:27:28.391Z"
-last_activity: 2026-08-26
-last_activity_desc: Deployed the inventory-owned Fabric/OneLake publication path for ARG-backed inventory tables and confirmed LAW authentication now reaches the Logs API; the configured workspace lacks ConfigurationData.
+current_phase: 08
+current_phase_name: resource-identity-plane
+status: executing
+stopped_at: Completed 08-01-PLAN.md
+last_updated: "2026-08-27T03:39:16.143Z"
+last_activity: 2026-08-27
+last_activity_desc: Phase 08 execution started
 progress:
-  total_phases: 9
-  completed_phases: 3
-  total_plans: 19
+  total_phases: 4
+  completed_phases: 1
+  total_plans: 23
   completed_plans: 19
 ---
 
@@ -23,16 +23,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-23)
 
 **Core value:** Operators can move from a detected Azure situation to an evidence-backed, auditable, human-approved remediation without losing context or control.
-**Current focus:** Phase 7: Unified Resource Inventory
+**Current focus:** Phase 08 — resource-identity-plane
 
 ## Current Position
 
-Phase: 7 of 9 (Unified Resource Inventory)
-Plan: 6 of 6 in current phase
-Status: Implementation complete — Fabric inventory pipeline deployed; LAW source-data and browser walkthrough verification pending
-Last activity: 2026-08-26 — Deployed Fabric/OneLake publication for ARG-backed inventory and confirmed LAW authentication now reaches Azure Monitor Logs; the configured workspace lacks ConfigurationData.
+Phase: 08 (resource-identity-plane) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-08-27 — Phase 08 execution started
 
-Progress: ██░░░░░░░░ [██████████] 95%
+Progress: ██░░░░░░░░ [████████░░] 83%
 
 ## Performance Metrics
 
@@ -75,6 +75,7 @@ Progress: ██░░░░░░░░ [██████████] 95%
 | Phase 07-unified-resource-inventory P04 | 7min | 3 tasks | 7 files |
 | Phase 07-unified-resource-inventory P05 | 8min | 3 tasks | 9 files |
 | Phase 07-unified-resource-inventory P06 | 8min | 3 tasks | 7 files |
+| Phase 08 P01 | 45min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -152,6 +153,9 @@ Recent decisions affecting current work:
 - [Phase ?]: Phase 7 Plan 04 stores ResourceObservation provider payloads as canonical provider_payload_json in Fabric while keeping API payloads redacted.
 - [Phase ?]: Phase 7 Plan 05 projects PaaS from one generic Resources inventory query and exposes only identity-plane route fields.
 - [Phase ?]: Phase 7 Plan 06 established InventoryReadPort as the scope-required cross-domain inventory access path; direct inventory dataset reads outside inventory are guarded.
+- [Phase ?]: Containment derived in-process from existing ResourceObservation fields; no persisted containment table, no separate ResourceContainers acquisition path
+- [Phase ?]: Management-group ancestry left None (not fabricated) since ResourceObservation lacks it yet
+- [Phase ?]: identity_source flag defaults to arg; IngestionService only requires inventory_read_port when flipped to inventory
 
 ### Roadmap Evolution
 
@@ -186,6 +190,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-26T07:39:43.000Z
-Stopped at: Phase 7 Fabric inventory pipeline deployed; LAW ConfigurationData source and browser verification pending
+Last session: 2026-08-27T03:39:16.133Z
+Stopped at: Completed 08-01-PLAN.md
 Resume file: None
