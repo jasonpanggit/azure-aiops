@@ -91,7 +91,6 @@ class InventoryPipeline:
             if row.get("workspaceId")
         ]
         software_rows, software_status = fetch_software_inventory(
-            self.config,
             self.logs_client,
             subscriptions,
             started,

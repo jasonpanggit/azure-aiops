@@ -41,10 +41,10 @@ describe("inventory CSV serialization", () => {
       body: { appendChild: vi.fn() },
     } as unknown as Document;
 
-    downloadCsv('"authorized"\r\n"row"\r\n', "software-inventory.csv", documentRef);
+    downloadCsv('"authorized"\r\n"row"\r\n', "inventory.csv", documentRef);
 
     expect(createObjectURL).toHaveBeenCalledOnce();
-    expect(link.download).toBe("software-inventory.csv");
+    expect(link.download).toBe("inventory.csv");
     expect(click).toHaveBeenCalledOnce();
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:inventory");
   });

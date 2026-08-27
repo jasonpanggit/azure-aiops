@@ -7,6 +7,79 @@ from typing import Any
 from .models import MachineObservation, ResourceObservation
 
 
+# Windows OS version to canonical product name mapping
+# Based on Windows Server release versions: https://learn.microsoft.com/en-us/windows-server/get-started/windows-server-release-info
+_WINDOWS_VERSION_MAP = {
+    "10.0.14393": "Windows Server 2016",      # RTM
+    "10.0.17763": "Windows Server 2019",      # RTM
+    "10.0.20348": "Windows Server 2022",      # RTM
+    "10.0.26100": "Windows Server 2025",      # RTM
+    "6.3.9600": "Windows Server 2012 R2",     # RTM
+    "6.2.9200": "Windows Server 2012",        # RTM
+    "6.1.7601": "Windows Server 2008 R2",     # SP1
+    "6.0.6003": "Windows Server 2008",        # SP2
+}
+
+
+def _canonicalize_windows_version(version_str: str) -> str:
+    """Map Windows version numbers to canonical product names.
+    
+    Args:
+        version_str: Version string like "10.0.14393.9140" or "Windows Server 2016"
+        
+    Returns:
+        Canonical OS name like "Windows Server 2016" or "Unknown" if not mappable
+    """
+    if not version_str or version_str.casefold() in {"unknown", ""}:
+        return "Unknown"
+    
+    # Already a canonical name
+    if version_str.casefold().startswith("windows server"):
+        return version_str
+    
+    # Extract major.minor.build from version string (e.g., "10.0.14393" from "10.0.14393.9140")
+    parts = version_str.split(".")
+    if len(parts) >= 3:
+        major_minor_build = ".".join(parts[:3])
+        if major_minor_build in _WINDOWS_VERSION_MAP:
+            return _WINDOWS_VERSION_MAP[major_minor_build]
+    
+    return "Unknown"
+
+
+def _canonicalize_os_name(os_name: str) -> str:
+    """Standardize OS name capitalization and format.
+    
+    Args:
+        os_name: Raw OS name from ARG (e.g., "windows", "Windows", "linux")
+        
+    Returns:
+        Canonical OS name (e.g., "Windows", "Linux", "Unknown")
+    """
+    if not os_name:
+        return "Unknown"
+    
+    normalized = os_name.strip().casefold()
+    if normalized.startswith("windows"):
+        return "Windows"
+    elif normalized.startswith("linux"):
+        return "Linux"
+    elif normalized.startswith("ubuntu"):
+        return "Ubuntu"
+    elif normalized.startswith("rhel") or normalized.startswith("red hat"):
+        return "RHEL"
+    elif normalized.startswith("debian"):
+        return "Debian"
+    elif normalized.startswith("centos"):
+        return "CentOS"
+    elif normalized.startswith("sles"):
+        return "SLES"
+    elif normalized.startswith("mac") or normalized.startswith("darwin"):
+        return "macOS"
+    
+    return os_name.strip() if os_name.strip() else "Unknown"
+
+
 def normalize_os_inventory(
     payload: Mapping[str, list[dict]],
     observed: str,
@@ -84,9 +157,11 @@ def _normalize_machine_row(
     if source_type == "azure_vm":
         properties = row.get("properties") if isinstance(row.get("properties"), Mapping) else {}
         os_type = str(row.get("osType") or row.get("os_type") or properties.get("osType") or "")
+        # For native VMs, we only have osType from image reference; installed OS is unknown
+        canonical_os_name = _canonicalize_os_name(os_type) if os_type else "Unknown"
         row = {
             **row,
-            "os_name": os_type or "Unknown OS",
+            "os_name": canonical_os_name,
             "os_version": "Unknown",
             "os_type": os_type,
             "image_publisher": row.get("imagePublisher") or "",
@@ -95,11 +170,24 @@ def _normalize_machine_row(
             "image_version": row.get("imageVersion") or "",
         }
     else:
+        # Arc machines have actual installed OS info from agent telemetry
         properties = row.get("properties") if isinstance(row.get("properties"), Mapping) else {}
+        raw_os_name = str(row.get("osName") or properties.get("osName") or "").strip()
+        raw_os_version = str(row.get("osVersion") or properties.get("osVersion") or "").strip()
+        
+        # Canonicalize OS name
+        canonical_os_name = _canonicalize_os_name(raw_os_name)
+        
+        # For Windows, map version numbers to product names; for others, keep raw version
+        if canonical_os_name == "Windows":
+            canonical_os_version = _canonicalize_windows_version(raw_os_version)
+        else:
+            canonical_os_version = raw_os_version if raw_os_version else "Unknown"
+        
         row = {
             **row,
-            "os_name": row.get("osName") or properties.get("osName") or "",
-            "os_version": row.get("osVersion") or properties.get("osVersion") or "Unknown",
+            "os_name": canonical_os_name,
+            "os_version": canonical_os_version,
             "computer_name": row.get("computerName") or properties.get("computerName") or "",
             "machine_status": row.get("status") or properties.get("status") or "",
             "os_type": row.get("osSku") or properties.get("osSku") or "",

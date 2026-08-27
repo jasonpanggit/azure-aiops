@@ -62,7 +62,7 @@ Requirements for the controlled Azure pilot.
 - [ ] **INV-08**: Platform represents every observed Azure resource family, including PaaS, through a common scope-enforced resource observation contract that preserves per-family identity, placement, SKU/tier/runtime, and provenance.
 - [ ] **INV-09**: Inventory availability and source status are reported per family, so a missing or degraded family degrades that family only and never blanks the inventory capability.
 - [ ] **INV-10**: Other subsystems, including the semantic graph, consume inventory exclusively through one scope-enforced Fabric-backed inventory contract rather than re-deriving resource lists from raw datasets.
-- [ ] **INV-11**: Inventory owns the resource identity plane — enumeration, type, placement, tags, containment hierarchy, raw provider properties, and per-family watermarks — losslessly enough that discovery and semantic modelling need no separate resource acquisition path.
+- [ ] **INV-11**: Inventory owns the resource identity plane — enumeration, type, placement, tags, containment hierarchy, raw provider properties, and per-family watermarks — losslessly enough that graph construction, relationship modelling, and semantic traversal need no separate resource acquisition path.
 - [ ] **INV-12**: Inventory is bounded to resource identity and does not absorb assessments about resources; patch, vulnerability, policy, advisor, metric, and health domains retain their own contracts and join to inventory by resource ID.
 
 ## v2 Requirements

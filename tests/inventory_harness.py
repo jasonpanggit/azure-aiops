@@ -60,11 +60,23 @@ def refresh_inventory(
         software_rows = json.loads(software_fixture_path.read_text(encoding="utf-8"))
     if workspaces is None:
         workspaces = {"connection-1": "workspace-1"}
+    if "inventory_log_analytics_workspaces" not in fixture:
+        discovered_ids: list[str] = []
+        for values in workspaces.values():
+            if isinstance(values, (list, tuple)):
+                discovered_ids.extend(str(v) for v in values)
+            else:
+                discovered_ids.append(str(values))
+        fixture = {
+            **fixture,
+            "inventory_log_analytics_workspaces": [
+                {"workspaceId": workspace_id} for workspace_id in discovered_ids
+            ],
+        }
     config = ConnectorConfig(
         output_dir=store_root,
         subscriptions=("sub-a", "sub-b"),
         connection_context={"connection_id": "connection-1"},
-        logs_workspaces=workspaces,
         cost_management_enabled=False,
     )
     service = InventoryPipeline(

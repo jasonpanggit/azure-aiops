@@ -13,7 +13,7 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
 - [ ] **Phase 5: Controlled Pilot Readiness** - Validate failure behavior, stale sources, authorization boundaries, rollout controls, and operator readiness.
 - [~] **Phase 6: Software and OS Inventory Visibility** - Deliver scoped, evidence-backed OS and installed-software inventory with lifecycle risk and export. *(code-complete; awaiting UAT sign-off)*
 - [ ] **Phase 7: Unified Resource Inventory** - Establish Fabric/OneLake-backed inventory as the unified data platform for every resource family including PaaS, consumed by the semantic graph and other subsystems rather than owned by them.
-- [ ] **Phase 8: Resource Identity Plane** - Extend inventory to own complete resource identity — all types, containment hierarchy, raw properties, and watermarks — so Hermes stops querying ARG for resource identity and consumes inventory for discovery and semantic modelling.
+- [ ] **Phase 8: Resource Identity Plane** - Extend inventory to own complete resource identity — all types, containment hierarchy, raw properties, and watermarks — so Hermes stops querying ARG for resource identity and consumes inventory for graph construction, relationship modelling, and semantic traversal.
 - [ ] **Phase 9: Consumer Pivot** - Repoint API providers, agent queries, and affected web pages at the inventory read port so the UI is powered by unified inventory.
 
 ## Phase Details
@@ -199,13 +199,13 @@ The genuinely wide step is extracting `DatasetStore`/generation machinery, which
 
 ### Phase 8: Resource Identity Plane
 
-**Goal:** As a platform operator, I want unified inventory to own the complete resource identity plane, so that the Hermes semantic graph performs discovery and semantic modelling from inventory instead of querying ARG for resource identity itself.
+**Goal:** As a platform operator, I want unified inventory to own the complete resource identity plane, so that the Hermes semantic graph performs graph construction, relationship modelling, and semantic traversal from inventory instead of querying ARG for resource identity itself.
 **Requirements**: INV-07, INV-08, INV-10, INV-11, INV-12
 **Depends on:** Phase 7
 **Plans:** TBD
 **UI hint:** no
 
-**Context:** `queries.py:build()` issues ~20 ARG query specs, of which only `_inventory_specs()` is inventory — roughly 10% of what Hermes acquires. Hermes independently queries `Resources` and `ResourceContainers` for the same resource identity that inventory owns, then normalizes it into 14+ `ENTITY_TYPES`. That duplicate acquisition path is what this phase removes.
+**Context:** `queries.py:build()` issues ~20 deterministic ARG query specs, then `Normalizer` maps known payloads into known entity/relationship rows and ontology metadata is generated from emitted row shapes. That is coded acquisition and normalization, not autonomous/self-learning discovery. Hermes independently queries `Resources` and `ResourceContainers` for the same resource identity that inventory owns, then normalizes it into 14+ `ENTITY_TYPES`. That duplicate acquisition path is what this phase removes; Hermes remains only if it adds graph-specific value such as relationship inference, topology modelling, confidence/provenance modelling, bounded traversal, semantic query APIs, and agent-safe context packaging.
 
 **Scope boundary — identity vs. assessments.** Inventory owns the **resource identity plane**: what exists, of what type, where, with what attributes and containment. It does **not** absorb assessments *about* resources — patch compliance, vulnerabilities, policy state, advisor recommendations, metrics, health — which remain owned by their domains and join to inventory by resource ID. Nor does it absorb relationship/topology modelling, which is Hermes's actual job. Without this boundary the phase would produce a god module worse than the current coupling.
 
@@ -215,7 +215,7 @@ The genuinely wide step is extracting `DatasetStore`/generation machinery, which
   2. Inventory carries the containment hierarchy (management group → subscription → resource group → resource) so no consumer needs a separate `ResourceContainers` acquisition path.
   3. Inventory preserves the full raw property bag per resource, losslessly enough that Hermes's normalizers, network modelling, and identity modelling read everything they read today.
   4. Inventory exposes per-family freshness and watermarks sufficient for incremental sync, with no regression to full refresh.
-  5. Hermes performs discovery and semantic modelling from the inventory read port, with its ARG resource-identity queries removed.
+  5. Hermes builds and traverses the semantic graph from the inventory read port, with its ARG resource-identity queries removed and no separate "discovery agent" role preserved unless it adds graph-specific inference or context-packaging value.
   6. Assessment domains and relationship modelling are unchanged, joining to inventory by resource ID.
 
 **Primary risk:** criteria 3 and 4. If `ResourceObservation` projects a lossy subset of `properties`, or cannot express watermark semantics, Hermes must retain its own ARG path and the pivot fails. **Design the contract from Hermes's real read patterns, not from what the inventory UI displays.** See `07-RESEARCH.md` §7.3.

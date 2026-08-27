@@ -80,7 +80,7 @@ function InventorySetupHint({ error }: { error: Error | ApiError | null }) {
   return (
     <StatePanel
       title="Inventory data is not loaded"
-      message="You do not need the Hermes semantic graph or operations agent. The Software Inventory page needs the ARG/Log Analytics inventory ingestion job to publish an inventory generation; installed software additionally needs ConfigurationData workspace mappings."
+      message="You do not need the Hermes semantic graph or operations agent. Inventory data is published by the Fabric ingestion pipeline; installed software additionally needs ConfigurationData workspace mappings."
       tone="error"
       action={(
         <div className="setup-hint">
@@ -137,7 +137,7 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
   );
 }
 
-export default function SoftwareInventoryPage() {
+export default function InventoryPage() {
   const { scope } = useScope();
   const [tab, setTab] = useState<InventoryTab>("os");
   const [subscriptionFilter, setSubscriptionFilter] = useState("all");
@@ -274,7 +274,7 @@ export default function SoftwareInventoryPage() {
     ] as const;
     downloadCsv(
       serializeCsv(rows, columns),
-      `software-inventory-${safeFilenamePart(softwareDetailGroup.software_name)}-${safeFilenamePart(softwareDetailGroup.software_version)}.csv`,
+      `inventory-${safeFilenamePart(softwareDetailGroup.software_name)}-${safeFilenamePart(softwareDetailGroup.software_version)}.csv`,
     );
   }
 
@@ -335,7 +335,7 @@ export default function SoftwareInventoryPage() {
     <main className="page-shell">
       <PageHeader
         eyebrow="Inventory"
-        title="Software Inventory"
+        title="Inventory"
         description="Find authorized operating-system and installed-software coverage across native Azure VMs and Arc-enabled servers."
         metadata={
           inventory.data && (

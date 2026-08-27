@@ -4684,7 +4684,7 @@ body.topology-fullscreen-open {
   background: var(--color-surface-muted);
 }
 
-/* Software Inventory */
+/* Inventory */
 .page-shell {
   display: grid;
   gap: 18px;

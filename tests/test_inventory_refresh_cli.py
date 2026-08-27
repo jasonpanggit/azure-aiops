@@ -24,6 +24,10 @@ def test_inventory_refresh_cli_publishes_to_configured_local_onelake(
             fixture = json.loads(
                 (Path(__file__).parent / "fixtures" / "mock_inventory_arg.json").read_text()
             )
+            fixture.setdefault(
+                "inventory_log_analytics_workspaces",
+                [{"workspaceId": "workspace-1"}],
+            )
             return {spec.name: list(fixture.get(spec.name, [])) for spec in specs}
 
     class LogsClient:
@@ -52,8 +56,6 @@ def test_inventory_refresh_cli_publishes_to_configured_local_onelake(
                 "  subscriptions:",
                 "    - sub-a",
                 "    - sub-b",
-                "  logs_workspaces:",
-                "    connection-1: workspace-1",
             ]
         )
     )

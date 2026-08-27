@@ -88,15 +88,15 @@ def test_refresh_runs_shared_pipeline_and_returns_manifest(
     monkeypatch.delenv("HERMES_FABRIC_CONFIG", raising=False)
 
     with patch(
-        "hermes_arg_connector.inventory_refresh.run_inventory_refresh",
-        return_value={"status": "ok", "rows": 5},
+        "hermes_arg_connector.inventory_refresh.run_inventory_refresh_all_connections",
+        return_value={"status": "completed", "connections": {}, "combined_manifest": {"rows": 5}},
     ) as mock_run:
         response = client.post("/api/v1/inventory/refresh", headers=_auth())
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert body["manifest"] == {"status": "ok", "rows": 5}
+    assert body["combined_manifest"] == {"rows": 5}
     mock_run.assert_called_once_with(str(config_path), fabric_config_path="")
 
 
@@ -108,7 +108,7 @@ def test_refresh_wraps_pipeline_failure_as_internal_error(
     monkeypatch.setenv("HERMES_ARG_CONFIG", str(config_path))
 
     with patch(
-        "hermes_arg_connector.inventory_refresh.run_inventory_refresh",
+        "hermes_arg_connector.inventory_refresh.run_inventory_refresh_all_connections",
         side_effect=RuntimeError("boom"),
     ):
         response = client.post("/api/v1/inventory/refresh", headers=_auth())

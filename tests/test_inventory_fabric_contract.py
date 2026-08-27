@@ -236,6 +236,7 @@ def test_inventory_refresh_writes_arg_and_law_rows_to_onelake_delta_tables(tmp_p
     from storage.onelake_writer import OneLakeWriter
 
     fixture = json.loads((Path(__file__).parent / "fixtures" / "mock_inventory_arg.json").read_text())
+    fixture.setdefault("inventory_log_analytics_workspaces", [{"workspaceId": "workspace-1"}])
     software_rows = json.loads(
         (Path(__file__).parent / "fixtures" / "mock_configurationdata.json").read_text()
     )
@@ -244,7 +245,6 @@ def test_inventory_refresh_writes_arg_and_law_rows_to_onelake_delta_tables(tmp_p
         output_dir=tmp_path / "compat",
         subscriptions=("sub-a", "sub-b"),
         connection_context={"connection_id": "connection-1"},
-        logs_workspaces={"connection-1": "workspace-1"},
         cost_management_enabled=False,
     )
     publisher = InventoryFabricPublisher(

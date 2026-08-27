@@ -638,6 +638,10 @@ def test_connection_ingestion_still_uses_live_arg_client(tmp_path, monkeypatch) 
     ingestion = build_connection_ingestion(
         ConnectorConfig(output_dir=tmp_path, cost_management_enabled=False),
         connection,
+        CredentialResolver(
+            provider=EnvironmentSecretProvider(env={"SPN_SECRET": "s3cret"}),
+            credential_factory=lambda **kwargs: object(),
+        ),
     )
 
     assert ingestion.source.arg.__class__ is FakeArgClient

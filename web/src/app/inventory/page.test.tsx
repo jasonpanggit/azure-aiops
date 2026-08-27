@@ -18,7 +18,7 @@ const { os, osGroup, software, softwareGroup, narrative, lifecycleReview, confir
 
 vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } }));
 
-import SoftwareInventoryPage from "./page";
+import InventoryPage from "./page";
 
 const envelope = <T,>(data: T) => ({
   data,
@@ -59,7 +59,7 @@ const collection = {
   requested_scope: {},
 };
 
-describe("Software Inventory OS tracer", () => {
+describe("Inventory OS tracer", () => {
   beforeEach(() => {
     os.mockResolvedValue(envelope(collection));
     osGroup.mockResolvedValue(envelope({
@@ -241,7 +241,7 @@ describe("Software Inventory OS tracer", () => {
   });
 
   it("renders grouped OS rows, status warnings, review state, and scoped drill-down", async () => {
-    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
     expect((await screen.findAllByText("Windows Server")).length).toBe(2);
     expect(screen.getByText("EOL date needs review")).toBeInTheDocument();
@@ -253,7 +253,7 @@ describe("Software Inventory OS tracer", () => {
   });
 
   it("renders canonical installed software and exact linked details", async () => {
-    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
     fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
 
     expect(await screen.findByText("7-Zip")).toBeInTheDocument();
@@ -264,7 +264,7 @@ describe("Software Inventory OS tracer", () => {
   });
 
   it("shows all EOL candidate citations and confirms an explicit choice", async () => {
-    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
     fireEvent.click(await screen.findByRole("button", { name: "Review EOL date" }));
 
     expect(await screen.findByText(/Claim: Official vendor claim/)).toBeInTheDocument();
@@ -283,7 +283,7 @@ describe("Software Inventory OS tracer", () => {
   });
 
   it("renders server-owned mapping review controls and sends its revision", async () => {
-    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
     fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
 
     expect(await screen.findByText(/Widget Suite v1.0/)).toBeInTheDocument();
@@ -293,7 +293,7 @@ describe("Software Inventory OS tracer", () => {
   });
 
   it("renders deterministic facts and filters OS groups without changing the API scope", async () => {
-    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
     expect(await screen.findByText("Inventory risk narrative")).toBeInTheDocument();
     expect(screen.getByText(/3 machines across 2 OS groups/)).toBeInTheDocument();
@@ -305,7 +305,7 @@ describe("Software Inventory OS tracer", () => {
   });
 
   it("keeps the two-tab boundary and shows authorized export context for exact lookup", async () => {
-    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
     expect(screen.getAllByRole("tab")).toHaveLength(2);
     expect(screen.getByRole("tab", { name: "OS Inventory" })).toHaveAttribute("aria-selected", "true");
@@ -334,7 +334,7 @@ describe("Software Inventory OS tracer", () => {
     narrative.mockRejectedValue(unavailable);
     mappings.mockRejectedValue(unavailable);
 
-    render(<ScopeProvider><SoftwareInventoryPage /></ScopeProvider>);
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
     expect(await screen.findByText("Inventory data is not loaded")).toBeInTheDocument();
     expect(screen.getByText(/You do not need the Hermes semantic graph or operations agent/)).toBeInTheDocument();

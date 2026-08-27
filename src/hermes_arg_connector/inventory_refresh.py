@@ -4,7 +4,11 @@ Extracted from the ``inventory-refresh`` CLI command so the exact same
 refresh logic can be invoked either from the command line or from an
 authenticated HTTP trigger (used by a Fabric Data Pipeline Web activity).
 Inventory remains the sole owner of acquisition/publication; this module
-only provides two entry points onto the same `InventoryPipeline` run.
+provides both a single-config entry point (for local/dev use, or when only
+one Azure AD app/subscription is configured) and a multi-connection
+orchestrator that fans out across every registered ``SubscriptionConnection``
+so production rollouts spanning many subscriptions each get their own
+acquisition run, merged into one Fabric-facing snapshot.
 """
 
 from __future__ import annotations
@@ -15,16 +19,105 @@ from typing import Any
 from .config import ConnectorConfig
 
 
+def run_inventory_refresh_all_connections(
+    config_path: str,
+    *,
+    fabric_config_path: str = "",
+    registry_root: str = "",
+) -> dict[str, Any]:
+    """Refresh inventory for every registered subscription connection.
+
+    Runs one ``InventoryPipeline`` per active :class:`SubscriptionConnection`,
+    scoped to that connection's subscription and isolated dataset root (the
+    same ``connections/<slug>/`` convention used by onboarding's ARG/cost
+    ingestion), then merges all connections' inventory datasets into one
+    deduplicated snapshot and -- if a Fabric config is supplied -- publishes
+    that merged snapshot to Fabric exactly once. A failure acquiring one
+    connection's inventory does not block the others.
+    """
+    from onboarding.credentials import CredentialResolver, default_secret_provider
+    from onboarding.registry import ConnectionRegistry
+    from onboarding.runtime import build_connection_inventory_pipeline
+
+    config = ConnectorConfig.load(config_path)
+    root = registry_root or str(config.output_dir)
+    registry = ConnectionRegistry(root)
+    connections = registry.list(include_disabled=False)
+    if not connections:
+        raise RuntimeError("No active subscription connections are registered")
+
+    resolver = CredentialResolver(provider=default_secret_provider())
+    connection_output_dirs: dict[str, str] = {}
+    connection_results: dict[str, Any] = {}
+    for connection in connections:
+        pipeline = build_connection_inventory_pipeline(config, connection, resolver)
+        connection_output_dirs[connection.connection_id] = str(pipeline.store.root)
+        try:
+            result = pipeline.refresh()
+        except Exception as exc:  # noqa: BLE001 - isolate one connection's failure
+            connection_results[connection.connection_id] = {
+                "status": "failed",
+                "error": str(exc),
+            }
+            continue
+        connection_results[connection.connection_id] = {
+            "status": "completed",
+            "manifest": result.manifest,
+        }
+
+    succeeded = [
+        connection_id
+        for connection_id, outcome in connection_results.items()
+        if outcome["status"] == "completed"
+    ]
+    if not succeeded:
+        return {
+            "status": "failed",
+            "connections": connection_results,
+        }
+
+    from intelligence.inventory.combine import (
+        publish_combined_inventory_snapshot,
+        republish_combined_snapshot_to_fabric,
+    )
+
+    combined_manifest = publish_combined_inventory_snapshot(
+        connection_output_dirs,
+        config.output_dir,
+        connection_ids=succeeded,
+    )
+
+    fabric_publication: dict[str, Any] | None = None
+    if fabric_config_path:
+        fabric_publication = republish_combined_snapshot_to_fabric(
+            config.output_dir,
+            fabric_config_path,
+            retain_raw_queries=config.retain_raw_queries,
+        )
+
+    return {
+        "status": "completed" if len(succeeded) == len(connections) else "partial",
+        "connections": connection_results,
+        "combined_manifest": combined_manifest,
+        "fabric_publication": fabric_publication,
+    }
+
+
 def run_inventory_refresh(
     config_path: str,
     *,
     fabric_config_path: str = "",
     connection_id: str = "",
 ) -> dict[str, Any]:
-    """Run one inventory refresh and return the publication manifest.
+    """Run one single-config inventory refresh and return the manifest.
 
     Mirrors the ``hermes-arg-connector inventory-refresh`` CLI command so
-    both entry points execute identical acquisition/publication logic.
+    both entry points execute identical acquisition/publication logic. This
+    entry point targets exactly the subscriptions listed in ``config_path``
+    (or all subscriptions visible to the configured credential, if none are
+    listed) -- it does not fan out across the onboarding connection
+    registry. Use :func:`run_inventory_refresh_all_connections` for
+    production rollouts spanning multiple registered subscriptions.
     """
     from fabric.auth import build_credential, build_delta_storage_options
     from fabric.config import FabricRuntimeConfig
@@ -65,11 +158,9 @@ def run_inventory_refresh(
         max_workers=config.max_query_workers,
         management_group_ids=config.management_groups,
     )
-    logs_client = None
-    if config.logs_workspaces:
-        from azure.identity import DefaultAzureCredential
+    from azure.identity import DefaultAzureCredential
 
-        logs_client = AzureMonitorLogsClient(DefaultAzureCredential())
+    logs_client = AzureMonitorLogsClient(DefaultAzureCredential())
     publisher = None
     if fabric_config_path:
         fabric_config = FabricRuntimeConfig.load(fabric_config_path)
@@ -119,3 +210,7 @@ def run_inventory_refresh(
         publisher=publisher,
     ).refresh()
     return result.manifest
+
+
+__all__ = ["run_inventory_refresh", "run_inventory_refresh_all_connections"]
+

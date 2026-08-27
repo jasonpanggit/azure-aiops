@@ -93,6 +93,7 @@ ONTOLOGY_ENTITY_TYPES = (
     "BlastRadius",
     "DependencyChain",
     "OperationalFinding",
+    "Situation",
     # Network topology (Prompt 16)
     "VNet",
     "Subnet",

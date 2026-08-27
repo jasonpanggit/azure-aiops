@@ -245,6 +245,16 @@ resource "azurerm_container_app" "api" {
         }
       }
 
+      env {
+        name  = "HERMES_ARG_CONFIG"
+        value = "/app/config.yaml"
+      }
+
+      env {
+        name  = "HERMES_FABRIC_CONFIG"
+        value = "/app/fabric.config.yaml"
+      }
+
       liveness_probe {
         transport = "HTTP"
         port      = 8080

@@ -425,17 +425,15 @@ def _ingestion(
     tmp_path: Path,
     logs: _LogsSource,
     *,
-    workspaces: dict[str, str | tuple[str, ...]] | None = None,
     law_workspaces: list[dict] | None = None,
 ) -> InventoryPipeline:
-    if workspaces is None:
-        workspaces = {"connection-1": "workspace-1"}
+    if law_workspaces is None:
+        law_workspaces = [{"workspaceId": "workspace-1"}]
     inventory = json.loads(FIXTURE.read_text(encoding="utf-8"))["inventory_native_vm_os"]
     config = ConnectorConfig(
         output_dir=tmp_path,
         subscriptions=("sub-a",),
         connection_context={"connection_id": "connection-1"},
-        logs_workspaces=workspaces,
         cost_management_enabled=False,
     )
     return InventoryPipeline(
@@ -446,7 +444,7 @@ def _ingestion(
     )
 
 
-def test_configured_workspace_publishes_software_in_the_active_generation(
+def test_discovered_workspace_publishes_software_in_the_active_generation(
     tmp_path: Path,
 ) -> None:
     logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:2]
@@ -503,7 +501,7 @@ def test_successful_empty_workspace_replaces_previous_rows_as_ready_empty(
     assert loaded.software_source_status()["logs"]["row_count"] == 0
 
 
-def test_multiple_server_configured_workspaces_report_partial_without_browser_input(
+def test_multiple_discovered_workspaces_report_partial_without_browser_input(
     tmp_path: Path,
 ) -> None:
     logs = _LogsSource(
@@ -513,7 +511,7 @@ def test_multiple_server_configured_workspaces_report_partial_without_browser_in
     ingestion = _ingestion(
         tmp_path,
         logs,
-        workspaces={"connection-1": ("workspace-1", "workspace-2")},
+        law_workspaces=[{"workspaceId": "workspace-1"}, {"workspaceId": "workspace-2"}],
     )
 
     ingestion.refresh()
@@ -526,11 +524,11 @@ def test_multiple_server_configured_workspaces_report_partial_without_browser_in
     assert status["workspace_count"] == 2
 
 
-def test_missing_workspace_mapping_is_unavailable_and_never_queries_arbitrary_id(
+def test_no_discovered_workspaces_is_unavailable_and_never_queries_arbitrary_id(
     tmp_path: Path,
 ) -> None:
     logs = _LogsSource({"attacker-workspace": json.loads(SOFTWARE_FIXTURE.read_text())})
-    _ingestion(tmp_path, logs, workspaces={}).refresh()
+    _ingestion(tmp_path, logs, law_workspaces=[]).refresh()
     loaded = InventoryService.from_store(DatasetStore(tmp_path))
 
     assert logs.calls == []
@@ -545,7 +543,6 @@ def test_dynamic_law_discovery_queries_arg_discovered_workspace(tmp_path: Path) 
     ingestion = _ingestion(
         tmp_path,
         logs,
-        workspaces={},
         law_workspaces=[{"workspaceId": "discovered-ws", "name": "law-a"}],
     )
 
@@ -559,17 +556,15 @@ def test_dynamic_law_discovery_queries_arg_discovered_workspace(tmp_path: Path) 
     assert status["workspace_count"] == 1
 
 
-def test_discovered_and_configured_workspaces_are_merged_without_duplicates(
-    tmp_path: Path,
-) -> None:
+def test_discovered_workspaces_are_deduplicated(tmp_path: Path) -> None:
     logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:1]
     logs = _LogsSource({"workspace-1": logs_rows, "discovered-ws": []})
     ingestion = _ingestion(
         tmp_path,
         logs,
-        workspaces={"connection-1": "workspace-1"},
         law_workspaces=[
             {"workspaceId": "discovered-ws"},
+            {"workspaceId": "workspace-1"},
             {"workspaceId": "workspace-1"},
         ],
     )
@@ -580,27 +575,6 @@ def test_discovered_and_configured_workspaces_are_merged_without_duplicates(
     assert logs.calls == ["discovered-ws", "workspace-1"]
     assert loaded is not None
     assert loaded.software_source_status()["logs"]["workspace_count"] == 2
-
-
-def test_workspace_configuration_is_validated_and_server_owned(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "azure:\n"
-        "  log_analytics_workspaces:\n"
-        "    connection-1: [workspace-1, workspace-2]\n"
-    )
-
-    config = ConnectorConfig.load(config_path)
-
-    assert config.workspaces_for_connection("CONNECTION-1") == (
-        "workspace-1",
-        "workspace-2",
-    )
-    with pytest.raises(ValueError, match="workspace ID"):
-        ConnectorConfig(
-            output_dir=tmp_path,
-            logs_workspaces={"connection-1": "../workspace"},
-        )
 
 
 def _write_payload(payload: dict) -> str:

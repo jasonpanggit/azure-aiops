@@ -14,11 +14,11 @@ from hermes_arg_connector.azure import (
     AzureResourceGraphClient,
 )
 from hermes_arg_connector.config import ConnectorConfig
-from storage.fs import join_root
 from hermes_arg_connector.logs import AzureMonitorLogsClient, LogsQueryLimits
 from hermes_arg_connector.service import IngestionService
 from hermes_arg_connector.source import AzureResourceGraphSource, CostActualsSource
 from ontology.subscription_connection import SubscriptionConnection
+from storage.fs import join_root
 
 from .credentials import CredentialResolver, SecretWriter, default_secret_provider
 from .metadata import BusinessMetadata
@@ -85,14 +85,12 @@ def build_connection_ingestion(
         max_workers=scoped.max_query_workers,
         management_group_ids=(),
     )
-    logs_client = None
-    if scoped.workspaces_for_connection(connection.connection_id):
-        logs_client = AzureMonitorLogsClient(
-            (resolver or CredentialResolver(provider=default_secret_provider())).build(
-                connection.credential
-            ),
-            limits=LogsQueryLimits(timeout_seconds=scoped.command_timeout_seconds),
-        )
+    logs_client = AzureMonitorLogsClient(
+        (resolver or CredentialResolver(provider=default_secret_provider())).build(
+            connection.credential
+        ),
+        limits=LogsQueryLimits(timeout_seconds=scoped.command_timeout_seconds),
+    )
     cost_source = (
         CostActualsSource(cost=build_connection_cost_client(scoped, connection, resolver))
         if scoped.cost_management_enabled
@@ -104,6 +102,45 @@ def build_connection_ingestion(
         cost_source=cost_source,
         logs_client=logs_client,
     )
+
+
+def build_connection_inventory_pipeline(
+    config: ConnectorConfig,
+    connection: SubscriptionConnection,
+    resolver: CredentialResolver | None = None,
+) -> Any:
+    """Build an ``InventoryPipeline`` scoped to exactly one connection.
+
+    Mirrors :func:`build_connection_ingestion`: the pipeline is scoped to the
+    connection's subscription and writes into that connection's isolated
+    ``connections/<slug>/`` dataset root. No Fabric publisher is attached here
+    -- only the merged, multi-connection snapshot should be published to
+    Fabric, so each connection's raw run stays purely local/staging.
+    """
+    from intelligence.inventory.pipeline import InventoryPipeline
+
+    scoped = dataclasses.replace(
+        config,
+        output_dir=join_root(str(config.output_dir), "connections", _slug(connection.connection_id)),
+        subscriptions=(connection.subscription_id,),
+        management_groups=(),
+        tenant_id=connection.tenant_id,
+        connection_context=connection_context(connection),
+    )
+    source = AzureResourceGraphSource(
+        mcp=None,
+        arg=build_connection_arg_client(scoped, connection, resolver),
+        tenant_id=connection.tenant_id,
+        max_workers=scoped.max_query_workers,
+        management_group_ids=(),
+    )
+    logs_client = AzureMonitorLogsClient(
+        (resolver or CredentialResolver(provider=default_secret_provider())).build(
+            connection.credential
+        ),
+        limits=LogsQueryLimits(timeout_seconds=scoped.command_timeout_seconds),
+    )
+    return InventoryPipeline(scoped, source=source, logs_client=logs_client)
 
 
 def build_connection_arg_client(
@@ -169,6 +206,7 @@ __all__ = [
     "build_connection_arg_client",
     "build_connection_cost_client",
     "build_connection_ingestion",
+    "build_connection_inventory_pipeline",
     "build_onboarding_service",
     "connection_context",
 ]

@@ -1221,10 +1221,10 @@ def _load_situation_provider() -> Any:
 
 
 def _load_inventory_service() -> Any:
-    """Load inventory only from an active generation (or explicit fixture)."""
+    """Load inventory from the compatibility snapshot or Fabric tables."""
     from storage.datasets import DatasetStore
     from intelligence.inventory.mapping_repository import SoftwareMappingRepository
-    from intelligence.inventory.service import InventoryService
+    from intelligence.inventory.service import InventoryService, InventorySnapshot
 
     eol_review = _load_eol_review_service()
     root = hermes_home()
@@ -1239,8 +1239,64 @@ def _load_inventory_service() -> Any:
             eol_review=eol_review,
             mapping_repository=mapping_repository,
         )
-    return InventoryService.from_store(
+    service = InventoryService.from_store(
         DatasetStore(root),
+        eol_review=eol_review,
+        mapping_repository=mapping_repository,
+    )
+    if service is not None:
+        return service
+
+    # Production refreshes publish governed inventory tables to OneLake while
+    # the compatibility generation may live on a different local filesystem.
+    # Read those tables directly so the API does not report an empty provider.
+    if os.environ.get("HERMES_ENABLE_FABRIC", "").strip().casefold() != "true":
+        return None
+    workspace_id = os.environ.get("FABRIC_WORKSPACE_ID", "").strip()
+    lakehouse_id = os.environ.get("FABRIC_LAKEHOUSE_ID", "").strip()
+    if not workspace_id or not lakehouse_id:
+        return None
+    from fabric.auth import FabricAuthConfig, build_credential, build_delta_storage_options
+    from storage.delta_writer import DeltaWriter
+    from storage.onelake_writer import OneLakeWriter
+
+    credential = build_credential(
+        FabricAuthConfig(
+            mode="managed_identity",
+            managed_identity_client_id=os.environ.get("AZURE_CLIENT_ID", "").strip(),
+        )
+    )
+    storage_options = build_delta_storage_options(credential)
+    onelake = OneLakeWriter(
+        workspace_id,
+        lakehouse_id,
+        credential=credential,
+        storage_options=storage_options,
+    )
+    delta = DeltaWriter(storage_options=storage_options)
+    datasets = {
+        name: delta.read(onelake.table_uri("inventory", table))
+        for name, table in {
+            "inventory/os_observations": "os_observations",
+            "inventory/source_status": "source_status",
+            "inventory/software_observations": "software_observations",
+            "inventory/software_source_status": "software_source_status",
+            "inventory/resource_observations": "resource_observations",
+        }.items()
+    }
+    if not any(datasets.values()):
+        return None
+    return InventoryService(
+        InventorySnapshot.from_payload(
+            {
+                "observations": datasets["inventory/os_observations"],
+                "source_status": datasets["inventory/source_status"],
+                "software_observations": datasets["inventory/software_observations"],
+                "software_source_status": datasets["inventory/software_source_status"],
+                "resource_observations": datasets["inventory/resource_observations"],
+                "query_version": "fabric-inventory-v1",
+            }
+        ),
         eol_review=eol_review,
         mapping_repository=mapping_repository,
     )

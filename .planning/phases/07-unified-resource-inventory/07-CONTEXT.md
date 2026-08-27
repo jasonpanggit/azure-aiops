@@ -45,6 +45,7 @@ Phase 7 delivers the *contract* that Phases 8 and 9 depend on. Getting the contr
 ### Scope boundary — identity vs. assessments
 - **D-11:** Inventory owns the **resource identity plane**: what exists, of what type, where, with what attributes and containment. It does **not** absorb assessments *about* resources — patch, vulnerability, policy, advisor, metrics, health stay with their own domains and join by `resource_id`. Without this fence, inventory becomes a god module worse than the current coupling.
 - **D-12:** Relationship/topology modelling stays with Hermes. That is its actual job.
+- **D-12a:** Hermes is **not** treated as an autonomous/self-learning discovery agent. Current Hermes discovery is deterministic code: fixed query specs, fixed normalizers, generated ontology metadata, and semantic/query services over the resulting rows. Under the Fabric unified-data-platform pivot, source discovery/acquisition/cataloguing/ETL belong to Fabric/inventory contracts; Hermes only adds value where it performs graph-specific work that Fabric tables alone do not: relationship inference, topology modelling, confidence/provenance modelling, bounded traversal, semantic query APIs, and agent-safe context packaging.
 
 ### Per-family availability
 - **D-13:** Replace the all-or-nothing `from_store()` → `return None` (`service.py:214`) with per-family availability. A missing or degraded family degrades **that family only** and never blanks the inventory capability.
@@ -150,6 +151,7 @@ A flattened `dict[str, str]` cannot express this. If Phase 7 locks that contract
 
 - **Targeted PaaS query specs** (`_paas_specs()`) with explicit SKU/tier/runtime projection, and PaaS lifecycle/EOL via `EOLReviewService` — D-16, revisit when PaaS EOL signals are needed.
 - **Hermes drops ARG resource-identity queries**; inventory owns containment hierarchy and per-family watermarks in Fabric-backed contracts — **Phase 8** (INV-11, INV-12).
+- **Hermes is graph consumer/modeller, not discovery learner.** Phase 8 must remove Hermes's ARG identity acquisition only if Fabric-curated `ResourceObservation`/identity tables are lossless enough for its deterministic normalizers and graph modelling. If Hermes contributes no graph-specific inference/traversal/context value beyond coded acquisition and row mapping, the separate "Hermes discovery" role should be deleted rather than preserved.
 - **API provider rewiring, `agent_queries.py` migration, web page audit** — **Phase 9** (INV-09, INV-10), after Fabric-backed read ports are stable.
 - **Open question for Phase 8 planning:** does the semantic graph still publish `entities/*` for identity types, or do those become views over inventory? Determines whether `agent_queries.py` changes shape or only source.
 - **Pre-existing `web/src/app/compliance/page.test.tsx` failure** — unrelated to inventory; triage so full-suite green becomes a usable signal.
