@@ -124,6 +124,97 @@ def test_api_cross_family_route_matches_read_port(tmp_path: Path) -> None:
     )["resources"]
 
 
+def test_list_containment_returns_strict_parent_chain() -> None:
+    port = InventoryReadPort(_service())
+    scope = Scope.from_mapping({"subscription": ["sub-a"]})
+
+    rows = port.list_containment(scope)
+
+    by_id = {row["id"]: row for row in rows}
+    subscription_id = "/subscriptions/sub-a"
+    rg_id = "/subscriptions/sub-a/resourcegroups/rg"
+    assert subscription_id in by_id
+    assert by_id[subscription_id]["kind"] == "subscription"
+    assert by_id[subscription_id]["parent_id"] is None
+    assert rg_id in by_id
+    assert by_id[rg_id]["kind"] == "resource_group"
+    assert by_id[rg_id]["parent_id"] == subscription_id
+
+
+def test_list_containment_requires_scope() -> None:
+    port = InventoryReadPort(_service())
+    try:
+        port.list_containment(None)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("list_containment(None) should raise TypeError")
+
+
+def test_get_resource_includes_containment_sub_object() -> None:
+    port = InventoryReadPort(_service())
+    scope = Scope.from_mapping({"subscription": ["sub-a"]})
+
+    resolved = port.get_resource(
+        scope,
+        "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Web/sites/app",
+    )
+
+    assert resolved is not None
+    containment = resolved["containment"]
+    assert containment["subscription_id"] == "/subscriptions/sub-a"
+    assert containment["resource_group_id"] == "/subscriptions/sub-a/resourcegroups/rg"
+    assert containment["management_group_id"] is None
+
+
+def test_get_resource_without_resource_group_resolves_subscription_only_containment() -> None:
+    service = InventoryService(
+        {
+            "observations": [],
+            "resource_observations": [
+                {
+                    "tenant_id": "tenant-a",
+                    "subscription_id": "sub-a",
+                    "resource_id": "/subscriptions/sub-a/providers/Microsoft.Resources/deployments/dep",
+                    "timestamp": "2026-08-26T06:00:00Z",
+                    "change_version": "v1",
+                    "ingestion_run_id": "run-1",
+                    "resource_name": "dep",
+                    "resource_type": "microsoft.resources/deployments",
+                    "resource_group": "",
+                    "location": "australiaeast",
+                    "family": "paas",
+                    "sku": "",
+                    "tier": "",
+                    "runtime": "",
+                    "provisioning_state": "Succeeded",
+                    "os_name": "",
+                    "os_version": "",
+                    "source_type": "arg",
+                    "source_table": "Resources",
+                    "observed_at": "2026-08-26T06:00:00Z",
+                    "query_version": "resource-observation-v1",
+                    "provider_payload_json": "{}",
+                    "tags_json": "{}",
+                    "provenance_json": "{}",
+                }
+            ],
+        }
+    )
+    port = InventoryReadPort(service)
+    scope = Scope.from_mapping({"subscription": ["sub-a"]})
+
+    resolved = port.get_resource(
+        scope,
+        "/subscriptions/sub-a/providers/Microsoft.Resources/deployments/dep",
+    )
+
+    assert resolved is not None
+    containment = resolved["containment"]
+    assert containment["subscription_id"] == "/subscriptions/sub-a"
+    assert containment["resource_group_id"] is None
+
+
 def test_guard_no_direct_inventory_dataset_reads_outside_inventory() -> None:
     offenders: list[str] = []
     for path in Path("src").rglob("*.py"):
