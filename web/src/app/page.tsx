@@ -7,6 +7,7 @@ import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
+import { CoverageDonut, OperationsSignalChart } from "@/components/ui/OperationsSignalChart";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
@@ -242,6 +243,25 @@ export default function Home() {
           </section>
 
           <section className="dashboard-grid">
+            <article className="card dashboard-visual-card">
+              <div className="card-header">
+                <div>
+                  <h2>Signal concentration</h2>
+                  <p>Where operator attention is concentrated right now.</p>
+                </div>
+                <span className="visual-card-kicker">Live scope</span>
+              </div>
+              <div className="card-body">
+                <OperationsSignalChart
+                  signals={[
+                    { label: "Priority situations", value: criticalSituations, tone: "critical" },
+                    { label: "Reachable exposure", value: exposureCount, tone: "critical" },
+                    { label: "Network gaps", value: gapCount, tone: "warning" },
+                    { label: "Stale connections", value: staleConnections, tone: "warning" },
+                  ]}
+                />
+              </div>
+            </article>
             <article className="card">
               <div className="card-header">
                 <div>
@@ -301,6 +321,18 @@ export default function Home() {
                 {(state.connections?.data.length ?? 0) === 0 && (
                   <span className="muted">No subscription connections are visible in this scope.</span>
                 )}
+              </div>
+            </article>
+            <article className="card dashboard-visual-card">
+              <div className="card-header">
+                <div>
+                  <h2>Connection coverage</h2>
+                  <p>Health of the data sources behind recommendations.</p>
+                </div>
+                <Link className="section-link" href="/connections">Manage</Link>
+              </div>
+              <div className="card-body">
+                <CoverageDonut healthy={Math.max(0, (state.connections?.data.length ?? 0) - staleConnections)} needsAttention={staleConnections} />
               </div>
             </article>
           </section>

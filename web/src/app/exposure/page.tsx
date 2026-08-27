@@ -7,6 +7,7 @@ import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
+import { OperationsSignalChart } from "@/components/ui/OperationsSignalChart";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
@@ -148,6 +149,26 @@ export default function ExposurePage() {
           tone={bestPatch ? "success" : "default"}
         />
       </div>
+
+      <section className="card dashboard-visual-card exposure-signal-card">
+        <div className="card-header">
+          <div>
+            <h2>Exposure profile</h2>
+            <p>Prioritization signals across the authorized environment.</p>
+          </div>
+          <span className="visual-card-kicker">Decision view</span>
+        </div>
+        <div className="card-body">
+          <OperationsSignalChart
+            signals={[
+              { label: "Critical CVEs", value: summary.data?.data.critical_count ?? 0, tone: "critical" },
+              { label: "Internet exposed", value: summary.data?.data.internet_exposed_count ?? 0, tone: "critical" },
+              { label: "Reachable servers", value: summary.data?.data.reachable_server_count ?? 0, tone: "warning" },
+              { label: "Affected services", value: summary.data?.data.affected_business_service_count ?? 0, tone: "info" },
+            ]}
+          />
+        </div>
+      </section>
 
       {bestPatch && (
         <section className="best-action-card">

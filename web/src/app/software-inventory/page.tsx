@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { OperationsSignalChart } from "@/components/ui/OperationsSignalChart";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
@@ -374,6 +375,27 @@ export default function SoftwareInventoryPage() {
           Installed Software
         </button>
       </div>
+
+      {tab === "os" && (
+        <section className="card dashboard-visual-card inventory-overview-card">
+          <div className="card-header">
+            <div>
+              <h2>OS coverage at a glance</h2>
+              <p>Machine coverage and lifecycle review signals in the selected scope.</p>
+            </div>
+            <span className="visual-card-kicker">{totalMachines} machines</span>
+          </div>
+          <div className="card-body">
+            <OperationsSignalChart
+              signals={[
+                { label: "Machines covered", value: totalMachines, tone: "info" },
+                { label: "Lifecycle review", value: reviewCount, tone: reviewCount ? "warning" : "success" },
+                { label: "OS groups", value: filteredGroups.length, tone: "success" },
+              ]}
+            />
+          </div>
+        </section>
+      )}
 
       <NarrativePanel narrative={narrative} />
       <InventorySetupHint error={inventory.error ?? softwareInventory.error ?? mappings.error ?? narrative.error} />

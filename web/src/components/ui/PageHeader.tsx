@@ -15,7 +15,7 @@ export function PageHeader({ eyebrow, title, description, actions, metadata }: P
       <div className="page-header-copy">
         <div className="page-header-signal">
           <span className="page-header-signal-dot" />
-          <span>Evidence-backed command view</span>
+          <span>Live operational context</span>
         </div>
         {eyebrow && <div className="eyebrow">{eyebrow}</div>}
         <h1>{title}</h1>
