@@ -330,3 +330,36 @@ def update_policy(
         ),
         scope=scope.to_dict(),
     )
+
+
+@router.post("/policy/preview", summary="Preview a proposed network design policy")
+def preview_policy(
+    principal: WritePrincipal,
+    context: Context,
+    scope: ReadScope,
+    changes: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    """Evaluate proposed policy changes against the current observed topology."""
+    store = context.network_policy_store
+    if store is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Policy preview is unavailable because no policy store is configured",
+            {"capability": "network_policy", "provider_state": "unavailable"},
+        )
+    try:
+        policy = store.preview(changes)
+    except NetworkDesignPolicyValidationError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc), {"section": sorted(changes)}) from exc
+    service = _service(context, scope)
+    preview_service = NetworkIntelligenceService(service.snapshot, policy=policy)
+    analysis = preview_service.analyze()
+    return envelope(
+        {
+            "policy": _policy_payload(policy)[0],
+            "gaps": [gap.to_dict() for gap in analysis.gaps],
+            "summary": analysis.summary(),
+        },
+        evidence=_evidence(service, confidence=CONFIDENCE_MEDIUM),
+        scope=scope.to_dict(),
+    )

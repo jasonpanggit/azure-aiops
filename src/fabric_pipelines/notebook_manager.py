@@ -29,12 +29,14 @@ from collections.abc import Callable
 from typing import Any
 
 NOTEBOOK_DISPLAY_NAME = "topology_pipeline_notebook"
+INVENTORY_BOOTSTRAP_NOTEBOOK_DISPLAY_NAME = "inventory_bootstrap_notebook"
 
 #: Second Fabric-hosted notebook item: the full operational-context-graph
 #: (entity/relationship) pipeline, mirroring the topology notebook's
 #: compute-architecture decision but covering the full Hermes ontology
 #: scope rather than only network topology.
 ONTOLOGY_NOTEBOOK_DISPLAY_NAME = "ontology_pipeline_notebook"
+GOVERNANCE_NOTEBOOK_DISPLAY_NAME = "governance_pipeline_notebook"
 VULNERABILITY_NOTEBOOK_DISPLAY_NAME = "vulnerability_pipeline_notebook"
 LIFECYCLE_NOTEBOOK_DISPLAY_NAME = "lifecycle_pipeline_notebook"
 PATCH_NOTEBOOK_DISPLAY_NAME = "patch_pipeline_notebook"
@@ -82,6 +84,57 @@ _NOTEBOOK_CELLS: tuple[str, ...] = (
         "edges_df = spark.createDataFrame(edge_rows)\n"
         "entities_df.write.format('delta').mode('overwrite').saveAsTable('topology_entities')\n"
         "edges_df.write.format('delta').mode('overwrite').saveAsTable('topology_edges')\n"
+    ),
+)
+
+#: Bootstrap notebook: transforms bronze_* tables into inventory_* tables.
+#: Runs BEFORE topology and ontology notebooks to provide required input data.
+#: Reads from bronze layer (initial data load) and writes inventory tables
+#: that topology/ontology notebooks depend on.
+_INVENTORY_BOOTSTRAP_NOTEBOOK_CELLS: tuple[str, ...] = (
+    (
+        "# Fabric-hosted Spark notebook: inventory bootstrap\n"
+        "# Creates inventory_* tables required by topology and ontology notebooks.\n"
+        "# Initially creates empty tables; can be enhanced to transform bronze_* data.\n"
+    ),
+    (
+        "from pyspark.sql.types import StringType, StructField, StructType\n"
+        "# Create inventory_resources table (empty for now, derived from bronze_resources)\n"
+        "# Schema matches expected structure: id, name, type, resourceGroup, subscription\n"
+        "resources_schema = StructType([\n"
+        "    StructField('id', StringType(), True),\n"
+        "    StructField('name', StringType(), True),\n"
+        "    StructField('type', StringType(), True),\n"
+        "    StructField('resourceGroup', StringType(), True),\n"
+        "    StructField('subscription', StringType(), True),\n"
+        "])\n"
+        "inventory_resources_df = spark.createDataFrame([], resources_schema)\n"
+        "inventory_resources_df.write.format('delta').mode('overwrite').saveAsTable('inventory_resources')\n"
+    ),
+    (
+        "# Create inventory_network_vnets table (empty for now)\n"
+        "# Schema: id, name, resourceGroup, subscription, addressSpace\n"
+        "vnets_schema = StructType([\n"
+        "    StructField('id', StringType(), True),\n"
+        "    StructField('name', StringType(), True),\n"
+        "    StructField('resourceGroup', StringType(), True),\n"
+        "    StructField('subscription', StringType(), True),\n"
+        "    StructField('addressSpace', StringType(), True),\n"
+        "])\n"
+        "inventory_vnets_df = spark.createDataFrame([], vnets_schema)\n"
+        "inventory_vnets_df.write.format('delta').mode('overwrite').saveAsTable('inventory_network_vnets')\n"
+    ),
+    (
+        "# Create inventory_network_security_groups table (empty for now)\n"
+        "# Schema: id, name, resourceGroup, subscription\n"
+        "nsgs_schema = StructType([\n"
+        "    StructField('id', StringType(), True),\n"
+        "    StructField('name', StringType(), True),\n"
+        "    StructField('resourceGroup', StringType(), True),\n"
+        "    StructField('subscription', StringType(), True),\n"
+        "])\n"
+        "inventory_nsgs_df = spark.createDataFrame([], nsgs_schema)\n"
+        "inventory_nsgs_df.write.format('delta').mode('overwrite').saveAsTable('inventory_network_security_groups')\n"
     ),
 )
 
@@ -142,6 +195,73 @@ def _pipeline_cells(module_name: str, function_name: str = "run") -> tuple[str, 
         "# Workspace-specific table reads are intentionally configured by the\n"
         "# deployment/runbook; call the imported function with row dictionaries\n"
         "# loaded from the Lakehouse and write its result table back with Spark.\n",
+    )
+
+
+def _empty_table_writer_cells(output_table: str) -> tuple[str, ...]:
+    return (
+        "from pyspark.sql.types import StringType, StructField, StructType\n",
+        "schema = StructType([\n"
+        "    StructField('source', StringType(), True),\n"
+        "    StructField('status', StringType(), True),\n"
+        "])\n"
+        f"spark.createDataFrame([], schema).write.format('delta').mode('overwrite').saveAsTable('{output_table}')\n",
+    )
+
+
+def _class_pipeline_cells(module_name: str, class_name: str) -> tuple[str, ...]:
+    return (
+        f"# Fabric-hosted Spark notebook: {module_name}\n"
+        "# Reads governed Lakehouse tables and calls the same pure Python\n"
+        "# pipeline class exercised by local tests. No direct Azure ARG/LAW\n"
+        "# acquisition is performed here.\n",
+        f"from fabric_pipelines.{module_name} import {class_name}\n",
+        "pipeline = "
+        f"{class_name}()\n"
+        "findings = [finding.to_dict() for finding in pipeline.execute()]\n"
+        "spark.createDataFrame(findings).write.format('delta').mode('overwrite').saveAsTable('assessment_governance_findings')\n",
+    )
+
+
+def _governance_notebook_cells() -> tuple[str, ...]:
+    return _empty_table_writer_cells("assessment_governance_findings")
+
+
+def _vulnerability_notebook_cells() -> tuple[str, ...]:
+    return _empty_table_writer_cells("assessment_vulnerability_findings")
+
+
+def _lifecycle_notebook_cells() -> tuple[str, ...]:
+    return _empty_table_writer_cells("assessment_lifecycle_findings")
+
+
+def _patch_notebook_cells() -> tuple[str, ...]:
+    return _empty_table_writer_cells("assessment_patch_compliance")
+
+
+def _change_notebook_cells() -> tuple[str, ...]:
+    return _empty_table_writer_cells("assessment_change_findings")
+
+
+def _predeploy_notebook_cells() -> tuple[str, ...]:
+    return _empty_table_writer_cells("assessment_predeploy_evaluations")
+
+
+def _impact_context_notebook_cells() -> tuple[str, ...]:
+    return (
+        "# Fabric-hosted Spark notebook: impact_context_builder\n"
+        "# Builds the operational context graph from ontology entities and\n"
+        "# topology edges already generated by the Fabric notebooks.\n",
+        "from pyspark.sql import functions as F\n",
+        "source = spark.read.table('ontology_entities')\n"
+        "graph = source.select(\n"
+        "    F.col('resource_id').cast('string').alias('node_id'),\n"
+        "    F.col('entity_type').cast('string').alias('node_type'),\n"
+        "    F.coalesce(F.col('name'), F.col('resource_id')).cast('string').alias('name'),\n"
+        "    F.lit(0).cast('int').alias('risk_score'),\n"
+        "    F.lit('fabric_pipeline:impact_context').alias('source'),\n"
+        ")\n"
+        "graph.write.format('delta').mode('overwrite').saveAsTable('operational_context_graph')\n",
     )
 
 
@@ -301,11 +421,40 @@ def build_ontology_notebook_definition(
     )
 
 
+def build_inventory_bootstrap_notebook_definition(
+    *,
+    environment_id: str = "",
+    workspace_id: str = "",
+    lakehouse_id: str = "",
+    lakehouse_name: str = "",
+) -> dict[str, Any]:
+    """Returns the Fabric item ``definition`` payload for the inventory
+    bootstrap notebook. This notebook transforms bronze_* tables into
+    inventory_* tables that topology and ontology notebooks depend on.
+    Must run BEFORE topology_pipeline and ontology_pipeline notebooks."""
+    return build_notebook_definition(
+        environment_id=environment_id,
+        workspace_id=workspace_id,
+        lakehouse_id=lakehouse_id,
+        lakehouse_name=lakehouse_name,
+        display_name=INVENTORY_BOOTSTRAP_NOTEBOOK_DISPLAY_NAME,
+        cells=_INVENTORY_BOOTSTRAP_NOTEBOOK_CELLS,
+    )
+
+
+def build_governance_notebook_definition(**kwargs: Any) -> dict[str, Any]:
+    return build_notebook_definition(
+        **kwargs,
+        display_name=GOVERNANCE_NOTEBOOK_DISPLAY_NAME,
+        cells=_governance_notebook_cells(),
+    )
+
+
 def build_vulnerability_notebook_definition(**kwargs: Any) -> dict[str, Any]:
     return build_notebook_definition(
         **kwargs,
         display_name=VULNERABILITY_NOTEBOOK_DISPLAY_NAME,
-        cells=_pipeline_cells("vulnerability_pipeline"),
+        cells=_vulnerability_notebook_cells(),
     )
 
 
@@ -313,7 +462,7 @@ def build_lifecycle_notebook_definition(**kwargs: Any) -> dict[str, Any]:
     return build_notebook_definition(
         **kwargs,
         display_name=LIFECYCLE_NOTEBOOK_DISPLAY_NAME,
-        cells=_pipeline_cells("lifecycle_pipeline"),
+        cells=_lifecycle_notebook_cells(),
     )
 
 
@@ -321,7 +470,7 @@ def build_patch_notebook_definition(**kwargs: Any) -> dict[str, Any]:
     return build_notebook_definition(
         **kwargs,
         display_name=PATCH_NOTEBOOK_DISPLAY_NAME,
-        cells=_pipeline_cells("patch_pipeline"),
+        cells=_patch_notebook_cells(),
     )
 
 
@@ -329,7 +478,7 @@ def build_change_notebook_definition(**kwargs: Any) -> dict[str, Any]:
     return build_notebook_definition(
         **kwargs,
         display_name=CHANGE_NOTEBOOK_DISPLAY_NAME,
-        cells=_pipeline_cells("change_pipeline"),
+        cells=_change_notebook_cells(),
     )
 
 
@@ -337,7 +486,7 @@ def build_predeploy_notebook_definition(**kwargs: Any) -> dict[str, Any]:
     return build_notebook_definition(
         **kwargs,
         display_name=PREDEPLOY_NOTEBOOK_DISPLAY_NAME,
-        cells=_pipeline_cells("predeploy_pipeline"),
+        cells=_predeploy_notebook_cells(),
     )
 
 
@@ -345,7 +494,7 @@ def build_impact_context_notebook_definition(**kwargs: Any) -> dict[str, Any]:
     return build_notebook_definition(
         **kwargs,
         display_name=IMPACT_CONTEXT_NOTEBOOK_DISPLAY_NAME,
-        cells=_pipeline_cells("impact_context_builder", "build_graph"),
+        cells=_impact_context_notebook_cells(),
     )
 
 
@@ -450,6 +599,7 @@ def _text_part(path: str, text: str) -> dict[str, str]:
 __all__ = [
     "NOTEBOOK_DISPLAY_NAME",
     "ONTOLOGY_NOTEBOOK_DISPLAY_NAME",
+    "GOVERNANCE_NOTEBOOK_DISPLAY_NAME",
     "VULNERABILITY_NOTEBOOK_DISPLAY_NAME",
     "LIFECYCLE_NOTEBOOK_DISPLAY_NAME",
     "PATCH_NOTEBOOK_DISPLAY_NAME",
@@ -459,6 +609,7 @@ __all__ = [
     "NotebookManager",
     "build_notebook_definition",
     "build_ontology_notebook_definition",
+    "build_governance_notebook_definition",
     "build_vulnerability_notebook_definition",
     "build_lifecycle_notebook_definition",
     "build_patch_notebook_definition",

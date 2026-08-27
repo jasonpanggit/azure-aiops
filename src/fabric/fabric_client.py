@@ -3,11 +3,13 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, ClassVar, Protocol
 
 import httpx
+
+UTC = timezone.utc
 
 
 class TokenCredential(Protocol):

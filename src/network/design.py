@@ -443,6 +443,26 @@ class NetworkDesignPolicyStore:
     def update(self, changes: dict[str, Any]) -> NetworkDesignPolicy:
         """Applies a partial update and returns the full effective policy."""
         validate_policy_update(changes)
+        merged = self._merge_changes(changes)
+        if self._documents is None:
+            self._memory = merged
+            return NetworkDesignPolicy.from_mapping(merged)
+
+        payload = self._documents.read(POLICY_DOCUMENT)
+        revision = int(payload.get("revision") or 0)
+        self._documents.write(
+            POLICY_DOCUMENT,
+            {"policy": merged, "revision": revision + 1},
+            expected_revision=revision,
+        )
+        return NetworkDesignPolicy.from_mapping(merged)
+
+    def preview(self, changes: dict[str, Any]) -> NetworkDesignPolicy:
+        """Returns the effective policy for changes without persisting them."""
+        validate_policy_update(changes)
+        return NetworkDesignPolicy.from_mapping(self._merge_changes(changes))
+
+    def _merge_changes(self, changes: dict[str, Any]) -> dict[str, Any]:
         current = self.read().to_dict()
         merged = {**current, **changes}
         # Rules replace by rule_id rather than requiring the whole list to be
@@ -466,16 +486,4 @@ class NetworkDesignPolicyStore:
                 if str(item.get("rule_id")) not in to_remove
             ]
         merged.pop("remove_rule_ids", None)
-
-        if self._documents is None:
-            self._memory = merged
-            return NetworkDesignPolicy.from_mapping(merged)
-
-        payload = self._documents.read(POLICY_DOCUMENT)
-        revision = int(payload.get("revision") or 0)
-        self._documents.write(
-            POLICY_DOCUMENT,
-            {"policy": merged, "revision": revision + 1},
-            expected_revision=revision,
-        )
-        return NetworkDesignPolicy.from_mapping(merged)
+        return merged
