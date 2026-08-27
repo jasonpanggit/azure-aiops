@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 
 from deltalake import DeltaTable
+from topology_comparison_scenario import (
+    NSG_ID,
+    OBSERVED_AT,
+    SUBNET_ID,
+    VNET_ID,
+    topology_comparison_scenario,
+)
 
 from fabric_pipelines.topology_pipeline import (
     TopologyOneLakePublisher,
@@ -11,13 +20,6 @@ from fabric_pipelines.topology_pipeline import (
 )
 from hermes_arg_connector.normalize import _add_edge as hermes_add_edge
 from storage.onelake_writer import OneLakeWriter
-from topology_comparison_scenario import (
-    NSG_ID,
-    OBSERVED_AT,
-    SUBNET_ID,
-    VNET_ID,
-    topology_comparison_scenario,
-)
 
 
 def test_derive_edges_produces_expected_entities_and_predicates():
@@ -103,3 +105,103 @@ def test_pipeline_writes_topology_entities_and_edges_to_delta_tables(tmp_path):
     edges_table = DeltaTable(str(lakehouse_root / "Tables" / "topology_edges"))
     assert entities_table.to_pyarrow_table().num_rows == len(entities)
     assert edges_table.to_pyarrow_table().num_rows == len(edge_rows)
+
+
+def test_derive_edges_covers_default_deny_rule_and_hasrule_predicate():
+    """Full predicate vocabulary (Task 2): hasRule must be emitted for both
+    the explicit allow rule and Azure's retained default deny rule -- the
+    default rule is not dropped (network_normalize.py docstring guarantee).
+    """
+    _, edges = derive_edges(topology_comparison_scenario(), observed=OBSERVED_AT)
+    rows = [to_topology_edge_row(edge) for edge in edges]
+
+    has_rule_objects = {row["object_id"] for row in rows if row["predicate"] == "hasRule"}
+    assert any("allow-https" in obj for obj in has_rule_objects)
+    assert any("denyallinbound" in obj for obj in has_rule_objects)
+
+
+def test_flowlog_ingest_join_is_fixture_only_and_classifies_allowed_vs_observed():
+    from topology_comparison_scenario import nsg_rule_rows
+
+    from fabric_pipelines.flowlog_ingest import (
+        curated_flow_log_fixture,
+        join_flow_logs_with_nsg_rules,
+    )
+
+    rules = nsg_rule_rows()
+    flows = curated_flow_log_fixture(OBSERVED_AT)
+    edges = join_flow_logs_with_nsg_rules(rules, flows, observed=OBSERVED_AT)
+
+    assert edges, "fixture flow logs must match at least one NSG rule"
+    classifications = {edge["attributes"]["allowedVsObserved"] for edge in edges}
+    assert "allowed_and_observed" in classifications
+    for edge in edges:
+        assert edge["source"] == "fabric_pipeline:flowlog_fixture"
+        assert edge["attributes"]["dataSource"] == "fixture"
+        assert edge["assertionState"] == "fixture_only"
+
+
+def test_ontology_binding_registers_topology_tables_without_inferring_relationships():
+    """Pitfall 2 / D-10 guard: ontology_binding must only register
+    already-derived tables, never claim to detect/infer relationships."""
+    from fabric_pipelines.ontology_binding import TopologyOntologyBinder
+
+    class _StubManager:
+        def __init__(self):
+            self.calls = []
+
+        def resolve(self, **kwargs):
+            self.calls.append(("resolve", kwargs))
+
+        def create(self, display_name, definition):
+            self.calls.append(("create", display_name, definition))
+            return {"id": "ontology-topology-1", "displayName": display_name}
+
+    manager = _StubManager()
+    binder = TopologyOntologyBinder(
+        manager, workspace_id="workspace-1", lakehouse_id="lakehouse-1"
+    )
+
+    result = binder.bind(
+        ontology_id="",
+        ontology_name="Topology_Comparison_Ontology",
+        entity_types={
+            "VNet": "topology_entities",
+            "Subnet": "topology_entities",
+            "NetworkSecurityGroup": "topology_entities",
+        },
+        relationships={
+            ("VNet", "contains", "Subnet"): "topology_edges",
+            ("Subnet", "protectedBy", "NetworkSecurityGroup"): "topology_edges",
+        },
+    )
+
+    assert result["action"] == "created"
+    create_call = next(call for call in manager.calls if call[0] == "create")
+    definition = create_call[2]
+    part_paths = {part["path"] for part in definition["parts"]}
+    assert any(path.startswith("EntityTypes/") for path in part_paths)
+    assert any(path.startswith("RelationshipTypes/") for path in part_paths)
+    # Registration only points at already-materialized Delta tables; it must
+    # never configure Fabric IQ to "detect"/"infer" anything (Pitfall 2).
+    assert "detect" not in json.dumps(definition).lower()
+    assert "infer" not in json.dumps(definition).lower()
+
+
+def test_notebook_definition_authors_genuine_fabric_hosted_notebook_item():
+    """Compute-architecture decision: fabric-hosted-notebook -- proves a
+    real Notebook item definition (not a Python-writer extension) is built,
+    and its cells call this package's own derive_edges/join functions rather
+    than re-implementing the predicate vocabulary a second time."""
+    from fabric_pipelines.notebook_manager import build_notebook_definition
+
+    definition = build_notebook_definition()
+    part_paths = {part["path"] for part in definition["parts"]}
+    assert "notebook-content.py" in part_paths
+    assert ".platform" in part_paths
+
+    content_part = next(p for p in definition["parts"] if p["path"] == "notebook-content.py")
+    decoded = json.loads(base64.b64decode(content_part["payload"]))
+    cell_sources = "".join("".join(cell["source"]) for cell in decoded["cells"])
+    assert "derive_edges" in cell_sources
+    assert "join_flow_logs_with_nsg_rules" in cell_sources

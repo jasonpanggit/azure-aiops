@@ -16,13 +16,21 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
-from dataclasses import dataclass, field
-
 from hermes_arg_connector.network_normalize import (
+    normalize_firewall,
+    normalize_firewall_policy,
+    normalize_gateway,
+    normalize_load_balancer,
+    normalize_nic,
     normalize_nsg,
+    normalize_private_dns_zone,
+    normalize_private_endpoint,
+    normalize_route_table,
     normalize_vnet,
+    private_dns_link_target,
 )
 from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
 from storage.onelake_writer import OneLakeWriter
@@ -101,7 +109,7 @@ def derive_edges(
 
     for row in entity_rows.get("network_interfaces", []):
         base = _base(row, observed)
-        nic = _normalize_nic_minimal(base, row)
+        nic = normalize_nic(base, row, observed)
         record("NetworkInterface", nic)
         containment(row, nic)
         if nic.get("subnetId"):
@@ -110,6 +118,88 @@ def derive_edges(
             link(nic["id"], "protectedBy", nic["nsgId"], 0.99)
         if nic.get("attachedResourceId"):
             link(nic["attachedResourceId"], "hasNetworkInterface", nic["id"], 0.99)
+
+    for row in entity_rows.get("network_route_tables", []):
+        base = _base(row, observed)
+        table, routes = normalize_route_table(base, row, observed)
+        record("RouteTable", table)
+        containment(row, table)
+        for route in routes:
+            record("Route", route)
+            link(table["id"], "hasRoute", route["id"])
+
+    for row in entity_rows.get("network_firewalls", []):
+        base = _base(row, observed)
+        firewall = normalize_firewall(base, row, observed)
+        record("AzureFirewall", firewall)
+        containment(row, firewall)
+        if firewall.get("subnetId"):
+            link(firewall["id"], "attachedTo", firewall["subnetId"], 0.99)
+        if firewall.get("policyId"):
+            link(firewall["id"], "enforcesPolicy", firewall["policyId"], 0.99)
+
+    for row in entity_rows.get("network_firewall_policies", []):
+        base = _base(row, observed)
+        policy, collections, rules = normalize_firewall_policy(base, row, observed)
+        if policy is not None:
+            record("FirewallPolicy", policy)
+            containment(row, policy)
+        for collection in collections:
+            record("FirewallRuleCollection", collection)
+            link(collection["policyId"], "hasRuleCollection", collection["id"], 0.99)
+        for rule in rules:
+            record("FirewallRule", rule)
+            link(rule["collectionId"], "hasRule", rule["id"])
+
+    for row in entity_rows.get("network_private_endpoints", []):
+        base = _base(row, observed)
+        endpoint = normalize_private_endpoint(base, row, observed)
+        record("PrivateEndpoint", endpoint)
+        containment(row, endpoint)
+        if endpoint.get("subnetId"):
+            link(endpoint["id"], "attachedTo", endpoint["subnetId"], 0.99)
+        if endpoint.get("targetResourceId"):
+            link(endpoint["id"], "exposesPrivately", endpoint["targetResourceId"], 0.98)
+
+    dns_zones: dict[str, dict[str, Any]] = {}
+    dns_links: list[tuple[str, str]] = []
+    for row in entity_rows.get("network_private_dns_zones", []):
+        base = _base(row, observed)
+        zone = normalize_private_dns_zone(base, row, observed)
+        if zone is None:
+            zone_id, vnet_id = private_dns_link_target(row)
+            if zone_id and vnet_id:
+                dns_links.append((zone_id, vnet_id))
+            continue
+        dns_zones[zone["id"]] = zone
+        containment(row, zone)
+    for zone_id, vnet_id in dns_links:
+        zone = dns_zones.get(zone_id)
+        if zone is not None and vnet_id not in zone["linkedVnetIds"]:
+            zone["linkedVnetIds"].append(vnet_id)
+        link(zone_id, "resolvesFor", vnet_id, 0.98)
+    for zone in dns_zones.values():
+        record("PrivateDnsZone", zone)
+
+    for row in entity_rows.get("network_gateways", []):
+        base = _base(row, observed)
+        gateway = normalize_gateway(base, row, observed)
+        record("NetworkGateway", gateway)
+        containment(row, gateway)
+        if gateway.get("subnetId"):
+            link(gateway["id"], "attachedTo", gateway["subnetId"], 0.99)
+        elif gateway.get("vnetId"):
+            link(gateway["id"], "attachedTo", gateway["vnetId"], 0.95)
+
+    for row in entity_rows.get("network_load_balancers", []):
+        base = _base(row, observed)
+        balancer = normalize_load_balancer(base, row, observed)
+        record("LoadBalancer", balancer)
+        containment(row, balancer)
+        if balancer.get("subnetId"):
+            link(balancer["id"], "attachedTo", balancer["subnetId"], 0.99)
+        for backend in balancer.get("backendResourceIds", []):
+            link(balancer["id"], "loadBalances", backend, 0.9)
 
     return list(entities.values()), list(edges.values())
 
@@ -164,28 +254,6 @@ def _base(row: Mapping[str, Any], observed: str) -> dict[str, Any]:
         "schemaVersion": _SCHEMA_VERSION,
         "resourceType": _lower(row.get("type")),
         "tags": row.get("tags") or {},
-    }
-
-
-def _normalize_nic_minimal(base: dict[str, Any], row: Mapping[str, Any]) -> dict[str, Any]:
-    """Subset of ``normalize_nic`` fields this pipeline's edges depend on.
-
-    Full NIC IP-config/DNS field parity is Task 2 scope; the tracer only
-    needs the edge-relevant foreign keys.
-    """
-    props = row.get("properties") or {}
-    ip_configs = props.get("ipConfigurations") or []
-    subnet_id = ""
-    if ip_configs:
-        subnet_ref = (ip_configs[0].get("properties") or {}).get("subnet") or {}
-        subnet_id = _lower(subnet_ref.get("id"))
-    nsg_ref = props.get("networkSecurityGroup") or {}
-    return {
-        **base,
-        "entityType": "NetworkInterface",
-        "subnetId": subnet_id,
-        "nsgId": _lower(nsg_ref.get("id")),
-        "attachedResourceId": _lower((props.get("virtualMachine") or {}).get("id")),
     }
 
 

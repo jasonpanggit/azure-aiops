@@ -32,6 +32,17 @@ fabric:
     ontology_id: "" # Optional immutable ID; otherwise resolved/created by name.
     ontology_name: "Operational_Context_Graph"
 
+  # Fabric-native topology comparison-arm pipeline (D-04a, Phase 8).
+  topology_pipeline:
+    enabled: false
+    notebook_item_id: "" # Optional immutable ID; otherwise resolved/created by name.
+    notebook_display_name: "topology_pipeline_notebook"
+    ontology_id: "" # Optional immutable ID; otherwise resolved/created by name.
+    ontology_name: "Topology_Comparison_Ontology"
+    # "fixture" (default, no live provisioning) or "live" once NSG Flow
+    # Logs / Traffic Analytics is provisioned and approved for this project.
+    flow_log_source: "fixture"
+
   source_data_root: "./live-data"
   # Bounded concurrency keeps independent Delta table writes fast without
   # overwhelming OneLake or creating unbounded client-side pressure.

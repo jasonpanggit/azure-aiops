@@ -20,9 +20,7 @@ from typing import Any
 OBSERVED_AT = "2026-08-27T00:00:00Z"
 
 _SUBSCRIPTION_ID = "11111111-1111-1111-1111-111111111111"
-_RESOURCE_GROUP = "/subscriptions/{}/resourcegroups/rg-topology-fixture".format(
-    _SUBSCRIPTION_ID
-)
+_RESOURCE_GROUP = f"/subscriptions/{_SUBSCRIPTION_ID}/resourcegroups/rg-topology-fixture"
 
 VNET_ID = f"{_RESOURCE_GROUP}/providers/microsoft.network/virtualnetworks/vnet-fixture"
 SUBNET_ID = f"{VNET_ID}/subnets/subnet-fixture"
