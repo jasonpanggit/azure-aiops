@@ -171,6 +171,8 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
+- Refine Copilot visual language: make the Ask Copilot entry points icon-first, less verbose, and consistent with the UI theme while preserving accessibility.
+
 - Complete remaining live Phase 7 verification: enable or target a Log Analytics workspace with `ConfigurationData`, rerun software inventory publication, then complete browser UX/accessibility walkthroughs for OS/software, failed-refresh retention, exact software/version search, EOL citation review, PaaS drill-down, and per-family degradation.
 - Triage the three recorded full-suite failures in `.planning/WINDOWS.md` so full-suite green is a usable signal after Phase 7.
 - Configure `APPROVED_SEARCH_API_ENDPOINT` / `APPROVED_SEARCH_API_KEY` if the third EOL source is operationally required.
