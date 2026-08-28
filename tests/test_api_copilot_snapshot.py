@@ -77,3 +77,35 @@ def test_context_loop_preserves_status_and_exposes_policy_grounding(tmp_path):
     assert finding["source_status"] == "denied"
     assert finding["actionable"] is False
     assert data["stages"] == ["plan", "observe", "delegate", "reassess"]
+
+
+def test_context_route_preserves_freshness_warning_and_downgrades_finding(tmp_path):
+    body = _body()
+    body["snapshot"]["freshness"] = [{
+        "source": "network-api",
+        "observed_at": "2026-08-28T00:00:00Z",
+        "status": "partial",
+    }]
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+    response = client.post("/api/v1/copilot/investigate-context", json=body, headers=HEADERS)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    finding = data["findings"][0]
+    assert finding["status"] == "hypothesis"
+    assert finding["actionable"] is False
+    assert any("partial" in warning for warning in data["warnings"])
+
+
+def test_context_route_rejects_out_of_scope_evidence_identity(tmp_path):
+    body = _body()
+    body["snapshot"]["evidence"][0]["resource_id"] = (
+        "/subscriptions/other-sub/resourceGroups/rg/providers/"
+        "Microsoft.Network/routeTables/route-1"
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+    response = client.post(
+        "/api/v1/copilot/investigate-context?subscription=sub-1",
+        json=body,
+        headers=HEADERS,
+    )
+    assert response.status_code == 400

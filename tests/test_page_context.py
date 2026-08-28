@@ -90,3 +90,35 @@ def test_network_findings_are_deterministic_and_cited():
     assert findings[0]["evidence_refs"] == ["nsg-1"]
     assert findings[0]["actionable"] is True
     assert findings[0]["next_check"]
+
+
+@pytest.mark.parametrize("freshness_status", ["stale", "partial", "unavailable"])
+def test_degraded_freshness_downgrades_verified_findings(freshness_status):
+    page = snapshot(freshness=[{
+        "source": "network-api",
+        "observed_at": "2026-08-28T00:00:00Z",
+        "status": freshness_status,
+    }])
+    finding = deterministic_network_findings(page)[0]
+    assert finding["status"] == "hypothesis"
+    assert finding["confidence"] == "medium"
+    assert finding["stale"] is True
+    assert finding["actionable"] is False
+    assert finding["uncertainty"]
+    assert finding["next_check"]
+
+
+@pytest.mark.parametrize("row_status", ["empty", "unavailable", "denied"])
+def test_non_ok_source_statuses_never_become_actionable(row_status):
+    page = snapshot(evidence=[{
+        "evidence_id": "nsg-1",
+        "section": "nsg",
+        "resource_id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Network/networkSecurityGroups/hub",
+        "status": row_status,
+        "data": {"finding": "Unavailable network evidence", "compliant": False},
+    }])
+    finding = deterministic_network_findings(page)[0]
+    assert finding["status"] == row_status
+    assert finding["confidence"] == "low"
+    assert finding["actionable"] is False
+    assert finding["uncertainty"]
