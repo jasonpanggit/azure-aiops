@@ -118,7 +118,7 @@ Plans:
 | 6. Software and OS Inventory Visibility | 9/9 | Code-complete, UAT pending | - |
 | 7. Unified Resource Inventory | 6/6 | Implementation complete; live verification pending | - |
 | 8. Resource Identity Plane | 3/3 | In Progress|  |
-| 9. Consumer Pivot | 0/TBD | Not started | - |
+| 9. Consumer Pivot | 2/3 | In Progress|  |
 
 ### Phase 6: Software and OS Inventory Visibility
 
@@ -232,7 +232,14 @@ Plans:
 **Goal:** As a platform operator, I want the API and UI powered by unified inventory, so that every surface reflects one source of truth about what resources exist.
 **Requirements**: INV-09, INV-10
 **Depends on:** Phase 8
-**Plans:** TBD
+**Plans:** 2/3 plans executed
+
+Plans:
+
+- [x] 09-01-PLAN.md — Deliver the typed page-snapshot Network Copilot backend tracer and governed bounded findings loop
+- [x] 09-02-PLAN.md — Pivot inventory consumers to the read port and configure named Foundry/Fabric IQ seams
+- [ ] 09-03-PLAN.md — Deliver the accessible contextual Copilot drawer across supported pages
+
 **UI hint:** yes
 
 **Context:** The API already has the right seam. `runtime.py` registers providers via `ProviderSpec`, and routers depend on providers rather than datasets — verified: no router reads `read_dataset` or `entities/` directly; only `runtime.py` does the wiring. The API pivot is therefore mostly a wiring change, not a router rewrite, and if route contracts hold, most web pages need no change.
