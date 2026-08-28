@@ -4,18 +4,16 @@ Reproduces ``ontology.entity_builder.EntityBuilder`` and
 ``ontology.relationship_builder.RelationshipBuilder``'s full deterministic
 entity/relationship inference (Application, BusinessService, VirtualMachine,
 PatchAssessment, AdvisorRecommendation, ... plus belongsTo/assessedBy/
-impacts/dependsOn, ...) as a Fabric-hosted Spark notebook pipeline, mirroring
-the proven ``fabric_pipelines.topology_pipeline`` compute-architecture
-pattern (D-04a) but covering the full Hermes ontology scope rather than only
-network topology.
+impacts/dependsOn, ...) for the API-triggered Fabric sync path, covering the
+full Hermes ontology scope rather than only network topology.
 
 This module owns *only* orchestration/Delta-publication glue: it never
 re-implements ``EntityBuilder``/``RelationshipBuilder``/
 ``generate_ontology_metadata``'s classification or inference logic a second
 time (Don't Hand-Roll / Anti-Pattern guard) -- it calls the exact same
 classes/functions this repo's local pipeline and test suite already exercise,
-so the notebook and the local/CI-tested pipeline are provably the same
-logic, run on two different compute surfaces (same guarantee
+so the API sync and local/CI-tested pipeline are provably the same
+logic, run through the same deterministic code path (same guarantee
 ``topology_pipeline.py`` gives for topology).
 """
 
@@ -25,7 +23,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from hermes_arg_connector.ontology import generate_ontology_metadata
+from onboarding.ontology_metadata import generate_ontology_metadata
 from ontology.entity_builder import EntityBuilder
 from ontology.relationship_builder import RelationshipBuilder
 from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
@@ -79,7 +77,7 @@ def derive_relationships(
 
 
 def derive_ontology_metadata(entities: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    """Ports ``hermes_arg_connector.ontology.generate_ontology_metadata``
+    """Ports ``onboarding.ontology_metadata.generate_ontology_metadata``
     faithfully: groups already-derived entities by ``entity_type`` and infers
     the Fabric IQ-consumable ontology schema document (entity/relationship
     type property maps) from their observed fields."""
@@ -147,7 +145,7 @@ class RelationshipMergeResult:
     subject/predicate/object -- per the user's explicit requirement,
     deterministic always wins in that case; the approved-suggestion version
     is dropped from ``merged`` but the collision is still reported here so
-    it's visible (e.g. logged, or surfaced in the notebook's run summary)
+    it's visible (e.g. logged or surfaced in the sync result)
     rather than silently discarded."""
 
     merged: list[dict[str, Any]]
@@ -172,7 +170,7 @@ def merge_approved_relationship_suggestions(
     deterministic entities/relationships and the same set of accepted
     suggestion rows, this always produces the same merged output (content-
     addressed ``relationship_id``s, no randomness, no mutation of either
-    input). Re-running the notebook after a suggestion is accepted simply
+    input). Re-running the sync after a suggestion is accepted simply
     adds that edge to the graph going forward; re-running it again is a
     no-op (same accepted row -> same relationship row every time).
 
@@ -247,14 +245,14 @@ def run(
     """Notebook entrypoint: derives entities/relationships/ontology metadata
     from ``source_rows`` and writes the entity/relationship tables to the
     lakehouse via the shared Delta writer path, mirroring
-    ``topology_pipeline``'s ``run``-shaped notebook cell contract (read via
-    Spark -> pure-Python derive -> write via Delta).
+    ``topology_pipeline``'s run contract (read -> pure-Python derive -> write
+    via Delta).
 
     ``approved_suggestion_rows`` closes the Data Agent feedback loop
     (see ``docs/fabric-data-agent-relationship-suggestions.md``): pass in
     the ``relationship_suggestions`` table's rows (typically read via
     ``spark.read.table(...).collect()`` and converted to dicts in the
-    notebook cell) and any row already marked
+    sync input) and any row already marked
     ``status="accepted"`` by a human reviewer is folded into this run's
     relationships output, tagged with a distinct ``source`` so it's never
     confused with a deterministically-derived edge. Deterministic

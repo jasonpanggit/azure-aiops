@@ -8,7 +8,6 @@ from change_scenario import change_engine
 from semantic_scenario import semantic_scenario
 
 from agents.operations.operations_agent import OperationsAgent
-from hermes_arg_connector.plugin import OPERATIONS_AGENT_SCHEMA
 from intelligence.change.baseline_engine import BaselineEngine
 from intelligence.change.change_classifier import ChangeClassifier
 from intelligence.change.change_collector import ChangeCollector
@@ -16,6 +15,7 @@ from intelligence.change.change_correlator import ChangeCorrelator
 from intelligence.change.change_intelligence import ChangeIntelligence
 from intelligence.change.change_summary import ChangeSummary
 from intelligence.change.configuration_drift import DriftDetectionEngine
+from onboarding.plugin import OPERATIONS_AGENT_SCHEMA
 from ontology.ontology_validator import OntologyValidator
 from semantic.semantic_engine import SemanticEngine
 

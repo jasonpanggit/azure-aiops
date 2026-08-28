@@ -5,7 +5,7 @@ from ontology.ontology_validator import OntologyValidator
 def test_situations_are_registered_as_ontology_entities_with_typed_links(tmp_path) -> None:
     from datetime import UTC, datetime
 
-    from hermes_arg_connector.normalize import Normalizer
+    from onboarding.graph_normalize import Normalizer
     from situations.store import SituationStore
 
     observed = datetime(2026, 8, 25, tzinfo=UTC)
@@ -28,7 +28,7 @@ def test_situations_are_registered_as_ontology_entities_with_typed_links(tmp_pat
 def test_required_operational_link_families_are_retained_when_unresolved() -> None:
     from datetime import UTC, datetime
 
-    from hermes_arg_connector.normalize import Normalizer
+    from onboarding.graph_normalize import Normalizer
 
     resource_id = "/subscriptions/sub-a/resource-groups/rg/providers/microsoft.compute/virtualmachines/vm"
     related = [

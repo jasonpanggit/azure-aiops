@@ -8,7 +8,7 @@ from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.telemetry import ApiTelemetry
-from hermes_arg_connector.normalize import Normalizer
+from onboarding.graph_normalize import Normalizer
 from situations.store import SituationReadProvider
 
 

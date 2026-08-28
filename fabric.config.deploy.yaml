@@ -33,14 +33,15 @@ fabric:
 
   workspace_id: "1c328da7-2490-48dc-9ba6-de8c1f333756"
   workspace_name: "aiops-dev-ops"
-  lakehouse_id: "aef9854d-ab23-413e-a86d-99a344a269c0"
-  lakehouse_name: "operational_context_graph"
+  # Fresh, disposable validation lakehouse created for API cutover testing.
+  lakehouse_id: "6317eaf6-e597-4b4e-a07d-c53027c01feb"
+  lakehouse_name: "operational_context_graph_v2"
   create_lakehouse_if_missing: false
   table_schema: ""
   ontology:
     enabled: true
     ontology_id: ""
-    ontology_name: "Operational_Context_Ontology"
+    ontology_name: "Operational_Context_Ontology_v2"
 
   source_data_root: "/data/inventory-source"
   registration_attempts: 20

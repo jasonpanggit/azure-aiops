@@ -5,11 +5,13 @@ import json
 from datetime import UTC
 from pathlib import Path
 
+from onboarding.graph_normalize import Normalizer
+from onboarding.ingestion_storage import DatasetStore
+
 from .agent_queries import ContextQueryService
 from .config import ConnectorConfig
-from .normalize import Normalizer
+from .ingestion_service import IngestionService
 from .schedule import install_schedule
-from .service import IngestionService
 
 
 def register_cli(parser: argparse.ArgumentParser) -> None:
@@ -207,7 +209,7 @@ def cli_command(args: argparse.Namespace) -> int:
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
     if action == "local":
-        from .local import seed_local_environment
+        from .local_seed import seed_local_environment
 
         result = seed_local_environment(
             root=args.home,
@@ -217,7 +219,7 @@ def cli_command(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     if action == "local-spn":
-        from .local import inject_local_spn_connection
+        from .local_seed import inject_local_spn_connection
 
         result = inject_local_spn_connection(
             root=args.home,
@@ -310,7 +312,7 @@ def subscriptions_command(args: argparse.Namespace) -> int:
     command = getattr(args, "subscriptions_command", None)
     if not command:
         print(
-            "Usage: hermes-arg subscriptions "
+            "Usage: aiops-inventory subscriptions "
             "{add|list|detail|update|validate|sync|health|map|disable|enable}"
         )
         return 2
@@ -390,7 +392,7 @@ def _metadata_from_args(args: argparse.Namespace, metadata_cls):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="hermes-arg")
+    parser = argparse.ArgumentParser(prog="aiops-inventory")
     register_cli(parser)
     args = parser.parse_args(argv)
     func = getattr(args, "func", None)

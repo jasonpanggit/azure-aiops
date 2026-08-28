@@ -227,14 +227,14 @@ def test_guard_no_direct_inventory_dataset_reads_outside_inventory() -> None:
 
 
 def test_guard_hermes_has_no_inventory_lifecycle_ownership_symbols() -> None:
-    allowed = {"src/hermes_arg_connector/cli.py"}
+    allowed = {"src/onboarding/cli.py"}
     patterns = re.compile(
         r"_fetch_software_inventory|normalize_configuration_data|_inventory_specs|"
         r"inventory/(os|software|resource)_observations|inventory_source_status|"
         r"inventory_software|inventory_resource|inventory_os"
     )
     offenders = []
-    for path in Path("src/hermes_arg_connector").rglob("*.py"):
+    for path in Path("src/onboarding").rglob("*.py"):
         if str(path) in allowed:
             continue
         text = path.read_text(encoding="utf-8")

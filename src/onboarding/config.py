@@ -1,3 +1,5 @@
+"""Configuration for API-owned Azure subscription discovery."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -14,6 +16,8 @@ from storage.fs import is_onelake_uri
 
 @dataclass(frozen=True)
 class ConnectorConfig:
+    """Validated configuration shared by discovery and inventory services."""
+
     output_dir: Path | str
     subscriptions: tuple[str, ...] = field(default_factory=tuple)
     management_groups: tuple[str, ...] = field(default_factory=tuple)
@@ -31,8 +35,6 @@ class ConnectorConfig:
     identity_source: str = "arg"
 
     def __post_init__(self) -> None:
-        # Keep OneLake URIs untouched; only resolve plain filesystem paths,
-        # since Path() would mangle a URI's "//".
         if is_onelake_uri(self.output_dir):
             object.__setattr__(self, "output_dir", str(self.output_dir).rstrip("/"))
         else:
@@ -83,7 +85,9 @@ class ConnectorConfig:
                 str(x) for x in (azure.get("management_groups") or [])
             ),
             tenant_id=str(azure.get("tenant_id") or ""),
-            azure_mcp_command=tuple(str(item) for item in (azure.get("mcp_command") or ["azmcp"])),
+            azure_mcp_command=tuple(
+                str(item) for item in (azure.get("mcp_command") or ["azmcp"])
+            ),
             page_size=int(azure.get("page_size") or 1000),
             max_pages=int(azure.get("max_pages") or 1000),
             command_timeout_seconds=int(azure.get("command_timeout_seconds") or 60),
@@ -98,4 +102,3 @@ class ConnectorConfig:
     @property
     def cost_management_lookback(self) -> timedelta:
         return timedelta(days=self.cost_management_lookback_days)
-

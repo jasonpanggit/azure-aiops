@@ -2,7 +2,7 @@
 
 This documents the "relationship suggestion" layer requested as an addition
 on top of the verified deterministic ontology pipeline
-(`src/fabric_pipelines/ontology_pipeline.py`, `ontology_pipeline_notebook`,
+(`src/fabric_pipelines/ontology_pipeline.py`,
 committed in `f74335c`). It is **advisory and human-in-the-loop only** — it
 never writes into the authoritative `ontology_relationships` Delta table
 that the deterministic pipeline owns.
@@ -65,9 +65,8 @@ waiting for propagation, with no change. Both `ontology_entities` and
 `ontology_relationships` genuinely exist as Delta tables in the lakehouse
 (confirmed via the Lakehouse Tables API, paginating through all 294 tables).
 The failure is opaque from the client side — the MCP response gives no
-further diagnostic detail (no stack trace, error code, or Livy-style log
-reference the way notebook job failures do), and there is no equivalent of
-the notebook's Livy driver-log endpoint for Data Agent runs exposed via
+further diagnostic detail (no stack trace or error code), and there is no
+equivalent diagnostic log endpoint for Data Agent runs exposed via
 this REST surface. This is the honest, currently-undiagnosable gap: the
 item is fully and correctly provisioned and published, but the query
 execution itself fails server-side for a reason not observable from the
@@ -87,8 +86,8 @@ from this repo's own code regardless of the SDK being genuinely installed
 (verified: `pip show -f fabric-data-agent-sdk` confirms the files exist in
 site-packages; `from fabric.dataagent.client import create_data_agent`
 still raises `ModuleNotFoundError`). This is why `DataAgentManager` talks
-to the raw Fabric Items/DataAgent REST API directly (mirroring
-`EnvironmentManager`) instead of using the SDK. In practice this doesn't
+to the raw Fabric Items/DataAgent REST API directly (mirroring the other
+Fabric item managers) instead of using the SDK. In practice this doesn't
 matter for provisioning (which works via REST either way), and the plain
 `httpx` MCP calls above show the SDK isn't even required for querying —
 so this collision, while real, turned out not to be the actual blocker.
@@ -177,7 +176,7 @@ deterministically-derived edge.
 | `run()` accepting `approved_suggestion_rows` and folding them into published output | **Real, unit-tested**; existing callers unaffected since the parameter defaults to `()` |
 | Data Agent actually producing a suggestion to accept | **Not working** (see gap above) |
 | Human review UI for setting `status = "accepted"` | **Does not exist** — manual Delta table edit today |
-| End-to-end live proof (real agent suggestion → accepted → merged by a live notebook run) | **Not exercised** — blocked upstream by the Data Agent invocation gap, not by this merge logic |
+| End-to-end live proof (real agent suggestion → accepted → merged by an API sync) | **Not exercised** — blocked upstream by the Data Agent invocation gap, not by this merge logic |
 
 In short: the feedback loop's pipeline-side half (merge, provenance,
 conflict handling, idempotency) is fully built and verified. Its

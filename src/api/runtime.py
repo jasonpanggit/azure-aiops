@@ -26,10 +26,8 @@ from fabric.auth import FabricAuthConfig
 from fabric.config import FabricRuntimeConfig, OntologyRuntimeConfig
 from fabric.dataset_mapper import InventoryDatasetMapper
 from fabric.runtime import FabricRuntime, build_runtime
-from hermes_arg_connector.config import ConnectorConfig
-from hermes_arg_connector.queries import QuerySpec
 from intelligence.governance import EnterpriseSettingsStore
-from intelligence.incident.incident_intelligence import IncidentIntelligence
+from intelligence.health.service import ResourceHealthService
 from intelligence.incidents.incident_engine import IncidentEngine
 from intelligence.vulnerability.connector import (
     EpssScoreConnector,
@@ -40,17 +38,22 @@ from intelligence.vulnerability.connector import (
 from intelligence.vulnerability.enrichment_cache import EnrichmentCache
 from intelligence.vulnerability.models import RiskException
 from intelligence.vulnerability.service import VulnerabilityIntelligenceService
+from onboarding.config import ConnectorConfig
+from onboarding.query_contract import QuerySpec
 
 _LOGGER = logging.getLogger(__name__)
 
-from storage.fs import is_onelake_uri
 from network.design import NetworkDesignPolicyStore
 from network.flow import FlowQuery
 from network.models import PRIVATE_LINK_RESOURCE_TYPES
 from network.service import NetworkIntelligenceService
 from onboarding.credentials import KeyVaultSecretWriter
 from onboarding.registry import ConnectionRegistry
-from onboarding.runtime import build_connection_arg_client, build_onboarding_service
+from onboarding.runtime import (
+    build_connection_arg_client,
+    build_connection_monitor_metrics_client,
+    build_onboarding_service,
+)
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
 from operations.foundry_agent import FoundryPromptAgent
@@ -67,6 +70,7 @@ from semantic.live_operations import (
 )
 from semantic.live_provider import ConnectionScopedLiveResourceProvider
 from semantic.semantic_engine import SemanticEngine
+from storage.fs import is_onelake_uri
 from storage.onelake_documents import OneLakeDocumentStore
 
 from .auth import (
@@ -86,7 +90,7 @@ ENV_TOKENS = "HERMES_API_TOKENS"
 ENV_GATEWAY_GRANTS = "HERMES_API_GATEWAY_GRANTS"
 ENV_ENTRA_TENANT_ID = "HERMES_ENTRA_TENANT_ID"
 ENV_ENTRA_AUDIENCE = "HERMES_ENTRA_AUDIENCE"
-# Optional path to a hermes_arg_connector YAML config (see config.example.yaml)
+# Optional path to the onboarding YAML config (see config.example.yaml)
 # used only to source ingestion defaults (page size, timeouts, MCP command,
 # ...). Per-connection subscription/tenant scoping always comes from the
 # connection itself, so this file need not list any subscriptions.
@@ -119,7 +123,7 @@ def hermes_home() -> Path | str:
     ``abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>/Files/<path>``
     URI to persist synced dataset snapshots in OneLake instead -- the same
     `DatasetStore`/`InventoryDatasetMapper` code path handles both
-    transparently (see `hermes_arg_connector.fs`).
+    transparently through the storage filesystem adapters.
     """
     from storage.fs import resolve_root
 
@@ -215,6 +219,8 @@ def _onboarding_service() -> SubscriptionOnboardingService:
     return build_onboarding_service(
         config,
         secret_writer=KeyVaultSecretWriter(vault) if vault else None,
+        config_path=config_path,
+        fabric_config_path=os.environ.get(ENV_FABRIC_CONFIG, "").strip(),
     )
 
 
@@ -1011,9 +1017,10 @@ def _build_provider_runtime(
         snapshot = runtime.service.semantic_snapshot()
         freshness = str(snapshot.get("freshness") or "")
         if not freshness:
-            # Downstream intelligence requires a real snapshot timestamp. Surface
-            # this as an explicit degraded provider rather than letting the
-            # constructor raise an opaque timestamp error.
+            if _truthy("HERMES_ALLOW_EMPTY_FABRIC_SNAPSHOT"):
+                # A newly created validation lakehouse is intentionally empty
+                # until the first activation sync completes.
+                return None
             raise RuntimeError(
                 "Fabric semantic snapshot has no freshness; publish the ontology "
                 "and ingestion state before activating providers"
@@ -1061,8 +1068,9 @@ def _build_provider_runtime(
         os.environ.get("FOUNDRY_PROJECT_ENDPOINT", "").strip()
         and os.environ.get("FOUNDRY_AGENT_NAME", "").strip()
     )
+    bootstrap = _truthy("HERMES_ALLOW_EMPTY_FABRIC_SNAPSHOT")
     specs = {
-        name: ProviderSpec(loader=loader, configured=True, required=True)
+        name: ProviderSpec(loader=loader, configured=True, required=not bootstrap)
         for name, loader in loaders.items()
     }
     specs["copilot"] = ProviderSpec(
@@ -1214,17 +1222,17 @@ def _network_policy_store() -> NetworkDesignPolicyStore:
 
 def _load_situation_provider() -> Any:
     """Read the durable Phase 1 projection from the active generation."""
-    from storage.datasets import DatasetStore
     from situations.store import SituationReadProvider
+    from storage.datasets import DatasetStore
 
     return SituationReadProvider(DatasetStore(hermes_home()))
 
 
 def _load_inventory_service() -> Any:
     """Load inventory from the compatibility snapshot or Fabric tables."""
-    from storage.datasets import DatasetStore
     from intelligence.inventory.mapping_repository import SoftwareMappingRepository
     from intelligence.inventory.service import InventoryService, InventorySnapshot
+    from storage.datasets import DatasetStore
 
     eol_review = _load_eol_review_service()
     root = hermes_home()
@@ -1256,7 +1264,11 @@ def _load_inventory_service() -> Any:
     lakehouse_id = os.environ.get("FABRIC_LAKEHOUSE_ID", "").strip()
     if not workspace_id or not lakehouse_id:
         return None
-    from fabric.auth import FabricAuthConfig, build_credential, build_delta_storage_options
+    from fabric.auth import (
+        FabricAuthConfig,
+        build_credential,
+        build_delta_storage_options,
+    )
     from storage.delta_writer import DeltaWriter
     from storage.onelake_writer import OneLakeWriter
 
@@ -1478,6 +1490,41 @@ def build_context() -> ApiContext:
             service, store=_patch_run_store, adapter=_patch_execution_adapter()
         )
 
+    def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:
+        # Live per-connection utilization: each request re-lists in-scope
+        # compute resources via ARG and fetches fresh Monitor Metrics, so no
+        # cache is used here (unlike hybrid_network) since a stale CPU
+        # reading would actively mislead an operator.
+        def resource_lister(connection: Any) -> list[dict[str, Any]]:
+            observation = live_resources.query(
+                QuerySpec(
+                    name="live_compute_resources",
+                    table="Resources",
+                    query=(
+                        "Resources "
+                        "| where type in ("
+                        "'microsoft.compute/virtualmachines', "
+                        "'microsoft.hybridcompute/machines') "
+                        "| project id, name, type, subscriptionId, resourceGroup"
+                    ),
+                    incremental=False,
+                ),
+                subscription_ids=[str(connection.subscription_id)],
+            )
+            return list(observation.rows)
+
+        return ResourceHealthService(
+            lambda: [
+                connection
+                for connection in onboarding.registry.list(include_disabled=False)
+                if str(connection.subscription_id) in subscription_ids
+            ],
+            resource_lister,
+            lambda connection: build_connection_monitor_metrics_client(
+                arg_config, connection, onboarding.resolver
+            ),
+        )
+
     return ApiContext(
         onboarding=onboarding,
         authenticator=build_authenticator(),
@@ -1497,6 +1544,7 @@ def build_context() -> ApiContext:
         hybrid_incident_provider=hybrid_incidents,
         hybrid_remediation_provider=hybrid_remediation,
         hybrid_patching_provider=hybrid_patching,
+        hybrid_resource_health_provider=hybrid_resource_health,
         incident_provider=lambda: providers.get("incidents", optional=True),
         remediation_provider=lambda: providers.get("remediation", optional=True),
         network_provider=lambda: providers.get("network", optional=True),

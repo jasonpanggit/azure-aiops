@@ -1,9 +1,9 @@
 """Manages the Fabric Data Agent item that proposes advisory, non-authoritative
 relationship suggestions on top of the deterministic ontology graph written by
-``ontology_pipeline_notebook`` (``ontology_entities``/``ontology_relationships``
+the ontology pipeline (``ontology_entities``/``ontology_relationships``
 in the ``operational_context_graph`` lakehouse).
 
-Mirrors ``EnvironmentManager``/``LakehouseManager``'s resolve-by-name-or-id,
+Mirrors the other Fabric item managers' resolve-by-name-or-id,
 create-if-missing pattern via Fabric's generic Items API
 (``POST/GET /workspaces/{id}/items``), the same surface those managers use,
 rather than the Microsoft-published ``fabric-data-agent-sdk`` package.
@@ -30,7 +30,7 @@ surface you already use for other workspaces and items").
 
 Item-management ("management plane") operations -- create the DataAgent
 item, attach a lakehouse datasource, set AI instructions, publish -- are
-covered by this manager, mirroring ``EnvironmentManager``.
+covered by this manager.
 
 Querying a published Data Agent ("runtime") is a *distinct* surface: per
 Microsoft Learn ("Fabric data agent Python SDK (preview)"), a published
@@ -87,8 +87,7 @@ RELATIONSHIP_SUGGESTION_INSTRUCTIONS = (
 
 
 class DataAgentManager:
-    """Thin manager over Fabric's DataAgent item type, scoped the same way
-    ``EnvironmentManager``/``LakehouseManager`` are scoped to theirs."""
+    """Thin manager over Fabric's DataAgent item type."""
 
     ITEM_TYPE = ITEM_TYPE
 
@@ -163,8 +162,7 @@ class DataAgentManager:
         distinct from the generic Items API's own ``.../items/{id}/publish``
         (which 404s for DataAgent items; the initial implementation of this
         method assumed the generic path and had to be corrected after a
-        live 404). Mirrors ``EnvironmentManager.publish``'s own
-        environment-specific ``.../environments/{id}/staging/publish`` path."""
+        live 404). Uses the DataAgent-specific staging publish path."""
         # Verified live: this endpoint 400s if the JSON body is omitted
         # entirely (``json_body=None``) but accepts ``{}``, so always send a
         # (possibly empty) dict rather than collapsing an empty body away.
@@ -274,8 +272,7 @@ def ensure_data_agent(
     item_id: str = "",
     ai_instructions: str = RELATIONSHIP_SUGGESTION_INSTRUCTIONS,
 ) -> dict[str, Any]:
-    """Idempotent resolve-or-create of the DataAgent item, mirroring
-    ``environment_manager.ensure_environment``.
+    """Idempotent resolve-or-create of the DataAgent item.
 
     When an existing item is resolved, its staged definition is always
     re-pushed via ``update_definition`` (not just left as-is) -- this was

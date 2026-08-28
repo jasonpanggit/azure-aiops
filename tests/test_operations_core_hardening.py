@@ -9,8 +9,8 @@ from patch_scenario import patch_engine
 from semantic_scenario import semantic_scenario
 
 from fabric.config import FabricRuntimeConfig
-from hermes_arg_connector.plugin import OPERATIONS_AGENT_SCHEMA
 from intelligence.incident.incident_intelligence import IncidentIntelligence
+from onboarding.plugin import OPERATIONS_AGENT_SCHEMA
 from operations.compliance_analyzer import ComplianceAnalyzer
 from operations.context_router import SUPPORTED_COMMANDS
 from operations.health_analyzer import HealthAnalyzer

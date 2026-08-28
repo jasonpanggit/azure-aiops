@@ -3,7 +3,7 @@ from __future__ import annotations
 from semantic_scenario import semantic_scenario
 
 from agents.operations.operations_agent import OperationsAgent
-from hermes_arg_connector.plugin import OPERATIONS_AGENT_SCHEMA
+from onboarding.plugin import OPERATIONS_AGENT_SCHEMA
 from operations.operational_reasoner import OperationalReasoner
 from operations.operational_summary import OperationalSummary
 from semantic.semantic_engine import SemanticEngine

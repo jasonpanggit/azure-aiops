@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 
@@ -18,7 +17,7 @@ from fabric_pipelines.topology_pipeline import (
     derive_edges,
     to_topology_edge_row,
 )
-from hermes_arg_connector.normalize import _add_edge as hermes_add_edge
+from onboarding.graph_normalize import _add_edge as hermes_add_edge
 from storage.onelake_writer import OneLakeWriter
 
 
@@ -186,26 +185,3 @@ def test_ontology_binding_registers_topology_tables_without_inferring_relationsh
     # never configure Fabric IQ to "detect"/"infer" anything (Pitfall 2).
     assert "detect" not in json.dumps(definition).lower()
     assert "infer" not in json.dumps(definition).lower()
-
-
-def test_notebook_definition_authors_genuine_fabric_hosted_notebook_item():
-    """Compute-architecture decision: fabric-hosted-notebook -- proves a
-    real Notebook item definition (not a Python-writer extension) is built,
-    and its cells call this package's own derive_edges/join functions rather
-    than re-implementing the predicate vocabulary a second time."""
-    from fabric_pipelines.notebook_manager import build_notebook_definition
-
-    definition = build_notebook_definition()
-    part_paths = {part["path"] for part in definition["parts"]}
-    assert "notebook-content.py" in part_paths
-    assert ".platform" in part_paths
-
-    content_part = next(p for p in definition["parts"] if p["path"] == "notebook-content.py")
-    decoded = base64.b64decode(content_part["payload"]).decode()
-    # Must be Fabric's ".py notebook source" format, not raw ipynb JSON --
-    # submitting ipynb JSON under a ".py" path fails with Fabric's
-    # PyToIPynbFailure ("prologue is invalid").
-    assert decoded.startswith("# Fabric notebook source\n")
-    assert "# CELL ********************" in decoded
-    assert "derive_edges" in decoded
-    assert "join_flow_logs_with_nsg_rules" in decoded

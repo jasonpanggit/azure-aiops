@@ -5,14 +5,15 @@ from dataclasses import dataclass
 
 import httpx
 
-from hermes_arg_connector.azure import (
+from onboarding.azure_clients import (
     AzureCliArgClient,
     AzureCostManagementClient,
     AzureMcpClient,
+    AzureMonitorMetricsClient,
     AzureResourceGraphClient,
     CommandResult,
 )
-from hermes_arg_connector.queries import QuerySpec
+from onboarding.query_catalog import QuerySpec
 
 
 @dataclass
@@ -229,3 +230,114 @@ def test_cost_management_client_retries_throttled_requests() -> None:
     assert rows[0]["cost"] == 1.23
     assert rows[0]["usageDate"] == "2026-08-24"
     assert sleeps == [0.0]
+
+
+def test_monitor_metrics_client_returns_latest_average_per_metric() -> None:
+    class Token:
+        token = "connection-token"
+
+    class Credential:
+        def __init__(self) -> None:
+            self.scopes: list[str] = []
+
+        def get_token(self, scope: str):
+            self.scopes.append(scope)
+            return Token()
+
+    requests: list[dict] = []
+
+    def requester(method: str, url: str, **kwargs):
+        requests.append({"method": method, "url": url, **kwargs})
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "name": {"value": "Percentage CPU"},
+                        "unit": "Percent",
+                        "timeseries": [
+                            {
+                                "data": [
+                                    {"timeStamp": "2026-08-23T00:00:00Z", "average": None},
+                                    {"timeStamp": "2026-08-23T00:05:00Z", "average": 42.5},
+                                ]
+                            }
+                        ],
+                    },
+                    {
+                        "name": {"value": "Network In Total"},
+                        "unit": "Bytes",
+                        "timeseries": [{"data": [{"timeStamp": "t", "average": 1024.0}]}],
+                    },
+                ]
+            },
+        )
+
+    credential = Credential()
+    resource_id = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1"
+    client = AzureMonitorMetricsClient(credential, requester=requester)
+
+    metrics = client.query_resource_metrics(resource_id)
+
+    assert metrics["Percentage CPU"]["value"] == 42.5
+    assert metrics["Percentage CPU"]["unit"] == "Percent"
+    assert metrics["Network In Total"]["value"] == 1024.0
+    assert credential.scopes == ["https://management.azure.com/.default"]
+    assert requests[0]["headers"]["Authorization"] == "******"
+    assert requests[0]["url"].endswith(
+        "subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1/providers/microsoft.insights/metrics"
+    )
+    assert "Percentage CPU" in requests[0]["params"]["metricnames"]
+
+
+def test_monitor_metrics_client_retries_throttled_requests() -> None:
+    class Token:
+        token = "connection-token"
+
+    class Credential:
+        def get_token(self, scope: str):
+            return Token()
+
+    responses = [
+        httpx.Response(429, json={"error": {"code": "429"}}, headers={"Retry-After": "0"}),
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "name": {"value": "Percentage CPU"},
+                        "unit": "Percent",
+                        "timeseries": [{"data": [{"timeStamp": "t", "average": 10.0}]}],
+                    }
+                ]
+            },
+        ),
+    ]
+    sleeps: list[float] = []
+
+    def requester(method: str, url: str, **kwargs):
+        return responses.pop(0)
+
+    metrics = AzureMonitorMetricsClient(
+        Credential(),
+        requester=requester,
+        retry_sleep=sleeps.append,
+    ).query_resource_metrics("/subscriptions/sub-1/resourceGroups/rg/providers/x/y")
+
+    assert metrics["Percentage CPU"]["value"] == 10.0
+    assert sleeps == [0.0]
+
+
+def test_monitor_metrics_client_rejects_blank_resource_id() -> None:
+    class Credential:
+        def get_token(self, scope: str):
+            raise AssertionError("should not fetch a token for an invalid request")
+
+    client = AzureMonitorMetricsClient(Credential(), requester=lambda *a, **k: None)
+
+    try:
+        client.query_resource_metrics("   ")
+    except ValueError as exc:
+        assert "resource id" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")

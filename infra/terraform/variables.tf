@@ -350,7 +350,13 @@ variable "fabric_workspace_name" {
 variable "fabric_lakehouse_name" {
   description = "Lakehouse holding the operational context graph datasets."
   type        = string
-  default     = "operational_context_graph"
+  default     = "operational_context_graph_v2"
+}
+
+variable "fabric_ontology_name" {
+  description = "Fabric ontology item backing the operational context graph."
+  type        = string
+  default     = "Operational_Context_Ontology_v2"
 }
 
 variable "alert_email_addresses" {

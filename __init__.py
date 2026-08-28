@@ -11,6 +11,6 @@ _src = str(Path(__file__).resolve().parent / "src")
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from hermes_arg_connector.plugin import register
+from onboarding.plugin import register
 
 __all__ = ["register"]

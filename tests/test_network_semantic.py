@@ -15,7 +15,7 @@ import pytest
 from test_network_ontology import PEER_VNET_ID, SQL_ID, VNET_ID, _full_payload
 
 from fabric.dataset_mapper import _entity_row
-from hermes_arg_connector.normalize import Normalizer
+from onboarding.graph_normalize import Normalizer
 from ontology.entity_builder import EntityBuilder
 from ontology.relationship_builder import RelationshipBuilder
 from semantic.semantic_engine import SemanticEngine

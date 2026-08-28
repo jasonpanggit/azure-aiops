@@ -13,8 +13,8 @@ from datetime import UTC, datetime
 import pytest
 
 from fabric.dataset_mapper import ONTOLOGY_ENTITY_TYPES, ONTOLOGY_RELATIONSHIP_TYPES
-from hermes_arg_connector.network_normalize import NETWORK_ENTITY_TYPES, normalize_nic
-from hermes_arg_connector.normalize import Normalizer
+from onboarding.graph_normalize import Normalizer
+from onboarding.network_normalize import NETWORK_ENTITY_TYPES, normalize_nic
 from ontology.entity_builder import RESOURCE_ENTITY_TYPES
 
 OBSERVED = datetime(2026, 8, 1, tzinfo=UTC)

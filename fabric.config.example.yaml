@@ -32,11 +32,9 @@ fabric:
     ontology_id: "" # Optional immutable ID; otherwise resolved/created by name.
     ontology_name: "Operational_Context_Graph"
 
-  # Fabric-native topology comparison-arm pipeline (D-04a, Phase 8).
+  # Fabric-backed topology pipeline.
   topology_pipeline:
     enabled: false
-    notebook_item_id: "" # Optional immutable ID; otherwise resolved/created by name.
-    notebook_display_name: "topology_pipeline_notebook"
     ontology_id: "" # Optional immutable ID; otherwise resolved/created by name.
     ontology_name: "Topology_Comparison_Ontology"
     # "fixture" (default, no live provisioning) or "live" once NSG Flow

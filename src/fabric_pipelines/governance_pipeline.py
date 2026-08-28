@@ -1,7 +1,7 @@
 """Governance domain pipeline for Fabric.
 
-Ports Hermes governance domain logic (IdentityRiskEngine, SpnGovernanceEngine, 
-FinOpsEngine) to Fabric PySpark notebooks. Consumes Fabric-backed inventory and
+Ports Hermes governance domain logic (IdentityRiskEngine, SpnGovernanceEngine,
+FinOpsEngine) to the API-triggered Fabric sync path. Consumes Fabric-backed inventory and
 Azure Advisor/Cost Management data; generates assessment_governance_findings output
 matching Hermes engine byte-for-byte on test scenario.
 """
@@ -11,18 +11,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any
+
+from intelligence.governance.finops import FinOpsEngine
 
 # Import Hermes governance contracts to reuse existing logic
 from intelligence.governance.identity import (
-    CREDENTIAL_EXPIRY_WARNING_DAYS,
     STALE_ACCESS_DAYS,
     IdentityRiskEngine,
-    PrincipalRisk,
-    ServicePrincipalGovernance,
     SpnGovernanceEngine,
 )
-from intelligence.governance.finops import FinOpsEngine, SavingsOpportunity, WasteItem
 
 
 @dataclass(frozen=True)

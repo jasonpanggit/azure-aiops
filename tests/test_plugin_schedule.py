@@ -5,8 +5,8 @@ import os
 import subprocess
 import sys
 
-from hermes_arg_connector import plugin as hermes_plugin
-from hermes_arg_connector.schedule import build_hermes_cron_command
+from onboarding import plugin as hermes_plugin
+from onboarding.schedule import build_hermes_cron_command
 
 
 class FakeContext:
@@ -53,7 +53,7 @@ class Block(importlib.abc.MetaPathFinder):
             raise ModuleNotFoundError(fullname)
         return None
 sys.meta_path.insert(0, Block())
-import hermes_arg_connector.plugin
+import onboarding.plugin
 print('ok')
 """
     env = {**os.environ, "PYTHONPATH": "src"}

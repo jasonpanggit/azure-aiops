@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from hermes_arg_connector.logs import (
+from onboarding.monitor_logs import (
     CONFIGURATION_DATA_QUERY,
     LOGS_QUERY_SCOPE,
     AzureMonitorLogsClient,

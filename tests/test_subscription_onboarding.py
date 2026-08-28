@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from onboarding import runtime as onboarding_runtime
 from onboarding.credentials import (
     ChainedSecretProvider,
     CredentialResolver,
@@ -620,7 +624,7 @@ def test_registry_persists_across_instances(tmp_path: Path) -> None:
 
 
 def test_connection_ingestion_still_uses_live_arg_client(tmp_path, monkeypatch) -> None:
-    from hermes_arg_connector.config import ConnectorConfig
+    from onboarding.config import ConnectorConfig
 
     service = build_service(tmp_path)
     onboard(service)
@@ -648,3 +652,213 @@ def test_connection_ingestion_still_uses_live_arg_client(tmp_path, monkeypatch) 
     assert ingestion.source.mcp is None
     assert ingestion.cost_source is None
     assert built[0][1] is connection
+
+
+class FakePublisher:
+    """Stand-in for the object `publish_factory()` returns -- mirrors the
+    real `_InventoryRefreshRunner` adapter's shape (a no-arg `run()`)."""
+
+    def __init__(self, error: str = "") -> None:
+        self.error = error
+        self.calls = 0
+
+    def run(self):
+        self.calls += 1
+        if self.error:
+            raise RuntimeError(self.error)
+        return {"status": "completed"}
+
+
+def test_sync_coordinator_reports_progress_through_publish_stages(tmp_path: Path) -> None:
+    publisher = FakePublisher()
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path,
+        ingestion_factory=lambda connection: FakeIngestion(),
+        publish_factory=lambda connection: publisher,
+    )
+    service = build_service(tmp_path)
+    service.sync_coordinator = coordinator
+    onboard(service)
+    connection = service.registry.get("prod-core")
+
+    seen: list[tuple[str, int]] = []
+    result, state = coordinator.run(
+        connection,
+        mode="manual",
+        progress_callback=lambda stage, message, pct: seen.append((stage, pct)),
+    )
+
+    assert result.status == "succeeded"
+    assert publisher.calls == 1
+    stages = [stage for stage, _ in seen]
+    assert stages == [
+        "discovering",
+        "merging",
+        "publishing_ontology",
+        "writing_fabric_tables",
+        "succeeded",
+    ]
+    assert [pct for _, pct in seen] == sorted(pct for _, pct in seen)
+    assert state.stage == "succeeded"
+    assert state.progress_pct == 100
+
+
+def test_sync_coordinator_surfaces_publish_failure_as_failed_sync(tmp_path: Path) -> None:
+    publisher = FakePublisher(error="Fabric write denied")
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path,
+        ingestion_factory=lambda connection: FakeIngestion(),
+        publish_factory=lambda connection: publisher,
+    )
+    service = build_service(tmp_path)
+    service.sync_coordinator = coordinator
+    onboard(service)
+    connection = service.registry.get("prod-core")
+
+    result, state = coordinator.run(connection, mode="manual")
+
+    assert result.status == "failed"
+    assert "Fabric write denied" in result.message
+    assert state.stage == "failed"
+    # Ingestion itself succeeded, so the sync's own record count/version are
+    # still captured even though the downstream Fabric publish failed.
+    assert result.record_count == 7
+
+
+def test_sync_coordinator_progress_callback_exceptions_do_not_break_sync(
+    tmp_path: Path,
+) -> None:
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path, ingestion_factory=lambda connection: FakeIngestion()
+    )
+    service = build_service(tmp_path)
+    service.sync_coordinator = coordinator
+    onboard(service)
+    connection = service.registry.get("prod-core")
+
+    def _bad_callback(stage, message, pct):
+        raise RuntimeError("progress sink is down")
+
+    result, _state = coordinator.run(
+        connection, mode="manual", progress_callback=_bad_callback
+    )
+
+    assert result.status == "succeeded"
+
+
+def test_sync_async_returns_running_state_immediately(tmp_path: Path) -> None:
+    release = threading.Event()
+
+    class BlockingIngestion:
+        def run(self):
+            release.wait(timeout=5)
+            return {"queryVersion": "1.0.0", "datasets": {"entities/resource": {"rowCount": 3}}}
+
+    service = build_service(tmp_path, ingestion=BlockingIngestion())
+    onboard(service)
+
+    try:
+        result = service.sync_async("prod-core", mode="manual")
+
+        assert result["status"] == "running"
+        assert result["sync_state"]["stage"] == "queued"
+        assert result["sync_state"]["progress_pct"] == 0
+        assert result["run_id"]
+    finally:
+        release.set()
+
+    for _ in range(50):
+        detail = service.detail("prod-core")
+        if detail["sync_status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.05)
+    assert service.detail("prod-core")["sync_status"] == "succeeded"
+
+
+def test_sync_async_persists_failure_from_background_job(tmp_path: Path) -> None:
+    service = build_service(tmp_path, ingestion=FakeIngestion(error="ARG throttled"))
+    onboard(service)
+
+    service.sync_async("prod-core", mode="manual")
+
+    for _ in range(50):
+        detail = service.detail("prod-core")
+        if detail["sync_status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.05)
+
+    detail = service.detail("prod-core")
+    assert detail["sync_status"] == "failed"
+
+
+def test_sync_async_rejects_disabled_connection_immediately(tmp_path: Path) -> None:
+    service = build_service(tmp_path)
+    onboard(service)
+    service.disable("prod-core")
+
+    with pytest.raises((ValueError, OnboardingError)):
+        service.sync_async("prod-core")
+
+
+def test_sync_async_rejects_unknown_mode_immediately(tmp_path: Path) -> None:
+    service = build_service(tmp_path)
+    onboard(service)
+
+    with pytest.raises(OnboardingError):
+        service.sync_async("prod-core", mode="bogus")
+
+
+def test_api_publish_runner_completes_ontology_and_fabric_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inventory = {"status": "completed", "combined_manifest": {"runId": "inventory-run"}}
+    combined = {"status": "published", "source_runs": ["discovery-run"]}
+    publication = SimpleNamespace(
+        run_id="fabric-run",
+        source_run_id="discovery-run",
+        status="succeeded",
+        tables=("silver_entities", "silver_relationships"),
+    )
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(
+        "api.inventory_orchestration.run_inventory_refresh_all_connections",
+        lambda *args, **kwargs: inventory,
+    )
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        lambda path: SimpleNamespace(source_data_root="/tmp/fabric-source"),
+    )
+    monkeypatch.setattr(
+        "onboarding.activation.publish_combined_snapshot",
+        lambda service, connection_ids, target_root: (
+            calls.append(("ontology", (connection_ids, target_root))) or combined
+        ),
+    )
+    monkeypatch.setattr(
+        "fabric.runtime.build_runtime",
+        lambda config: SimpleNamespace(
+            service=SimpleNamespace(
+                sync=lambda: (
+                    calls.append(("fabric", config.source_data_root)) or publication
+                )
+            )
+        ),
+    )
+
+    result = onboarding_runtime._InventoryRefreshRunner(
+        "connector.yaml",
+        "fabric.yaml",
+        SimpleNamespace(),
+        "connection-1",
+    ).run()
+
+    assert result["combined_snapshot"] == combined
+    assert result["fabric_publication"]["tables"] == [
+        "silver_entities",
+        "silver_relationships",
+    ]
+    assert calls == [
+        ("ontology", (["connection-1"], "/tmp/fabric-source")),
+        ("fabric", "/tmp/fabric-source"),
+    ]

@@ -3,7 +3,7 @@
 Mirrors ``onboarding.activation.publish_combined_snapshot``'s dedupe-and-merge
 pattern, but for the inventory-owned datasets. Inventory remains the sole
 owner of these dataset names and of the ``InventoryFabricPublisher`` republish
-step, so this module -- not ``hermes_arg_connector`` or ``onboarding`` --
+step, so this module -- not ``onboarding`` or ``onboarding`` --
 performs the merge and the final Fabric write.
 """
 

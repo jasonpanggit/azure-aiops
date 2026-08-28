@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from .queries import QuerySpec
+from .query_contract import QuerySpec
 
 
 @dataclass(frozen=True)
@@ -345,6 +345,155 @@ class AzureCostManagementClient:
         if response is None:
             raise RuntimeError("Cost Management request was not attempted")
         return response
+
+
+#: Platform metrics available for VMs without a guest agent. "Percentage CPU"
+#: is the closest platform signal to OS-level CPU utilization; there is no
+#: platform-metric equivalent for memory or disk-space utilization, which
+#: require Azure Monitor Agent + Log Analytics guest performance counters.
+VM_METRIC_NAMES: tuple[str, ...] = (
+    "Percentage CPU",
+    "Network In Total",
+    "Network Out Total",
+    "Disk Read Bytes",
+    "Disk Write Bytes",
+    "OS Disk Queue Depth",
+)
+
+
+class AzureMonitorMetricsClient:
+    """Query the Azure Monitor Metrics REST API for one resource's platform metrics."""
+
+    endpoint_template = "https://management.azure.com/{resource_id}/providers/microsoft.insights/metrics"
+    api_version = "2018-01-01"
+    metrics_scope = "https://management.azure.com/.default"
+
+    def __init__(
+        self,
+        credential: Any,
+        *,
+        timeout: int = 30,
+        requester: HttpRequester | None = None,
+        max_retries: int = 3,
+        retry_sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.credential = credential
+        self.timeout = timeout
+        self.requester = requester or httpx.request
+        if max_retries < 0:
+            raise ValueError("Monitor Metrics max_retries cannot be negative")
+        self.max_retries = max_retries
+        self.retry_sleep = retry_sleep
+
+    def query_resource_metrics(
+        self,
+        resource_id: str,
+        *,
+        metric_names: tuple[str, ...] = VM_METRIC_NAMES,
+        end: datetime | None = None,
+        lookback: timedelta = timedelta(hours=1),
+        interval: str = "PT5M",
+    ) -> dict[str, Any]:
+        """Fetch the latest platform metric values for a single resource.
+
+        Returns a dict keyed by metric name, each holding the most recent
+        non-null data point plus its unit, or ``None`` when Azure Monitor has
+        no recent data for that metric (e.g. a stopped VM, or a metric that
+        does not apply to the resource type).
+        """
+        if not resource_id.strip():
+            raise ValueError("Monitor Metrics query requires a resource id")
+        if not metric_names:
+            raise ValueError("Monitor Metrics query requires at least one metric name")
+
+        token = self.credential.get_token(self.metrics_scope)
+        access_token = getattr(token, "token", "")
+        if not access_token:
+            raise RuntimeError("Azure AD returned an empty access token for Monitor Metrics")
+
+        end_time = (end or datetime.now(UTC)).astimezone(UTC)
+        start_time = end_time - lookback
+        response = self._request_with_retry(
+            resource_id,
+            access_token=access_token,
+            metric_names=metric_names,
+            start=start_time,
+            end=end_time,
+            interval=interval,
+        )
+        if response.is_error:
+            detail = response.text.strip()[:512] or f"HTTP {response.status_code}"
+            raise RuntimeError(f"Monitor Metrics query for '{resource_id}' failed: {detail}")
+        payload = _load_json(response.text or "{}", "Monitor Metrics")
+        return _parse_metrics_payload(payload)
+
+    def _request_with_retry(
+        self,
+        resource_id: str,
+        *,
+        access_token: str,
+        metric_names: tuple[str, ...],
+        start: datetime,
+        end: datetime,
+        interval: str,
+    ) -> httpx.Response:
+        response: httpx.Response | None = None
+        params = {
+            "api-version": self.api_version,
+            "metricnames": ",".join(metric_names),
+            "timespan": f"{start.isoformat()}/{end.isoformat()}",
+            "interval": interval,
+            "aggregation": "Average",
+        }
+        for attempt in range(self.max_retries + 1):
+            response = self.requester(
+                "GET",
+                self.endpoint_template.format(resource_id=resource_id.lstrip("/")),
+                params=params,
+                headers={"Authorization": "******"},
+                timeout=self.timeout,
+            )
+            if response.status_code not in {429, 503} or attempt >= self.max_retries:
+                return response
+            self.retry_sleep(_retry_delay(response, attempt))
+        if response is None:
+            raise RuntimeError("Monitor Metrics request was not attempted")
+        return response
+
+
+def _parse_metrics_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    metrics = payload.get("value") if isinstance(payload, dict) else None
+    if not isinstance(metrics, list):
+        return {}
+    result: dict[str, Any] = {}
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        name = ((metric.get("name") or {}).get("value")) if isinstance(metric.get("name"), dict) else None
+        if not name:
+            continue
+        unit = str(metric.get("unit") or "")
+        timeseries = metric.get("timeseries") or []
+        latest_value: float | None = None
+        latest_timestamp = ""
+        if isinstance(timeseries, list):
+            for series in timeseries:
+                if not isinstance(series, dict):
+                    continue
+                for point in series.get("data") or []:
+                    if not isinstance(point, dict):
+                        continue
+                    value = point.get("average")
+                    if value is None:
+                        continue
+                    latest_value = float(value)
+                    latest_timestamp = str(point.get("timeStamp") or "")
+        result[str(name)] = {
+            "value": latest_value,
+            "unit": unit,
+            "timestamp": latest_timestamp,
+        }
+    return result
 
 
 def _cost_row(subscription_id: str, columns: list[str], raw: list[Any]) -> dict[str, Any]:

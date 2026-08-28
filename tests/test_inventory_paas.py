@@ -10,11 +10,10 @@ from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
-from api.scope import Scope
 from api.telemetry import ApiTelemetry
-from hermes_arg_connector.config import ConnectorConfig
 from intelligence.inventory.pipeline import InventoryPipeline
 from intelligence.inventory.service import InventoryService
+from onboarding.config import ConnectorConfig
 from onboarding.service import SubscriptionOnboardingService
 from storage.datasets import DatasetStore
 
@@ -62,6 +61,18 @@ class _ResourceSource:
                 "tags": {},
                 "osType": "Windows",
             },
+            {
+                "id": "/subscriptions/sub-a/resourceGroups/rg-law/providers/Microsoft.OperationalInsights/workspaces/law-1",
+                "name": "law-1",
+                "type": "microsoft.operationalinsights/workspaces",
+                "tenantId": "tenant-a",
+                "subscriptionId": "sub-a",
+                "resourceGroup": "rg-law",
+                "location": "australiaeast",
+                "tags": {},
+                "sku": {"name": "PerGB2018"},
+                "properties": {"customerId": "workspace-guid-1", "retentionInDays": 30},
+            },
         ]
         return {
             spec.name: (
@@ -108,9 +119,43 @@ def test_paas_refresh_writes_fabric_table_and_excludes_vm_arc(tmp_path: Path) ->
     assert {row["resource_type"] for row in rows} == {
         "microsoft.web/sites",
         "microsoft.sql/servers/databases",
+        "microsoft.operationalinsights/workspaces",
     }
     assert all("microsoft.compute/virtualmachines" != row["resource_type"] for row in rows)
     assert "provider_payload_json" not in json.dumps(rows)
+
+
+def test_paas_auto_discovers_log_analytics_workspaces_in_scope(tmp_path: Path) -> None:
+    """Unified inventory must surface Log Analytics workspaces without any
+    hand-maintained connection -> workspace mapping -- they are just another
+    generic ARG Resources row, scoped and grouped like any other PaaS type."""
+    client = _client(_service(tmp_path), tmp_path)
+
+    response = client.get(
+        "/api/v1/inventory/paas",
+        params={"subscription": "sub-a", "limit": 10},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    law_groups = [
+        group
+        for group in body["data"]["groups"]
+        if group["resource_type"] == "microsoft.operationalinsights/workspaces"
+    ]
+    assert len(law_groups) == 1
+    assert law_groups[0]["resource_count"] == 1
+
+    detail = client.get(
+        f"/api/v1/inventory/paas/{law_groups[0]['key']}",
+        params={"subscription": "sub-a"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body["data"]["resources"][0]["resource_name"] == "law-1"
+    assert detail_body["data"]["resources"][0]["subscription_id"] == "sub-a"
 
 
 def test_paas_grouped_route_is_scoped_evidence_wrapped_and_paginated(tmp_path: Path) -> None:
@@ -125,10 +170,11 @@ def test_paas_grouped_route_is_scoped_evidence_wrapped_and_paginated(tmp_path: P
     assert response.status_code == 200
     body = response.json()
     assert body["scope"] == {"subscription": ["sub-a"]}
-    assert body["pagination"]["total"] == 1
+    assert body["pagination"]["total"] == 2
     assert body["evidence"][0]["source_table"] == "inventory/resource_observations"
     assert body["data"]["source_status"]["paas"]["state"] == "ready"
-    assert body["data"]["groups"][0]["key"] == "microsoft.web:sites|P1v3|PremiumV3"
+    group_keys = {group["key"] for group in body["data"]["groups"]}
+    assert "microsoft.web:sites|P1v3|PremiumV3" in group_keys
 
 
 def test_paas_scope_excludes_out_of_scope_subscription(tmp_path: Path) -> None:
@@ -175,5 +221,5 @@ def test_cross_family_route_returns_multiple_scoped_families_without_payload(tmp
     assert response.status_code == 200
     body = response.json()
     assert {row["family"] for row in body["data"]["resources"]} == {"os", "paas"}
-    assert body["pagination"]["total"] == 2
+    assert body["pagination"]["total"] == 3
     assert "provider_payload" not in json.dumps(body)

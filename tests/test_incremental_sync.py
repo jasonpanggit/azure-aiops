@@ -11,11 +11,10 @@ from deltalake import DeltaTable
 from fabric.data_quality import DataQualityValidator
 from fabric.dataset_mapper import InventoryDatasetMapper
 from fabric.sync_service import FabricSyncService
-from hermes_arg_connector.config import ConnectorConfig
-from hermes_arg_connector.normalize import Normalizer
-from hermes_arg_connector.service import IngestionService
-from hermes_arg_connector.storage import DatasetStore
 from intelligence.inventory.pipeline import InventoryPipeline
+from onboarding.config import ConnectorConfig
+from onboarding.graph_normalize import Normalizer
+from onboarding.ingestion_storage import DatasetStore
 from semantic.semantic_engine import SemanticEngine
 from storage.delta_writer import DeltaWriter
 from storage.onelake_writer import OneLakeWriter

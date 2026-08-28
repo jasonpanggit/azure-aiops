@@ -9,8 +9,8 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-from hermes_arg_connector.normalize import Normalizer
-from hermes_arg_connector.storage import DatasetStore
+from onboarding.graph_normalize import Normalizer
+from onboarding.ingestion_storage import DatasetStore
 from storage.datasets import DatasetStore as NeutralDatasetStore
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
@@ -118,7 +118,7 @@ def test_store_uses_owner_only_permissions(tmp_path: Path) -> None:
 
 
 def test_run_lock_rejects_a_concurrent_writer(tmp_path: Path) -> None:
-    from hermes_arg_connector.locking import RunLock
+    from storage.locking import RunLock
 
     with (
         RunLock(tmp_path),

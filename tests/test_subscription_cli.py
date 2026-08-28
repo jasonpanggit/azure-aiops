@@ -12,8 +12,8 @@ from test_subscription_onboarding import (
     build_service,
 )
 
-from hermes_arg_connector import cli
-from hermes_arg_connector.local import DEFAULT_LOCAL_CONNECTION_ID
+from onboarding import cli
+from onboarding.local_seed import DEFAULT_LOCAL_CONNECTION_ID
 
 
 def _config(tmp_path: Path) -> str:

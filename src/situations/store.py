@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from api.scope import Scope, scope_attributes
-from hermes_arg_connector.ontology import generate_ontology_metadata
+from onboarding.ontology_metadata import generate_ontology_metadata
 from storage.datasets import DatasetStore
 
 from .materializer import materialize_graph

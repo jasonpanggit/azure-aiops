@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from .azure import AzureCliArgClient, AzureCostManagementClient, AzureMcpClient
+from .azure_clients import AzureCliArgClient, AzureCostManagementClient, AzureMcpClient
 
 
 @dataclass

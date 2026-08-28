@@ -6,16 +6,17 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from .azure import AzureCliArgClient, AzureMcpClient
-from .config import ConnectorConfig
-from .inventory_read_adapter import InventoryReadAdapter
-from .logs import AzureMonitorLogsClient
-from .normalize import Normalizer
-from .queries import QueryCatalog
-from .source import AzureResourceGraphSource, CostActualsSource
-from .state import StateStore
-from .storage import DatasetStore
 from storage.locking import RunLock
+
+from .azure_clients import AzureCliArgClient, AzureMcpClient
+from .config import ConnectorConfig
+from .discovery_source import AzureResourceGraphSource, CostActualsSource
+from .graph_normalize import Normalizer
+from .ingestion_state import StateStore
+from .ingestion_storage import DatasetStore
+from .inventory_read_adapter import InventoryReadAdapter
+from .monitor_logs import AzureMonitorLogsClient
+from .query_catalog import QueryCatalog
 
 logger = logging.getLogger(__name__)
 

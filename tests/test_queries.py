@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from hermes_arg_connector.queries import QueryCatalog
+from onboarding.query_catalog import QueryCatalog
 
 
 def test_query_catalog_contains_required_arg_tables() -> None:

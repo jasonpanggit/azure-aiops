@@ -5,7 +5,7 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from hermes_arg_connector import cli
+from onboarding import cli
 
 
 def test_inventory_refresh_cli_publishes_to_configured_local_onelake(
@@ -42,8 +42,8 @@ def test_inventory_refresh_cli_publishes_to_configured_local_onelake(
     class Credential:
         pass
 
-    monkeypatch.setattr("hermes_arg_connector.source.AzureResourceGraphSource", AzureClient)
-    monkeypatch.setattr("hermes_arg_connector.logs.AzureMonitorLogsClient", LogsClient)
+    monkeypatch.setattr("onboarding.discovery_source.AzureResourceGraphSource", AzureClient)
+    monkeypatch.setattr("onboarding.monitor_logs.AzureMonitorLogsClient", LogsClient)
     monkeypatch.setattr("azure.identity.DefaultAzureCredential", Credential)
 
     config = tmp_path / "config.yaml"

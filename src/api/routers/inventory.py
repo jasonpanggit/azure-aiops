@@ -127,7 +127,7 @@ def trigger_inventory_refresh(request: Request) -> dict[str, Any]:
             {"capability": "inventory", "provider_state": "unconfigured"},
         )
     fabric_config_path = os.environ.get("HERMES_FABRIC_CONFIG", "").strip()
-    from hermes_arg_connector.inventory_refresh import (
+    from api.inventory_orchestration import (
         run_inventory_refresh_all_connections,
     )
 

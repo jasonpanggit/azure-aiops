@@ -168,7 +168,7 @@ def accepted_suggestion_to_relationship_row(
     ``relationship_id``/``change_version`` content-addressing scheme
     ``RelationshipBuilder._relationship_id``/``stable_version`` already use)
     -- calling this twice on the same accepted suggestion always yields the
-    same row, so re-running the notebook never duplicates or drifts a
+    same row, so re-running the sync never duplicates or drifts a
     previously-approved edge.
 
     Deliberately reuses ``RelationshipBuilder``'s own private

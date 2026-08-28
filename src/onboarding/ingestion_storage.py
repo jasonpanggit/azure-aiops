@@ -4,8 +4,8 @@ from typing import Any
 
 from storage.datasets import DatasetStore as _DatasetStore
 
-from .normalize import NormalizedGraph
-from .ontology import generate_ontology_metadata
+from .graph_normalize import NormalizedGraph
+from .ontology_metadata import generate_ontology_metadata
 
 
 class DatasetStore(_DatasetStore):

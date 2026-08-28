@@ -1,7 +1,7 @@
 """Comparison-harness proof that the Fabric-native ontology pipeline
 reproduces ``ontology.entity_builder.EntityBuilder`` /
 ``ontology.relationship_builder.RelationshipBuilder`` /
-``hermes_arg_connector.ontology.generate_ontology_metadata`` faithfully.
+``onboarding.ontology_metadata.generate_ontology_metadata`` faithfully.
 
 Mirrors ``tests/test_topology_pipeline.py``'s style: rather than asserting
 against a separately-hand-written expected output, this test feeds the same
@@ -19,20 +19,18 @@ from __future__ import annotations
 import json
 
 from deltalake import DeltaTable
+from ontology_comparison_scenario import ontology_comparison_scenario
 
 from fabric_pipelines.ontology_pipeline import (
-    OntologyOneLakePublisher,
     derive_entities,
     derive_ontology_metadata,
     derive_relationships,
     run,
 )
-from hermes_arg_connector.ontology import generate_ontology_metadata
+from onboarding.ontology_metadata import generate_ontology_metadata
 from ontology.entity_builder import EntityBuilder
 from ontology.relationship_builder import RelationshipBuilder
 from storage.onelake_writer import OneLakeWriter
-
-from ontology_comparison_scenario import ontology_comparison_scenario
 
 RUN_ID = "ontology-pipeline-test-run"
 TIMESTAMP = "2026-08-27T00:00:00Z"
@@ -256,7 +254,7 @@ def test_derive_relationships_matches_relationship_builder_output_exactly():
 
 def test_derive_ontology_metadata_matches_generate_ontology_metadata_exactly():
     """Proves ``derive_ontology_metadata`` is a faithful pass-through of
-    ``hermes_arg_connector.ontology.generate_ontology_metadata`` -- including
+    ``onboarding.ontology_metadata.generate_ontology_metadata`` -- including
     its full static ``RELATIONSHIP_TYPES`` vocabulary (belongsTo/assessedBy/
     impacts) and entity-type schema inference across the full fixture."""
     entities = derive_entities(_full_source_rows(), run_id=RUN_ID, timestamp=TIMESTAMP)
@@ -294,50 +292,3 @@ def test_run_writes_ontology_entities_and_relationships_to_delta_tables(tmp_path
     relationships_table = DeltaTable(str(lakehouse_root / "Tables" / "ontology_relationships"))
     assert entities_table.to_pyarrow_table().num_rows == summary.entity_count
     assert relationships_table.to_pyarrow_table().num_rows == summary.relationship_count
-
-
-def test_ontology_notebook_definition_authors_genuine_fabric_hosted_notebook_item():
-    """Compute-architecture decision: fabric-hosted-notebook, mirroring
-    ``test_notebook_definition_authors_genuine_fabric_hosted_notebook_item``
-    for the topology notebook -- proves a real Notebook item definition
-    (not a Python-writer extension) is built for the ontology pipeline, and
-    its cells call this package's own derive_entities/derive_relationships/
-    derive_ontology_metadata functions rather than re-implementing the
-    entity/relationship classification logic a second time. Also proves the
-    existing topology notebook definition is unaffected by this addition."""
-    import base64
-
-    from fabric_pipelines.notebook_manager import (
-        NOTEBOOK_DISPLAY_NAME,
-        ONTOLOGY_NOTEBOOK_DISPLAY_NAME,
-        build_notebook_definition,
-        build_ontology_notebook_definition,
-    )
-
-    ontology_definition = build_ontology_notebook_definition()
-    part_paths = {part["path"] for part in ontology_definition["parts"]}
-    assert "notebook-content.py" in part_paths
-    assert ".platform" in part_paths
-
-    platform_part = next(p for p in ontology_definition["parts"] if p["path"] == ".platform")
-    platform_payload = json.loads(base64.b64decode(platform_part["payload"]).decode())
-    assert platform_payload["metadata"]["displayName"] == ONTOLOGY_NOTEBOOK_DISPLAY_NAME
-
-    content_part = next(p for p in ontology_definition["parts"] if p["path"] == "notebook-content.py")
-    decoded = base64.b64decode(content_part["payload"]).decode()
-    assert decoded.startswith("# Fabric notebook source\n")
-    assert "# CELL ********************" in decoded
-    assert "derive_entities" in decoded
-    assert "derive_relationships" in decoded
-    assert "derive_ontology_metadata" in decoded
-
-    # Existing topology notebook definition remains unaffected by this addition.
-    topology_definition = build_notebook_definition()
-    topology_platform_part = next(p for p in topology_definition["parts"] if p["path"] == ".platform")
-    topology_platform_payload = json.loads(base64.b64decode(topology_platform_part["payload"]).decode())
-    assert topology_platform_payload["metadata"]["displayName"] == NOTEBOOK_DISPLAY_NAME
-    topology_content_part = next(
-        p for p in topology_definition["parts"] if p["path"] == "notebook-content.py"
-    )
-    topology_decoded = base64.b64decode(topology_content_part["payload"]).decode()
-    assert "derive_edges" in topology_decoded

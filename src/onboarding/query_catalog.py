@@ -1,17 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-
-@dataclass(frozen=True)
-class QuerySpec:
-    name: str
-    table: str
-    query: str
-    incremental: bool
-    scope: str = "subscriptions"
-    version: str = "1.0.0"
+from onboarding.query_contract import QuerySpec
 
 
 class QueryCatalog:

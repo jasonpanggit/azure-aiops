@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from hermes_arg_connector.network_normalize import NETWORK_ENTITY_TYPES
+from onboarding.network_normalize import NETWORK_ENTITY_TYPES
 from ontology.entity_builder import EntityBuilder
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator

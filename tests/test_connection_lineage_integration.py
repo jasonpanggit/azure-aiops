@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from fabric.dataset_mapper import _entity_row
-from hermes_arg_connector.normalize import Normalizer
+from onboarding.graph_normalize import Normalizer
 from onboarding.metadata import BusinessMetadata
 from onboarding.registry import ConnectionRegistry, RegistryConflictError
 from onboarding.runtime import connection_context

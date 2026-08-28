@@ -13,9 +13,9 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from hermes_arg_connector.inventory_read_adapter import InventoryReadAdapter
-from hermes_arg_connector.normalize import Normalizer
 from intelligence.inventory.models import ResourceObservation
+from onboarding.graph_normalize import Normalizer
+from onboarding.inventory_read_adapter import InventoryReadAdapter
 
 OBSERVED_AT = datetime(2026, 8, 27, 6, 0, tzinfo=UTC)
 
@@ -256,7 +256,7 @@ def _normalize(payload: dict[str, list[dict]]):
 def _entity_sets(graph) -> dict[str, list]:
     return {
         entity_type: sorted(
-            (json.dumps(entity, sort_keys=True, default=str) for entity in entities)
+            json.dumps(entity, sort_keys=True, default=str) for entity in entities
         )
         for entity_type, entities in graph.entities.items()
         if entities

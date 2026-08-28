@@ -6,7 +6,6 @@ from incident_scenario import incident_engine
 from semantic_scenario import semantic_scenario
 
 from agents.operations.operations_agent import OperationsAgent
-from hermes_arg_connector.plugin import OPERATIONS_AGENT_SCHEMA
 from intelligence.incidents.blast_radius_engine import BlastRadiusEngine
 from intelligence.incidents.causality_graph import CausalityGraph
 from intelligence.incidents.event_timeline import EventTimelineEngine
@@ -15,6 +14,7 @@ from intelligence.incidents.incident_engine import IncidentEngine
 from intelligence.incidents.incident_summary import IncidentSummary
 from intelligence.incidents.operational_patterns import OperationalPatterns
 from intelligence.incidents.root_cause_engine import RootCauseEngine
+from onboarding.plugin import OPERATIONS_AGENT_SCHEMA
 from ontology.ontology_validator import OntologyValidator
 from semantic.semantic_engine import SemanticEngine
 

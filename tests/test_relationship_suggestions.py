@@ -24,7 +24,9 @@ from fabric_pipelines.relationship_suggestions_contract import (
 
 
 def test_relationship_suggestions_contract_is_separate_from_relationships_contract():
-    from fabric_pipelines.ontology_fabric_contracts import ONTOLOGY_RELATIONSHIPS_CONTRACT
+    from fabric_pipelines.ontology_fabric_contracts import (
+        ONTOLOGY_RELATIONSHIPS_CONTRACT,
+    )
 
     assert RELATIONSHIP_SUGGESTIONS_CONTRACT.table_name == "relationship_suggestions"
     assert RELATIONSHIP_SUGGESTIONS_CONTRACT.table_name != ONTOLOGY_RELATIONSHIPS_CONTRACT.table_name

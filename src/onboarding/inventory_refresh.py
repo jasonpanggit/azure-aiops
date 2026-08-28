@@ -16,16 +16,18 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from .config import ConnectorConfig
+from api.inventory_orchestration import run_inventory_refresh_all_connections
+from onboarding.config import ConnectorConfig
 
 
-def run_inventory_refresh_all_connections(
+def _legacy_run_inventory_refresh_all_connections(
     config_path: str,
     *,
     fabric_config_path: str = "",
     registry_root: str = "",
+    connection_id: str = "",
 ) -> dict[str, Any]:
-    """Refresh inventory for every registered subscription connection.
+    """Refresh inventory for registered subscription connections.
 
     Runs one ``InventoryPipeline`` per active :class:`SubscriptionConnection`,
     scoped to that connection's subscription and isolated dataset root (the
@@ -33,7 +35,8 @@ def run_inventory_refresh_all_connections(
     ingestion), then merges all connections' inventory datasets into one
     deduplicated snapshot and -- if a Fabric config is supplied -- publishes
     that merged snapshot to Fabric exactly once. A failure acquiring one
-    connection's inventory does not block the others.
+    connection's inventory does not block the others. When ``connection_id`` is
+    supplied, only that active connection is refreshed and published.
     """
     from onboarding.credentials import CredentialResolver, default_secret_provider
     from onboarding.registry import ConnectionRegistry
@@ -42,7 +45,12 @@ def run_inventory_refresh_all_connections(
     config = ConnectorConfig.load(config_path)
     root = registry_root or str(config.output_dir)
     registry = ConnectionRegistry(root)
-    connections = registry.list(include_disabled=False)
+    if connection_id:
+        connections = [registry.get(connection_id)]
+        if not connections[0].is_active:
+            raise RuntimeError(f"Connection '{connection_id}' is disabled")
+    else:
+        connections = registry.list(include_disabled=False)
     if not connections:
         raise RuntimeError("No active subscription connections are registered")
 
@@ -111,7 +119,7 @@ def run_inventory_refresh(
 ) -> dict[str, Any]:
     """Run one single-config inventory refresh and return the manifest.
 
-    Mirrors the ``hermes-arg-connector inventory-refresh`` CLI command so
+    Mirrors the ``aiops-inventory inventory-refresh`` CLI command so
     both entry points execute identical acquisition/publication logic. This
     entry point targets exactly the subscriptions listed in ``config_path``
     (or all subscriptions visible to the configured credential, if none are
@@ -131,9 +139,9 @@ def run_inventory_refresh(
     from storage.delta_writer import DeltaWriter
     from storage.onelake_writer import OneLakeWriter
 
-    from .azure import AzureCliArgClient, AzureMcpClient
-    from .logs import AzureMonitorLogsClient
-    from .source import AzureResourceGraphSource
+    from .azure_clients import AzureCliArgClient, AzureMcpClient
+    from .discovery_source import AzureResourceGraphSource
+    from .monitor_logs import AzureMonitorLogsClient
 
     config = ConnectorConfig.load(config_path)
     if connection_id:
@@ -213,4 +221,3 @@ def run_inventory_refresh(
 
 
 __all__ = ["run_inventory_refresh", "run_inventory_refresh_all_connections"]
-

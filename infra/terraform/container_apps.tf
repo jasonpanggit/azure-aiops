@@ -168,7 +168,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "FABRIC_ONTOLOGY_NAME"
-        value = "Operational_Context_Graph"
+        value = var.fabric_ontology_name
       }
 
       env {

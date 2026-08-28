@@ -7,8 +7,7 @@ import os
 import shutil
 import sys
 import uuid
-from pathlib import Path
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pyarrow as pa
@@ -382,6 +381,11 @@ def _secure_text(path: Path, content: str) -> None:
 
 
 def _atomic_text(path: Path, content: str) -> None:
+    _secure_text(Path(path), content)
+
+
+def atomic_text(path: Path, content: str) -> None:
+    """Write text atomically with restrictive file permissions."""
     _secure_text(Path(path), content)
 
 

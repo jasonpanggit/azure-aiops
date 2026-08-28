@@ -12,7 +12,6 @@ from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
-from intelligence.inventory.software_normalization import normalize_configuration_data
 from intelligence.inventory import InventoryService
 from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
 from intelligence.inventory.eol_review import (
@@ -21,6 +20,7 @@ from intelligence.inventory.eol_review import (
     UnavailableLifecycleSearchProvider,
 )
 from intelligence.inventory.mapping_repository import SoftwareMappingRepository
+from intelligence.inventory.software_normalization import normalize_configuration_data
 from onboarding.service import SubscriptionOnboardingService
 
 TOKEN = "inventory-token-0123456789"

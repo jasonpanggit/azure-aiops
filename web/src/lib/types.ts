@@ -716,6 +716,9 @@ export interface SyncState {
   last_successful_sync_at?: string | null;
   run_id?: string | null;
   message?: string;
+  stage?: string | null;
+  stage_message?: string | null;
+  progress_pct?: number | null;
 }
 
 export interface SubscriptionConnection {
@@ -1917,3 +1920,49 @@ export interface SoftwareMappingCollection {
   repository_revision: number;
   requested_scope: Record<string, string[]>;
 }
+
+// ---------------------------------------------------------------------------
+// Resource health -- live CPU/network/disk utilization via Azure Monitor
+// Metrics. Memory % and disk free % are not available from platform metrics
+// for an ordinary VM (they require Azure Monitor Agent + Log Analytics guest
+// counters), so every response names them in `unavailable_metrics` rather
+// than omitting the fields silently.
+// ---------------------------------------------------------------------------
+
+export type ResourceHealthStatus = "critical" | "warning" | "healthy" | "unknown";
+
+export interface ResourceUtilization {
+  resource_id: string;
+  resource_name: string;
+  resource_type: string;
+  subscription_id: string;
+  resource_group: string;
+  connection_id: string;
+  cpu_percent: number | null;
+  network_in_bytes: number | null;
+  network_out_bytes: number | null;
+  disk_read_bytes: number | null;
+  disk_write_bytes: number | null;
+  os_disk_queue_depth: number | null;
+  status: ResourceHealthStatus;
+  observed_at: string;
+  error: string;
+  unavailable_metrics: string[];
+}
+
+export interface ResourceHealthSummary {
+  total: number;
+  critical: number;
+  warning: number;
+  healthy: number;
+  unknown: number;
+}
+
+export interface ResourceHealthSnapshot {
+  resources: ResourceUtilization[];
+  summary: ResourceHealthSummary;
+  observed_at: string;
+  warnings: string[];
+  unavailable_metrics: string[];
+}
+

@@ -5,13 +5,13 @@ from datetime import UTC, datetime
 import pytest
 from predictive_scenario import predictive_engine
 
-from hermes_arg_connector.plugin import OPERATIONS_AGENT_SCHEMA
 from intelligence.predictive.incident_probability_engine import (
     IncidentProbabilityEngine,
 )
 from intelligence.predictive.predictive_engine import PredictiveEngine
 from intelligence.predictive.predictive_intelligence import PredictiveIntelligence
 from intelligence.predictive.predictive_trend_engine import PredictiveTrendEngine
+from onboarding.plugin import OPERATIONS_AGENT_SCHEMA
 from ontology.ontology_validator import OntologyValidator
 
 REQUESTED_COMMANDS = {

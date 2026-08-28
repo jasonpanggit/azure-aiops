@@ -13,6 +13,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from topology_comparison_scenario import (
+    NSG_ID,
+    OBSERVED_AT,
+    VNET_ID,
+    topology_comparison_scenario,
+)
+
 from fabric_pipelines.comparison_report import (
     build_arm_result,
     compare,
@@ -21,8 +28,7 @@ from fabric_pipelines.comparison_report import (
     timed,
 )
 from fabric_pipelines.topology_pipeline import derive_edges
-from hermes_arg_connector.normalize import Normalizer
-from topology_comparison_scenario import NSG_ID, OBSERVED_AT, VNET_ID, topology_comparison_scenario
+from onboarding.graph_normalize import Normalizer
 
 _OBSERVED_DT = datetime.fromisoformat(OBSERVED_AT.replace("Z", "+00:00"))
 

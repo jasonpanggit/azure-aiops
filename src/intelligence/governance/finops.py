@@ -63,7 +63,7 @@ def _as_float(value: Any) -> float | None:
     return number
 
 
-def _savings_rank(opportunity: "SavingsOpportunity") -> float:
+def _savings_rank(opportunity: SavingsOpportunity) -> float:
     """Order key for picking the best duplicate: quantified savings beat unquantified ones."""
     return opportunity.annual_savings if opportunity.annual_savings is not None else -1.0
 

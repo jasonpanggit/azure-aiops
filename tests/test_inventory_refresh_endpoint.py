@@ -3,7 +3,7 @@
 This endpoint exists so a native Fabric Data Pipeline (Web activity + schedule
 trigger) can invoke the same `InventoryPipeline` refresh used by the
 `inventory-refresh` CLI, without duplicating acquisition/normalization logic
-inside Fabric. See `src/hermes_arg_connector/inventory_refresh.py`.
+inside Fabric. See `src/onboarding/inventory_refresh.py`.
 
 Authenticated by a dedicated shared secret (`HERMES_REFRESH_TRIGGER_SECRET`)
 rather than the Entra principal flow, because the caller is a Fabric Web
@@ -88,7 +88,7 @@ def test_refresh_runs_shared_pipeline_and_returns_manifest(
     monkeypatch.delenv("HERMES_FABRIC_CONFIG", raising=False)
 
     with patch(
-        "hermes_arg_connector.inventory_refresh.run_inventory_refresh_all_connections",
+        "api.inventory_orchestration.run_inventory_refresh_all_connections",
         return_value={"status": "completed", "connections": {}, "combined_manifest": {"rows": 5}},
     ) as mock_run:
         response = client.post("/api/v1/inventory/refresh", headers=_auth())
@@ -108,7 +108,7 @@ def test_refresh_wraps_pipeline_failure_as_internal_error(
     monkeypatch.setenv("HERMES_ARG_CONFIG", str(config_path))
 
     with patch(
-        "hermes_arg_connector.inventory_refresh.run_inventory_refresh_all_connections",
+        "api.inventory_orchestration.run_inventory_refresh_all_connections",
         side_effect=RuntimeError("boom"),
     ):
         response = client.post("/api/v1/inventory/refresh", headers=_auth())

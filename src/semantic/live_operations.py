@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from hermes_arg_connector.queries import QuerySpec
 from intelligence.vulnerability.service import VulnerabilityIntelligenceService
+from onboarding.query_contract import QuerySpec
 
 from .live_provider import LiveResourceProvider
 

@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 
 from api.scope import Scope
-from hermes_arg_connector.config import ConnectorConfig
 from intelligence.inventory import InventoryService, MachineObservation
 from intelligence.inventory.normalization import canonicalize_os, normalize_os_inventory
 from intelligence.inventory.pipeline import InventoryPipeline
 from intelligence.inventory.software_normalization import normalize_configuration_data
 from intelligence.inventory.sources.arg import inventory_os_specs
 from intelligence.lifecycle import EOLCatalog, LifecycleStatus
+from onboarding.config import ConnectorConfig
 from storage.datasets import DatasetStore
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_inventory_arg.json"

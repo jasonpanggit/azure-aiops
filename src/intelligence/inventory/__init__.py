@@ -30,8 +30,8 @@ def __getattr__(name: str):
 __all__ = [
     "InventoryEvidence",
     "InventoryNarrativeCitation",
-    "InventoryService",
     "InventoryReadPort",
+    "InventoryService",
     "InventorySnapshot",
     "InventorySourceStatus",
     "MachineObservation",

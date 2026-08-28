@@ -1,4 +1,4 @@
-"""Unit tests for `hermes_arg_connector.locking.RunLock`.
+"""Unit tests for `storage.locking.RunLock`.
 
 The lock stops two replicas ingesting into the same data root at once. It
 replaced a PostgreSQL advisory lock, so the OneLake path must preserve the two
@@ -18,7 +18,7 @@ from typing import ClassVar
 
 import pytest
 
-from hermes_arg_connector.locking import LEASE_DURATION_SECONDS, RunLock
+from storage.locking import LEASE_DURATION_SECONDS, RunLock
 
 ROOT = "abfss://ws-hermes@onelake.dfs.fabric.microsoft.com/lakehouse/Files/hermes"
 

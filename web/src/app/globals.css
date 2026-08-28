@@ -3606,6 +3606,26 @@ body.topology-fullscreen-open {
   border-left-color: var(--color-success);
 }
 
+.sync-progress-callout {
+  flex-direction: column;
+  margin-bottom: 14px;
+}
+
+.sync-progress-bar {
+  width: 100%;
+  height: 6px;
+  margin-top: 6px;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.sync-progress-bar-fill {
+  height: 100%;
+  background: var(--color-info);
+  transition: width 0.3s ease;
+}
+
 .connection-table {
   overflow: hidden;
 }

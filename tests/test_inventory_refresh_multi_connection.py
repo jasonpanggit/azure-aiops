@@ -95,10 +95,10 @@ class FakePipeline:
 def test_refresh_all_connections_merges_successful_connections_and_isolates_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from hermes_arg_connector.config import ConnectorConfig
-    from hermes_arg_connector.inventory_refresh import (
+    from api.inventory_orchestration import (
         run_inventory_refresh_all_connections,
     )
+    from onboarding.config import ConnectorConfig
 
     _build_registry(tmp_path)
 

@@ -8,7 +8,6 @@ import pytest
 
 from storage.datasets import DatasetStore
 
-
 PAYLOADS = (
     {
         "id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Web/sites/app-1",

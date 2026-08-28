@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hermes_arg_connector.config import ConnectorConfig
+from onboarding.config import ConnectorConfig
 
 
 def test_relative_output_dir_resolves_from_config_directory(tmp_path: Path) -> None:

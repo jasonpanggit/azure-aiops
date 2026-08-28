@@ -4,7 +4,7 @@ graph (not just network topology): runs the identical shared fixture
 
 - **Hermes** -- the real ``ontology.entity_builder.EntityBuilder`` /
   ``ontology.relationship_builder.RelationshipBuilder`` /
-  ``hermes_arg_connector.ontology.generate_ontology_metadata`` (the engine
+  ``onboarding.ontology_metadata.generate_ontology_metadata`` (the engine
   Hermes itself runs in production).
 - **Fabric-native** -- ``fabric_pipelines.ontology_pipeline``'s
   ``derive_entities``/``derive_relationships``/``derive_ontology_metadata``.
@@ -36,15 +36,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ontology_comparison_scenario import TIMESTAMP, ontology_comparison_scenario
+
 from fabric_pipelines.ontology_pipeline import (
     derive_entities,
     derive_ontology_metadata,
     derive_relationships,
 )
-from hermes_arg_connector.ontology import generate_ontology_metadata
+from onboarding.ontology_metadata import generate_ontology_metadata
 from ontology.entity_builder import EntityBuilder
 from ontology.relationship_builder import RelationshipBuilder
-from ontology_comparison_scenario import TIMESTAMP, ontology_comparison_scenario
 
 RUN_ID = "ontology-comparison-harness"
 

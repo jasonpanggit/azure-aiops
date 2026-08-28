@@ -157,7 +157,7 @@ class ArgConnectionProbe:
             raise RuntimeError(
                 "No Azure Resource Graph client is configured for connection validation"
             )
-        from hermes_arg_connector.queries import QuerySpec
+        from onboarding.query_contract import QuerySpec
 
         spec = QuerySpec(name="validation", table="Resources", query=query, incremental=False)
         return client.query(spec, [connection.subscription_id])

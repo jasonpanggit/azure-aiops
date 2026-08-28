@@ -53,7 +53,7 @@ Authenticate with your normal enterprise-approved Azure CLI flow before running.
 ├── .planning/                      # GSD planning artifacts (roadmap, requirements, state)
 ├── .github/                        # GitHub configuration and workflows
 ├── src/
-│   ├── hermes_arg_connector/       # ARG ingestion and connector CLI
+│   ├── onboarding/       # ARG ingestion and connector CLI
 │   ├── fabric/                     # Fabric/OneLake persistence and authentication
 │   ├── storage/                    # Delta, Parquet, OneLake writers
 │   ├── ontology/                   # Fabric Ontology creation and updates
@@ -139,7 +139,7 @@ The preinstalled Azure MCP executable is used for Azure subscription discovery. 
 ## Data Layers
 
 ### 1. ARG Ingestion and Normalization
-Raw resource and change data from Azure Resource Graph are queried, normalized, deduplicated, and published as JSONL/Parquet datasets with full provenance and freshness signals. See `src/hermes_arg_connector/` and `src/storage/`.
+Raw resource and change data from Azure Resource Graph are queried, normalized, deduplicated, and published as JSONL/Parquet datasets with full provenance and freshness signals. See `src/onboarding/` and `src/storage/`.
 
 ### 2. Fabric Ontology and OneLake Persistence
 Normalized datasets sync to Microsoft Fabric Lakehouse via OneLake, building queryable Delta tables. The Fabric Ontology item creates a semantic authority for entities and relationships.
@@ -391,7 +391,7 @@ does not query Azure or Fabric directly and does not fabricate unavailable
 capabilities.
 
 Hermes integration is provided by `plugin.yaml`, `__init__.py`, and
-`src/hermes_arg_connector/plugin.py`. The `operations_analysis` tool and the
+`src/onboarding/plugin.py`. The `operations_analysis` tool and the
 `azure_operational_context` toolset provide read-only operational reasoning.
 Current context-query helpers read the published snapshot and support a bounded
 set of operational questions; they are not a write or remediation authority.

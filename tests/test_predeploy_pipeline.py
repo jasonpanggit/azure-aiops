@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from test_predeploy import _discovered, _terraform_plan
+
 from fabric_pipelines.predeploy_pipeline import OUTPUT_TABLE, run
 from intelligence.predeploy import PreDeploymentImpactService
-from test_predeploy import _discovered, _terraform_plan
 
 
 def test_predeploy_pipeline_matches_hermes_service_for_cab_and_risk():

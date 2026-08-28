@@ -468,7 +468,7 @@ class MachineObservation:
         else:
             evidence_rows = [
                 {
-                    "source_engine": "hermes_arg_connector",
+                    "source_engine": "onboarding",
                     "source_table": "Resources",
                     "observed_at": row.get("observed_at") or row.get("observedAt") or "",
                     "source_id": row.get("id") or row.get("resource_id") or "",
@@ -479,7 +479,7 @@ class MachineObservation:
             item
             if isinstance(item, InventoryEvidence)
             else InventoryEvidence(
-                source_engine=item.get("source_engine", "hermes_arg_connector"),
+                source_engine=item.get("source_engine", "onboarding"),
                 source_table=item.get("source_table", "Resources"),
                 observed_at=item.get("observed_at") or row.get("observed_at") or "",
                 source_id=item.get("source_id", ""),

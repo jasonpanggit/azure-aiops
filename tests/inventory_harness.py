@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from hermes_arg_connector.config import ConnectorConfig
 from intelligence.inventory.pipeline import InventoryPipeline
+from onboarding.config import ConnectorConfig
 
 
 class _InventorySource:
@@ -90,7 +90,7 @@ def refresh_inventory(
 
 class _HermesArgSource:
     """Fake `AzureResourceGraphSource`-shaped fetch for the Hermes
-    (hermes_arg_connector) ingestion seam, distinct from `_InventorySource`
+    (onboarding) ingestion seam, distinct from `_InventorySource`
     above which feeds `intelligence.inventory.pipeline.InventoryPipeline`."""
 
     def __init__(self, fixture: dict[str, Any]) -> None:
@@ -110,15 +110,15 @@ def run_hermes_ingestion(
     fixture_path: Path | None = None,
     clock: datetime | None = None,
 ) -> dict[str, Any]:
-    """Runs `hermes_arg_connector.service.IngestionService` end-to-end for a
+    """Runs `onboarding.ingestion_service.IngestionService` end-to-end for a
     given `identity_source`, through the single named harness seam (Task 3:
     "Characterization tests reach their driver only through a single named
     seam"). Both ``"arg"`` and ``"inventory"`` values must be exercisable
     from this one entry point against the same golden fixture."""
-    from hermes_arg_connector.config import ConnectorConfig as HermesConnectorConfig
-    from hermes_arg_connector.service import IngestionService
     from intelligence.inventory.read_port import InventoryReadPort
     from intelligence.inventory.service import InventoryService as OSInventoryService
+    from onboarding.config import ConnectorConfig as HermesConnectorConfig
+    from onboarding.ingestion_service import IngestionService
 
     fixture_path = fixture_path or Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -182,7 +182,7 @@ def _normalized_entities_and_relationships(store_root: Path) -> tuple[dict, list
     that a real ResourceContainers query carries; a persisted containment
     table with that fidelity is explicitly out of scope for this plan (Task 1
     action note) and is a follow-up, not silently added here."""
-    from hermes_arg_connector.storage import DatasetStore
+    from onboarding.ingestion_storage import DatasetStore
 
     store = DatasetStore(store_root)
     entities: dict[str, list] = {}
@@ -228,7 +228,7 @@ def test_identity_source_inventory_matches_identity_source_arg(tmp_path: Path) -
 def test_identity_source_defaults_to_arg_with_no_behavior_change(tmp_path: Path) -> None:
     """Default behavior (`identity_source="arg"`) is unchanged: omitting the
     flag entirely must match explicitly passing `identity_source="arg"`."""
-    from hermes_arg_connector.config import ConnectorConfig as HermesConnectorConfig
+    from onboarding.config import ConnectorConfig as HermesConnectorConfig
 
     default_config = HermesConnectorConfig(output_dir=tmp_path / "default")
     assert default_config.identity_source == "arg"

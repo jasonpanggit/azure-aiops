@@ -2,9 +2,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { create, getConnection, list, mapMetadata, sync, updateConnection } = vi.hoisted(() => ({
+const { create, getConnection, health, list, mapMetadata, sync, updateConnection } = vi.hoisted(() => ({
   create: vi.fn(),
   getConnection: vi.fn(),
+  health: vi.fn(),
   list: vi.fn(),
   mapMetadata: vi.fn(),
   sync: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock("@/lib/services", () => ({
   connectionsApi: {
     create,
     get: getConnection,
+    health,
     list,
     mapMetadata,
     update: updateConnection,
@@ -59,6 +61,7 @@ describe("Connections page onboarding", () => {
   beforeEach(() => {
     create.mockReset();
     getConnection.mockReset();
+    health.mockReset();
     list.mockReset();
     mapMetadata.mockReset();
     sync.mockReset();
@@ -182,5 +185,47 @@ describe("Connections page onboarding", () => {
     await waitFor(() => expect(sync).toHaveBeenCalledWith("prod", "initial"));
     expect(await screen.findByText("Credential could not be resolved")).toBeInTheDocument();
     expect(screen.queryByText("Sync completed for Production.")).not.toBeInTheDocument();
+  });
+
+  it("polls health until a background sync reaches a terminal stage", async () => {
+    list.mockResolvedValue({ ...emptyEnvelope, data: [connection] });
+    sync.mockResolvedValue({
+      ...emptyEnvelope,
+      data: {
+        connection_id: "prod",
+        status: "running",
+        sync_state: { status: "running", stage: "queued", progress_pct: 0 },
+      },
+    });
+    health
+      .mockResolvedValueOnce({
+        ...emptyEnvelope,
+        data: {
+          connections: [
+            {
+              connection_id: "prod",
+              sync: { status: "running", stage: "discovering", progress_pct: 10 },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        ...emptyEnvelope,
+        data: {
+          connections: [
+            {
+              connection_id: "prod",
+              sync: { status: "succeeded", stage: "succeeded", progress_pct: 100 },
+            },
+          ],
+        },
+      });
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
+
+    expect(await screen.findByText(/Discovering resources/)).toBeInTheDocument();
+    expect(await screen.findByText("Sync completed for Production.")).toBeInTheDocument();
+    expect(health).toHaveBeenCalledWith("prod");
   });
 });

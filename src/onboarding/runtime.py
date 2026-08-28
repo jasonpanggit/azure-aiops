@@ -9,19 +9,20 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-from hermes_arg_connector.azure import (
-    AzureCostManagementClient,
-    AzureResourceGraphClient,
-)
-from hermes_arg_connector.config import ConnectorConfig
-from hermes_arg_connector.logs import AzureMonitorLogsClient, LogsQueryLimits
-from hermes_arg_connector.service import IngestionService
-from hermes_arg_connector.source import AzureResourceGraphSource, CostActualsSource
+from onboarding.config import ConnectorConfig
 from ontology.subscription_connection import SubscriptionConnection
 from storage.fs import join_root
 
+from .azure_clients import (
+    AzureCostManagementClient,
+    AzureMonitorMetricsClient,
+    AzureResourceGraphClient,
+)
 from .credentials import CredentialResolver, SecretWriter, default_secret_provider
+from .discovery_source import AzureResourceGraphSource, CostActualsSource
+from .ingestion_service import IngestionService
 from .metadata import BusinessMetadata
+from .monitor_logs import AzureMonitorLogsClient, LogsQueryLimits
 from .registry import ConnectionRegistry
 from .service import SubscriptionOnboardingService
 from .sync import ConnectionSyncCoordinator
@@ -34,7 +35,24 @@ def build_onboarding_service(
     resolver: CredentialResolver | None = None,
     secret_writer: SecretWriter | None = None,
     arg_client: Any = None,
+    config_path: str = "",
+    fabric_config_path: str = "",
 ) -> SubscriptionOnboardingService:
+    """Build the onboarding service, wired for connection-scoped sync.
+
+    ``fabric_config_path``, when set, attaches a ``publish_factory`` to the
+    sync coordinator so that a successful connection sync is immediately
+    followed by the same merge + ontology + Fabric-publish step
+    ``aiops-inventory inventory-refresh`` runs from the CLI/cron path -- i.e. an
+    interactive "Sync" click on one connection produces Fabric tables for
+    that connection only.
+    Leaving it empty keeps this call ingestion-only (used by the CLI, and by
+    tests that don't want a Fabric publish attempted). ``config_path`` is the
+    on-disk connector config path used to re-load a fresh
+    :class:`ConnectorConfig` inside the refresh run (mirrors how the CLI and
+    `/inventory/refresh` invoke `run_inventory_refresh_all_connections`); it
+    is only required alongside `fabric_config_path`.
+    """
     credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
     arg_factory = (
         (lambda _connection: arg_client)
@@ -49,7 +67,7 @@ def build_onboarding_service(
             config, connection, credential_resolver
         ),
     )
-    return SubscriptionOnboardingService(
+    service = SubscriptionOnboardingService(
         config.output_dir,
         registry=ConnectionRegistry(config.output_dir),
         validator=ConnectionValidator(
@@ -62,6 +80,11 @@ def build_onboarding_service(
         resolver=credential_resolver,
         secret_writer=secret_writer,
     )
+    if fabric_config_path:
+        coordinator.publish_factory = lambda connection: _InventoryRefreshRunner(
+            config_path, fabric_config_path, service, connection.connection_id
+        )
+    return service
 
 
 def build_connection_ingestion(
@@ -171,6 +194,19 @@ def build_connection_cost_client(
     )
 
 
+def build_connection_monitor_metrics_client(
+    config: ConnectorConfig,
+    connection: SubscriptionConnection,
+    resolver: CredentialResolver | None = None,
+) -> AzureMonitorMetricsClient:
+    """Build a Monitor Metrics client authenticated with one connection SPN."""
+    credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
+    return AzureMonitorMetricsClient(
+        credential_resolver.build(connection.credential),
+        timeout=config.command_timeout_seconds,
+    )
+
+
 def connection_context(connection: SubscriptionConnection) -> dict[str, str]:
     """Connection identity and business metadata stamped onto every ingested row.
 
@@ -202,11 +238,72 @@ def _slug(value: str) -> str:
     return "".join(char if char.isalnum() or char in "-_" else "-" for char in str(value)).strip("-")
 
 
+class _InventoryRefreshRunner:
+    """Adapts `run_inventory_refresh_all_connections` to the coordinator's
+    `publish_factory` contract (an object with a no-arg ``run()``).
+
+    A small class rather than a bare closure so the config paths are
+    captured once at service-build time; the underlying function re-reads
+    the connector config and registry itself on every call.
+    """
+
+    def __init__(
+        self,
+        config_path: str,
+        fabric_config_path: str,
+        service: SubscriptionOnboardingService,
+        connection_id: str,
+    ) -> None:
+        self._config_path = config_path
+        self._fabric_config_path = fabric_config_path
+        self._service = service
+        self._connection_id = connection_id
+
+    def run(self) -> dict[str, Any]:
+        from api.inventory_orchestration import (
+            run_inventory_refresh_all_connections,
+        )
+
+        inventory = run_inventory_refresh_all_connections(
+            self._config_path,
+            # Publish only after the ontology merge below has completed.
+            fabric_config_path="",
+            connection_id=self._connection_id,
+        )
+        if inventory.get("status") == "failed":
+            raise RuntimeError(
+                f"Inventory refresh failed for connection '{self._connection_id}'"
+            )
+
+        from fabric.config import FabricRuntimeConfig
+        from fabric.runtime import build_runtime
+        from onboarding.activation import publish_combined_snapshot
+
+        fabric_config = FabricRuntimeConfig.load(self._fabric_config_path)
+        combined = publish_combined_snapshot(
+            self._service,
+            [self._connection_id],
+            fabric_config.source_data_root,
+        )
+        publication = build_runtime(fabric_config).service.sync()
+        return {
+            "inventory": inventory,
+            "combined_snapshot": combined,
+            "fabric_publication": {
+                "run_id": publication.run_id,
+                "source_run_id": publication.source_run_id,
+                "status": publication.status,
+                "tables": list(publication.tables),
+            },
+        }
+
+
 __all__ = [
     "build_connection_arg_client",
     "build_connection_cost_client",
     "build_connection_ingestion",
     "build_connection_inventory_pipeline",
+    "build_connection_monitor_metrics_client",
     "build_onboarding_service",
     "connection_context",
 ]

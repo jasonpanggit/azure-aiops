@@ -1,6 +1,6 @@
-"""Fabric-native topology derivation pipeline (D-04a comparison arm).
+"""Fabric-backed topology derivation pipeline.
 
-Reproduces ``hermes_arg_connector.normalize._normalize_network``'s
+Reproduces the onboarding normalizer's ``_normalize_network`` behavior.
 deterministic predicate vocabulary and ``_add_edge``'s content-addressed
 relationship-ID scheme verbatim, but sources rows from inventory-owned
 identity data (via the same ``network_normalize`` sub-resource flatteners
@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from hermes_arg_connector.network_normalize import (
+from onboarding.network_normalize import (
     normalize_firewall,
     normalize_firewall_policy,
     normalize_gateway,
@@ -202,11 +202,11 @@ def derive_edges(
             link(balancer["id"], "loadBalances", backend, 0.9)
 
     # Port of ``normalize.normalize()``'s ``known_entity_ids`` dangling-edge
-    # filter (src/hermes_arg_connector/normalize.py:225-236). Without this,
+    # filter (src/onboarding/graph_normalize.py). Without this,
     # any edge whose subject/object was never actually emitted as an entity
     # (e.g. a reference to a resource type outside this pipeline's coverage)
     # would be written straight to the topology_edges Delta table / Fabric IQ
-    # ontology by the notebook path, unlike Hermes's engine which always
+    # ontology by the sync path, unlike Hermes's engine which always
     # drops such edges before publication (CR-01, 08-REVIEW.md).
     known_entity_ids = set(entities.keys())
     filtered_edges = [

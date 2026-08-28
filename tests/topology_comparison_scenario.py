@@ -120,7 +120,7 @@ def topology_comparison_scenario() -> dict[str, list[dict[str, Any]]]:
 #: NSG rule rows already flattened to the ``network_normalize.py:198-251``
 #: shape, for the flow-log join stage (Task 2 / D-11).
 def nsg_rule_rows() -> list[dict[str, Any]]:
-    from hermes_arg_connector.network_normalize import normalize_nsg
+    from onboarding.network_normalize import normalize_nsg
 
     row = topology_comparison_scenario()["network_security_groups"][0]
     base = {

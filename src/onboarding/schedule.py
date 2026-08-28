@@ -35,7 +35,7 @@ def install_schedule(schedule: str, config_path: Path, workdir: Path) -> list[st
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f"cd {shlex.quote(str(workdir))}\n"
-        f"uv run hermes-arg sync --config {shlex.quote(str(config_path))}\n"
+        f"uv run aiops-inventory sync --config {shlex.quote(str(config_path))}\n"
     )
     temporary = script_path.with_suffix(".tmp")
     temporary.write_text(content)

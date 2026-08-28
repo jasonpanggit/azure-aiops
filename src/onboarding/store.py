@@ -24,8 +24,8 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
+from storage.datasets import atomic_text
 from storage.fs import is_onelake_uri
-from hermes_arg_connector.state import _atomic_text
 from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
 REGISTRY_DOCUMENT = "state/subscription_connections.json"
@@ -66,7 +66,7 @@ class FileRegistryStore:
                 f"Registry changed during update (revision {current}, expected "
                 f"{expected_revision}); reload the connection and retry"
             )
-        _atomic_text(self.path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        atomic_text(self.path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 class OneLakeRegistryStore:

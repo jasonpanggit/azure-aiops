@@ -210,9 +210,9 @@ def test_inventory_contract_rejects_duplicate_identity_and_assessment_fields() -
 def test_standalone_inventory_refresh_publishes_os_rows_without_hermes_sync(tmp_path) -> None:
     from inventory_harness import refresh_inventory
 
-    from hermes_arg_connector.storage import DatasetStore
     from intelligence.inventory.fabric_contracts import fabric_table_for_logical_name
     from intelligence.inventory.service import InventoryService
+    from onboarding.ingestion_storage import DatasetStore
 
     manifest = refresh_inventory(tmp_path)
     store = DatasetStore(tmp_path)
@@ -228,10 +228,10 @@ def test_standalone_inventory_refresh_publishes_os_rows_without_hermes_sync(tmp_
 def test_inventory_refresh_writes_arg_and_law_rows_to_onelake_delta_tables(tmp_path) -> None:
     from inventory_harness import _InventorySource, _LogsSource
 
-    from hermes_arg_connector.config import ConnectorConfig
     from intelligence.inventory.fabric_publication import InventoryFabricPublisher
     from intelligence.inventory.onelake_publication import InventoryOneLakePublisher
     from intelligence.inventory.pipeline import InventoryPipeline
+    from onboarding.config import ConnectorConfig
     from storage.datasets import DatasetStore
     from storage.onelake_writer import OneLakeWriter
 

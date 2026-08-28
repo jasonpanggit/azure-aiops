@@ -20,10 +20,10 @@ from ontology.subscription_connection import (
     SubscriptionConnection,
     SyncState,
 )
+from storage.fs import join_root
 
 from .config import ConnectorConfig
-from storage.fs import join_root
-from .service import IngestionService
+from .ingestion_service import IngestionService
 
 DEFAULT_LOCAL_CONNECTION_ID = "local-demo"
 DEFAULT_LOCAL_TENANT_ID = "00000000-0000-0000-0000-000000000001"

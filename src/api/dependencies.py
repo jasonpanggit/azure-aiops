@@ -53,6 +53,10 @@ class ApiContext:
     hybrid_incident_provider: Callable[[list[str]], Any] | None = None
     hybrid_remediation_provider: Callable[[list[str]], Any] | None = None
     hybrid_patching_provider: Callable[[list[str]], Any] | None = None
+    # Live resource-health utilization (CPU/disk/network) via Azure Monitor
+    # Metrics. Resolved per request like the other hybrid providers since it
+    # performs a live per-connection Azure call rather than reading a snapshot.
+    hybrid_resource_health_provider: Callable[[list[str]], Any] | None = None
     # Same rationale for the intelligence engines: they are projections of a
     # snapshot, so they are resolved per request rather than pinned at startup.
     incident_provider: Callable[[], Any] | None = None

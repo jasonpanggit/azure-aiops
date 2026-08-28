@@ -9,9 +9,9 @@ from inventory_harness import refresh_inventory
 from api.evidence import envelope
 from api.routers.inventory import _evidence
 from api.scope import Scope
-from hermes_arg_connector.storage import DatasetStore
 from intelligence.inventory.models import SOURCE_STATES, SOURCE_TYPES, group_key
 from intelligence.inventory.service import InventoryService
+from onboarding.ingestion_storage import DatasetStore
 
 GOLDEN_ROOT = Path(__file__).parent / "fixtures" / "inventory_golden"
 EXPECTED_INVENTORY_DATASETS = {

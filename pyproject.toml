@@ -22,14 +22,14 @@ api = ["fastapi>=0.115,<1", "uvicorn>=0.32,<1"]
 test = ["pytest>=9.0.3,<10", "ruff>=0.16,<0.17", "fastapi>=0.115,<1", "httpx>=0.27,<1"]
 
 [project.scripts]
-hermes-arg = "hermes_arg_connector.cli:main"
+aiops-inventory = "onboarding.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/hermes_arg_connector", "src/fabric", "src/fabric_pipelines", "src/storage", "src/ontology", "src/semantic", "src/agents", "src/operations", "src/intelligence", "src/onboarding", "src/api"]
+packages = ["src/fabric", "src/fabric_pipelines", "src/storage", "src/ontology", "src/semantic", "src/agents", "src/operations", "src/intelligence", "src/onboarding", "src/api"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills/operational-context-graph/SKILL.md" = "skills/operational-context-graph/SKILL.md"

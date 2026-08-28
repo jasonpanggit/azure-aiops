@@ -8,7 +8,7 @@ from semantic_scenario import semantic_scenario
 
 from agents.operations.context_router import ContextRouter
 from agents.operations.operations_agent import OperationsAgent
-from hermes_arg_connector.plugin import OPERATIONS_AGENT_SCHEMA
+from onboarding.plugin import OPERATIONS_AGENT_SCHEMA
 from ontology.entity_builder import EntityBuilder
 from ontology.graph_queries import OntologyQueryService
 from ontology.ontology_sync import OntologyGraphSynchronizer

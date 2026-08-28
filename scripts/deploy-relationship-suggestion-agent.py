@@ -4,8 +4,7 @@ Fabric Data Agent, pointed at this workspace's ``operational_context_graph``
 lakehouse, per the user's "relationship suggestion layer" request.
 
 This is a one-off operator script (not part of the automated test suite),
-mirroring ``scripts/deploy-topology-notebook.py``/``deploy-ontology-notebook.py``'s
-CLI/credential-loading style.
+using the repository's standard CLI and credential-loading style.
 
 SCOPE (read before running -- see ``docs/fabric-data-agent-relationship-suggestions.md``
 for the full write-up): this script provisions the DataAgent *item* itself --

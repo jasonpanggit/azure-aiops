@@ -1,12 +1,12 @@
 """Fabric lifecycle assessment pipeline.
 
-Ports the Hermes lifecycle analysis surface to a Fabric notebook entrypoint by
-reusing ``LifecycleIntelligence`` directly over Fabric/Lakehouse rows.
+Ports the Hermes lifecycle analysis surface to the API-triggered Fabric sync
+path by reusing ``LifecycleIntelligence`` directly over Fabric/Lakehouse rows.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any

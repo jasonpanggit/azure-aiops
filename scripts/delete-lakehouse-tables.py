@@ -9,8 +9,8 @@ Deletes 127 tables classified as:
   - Unknown tables (not referenced in code): 52 tables
 
 Preserves:
-  - 16 active required tables (9-notebook outputs)
-  - 82 inventory input tables (needed by 9 notebooks)
+  - 16 active required tables
+  - 82 inventory input tables
   - 39 staging layers (bronze/silver, preserved for safety)
 """
 

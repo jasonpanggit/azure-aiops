@@ -1,3 +1,5 @@
+"""Ontology metadata generation for API-owned discovery snapshots."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -19,6 +21,7 @@ RELATIONSHIP_TYPES = {
 
 
 def generate_ontology_metadata(entities: dict[str, list[dict]]) -> dict[str, Any]:
+    """Generate the additive ontology schema for normalized entities."""
     entity_types: dict[str, dict[str, Any]] = {}
     for entity_type, rows in sorted(entities.items()):
         properties: dict[str, str] = {"id": "string"}

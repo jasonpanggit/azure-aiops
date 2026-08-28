@@ -70,6 +70,7 @@ import type {
   SoftwareInventoryDetail,
   SoftwareMapping,
   SoftwareMappingCollection,
+  ResourceHealthSnapshot,
 } from "./types";
 
 async function listAllConnections(scope: ScopeSelection): Promise<Envelope<SubscriptionConnection[]>> {
@@ -640,6 +641,15 @@ export const healthApi = {
     if (!response.ok) throw new Error(`health check failed: ${response.status}`);
     return (await response.json()) as HealthResponse;
   },
+};
+
+export const resourceHealthApi = {
+  /** Live CPU/network/disk utilization for in-scope compute resources.
+   * Requires an explicit subscription scope -- unlike most routes there is
+   * no snapshot fallback, since a stale utilization reading would actively
+   * mislead an operator. */
+  snapshot: (scope: ScopeSelection = {}) =>
+    apiRequest<ResourceHealthSnapshot>("/resource-health", { query: scopeToSearchParams(scope) }),
 };
 
 export interface AdminAkvConfig {

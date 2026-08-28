@@ -10,7 +10,20 @@ import { useApi } from "@/hooks/useApi";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi } from "@/lib/services";
-import type { BusinessMetadata, ConnectionCreateRequest, SubscriptionConnection } from "@/lib/types";
+import type { BusinessMetadata, ConnectionCreateRequest, SubscriptionConnection, SyncState } from "@/lib/types";
+
+const SYNC_POLL_INTERVAL_MS = 1500;
+const SYNC_POLL_TIMEOUT_MS = 10 * 60 * 1000;
+
+const SYNC_STAGE_LABELS: Record<string, string> = {
+  queued: "Queued",
+  discovering: "Discovering resources",
+  merging: "Merging inventory",
+  publishing_ontology: "Publishing ontology",
+  writing_fabric_tables: "Writing Fabric tables",
+  succeeded: "Completed",
+  failed: "Failed",
+};
 
 const EMPTY_FORM = {
   connectionId: "",
@@ -55,6 +68,7 @@ export default function ConnectionsPage() {
   const [editForm, setEditForm] = useState(EMPTY_EDIT_FORM);
   const [editLoading, setEditLoading] = useState(false);
   const [editSubmitting, setEditSubmitting] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<{ connectionId: string; state: SyncState } | null>(null);
   const connections = useApi(() => connectionsApi.list(scope), [scope, refreshKey]);
   const rows = connections.data?.data ?? [];
   const healthy = rows.filter((connection) => connection.health_status === "healthy").length;
@@ -128,22 +142,47 @@ export default function ConnectionsPage() {
           throw new Error("Validation failed");
         }
         setActionMessage(`Validation completed for ${connection.name}.`);
+        setRefreshKey((value) => value + 1);
       } else {
         const result = await connectionsApi.sync(connection.connection_id, "initial");
+        setSyncProgress({ connectionId: connection.connection_id, state: result.data.sync_state });
         if (result.data.status.toLowerCase() === "failed") {
           setRefreshKey((value) => value + 1);
           throw new Error(String(result.data.sync_state.message ?? result.data.message ?? "Sync failed"));
         }
-        setActionMessage(
-          `Sync completed for ${connection.name}: ${result.data.record_count ?? 0} records discovered.`,
-        );
+        const finalState = await pollSyncState(connection.connection_id);
+        setSyncProgress(null);
+        setRefreshKey((value) => value + 1);
+        if (finalState.status.toLowerCase() === "failed") {
+          throw new Error(String(finalState.message ?? finalState.stage_message ?? "Sync failed"));
+        }
+        setActionMessage(`Sync completed for ${connection.name}.`);
+        return;
       }
-      setRefreshKey((value) => value + 1);
     } catch (reason) {
+      setSyncProgress(null);
       setActionError(reason instanceof Error ? reason.message : `Unable to ${action} connection.`);
     } finally {
       setRunningAction("");
     }
+  }
+
+  /** Polls connection health until the background sync reaches a terminal stage, updating live progress. */
+  async function pollSyncState(connectionId: string): Promise<SyncState> {
+    const deadline = Date.now() + SYNC_POLL_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const report = await connectionsApi.health(connectionId);
+      const summary = report.data.connections.find((entry) => entry.connection_id === connectionId);
+      const state = summary?.sync;
+      if (state) {
+        setSyncProgress({ connectionId, state });
+        if (["succeeded", "failed"].includes(state.status.toLowerCase())) {
+          return state;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
+    }
+    throw new Error("Timed out waiting for sync to complete.");
   }
 
   async function deleteConnection(connection: SubscriptionConnection) {
@@ -400,6 +439,19 @@ export default function ConnectionsPage() {
         </form>
       )}
 
+      {syncProgress && (
+        <div className="callout sync-progress-callout">
+          <strong>Syncing {rows.find((row) => row.connection_id === syncProgress.connectionId)?.name ?? syncProgress.connectionId}</strong>
+          <span>
+            {SYNC_STAGE_LABELS[syncProgress.state.stage ?? ""] ?? syncProgress.state.stage ?? "Working"}
+            {typeof syncProgress.state.progress_pct === "number" ? ` — ${syncProgress.state.progress_pct}%` : ""}
+            {syncProgress.state.stage_message ? `: ${syncProgress.state.stage_message}` : ""}
+          </span>
+          <div className="sync-progress-bar" role="progressbar" aria-valuenow={syncProgress.state.progress_pct ?? 0} aria-valuemin={0} aria-valuemax={100}>
+            <div className="sync-progress-bar-fill" style={{ width: `${syncProgress.state.progress_pct ?? 0}%` }} />
+          </div>
+        </div>
+      )}
       {actionMessage && <div className="callout callout-success"><strong>Complete</strong><span>{actionMessage}</span></div>}
       {actionError && <div className="callout callout-critical"><strong>Action failed</strong><span>{actionError}</span></div>}
 
@@ -442,7 +494,11 @@ export default function ConnectionsPage() {
                           disabled={Boolean(runningAction)}
                           onClick={() => runAction(connection, "sync")}
                         >
-                          {runningAction === `sync:${connection.connection_id}` ? "Syncing…" : "Sync"}
+                          {runningAction === `sync:${connection.connection_id}`
+                            ? syncProgress?.connectionId === connection.connection_id
+                              ? `${SYNC_STAGE_LABELS[syncProgress.state.stage ?? ""] ?? "Syncing"}…`
+                              : "Syncing…"
+                            : "Sync"}
                         </button>
                         <button
                           type="button"

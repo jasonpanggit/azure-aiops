@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from patch_scenario import patch_engine
 
-from hermes_arg_connector.plugin import OPERATIONS_AGENT_SCHEMA
 from intelligence.patch.patch_intelligence import (
     CriticalUpdate,
     Installation,
@@ -14,6 +13,7 @@ from intelligence.patch.patch_intelligence import (
     SecurityUpdate,
     Update,
 )
+from onboarding.plugin import OPERATIONS_AGENT_SCHEMA
 
 MODULES = (
     "patch_intelligence",

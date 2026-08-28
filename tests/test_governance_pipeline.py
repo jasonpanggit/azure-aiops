@@ -7,8 +7,7 @@ on a curated test scenario.
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -18,7 +17,6 @@ from intelligence.governance import (
     SpnGovernanceEngine,
 )
 from src.fabric_pipelines.governance_pipeline import GovernancePipeline
-
 
 # Curated test scenario: governance data fixture
 _SUBSCRIPTION_ID = "11111111-1111-1111-1111-111111111111"
@@ -155,7 +153,7 @@ class TestGovernancePipelineComparison:
     def test_identity_risk_matches_hermes(self):
         """Identity risk findings from Fabric match Hermes IdentityRiskEngine."""
         scenario = GOVERNANCE_COMPARISON_SCENARIO
-        test_now = datetime(2026, 8, 27, tzinfo=timezone.utc)
+        test_now = datetime(2026, 8, 27, tzinfo=UTC)
 
         # Run Hermes engine
         hermes_engine = IdentityRiskEngine(
@@ -193,7 +191,7 @@ class TestGovernancePipelineComparison:
     def test_spn_governance_matches_hermes(self):
         """SPN governance findings from Fabric match Hermes SpnGovernanceEngine."""
         scenario = GOVERNANCE_COMPARISON_SCENARIO
-        test_now = datetime(2026, 8, 27, tzinfo=timezone.utc)
+        test_now = datetime(2026, 8, 27, tzinfo=UTC)
 
         # Run Hermes engine
         hermes_engine = SpnGovernanceEngine(
@@ -262,7 +260,7 @@ class TestGovernancePipelineComparison:
     def test_governance_pipeline_full_execution(self):
         """Full pipeline execution generates all three domain findings."""
         scenario = GOVERNANCE_COMPARISON_SCENARIO
-        test_now = datetime(2026, 8, 27, tzinfo=timezone.utc)
+        test_now = datetime(2026, 8, 27, tzinfo=UTC)
 
         pipeline = GovernancePipeline(
             role_assignments=scenario["role_assignments"],
