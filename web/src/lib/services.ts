@@ -72,6 +72,7 @@ import type {
   SoftwareMapping,
   SoftwareMappingCollection,
   ResourceHealthSnapshot,
+  CopilotPageKind, CopilotPageSnapshot, CopilotSelectedResource, CopilotEvidenceRow, CopilotContextResult,
 } from "./types";
 
 async function listAllConnections(scope: ScopeSelection): Promise<Envelope<SubscriptionConnection[]>> {
@@ -347,6 +348,39 @@ export interface CopilotInvestigation {
   warnings: string[];
 }
 
+export interface CopilotPageSnapshotInput {
+  pageKind: CopilotPageKind; pageId: string; scope: ScopeSelection;
+  filters?: Record<string, string[]>; selectedResources?: CopilotSelectedResource[];
+  evidence?: CopilotEvidenceRow[]; freshness?: CopilotPageSnapshot["freshness"];
+  question?: string; rechecks?: string[];
+}
+
+export function buildCopilotSnapshot(input: CopilotPageSnapshotInput): CopilotPageSnapshot {
+  return {
+    version: "1", page_kind: input.pageKind, page_id: input.pageId,
+    selected_resources: (input.selectedResources ?? []).slice(0, 50),
+    filters: input.filters ?? {}, freshness: (input.freshness ?? []).slice(0, 32),
+    scope: { declared: input.scope, authorized: true }, evidence: (input.evidence ?? []).slice(0, 200),
+    question: input.question?.trim() || "Summarize the visible page evidence.", rechecks: input.rechecks ?? [],
+  };
+}
+
+export function copilotEvidenceRows(
+  section: string, evidence: EvidenceItem[], records: unknown[] = [],
+  status: "ok" | "empty" | "unavailable" | "denied" = "ok",
+): CopilotEvidenceRow[] {
+  const rows: CopilotEvidenceRow[] = evidence.map((item, index) => ({
+    evidence_id: `${section}:${item.source_table || "source"}:${index}`,
+    resource_id: item.resource_id || undefined, section,
+    data: { source_engine: item.source_engine, source_table: item.source_table },
+    status, observed_at: item.timestamp,
+  }));
+  return rows.concat(records.slice(0, 200).map((record, index): CopilotEvidenceRow => ({
+    evidence_id: `${section}:visible:${index}`, section,
+    data: (record && typeof record === "object" ? record : { value: record }) as Record<string, unknown>, status,
+  })));
+}
+
 export interface CopilotToolSpec {
   name: string;
   description: string;
@@ -396,6 +430,9 @@ export const copilotApi = {
     apiRequest<{ session_id: string; turns: CopilotInvestigation[] }>(
       `/copilot/history/${encodeURIComponent(sessionId)}`
     ),
+
+    investigateContext: (snapshot: CopilotPageSnapshot) =>
+      apiRequest<CopilotContextResult>("/copilot/investigate-context", { method: "POST", body: { snapshot } }),
 };
 
 // ---------------------------------------------------------------------------
@@ -649,8 +686,11 @@ export const resourceHealthApi = {
    * Requires an explicit subscription scope -- unlike most routes there is
    * no snapshot fallback, since a stale utilization reading would actively
    * mislead an operator. */
-  snapshot: (scope: ScopeSelection = {}) =>
-    apiRequest<ResourceHealthSnapshot>("/resource-health", { query: scopeToSearchParams(scope) }),
+  snapshot: (scope: ScopeSelection = {}, forceRefresh = false) => {
+    const query = scopeToSearchParams(scope);
+    if (forceRefresh) query.set("force_refresh", "true");
+    return apiRequest<ResourceHealthSnapshot>("/resource-health", { query });
+  },
 };
 
 export interface AdminAkvConfig {

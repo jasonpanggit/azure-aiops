@@ -1946,6 +1946,11 @@ export interface SoftwareMappingCollection {
 
 export type ResourceHealthStatus = "critical" | "warning" | "healthy" | "unknown";
 
+export interface MetricSeriesPoint {
+  timestamp: string;
+  value: number;
+}
+
 export interface ResourceUtilization {
   resource_id: string;
   resource_name: string;
@@ -1959,10 +1964,13 @@ export interface ResourceUtilization {
   disk_read_bytes: number | null;
   disk_write_bytes: number | null;
   os_disk_queue_depth: number | null;
+  memory_percent: number | null;
+  disk_free_percent: number | null;
   status: ResourceHealthStatus;
   observed_at: string;
   error: string;
   unavailable_metrics: string[];
+  cpu_series: MetricSeriesPoint[];
 }
 
 export interface ResourceHealthSummary {
@@ -1979,4 +1987,32 @@ export interface ResourceHealthSnapshot {
   observed_at: string;
   warnings: string[];
   unavailable_metrics: string[];
+  cached: boolean;
+  cache_ttl_seconds: number;
+}
+
+export type CopilotPageKind = "network" | "vulnerability" | "patch" | "incident" | "governance" | "resource";
+export type CopilotSnapshotStatus = "ok" | "empty" | "unavailable" | "denied";
+export interface CopilotSelectedResource { resource_id: string; resource_type: string; name?: string; attributes?: Record<string, string>; }
+export interface CopilotFreshnessRecord { source: string; observed_at: string; status: "fresh" | "stale" | "partial" | "unavailable"; }
+export interface CopilotScopeAuthorization { declared: Record<string, string[]>; authorized: boolean; }
+export interface CopilotEvidenceRow { evidence_id: string; resource_id?: string; section: string; data: Record<string, unknown>; status: CopilotSnapshotStatus; observed_at?: string; }
+export interface CopilotPageSnapshot {
+  version: "1"; page_kind: CopilotPageKind; page_id: string;
+  selected_resources: CopilotSelectedResource[]; filters: Record<string, string[]>;
+  freshness: CopilotFreshnessRecord[]; scope: CopilotScopeAuthorization;
+  evidence: CopilotEvidenceRow[]; question: string; rechecks: string[];
+}
+export interface CopilotContextFinding {
+  finding_id: string; resource_ids: string[]; check_id: string; policy_id: string; source_status: string;
+  status: "verified" | "hypothesis" | "partial" | "unavailable" | "denied"; summary: string;
+  evidence_refs: string[]; confidence: Confidence; uncertainty: string[]; stale: boolean;
+  next_check: string; actionable: boolean;
+}
+export interface CopilotContextResult {
+  page_kind: CopilotPageKind; page_id: string; snapshot_hash: string; stages: string[];
+  findings: CopilotContextFinding[]; tool_calls: Array<{ tool: string; arguments: Record<string, unknown>; status: CopilotSnapshotStatus; data: unknown; evidence: EvidenceItem[]; warning: string; }>;
+  synthesis_mode: "foundry" | "deterministic"; synthesis_agent: string;
+  synthesis: { text: string; agent_name: string; model: string; grounded: boolean } | null;
+  warnings: string[]; ledger_id?: string;
 }

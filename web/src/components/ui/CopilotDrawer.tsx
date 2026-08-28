@@ -8,7 +8,8 @@ import { StructuredData } from "@/components/ui/StructuredData";
 import { useScope } from "@/lib/scope-context";
 import { copilotApi } from "@/lib/services";
 import type { CopilotAnswer, CopilotToolCall } from "@/lib/services";
-import type { EvidenceItem } from "@/lib/types";
+import { buildCopilotSnapshot } from "@/lib/services";
+import type { CopilotContextFinding, EvidenceItem } from "@/lib/types";
 
 interface ChatTurn {
   question: string;
@@ -18,6 +19,9 @@ interface ChatTurn {
   knowledgeVersion?: string;
   warnings?: string[];
   error?: string;
+  findings?: CopilotContextFinding[];
+  synthesisMode?: "foundry" | "deterministic";
+  snapshot?: ReturnType<typeof buildCopilotSnapshot>;
 }
 
 const TOOL_STATUS_TONE: Record<string, "success" | "warning" | "critical" | "info"> = {
@@ -44,6 +48,8 @@ export interface CopilotDrawerProps {
   contextLabel?: string;
   /** Context-aware starter questions, optionally pre-bound to a known tool. */
   starterQuestions: CopilotStarterQuestion[];
+  /** Exact bounded state rendered by the calling page. */
+  snapshot?: ReturnType<typeof buildCopilotSnapshot>;
 }
 
 /**
@@ -59,11 +65,14 @@ const MIN_WIDTH = 420;
 const MAX_WIDTH = 1100;
 const WIDE_WIDTH = 760;
 
-export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }: CopilotDrawerProps) {
+export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions, snapshot }: CopilotDrawerProps) {
   const { scope } = useScope();
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [loading, setLoading] = useState(false);
+  const [stage, setStage] = useState<"idle" | "loading" | "partial" | "fallback" | "error">("idle");
+  const [lastSnapshot, setLastSnapshot] = useState<ReturnType<typeof buildCopilotSnapshot> | null>(null);
+  const [lastQuestion, setLastQuestion] = useState("");
   const [width, setWidth] = useState(MIN_WIDTH);
   const sessionId = useRef(`drawer-${Math.random().toString(36).slice(2)}-${Date.now()}`);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -102,28 +111,45 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
     if (!nextQuestion) return;
     setQuestion("");
     setLoading(true);
+    setStage("loading");
+    const submittedSnapshot = snapshot
+      ? { ...snapshot, question: nextQuestion }
+      : buildCopilotSnapshot({ pageKind: "resource", pageId: "legacy-drawer", scope, question: nextQuestion });
+    setLastSnapshot(submittedSnapshot);
+    setLastQuestion(nextQuestion);
     try {
-      const envelope = await copilotApi.investigate(nextQuestion, scope, {
-        sessionId: sessionId.current,
-        tool,
-        toolArguments,
-      });
+      const envelope = snapshot
+        ? await copilotApi.investigateContext(submittedSnapshot)
+        : await copilotApi.investigate(nextQuestion, scope, { sessionId: sessionId.current, tool, toolArguments });
+      const result = envelope.data as typeof envelope.data & {
+        answer?: CopilotAnswer | null;
+        synthesis?: CopilotAnswer | null;
+        synthesis_mode?: "foundry" | "deterministic";
+        synthesis_agent?: string;
+        findings?: CopilotContextFinding[];
+        stages?: string[];
+      };
       setTurns((current) => [
         ...current,
         {
           question: nextQuestion,
           toolCalls: envelope.data.tool_calls,
-          narration: envelope.data.answer,
-          evidence: envelope.evidence,
+          narration: result.synthesis ?? result.answer ?? null,
+          evidence: envelope.evidence ?? [],
           knowledgeVersion: envelope.knowledge_version,
-          warnings: envelope.warnings,
+          warnings: [...(envelope.warnings ?? []), ...(result.warnings ?? [])],
+          findings: result.findings,
+          synthesisMode: result.synthesis_mode,
+          snapshot: submittedSnapshot,
         },
       ]);
+      setStage(result.synthesis_mode === "deterministic" ? "fallback" : result.findings?.some((finding) => finding.status !== "verified") ? "partial" : "idle");
     } catch (reason) {
       setTurns((current) => [
         ...current,
         { question: nextQuestion, error: reason instanceof Error ? reason.message : "Copilot could not answer this request." },
       ]);
+      setStage("error");
     } finally {
       setLoading(false);
     }
@@ -138,6 +164,7 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
         className="copilot-drawer"
         role="dialog"
         aria-label="Operations Copilot"
+        aria-modal="false"
         ref={panelRef}
         tabIndex={-1}
         style={{ width }}
@@ -193,6 +220,12 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
             </div>
           )}
 
+          <div className="copilot-live-status" role="status" aria-live="polite">
+            {loading && "Gathering the visible page evidence and checking governed sources…"}
+            {!loading && stage === "fallback" && "Deterministic evidence is available; Foundry narration was not produced."}
+            {!loading && stage === "partial" && "Partial evidence: review freshness and source warnings before relying on this result."}
+            {!loading && stage === "error" && "The request failed. Retry the same bounded page snapshot."}
+          </div>
           {turns.map((turn, index) => (
             <div className="copilot-turn" key={`${turn.question}-${index}`}>
               <div className="copilot-question"><span>You</span><p>{turn.question}</p></div>
@@ -206,14 +239,29 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
                   <p>{turn.error}</p>
                 ) : (
                   <>
-                    {turn.narration && <MarkdownLite text={turn.narration.text} />}
+                    {turn.narration && (
+                      <>
+                        {turn.synthesisMode === "foundry" && <p className="copilot-synthesis-mode">Narrated by {turn.narration.agent_name}.</p>}
+                        <MarkdownLite text={turn.narration.text} />
+                      </>
+                    )}
                     {!turn.narration && turn.toolCalls?.some((call) => call.status === "ok") && (
                       <p className="copilot-fallback-note">
                         No narration model is configured in this environment — showing the governed tool results
                         directly below.
                       </p>
                     )}
-                    {turn.toolCalls?.length ? (
+                    {turn.findings?.length ? (
+                      <div className="copilot-findings" aria-label="Context findings">
+                        {turn.findings.map((finding) => (
+                          <article className={`copilot-finding copilot-finding-${finding.status}`} key={finding.finding_id}>
+                            <strong>{finding.status === "verified" ? "Verified finding" : finding.status === "hypothesis" ? "Hypothesis" : "Evidence status"}</strong>
+                            <p>{finding.summary}</p>
+                            <small>Check {finding.check_id} · Evidence: {finding.evidence_refs.join(", ") || "not named"} · {finding.next_check}</small>
+                          </article>
+                        ))}
+                      </div>
+                    ) : turn.toolCalls?.length ? (
                       <div className="copilot-tool-calls">
                         {turn.toolCalls.map((call, callIndex) => (
                           <details className="copilot-tool-call" key={`${call.tool}-${callIndex}`} open={callIndex === 0}>
@@ -241,7 +289,7 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
               </div>
             </div>
           ))}
-          {loading && <div className="copilot-thinking"><span /><span /><span /> Correlating evidence</div>}
+          {loading && <div className="copilot-thinking"><span /><span /><span /> Correlating evidence and validating sources</div>}
         </div>
 
         <div className="copilot-drawer-composer">
@@ -260,6 +308,11 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions }:
           <button type="button" className="button button-primary" onClick={() => ask(question)} disabled={loading || !question.trim()}>
             Ask
           </button>
+          {stage === "error" && lastSnapshot && (
+            <button type="button" className="button" onClick={() => ask(lastQuestion)} disabled={loading}>
+              Retry
+            </button>
+          )}
         </div>
       </aside>
     </>

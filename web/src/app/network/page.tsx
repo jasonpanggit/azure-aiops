@@ -13,7 +13,7 @@ import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { presentVerdict } from "@/lib/flow-verdict";
 import { useScope } from "@/lib/scope-context";
-import { networkApi } from "@/lib/services";
+import { buildCopilotSnapshot, copilotEvidenceRows, networkApi } from "@/lib/services";
 import type { FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
 
 type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
@@ -163,6 +163,21 @@ export default function NetworkPage() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Network topology"
+        snapshot={buildCopilotSnapshot({
+          pageKind: "network",
+          pageId: "network-topology",
+          scope,
+          filters: { tab: [tab] },
+          selectedResources: topology.data?.data.topology.hubs.slice(0, 50).map((hub) => ({
+            resource_id: hub.vnet_id,
+            resource_type: "Microsoft.Network/virtualNetworks",
+            name: hub.name,
+          })) ?? [],
+          evidence: copilotEvidenceRows("network", evidence, [
+            ...(gaps.data?.data.gaps ?? []),
+            ...(findings.data?.data.findings ?? []),
+          ]),
+        })}
         starterQuestions={[
           {
             label: "Can UAT reach PROD?",
