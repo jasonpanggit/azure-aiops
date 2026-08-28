@@ -182,6 +182,12 @@ def _gateway_grants():
         principal = principals.get(subject.casefold())
         if principal is None:
             return ()
+        # APIM validates the token and forwards only its trusted subject. The
+        # subject-to-grant map is the authorization source; no client header is
+        # allowed to manufacture roles. Direct gateway deployments may still
+        # provide explicit roles as an additional configured constraint.
+        if not roles:
+            return principal.grants
         asserted = set(roles)
         return tuple(grant for grant in principal.grants if grant.role in asserted)
 

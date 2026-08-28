@@ -63,6 +63,16 @@ output "apim_resource_id" {
   value       = var.enable_apim ? azurerm_api_management.main[0].id : null
 }
 
+output "apim_name" {
+  description = "APIM service name, or null when APIM is disabled."
+  value       = var.enable_apim ? azurerm_api_management.main[0].name : null
+}
+
+output "apim_api_name" {
+  description = "APIM MCP API name, or null when APIM is disabled."
+  value       = var.enable_apim ? azurerm_api_management_api.mcp[0].name : null
+}
+
 
 output "fabric_workspace_id" {
   description = "Fabric workspace ID, or null when Fabric is disabled."

@@ -7,9 +7,10 @@ locals {
   apim_name       = coalesce(var.apim_name, "${local.base}-apim")
   apim_api_name   = "${local.base}-mcp"
   mcp_backend_url = "${local.api_base_url}/api/v1/mcp"
+  apim_audience   = coalesce(var.apim_audience, var.entra_api_audience)
   mcp_policy_vars = {
     tenant_id         = var.tenant_id
-    audience          = var.apim_audience
+    audience          = local.apim_audience
     backend_url       = local.mcp_backend_url
     gateway_assertion = var.apim_gateway_assertion
   }
@@ -61,15 +62,6 @@ resource "azurerm_api_management_api_policy" "mcp" {
   api_management_name = azurerm_api_management.main[0].name
   resource_group_name = azurerm_resource_group.main.name
   xml_content         = templatefile("${path.module}/apim-policies/mcp-inbound.xml", local.mcp_policy_vars)
-}
-
-resource "azurerm_api_management_api_operation_policy" "mcp" {
-  count               = var.enable_apim ? 1 : 0
-  api_name            = azurerm_api_management_api.mcp[0].name
-  api_management_name = azurerm_api_management.main[0].name
-  resource_group_name = azurerm_resource_group.main.name
-  operation_id        = "mcp"
-  xml_content         = templatefile("${path.module}/apim-policies/mcp-backend.xml", local.mcp_policy_vars)
 }
 
 resource "azurerm_api_management_product" "mcp" {

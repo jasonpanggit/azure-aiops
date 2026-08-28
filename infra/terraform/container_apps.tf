@@ -108,7 +108,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "AIOPS_API_AUTH"
-        value = "entra"
+        value = var.enable_apim ? "gateway" : "entra"
       }
 
       env {

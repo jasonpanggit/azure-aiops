@@ -308,7 +308,7 @@ variable "apim_publisher_email" {
 }
 
 variable "apim_audience" {
-  description = "Entra audience accepted by the APIM MCP policy; never use a client-declared audience."
+  description = "Optional Entra audience accepted by the APIM MCP policy; defaults to the API audience and never uses a client-declared audience."
   type        = string
   default     = ""
 }

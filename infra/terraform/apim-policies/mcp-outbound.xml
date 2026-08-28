@@ -2,7 +2,7 @@
   <outbound>
     <base />
     <set-header name="X-Correlation-ID" exists-action="override">
-      <value>@((string)context.Variables.GetValueOrDefault("aiops-correlation-id", context.RequestId.ToString()))</value>
+      <value>@(context.RequestId.ToString())</value>
     </set-header>
   </outbound>
 </policies>

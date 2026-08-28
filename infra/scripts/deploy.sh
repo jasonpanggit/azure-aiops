@@ -5,6 +5,7 @@
 #   ./infra/scripts/deploy.sh plan
 #   ./infra/scripts/deploy.sh apply
 #   ./infra/scripts/deploy.sh output
+#   AIOPS_DEPLOY_ARTIFACT_DIR=/secure/path ./infra/scripts/deploy.sh apply
 #
 # Credentials are read from web/.env.local (gitignored) and exported into the
 # process only; they are never written to a tfvars file.
@@ -56,6 +57,8 @@ ENTRA_GRANTS_JSON="$(read_env AIOPS_ENTRA_GRANTS_JSON)"
 # Optional: without it, the deployed API's CVE enrichment hits NVD's
 # anonymous rate limit (5 req/30s) and CVE detail lookups fail.
 NVD_API_KEY="$(read_env NVD_API_KEY)"
+APIM_PUBLISHER_EMAIL="${AIOPS_APIM_PUBLISHER_EMAIL:-$(read_env AIOPS_APIM_PUBLISHER_EMAIL)}"
+APIM_NAME="${AIOPS_APIM_NAME:-$(read_env AIOPS_APIM_NAME)}"
 
 for var in ARM_SUBSCRIPTION_ID ARM_TENANT_ID ARM_CLIENT_ID ARM_CLIENT_SECRET ENTRA_WEB_CLIENT_ID ENTRA_API_AUDIENCE ENTRA_GRANTS_JSON; do
   if [[ -z "${!var}" ]]; then
@@ -82,6 +85,12 @@ tf_vars=(
   -var "entra_api_audience=${ENTRA_API_AUDIENCE}"
   -var "entra_grants_json=${ENTRA_GRANTS_JSON}"
 )
+if [[ -n "${APIM_PUBLISHER_EMAIL}" ]]; then
+  tf_vars+=(-var "apim_publisher_email=${APIM_PUBLISHER_EMAIL}")
+fi
+if [[ -n "${APIM_NAME}" ]]; then
+  tf_vars+=(-var "apim_name=${APIM_NAME}")
+fi
 if [[ -n "${deployer_object_id}" ]]; then
   tf_vars+=(-var "deployer_object_id=${deployer_object_id}")
 fi
@@ -92,7 +101,79 @@ fi
 command="${1:-plan}"
 shift || true
 
+# Pointing Container Apps at a tag that was never pushed produces a revision
+# stuck in ActivationFailed with MANIFEST_UNKNOWN, so verify the images exist
+# before Terraform rewrites the container image.
+verify_images_exist() {
+  local args=("$@")
+  local deploy_images="" image_tag="" i
+
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -var) case "${args[i + 1]:-}" in
+              deploy_images=*) deploy_images="${args[i + 1]#deploy_images=}" ;;
+              image_tag=*) image_tag="${args[i + 1]#image_tag=}" ;;
+            esac ;;
+      -var=deploy_images=*) deploy_images="${args[i]#-var=deploy_images=}" ;;
+      -var=image_tag=*) image_tag="${args[i]#-var=image_tag=}" ;;
+    esac
+  done
+
+  [[ "${deploy_images}" == "true" && -n "${image_tag}" ]] || return 0
+  command -v az >/dev/null 2>&1 || return 0
+
+  local registry
+  registry="$(cd "${tf_dir}" && terraform output -raw container_registry 2>/dev/null || true)"
+  [[ -n "${registry}" ]] || return 0
+
+  local repo missing=()
+  for repo in aiops-api aiops-web; do
+    if ! az acr repository show \
+      --name "${registry%%.*}" \
+      --image "${repo}:${image_tag}" >/dev/null 2>&1; then
+      missing+=("${repo}:${image_tag}")
+    fi
+  done
+
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    echo "deploy: image(s) not found in ${registry}: ${missing[*]}" >&2
+    echo "deploy: build them first with" >&2
+    echo "  ./infra/scripts/build-and-push.sh ${image_tag}" >&2
+    exit 1
+  fi
+}
+
 cd "${tf_dir}"
+
+artifact_dir="${AIOPS_DEPLOY_ARTIFACT_DIR:-${TMPDIR:-/tmp}/aiops-deploy}"
+capture_apim_snapshot() {
+  [[ "${AIOPS_CAPTURE_APIM_SNAPSHOT:-true}" == "true" ]] || return 0
+  command -v az >/dev/null 2>&1 || return 0
+  local enabled
+  enabled="$(printf '%s\n' "${tf_vars[@]}" | grep -c 'enable_apim=true' || true)"
+  [[ "${enabled}" -gt 0 ]] || return 0
+
+  local rg apim api snapshot_dir
+  rg="$(terraform output -raw resource_group_name 2>/dev/null || true)"
+  apim="${AIOPS_APIM_NAME:-aiops-dev-apim}"
+  api="${AIOPS_APIM_API_NAME:-aiops-dev-mcp}"
+  [[ -n "${rg}" && -n "${apim}" && -n "${api}" ]] || return 0
+  az apim show --resource-group "${rg}" --name "${apim}" >/dev/null 2>&1 || return 0
+  snapshot_dir="${artifact_dir}/apim/$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "${snapshot_dir}"
+  umask 077
+  printf '%s\n' "resource_group=${rg}" "apim_name=${apim}" \
+    "api_name=${api}" "captured_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    >"${snapshot_dir}/metadata.txt"
+  az apim api show --resource-group "${rg}" --service-name "${apim}" \
+    --api-id "${api}" --output json >"${snapshot_dir}/api.json" 2>/dev/null || true
+  az apim api policy show --resource-group "${rg}" --service-name "${apim}" \
+    --api-id "${api}" --format rawxml >"${snapshot_dir}/api-policy.xml" 2>/dev/null || true
+  az apim api operation policy show --resource-group "${rg}" --service-name "${apim}" \
+    --api-id "${api}" --operation-id mcp --format rawxml \
+    >"${snapshot_dir}/operation-policy.xml" 2>/dev/null || true
+  printf '%s\n' "${snapshot_dir}"
+}
 
 if [[ ! -d .terraform ]]; then
   terraform init -input=false
@@ -103,6 +184,8 @@ case "${command}" in
     terraform plan -input=false "${tf_vars[@]}" "$@"
     ;;
   apply)
+    verify_images_exist "$@"
+    capture_apim_snapshot
     terraform apply -input=false "${tf_vars[@]}" "$@"
     ;;
   destroy)
