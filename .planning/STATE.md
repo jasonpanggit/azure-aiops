@@ -2,19 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 08
-current_phase_name: fabric-migration
-status: halted
-stopped_at: "2026-08-27T23:19:18.504+08:00"
-last_updated: "2026-08-27T23:19:18.504+08:00"
-last_activity: 2026-08-27
-last_activity_desc: Phase 08 Fabric-notebook execution halted and closed; Hermes functionality is being migrated into API-triggered server orchestration for Fabric tables, inventory, and ontology graph generation.
+status: in_progress
+stopped_at: Completed 09-01-PLAN.md
+last_updated: "2026-08-28T07:18:47.887Z"
+last_activity: 2026-08-28
+last_activity_desc: "Completed quick task 260828-gc7: Automate subscription connection validation and initial sync"
 progress:
-  total_phases: 4
-  completed_phases: 0
-  total_plans: 23
-  completed_plans: 22
-  blocked_on: null
+  total_phases: 5
+  completed_phases: 2
+  total_plans: 32
+  completed_plans: 28
+current_phase: 09
+current_phase_name: consumer-pivot
 ---
 
 # PHASE 08 HALTED AND CLOSED
@@ -35,6 +34,7 @@ The project is still migrating Hermes to Fabric, but the execution boundary is m
 ## Active Direction
 
 Implement and verify the API-triggered Hermes-to-Fabric sync flow for:
+
 1. Creating a subscription connection
 2. Clicking Sync
 3. Starting server-side Hermes orchestration
@@ -48,3 +48,20 @@ Implement and verify the API-triggered Hermes-to-Fabric sync flow for:
 | 260828-gc7 | Automate subscription connection validation and initial sync | 2026-08-28 | f1f8c510 | [quick task](./quick/260828-gc7-automate-subscription-connection-validat/) |
 
 Last activity: 2026-08-28 - Completed quick task 260828-gc7: Automate subscription connection validation and initial sync
+
+## Performance Metrics
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 09 P01 | 18min | 2 tasks | 5 files |
+
+## Decisions
+
+- [Phase 09]: Analyze submitted page evidence directly and only ledger explicitly named rechecks.
+- [Phase 09]: Keep deterministic Network findings authoritative and use Foundry only for optional narration.
+
+## Session
+
+**Last session:** 2026-08-28T07:18:47.869Z
+**Stopped at:** Completed 09-01-PLAN.md
+**Resume file:** None
