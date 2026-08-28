@@ -121,6 +121,7 @@ class MCPServer:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.audit_entries: list[dict[str, Any]] = []
 
     def handle(
         self,
@@ -184,6 +185,14 @@ class MCPServer:
         if not _safe_size(output, MAX_RESPONSE_BYTES):
             result = ToolResult(status=STATUS_DENIED, warning="Tool response exceeded the MCP response budget")
             output = result.to_dict()
+        self.audit_entries.append({
+            "correlation_id": correlation_id,
+            "actor": getattr(principal, "subject", ""),
+            "scope": scope.to_dict(),
+            "tool": name,
+            "status": result.status,
+            "evidence": output.get("evidence", []),
+        })
         LOGGER.info(
             "mcp_tool_call correlation_id=%s actor=%s scope=%s tool=%s status=%s duration_ms=%.0f",
             correlation_id, getattr(principal, "subject", ""), scope.to_dict(), name,

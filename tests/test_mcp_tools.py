@@ -38,6 +38,7 @@ def test_dispatch_records_redacted_ledger_metadata():
     assert server.audit_entries[-1] == {
         "correlation_id": "corr-123",
         "actor": "operator",
+        "scope": {},
         "tool": "network_topology",
         "status": "unavailable",
         "evidence": [],
