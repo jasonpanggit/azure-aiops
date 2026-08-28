@@ -197,6 +197,70 @@ def test_add_validates_identifiers(tmp_path: Path) -> None:
         onboard(service, connection_id="Bad Id!")
 
 
+def test_add_and_initialize_validates_before_queuing_one_initial_sync(tmp_path: Path) -> None:
+    service = build_service(tmp_path)
+
+    result = service.add_and_initialize(
+        connection_id="prod-core",
+        name="Production Core",
+        tenant_id=TENANT,
+        subscription_id=SUBSCRIPTION,
+        client_id=CLIENT,
+        secret_ref="env://SPN_SECRET",
+    )
+
+    assert result["validation"]["status"] == "healthy"
+    assert result["initial_sync"]["status"] == "running"
+    assert result["initial_sync"]["sync_state"]["run_id"]
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if service.detail("prod-core")["sync_status"] == "succeeded":
+            break
+        time.sleep(0.01)
+    assert service.detail("prod-core")["sync_status"] == "succeeded"
+
+
+def test_add_and_initialize_allows_optional_degradation(tmp_path: Path) -> None:
+    service = build_service(tmp_path, probe=FakeProbe(failures={"advisor_read"}))
+
+    result = service.add_and_initialize(
+        connection_id="prod-core",
+        name="Production Core",
+        tenant_id=TENANT,
+        subscription_id=SUBSCRIPTION,
+        client_id=CLIENT,
+        secret_ref="env://SPN_SECRET",
+    )
+
+    assert result["validation"]["status"] == "degraded"
+    assert result["validation"]["passed"] is True
+    assert result["initial_sync"]["status"] == "running"
+
+
+def test_add_and_initialize_persists_required_failure_without_sync(tmp_path: Path) -> None:
+    ingestion = FakeIngestion()
+    service = build_service(
+        tmp_path,
+        probe=FakeProbe(failures={"arg_read"}),
+        ingestion=ingestion,
+    )
+
+    result = service.add_and_initialize(
+        connection_id="prod-core",
+        name="Production Core",
+        tenant_id=TENANT,
+        subscription_id=SUBSCRIPTION,
+        client_id=CLIENT,
+        secret_ref="env://SPN_SECRET",
+    )
+
+    assert result["validation"]["status"] == "failed"
+    assert result["initial_sync"]["status"] == "not_started"
+    assert result["initial_sync"]["reason"] == "validation_failed"
+    assert ingestion.calls == 0
+    assert service.detail("prod-core")["health_status"] == "failed"
+
+
 def test_validate_runs_full_check_suite_and_records_health(tmp_path: Path) -> None:
     service = build_service(tmp_path)
     onboard(service)

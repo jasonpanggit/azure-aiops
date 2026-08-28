@@ -109,7 +109,7 @@ def create_connection(
             **payload.metadata.model_dump(),
         },
     )
-    detail = context.onboarding.add(
+    lifecycle = context.onboarding.add_and_initialize(
         connection_id=payload.connection_id,
         name=payload.name,
         tenant_id=payload.tenant_id,
@@ -121,7 +121,7 @@ def create_connection(
         metadata=payload.metadata.model_dump(),
     )
     return envelope(
-        detail,
+        lifecycle,
         evidence=_evidence(payload.connection_id),
         scope=scope.to_dict(),
     )

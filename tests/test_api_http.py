@@ -307,6 +307,9 @@ class TestConnectionsCrud:
         assert created.status_code == 201
         body = created.json()
         assert body["data"]["connection_id"] == "conn-a"
+        assert body["data"]["validation"]["status"] == "failed"
+        assert body["data"]["initial_sync"]["status"] == "not_started"
+        assert "client_secret" not in created.text
         assert body["evidence"][0]["source_engine"].endswith(
             "SubscriptionOnboardingService"
         )

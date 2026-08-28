@@ -166,6 +166,47 @@ class SubscriptionOnboardingService:
         self.registry.add(connection)
         return self.detail(identifier)
 
+    def add_and_initialize(
+        self,
+        *,
+        connection_id: str,
+        name: str | None = None,
+        tenant_id: str,
+        subscription_id: str,
+        client_id: str,
+        secret_ref: str | None = None,
+        client_secret: str | None = None,
+        credential_id: str | None = None,
+        metadata: BusinessMetadata | dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a connection, validate it, and queue its first sync when safe."""
+        detail = self.add(
+            connection_id=connection_id,
+            name=name,
+            tenant_id=tenant_id,
+            subscription_id=subscription_id,
+            client_id=client_id,
+            secret_ref=secret_ref,
+            client_secret=client_secret,
+            credential_id=credential_id,
+            metadata=metadata,
+        )
+        identifier = detail["connection_id"]
+        validation = self.validate(identifier)
+        initial_sync: dict[str, Any] = {
+            "connection_id": identifier,
+            "status": "not_started",
+            "reason": "validation_failed",
+            "sync_state": self.registry.get(identifier).sync_state.to_dict(),
+        }
+        if validation["passed"]:
+            initial_sync = self.sync_async(identifier, mode="initial")
+        return {
+            **self.detail(identifier),
+            "validation": validation,
+            "initial_sync": initial_sync,
+        }
+
     def update(
         self,
         connection_id: str,
