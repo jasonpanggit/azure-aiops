@@ -21,7 +21,7 @@ def snapshot(**overrides):
         "evidence": [{
             "evidence_id": "nsg-1",
             "section": "nsg",
-            "resource_id": "nsg-1",
+            "resource_id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Network/networkSecurityGroups/hub",
             "data": {"finding": "Inbound any-source rule", "compliant": False},
         }],
     }
