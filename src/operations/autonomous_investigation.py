@@ -32,6 +32,8 @@ AGENT_TIMEOUT_SECONDS = 8.0
 MAX_RETRIES = 1
 MAX_LEDGER_ENTRIES = 1_000
 MAX_CONTEXT_STEPS = 5
+MAX_CONTEXT_SPECIALISTS = 3
+MAX_CONTEXT_TOOL_CALLS = 8
 
 
 def _now() -> str:
@@ -512,36 +514,107 @@ def run_context_investigation(
     principal_subject: str,
     timeout_seconds: float = AGENT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Run the deterministic-first page loop and publish it in the same ledger.
+    """Run a bounded, deterministic-first contextual investigation loop.
 
-    The submitted evidence is the observation.  Provider calls are only made
-    for explicitly named rechecks, never as an implicit page refresh.
+    The browser snapshot is the observation.  Delegation is nevertheless real:
+    selected specialists invoke only their catalogued tools, and named evidence
+    requests are mapped to a small allowlist of scope-bound Network tools.
     """
     started = time.monotonic()
     findings = deterministic_network_findings(snapshot) if snapshot.page_kind == "network" else []
     stages = ["plan", "observe"]
     tool_calls: list[dict[str, Any]] = []
+    agent_runs: list[dict[str, Any]] = []
+    stop_reason = "reassessed"
     warnings: list[str] = [
         f"Source {record.source} is {record.status}; findings are uncertainty-qualified"
         for record in snapshot.freshness
         if record.status != "fresh"
     ]
-    if snapshot.rechecks:
+    # Contextual selection is deliberately narrower than the full autonomous
+    # catalog: page kind, not model output, chooses the specialist.
+    page_specialists = {
+        "network": ("network",),
+        "vulnerability": ("vulnerability", "patch"),
+        "patch": ("patch",),
+        "incident": ("incident", "change"),
+        "governance": ("governance",),
+        "resource": ("governance",),
+    }
+    selected_ids = page_specialists.get(snapshot.page_kind, ())[:MAX_CONTEXT_SPECIALISTS]
+    selected = [agent for agent in AGENTS if agent.id in selected_ids]
+    stages.append("delegate")
+    remaining_tools = MAX_CONTEXT_TOOL_CALLS
+    for agent in selected:
+        if time.monotonic() - started >= timeout_seconds:
+            stop_reason = "wall_clock_timeout"
+            warnings.append("context investigation wall-clock budget exhausted")
+            break
+        allowed = tuple(tool for tool in agent.tools if remaining_tools)
+        bounded_agent = AgentDefinition(
+            agent.id, agent.name, agent.role, allowed[:remaining_tools],
+            agent.keywords, agent.depends_on,
+        )
+        run = _agent_run(bounded_agent, snapshot.question, context=context, scope=scope)
+        catalog = next((item for item in specialist_catalog() if item["id"] == agent.id), {})
+        run["specialist"] = {
+            "id": agent.id,
+            "name": catalog.get("name") or agent.name,
+            "version": catalog.get("version") or "deterministic",
+        }
+        agent_runs.append(run)
+        tool_calls.extend({**call, "specialist": agent.id, "operation": "delegate"} for call in run["tool_calls"])
+        remaining_tools -= len(run["tool_calls"])
+
+    if snapshot.rechecks and time.monotonic() - started < timeout_seconds and remaining_tools:
         stages.append("request-evidence")
-        for evidence_id in snapshot.rechecks:
+        recheck_tools = {
+            "network": "network_topology",
+            "topology": "network_topology",
+            "route": "network_topology",
+            "nsg": "firewall_nsg_gaps",
+            "firewall": "firewall_nsg_gaps",
+        }
+        for evidence_id in snapshot.rechecks[:remaining_tools]:
             if time.monotonic() - started >= timeout_seconds:
+                stop_reason = "wall_clock_timeout"
                 warnings.append("context investigation wall-clock budget exhausted")
                 break
             row = next(row for row in snapshot.evidence if row.evidence_id == evidence_id)
-            # Rechecks remain ledgered and bounded; provider-specific execution
-            # is intentionally not inferred from an identifier alone.
-            tool_calls.append({
-                "tool": "named_recheck",
+            tool = recheck_tools.get(row.section.casefold())
+            if tool is None:
+                result = None
+                status = STATUS_DENIED
+                warning = "Evidence request is not allowlisted"
+            else:
+                result = call_tool(tool, {}, context=context, scope=scope)
+                status = result.status
+                warning = result.warning
+            call = {
+                "tool": tool or "evidence_request",
                 "arguments": {"evidence_id": evidence_id},
-                "status": row.status,
+                "status": status,
+                "warning": warning,
+                "attempts": 1,
+                "operation": "request-evidence",
                 "evidence_refs": [evidence_id],
-            })
-    stages.extend(["delegate", "reassess"])
+            }
+            if result is not None:
+                call["result"] = result.to_dict()
+            tool_calls.append(call)
+            remaining_tools -= 1
+    elif snapshot.rechecks:
+        stop_reason = "budget_exhausted"
+        warnings.append("context investigation budget exhausted before evidence requests")
+
+    stages.append("reassess")
+    if time.monotonic() - started >= timeout_seconds:
+        stop_reason = "wall_clock_timeout"
+        warnings.append("context investigation wall-clock budget exhausted")
+    # Reassessment is a fresh deterministic evaluation of the submitted state;
+    # provider results remain visible as observations and never become an
+    # alternate inventory identity source.
+    findings = deterministic_network_findings(snapshot) if snapshot.page_kind == "network" else findings
     agent = _resolve_foundry_agent(context)
     synthesis_mode = "deterministic"
     narration = ""
@@ -572,6 +645,7 @@ def run_context_investigation(
         "page_kind": snapshot.page_kind,
         "stages": stages[:MAX_CONTEXT_STEPS],
         "tool_calls": tool_calls,
+        "agent_runs": agent_runs,
         "findings": findings,
         "synthesis": {
             "mode": synthesis_mode,
@@ -579,12 +653,14 @@ def run_context_investigation(
             "warning": warnings[-1] if warnings and "Foundry" in warnings[-1] else "",
         },
         "warnings": warnings,
+        "stop_reason": stop_reason,
         "human_controls": {"available_actions": ["request_more_evidence", "approve_plan", "stop_investigation"]},
         "decisions": [],
         "approvals": [],
         "evaluation": {
             "step_count": len(stages[:MAX_CONTEXT_STEPS]),
             "tool_calls": len(tool_calls),
+            "specialists": len(agent_runs),
             "wall_clock_ms": round((time.monotonic() - started) * 1000, 2),
             "hidden_reasoning_exposed": False,
         },
