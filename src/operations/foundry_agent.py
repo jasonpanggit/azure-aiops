@@ -44,6 +44,16 @@ ENV_CIRCUIT_RESET_SECONDS = "FOUNDRY_CIRCUIT_BREAKER_RESET_SECONDS"
 # The Foundry "projects (new)" data plane is versioned with the literal string
 # `v1`, not a date. See the Microsoft quickstart sample for prompt agents.
 DEFAULT_API_VERSION = "v1"
+SPECIALIST_IDS = (
+    "network",
+    "vulnerability",
+    "patch",
+    "incident",
+    "change",
+    "governance",
+    "remediation",
+    "executive_summary",
+)
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
 # Entra scope for the Foundry data plane. Distinct from the ARM scope: an ARM
@@ -150,6 +160,7 @@ class AgentAnswer:
     agent_name: str
     model: str = ""
     grounded: bool = True
+    agent_version: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -157,6 +168,7 @@ class AgentAnswer:
             "agent_name": self.agent_name,
             "model": self.model,
             "grounded": self.grounded,
+            "agent_version": self.agent_version,
         }
 
 
@@ -223,6 +235,8 @@ class FoundryPromptAgent:
         retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
         circuit_breaker: _CircuitBreaker | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        specialist_id: str = "network",
+        agent_version: str = "",
     ) -> None:
         endpoint = str(project_endpoint or "").strip().rstrip("/")
         name = str(agent_name or "").strip()
@@ -239,16 +253,24 @@ class FoundryPromptAgent:
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self._breaker = circuit_breaker or _CircuitBreaker()
         self._sleep = sleep
+        self.specialist_id = specialist_id
+        self.agent_version = agent_version
 
     @classmethod
-    def from_env(cls) -> FoundryPromptAgent | None:
+    def from_env(cls, specialist_id: str | None = None) -> FoundryPromptAgent | None:
         """Build from the environment, or ``None`` when unconfigured.
 
         Returning ``None`` (rather than raising) is what lets a deployment run
         without Foundry: the Copilot then answers with retrieval only.
         """
         endpoint = os.environ.get(ENV_PROJECT_ENDPOINT, "").strip()
-        agent_name = os.environ.get(ENV_AGENT_NAME, "").strip()
+        specialist = (specialist_id or "").strip().casefold()
+        specialist_name = (
+            os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_NAME", "").strip()
+            if specialist
+            else ""
+        )
+        agent_name = specialist_name or os.environ.get(ENV_AGENT_NAME, "").strip()
         if not endpoint or not agent_name:
             return None
         try:
@@ -282,6 +304,12 @@ class FoundryPromptAgent:
             max_retries=max_retries,
             circuit_breaker=_CircuitBreaker(
                 failure_threshold=circuit_threshold, reset_seconds=circuit_reset
+            ),
+            specialist_id=specialist or "network",
+            agent_version=(
+                os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
+                if specialist
+                else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
             ),
         )
 
@@ -356,7 +384,7 @@ class FoundryPromptAgent:
         system prompt (created at deploy time) cannot be overridden by anything
         that came out of the knowledge layer.
         """
-        prompt = _build_prompt(question=question, context=context)
+        prompt = self.build_prompt(question, context)
         response = self._post(
             "/openai/v1/responses",
             {
@@ -373,6 +401,15 @@ class FoundryPromptAgent:
             agent_name=self.agent_name,
             model=str(response.get("model") or ""),
             grounded=True,
+            agent_version=self.agent_version,
+        )
+
+    def build_prompt(self, question: str, context: Any) -> str:
+        """Expose the bounded, evidence-only prompt for contract testing."""
+        return _build_prompt(
+            question=question,
+            context=context,
+            specialist_id=self.specialist_id,
         )
 
 
@@ -382,12 +419,15 @@ class FoundryPromptAgent:
 _MAX_CONTEXT_CHARS = 24_000
 
 
-def _build_prompt(*, question: str, context: Any) -> str:
+def _build_prompt(
+    *, question: str, context: Any, specialist_id: str = "network"
+) -> str:
     """Frame the retrieved context as the only admissible evidence."""
     serialized = json.dumps(context, default=str, ensure_ascii=False)
     if len(serialized) > _MAX_CONTEXT_CHARS:
         serialized = serialized[:_MAX_CONTEXT_CHARS] + "\u2026(truncated)"
     return (
+        f"You are the {specialist_id} specialist. "
         "Answer the operator's question using only the operational context "
         "below. It was retrieved from the governed knowledge graph. If the "
         "context does not contain the answer, say so explicitly and do not "
@@ -431,3 +471,26 @@ def _extract_text(response: dict[str, Any]) -> str:
             elif isinstance(part, str) and part.strip():
                 fragments.append(part)
     return "\n".join(fragments).strip()
+
+
+def specialist_catalog() -> list[dict[str, Any]]:
+    """Return independent release metadata without claiming unavailable agents exist."""
+    endpoint = os.environ.get(ENV_PROJECT_ENDPOINT, "").strip()
+    entries: list[dict[str, Any]] = []
+    for specialist in SPECIALIST_IDS:
+        prefix = f"FOUNDRY_{specialist.upper()}_AGENT"
+        name = os.environ.get(f"{prefix}_NAME", "").strip()
+        version = os.environ.get(f"{prefix}_VERSION", "").strip()
+        if not name and specialist == "network":
+            name = os.environ.get(ENV_AGENT_NAME, "").strip()
+            version = version or os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
+        entries.append(
+            {
+                "id": specialist,
+                "name": name,
+                "version": version,
+                "status": "ready" if endpoint and name and version else "unavailable",
+                "configured": bool(endpoint and name and version),
+            }
+        )
+    return entries

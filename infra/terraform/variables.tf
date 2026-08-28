@@ -293,6 +293,24 @@ variable "foundry_agent_name" {
   default     = "operations-copilot"
 }
 
+variable "foundry_specialists" {
+  description = "Independently named/versioned Foundry prompt specialists."
+  type = map(object({
+    name    = string
+    version = string
+  }))
+  default = {
+    network           = { name = "aiops-network-agent", version = "2026.08.1" }
+    vulnerability     = { name = "aiops-vulnerability-agent", version = "2026.08.1" }
+    patch             = { name = "aiops-patch-agent", version = "2026.08.1" }
+    incident          = { name = "aiops-incident-agent", version = "2026.08.1" }
+    change            = { name = "aiops-change-agent", version = "2026.08.1" }
+    governance        = { name = "aiops-governance-agent", version = "2026.08.1" }
+    remediation       = { name = "aiops-remediation-agent", version = "2026.08.1" }
+    executive_summary = { name = "aiops-executive-summary-agent", version = "2026.08.1" }
+  }
+}
+
 variable "create_foundry_agent" {
   description = <<-EOT
     Whether to create the prompt agent after apply.
@@ -375,4 +393,3 @@ variable "alert_provider_stale_threshold_hours" {
   type        = number
   default     = 6
 }
-

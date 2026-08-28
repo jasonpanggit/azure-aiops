@@ -26,6 +26,7 @@ from operations.tools import (
     call_tool,
 )
 from operations.page_context import PageSnapshot, deterministic_network_findings
+from operations.foundry_agent import specialist_catalog
 
 AGENT_TIMEOUT_SECONDS = 8.0
 MAX_RETRIES = 1
@@ -70,7 +71,14 @@ AGENTS: tuple[AgentDefinition, ...] = (
 
 
 def agent_catalog() -> list[dict[str, Any]]:
-    return [agent.to_dict() for agent in AGENTS]
+    configured = {item["id"]: item for item in specialist_catalog()}
+    return [
+        {
+            **agent.to_dict(),
+            "foundry": configured.get(agent.id, {"status": "unavailable"}),
+        }
+        for agent in AGENTS
+    ]
 
 
 def _extract_subject(objective: str) -> str:

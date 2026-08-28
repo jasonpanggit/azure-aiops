@@ -217,6 +217,11 @@ resource "azurerm_container_app" "api" {
         value = var.foundry_agent_name
       }
 
+      env {
+        name  = "FOUNDRY_SPECIALISTS_JSON"
+        value = jsonencode(var.foundry_specialists)
+      }
+
       # Selects the user-assigned identity for DefaultAzureCredential, which
       # would otherwise be ambiguous on a multi-identity app.
       env {

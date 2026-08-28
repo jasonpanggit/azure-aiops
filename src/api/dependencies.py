@@ -101,6 +101,7 @@ class ApiContext:
     # OS inventory is a read-only projection of the active immutable generation.
     inventory_provider: Callable[[], Any] | None = None
     inventory_read_port_provider: Callable[[], Any] | None = None
+    fabric_iq_provider: Callable[[], Any] | None = None
 
     def resolve_provider(self, name: str, *, optional: bool = False) -> Any:
         """Resolve a provider through the managed runtime or legacy callable."""

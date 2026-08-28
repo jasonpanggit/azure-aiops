@@ -9,6 +9,7 @@
 # ---------------------------------------------------------------------------
 
 locals {
+  foundry_specialists_json = jsonencode(var.foundry_specialists)
   # The custom subdomain is mandatory for token-based (Entra) authentication
   # and for the agent data-plane endpoint. It is part of a global DNS name, so
   # it carries the unique suffix.
@@ -192,6 +193,7 @@ resource "terraform_data" "foundry_agent" {
       FOUNDRY_AGENT_NAME       = var.foundry_agent_name
       FOUNDRY_AGENT_MODEL      = azurerm_cognitive_deployment.chat.name
       FOUNDRY_AGENT_PROMPT     = local.agent_instructions
+      FOUNDRY_SPECIALISTS_JSON = local.foundry_specialists_json
       AZURE_TENANT_ID          = var.tenant_id
       AZURE_CLIENT_ID          = var.client_id
       AZURE_CLIENT_SECRET      = var.client_secret

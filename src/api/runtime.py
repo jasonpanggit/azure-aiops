@@ -1577,4 +1577,5 @@ def build_context() -> ApiContext:
         inventory_read_port_provider=lambda: providers.get(
             "inventory_read_port", optional=True
         ),
+        fabric_iq_provider=lambda: None,
     )

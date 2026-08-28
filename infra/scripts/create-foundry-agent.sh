@@ -24,6 +24,21 @@ for var in FOUNDRY_PROJECT_ENDPOINT FOUNDRY_AGENT_NAME FOUNDRY_AGENT_MODEL \
   fi
 done
 
+# A deployment may provide a catalog of independently released specialists.
+# Reuse this idempotent single-agent path for each entry so old callers that
+# provide only FOUNDRY_AGENT_NAME remain fully compatible.
+if [[ -n "${FOUNDRY_SPECIALISTS_JSON:-}" ]]; then
+  while IFS=$'\t' read -r specialist_name specialist_version; do
+    [[ -z "${specialist_name}" ]] && continue
+    FOUNDRY_AGENT_NAME="${specialist_name}" \
+    FOUNDRY_AGENT_VERSION="${specialist_version}" \
+    FOUNDRY_SPECIALISTS_JSON="" \
+    "$0"
+  done < <(FOUNDRY_SPECIALISTS_JSON="$FOUNDRY_SPECIALISTS_JSON" python3 -c \
+    'import json,os; d=json.loads(os.environ["FOUNDRY_SPECIALISTS_JSON"]); [print(f"{v[\"name\"]}\t{v.get(\"version\", \"\")}") for v in d.values()]')
+  exit 0
+fi
+
 API_VERSION="${FOUNDRY_API_VERSION:-v1}"
 endpoint="${FOUNDRY_PROJECT_ENDPOINT%/}"
 
