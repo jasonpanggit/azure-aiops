@@ -25,10 +25,12 @@ from operations.tools import (
     STATUS_UNAVAILABLE,
     call_tool,
 )
+from operations.page_context import PageSnapshot, deterministic_network_findings
 
 AGENT_TIMEOUT_SECONDS = 8.0
 MAX_RETRIES = 1
 MAX_LEDGER_ENTRIES = 1_000
+MAX_CONTEXT_STEPS = 5
 
 
 def _now() -> str:
@@ -492,6 +494,90 @@ def run_autonomous_investigation(
         "stop_reason": stop_reason,
         "evaluation": _evaluate(started, agent_runs, reconciliation, scope, int(synthesis.get("llm_calls", 0))),
     }
+
+
+def run_context_investigation(
+    snapshot: PageSnapshot,
+    *,
+    context: Any,
+    scope: Scope,
+    principal_subject: str,
+    timeout_seconds: float = AGENT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Run the deterministic-first page loop and publish it in the same ledger.
+
+    The submitted evidence is the observation.  Provider calls are only made
+    for explicitly named rechecks, never as an implicit page refresh.
+    """
+    started = time.monotonic()
+    findings = deterministic_network_findings(snapshot) if snapshot.page_kind == "network" else []
+    stages = ["plan", "observe"]
+    tool_calls: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    if snapshot.rechecks:
+        stages.append("request-evidence")
+        for evidence_id in snapshot.rechecks:
+            if time.monotonic() - started >= timeout_seconds:
+                warnings.append("context investigation wall-clock budget exhausted")
+                break
+            row = next(row for row in snapshot.evidence if row.evidence_id == evidence_id)
+            # Rechecks remain ledgered and bounded; provider-specific execution
+            # is intentionally not inferred from an identifier alone.
+            tool_calls.append({
+                "tool": "named_recheck",
+                "arguments": {"evidence_id": evidence_id},
+                "status": row.status,
+                "evidence_refs": [evidence_id],
+            })
+    stages.extend(["delegate", "reassess"])
+    agent = _resolve_foundry_agent(context)
+    synthesis_mode = "deterministic"
+    narration = ""
+    if agent is not None:
+        try:
+            answer = agent.answer(
+                question=snapshot.question,
+                context={"page_kind": snapshot.page_kind, "findings": findings},
+            )
+            narration = str(getattr(answer, "text", "") or "").strip()
+            if narration:
+                synthesis_mode = "foundry"
+        except Exception as exc:  # noqa: BLE001 - fallback is part of the contract.
+            warnings.append(f"Foundry narration unavailable: {exc.__class__.__name__}")
+    if synthesis_mode == "deterministic" and agent is None:
+        warnings.append("Foundry narration unavailable; deterministic findings returned")
+    ledger_id = f"ctx-{uuid.uuid4().hex[:12]}"
+    ledger = {
+        "ledger_id": ledger_id,
+        "objective": snapshot.question,
+        "scope": scope.to_dict(),
+        "created_by": principal_subject,
+        "created_at": _now(),
+        "updated_at": _now(),
+        "status": "synthesized",
+        "snapshot_hash": snapshot.snapshot_hash(),
+        "snapshot_version": snapshot.version,
+        "page_kind": snapshot.page_kind,
+        "stages": stages[:MAX_CONTEXT_STEPS],
+        "tool_calls": tool_calls,
+        "findings": findings,
+        "synthesis": {
+            "mode": synthesis_mode,
+            "narration": narration,
+            "warning": warnings[-1] if warnings and "Foundry" in warnings[-1] else "",
+        },
+        "warnings": warnings,
+        "human_controls": {"available_actions": ["request_more_evidence", "approve_plan", "stop_investigation"]},
+        "decisions": [],
+        "approvals": [],
+        "evaluation": {
+            "step_count": len(stages[:MAX_CONTEXT_STEPS]),
+            "tool_calls": len(tool_calls),
+            "wall_clock_ms": round((time.monotonic() - started) * 1000, 2),
+            "hidden_reasoning_exposed": False,
+        },
+    }
+    return ledger
 
 
 def _failed_run(agent: AgentDefinition, reason: str) -> dict[str, Any]:

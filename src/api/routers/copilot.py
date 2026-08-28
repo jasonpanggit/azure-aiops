@@ -29,6 +29,8 @@ from operations.investigation import (
     run_investigation,
     tool_catalog,
 )
+from operations.autonomous_investigation import ledger_store, run_context_investigation
+from operations.page_context import PageSnapshot
 
 from ..dependencies import Context, CurrentPrincipal, ReadScope
 from ..errors import ApiError, ErrorCode
@@ -83,6 +85,12 @@ class InvestigationRequest(BaseModel):
         description="Optional tool name a UI starter question already knows to call, bypassing the planner.",
     )
     tool_arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextInvestigationRequest(BaseModel):
+    """Strict page snapshot submitted by a supported consumer page."""
+
+    snapshot: PageSnapshot
 
 
 _HIDDEN = object()
@@ -296,6 +304,51 @@ def investigate(
         evidence=evidence,
         scope=scope.to_dict(),
         warnings=list(investigation.warnings),
+    )
+
+
+@router.post(
+    "/copilot/investigate-context",
+    summary="Investigate the exact state shown on a supported page",
+)
+def investigate_context(
+    payload: ContextInvestigationRequest,
+    context: Context,
+    scope: ReadScope,
+    principal: CurrentPrincipal,
+) -> dict[str, Any]:
+    """Validate, analyze, and ledger a bounded contextual investigation."""
+    snapshot = payload.snapshot
+    try:
+        snapshot.validate_effective_scope(scope)
+    except ValueError as exc:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            str(exc),
+            details={"field": "snapshot.scope"},
+        ) from exc
+    ledger = run_context_investigation(
+        snapshot,
+        context=context,
+        scope=scope,
+        principal_subject=principal.subject,
+    )
+    ledger_store().add(ledger)
+    evidence = [
+        Evidence(
+            source_engine="operations.PageSnapshot",
+            source_table=f"page_snapshot:{snapshot.page_kind}",
+            resource_id=row.resource_id,
+            timestamp=row.observed_at,
+            confidence=CONFIDENCE_MEDIUM,
+        )
+        for row in snapshot.evidence
+    ]
+    return envelope(
+        ledger,
+        evidence=evidence,
+        scope=scope.to_dict(),
+        warnings=list(ledger["warnings"]),
     )
 
 
