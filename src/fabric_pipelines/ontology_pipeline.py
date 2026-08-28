@@ -5,7 +5,7 @@ Reproduces ``ontology.entity_builder.EntityBuilder`` and
 entity/relationship inference (Application, BusinessService, VirtualMachine,
 PatchAssessment, AdvisorRecommendation, ... plus belongsTo/assessedBy/
 impacts/dependsOn, ...) for the API-triggered Fabric sync path, covering the
-full Hermes ontology scope rather than only network topology.
+full AIOps ontology scope rather than only network topology.
 
 This module owns *only* orchestration/Delta-publication glue: it never
 re-implements ``EntityBuilder``/``RelationshipBuilder``/
@@ -40,7 +40,7 @@ from .relationship_suggestions_contract import (
 )
 
 #: Source tag recorded in this pipeline's Fabric run summary -- distinct from
-#: Hermes's own ingestion path so provenance is unambiguous about which arm
+#: AIOps's own ingestion path so provenance is unambiguous about which arm
 #: produced a given ontology snapshot (mirrors topology_pipeline.SOURCE_TAG).
 SOURCE_TAG = "fabric_pipeline:ontology"
 

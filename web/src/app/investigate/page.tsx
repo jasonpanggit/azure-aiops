@@ -93,7 +93,7 @@ const ENTRY_TYPES: EntryType[] = [
   "RemediationPlan",
 ];
 
-const STORAGE_KEY = "hermes.investigations.v1";
+const STORAGE_KEY = "aiops.investigations.v1";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);

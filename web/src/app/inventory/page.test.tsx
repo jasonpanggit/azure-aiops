@@ -512,8 +512,8 @@ describe("Inventory OS tracer", () => {
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
     expect(await screen.findByText("Inventory data is not loaded")).toBeInTheDocument();
-    expect(screen.getByText(/You do not need the Hermes semantic graph or operations agent/)).toBeInTheDocument();
-    expect(screen.getByText("uv run hermes-arg sync --config config.yaml")).toBeInTheDocument();
-    expect(screen.getByText(/HERMES_INVENTORY_FIXTURE=tests\/fixtures\/mock_inventory_arg.json/)).toBeInTheDocument();
+    expect(screen.getByText(/You do not need the AIOps semantic graph or operations agent/)).toBeInTheDocument();
+    expect(screen.getByText("uv run aiops-inventory sync --config config.yaml")).toBeInTheDocument();
+    expect(screen.getByText(/AIOPS_INVENTORY_FIXTURE=tests\/fixtures\/mock_inventory_arg.json/)).toBeInTheDocument();
   });
 });

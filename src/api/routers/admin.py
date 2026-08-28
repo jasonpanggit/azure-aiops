@@ -18,11 +18,11 @@ from ..models import ApiModel
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 _SECRET_FIELDS = {
-    "entra_web_client_id": "hermes-entra-web-client-id",
-    "entra_tenant_id": "hermes-entra-tenant-id",
-    "entra_api_audience": "hermes-entra-api-audience",
-    "entra_api_scope": "hermes-entra-api-scope",
-    "entra_grants_json": "hermes-entra-grants-json",
+    "entra_web_client_id": "aiops-entra-web-client-id",
+    "entra_tenant_id": "aiops-entra-tenant-id",
+    "entra_api_audience": "aiops-entra-api-audience",
+    "entra_api_scope": "aiops-entra-api-scope",
+    "entra_grants_json": "aiops-entra-grants-json",
 }
 
 

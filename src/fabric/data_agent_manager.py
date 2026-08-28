@@ -228,7 +228,7 @@ def build_data_agent_definition(
         "type": "lakehouse_tables",
         "userDescription": (
             "Deterministic operational context graph (entities + "
-            "relationships) ported from Hermes's entity_builder.py/"
+            "relationships) ported from AIOps's entity_builder.py/"
             "relationship_builder.py."
         ),
         "elements": [

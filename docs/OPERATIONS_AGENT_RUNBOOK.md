@@ -7,16 +7,16 @@ Operate and validate the read-only Operations Agent over synchronized Microsoft 
 ## Prerequisites
 
 1. A successfully completed Fabric/Ontology synchronization.
-2. A trusted Fabric runtime configuration readable by the Hermes process.
-3. `HERMES_FABRIC_CONFIG` set to that configuration path for plugin use.
-4. Project dependencies installed in the same Python environment as Hermes.
+2. A trusted Fabric runtime configuration readable by the AIOps process.
+3. `AIOPS_FABRIC_CONFIG` set to that configuration path for plugin use.
+4. Project dependencies installed in the same Python environment as AIOps.
 5. Fabric/OneLake permissions configured through managed identity in production where possible.
 
 The Operations Agent can continue reading the latest synchronized knowledge while Azure is disconnected. Freshness fields must be checked before relying on the result.
 
 ## Agent tool
 
-Hermes registers exactly one operational agent tool:
+AIOps registers exactly one operational agent tool:
 
 - `operations_analysis`
 
@@ -37,17 +37,17 @@ The tool intentionally does not expose `semantic_knowledge_query`, raw Azure que
 ## Operator CLI smoke tests
 
 ```bash
-uv run hermes-arg operations \
+uv run aiops-inventory operations \
   "Analyze VM" vm-payments \
   --subject-type VirtualMachine \
   --config fabric.config.yaml
 
-uv run hermes-arg operations \
+uv run aiops-inventory operations \
   "Executive Summary" Payments \
   --subject-type Application \
   --config fabric.config.yaml
 
-uv run hermes-arg operations \
+uv run aiops-inventory operations \
   "Generate Incident Context" vm-payments \
   --subject-type VirtualMachine \
   --config fabric.config.yaml
@@ -129,8 +129,8 @@ uv run --extra test pytest \
 
 uvx ruff check . --exclude .venv --exclude live-data --exclude mock-fabric-lakehouse
 uvx bandit -r src -q
-uv run python -m compileall -q src hermes_plugin.py __init__.py
-hermes plugins doctor --ci .
+uv run python -m compileall -q src aiops_plugin.py __init__.py
+aiops plugins doctor --ci .
 uv build
 ```
 

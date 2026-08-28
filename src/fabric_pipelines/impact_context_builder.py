@@ -3,7 +3,7 @@
 The graph combines resource identity/topology and assessment-domain findings
 into a single table shape that Fabric IQ can expose for traversal.  It is a
 Fabric-side replacement data product for operational context queries; it does
-not call Hermes or perform live Azure discovery.
+not perform live Azure discovery.
 """
 
 from __future__ import annotations

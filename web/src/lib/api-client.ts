@@ -2,7 +2,7 @@ import { forceReauthentication, getAccessToken, refreshAccessToken } from "./aut
 import { ApiError, type ApiErrorBody, type Envelope } from "./types";
 
 /**
- * Base URL of the deployed Operations API, e.g. `https://hermes-api.example.com`.
+ * Base URL of the deployed Operations API, e.g. `https://aiops-api.example.com`.
  * The API itself is mounted at `/api/v1` (see docs/OPERATIONS_API.md).
  *
  * Keeps the NEXT_PUBLIC_ prefix intentionally: this file runs in the browser
@@ -12,7 +12,7 @@ import { ApiError, type ApiErrorBody, type Envelope } from "./types";
  * browser's network tab — so there's no confidentiality to protect by
  * routing it through a server-side handler like /api/dev-token.
  */
-const CONFIGURED_API_BASE_URL = process.env.NEXT_PUBLIC_HERMES_API_BASE_URL;
+const CONFIGURED_API_BASE_URL = process.env.NEXT_PUBLIC_AIOPS_API_BASE_URL;
 const API_BASE_URL = CONFIGURED_API_BASE_URL ?? "http://127.0.0.1:8080";
 const API_PREFIX = "/api/v1";
 
@@ -23,7 +23,7 @@ const API_PREFIX = "/api/v1";
  * In a container deployment the API's FQDN is only known after the
  * infrastructure is applied, which is strictly after the image is built — so
  * a `NEXT_PUBLIC_` value baked in at `next build` time cannot be correct.
- * `/api/config` reads `HERMES_API_BASE_URL` from the running server process,
+ * `/api/config` reads `AIOPS_API_BASE_URL` from the running server process,
  * letting one image serve every environment. The result is memoized because
  * it cannot change within the lifetime of a page, and falls back to the
  * build-time constant so local development is unaffected.
@@ -32,14 +32,14 @@ let runtimeBaseUrl: Promise<string> | null = null;
 
 function fallbackApiBaseUrl(): string {
   if (process.env.NODE_ENV === "production" && !CONFIGURED_API_BASE_URL) {
-    throw new Error("HERMES_API_BASE_URL is not configured for this production deployment");
+    throw new Error("AIOPS_API_BASE_URL is not configured for this production deployment");
   }
   return API_BASE_URL;
 }
 
 export function resolveApiBaseUrl(): Promise<string> {
   if (typeof window === "undefined") {
-    return Promise.resolve(process.env.HERMES_API_BASE_URL ?? API_BASE_URL);
+    return Promise.resolve(process.env.AIOPS_API_BASE_URL ?? API_BASE_URL);
   }
   runtimeBaseUrl ??= fetch("/api/config")
     .then((response) => (response.ok ? response.json() : null))

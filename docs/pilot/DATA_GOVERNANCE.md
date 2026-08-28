@@ -12,7 +12,7 @@ telemetry, Sentinel/ITSM for incidents, Defender for Cloud for findings,
 Update Manager for patch state, Entra/Microsoft Graph for identity,
 ServiceNow for CMDB/ITSM references, Azure DevOps for engineering context.
 
-Hermes/the semantic layer does not become a second copy of authoritative
+AIOps/the semantic layer does not become a second copy of authoritative
 data — it retains identity, relationship evidence, and observation
 timestamps, and queries the source live for current values
 (`DATA_SOURCES.md` §1, `docs/semantic-architecture.md`).
@@ -89,7 +89,7 @@ within the same tenant.
 
 Every provider surfaces a `freshness` field and `ontology_version` via
 `/health`; the UI is expected to render a stale-data indicator when
-freshness exceeds `HERMES_PROVIDER_STALE_HOURS`. This is the mechanism that
+freshness exceeds `AIOPS_PROVIDER_STALE_HOURS`. This is the mechanism that
 keeps the platform honest about "real-time vs stale" — the entire premise
 of the live/near-real-time pivot this session's history documents.
 

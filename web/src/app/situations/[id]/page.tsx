@@ -105,7 +105,7 @@ export default function SituationDetailPage({ params }: { params: { id: string }
     return groups;
   }, {});
   const saveView = () => {
-    window.localStorage.setItem(`hermes.situation-view.${record.situation_id}`, JSON.stringify({ scope, savedAt: new Date().toISOString() }));
+    window.localStorage.setItem(`aiops.situation-view.${record.situation_id}`, JSON.stringify({ scope, savedAt: new Date().toISOString() }));
     setSaved(true);
   };
 

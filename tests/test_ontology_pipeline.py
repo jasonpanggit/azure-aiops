@@ -10,7 +10,7 @@ fixture input to both (1) the Fabric pipeline's ``derive_entities``/
 (2) ``EntityBuilder``/``RelationshipBuilder``/``generate_ontology_metadata``
 directly, then asserts the two outputs are identical -- proving the Fabric
 pipeline is a faithful pass-through (not a re-implementation) of the exact
-Hermes ontology-construction logic, plus exercises the Delta-write path via
+AIOps ontology-construction logic, plus exercises the Delta-write path via
 the reused ``DeltaWriter``/``OneLakeWriter`` machinery.
 """
 
@@ -35,7 +35,7 @@ from storage.onelake_writer import OneLakeWriter
 RUN_ID = "ontology-pipeline-test-run"
 TIMESTAMP = "2026-08-27T00:00:00Z"
 
-# The full set of entity types Hermes's ``TAG_ENTITY_TYPES``/
+# The full set of entity types AIOps's ``TAG_ENTITY_TYPES``/
 # ``RESOURCE_ENTITY_TYPES`` mapping tables plus structural inventory
 # entities (Tenant/Subscription/ResourceGroup) and lineage-derived entities
 # (ConnectionHealth) can produce -- asserted against
@@ -218,7 +218,7 @@ def _source_rows() -> list[dict]:
 
 
 def _full_source_rows() -> list[dict]:
-    """The comprehensive fixture covering every Hermes entity type and
+    """The comprehensive fixture covering every AIOps entity type and
     relationship predicate -- used by the parity-assertion tests below."""
     return ontology_comparison_scenario()
 
@@ -226,7 +226,7 @@ def _full_source_rows() -> list[dict]:
 def test_derive_entities_matches_entity_builder_output_exactly():
     """Proves ``derive_entities`` is a faithful pass-through: same rows,
     byte-for-byte, as calling ``EntityBuilder().build(...)`` directly --
-    exercised against the full Hermes entity-type surface, not a subset."""
+    exercised against the full AIOps entity-type surface, not a subset."""
     rows = _full_source_rows()
     pipeline_entities = derive_entities(rows, run_id=RUN_ID, timestamp=TIMESTAMP)
     reference_entities = EntityBuilder().build(rows, RUN_ID, timestamp=TIMESTAMP)
@@ -239,7 +239,7 @@ def test_derive_entities_matches_entity_builder_output_exactly():
 def test_derive_relationships_matches_relationship_builder_output_exactly():
     """Proves ``derive_relationships`` is a faithful pass-through: same rows,
     byte-for-byte, as calling ``RelationshipBuilder().build(...)`` directly --
-    exercised against the full Hermes relationship-predicate vocabulary
+    exercised against the full AIOps relationship-predicate vocabulary
     (structural, tag-derived, lineage, operational, and network), not just
     belongsTo/assessedBy/impacts analogs."""
     entities = derive_entities(_full_source_rows(), run_id=RUN_ID, timestamp=TIMESTAMP)
@@ -267,7 +267,7 @@ def test_derive_ontology_metadata_matches_generate_ontology_metadata_exactly():
     reference_metadata = generate_ontology_metadata(by_type)
 
     assert pipeline_metadata == reference_metadata
-    assert pipeline_metadata["name"] == "HermesAzureOperationalContext"
+    assert pipeline_metadata["name"] == "AIOpsAzureOperationalContext"
     assert FULL_ENTITY_TYPE_SET <= set(pipeline_metadata["entityTypes"])
     assert set(pipeline_metadata["relationshipTypes"]) == {"belongsTo", "assessedBy", "impacts"}
 
@@ -286,7 +286,7 @@ def test_run_writes_ontology_entities_and_relationships_to_delta_tables(tmp_path
     assert summary.relationship_count > 0
     assert summary.entities_write.result.rows_processed == summary.entity_count
     assert summary.relationships_write.result.rows_processed == summary.relationship_count
-    assert summary.ontology_metadata["name"] == "HermesAzureOperationalContext"
+    assert summary.ontology_metadata["name"] == "AIOpsAzureOperationalContext"
 
     entities_table = DeltaTable(str(lakehouse_root / "Tables" / "ontology_entities"))
     relationships_table = DeltaTable(str(lakehouse_root / "Tables" / "ontology_relationships"))

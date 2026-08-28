@@ -164,7 +164,7 @@ describe("durable Situation detail", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("heading", { name: "Evidence detail" })).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Save view locally" }));
-    expect(window.localStorage.getItem("hermes.situation-view.situation://one")).toContain("savedAt");
+    expect(window.localStorage.getItem("aiops.situation-view.situation://one")).toContain("savedAt");
     expect(screen.getByText("View future-phase candidate")).toBeInTheDocument();
   });
 

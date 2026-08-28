@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# Defines the Hermes app roles on the Entra app registration and assigns them
-# to the configured HERMES_API_GATEWAY_GRANTS subjects.
+# Defines the AIOps app roles on the Entra app registration and assigns them
+# to the configured AIOPS_API_GATEWAY_GRANTS subjects.
 #
 # Why this is needed: EntraJwtAuthenticator (src/api/auth.py) reads the JWT's
 # `roles` claim and intersects it with each subject's grants from
-# HERMES_API_GATEWAY_GRANTS (src/api/runtime.py:_gateway_grants). Entra only
+# AIOPS_API_GATEWAY_GRANTS (src/api/runtime.py:_gateway_grants). Entra only
 # populates a `roles` claim when the app registration defines appRoles AND the
 # signed-in user/SP has been assigned one of them. Without this one-time setup,
 # every token has an empty roles claim and every principal is rejected with
-# "Entra principal has no configured Hermes grants" regardless of what's in
-# HERMES_API_GATEWAY_GRANTS.
+# "Entra principal has no configured AIOps grants" regardless of what's in
+# AIOPS_API_GATEWAY_GRANTS.
 #
 # Requires an identity with Application.ReadWrite.All (or ownership of the app
 # registration) -- run this as a tenant/app admin, not the deployment SPN.
 #
 # Usage:
 #   ENTRA_WEB_CLIENT_ID=<app-id> \
-#   HERMES_API_GATEWAY_GRANTS='{"admin@contoso.com":[{"role":"admin"}]}' \
+#   AIOPS_API_GATEWAY_GRANTS='{"admin@contoso.com":[{"role":"admin"}]}' \
 #   ./infra/scripts/configure-entra-app-roles.sh
 
 set -euo pipefail
 
 : "${ENTRA_WEB_CLIENT_ID:?Set ENTRA_WEB_CLIENT_ID to the app (client) ID}"
-: "${HERMES_API_GATEWAY_GRANTS:?Set HERMES_API_GATEWAY_GRANTS to the same JSON used by the API container app}"
+: "${AIOPS_API_GATEWAY_GRANTS:?Set AIOPS_API_GATEWAY_GRANTS to the same JSON used by the API container app}"
 
 echo "Resolving application object..."
 APP_OBJECT_ID="$(az ad app show --id "$ENTRA_WEB_CLIENT_ID" --query id -o tsv)"
@@ -36,7 +36,7 @@ ROLE_OPERATOR_ID="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
 ROLE_READER_ID="1c2d3e4f-5a6b-7c8d-9e0f-1a2b3c4d5e6f"
 
 echo "Ensuring appRoles admin/operator/reader are defined..."
-cat > /tmp/hermes-app-roles.json <<EOF
+cat > /tmp/aiops-app-roles.json <<EOF
 {
   "appRoles": [
     {
@@ -69,7 +69,7 @@ EOF
 az rest --method PATCH \
   --url "https://graph.microsoft.com/v1.0/applications/${APP_OBJECT_ID}" \
   --headers "Content-Type=application/json" \
-  --body @/tmp/hermes-app-roles.json
+  --body @/tmp/aiops-app-roles.json
 
 echo "Assigning app roles to configured grant subjects..."
 python3 - "$SP_OBJECT_ID" "$ROLE_ADMIN_ID" "$ROLE_OPERATOR_ID" "$ROLE_READER_ID" <<'PY'
@@ -81,7 +81,7 @@ import sys
 sp_id, admin_role, operator_role, reader_role = sys.argv[1:5]
 role_by_name = {"admin": admin_role, "operator": operator_role, "reader": reader_role}
 
-grants = json.loads(os.environ["HERMES_API_GATEWAY_GRANTS"])
+grants = json.loads(os.environ["AIOPS_API_GATEWAY_GRANTS"])
 
 # Resolve each subject to its Entra objectId (user UPN or SP appId), then
 # assign the highest-configured app role for that subject.

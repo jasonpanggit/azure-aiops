@@ -3,7 +3,7 @@
 This module is intentionally opt-in. Container Apps supplies the values through
 secret-backed environment variables, while the user-assigned managed identity
 authenticates to Key Vault. Only the ``secret_name -> environment_variable``
-mapping in ``HERMES_AKV_BOOTSTRAP_SECRETS`` is copied; arbitrary environment
+mapping in ``AIOPS_AKV_BOOTSTRAP_SECRETS`` is copied; arbitrary environment
 variables are never scanned or persisted.
 """
 
@@ -38,9 +38,9 @@ def _load_mapping(raw: str) -> dict[str, str]:
     try:
         payload = json.loads(raw or "{}")
     except json.JSONDecodeError as exc:
-        raise RuntimeError("HERMES_AKV_BOOTSTRAP_SECRETS is not valid JSON") from exc
+        raise RuntimeError("AIOPS_AKV_BOOTSTRAP_SECRETS is not valid JSON") from exc
     if not isinstance(payload, dict):
-        raise TypeError("HERMES_AKV_BOOTSTRAP_SECRETS must be a JSON object")
+        raise TypeError("AIOPS_AKV_BOOTSTRAP_SECRETS must be a JSON object")
 
     mapping: dict[str, str] = {}
     for secret_name, environment_name in payload.items():
@@ -51,7 +51,7 @@ def _load_mapping(raw: str) -> dict[str, str]:
             or not _ENV_NAME.fullmatch(environment_name)
         ):
             raise RuntimeError(
-                "HERMES_AKV_BOOTSTRAP_SECRETS entries must map a Key Vault-safe "
+                "AIOPS_AKV_BOOTSTRAP_SECRETS entries must map a Key Vault-safe "
                 "secret name to an uppercase environment variable"
             )
         mapping[secret_name] = environment_name
@@ -71,19 +71,19 @@ def sync_secrets(
     """
 
     environment = env if env is not None else os.environ
-    enabled = str(environment.get("HERMES_AKV_BOOTSTRAP_ENABLED", "")).casefold()
+    enabled = str(environment.get("AIOPS_AKV_BOOTSTRAP_ENABLED", "")).casefold()
     if enabled not in {"1", "true", "yes"}:
         return 0
 
-    vault_name = str(environment.get("HERMES_CONNECTION_KEY_VAULT", "")).strip()
+    vault_name = str(environment.get("AIOPS_CONNECTION_KEY_VAULT", "")).strip()
     if not vault_name:
         raise RuntimeError(
-            "HERMES_AKV_BOOTSTRAP_ENABLED requires HERMES_CONNECTION_KEY_VAULT"
+            "AIOPS_AKV_BOOTSTRAP_ENABLED requires AIOPS_CONNECTION_KEY_VAULT"
         )
-    mapping = _load_mapping(environment.get("HERMES_AKV_BOOTSTRAP_SECRETS", "{}"))
+    mapping = _load_mapping(environment.get("AIOPS_AKV_BOOTSTRAP_SECRETS", "{}"))
     if not mapping:
         raise RuntimeError(
-            "HERMES_AKV_BOOTSTRAP_ENABLED requires at least one configured secret"
+            "AIOPS_AKV_BOOTSTRAP_ENABLED requires at least one configured secret"
         )
 
     factory = client_factory or _client_factory

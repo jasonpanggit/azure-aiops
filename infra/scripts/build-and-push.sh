@@ -31,15 +31,15 @@ registry_name="${registry%%.*}"
 # the web image die with "Exit handler never called!" (emulated Node exhausts
 # the Docker VM). ACR tasks build natively on amd64, so that is the default.
 #
-#   HERMES_BUILD_MODE=acr    (default) build in Azure Container Registry
-#   HERMES_BUILD_MODE=local  build locally with docker buildx and push
+#   AIOPS_BUILD_MODE=acr    (default) build in Azure Container Registry
+#   AIOPS_BUILD_MODE=local  build locally with docker buildx and push
 platform="linux/amd64"
-build_mode="${HERMES_BUILD_MODE:-acr}"
+build_mode="${AIOPS_BUILD_MODE:-acr}"
 
 build_image() {
   local image="$1" dockerfile="$2" context="$3"
   local -a build_args=()
-  if [[ "${image}" == "hermes-web" ]]; then
+  if [[ "${image}" == "aiops-web" ]]; then
     : "${NEXT_PUBLIC_ENTRA_CLIENT_ID:?Set NEXT_PUBLIC_ENTRA_CLIENT_ID}"
     : "${NEXT_PUBLIC_ENTRA_TENANT_ID:?Set NEXT_PUBLIC_ENTRA_TENANT_ID}"
     : "${NEXT_PUBLIC_ENTRA_API_SCOPE:?Set NEXT_PUBLIC_ENTRA_API_SCOPE}"
@@ -93,8 +93,8 @@ if [[ "${build_mode}" == "local" ]]; then
   az acr login --name "${registry_name}"
 fi
 
-build_image hermes-api "${repo_root}/Dockerfile" "${repo_root}"
-build_image hermes-web "${repo_root}/web/Dockerfile" "${repo_root}/web"
+build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
+build_image aiops-web "${repo_root}/web/Dockerfile" "${repo_root}/web"
 
 echo
 echo "build-and-push: pushed both images with tag '${tag}'."

@@ -55,7 +55,7 @@ resource "fabric_workspace" "ops" {
   count = var.enable_fabric ? 1 : 0
 
   display_name = local.fabric_workspace_name
-  description  = "Operational context graph for the Hermes workbench."
+  description  = "Operational context graph for the AIOps workbench."
   capacity_id  = data.fabric_capacity.main[0].id
 }
 
@@ -67,7 +67,7 @@ resource "fabric_lakehouse" "context_graph" {
   workspace_id = fabric_workspace.ops[0].id
 
   # Schema support is set at creation and cannot be changed afterwards. It is
-  # left disabled: the Hermes sync client's table-listing/registration calls
+  # left disabled: the AIOps sync client's table-listing/registration calls
   # (LakehouseManager.list_tables) use the flat `/tables` endpoint, which
   # Fabric rejects with UnsupportedOperationForSchemasEnabledLakehouse when
   # schemas are enabled. Curated datasets are organised by table name prefix

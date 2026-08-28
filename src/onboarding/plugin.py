@@ -1,4 +1,4 @@
-"""Hermes plugin registration for Azure operational context."""
+"""AIOps plugin registration for Azure operational context."""
 
 from __future__ import annotations
 
@@ -130,12 +130,12 @@ OPERATIONS_AGENT_SCHEMA = {
 
 
 def _fabric_config_path() -> Path:
-    configured = os.environ.get("HERMES_FABRIC_CONFIG")
+    configured = os.environ.get("AIOPS_FABRIC_CONFIG")
     if not configured:
-        raise ValueError("HERMES_FABRIC_CONFIG must identify the trusted Fabric configuration")
+        raise ValueError("AIOPS_FABRIC_CONFIG must identify the trusted Fabric configuration")
     path = Path(configured).expanduser().resolve(strict=True)
     if not path.is_file():
-        raise ValueError("HERMES_FABRIC_CONFIG must be a file")
+        raise ValueError("AIOPS_FABRIC_CONFIG must be a file")
     return path
 
 def _handle_operations(args: dict, **_kwargs) -> str:

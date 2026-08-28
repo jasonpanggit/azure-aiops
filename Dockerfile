@@ -33,13 +33,13 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH=/app/src \
-    HERMES_HOME=/data \
-    HERMES_RUNTIME_MODE=production \
-    HERMES_LOCAL_SEED=0 \
-    HERMES_API_HOST=0.0.0.0 \
-    HERMES_API_PORT=8080 \
-    HERMES_ARG_CONFIG=/app/config.yaml \
-    HERMES_FABRIC_CONFIG=/app/fabric.config.yaml
+    AIOPS_HOME=/data \
+    AIOPS_RUNTIME_MODE=production \
+    AIOPS_LOCAL_SEED=0 \
+    AIOPS_API_HOST=0.0.0.0 \
+    AIOPS_API_PORT=8080 \
+    AIOPS_ARG_CONFIG=/app/config.yaml \
+    AIOPS_FABRIC_CONFIG=/app/fabric.config.yaml
 
 # `az` is a hard runtime dependency of the ARG extraction path, and the
 # Resource Graph extension must be baked in: a scheduled sync must never
@@ -68,15 +68,15 @@ COPY skills/ /app/skills/
 COPY arg.config.deploy.yaml /app/config.yaml
 COPY fabric.config.deploy.yaml /app/fabric.config.yaml
 
-# The API writes connection registries and synced datasets under HERMES_HOME.
-RUN useradd --create-home --uid 10001 hermes \
+# The API writes connection registries and synced datasets under AIOPS_HOME.
+RUN useradd --create-home --uid 10001 aiops \
     && mkdir -p /data \
-    && chown -R hermes:hermes /data /app
-USER hermes
+    && chown -R aiops:aiops /data /app
+USER aiops
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4).status == 200 else 1)"
 
-CMD ["sh", "-c", "python -m api.akv_bootstrap && exec uvicorn api.app:create_app --factory --host ${HERMES_API_HOST} --port ${HERMES_API_PORT}"]
+CMD ["sh", "-c", "python -m api.akv_bootstrap && exec uvicorn api.app:create_app --factory --host ${AIOPS_API_HOST} --port ${AIOPS_API_PORT}"]

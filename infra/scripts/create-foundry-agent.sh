@@ -48,7 +48,7 @@ import json, os
 # multi-line and contain quotes — are escaped correctly.
 print(json.dumps({
     "name": os.environ["FOUNDRY_AGENT_NAME"],
-    "description": "Narrates grounded answers for the Hermes Operations Copilot.",
+    "description": "Narrates grounded answers for the AIOps Operations Copilot.",
     "definition": {
         "kind": "prompt",
         "model": os.environ["FOUNDRY_AGENT_MODEL"],

@@ -1,6 +1,6 @@
-"""Test governance pipeline against Hermes engines (comparison harness).
+"""Test governance pipeline against AIOps engines (comparison harness).
 
-Validates that Fabric governance_pipeline output matches Hermes 
+Validates that Fabric governance_pipeline output matches AIOps 
 IdentityRiskEngine, SpnGovernanceEngine, and FinOpsEngine byte-for-byte
 on a curated test scenario.
 """
@@ -148,23 +148,23 @@ GOVERNANCE_COMPARISON_SCENARIO = {
 
 
 class TestGovernancePipelineComparison:
-    """Validates Fabric governance_pipeline matches Hermes engines."""
+    """Validates Fabric governance_pipeline matches AIOps engines."""
 
-    def test_identity_risk_matches_hermes(self):
-        """Identity risk findings from Fabric match Hermes IdentityRiskEngine."""
+    def test_identity_risk_matches_aiops(self):
+        """Identity risk findings from Fabric match AIOps IdentityRiskEngine."""
         scenario = GOVERNANCE_COMPARISON_SCENARIO
         test_now = datetime(2026, 8, 27, tzinfo=UTC)
 
-        # Run Hermes engine
-        hermes_engine = IdentityRiskEngine(
+        # Run AIOps engine
+        aiops_engine = IdentityRiskEngine(
             role_assignments=scenario["role_assignments"],
             role_definitions=scenario["role_definitions"],
             managed_identities=scenario.get("managed_identities", []),
             now=test_now,
         )
-        hermes_principals = hermes_engine.principals()
-        hermes_stale = hermes_engine.stale_access()
-        hermes_non_human = hermes_engine.non_human_identities()
+        aiops_principals = aiops_engine.principals()
+        aiops_stale = aiops_engine.stale_access()
+        aiops_non_human = aiops_engine.non_human_identities()
 
         # Run Fabric pipeline
         fabric_pipeline = GovernancePipeline(
@@ -176,30 +176,30 @@ class TestGovernancePipelineComparison:
         fabric_findings = fabric_pipeline.assess_identity_risk()
 
         # Validate key counts match
-        assert len(hermes_principals) >= 1, "Should have at least one principal"
-        assert len(hermes_stale) >= 1, "Should have at least one stale access"
+        assert len(aiops_principals) >= 1, "Should have at least one principal"
+        assert len(aiops_stale) >= 1, "Should have at least one stale access"
         
         # Extract findings by type
         principal_findings = [f for f in fabric_findings if f.finding_type == "identity_risk"]
         assert len(principal_findings) > 0, "Should generate identity risk findings"
 
         # Validate stale access is caught (contributor-002 is stale)
-        stale_ids = {s["assignment_id"] for s in hermes_stale}
+        stale_ids = {s["assignment_id"] for s in aiops_stale}
         stale_findings = [f for f in fabric_findings if "Stale access" in f.title]
         assert len(stale_findings) > 0, "Should detect stale access (>90 days)"
 
-    def test_spn_governance_matches_hermes(self):
-        """SPN governance findings from Fabric match Hermes SpnGovernanceEngine."""
+    def test_spn_governance_matches_aiops(self):
+        """SPN governance findings from Fabric match AIOps SpnGovernanceEngine."""
         scenario = GOVERNANCE_COMPARISON_SCENARIO
         test_now = datetime(2026, 8, 27, tzinfo=UTC)
 
-        # Run Hermes engine
-        hermes_engine = SpnGovernanceEngine(
+        # Run AIOps engine
+        aiops_engine = SpnGovernanceEngine(
             connections=scenario["connections"],
             role_assignments=scenario["role_assignments"],
             now=test_now,
         )
-        hermes_credentials = hermes_engine.credentials()
+        aiops_credentials = aiops_engine.credentials()
 
         # Run Fabric pipeline
         fabric_pipeline = GovernancePipeline(
@@ -210,28 +210,28 @@ class TestGovernancePipelineComparison:
         fabric_findings = fabric_pipeline.assess_spn_governance()
 
         # Validate SPN counts
-        assert len(hermes_credentials) == 2, "Should have 2 SPNs"
+        assert len(aiops_credentials) == 2, "Should have 2 SPNs"
         
         # Validate expiring_soon is detected (conn-spn-002 expires in ~19 days)
-        expiring_statuses = {c.rotation_status for c in hermes_credentials}
+        expiring_statuses = {c.rotation_status for c in aiops_credentials}
         assert "expiring_soon" in expiring_statuses, "Should detect expiring SPN credentials"
         
         # Fabric should also detect this
         expiring_findings = [f for f in fabric_findings if "expiring_soon" in f.title.lower()]
         assert len(expiring_findings) > 0, "Should detect expiring SPN"
 
-    def test_finops_matches_hermes(self):
-        """FinOps findings from Fabric match Hermes FinOpsEngine."""
+    def test_finops_matches_aiops(self):
+        """FinOps findings from Fabric match AIOps FinOpsEngine."""
         scenario = GOVERNANCE_COMPARISON_SCENARIO
 
-        # Run Hermes engine
-        hermes_engine = FinOpsEngine(
+        # Run AIOps engine
+        aiops_engine = FinOpsEngine(
             advisor_recommendations=scenario.get("advisor_recommendations", []),
             cost_actuals=scenario.get("cost_actuals", []),
             resources=scenario.get("resources", []),
         )
-        hermes_opportunities = hermes_engine.savings_opportunities()
-        hermes_waste = hermes_engine.waste()
+        aiops_opportunities = aiops_engine.savings_opportunities()
+        aiops_waste = aiops_engine.waste()
 
         # Run Fabric pipeline
         fabric_pipeline = GovernancePipeline(
@@ -242,15 +242,15 @@ class TestGovernancePipelineComparison:
         fabric_findings = fabric_pipeline.assess_finops()
 
         # Validate savings opportunities match
-        assert len(hermes_opportunities) >= 1, "Should have at least one savings opportunity"
+        assert len(aiops_opportunities) >= 1, "Should have at least one savings opportunity"
         
         savings_findings = [f for f in fabric_findings if f.finding_type == "savings_opportunity"]
         assert len(savings_findings) >= 1, "Should detect savings opportunities"
         
         # Validate first opportunity matches
-        first_hermes = hermes_opportunities[0]
+        first_aiops = aiops_opportunities[0]
         first_fabric = savings_findings[0]
-        assert first_hermes.annual_savings == 1200.0
+        assert first_aiops.annual_savings == 1200.0
         assert first_fabric.finding_data.get("annual_savings") == 1200.0
 
         # Validate waste detection

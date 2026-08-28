@@ -5,8 +5,8 @@ import os
 import subprocess
 import sys
 
-from onboarding import plugin as hermes_plugin
-from onboarding.schedule import build_hermes_cron_command
+from onboarding import plugin as aiops_plugin
+from onboarding.schedule import build_aiops_cron_command
 
 
 class FakeContext:
@@ -23,7 +23,7 @@ class FakeContext:
 
 def test_plugin_registers_cli_and_read_only_operations_agent_tool() -> None:
     ctx = FakeContext()
-    hermes_plugin.register(ctx)
+    aiops_plugin.register(ctx)
 
     assert ctx.cli[0]["name"] == "azure-graph"
     assert ctx.tools[0]["name"] == "operations_analysis"
@@ -62,9 +62,9 @@ print('ok')
 
 
 def test_root_plugin_entrypoint_imports_operations_schema() -> None:
-    import hermes_plugin
+    import aiops_plugin
 
-    assert hermes_plugin.TOOL_SCHEMA["name"] == "operations_analysis"
+    assert aiops_plugin.TOOL_SCHEMA["name"] == "operations_analysis"
 
 
 def test_operations_tool_errors_do_not_echo_supplied_subject(monkeypatch) -> None:
@@ -76,10 +76,10 @@ def test_operations_tool_errors_do_not_echo_supplied_subject(monkeypatch) -> Non
         def operations_agent(self):
             return FailingAgent()
 
-    monkeypatch.setattr(hermes_plugin, "_get_semantic_runtime", lambda: Runtime())
+    monkeypatch.setattr(aiops_plugin, "_get_semantic_runtime", lambda: Runtime())
 
     result = json.loads(
-        hermes_plugin._handle_operations(
+        aiops_plugin._handle_operations(
             {
                 "command": "Analyze VM",
                 "subject": "/subscriptions/SECRET",
@@ -91,13 +91,13 @@ def test_operations_tool_errors_do_not_echo_supplied_subject(monkeypatch) -> Non
     assert "SECRET" not in str(result)
 
 
-def test_schedule_command_reuses_hermes_cron() -> None:
-    command = build_hermes_cron_command(
+def test_schedule_command_reuses_aiops_cron() -> None:
+    command = build_aiops_cron_command(
         schedule="every 30m",
         script_name="azure-resource-graph-sync.py",
         workdir="/workspace/hog",
     )
-    assert command[:3] == ["hermes", "cron", "create"]
+    assert command[:3] == ["aiops", "cron", "create"]
     assert "--no-agent" in command
     assert "--script" in command
     assert "--workdir" in command

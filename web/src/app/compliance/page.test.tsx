@@ -120,14 +120,14 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
     expect(screen.getByRole("link", { name: /Which PROD workloads bypass the firewall/ })).toHaveAttribute("href", expect.stringContaining("/copilot?q="));
 
     fireEvent.change(screen.getByLabelText("Policy pack name"), { target: { value: "Payroll landing-zone policy" } });
-    expect(window.localStorage.getItem("hermes.architecture-policy.v1")).toContain("Payroll landing-zone policy");
+    expect(window.localStorage.getItem("aiops.architecture-policy.v1")).toContain("Payroll landing-zone policy");
 
     fireEvent.change(screen.getByLabelText("Exception owner"), { target: { value: "Network CAB" } });
     fireEvent.change(screen.getByLabelText("Risk acceptance reason"), { target: { value: "Temporary migration exception" } });
     fireEvent.change(screen.getByLabelText("Expires at"), { target: { value: "2026-12-31" } });
     fireEvent.click(screen.getByRole("button", { name: "Accept selected risk" }));
 
-    await waitFor(() => expect(window.localStorage.getItem("hermes.architecture-exceptions.v1")).toContain("Temporary migration exception"));
+    await waitFor(() => expect(window.localStorage.getItem("aiops.architecture-exceptions.v1")).toContain("Temporary migration exception"));
     expect(screen.getByText("Accepted risk")).toBeInTheDocument();
   });
 });

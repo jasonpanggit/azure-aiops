@@ -67,8 +67,8 @@ interface Violation {
   evidence: unknown;
 }
 
-const POLICY_KEY = "hermes.architecture-policy.v1";
-const EXCEPTION_KEY = "hermes.architecture-exceptions.v1";
+const POLICY_KEY = "aiops.architecture-policy.v1";
+const EXCEPTION_KEY = "aiops.architecture-exceptions.v1";
 
 const DEFAULT_POLICY: DesignPolicy = {
   name: "Approved hub-spoke landing-zone baseline",

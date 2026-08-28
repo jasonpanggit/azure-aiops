@@ -35,13 +35,13 @@ then update the existing Azure Container Apps deployment.
   `aiopsdevacrg6ludc.azurecr.io`.
 - 2026-08-27: `terraform fmt infra/terraform/terraform.tfvars` completed, correcting the
   formatting-only preflight finding.
-- 2026-08-27: `HERMES_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+- 2026-08-27: `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
   -refresh=false -lock=false` passed with two image updates and no resource creation or
   destruction.
 - 2026-08-27: `IMAGE_TAG=validation-20260827-1928 ./infra/scripts/build-and-push.sh`
   passed; API and web images were pushed to ACR. Web digest:
   `sha256:58d968dda5d4824d210ac93c77c5a177a4f110e4957317dcfc9956f6e52eea6c`.
-- 2026-08-27: `HERMES_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh apply
+- 2026-08-27: `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh apply
   -auto-approve -var deploy_images=true -var image_tag=validation-20260827-1928`
   passed with 0 additions, 2 updates, and 0 destructions.
 - 2026-08-27: ACA revisions reached `Succeeded`; API revision `aiops-dev-api--0000073`
@@ -50,12 +50,12 @@ then update the existing Azure Container Apps deployment.
   successfully over HTTPS.
 - 2026-08-28: New API/onboarding extraction changes require a fresh image build and
   ACA revision rollout; validation will use the separate Fabric lakehouse target.
-- 2026-08-28: `HERMES_BUILD_MODE=local ./infra/scripts/build-and-push.sh` built and
+- 2026-08-28: `AIOPS_BUILD_MODE=local ./infra/scripts/build-and-push.sh` built and
   pushed the API image; the web image was built natively by ACR Task `cr4j` after
   the local Apple Silicon npm build hit the known emulation failure. Web build
   completed `next build` successfully and pushed tag
   `api-onboarding-validation-20260828-0034`.
-- 2026-08-28: `HERMES_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+- 2026-08-28: `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
   -refresh=false -lock=false` produced an image-only plan: 0 additions, 2 updates,
   and 0 destructions.
 - 2026-08-28: `./infra/scripts/deploy.sh apply -refresh=false -lock=false

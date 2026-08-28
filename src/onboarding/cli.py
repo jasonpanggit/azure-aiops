@@ -40,7 +40,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     query.add_argument("question")
     query.add_argument("--output-dir", default="./data")
 
-    schedule = actions.add_parser("schedule", help="Create a Hermes cron job for continuous ingestion")
+    schedule = actions.add_parser("schedule", help="Create a AIOps cron job for continuous ingestion")
     schedule.add_argument("--config", default="config.yaml")
     schedule.add_argument("--schedule", default="every 30m")
 
@@ -50,13 +50,13 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
 
     local = actions.add_parser("local", help="Seed offline local API data from a fixture")
     local.add_argument("--fixture", default="tests/fixtures/mock_arg_responses.json")
-    local.add_argument("--home", default=".hermes-local")
+    local.add_argument("--home", default=".aiops-local")
     local.add_argument("--connection-id", default="local-demo")
 
     local_spn = actions.add_parser(
         "local-spn", help="Register a local SPN connection from AZURE_* env vars"
     )
-    local_spn.add_argument("--home", default=".hermes-local")
+    local_spn.add_argument("--home", default=".aiops-local")
     local_spn.add_argument("--connection-id", default="local-spn")
     local_spn.add_argument("--name", default="Local SPN Subscription")
     local_spn.add_argument("--sync", action="store_true", help="Run discovery after injecting the connection")
@@ -293,7 +293,7 @@ def cli_command(args: argparse.Namespace) -> int:
     if action == "subscriptions":
         return subscriptions_command(args)
     print(
-        "Usage: hermes azure-graph "
+        "Usage: aiops azure-graph "
         "{sync|query|schedule|sample|local|local-spn|fabric|ontology|semantic|operations|activate|subscriptions}"
     )
     return 2

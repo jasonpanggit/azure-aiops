@@ -310,7 +310,7 @@ export default function ConnectionsPage() {
       {showOnboarding && (
         <form className="card onboarding-form" onSubmit={onboard}>
           <div className="card-header">
-            <div><h2>Onboard an Azure subscription</h2><p>Enter the service principal secret once. The API stores it in Azure Key Vault and Hermes keeps only the Key Vault reference.</p></div>
+            <div><h2>Onboard an Azure subscription</h2><p>Enter the service principal secret once. The API stores it in Azure Key Vault and AIOps keeps only the Key Vault reference.</p></div>
           </div>
           <div className="card-body">
             <h3>Azure connection</h3>

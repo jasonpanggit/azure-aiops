@@ -4,7 +4,7 @@ Reproduces the onboarding normalizer's ``_normalize_network`` behavior.
 deterministic predicate vocabulary and ``_add_edge``'s content-addressed
 relationship-ID scheme verbatim, but sources rows from inventory-owned
 identity data (via the same ``network_normalize`` sub-resource flatteners
-Hermes already uses) instead of a direct ARG query.
+AIOps already uses) instead of a direct ARG query.
 
 This module owns *only* topology entity/edge derivation. It never re-derives
 or re-queries identity fields already owned by inventory — every row must
@@ -41,12 +41,12 @@ from .topology_fabric_contracts import (
     TopologyFabricContract,
 )
 
-#: Fixed 1.0 schema version tag, matching Hermes's own entity/edge envelope
+#: Fixed 1.0 schema version tag, matching the ingestion entity/edge envelope
 #: (normalize.py:_base / _add_edge) so downstream consumers see identical
 #: envelope shape regardless of which arm produced the row.
 _SCHEMA_VERSION = "1.0.0"
 
-#: Source tag recorded on every derived edge -- distinct from Hermes's own
+#: Source tag recorded on every derived edge -- distinct from AIOps's own
 #: "arg:Resources" tag so provenance is unambiguous about which arm produced
 #: a given relationship (T-08-06: source must remain explicit, never implied).
 SOURCE_TAG = "fabric_pipeline:topology"
@@ -206,7 +206,7 @@ def derive_edges(
     # any edge whose subject/object was never actually emitted as an entity
     # (e.g. a reference to a resource type outside this pipeline's coverage)
     # would be written straight to the topology_edges Delta table / Fabric IQ
-    # ontology by the sync path, unlike Hermes's engine which always
+    # ontology by the sync path, unlike AIOps's engine which always
     # drops such edges before publication (CR-01, 08-REVIEW.md).
     known_entity_ids = set(entities.keys())
     filtered_edges = [
@@ -231,7 +231,7 @@ def _add_edge(
     Same hash input order (``subject|predicate|object|source``), same
     truncation (24 hex chars of sha256), same envelope fields -- this is
     the exact scheme the 08-03 comparison harness checks for equality
-    against Hermes's own edge index.
+    against AIOps's own edge index.
     """
     if not subject or not obj:
         return
@@ -307,7 +307,7 @@ def _to_topology_entity_row(entity_type: str, entity: dict[str, Any]) -> dict[st
 
 
 def to_topology_edge_row(edge: Mapping[str, Any]) -> dict[str, Any]:
-    """Maps a Hermes-style camelCase edge dict onto the Delta table schema."""
+    """Maps a AIOps-style camelCase edge dict onto the Delta table schema."""
     return {
         "relationship_id": edge["relationshipId"],
         "subject_id": edge["subjectId"],

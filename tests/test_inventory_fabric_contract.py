@@ -207,7 +207,7 @@ def test_inventory_contract_rejects_duplicate_identity_and_assessment_fields() -
     assert SOURCE_STATES == {"ready", "partial", "stale", "degraded", "unavailable"}
 
 
-def test_standalone_inventory_refresh_publishes_os_rows_without_hermes_sync(tmp_path) -> None:
+def test_standalone_inventory_refresh_publishes_os_rows_without_aiops_sync(tmp_path) -> None:
     from inventory_harness import refresh_inventory
 
     from intelligence.inventory.fabric_contracts import fabric_table_for_logical_name

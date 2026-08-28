@@ -1,16 +1,16 @@
-# Existing Hermes/Pi Capability Inventory
+# Existing AIOps/Pi Capability Inventory
 
 ## 1. Inspection baseline
 
-This inventory was produced from the live Hermes checkout and active profile before any HOG implementation.
+This inventory was produced from the live AIOps checkout and active profile before any HOG implementation.
 
 | Item | Observed value |
 |---|---|
-| Source checkout | `/Users/jasonmba/.hermes/hermes-agent` |
+| Source checkout | `/Users/jasonmba/.aiops/aiops-agent` |
 | Commit | `894b29df167a9789b4809316b266c6aca400f366` (2026-08-17) |
-| Hermes version | `v0.20.2 (2026.8.16)` |
+| AIOps version | `v0.20.2 (2026.8.16)` |
 | Upstream state | checkout is 25 commits behind `origin/main` |
-| Working tree | pre-existing modifications in `contributors/emails/agent@Agents-Mac-mini.local`, `pyproject.toml`, `setup-hermes.sh`, `uv.lock`; they were not touched |
+| Working tree | pre-existing modifications in `contributors/emails/agent@Agents-Mac-mini.local`, `pyproject.toml`, `setup-aiops.sh`, `uv.lock`; they were not touched |
 | Tracked files | 9,514 |
 | Tests | 3,129 tracked test files; strong coverage around tools, agent, gateway, cron, memory, plugins, and MCP |
 | Active skills | 82 built-in enabled; 0 hub/local |
@@ -22,7 +22,7 @@ This inventory was produced from the live Hermes checkout and active profile bef
 | Memory | built-in enabled; no external provider active |
 | Monitoring | gateway health export disabled; OTLP unconfigured; OTel SDK optional extra not installed |
 
-No separate Pi implementation root was found. Pi appears in ACP/client compatibility, trace formats, and architecture lessons; the inspected codebase is Hermes Agent. Hermes can expose ACP/MCP interfaces to clients including Pi-compatible consumers.
+No separate Pi implementation root was found. Pi appears in ACP/client compatibility, trace formats, and architecture lessons; the inspected codebase is AIOps Agent. AIOps can expose ACP/MCP interfaces to clients including Pi-compatible consumers.
 
 **Baseline decision:** update/reconcile the checkout and isolate the existing local changes before implementation. The artifacts are valid for this inspected commit; re-run inventory after updating.
 
@@ -42,25 +42,25 @@ These are baseline issues to reproduce after updating the checkout. They do not 
 | Capability | Purpose/maturity evidence | Reusable | Replace | Extend |
 |---|---|---:|---:|---:|
 | Central tool registry | 87 registered built-in tools across 40 self-registering modules; schemas, handlers, availability checks, plugin override controls, TTL checks. Mature. | yes | no | register HOG service-gated tools in standalone plugin only if structured calls are necessary |
-| Toolsets/narrow-waist model | 59 static definitions: 32 capability, 3 posture, 24 platform/composite; session gating and progressive disclosure. Mature. | yes | no | add HOG plugin toolset; do not add Azure tools to `_HERMES_CORE_TOOLS` |
+| Toolsets/narrow-waist model | 59 static definitions: 32 capability, 3 posture, 24 platform/composite; session gating and progressive disclosure. Mature. | yes | no | add HOG plugin toolset; do not add Azure tools to `_AIOPS_CORE_TOOLS` |
 | Plugin framework | 97 manifests across provider/platform/memory/observability categories; install/enable/doctor/capability/pack CLI. Mature framework; individual 0.x plugins vary. | yes | no | HOG should be standalone plugin/repository using generic hooks/providers |
 | Skill framework | 82 active + 117 optional; load-on-demand procedural memory, curator and bundles. Mature. | yes | no | add focused HOG/Azure source skills in project/plugin, not giant core prompt |
 | Native MCP client | stdio/HTTP/SSE, OAuth, reconnection, dynamic schemas, sampling, tool selection, cron/gateway integration; 79 MCP-focused tests. Mature. | yes | no | configure pinned Azure/Fabric/source MCPs and exact tool allowlists |
-| MCP server/ACP | Hermes can serve conversations over MCP and ACP; Pi-compatible session replay noted. Mature integration surface. | yes | no | expose HOG reasoning only if Foundry/client needs this transport |
+| MCP server/ACP | AIOps can serve conversations over MCP and ACP; Pi-compatible session replay noted. Mature integration surface. | yes | no | expose HOG reasoning only if Foundry/client needs this transport |
 | Built-in memory | profile-aware `MEMORY.md`/`USER.md`, explicit memory tool and injection. Mature for stable facts/preferences. | limited | no | enforce boundary: never store operational graph facts here |
 | Memory provider ABC/manager | one external provider at a time; async prefetch/sync, context fencing, provider tools; 8 bundled providers and extensive tests. Mature framework. | limited | no | optional operator knowledge retrieval; ontology remains authoritative |
 | Session persistence | profile-aware SQLite/WAL `state.db` schema v26, migrations/self-healing, FTS5/trigram/CJK, sessions/messages/prompts/model usage/routing/leases/async delegation. Mature. | yes | no | investigation audit/resume only; not graph storage |
 | Cron scheduler | profile-scoped JSON plus SQLite execution ledger/notepad, output, locking, claims, scripts, monitor mode, no-agent jobs, context chaining, workdir and delivery. Production-grade single-node. | yes | no | HOG scheduled reconciliation/steward jobs; use an Azure queue for volume/multi-host durability |
 | Cron provider ABC | separates trigger from execution/delivery; built-in plus Chronos. Explicitly experimental until a second provider validates it. | yes with caution | replace Chronos/NAS for Azure production | reuse the provider seam; built-in for development, Azure-native scheduling/wake-up for hosted production |
-| Webhook framework | HMAC routes, filters, transform scripts, idempotency, hot reload, agent/direct delivery. Mature generic input. | yes | no | managed Azure Event Grid adapter signs normalized Hermes events |
+| Webhook framework | HMAC routes, filters, transform scripts, idempotency, hot reload, agent/direct delivery. Mature generic input. | yes | no | managed Azure Event Grid adapter signs normalized AIOps events |
 | Delegation | isolated parallel subagents, background completion, bounded roles/toolsets. Mature. | yes | no | ambiguity analysis and parallel source investigation, not event processing |
 | Kanban | durable SQLite/WAL review queue with events, idempotency, dispatcher, worker isolation, attachments and review loops. Very mature single-host kernel. | yes | no | ontology steward human review; externalize leases/dispatch for multi-host production |
 | Agent core | shared loop across CLI/gateway/TUI/desktop; model routing, compression, prompt caching, tool enforcement. Mature. | yes | no | HOG agents/instructions/evaluations at edge |
 | Gateway/platforms | multi-channel delivery, session routing, approvals, plugin adapters. Mature. | optional | no | alerts/review notifications only |
 | Gateway monitoring | content-free health/diagnostic export over OTLP; no prompts/tool payloads. Present but disabled locally. | yes | no | enable OTLP to Azure Monitor/Application Insights after security review |
 | Langfuse/NeMo observability plugins | optional conversation/tool observability, disabled. Version 1.0/0.1. | optional | no | do not use by default for sensitive operations; evaluate only with explicit opt-in |
-| Checkpoints/backup | session/runtime recovery and Hermes home backup. Mature operational support. | yes | no | use for Hermes recovery, not Fabric data versioning |
-| Fabric/OneLake persistence | not present as a Hermes core subsystem. | no | no | new HOG adapter/publication layer required |
+| Checkpoints/backup | session/runtime recovery and AIOps home backup. Mature operational support. | yes | no | use for AIOps recovery, not Fabric data versioning |
+| Fabric/OneLake persistence | not present as a AIOps core subsystem. | no | no | new HOG adapter/publication layer required |
 | Azure source adapters | no generic ARG/Arc/Defender/Sentinel/Update/ServiceNow adapter found. | partial via MCP/terminal | no | add standalone HOG source adapters; do not alter core |
 
 ## 3. Tool registry and active toolsets
@@ -69,7 +69,7 @@ These are baseline issues to reproduce after updating the checkout. They do not 
 
 - `tools/registry.py`: central `ToolRegistry`, AST-based auto-discovery, disk-cached discovery verdicts, schema/handler/check metadata, result/error bounds, plugin override policy, check TTL/flap handling.
 - `model_tools.py`: imports discovered tools, resolves toolsets, dispatches calls, and supports deferred/tiered tool disclosure.
-- `toolsets.py`: `_HERMES_CORE_TOOLS`, optional toolsets, webhook-safe surface, platform composites, and resolution helpers.
+- `toolsets.py`: `_AIOPS_CORE_TOOLS`, optional toolsets, webhook-safe surface, platform composites, and resolution helpers.
 - `tools/mcp_tool.py`: dynamic MCP tools register into the same registry.
 - Plugin tools register through the same contracts rather than a parallel dispatcher.
 
@@ -111,7 +111,7 @@ Capabilities confirmed in code/docs:
 - server-initiated sampling with model/rate/tool-round controls;
 - filtered subprocess environment and error credential redaction;
 - gateway/TUI reload and cron startup discovery;
-- Hermes MCP server mode for external consumers.
+- AIOps MCP server mode for external consumers.
 
 Current source names dynamic tools as `mcp__<sanitized-server>__<sanitized-tool>` and gives each server the canonical toolset `mcp-<server>` (with raw server name as an alias). Older single-underscore naming in some guidance is stale; integration tests must inspect the live registry.
 
@@ -207,10 +207,10 @@ Image/video/web purpose: creative generation or external research. HOG action: *
 
 ### Other extension surfaces inspected
 
-- **Desktop plugins (3):** `hermes-bots` (default on), `kanban` (default off), and `example` SDK fixture under `apps/desktop/src/plugins/`.
-- **Dashboard plugins (2):** Kanban and Hermes Achievements manifests under `plugins/*/dashboard/`; bundled dashboard plugins are active unless hidden/disabled.
+- **Desktop plugins (3):** `aiops-bots` (default on), `kanban` (default off), and `example` SDK fixture under `apps/desktop/src/plugins/`.
+- **Dashboard plugins (2):** Kanban and AIOps Achievements manifests under `plugins/*/dashboard/`; bundled dashboard plugins are active unless hidden/disabled.
 - **TUI widget apps (4):** weather, ticker, grid-test, dialog-test under `ui-tui/src/sdk/apps/`; the latter two are SDK/demo apps.
-- **User/project extensions:** no user Python plugins, entry-point plugins, desktop plugins, TUI widgets, or project `.hermes/plugins` were found. Project plugins are explicitly gated.
+- **User/project extensions:** no user Python plugins, entry-point plugins, desktop plugins, TUI widgets, or project `.aiops/plugins` were found. Project plugins are explicitly gated.
 
 Python plugins run in-process as trusted code. Capability declarations are consent/API gates, not a security sandbox. Plugin profile state is atomic JSON with a 10 MiB quota per plugin, which is unsuitable for the operational graph.
 
@@ -219,7 +219,7 @@ Python plugins run in-process as trusted code. Capability declarations are conse
 ### Active built-in skills (82)
 
 - **apple (4):** apple-notes, apple-reminders, findmy, imessage.
-- **autonomous-ai-agents (6):** claude-code, codex, computer-use, hermes-agent, merge-reconciler, opencode.
+- **autonomous-ai-agents (6):** claude-code, codex, computer-use, aiops-agent, merge-reconciler, opencode.
 - **creative (16):** architecture-diagram, ascii-art, ascii-video, baoyu-infographic, claude-design, comfyui, design-md, excalidraw, humanizer, manim-video, p5js, popular-web-designs, pretext, sketch, songwriting-and-ai-music, touchdesigner-mcp.
 - **devops (1):** sdlc-review.
 - **email (2):** email-inbox-triage, himalaya.
@@ -231,7 +231,7 @@ Python plugins run in-process as trusted code. Capability declarations are conse
 - **research (7):** arxiv, blocked-page-recovery, blogwatcher, competitor-news-monitor, grounded-citations, llm-wiki, research-paper-writing.
 - **smart-home (1):** openhue.
 - **social-media (1):** xurl.
-- **software-development (11):** dogfood, hermes-agent-skill-authoring, inspecting-hermes-desktop-dom, node-inspect-debugger, plan, python-debugpy, requesting-code-review, simplify-code, spike, systematic-debugging, test-driven-development.
+- **software-development (11):** dogfood, aiops-agent-skill-authoring, inspecting-aiops-desktop-dom, node-inspect-debugger, plan, python-debugpy, requesting-code-review, simplify-code, spike, systematic-debugging, test-driven-development.
 
 ### Optional repository skills (117)
 
@@ -240,7 +240,7 @@ Python plugins run in-process as trusted code. Capability declarations are conse
 - **communication (1):** one-three-one-rule.
 - **creative (15):** audiocraft-audio-generation, baoyu-article-illustrator, baoyu-comic, concept-diagrams, creative-ideation, draw-your-font, heartmula, hyperframes, kanban-video-orchestrator, meme-generation, pixel-art, simple-english, social-media-content-calendar, tldraw-offline, unreal-mcp.
 - **data-science (1):** jupyter-notebook.
-- **devops (6):** actual-setup, docker-management, hermes-s6-container-supervision, inference-sh-cli, pinggy-tunnel, watchers.
+- **devops (6):** actual-setup, docker-management, aiops-s6-container-supervision, inference-sh-cli, pinggy-tunnel, watchers.
 - **dogfood (1):** adversarial-ux-test.
 - **email (1):** agentmail.
 - **finance (9):** 3-statement-model, comps-analysis, dcf-model, excel-author, lbo-model, merger-model, polymarket, pptx-author, stocks.
@@ -261,7 +261,7 @@ Python plugins run in-process as trusted code. Capability declarations are conse
 
 | Skill | Reuse |
 |---|---|
-| hermes-agent | framework configuration, MCP/plugins/cron/webhooks/background systems |
+| aiops-agent | framework configuration, MCP/plugins/cron/webhooks/background systems |
 | grounded-citations | source-grounded architecture and RCA/postmortem extraction |
 | document-to-action-items / meeting-action-items | structured extraction patterns for RCA/postmortem obligations and decisions |
 | teams-meeting-pipeline | Graph subscription/transcript/replay patterns |
@@ -280,7 +280,7 @@ Do not overload skills with live operational state. Skills are procedures; OneLa
 
 ### Built-in
 
-- `$HERMES_HOME/memories/MEMORY.md` and `$HERMES_HOME/memories/USER.md`, profile-scoped and injected into sessions.
+- `$AIOPS_HOME/memories/MEMORY.md` and `$AIOPS_HOME/memories/USER.md`, profile-scoped and injected into sessions.
 - Explicit memory tool with batched add/replace/remove.
 - Stable preferences, environment facts, and lessons only.
 
@@ -298,10 +298,10 @@ Reuse memory for operator preferences, vocabulary aliases, and reusable source q
 
 ### Cron
 
-- Store: `$HERMES_HOME/cron/jobs.json`.
-- Output: `$HERMES_HOME/cron/output/{job_id}/{timestamp}.md`.
-- Execution ledger: `$HERMES_HOME/cron/executions.db` with immutable terminal attempts and interrupted-run recovery.
-- Durable notepad: `$HERMES_HOME/cron/notepad.db`, capped at 16 KiB/value and 64 KiB/job; use only for compact cursors/watermarks.
+- Store: `$AIOPS_HOME/cron/jobs.json`.
+- Output: `$AIOPS_HOME/cron/output/{job_id}/{timestamp}.md`.
+- Execution ledger: `$AIOPS_HOME/cron/executions.db` with immutable terminal attempts and interrupted-run recovery.
+- Durable notepad: `$AIOPS_HOME/cron/notepad.db`, capped at 16 KiB/value and 64 KiB/job; use only for compact cursors/watermarks.
 - Profile isolation, atomic writes, process/file locks, ticker heartbeat/success/error, running claims, stale recovery, execution history.
 - Built-in 60-second ticker; external provider ABC; Chronos optional.
 - Jobs support scripts, no-agent mode, monitor hashing, skills, context chaining, continuity, workdir, toolsets, delivery, durable notepad.
@@ -316,7 +316,7 @@ HOG use: deterministic source reconciliation, confidence/staleness scans, public
 
 Limitations: inbound dedupe/rate-limit state is process-local, accepted agent requests are not first committed to a durable queue, and Azure Event Grid validation/Entra authentication/Service Bus settlement are not native. Use Azure Function/APIM/Service Bus in front for production durability and identity validation.
 
-HOG use: receive compact, normalized, signed Azure/source event hints through a managed source adapter. Native Azure Event Grid validation/signatures should terminate before the Hermes HMAC route unless a generic plugin adapter is built.
+HOG use: receive compact, normalized, signed Azure/source event hints through a managed source adapter. Native Azure Event Grid validation/signatures should terminate before the AIOps HMAC route unless a generic plugin adapter is built.
 
 ## 9. Agent infrastructure
 
@@ -328,7 +328,7 @@ HOG use: receive compact, normalized, signed Azure/source event hints through a 
 - `acp_adapter/` and `mcp_serve.py`: external agent/client protocols.
 - `apps/`, `ui-tui/`, `web/`, `tui_gateway/`: desktop/TUI/dashboard surfaces.
 
-HOG use: deterministic engines run as scripts/adapters; agents handle ambiguity, causal extraction, explanations, and steward summaries. Kanban handles human review. Foundry consumes Fabric IQ rather than directly sharing Hermes conversation state.
+HOG use: deterministic engines run as scripts/adapters; agents handle ambiguity, causal extraction, explanations, and steward summaries. Kanban handles human review. Foundry consumes Fabric IQ rather than directly sharing AIOps conversation state.
 
 Running delegated children and background agents are host-process threads and cannot resume after process exit; durable records preserve completion/delivery state, not resumable execution. Use Azure queues/jobs or Kanban for durable production work.
 
@@ -352,12 +352,12 @@ Langfuse and NeMo Relay are disabled. They can expose conversation/tool traces a
 
 | Store | Existing use | HOG use |
 |---|---|---|
-| `$HERMES_HOME/state.db` | SQLite sessions/messages/system prompts/tool/session state, FTS5/trigram/CJK search, migrations | investigation audit/resume and session search |
+| `$AIOPS_HOME/state.db` | SQLite sessions/messages/system prompts/tool/session state, FTS5/trigram/CJK search, migrations | investigation audit/resume and session search |
 | `MEMORY.md` / `USER.md` | stable cross-session facts/preferences | operator preferences only |
 | cron JSON/output/execution/notepad | schedules, run attempts/results, bounded durable KV | schedule/watermark coordination, not graph data |
 | webhook subscription JSON | dynamic route registry | normalized source trigger registration |
 | Kanban SQLite board | durable work/review queue | steward review workflow |
-| checkpoints/backups | Hermes session/home recovery | runtime recovery only |
+| checkpoints/backups | AIOps session/home recovery | runtime recovery only |
 | Fabric/OneLake | absent in core | **new authoritative HOG context projection** |
 
 Do not extend `state.db` into an operational graph store. Keep HOG canonical data in governed OneLake tables bound to Fabric Ontology.
@@ -382,11 +382,11 @@ Do not extend `state.db` into an operational graph store. Keep HOG canonical dat
 - graph-grounded Foundry integration and evaluations;
 - focused Azure/HOG skills after procedures are validated.
 
-These are edge integrations, not reasons to replace Hermes core systems.
+These are edge integrations, not reasons to replace AIOps core systems.
 
 ## References
 
-- Source architecture: `/Users/jasonmba/.hermes/hermes-agent/AGENTS.md` and inspected modules named above.
-- Hermes documentation: https://hermes-agent.nousresearch.com/docs/
-- Plugin guide: https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins
-- Cron guide: https://hermes-agent.nousresearch.com/docs/user-guide/features/cron
+- Source architecture: `/Users/jasonmba/.aiops/aiops-agent/AGENTS.md` and inspected modules named above.
+- AIOps documentation: https://aiops-agent.nousresearch.com/docs/
+- Plugin guide: https://aiops-agent.nousresearch.com/docs/user-guide/features/plugins
+- Cron guide: https://aiops-agent.nousresearch.com/docs/user-guide/features/cron

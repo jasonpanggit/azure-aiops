@@ -4,9 +4,9 @@
 # (see next.config.mjs) so the runtime stage ships only the traced server
 # bundle instead of the full node_modules tree.
 #
-# Deliberately no NEXT_PUBLIC_HERMES_API_BASE_URL build arg: the API FQDN is
+# Deliberately no NEXT_PUBLIC_AIOPS_API_BASE_URL build arg: the API FQDN is
 # only known after Terraform apply, so the base URL is resolved at runtime via
-# the /api/config route handler reading HERMES_API_BASE_URL.
+# the /api/config route handler reading AIOPS_API_BASE_URL.
 
 FROM node:22-alpine AS deps
 WORKDIR /app

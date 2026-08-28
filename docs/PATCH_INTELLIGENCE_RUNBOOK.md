@@ -12,11 +12,11 @@
 ```bash
 uv sync --extra test
 uv run pytest tests/test_patch_*.py -q
-uv run hermes-arg sample --fixture tests/fixtures/mock_arg_responses.json --output-dir sample-data
-uv run hermes-arg fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
+uv run aiops-inventory sample --fixture tests/fixtures/mock_arg_responses.json --output-dir sample-data
+uv run aiops-inventory fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
 ```
 
-Set `HERMES_FABRIC_CONFIG` to the operator-managed Fabric configuration before starting Hermes. Do not expose configuration paths or credentials in the tool schema.
+Set `AIOPS_FABRIC_CONFIG` to the operator-managed Fabric configuration before starting AIOps. Do not expose configuration paths or credentials in the tool schema.
 
 ## Smoke tests
 

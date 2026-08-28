@@ -31,7 +31,7 @@ AKS_ID = "/subscriptions/sub-2/resourceGroups/rg/providers/Microsoft.ContainerSe
 
 class FakeSecretWriter:
     def store(self, *, connection_id: str, secret_value: str) -> str:
-        return f"keyvault://kv-test/secrets/hermes-conn-{connection_id}/v1"
+        return f"keyvault://kv-test/secrets/aiops-conn-{connection_id}/v1"
 
 
 def _vulnerability_service() -> VulnerabilityIntelligenceService:
@@ -86,7 +86,7 @@ def build_client(tmp_path):
         )
         context = ApiContext(
             onboarding=SubscriptionOnboardingService(
-                tmp_path / "hermes", secret_writer=FakeSecretWriter()
+                tmp_path / "aiops", secret_writer=FakeSecretWriter()
             ),
             authenticator=StaticTokenAuthenticator(principals or _principals()),
             authorizer=Authorizer(),

@@ -1,7 +1,7 @@
-"""Hermes directory-plugin entry point.
+"""AIOps directory-plugin entry point.
 
 The plugin installer copies the repository directory. Add the bundled src tree
-so the plugin remains importable without editing Hermes core.
+so the plugin remains importable without editing AIOps core.
 """
 
 import sys

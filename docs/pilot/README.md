@@ -1,7 +1,7 @@
 # Enterprise Pilot Readiness Pack
 
 This directory documents what is required, verified, and owned to run
-Hermes Operations Graph (HOG) as a controlled enterprise pilot across real
+AIOps Operations Graph (HOG) as a controlled enterprise pilot across real
 Azure subscriptions. It complements, and does not duplicate, the existing
 runbooks under `docs/` for individual intelligence engines (patch,
 vulnerability, network, lifecycle, remediation, incident causality, ontology)

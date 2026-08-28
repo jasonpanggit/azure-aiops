@@ -22,11 +22,11 @@ evidence.
 
 | Check | Evidence | Status |
 | --- | --- | --- |
-| Entra auth mode enforced in production Terraform | `infra/terraform/container_apps.tf` (`HERMES_API_AUTH=entra` hardcoded) | ✅ |
+| Entra auth mode enforced in production Terraform | `infra/terraform/container_apps.tf` (`AIOPS_API_AUTH=entra` hardcoded) | ✅ |
 | RBAC scope narrowing verified (no cross-scope leakage) | `tests/test_api_copilot.py` grounded-context assertion + equivalent scope tests in graph/network/vulnerability/twin routers | ✅ |
 | Key Vault purge protection enabled for pilot environment | `terraform plan` diff showing `purge_protection_enabled = true` | ☐ Must be set before pilot secrets are stored — see `SECURITY.md` |
 | Discovery SPNs are read-only against target subscriptions | Azure RBAC role assignment review per connection | ☐ Review per onboarded connection |
-| `HERMES_API_GATEWAY_GRANTS` reviewed for the pilot tenant | Grant map diff reviewed by security reviewer | ☐ Review before go-live |
+| `AIOPS_API_GATEWAY_GRANTS` reviewed for the pilot tenant | Grant map diff reviewed by security reviewer | ☐ Review before go-live |
 | Secrets never logged | Code review of `akv_bootstrap.py`, `foundry_agent.py` (Authorization header masking) | ✅ |
 
 ## Reliability readiness
@@ -43,8 +43,8 @@ evidence.
 
 | Check | Evidence | Status |
 | --- | --- | --- |
-| API p95 read latency under target | Log Analytics query against `hermes.api.request.duration` | ☐ Baseline once alert_email/dashboard is live |
-| Background refresh cadence matches `HERMES_PROVIDER_REFRESH_SECONDS` under real discovery volume | Provider health `loaded_at`/`last_success_at` deltas over a day | ☐ Observe during first week of pilot |
+| API p95 read latency under target | Log Analytics query against `aiops.api.request.duration` | ☐ Baseline once alert_email/dashboard is live |
+| Background refresh cadence matches `AIOPS_PROVIDER_REFRESH_SECONDS` under real discovery volume | Provider health `loaded_at`/`last_success_at` deltas over a day | ☐ Observe during first week of pilot |
 | Copilot answer latency under target (if Foundry configured) | Foundry timeout/retry configuration reviewed against real network latency to the Foundry project endpoint | ☐ Measure during demo script walkthrough |
 
 ## UX readiness

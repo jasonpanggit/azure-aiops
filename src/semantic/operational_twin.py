@@ -1,7 +1,7 @@
 """Operational digital twin composition.
 
 The twin is a request-time projection over the durable semantic graph and live
-operational providers. It does not ask Hermes to snapshot mutable facts; instead
+operational providers. It does not ask AIOps to snapshot mutable facts; instead
 it versions the current composed view and emits provenance for each contribution.
 """
 

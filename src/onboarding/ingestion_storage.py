@@ -9,7 +9,7 @@ from .ontology_metadata import generate_ontology_metadata
 
 
 class DatasetStore(_DatasetStore):
-    """Compatibility shim for Hermes graph-shaped publication."""
+    """Compatibility shim for AIOps graph-shaped publication."""
 
     def publish(
         self,

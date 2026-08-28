@@ -5,7 +5,7 @@ identically:
 
 - This repo's real Fabric-native ``topology_pipeline.derive_edges()``
   (this plan, 08-02).
-- Hermes's real ``SemanticEngine.from_rows()`` / ``Normalizer`` engine
+- AIOps's real ``SemanticEngine.from_rows()`` / ``Normalizer`` engine
   (08-03's comparison harness).
 
 Kept as a single source of truth so neither arm can be fed a
@@ -28,10 +28,10 @@ NSG_ID = f"{_RESOURCE_GROUP}/providers/microsoft.network/networksecuritygroups/n
 
 
 def topology_comparison_scenario() -> dict[str, list[dict[str, Any]]]:
-    """Returns raw ARG-shaped rows keyed by Hermes's ``payload`` dataset names.
+    """Returns raw ARG-shaped rows keyed by AIOps's ``payload`` dataset names.
 
     Both arms consume this same dict: the Fabric pipeline via
-    ``topology_pipeline.derive_edges()``, Hermes via
+    ``topology_pipeline.derive_edges()``, AIOps via
     ``Normalizer._normalize_network()`` (directly, or through the
     read-port adapter proven in 08-01).
     """

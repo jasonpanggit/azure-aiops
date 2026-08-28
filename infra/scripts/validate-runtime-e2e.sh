@@ -6,21 +6,21 @@ set -eu
 : "${API_TOKEN:?Set API_TOKEN to an operator/admin bearer token}"
 : "${HUB_CONNECTION_ID:?Set HUB_CONNECTION_ID}"
 : "${SPOKE_CONNECTION_ID:?Set SPOKE_CONNECTION_ID}"
-: "${HERMES_ARG_CONFIG:?Set HERMES_ARG_CONFIG}"
-: "${HERMES_FABRIC_CONFIG:?Set HERMES_FABRIC_CONFIG}"
+: "${AIOPS_ARG_CONFIG:?Set AIOPS_ARG_CONFIG}"
+: "${AIOPS_FABRIC_CONFIG:?Set AIOPS_FABRIC_CONFIG}"
 
 if [ "$HUB_CONNECTION_ID" = "$SPOKE_CONNECTION_ID" ]; then
   echo "Hub and spoke connection IDs must be different" >&2
   exit 2
 fi
 
-HERMES_CLI="${HERMES_CLI:-.venv/bin/hermes-arg}"
+AIOPS_CLI="${AIOPS_CLI:-.venv/bin/aiops-inventory}"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
-"$HERMES_CLI" activate \
-  --config "$HERMES_ARG_CONFIG" \
-  --fabric-config "$HERMES_FABRIC_CONFIG" \
+"$AIOPS_CLI" activate \
+  --config "$AIOPS_ARG_CONFIG" \
+  --fabric-config "$AIOPS_FABRIC_CONFIG" \
   --connection-id "$HUB_CONNECTION_ID" \
   --connection-id "$SPOKE_CONNECTION_ID" \
   >"$tmp_dir/activation.json"

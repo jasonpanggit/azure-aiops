@@ -1,7 +1,7 @@
 """Pure translation layer: InventoryReadPort output -> Normalizer input rows.
 
 This adapter is additive only (Phase 8 D-08): it does not remove or modify
-`queries.py`'s existing ARG specs. It exists to prove that Hermes's existing
+`queries.py`'s existing ARG specs. It exists to prove that AIOps's existing
 normalizers (`normalize.py`, `network_normalize.py`) can be fed identity data
 sourced from the inventory read port instead of a direct ARG query, producing
 byte-identical `NormalizedGraph` output (ROADMAP success criterion 3).

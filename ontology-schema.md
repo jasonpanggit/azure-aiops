@@ -2,7 +2,7 @@
 
 ## 1. Design intent
 
-Fabric Ontology is the **system of context**. Azure, ServiceNow, Azure DevOps, Entra ID, Defender, Sentinel, Update Manager, and observability systems remain systems of record. Hermes publishes normalized identity and relationship assertions, not replacement inventories or telemetry.
+Fabric Ontology is the **system of context**. Azure, ServiceNow, Azure DevOps, Entra ID, Defender, Sentinel, Update Manager, and observability systems remain systems of record. AIOps publishes normalized identity and relationship assertions, not replacement inventories or telemetry.
 
 Fabric IQ Ontology is currently preview. It supports entity types, properties, directional relationships with attributes, data bindings to supported OneLake sources, and a queryable graph. Upstream changes require graph refresh. The design therefore keeps portable canonical tables in OneLake and treats the ontology as a governed semantic projection, not as a transactional graph database.[1]
 
@@ -23,14 +23,14 @@ Every entity has:
 
 | Property | Type | Required | Meaning |
 |---|---|---:|---|
-| `id` | string | yes | Hermes canonical ID. |
+| `id` | string | yes | AIOps canonical ID. |
 | `tenantId` | string | yes | Entra tenant boundary. |
 | `displayName` | string | yes | Approved human-readable name. |
 | `sourceSystem` | string | yes | Identity authority. |
 | `sourceId` | string | yes | Stable native identifier. |
 | `sourceUrl` | string | no | Deep link/API locator. |
 | `lifecycleState` | string | yes | `active`, `inactive`, `retired`, `deleted`, `unknown`. |
-| `createdTimestamp` | datetime | yes | First creation in Hermes. |
+| `createdTimestamp` | datetime | yes | First creation in AIOps. |
 | `lastObservedTimestamp` | datetime | yes | Latest successful source observation. |
 | `schemaVersion` | string | yes | Projection contract version. |
 

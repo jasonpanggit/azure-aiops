@@ -10,7 +10,7 @@ Operate, diagnose, replay, and recover the Azure inventory to OneLake synchroniz
 2. A managed identity or service principal with access to the workspace/Lakehouse and OneLake data paths.
 3. A completed local ARG generation under the configured `source_data_root`.
 4. The project environment provisioned with `uv sync --extra test`.
-5. `HERMES_FABRIC_CONFIG` set for Hermes gateway agent commands.
+5. `AIOPS_FABRIC_CONFIG` set for AIOps gateway agent commands.
 
 Fabric workspace roles govern item operations and OneLake access.[1] Use least privilege and immutable workspace/Lakehouse IDs in production.
 
@@ -34,26 +34,26 @@ Never write the secret into YAML, source control, run state, or catalog metadata
 
 ```bash
 # Persist the current normalized ARG generation
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Sync Azure inventory to OneLake" \
   --config fabric.config.yaml
 
 # Refresh idempotently
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Refresh inventory lakehouse" \
   --config fabric.config.yaml
 
 # Read durable OneLake state
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Show ingestion status" \
   --config fabric.config.yaml
 
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Show last Fabric sync" \
   --config fabric.config.yaml
 
 # Validate without writing inventory tables
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Validate inventory data" \
   --config fabric.config.yaml
 ```
@@ -65,7 +65,7 @@ These phrases are operator CLI commands and are intentionally not exposed to age
 List source generations under `<source_data_root>/generations/`, select the immutable source run ID, then run:
 
 ```bash
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Sync Azure inventory to OneLake" \
   --config fabric.config.yaml \
   --replay-source-run-id '<source-run-id>'
@@ -98,13 +98,13 @@ Current-state Delta tables compare `resource_id` and `change_version`, skip unch
 
 ## Scheduling
 
-Use the existing Hermes script-only cron framework. Create a wrapper under `$HERMES_HOME/scripts/fabric-inventory-sync.sh`:
+Use the existing AIOps script-only cron framework. Create a wrapper under `$AIOPS_HOME/scripts/fabric-inventory-sync.sh`:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 cd /absolute/path/to/azure-aiops
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Sync Azure inventory to OneLake" \
   --config /absolute/path/to/fabric.config.yaml
 ```
@@ -112,7 +112,7 @@ uv run hermes-arg fabric \
 Then register it:
 
 ```bash
-hermes cron create "every 30m" "" \
+aiops cron create "every 30m" "" \
   --name fabric-inventory-sync \
   --script fabric-inventory-sync.sh \
   --no-agent \

@@ -7,7 +7,7 @@ Ships a pluggable :class:`Authenticator` protocol plus two implementations:
 * :class:`HeaderPrincipalAuthenticator` — trusts principal identity asserted by
   an upstream gateway (App Service Easy Auth, API Management, an ingress that
   has already validated the Entra ID token). This is the production posture:
-  Hermes does not re-implement OIDC, it consumes a verified assertion.
+  AIOps does not re-implement OIDC, it consumes a verified assertion.
 
 Token validation against Entra ID directly is deliberately *not* implemented
 here; wiring a JWKS-validating authenticator is a drop-in replacement for the
@@ -181,7 +181,7 @@ class EntraJwtAuthenticator:
             # asserted app-role claim and the resolved subject only -- useful
             # to distinguish "no roles claim" (app role not defined/assigned,
             # or a stale cached token issued before assignment) from
-            # "roles present but no matching HERMES_API_GATEWAY_GRANTS entry"
+            # "roles present but no matching AIOPS_API_GATEWAY_GRANTS entry"
             # (subject/casefold mismatch, or a role not listed for that
             # subject) without ever exposing token secrets.
             print(
@@ -191,6 +191,6 @@ class EntraJwtAuthenticator:
             )
             raise ApiError(
                 ErrorCode.UNAUTHENTICATED,
-                "Entra principal has no configured Hermes grants",
+                "Entra principal has no configured AIOps grants",
             )
         return Principal(subject=subject, grants=grants)

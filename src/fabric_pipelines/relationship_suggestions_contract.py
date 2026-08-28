@@ -3,7 +3,7 @@
 This is deliberately a **separate** Delta table contract from
 ``ontology_fabric_contracts.ONTOLOGY_RELATIONSHIPS_CONTRACT``. The
 deterministic ``relationships`` table (``ontology_relationships``) is
-ported field-for-field from Hermes's ``RelationshipBuilder`` and is the
+ported field-for-field from AIOps's ``RelationshipBuilder`` and is the
 sole authoritative graph -- nothing in this module ever writes to it.
 
 ``relationship_suggestions`` instead holds candidate edges proposed by a
@@ -90,7 +90,7 @@ ACCEPTED_SUGGESTION_STATUS = "accepted"
 #: approved Data Agent suggestion (as opposed to ``RelationshipBuilder``'s
 #: own deterministic ``source`` values, e.g. ``"tag_membership"``,
 #: ``"lineage"``, etc.) -- this is the provenance tag that lets a reader of
-#: ``ontology_relationships`` distinguish "Hermes/ontology_pipeline derived
+#: ``ontology_relationships`` distinguish "AIOps/ontology_pipeline derived
 #: this deterministically" from "a human approved an AI suggestion into
 #: this" without losing either lineage.
 APPROVED_SUGGESTION_RELATIONSHIP_SOURCE = "data_agent_suggested_approved"

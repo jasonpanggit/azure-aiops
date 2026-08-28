@@ -13,13 +13,13 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tf_dir="${repo_root}/infra/terraform"
-env_file="${HERMES_ENV_FILE:-${repo_root}/web/.env.local}"
+env_file="${AIOPS_ENV_FILE:-${repo_root}/web/.env.local}"
 
 # Homebrew and Docker Desktop are not always on a non-login shell's PATH.
 export PATH="${PATH}:/opt/homebrew/bin:/usr/local/bin"
 
 if [[ ! -f "${env_file}" ]]; then
-  echo "deploy: ${env_file} not found. Set HERMES_ENV_FILE to override." >&2
+  echo "deploy: ${env_file} not found. Set AIOPS_ENV_FILE to override." >&2
   exit 1
 fi
 
@@ -51,8 +51,8 @@ ARM_TENANT_ID="$(read_env AZURE_TENANT_ID)"
 ARM_CLIENT_ID="$(read_env AZURE_CLIENT_ID)"
 ARM_CLIENT_SECRET="$(read_env AZURE_CLIENT_SECRET)"
 ENTRA_WEB_CLIENT_ID="$(read_env NEXT_PUBLIC_ENTRA_CLIENT_ID)"
-ENTRA_API_AUDIENCE="$(read_env HERMES_ENTRA_API_AUDIENCE)"
-ENTRA_GRANTS_JSON="$(read_env HERMES_ENTRA_GRANTS_JSON)"
+ENTRA_API_AUDIENCE="$(read_env AIOPS_ENTRA_API_AUDIENCE)"
+ENTRA_GRANTS_JSON="$(read_env AIOPS_ENTRA_GRANTS_JSON)"
 # Optional: without it, the deployed API's CVE enrichment hits NVD's
 # anonymous rate limit (5 req/30s) and CVE detail lookups fail.
 NVD_API_KEY="$(read_env NVD_API_KEY)"
@@ -68,7 +68,7 @@ export ARM_SUBSCRIPTION_ID ARM_TENANT_ID ARM_CLIENT_ID ARM_CLIENT_SECRET
 
 # The service principal's object ID differs from its application ID, and Fabric
 # capacity administration and Key Vault RBAC both need the object ID.
-deployer_object_id="${HERMES_DEPLOYER_OBJECT_ID:-}"
+deployer_object_id="${AIOPS_DEPLOYER_OBJECT_ID:-}"
 if [[ -z "${deployer_object_id}" ]] && command -v az >/dev/null 2>&1; then
   deployer_object_id="$(az ad sp show --id "${ARM_CLIENT_ID}" --query id -o tsv 2>/dev/null || true)"
 fi

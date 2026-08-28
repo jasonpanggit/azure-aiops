@@ -75,7 +75,7 @@ session but not gated in CI. This closed that gap.
 - The API fails loudly at startup on misconfiguration rather than 500ing on
   the first request — this is the explicit design intent of
   `src/api/runtime.py` (see its module docstring).
-- `src/api/akv_bootstrap.py` validates `HERMES_AKV_BOOTSTRAP_SECRETS` JSON
+- `src/api/akv_bootstrap.py` validates `AIOPS_AKV_BOOTSTRAP_SECRETS` JSON
   shape and Key-Vault-safe naming before attempting any write, and fails
   container startup on a malformed mapping rather than silently skipping it.
 - **New checklist item for the pilot**: add a `terraform validate` +

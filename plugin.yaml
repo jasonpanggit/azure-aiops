@@ -3,7 +3,7 @@ api_version: 1
 name: azure-operational-context
 version: 0.1.0
 description: "Read-only Operations Agent over Fabric Ontology and the Semantic Knowledge Layer."
-author: Hermes Operations Graph
+author: AIOps Operations Graph
 license: MIT
 kind: standalone
 platforms: [linux, macos, windows]

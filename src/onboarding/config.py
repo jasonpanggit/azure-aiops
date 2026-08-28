@@ -69,12 +69,12 @@ class ConnectorConfig:
         azure = payload.get("azure") or {}
         cost = azure.get("cost_management") or {}
         storage = payload.get("storage") or {}
-        # Falling back to HERMES_HOME keeps the refresh path's output root
+        # Falling back to AIOPS_HOME keeps the refresh path's output root
         # identical to the root the API reads the connection registry from.
         # Divergent roots silently split the registry in two: connections get
         # registered under one prefix and looked up under another.
         raw_output_dir = str(
-            storage.get("output_dir") or os.environ.get("HERMES_HOME") or "./data"
+            storage.get("output_dir") or os.environ.get("AIOPS_HOME") or "./data"
         )
         if is_onelake_uri(raw_output_dir):
             output_dir: Path | str = raw_output_dir

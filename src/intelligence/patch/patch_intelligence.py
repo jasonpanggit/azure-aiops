@@ -173,7 +173,7 @@ Policy = PatchPolicy
 
 class PatchTelemetry:
     def __init__(self, meter=None) -> None:
-        meter = meter or metrics.get_meter("hermes.patch_intelligence", "0.1.0")
+        meter = meter or metrics.get_meter("aiops.patch_intelligence", "0.1.0")
         self.compliance_duration = meter.create_histogram(
             "patch.compliance.calculation.duration", unit="s"
         )

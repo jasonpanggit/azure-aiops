@@ -5,7 +5,7 @@ Usage:
     AZURE_CLIENT_SECRET=<secret> .venv/bin/python scripts/delete-lakehouse-tables.py
 
 Deletes 127 tables classified as:
-  - Ontology derivatives (old Hermes outputs): 75 tables
+  - Ontology derivatives (old AIOps outputs): 75 tables
   - Unknown tables (not referenced in code): 52 tables
 
 Preserves:

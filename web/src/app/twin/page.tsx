@@ -159,7 +159,7 @@ export default function OperationalTwinPage() {
             ))}
           </div>
           <p className="muted">
-            Version {snapshot?.data.version ?? "unknown"} is derived at request time; Hermes supplies the semantic model while operational state remains live.
+            Version {snapshot?.data.version ?? "unknown"} is derived at request time; AIOps supplies the semantic model while operational state remains live.
           </p>
           </div>
         </section>

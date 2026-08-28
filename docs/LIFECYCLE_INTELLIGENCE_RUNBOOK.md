@@ -15,8 +15,8 @@ uv sync --extra test
 uv run --extra test pytest tests/test_lifecycle_*.py tests/test_risk_engine.py \
   tests/test_modernization_engine.py tests/test_business_impact.py \
   tests/test_executive_reporting.py -q
-uv run hermes-arg fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
-hermes plugins doctor --ci .
+uv run aiops-inventory fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
+aiops plugins doctor --ci .
 ```
 
 ## Smoke checks

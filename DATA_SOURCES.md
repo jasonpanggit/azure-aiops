@@ -1,8 +1,8 @@
-# Hermes Operations Graph — Data Sources
+# AIOps Operations Graph — Data Sources
 
 ## 1. Source strategy
 
-Hermes Operations Graph (HOG) federates authoritative observations with a
+AIOps Operations Graph (HOG) federates authoritative observations with a
 durable semantic graph; it does not replace or snapshot the listed systems.
 
 | Information | Authority | What HOG retains |

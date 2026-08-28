@@ -47,7 +47,7 @@ environments aren't forced to have an on-call address.
 
 - **Foundry tool latency histogram** is tracked only via the circuit
   breaker's failure counter today, not exported as an OTel histogram. A
-  dedicated `hermes.foundry.request.duration` histogram is the natural next
+  dedicated `aiops.foundry.request.duration` histogram is the natural next
   increment (same shape as `ApiTelemetry`) — tracked as a follow-up, not
   blocking pilot go-live because Foundry failures already degrade safely
   (see `RELIABILITY.md`).

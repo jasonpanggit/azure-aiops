@@ -42,7 +42,7 @@ class LakehouseManager:
             raise LookupError(f"Fabric lakehouse not found: {lakehouse_name}")
         body: dict[str, Any] = {
             "displayName": lakehouse_name,
-            "description": "Hermes Operations Graph inventory lakehouse",
+            "description": "AIOps Operations Graph inventory lakehouse",
         }
         if enable_schemas:
             body["creationPayload"] = {"enableSchemas": True}

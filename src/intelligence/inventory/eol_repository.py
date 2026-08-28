@@ -106,7 +106,7 @@ class LocalEOLCatalogRepository:
         self.path = (
             Path(path)
             if path
-            else Path.home() / ".hermes" / "state" / "eol_catalog.json"
+            else Path.home() / ".aiops" / "state" / "eol_catalog.json"
         )
         self.base_catalog = base_catalog or EOLCatalog.default()
         self.document_store = document_store

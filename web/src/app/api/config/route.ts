@@ -15,6 +15,6 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   return NextResponse.json({
-    apiBaseUrl: process.env.HERMES_API_BASE_URL ?? null,
+    apiBaseUrl: process.env.AIOPS_API_BASE_URL ?? null,
   });
 }

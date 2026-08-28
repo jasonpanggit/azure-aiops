@@ -54,7 +54,7 @@ _RECOMMENDATION_FIELDS = {
 
 class OperationsTelemetry:
     def __init__(self, meter=None) -> None:
-        meter = meter or metrics.get_meter("hermes.operations_agent", "0.1.0")
+        meter = meter or metrics.get_meter("aiops.operations_agent", "0.1.0")
         self.analysis_duration = meter.create_histogram(
             "operations.analysis.duration", unit="s"
         )

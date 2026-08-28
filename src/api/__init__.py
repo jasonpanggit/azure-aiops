@@ -1,4 +1,4 @@
-"""Hermes Operations API layer.
+"""AIOps Operations API layer.
 
 Composes the existing service layer over HTTP. Contains no business logic and
 never bypasses the Semantic Knowledge Layer.

@@ -824,7 +824,7 @@ def _situation_ontology_entity(row: dict[str, Any], run_id: str) -> dict[str, An
         **result,
         "entity_type": "Situation",
         "name": payload["title"] or payload["situation_id"],
-        "resource_type": "hermes/situation",
+        "resource_type": "aiops/situation",
         "location": "",
         "payload_json": _canonical(payload),
         "lineage_json": _canonical({"source_resource_ids": row.get("affected_resource_ids") or []}),

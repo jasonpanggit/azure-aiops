@@ -102,31 +102,31 @@ def trigger_inventory_refresh(request: Request) -> dict[str, Any]:
     snapshot before publishing to Fabric once.
 
     Authenticated separately from the Entra principal flow via a shared
-    secret (``HERMES_REFRESH_TRIGGER_SECRET``), because a Fabric Web activity
+    secret (``AIOPS_REFRESH_TRIGGER_SECRET``), because a Fabric Web activity
     calling this endpoint on a schedule is a system-to-system caller, not an
     interactive/gateway-authenticated user -- minting and refreshing an Entra
     app-role token for that one activity adds real operational fragility for
     no security benefit over a dedicated, rotatable trigger secret.
     """
-    expected = os.environ.get("HERMES_REFRESH_TRIGGER_SECRET", "").strip()
+    expected = os.environ.get("AIOPS_REFRESH_TRIGGER_SECRET", "").strip()
     if not expected:
         raise ApiError(
             ErrorCode.PROVIDER_UNAVAILABLE,
-            "HERMES_REFRESH_TRIGGER_SECRET is not configured for this deployment",
+            "AIOPS_REFRESH_TRIGGER_SECRET is not configured for this deployment",
             {"capability": "inventory", "provider_state": "unconfigured"},
         )
-    provided = request.headers.get("x-hermes-trigger-secret", "")
+    provided = request.headers.get("x-aiops-trigger-secret", "")
     if not hmac.compare_digest(provided, expected):
         raise ApiError(ErrorCode.UNAUTHENTICATED, "Invalid trigger secret")
 
-    config_path = os.environ.get("HERMES_ARG_CONFIG", "").strip()
+    config_path = os.environ.get("AIOPS_ARG_CONFIG", "").strip()
     if not config_path:
         raise ApiError(
             ErrorCode.PROVIDER_UNAVAILABLE,
-            "HERMES_ARG_CONFIG is not configured for this deployment",
+            "AIOPS_ARG_CONFIG is not configured for this deployment",
             {"capability": "inventory", "provider_state": "unconfigured"},
         )
-    fabric_config_path = os.environ.get("HERMES_FABRIC_CONFIG", "").strip()
+    fabric_config_path = os.environ.get("AIOPS_FABRIC_CONFIG", "").strip()
     from api.inventory_orchestration import (
         run_inventory_refresh_all_connections,
     )

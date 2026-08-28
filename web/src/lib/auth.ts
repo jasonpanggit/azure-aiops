@@ -7,7 +7,7 @@ import { type Configuration, LogLevel, PublicClientApplication } from "@azure/ms
  * environment variables at build/deploy time. In local development without
  * an Entra app registration, `getAccessToken()` degrades to a static dev
  * token fetched from the `/api/dev-token` route handler, which reads the
- * server-only `HERMES_DEV_TOKEN` env var (matching the API's
+ * server-only `AIOPS_DEV_TOKEN` env var (matching the API's
  * `StaticTokenAuthenticator`, see docs/OPERATIONS_API.md) so the UI is usable
  * without a tenant.
  */
@@ -86,8 +86,8 @@ export async function getAccessToken(): Promise<string | null> {
  * Entra, still silently (no interactive prompt). A cached token issued
  * before an app-role assignment change can otherwise be served from
  * sessionStorage indefinitely, missing the `roles` claim the API requires to
- * resolve Hermes grants. Call this once after an "Entra principal has no
- * configured Hermes grants" 401 to pick up a newly-assigned role without
+ * resolve AIOps grants. Call this once after an "Entra principal has no
+ * configured AIOps grants" 401 to pick up a newly-assigned role without
  * requiring the user to fully sign out.
  */
 export async function refreshAccessToken(): Promise<string | null> {

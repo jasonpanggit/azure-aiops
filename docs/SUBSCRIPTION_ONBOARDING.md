@@ -15,7 +15,7 @@ connection isolation is the security boundary.
 
 ```bash
 az ad sp create-for-rbac \
-  --name "hermes-conn-prod-core" \
+  --name "aiops-conn-prod-core" \
   --role Reader \
   --scopes /subscriptions/<subscription-id>
 ```
@@ -49,8 +49,8 @@ supported.
 
 The Workbench UI can accept the client secret directly during onboarding. In
 that flow the Operations API stores the submitted value in the Key Vault named by
-`HERMES_CONNECTION_KEY_VAULT`, then passes only the returned
-`keyvault://<vault>/secrets/<name>/<version>` reference to Hermes.
+`AIOPS_CONNECTION_KEY_VAULT`, then passes only the returned
+`keyvault://<vault>/secrets/<name>/<version>` reference to AIOps.
 
 ### Key Vault (production)
 
@@ -61,12 +61,12 @@ keyvault://<vault-name>/secrets/<secret-name>/<version>
 
 ```bash
 az keyvault secret set \
-  --vault-name kv-hermes-prod \
-  --name hermes-conn-prod-core \
+  --vault-name kv-aiops-prod \
+  --name aiops-conn-prod-core \
   --value "<spn-secret>"
 ```
 
-Grant the Hermes runtime identity `Key Vault Secrets User` on the vault. If the
+Grant the AIOps runtime identity `Key Vault Secrets User` on the vault. If the
 Workbench stores submitted secrets, grant the Operations API runtime identity
 `Key Vault Secrets Officer` or an equivalent custom role with `set` permission on
 that vault. The runtime resolves the secret at use time and discards it; it is
@@ -79,7 +79,7 @@ env://VARNAME
 ```
 
 ```bash
-export HERMES_CONN_PROD_CORE_SECRET='<spn-secret>'
+export AIOPS_CONN_PROD_CORE_SECRET='<spn-secret>'
 ```
 
 Use this only for local development. See [Local development](#5-local-development).
@@ -87,12 +87,12 @@ Use this only for local development. See [Local development](#5-local-developmen
 ## 3. Onboard the subscription
 
 ```bash
-hermes-arg subscriptions add prod-core \
+aiops-inventory subscriptions add prod-core \
   --name "Production Core" \
   --tenant-id <tenant-id> \
   --subscription-id <subscription-id> \
   --client-id <spn-app-id> \
-  --secret-ref keyvault://kv-hermes-prod/secrets/hermes-conn-prod-core \
+  --secret-ref keyvault://kv-aiops-prod/secrets/aiops-conn-prod-core \
   --business-service Payments \
   --application checkout-api \
   --environment production \
@@ -126,7 +126,7 @@ All commands accept `--config` (default `config.yaml`).
 ### Validate
 
 ```bash
-hermes-arg subscriptions validate prod-core
+aiops-inventory subscriptions validate prod-core
 ```
 
 Runs all seven checks and returns a per-capability report with remediation
@@ -136,7 +136,7 @@ downstream checks are reported as `skipped` rather than as separate failures.
 Run a subset with repeated `--check` flags:
 
 ```bash
-hermes-arg subscriptions validate prod-core --check spn_authentication --check arg_read
+aiops-inventory subscriptions validate prod-core --check spn_authentication --check arg_read
 ```
 
 Statuses: `healthy` (all passed), `degraded` (optional checks failed),
@@ -145,7 +145,7 @@ Statuses: `healthy` (all passed), `degraded` (optional checks failed),
 ### Sync
 
 ```bash
-hermes-arg subscriptions sync prod-core --mode initial
+aiops-inventory subscriptions sync prod-core --mode initial
 ```
 
 Modes are `initial`, `scheduled`, and `manual`. Each run produces an ingestion
@@ -163,8 +163,8 @@ freshness stays accurate through outages. Disabled connections refuse to sync.
 ### Health
 
 ```bash
-hermes-arg subscriptions health
-hermes-arg subscriptions health prod-core
+aiops-inventory subscriptions health
+aiops-inventory subscriptions health prod-core
 ```
 
 Overall status is one of `healthy`, `stale`, `unhealthy`, `unknown`
@@ -174,7 +174,7 @@ Overall status is one of `healthy`, `stale`, `unhealthy`, `unknown`
 ### Map business metadata
 
 ```bash
-hermes-arg subscriptions map prod-core \
+aiops-inventory subscriptions map prod-core \
   --business-service Payments \
   --environment production \
   --criticality critical
@@ -188,9 +188,9 @@ creates an environment mapping on the connection. `criticality` must be one of
 ### Rotate a credential
 
 ```bash
-hermes-arg subscriptions update prod-core \
-  --secret-ref keyvault://kv-hermes-prod/secrets/hermes-conn-prod-core/<new-version>
-hermes-arg subscriptions validate prod-core
+aiops-inventory subscriptions update prod-core \
+  --secret-ref keyvault://kv-aiops-prod/secrets/aiops-conn-prod-core/<new-version>
+aiops-inventory subscriptions validate prod-core
 ```
 
 ## 5. Local development
@@ -199,14 +199,14 @@ hermes-arg subscriptions validate prod-core
 uv sync --extra test
 export SPN_SECRET='<dev-secret>'
 
-hermes-arg subscriptions add dev-sandbox \
+aiops-inventory subscriptions add dev-sandbox \
   --tenant-id <tenant-id> \
   --subscription-id <subscription-id> \
   --client-id <spn-app-id> \
   --secret-ref env://SPN_SECRET \
   --environment dev
 
-hermes-arg subscriptions validate dev-sandbox
+aiops-inventory subscriptions validate dev-sandbox
 ```
 
 The registry is stored at `<output_dir>/state/subscription_connections.json`,

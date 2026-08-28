@@ -18,7 +18,7 @@ This runbook operates a planning feature only. Never interpret a generated plan,
 uv run --extra test pytest tests/test_remediation_*.py -q
 uv run --extra test ruff check src tests
 uvx bandit -q -r src
-hermes plugins doctor --ci .
+aiops plugins doctor --ci .
 ```
 
 Functional smoke checks:

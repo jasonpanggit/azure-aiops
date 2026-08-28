@@ -35,8 +35,8 @@ from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope, scope_attributes
 
-logger = logging.getLogger("hermes.api.copilot")
-audit_logger = logging.getLogger("hermes.api.copilot.audit")
+logger = logging.getLogger("aiops.api.copilot")
+audit_logger = logging.getLogger("aiops.api.copilot.audit")
 
 router = APIRouter(prefix="/api/v1", tags=["copilot"])
 

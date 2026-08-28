@@ -68,6 +68,6 @@ Oversized snapshots fail before analysis.
 
 Semantic inventory bounds are checked before resource-context enrichment, preventing source-driven work amplification. Patch compliance scores must be integer values from 0 to 100; ownership and exposure flags must be real Booleans.
 
-## Hermes authorization
+## AIOps authorization
 
 Expose only `operations_analysis` through the `azure_operational_context` toolset. Gateway/toolset authorization determines which principals may view the configured enterprise portfolio. Lifecycle commands require `subject=Enterprise` and `subject_type=LifecyclePortfolio`; arbitrary subscription/application labels are rejected rather than interpreted as authorization scopes.

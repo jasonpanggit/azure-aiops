@@ -279,7 +279,7 @@ class ResourceObservation:
             "observed_at": self.observed_at,
             "query_version": self.query_version,
             # Lossless raw provider properties/tags (INV-11): required so
-            # inventory read-port consumers (e.g. Hermes's normalizers via
+            # inventory read-port consumers (e.g. AIOps's normalizers via
             # InventoryReadAdapter) can reconstruct the exact nested shapes
             # ARG returned, without a separate ARG acquisition path.
             "tags": self.tags,

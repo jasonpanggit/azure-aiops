@@ -88,8 +88,8 @@ def refresh_inventory(
     return service.refresh().manifest
 
 
-class _HermesArgSource:
-    """Fake `AzureResourceGraphSource`-shaped fetch for the Hermes
+class _AIOpsArgSource:
+    """Fake `AzureResourceGraphSource`-shaped fetch for the AIOps
     (onboarding) ingestion seam, distinct from `_InventorySource`
     above which feeds `intelligence.inventory.pipeline.InventoryPipeline`."""
 
@@ -103,7 +103,7 @@ class _HermesArgSource:
         return {spec.name: list(self.fixture.get(spec.name, [])) for spec in specs}
 
 
-def run_hermes_ingestion(
+def run_aiops_ingestion(
     store_root: Path,
     *,
     identity_source: str = "arg",
@@ -117,13 +117,13 @@ def run_hermes_ingestion(
     from this one entry point against the same golden fixture."""
     from intelligence.inventory.read_port import InventoryReadPort
     from intelligence.inventory.service import InventoryService as OSInventoryService
-    from onboarding.config import ConnectorConfig as HermesConnectorConfig
+    from onboarding.config import ConnectorConfig as AIOpsConnectorConfig
     from onboarding.ingestion_service import IngestionService
 
     fixture_path = fixture_path or Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
 
-    config = HermesConnectorConfig(
+    config = AIOpsConnectorConfig(
         output_dir=store_root,
         subscriptions=("sub-1",),
         cost_management_enabled=False,
@@ -166,7 +166,7 @@ def run_hermes_ingestion(
 
     service = IngestionService(
         config,
-        source=_HermesArgSource(fixture),
+        source=_AIOpsArgSource(fixture),
         clock=lambda: clock or datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
         inventory_read_port=inventory_read_port,
     )
@@ -204,8 +204,8 @@ def test_identity_source_inventory_matches_identity_source_arg(tmp_path: Path) -
     arg_root = tmp_path / "arg"
     inventory_root = tmp_path / "inventory"
 
-    arg_manifest = run_hermes_ingestion(arg_root, identity_source="arg")
-    inventory_manifest = run_hermes_ingestion(inventory_root, identity_source="inventory")
+    arg_manifest = run_aiops_ingestion(arg_root, identity_source="arg")
+    inventory_manifest = run_aiops_ingestion(inventory_root, identity_source="inventory")
 
     arg_entities, arg_relationships = _normalized_entities_and_relationships(arg_root)
     inventory_entities, inventory_relationships = _normalized_entities_and_relationships(
@@ -228,15 +228,15 @@ def test_identity_source_inventory_matches_identity_source_arg(tmp_path: Path) -
 def test_identity_source_defaults_to_arg_with_no_behavior_change(tmp_path: Path) -> None:
     """Default behavior (`identity_source="arg"`) is unchanged: omitting the
     flag entirely must match explicitly passing `identity_source="arg"`."""
-    from onboarding.config import ConnectorConfig as HermesConnectorConfig
+    from onboarding.config import ConnectorConfig as AIOpsConnectorConfig
 
-    default_config = HermesConnectorConfig(output_dir=tmp_path / "default")
+    default_config = AIOpsConnectorConfig(output_dir=tmp_path / "default")
     assert default_config.identity_source == "arg"
 
     default_root = tmp_path / "default-run"
     explicit_root = tmp_path / "explicit-run"
-    run_hermes_ingestion(default_root, identity_source="arg")
-    run_hermes_ingestion(explicit_root, identity_source="arg")
+    run_aiops_ingestion(default_root, identity_source="arg")
+    run_aiops_ingestion(explicit_root, identity_source="arg")
 
     default_entities, default_relationships = _normalized_entities_and_relationships(default_root)
     explicit_entities, explicit_relationships = _normalized_entities_and_relationships(explicit_root)

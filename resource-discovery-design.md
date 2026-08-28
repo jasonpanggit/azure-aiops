@@ -4,7 +4,7 @@
 
 Continuously detect Azure resource creation, deletion, ownership changes, and tag changes while keeping Azure Resource Graph (ARG) authoritative and minimizing polling.
 
-Hermes is the orchestration and stewardship engine. It does not become an inventory system.
+AIOps is the orchestration and stewardship engine. It does not become an inventory system.
 
 ## 2. Reuse-first architecture
 
@@ -15,29 +15,29 @@ Azure Resource Notifications / Event Grid
 Azure Function or Logic App validation/transform
         │ signed compact event
         ▼
-Hermes webhook subscription
+AIOps webhook subscription
         │ enqueue targeted reconciliation
         ▼
-Hermes agent/job + Azure MCP/direct ARG query
+AIOps agent/job + Azure MCP/direct ARG query
         ▼
 Ontology Steward → OneLake projection → Fabric graph refresh
 
-Periodic Hermes cron reconciliation ───────────────┘
+Periodic AIOps cron reconciliation ───────────────┘
 ```
 
-### Reused Hermes capabilities
+### Reused AIOps capabilities
 
-- **Webhook framework:** authenticated HMAC routes, event filters, route scripts, idempotency, and agent-triggered runs (`hermes webhook`; `gateway/platforms/webhook.py` and dynamic subscription support).
+- **Webhook framework:** authenticated HMAC routes, event filters, route scripts, idempotency, and agent-triggered runs (`aiops webhook`; `gateway/platforms/webhook.py` and dynamic subscription support).
 - **Cron scheduler:** durable jobs, retries/history, scripts, monitor mode, notepad, workdir/project context, chaining, and gateway ticker (`cron/jobs.py`, `cron/scheduler.py`, `cron/scheduler_provider.py`).
 - **MCP client:** connect Azure MCP as a runtime-discovered, namespace-filtered tool surface (`tools/mcp_tool.py`).
 - **Tool registry/toolsets:** service-gate Azure tools and keep them outside the core schema (`tools/registry.py`, `toolsets.py`).
-- **Session/state store:** durable run audit and investigation sessions (`hermes_state*.py`, `state.db`).
+- **Session/state store:** durable run audit and investigation sessions (`aiops_state*.py`, `state.db`).
 - **Delegation/Kanban:** parallel subscription/source investigations and steward review work, not the high-volume event queue.
 - **Gateway monitoring:** operational health export over optional OTLP.
 
 ### New capability kept minimal
 
-- An Azure event adapter, preferably managed Azure Function/Logic App configuration rather than a new Hermes core tool.
+- An Azure event adapter, preferably managed Azure Function/Logic App configuration rather than a new AIOps core tool.
 - A standalone HOG plugin for source adapters, schema validation, watermarks, and publication. It should use generic plugin hooks and register only service-gated tools.
 - Direct ARG SDK/REST adapter for arbitrary queries because current Azure MCP lacks a general-purpose ARG query tool.
 
@@ -71,17 +71,17 @@ Use only when they improve semantics:
 
 Do not create one event pipeline per service when a resource notification plus targeted reconciliation is sufficient.
 
-## 4. Why Hermes webhooks need an Azure adapter
+## 4. Why AIOps webhooks need an Azure adapter
 
-Hermes dynamic webhooks expect Hermes-managed HMAC signatures and support generic route filters/scripts. Azure Event Grid has its own subscription validation and authentication semantics. Do not expose a raw unsigned public Hermes route.
+AIOps dynamic webhooks expect AIOps-managed HMAC signatures and support generic route filters/scripts. Azure Event Grid has its own subscription validation and authentication semantics. Do not expose a raw unsigned public AIOps route.
 
 Preferred order:
 
-1. Event Grid → Azure Function/Logic App that validates the Azure event, handles subscription validation, minimizes the payload, and signs the Hermes request.
-2. Event Grid → Service Bus/Event Hubs → managed receiver that signs Hermes requests, if buffering/replay is required.
-3. Extend Hermes webhook as a standalone plugin only if the managed adapter proves insufficient; do not special-case Azure in gateway core.
+1. Event Grid → Azure Function/Logic App that validates the Azure event, handles subscription validation, minimizes the payload, and signs the AIOps request.
+2. Event Grid → Service Bus/Event Hubs → managed receiver that signs AIOps requests, if buffering/replay is required.
+3. Extend AIOps webhook as a standalone plugin only if the managed adapter proves insufficient; do not special-case Azure in gateway core.
 
-The adapter submits only a compact trigger. Hermes then queries Azure using its own managed identity/RBAC.
+The adapter submits only a compact trigger. AIOps then queries Azure using its own managed identity/RBAC.
 
 ## 5. Discovery flows
 
@@ -123,7 +123,7 @@ A source change emits a new assertion and supersedes the old assertion from that
 
 ## 6. Scheduled reconciliation
 
-Events are never sufficient by themselves. Reuse Hermes cron for:
+Events are never sufficient by themselves. Reuse AIOps cron for:
 
 - targeted retry queue every few minutes;
 - subscription incremental/resource-change reconciliation every 15–30 minutes;
@@ -184,8 +184,8 @@ Rules:
 - Separate identities for source discovery, ontology publication, and Foundry consumption.
 - Azure MCP read-only and exact namespace/tool allowlists.
 - No write-capable Compute, Workbook, Monitor instrumentation, or Advisor apply tools in the discovery profile.
-- Validate Event Grid origin and sign the downstream Hermes webhook.
-- Store credentials in Key Vault/Hermes secret provider, never ontology or memory.
+- Validate Event Grid origin and sign the downstream AIOps webhook.
+- Store credentials in Key Vault/AIOps secret provider, never ontology or memory.
 - Preserve tenant/subscription boundary on every event and query.
 
 ## 10. Failure modes and recovery
@@ -198,7 +198,7 @@ Rules:
 | Source schema drift | Quarantine and steward alert; do not silently drop fields. |
 | Fabric refresh failure | Keep prior graph active; mark graph stale; retry/rollback. |
 | Permission loss | Report inaccessible scope separately from deleted resources. |
-| Hermes gateway restart | Durable cron/state/watermarks resume; upstream buffer replays. |
+| AIOps gateway restart | Durable cron/state/watermarks resume; upstream buffer replays. |
 
 ## 11. Acceptance criteria
 

@@ -1,4 +1,4 @@
-# Deploying Hermes to Azure
+# Deploying AIOps to Azure
 
 Terraform for the Operations Workbench: two Container Apps (the FastAPI
 Operations API and the Next.js workbench), an Azure AI Foundry project whose
@@ -158,5 +158,5 @@ identities cannot push the canvas.
   the agent but cannot create or modify one.
 - The web tier currently authenticates to the API with a single shared token
   granting `admin`. Front the API with Entra
-  (`HERMES_API_AUTH=gateway`) and carry end-user identity through before
+  (`AIOPS_API_AUTH=gateway`) and carry end-user identity through before
   exposing this beyond a demo.

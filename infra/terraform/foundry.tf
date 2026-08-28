@@ -114,7 +114,7 @@ resource "azurerm_role_assignment" "deployer_foundry_manager" {
 
 locals {
   agent_instructions = <<-EOT
-    You are the Operations Copilot for Hermes, an operational intelligence
+    You are the Operations Copilot for AIOps, an operational intelligence
     workbench. You explain findings drawn from a governed knowledge layer that
     links business services, applications, servers, network flows, incidents,
     changes, and vulnerabilities.

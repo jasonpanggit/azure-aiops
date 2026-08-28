@@ -1,6 +1,6 @@
 """Fabric lifecycle assessment pipeline.
 
-Ports the Hermes lifecycle analysis surface to the API-triggered Fabric sync
+Ports the lifecycle analysis surface to the API-triggered Fabric sync
 path by reusing ``LifecycleIntelligence`` directly over Fabric/Lakehouse rows.
 """
 

@@ -5,15 +5,15 @@
 Run the existing ARG and Fabric synchronization on the required cadence. `Sync operational ontology` performs inventory-to-OneLake synchronization and Ontology publication as one leased operation.
 
 ```bash
-uv run hermes-arg fabric "Sync operational ontology" --config /secure/fabric.config.yaml
+uv run aiops-inventory fabric "Sync operational ontology" --config /secure/fabric.config.yaml
 ```
 
 ## Health checks
 
 ```bash
-uv run hermes-arg fabric "Show ontology health" --config /secure/fabric.config.yaml
-uv run hermes-arg fabric "Show ingestion status" --config /secure/fabric.config.yaml
-uv run hermes-arg fabric "Validate inventory data" --config /secure/fabric.config.yaml
+uv run aiops-inventory fabric "Show ontology health" --config /secure/fabric.config.yaml
+uv run aiops-inventory fabric "Show ingestion status" --config /secure/fabric.config.yaml
+uv run aiops-inventory fabric "Validate inventory data" --config /secure/fabric.config.yaml
 ```
 
 Monitor OpenTelemetry instruments:
@@ -31,15 +31,15 @@ Alert on synchronization errors, sustained orphan growth, missing-ownership grow
 ## Query examples
 
 ```bash
-uv run hermes-arg ontology "What applications are affected by patch failures?" --config /secure/fabric.config.yaml
-uv run hermes-arg ontology "Who owns this VM?" --entity vm-prod-01 --config /secure/fabric.config.yaml
-uv run hermes-arg ontology "What resources belong to Service X?" --entity Payments --config /secure/fabric.config.yaml
-uv run hermes-arg ontology "What is impacted if this server fails?" --entity arc-prod-01 --config /secure/fabric.config.yaml
-uv run hermes-arg ontology "Show dependencies of Application X" --entity Checkout --config /secure/fabric.config.yaml
-uv run hermes-arg ontology "Show compliance by application" --config /secure/fabric.config.yaml
+uv run aiops-inventory ontology "What applications are affected by patch failures?" --config /secure/fabric.config.yaml
+uv run aiops-inventory ontology "Who owns this VM?" --entity vm-prod-01 --config /secure/fabric.config.yaml
+uv run aiops-inventory ontology "What resources belong to Service X?" --entity Payments --config /secure/fabric.config.yaml
+uv run aiops-inventory ontology "What is impacted if this server fails?" --entity arc-prod-01 --config /secure/fabric.config.yaml
+uv run aiops-inventory ontology "Show dependencies of Application X" --entity Checkout --config /secure/fabric.config.yaml
+uv run aiops-inventory ontology "Show compliance by application" --config /secure/fabric.config.yaml
 ```
 
-Agents use `operations_analysis`, which consumes the Semantic Layer internally; `hermes-arg ontology` is retained only for operator diagnostics.
+Agents use `operations_analysis`, which consumes the Semantic Layer internally; `aiops-inventory ontology` is retained only for operator diagnostics.
 
 For broad ownership coverage, agents use `command="Find Resources With Missing Ownership"` with `subject="Enterprise"`; the response remains bounded, sanitized, and read-only.
 

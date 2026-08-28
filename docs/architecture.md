@@ -17,9 +17,9 @@ flowchart LR
         ARG --> T5
     end
 
-    subgraph Connector[Hermes Azure Resource Graph plugin]
+    subgraph Connector[AIOps Azure Resource Graph plugin]
         CLI[On-demand CLI]
-        CRON[Hermes durable cron]
+        CRON[AIOps durable cron]
         SVC[IngestionService]
         CATALOG[Versioned QueryCatalog]
         MCPCLIENT[AzureMcpClient]
@@ -70,9 +70,9 @@ flowchart LR
 
 - Azure remains the inventory and operational system of record.
 - Azure MCP performs supported subscription discovery. The tested Azure MCP build does not expose an arbitrary ARG query tool, so the connector uses the existing Azure CLI `az graph query` command for the five required tables instead of adding an Azure SDK wrapper.
-- Hermes cron provides durable scheduling; the connector does not introduce another scheduler.
+- AIOps cron provides durable scheduling; the connector does not introduce another scheduler.
 - Normalized entities, relationships, and generated ontology metadata are separate datasets; raw query retention is an explicit, disabled-by-default option.
 - OneLake Delta is canonical persistence. Typed graph projections are bound through the documented Fabric Ontology public-definition REST API; no custom graph store or undocumented instance-write API is used.
 - Dataset generations use owner-only permissions and an atomic `current` symlink switch. A cross-process lock prevents concurrent writers.
 - `ResourceChanges` uses a maximum-observed watermark, overlap window, and accumulated deduplicated history.
-- Five ARG queries run in parallel after Azure MCP discovery so the default job remains within Hermes cron's execution budget.
+- Five ARG queries run in parallel after Azure MCP discovery so the default job remains within AIOps cron's execution budget.

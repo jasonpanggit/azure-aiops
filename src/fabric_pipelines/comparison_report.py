@@ -1,4 +1,4 @@
-"""D-04/D-04a comparison harness support: measures Hermes's
+"""D-04/D-04a comparison harness support: measures the SemanticEngine arm's
 ``SemanticEngine`` arm against the Fabric-native ``topology_pipeline`` arm
 on the identical shared curated snapshot (``tests/topology_comparison_scenario``,
 Pitfall 3) and produces a single reproducible ``ComparisonReport`` covering
@@ -24,7 +24,7 @@ traversal over each arm's own relationship/edge index, starting from the
 same root id -- this is what both ``Normalizer.normalize()`` (via
 ``NormalizedGraph.relationships``) and ``derive_edges()`` (via its edge
 dict) actually support natively, and it is the literal blast-radius
-question D-04 asks about ("what is reachable from this root"). Hermes's
+question D-04 asks about ("what is reachable from this root"). the SemanticEngine arm's
 ``get_impact_context()`` is *also* invoked and recorded (``cause_type``
 plus its own reported ``blast_radius``) as supplementary evidence, so the
 named API in the plan objective is exercised and its cause_type/ASSET_TYPES
@@ -76,20 +76,20 @@ class ComparisonReport:
     rather than the dimension being omitted."""
 
     root_id: str
-    hermes: ArmResult
+    semantic: ArmResult
     fabric: ArmResult
 
     # Dimension 1: correctness
     impacted_ids_match: bool
-    hermes_only: set[str]
+    semantic_only: set[str]
     fabric_only: set[str]
 
     # Dimension 2: evidence links
-    hermes_missing_evidence: list[str]
+    semantic_missing_evidence: list[str]
     fabric_missing_evidence: list[str]
 
     # Dimension 3: authorization / scope
-    hermes_scope_violations: list[str]
+    semantic_scope_violations: list[str]
     fabric_scope_violations: list[str]
 
     # Dimension 4: latency
@@ -111,23 +111,23 @@ class ComparisonReport:
         lines.append("")
         lines.append("#### 1. Correctness")
         lines.append(f"- Impacted-set match: **{self.impacted_ids_match}**")
-        lines.append(f"- Hermes impacted count: {len(self.hermes.impacted_ids)}")
+        lines.append(f"- SemanticEngine impacted count: {len(self.semantic.impacted_ids)}")
         lines.append(f"- Fabric impacted count: {len(self.fabric.impacted_ids)}")
-        if self.hermes_only:
-            lines.append(f"- Only in Hermes: {sorted(self.hermes_only)}")
+        if self.semantic_only:
+            lines.append(f"- Only in SemanticEngine: {sorted(self.semantic_only)}")
         if self.fabric_only:
             lines.append(f"- Only in Fabric: {sorted(self.fabric_only)}")
         lines.append("")
         lines.append("#### 2. Evidence-link presence")
         lines.append(
-            f"- Hermes edges missing source/confidence evidence: {self.hermes_missing_evidence or 'none'}"
+            f"- SemanticEngine edges missing source/confidence evidence: {self.semantic_missing_evidence or 'none'}"
         )
         lines.append(
             f"- Fabric edges missing source/confidence evidence: {self.fabric_missing_evidence or 'none'}"
         )
         lines.append("")
         lines.append("#### 3. Authorization / scope enforcement")
-        lines.append(f"- Hermes scope violations: {self.hermes_scope_violations or 'none'}")
+        lines.append(f"- SemanticEngine scope violations: {self.semantic_scope_violations or 'none'}")
         lines.append(f"- Fabric scope violations: {self.fabric_scope_violations or 'none'}")
         lines.append("")
         lines.append("#### 4. Latency (wall-clock, seconds)")
@@ -149,7 +149,7 @@ class ComparisonReport:
 
 
 def edge_view_from_camel_case(edge: Any) -> EdgeView:
-    """Both arms emit the same Hermes-style camelCase edge envelope
+    """Both arms emit the same SemanticEngine-style camelCase edge envelope
     (``relationshipId``/``subjectId``/``predicate``/``objectId``/``source``/
     ``confidence``/``assertionState``) -- one adapter covers both."""
     return EdgeView(
@@ -254,51 +254,51 @@ def _non_accepted_states(edges: list[EdgeView]) -> list[str]:
     return sorted({edge.assertion_state for edge in edges if edge.assertion_state != "accepted"})
 
 
-def compare(hermes: ArmResult, fabric: ArmResult, *, root_id: str) -> ComparisonReport:
+def compare(semantic: ArmResult, fabric: ArmResult, *, root_id: str) -> ComparisonReport:
     """Produces the five-dimension D-04 comparison for one shared scenario.
     Neither arm's raw output is trusted as ground truth over the other --
     both are measured against the same shared-fixture entity/edge index.
     """
-    impacted_match = hermes.impacted_ids == fabric.impacted_ids
-    hermes_only = hermes.impacted_ids - fabric.impacted_ids
-    fabric_only = fabric.impacted_ids - hermes.impacted_ids
+    impacted_match = semantic.impacted_ids == fabric.impacted_ids
+    semantic_only = semantic.impacted_ids - fabric.impacted_ids
+    fabric_only = fabric.impacted_ids - semantic.impacted_ids
 
-    hermes_missing_evidence = _missing_evidence(hermes.edges)
+    semantic_missing_evidence = _missing_evidence(semantic.edges)
     fabric_missing_evidence = _missing_evidence(fabric.edges)
 
-    hermes_scope_violations = _scope_violations(hermes.edges, hermes.entity_ids)
+    semantic_scope_violations = _scope_violations(semantic.edges, semantic.entity_ids)
     fabric_scope_violations = _scope_violations(fabric.edges, fabric.entity_ids)
 
-    latency = {hermes.arm_name: hermes.latency_seconds, fabric.arm_name: fabric.latency_seconds}
+    latency = {semantic.arm_name: semantic.latency_seconds, fabric.arm_name: fabric.latency_seconds}
 
     operational_cost_proxy = {
         "note": "proxy metric -- query count and edge count, not live Azure billing telemetry",
-        f"{hermes.arm_name}_query_count": hermes.query_count,
+        f"{semantic.arm_name}_query_count": semantic.query_count,
         f"{fabric.arm_name}_query_count": fabric.query_count,
-        f"{hermes.arm_name}_edge_count": len(hermes.edges),
+        f"{semantic.arm_name}_edge_count": len(semantic.edges),
         f"{fabric.arm_name}_edge_count": len(fabric.edges),
     }
 
     non_accepted_states = {
-        hermes.arm_name: _non_accepted_states(hermes.edges),
+        semantic.arm_name: _non_accepted_states(semantic.edges),
         fabric.arm_name: _non_accepted_states(fabric.edges),
     }
 
     dangling_edges_dropped = {
-        hermes.arm_name: bool(hermes.supplementary.get("dangling_edges_dropped", False)),
+        semantic.arm_name: bool(semantic.supplementary.get("dangling_edges_dropped", False)),
         fabric.arm_name: bool(fabric.supplementary.get("dangling_edges_dropped", False)),
     }
 
     return ComparisonReport(
         root_id=root_id,
-        hermes=hermes,
+        semantic=semantic,
         fabric=fabric,
         impacted_ids_match=impacted_match,
-        hermes_only=hermes_only,
+        semantic_only=semantic_only,
         fabric_only=fabric_only,
-        hermes_missing_evidence=hermes_missing_evidence,
+        semantic_missing_evidence=semantic_missing_evidence,
         fabric_missing_evidence=fabric_missing_evidence,
-        hermes_scope_violations=hermes_scope_violations,
+        semantic_scope_violations=semantic_scope_violations,
         fabric_scope_violations=fabric_scope_violations,
         latency_seconds=latency,
         operational_cost_proxy=operational_cost_proxy,

@@ -72,7 +72,7 @@ def client(tmp_path: Path) -> TestClient:
     payload["software_source_status"] = {"logs": {"state": "ready", "query_version": "inventory-software-v1"}}
     mapping_repository = SoftwareMappingRepository(tmp_path / "software-mappings.json")
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(
             {
                 TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),)),

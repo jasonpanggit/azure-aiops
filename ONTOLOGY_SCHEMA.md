@@ -1,4 +1,4 @@
-# Hermes Operations Graph — Ontology Schema
+# AIOps Operations Graph — Ontology Schema
 
 ## 1. Modeling conventions
 

@@ -151,7 +151,7 @@ def seed_local_environment(
         registry.add(seeded)
     return {
         "status": "seeded",
-        "hermes_home": str(root_path),
+        "aiops_home": str(root_path),
         "fixture": str(fixture_path),
         "connection": registry.get(connection_id).to_dict(),
         "manifest": manifest,
@@ -184,14 +184,14 @@ def inject_local_spn_connection(
     tenant_id = str(environment["AZURE_TENANT_ID"]).strip()
     client_id = str(environment["AZURE_CLIENT_ID"]).strip()
     business = BusinessMetadata(
-        business_service=str(environment.get("HERMES_LOCAL_BUSINESS_SERVICE") or "Local Azure Discovery"),
-        application=str(environment.get("HERMES_LOCAL_APPLICATION") or "AI Ops Local"),
-        environment=str(environment.get("HERMES_LOCAL_ENVIRONMENT") or "local"),
-        project_owner=str(environment.get("HERMES_LOCAL_OWNER") or "Local Developer"),
-        support_team=str(environment.get("HERMES_LOCAL_SUPPORT_TEAM") or "Local Developer"),
-        criticality=str(environment.get("HERMES_LOCAL_CRITICALITY") or "medium"),
-        region=str(environment.get("HERMES_LOCAL_REGION") or "local"),
-        cost_center=str(environment.get("HERMES_LOCAL_COST_CENTER") or "local"),
+        business_service=str(environment.get("AIOPS_LOCAL_BUSINESS_SERVICE") or "Local Azure Discovery"),
+        application=str(environment.get("AIOPS_LOCAL_APPLICATION") or "AI Ops Local"),
+        environment=str(environment.get("AIOPS_LOCAL_ENVIRONMENT") or "local"),
+        project_owner=str(environment.get("AIOPS_LOCAL_OWNER") or "Local Developer"),
+        support_team=str(environment.get("AIOPS_LOCAL_SUPPORT_TEAM") or "Local Developer"),
+        criticality=str(environment.get("AIOPS_LOCAL_CRITICALITY") or "medium"),
+        region=str(environment.get("AIOPS_LOCAL_REGION") or "local"),
+        cost_center=str(environment.get("AIOPS_LOCAL_COST_CENTER") or "local"),
     )
     connection = SubscriptionConnection(
         connection_id=connection_id,
@@ -250,7 +250,7 @@ def inject_local_spn_connection(
         sync_result = service.sync(connection_id, mode="initial")
     return {
         "status": status,
-        "hermes_home": str(root_path),
+        "aiops_home": str(root_path),
         "connection": registry.get(connection_id).to_dict(),
         "sync": sync_result,
     }

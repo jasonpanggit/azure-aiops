@@ -20,7 +20,7 @@ import pytest
 
 from storage.locking import LEASE_DURATION_SECONDS, RunLock
 
-ROOT = "abfss://ws-hermes@onelake.dfs.fabric.microsoft.com/lakehouse/Files/hermes"
+ROOT = "abfss://ws-aiops@onelake.dfs.fabric.microsoft.com/lakehouse/Files/aiops"
 
 
 class _FakeLease:
@@ -106,8 +106,8 @@ def test_remote_lock_acquires_a_finite_lease():
     with RunLock(ROOT, service_client=service) as lock:
         assert lock._lease.duration == LEASE_DURATION_SECONDS
     # The workspace is the container; the lakehouse path stays in the key.
-    assert service.file_systems == ["ws-hermes"]
-    assert service.created == {"ws-hermes/lakehouse/Files/hermes/state/run.lock"}
+    assert service.file_systems == ["ws-aiops"]
+    assert service.created == {"ws-aiops/lakehouse/Files/aiops/state/run.lock"}
 
 
 def test_remote_lock_is_exclusive():
@@ -146,7 +146,7 @@ def test_renew_is_a_no_op_for_local_roots(tmp_path):
 @pytest.mark.parametrize(
     "root",
     [
-        "abfss://ws-hermes@onelake.dfs.fabric.microsoft.com",
+        "abfss://ws-aiops@onelake.dfs.fabric.microsoft.com",
         "abfss://@onelake.dfs.fabric.microsoft.com/lakehouse",
     ],
 )

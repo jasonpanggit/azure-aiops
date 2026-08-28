@@ -84,27 +84,27 @@ from .providers import ProviderRuntime, ProviderSpec, ProviderValue
 from .rbac import Authorizer, Grant, Principal
 from .telemetry import ApiTelemetry
 
-ENV_HOME = "HERMES_HOME"
-ENV_AUTH_MODE = "HERMES_API_AUTH"
-ENV_TOKENS = "HERMES_API_TOKENS"
-ENV_GATEWAY_GRANTS = "HERMES_API_GATEWAY_GRANTS"
-ENV_ENTRA_TENANT_ID = "HERMES_ENTRA_TENANT_ID"
-ENV_ENTRA_AUDIENCE = "HERMES_ENTRA_AUDIENCE"
+ENV_HOME = "AIOPS_HOME"
+ENV_AUTH_MODE = "AIOPS_API_AUTH"
+ENV_TOKENS = "AIOPS_API_TOKENS"
+ENV_GATEWAY_GRANTS = "AIOPS_API_GATEWAY_GRANTS"
+ENV_ENTRA_TENANT_ID = "AIOPS_ENTRA_TENANT_ID"
+ENV_ENTRA_AUDIENCE = "AIOPS_ENTRA_AUDIENCE"
 # Optional path to the onboarding YAML config (see config.example.yaml)
 # used only to source ingestion defaults (page size, timeouts, MCP command,
 # ...). Per-connection subscription/tenant scoping always comes from the
 # connection itself, so this file need not list any subscriptions.
-ENV_ARG_CONFIG = "HERMES_ARG_CONFIG"
-ENV_CONNECTION_KEY_VAULT = "HERMES_CONNECTION_KEY_VAULT"
-ENV_FABRIC_CONFIG = "HERMES_FABRIC_CONFIG"
-ENV_RUNTIME_MODE = "HERMES_RUNTIME_MODE"
-ENV_PROVIDER_REFRESH_SECONDS = "HERMES_PROVIDER_REFRESH_SECONDS"
-ENV_PROVIDER_STALE_HOURS = "HERMES_PROVIDER_STALE_HOURS"
+ENV_ARG_CONFIG = "AIOPS_ARG_CONFIG"
+ENV_CONNECTION_KEY_VAULT = "AIOPS_CONNECTION_KEY_VAULT"
+ENV_FABRIC_CONFIG = "AIOPS_FABRIC_CONFIG"
+ENV_RUNTIME_MODE = "AIOPS_RUNTIME_MODE"
+ENV_PROVIDER_REFRESH_SECONDS = "AIOPS_PROVIDER_REFRESH_SECONDS"
+ENV_PROVIDER_STALE_HOURS = "AIOPS_PROVIDER_STALE_HOURS"
 ENV_FOUNDRY_PROJECT_ENDPOINT = "FOUNDRY_PROJECT_ENDPOINT"
 ENV_APPROVED_SEARCH_API_ENDPOINT = "APPROVED_SEARCH_API_ENDPOINT"
 ENV_APPROVED_SEARCH_API_KEY = "APPROVED_SEARCH_API_KEY"
 # Opt-in switch for real Azure patch execution. Absent it, patch runs refuse.
-ENV_PATCH_EXECUTION = "HERMES_PATCH_EXECUTION"
+ENV_PATCH_EXECUTION = "AIOPS_PATCH_EXECUTION"
 
 AUTH_GATEWAY = "gateway"
 AUTH_ENTRA = "entra"
@@ -116,7 +116,7 @@ _UNSET: Any = object()
 _foundry_agent: Any = _UNSET
 
 
-def hermes_home() -> Path | str:
+def aiops_home() -> Path | str:
     """Root for all persisted state: connection dataset snapshots.
 
     Plain paths use the local disk (the default for development). Set to a
@@ -127,11 +127,11 @@ def hermes_home() -> Path | str:
     """
     from storage.fs import resolve_root
 
-    return resolve_root(os.environ.get(ENV_HOME) or str(Path.home() / ".hermes"))
+    return resolve_root(os.environ.get(ENV_HOME) or str(Path.home() / ".aiops"))
 
 
 def _token_principals() -> dict[str, Principal]:
-    """Parse ``HERMES_API_TOKENS`` as JSON: ``{token: {subject, grants: [...]}}``."""
+    """Parse ``AIOPS_API_TOKENS`` as JSON: ``{token: {subject, grants: [...]}}``."""
     raw = os.environ.get(ENV_TOKENS, "").strip()
     if not raw:
         raise RuntimeError(
@@ -206,14 +206,14 @@ def _onboarding_service() -> SubscriptionOnboardingService:
     "No ingestion factory is configured" on every call. `build_onboarding_service`
     is the one place (also used by the CLI) that wires ingestion; per-connection
     subscription/tenant scoping comes from the connection itself at sync time,
-    so an unconfigured HERMES_ARG_CONFIG defaults safely to base ingestion
+    so an unconfigured AIOPS_ARG_CONFIG defaults safely to base ingestion
     settings.
     """
     config_path = os.environ.get(ENV_ARG_CONFIG, "").strip()
     config = (
         ConnectorConfig.load(config_path)
         if config_path
-        else ConnectorConfig(output_dir=hermes_home())
+        else ConnectorConfig(output_dir=aiops_home())
     )
     vault = os.environ.get(ENV_CONNECTION_KEY_VAULT, "").strip()
     return build_onboarding_service(
@@ -266,7 +266,7 @@ def _load_ontology_rows() -> tuple[list[dict], list[dict], str]:
 # real network latency, causing repeated probe failures and a
 # CrashLoopBackOff that silently reverts traffic to an older revision. Cache
 # the result with a short TTL so the probe never triggers a fresh remote read.
-# The cache is keyed by the resolved `HERMES_HOME` root, because that root is
+# The cache is keyed by the resolved `AIOPS_HOME` root, because that root is
 # resolved from the environment on every call and a value loaded for one root
 # must never be served for another.
 _SNAPSHOT_TABLES_CACHE_TTL_SECONDS = 30
@@ -282,13 +282,13 @@ _hybrid_network_cache: dict[tuple[str, tuple[str, ...]], tuple[float, list[dict]
 def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
     """Load the mapped datasets for every registered synced connection.
 
-    Cached per `HERMES_HOME` root with a short TTL (see module docstring above)
+    Cached per `AIOPS_HOME` root with a short TTL (see module docstring above)
     so repeated calls (notably the health probe, hit every ~10s) don't each
     perform a fresh remote OneLake read.
     """
     from storage.datasets import DatasetStore
 
-    root = hermes_home()
+    root = aiops_home()
     cache_key = str(root)
     now = time.time()
     cached = _snapshot_tables_cache.get(cache_key)
@@ -338,7 +338,7 @@ def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
 
 
 def _load_semantic_snapshot() -> SemanticEngine | None:
-    root = hermes_home()
+    root = aiops_home()
     entities, relationships, freshness = _load_ontology_rows()
     if not entities:
         return None
@@ -394,7 +394,7 @@ def _load_incident_engine() -> IncidentEngine | None:
 # external API call storm and to respect NVD's rate limits.
 #
 # The caches are backed by OneLake (see `EnrichmentCache`) whenever
-# HERMES_HOME points at Fabric, so they survive restarts and are shared by
+# AIOPS_HOME points at Fabric, so they survive restarts and are shared by
 # every replica instead of each one cold-starting its own copy and
 # multiplying load on rate-limited public feeds. A local home keeps them
 # purely in memory. Failures never break the endpoint.
@@ -413,11 +413,11 @@ def _enrichment_cache_for(name: str, root: str) -> EnrichmentCache:
 def _enrichment_cache(name: str) -> EnrichmentCache:
     """One durable cache per feed, reused per process.
 
-    Keyed by the resolved `HERMES_HOME` as well as the feed name: the root is
+    Keyed by the resolved `AIOPS_HOME` as well as the feed name: the root is
     read from the environment on every call, and entries cached under one
     root must never be served for another.
     """
-    return _enrichment_cache_for(name, str(hermes_home()))
+    return _enrichment_cache_for(name, str(aiops_home()))
 
 
 def _resolve_kb_to_cves(kb_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
@@ -667,7 +667,7 @@ def _load_vulnerability_service() -> VulnerabilityIntelligenceService | None:
 # Risk exceptions are user-submitted mutations that must survive both a
 # provider rebuild and a container restart, and must be consistent across
 # replicas. They are persisted as a single OneLake document whenever
-# HERMES_HOME points at Fabric; a local (development) home keeps them in
+# AIOPS_HOME points at Fabric; a local (development) home keeps them in
 # memory, which is sufficient for a single-process run.
 _risk_exception_store: dict[str, RiskException] = {}
 _RISK_EXCEPTION_DOCUMENT = "state/risk_exceptions.json"
@@ -675,7 +675,7 @@ _RISK_EXCEPTION_DOCUMENT = "state/risk_exceptions.json"
 
 def _risk_exception_documents() -> Any:
     """Return the OneLake document store, or None for a local home."""
-    root = hermes_home()
+    root = aiops_home()
     if not is_onelake_uri(root):
         return None
     return OneLakeDocumentStore(str(root))
@@ -854,7 +854,7 @@ def _truthy(name: str, default: bool = False) -> bool:
 
 def _fabric_is_configured() -> bool:
     return bool(os.environ.get(ENV_FABRIC_CONFIG, "").strip()) or (
-        _truthy("HERMES_ENABLE_FABRIC")
+        _truthy("AIOPS_ENABLE_FABRIC")
         and bool(os.environ.get("FABRIC_WORKSPACE_ID", "").strip())
         and bool(os.environ.get("FABRIC_LAKEHOUSE_ID", "").strip())
     )
@@ -875,7 +875,7 @@ def _fabric_runtime_from_environment() -> FabricRuntime | None:
         # The API reads published OneLake tables. This source path is used only
         # by explicit publication commands, never by request handling.
         source_data_root=Path(
-            os.environ.get("HERMES_FABRIC_SOURCE_DATA_ROOT", "/data/fabric-source")
+            os.environ.get("AIOPS_FABRIC_SOURCE_DATA_ROOT", "/data/fabric-source")
         ),
         workspace_id=os.environ["FABRIC_WORKSPACE_ID"].strip(),
         lakehouse_id=os.environ["FABRIC_LAKEHOUSE_ID"].strip(),
@@ -1017,7 +1017,7 @@ def _build_provider_runtime(
         snapshot = runtime.service.semantic_snapshot()
         freshness = str(snapshot.get("freshness") or "")
         if not freshness:
-            if _truthy("HERMES_ALLOW_EMPTY_FABRIC_SNAPSHOT"):
+            if _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT"):
                 # A newly created validation lakehouse is intentionally empty
                 # until the first activation sync completes.
                 return None
@@ -1068,7 +1068,7 @@ def _build_provider_runtime(
         os.environ.get("FOUNDRY_PROJECT_ENDPOINT", "").strip()
         and os.environ.get("FOUNDRY_AGENT_NAME", "").strip()
     )
-    bootstrap = _truthy("HERMES_ALLOW_EMPTY_FABRIC_SNAPSHOT")
+    bootstrap = _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT")
     specs = {
         name: ProviderSpec(loader=loader, configured=True, required=not bootstrap)
         for name, loader in loaders.items()
@@ -1128,7 +1128,7 @@ def _patch_execution_adapter() -> Any:
 
     Defaults to the refusing adapter: triggering real Azure writes must be an
     explicit deployment decision, never an accident of configuration. Setting
-    ``HERMES_PATCH_EXECUTION=azure`` opts a deployment in to live ARM calls,
+    ``AIOPS_PATCH_EXECUTION=azure`` opts a deployment in to live ARM calls,
     and even then a missing or unusable credential falls back to refusing
     rather than failing at import time.
     """
@@ -1201,7 +1201,7 @@ def _governance_connections() -> list[dict[str, Any]]:
 
 def _settings_store() -> EnterpriseSettingsStore:
     """Settings persisted to OneLake when available, in memory otherwise."""
-    root = hermes_home()
+    root = aiops_home()
     documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
     return EnterpriseSettingsStore(documents)
 
@@ -1214,7 +1214,7 @@ _NETWORK_POLICY_STORE: NetworkDesignPolicyStore | None = None
 def _network_policy_store() -> NetworkDesignPolicyStore:
     global _NETWORK_POLICY_STORE
     if _NETWORK_POLICY_STORE is None:
-        root = hermes_home()
+        root = aiops_home()
         documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
         _NETWORK_POLICY_STORE = NetworkDesignPolicyStore(documents)
     return _NETWORK_POLICY_STORE
@@ -1225,7 +1225,7 @@ def _load_situation_provider() -> Any:
     from situations.store import SituationReadProvider
     from storage.datasets import DatasetStore
 
-    return SituationReadProvider(DatasetStore(hermes_home()))
+    return SituationReadProvider(DatasetStore(aiops_home()))
 
 
 def _load_inventory_service() -> Any:
@@ -1235,12 +1235,12 @@ def _load_inventory_service() -> Any:
     from storage.datasets import DatasetStore
 
     eol_review = _load_eol_review_service()
-    root = hermes_home()
+    root = aiops_home()
     mapping_repository = SoftwareMappingRepository(
         document_store=OneLakeDocumentStore(str(root)),
         document_name="state/software_mappings.json",
     )
-    fixture = os.environ.get("HERMES_INVENTORY_FIXTURE", "").strip()
+    fixture = os.environ.get("AIOPS_INVENTORY_FIXTURE", "").strip()
     if fixture:
         return InventoryService.from_fixture(
             fixture,
@@ -1258,7 +1258,7 @@ def _load_inventory_service() -> Any:
     # Production refreshes publish governed inventory tables to OneLake while
     # the compatibility generation may live on a different local filesystem.
     # Read those tables directly so the API does not report an empty provider.
-    if os.environ.get("HERMES_ENABLE_FABRIC", "").strip().casefold() != "true":
+    if os.environ.get("AIOPS_ENABLE_FABRIC", "").strip().casefold() != "true":
         return None
     workspace_id = os.environ.get("FABRIC_WORKSPACE_ID", "").strip()
     lakehouse_id = os.environ.get("FABRIC_LAKEHOUSE_ID", "").strip()
@@ -1324,7 +1324,7 @@ def _load_eol_review_service() -> Any:
         UnavailableLifecycleSearchProvider,
     )
 
-    root = hermes_home()
+    root = aiops_home()
     document_store = OneLakeDocumentStore(str(root))
     endpoint = os.environ.get(ENV_APPROVED_SEARCH_API_ENDPOINT, "").strip()
     credential = os.environ.get(ENV_APPROVED_SEARCH_API_KEY, "").strip()
@@ -1361,7 +1361,7 @@ def build_context() -> ApiContext:
     arg_config = (
         ConnectorConfig.load(os.environ[ENV_ARG_CONFIG])
         if os.environ.get(ENV_ARG_CONFIG, "").strip()
-        else ConnectorConfig(output_dir=hermes_home())
+        else ConnectorConfig(output_dir=aiops_home())
     )
     live_resources = ConnectionScopedLiveResourceProvider(
         lambda: onboarding.registry.list(include_disabled=False),
@@ -1427,7 +1427,7 @@ def build_context() -> ApiContext:
         # Cached per (root, subscription set): every scoped network route hits
         # this path, and each miss is a live ARG round trip. The TTL matches
         # the snapshot-table cache so freshness behaviour is consistent.
-        cache_key = (str(hermes_home()), tuple(sorted(subscription_ids)))
+        cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
         now = time.time()
         cached = _hybrid_network_cache.get(cache_key)
         if cached is not None and now - cached[0] < _HYBRID_NETWORK_CACHE_TTL_SECONDS:

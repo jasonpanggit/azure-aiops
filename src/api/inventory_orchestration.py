@@ -1,8 +1,8 @@
 """API-owned inventory orchestration.
 
 This module contains the multi-connection refresh used by API-triggered sync.
-The legacy Hermes connector remains as a compatibility surface while callers
-move to this neutral API module.
+It is the single entry point for inventory refresh; the standalone connector
+package it replaced has been removed.
 """
 
 from __future__ import annotations

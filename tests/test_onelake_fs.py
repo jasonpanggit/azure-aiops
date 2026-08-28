@@ -251,8 +251,8 @@ def test_resolve_fs_selects_the_dfs_native_backend(monkeypatch) -> None:
     from storage.fs import resolve_fs
 
     filesystem, root = resolve_fs(
-        "abfss://workspace-id@onelake.dfs.fabric.microsoft.com/lakehouse-id/Files/hermes"
+        "abfss://workspace-id@onelake.dfs.fabric.microsoft.com/lakehouse-id/Files/aiops"
     )
 
     assert isinstance(filesystem, OneLakeFileSystem)
-    assert root == "workspace-id/lakehouse-id/Files/hermes"
+    assert root == "workspace-id/lakehouse-id/Files/aiops"

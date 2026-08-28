@@ -7,11 +7,11 @@ the signals in `OBSERVABILITY.md`.
 
 | SLO | Target | Measured by |
 | --- | --- | --- |
-| API availability (`/ready` returns non-503) | 99.0% monthly | `hermes.api.requests` status class + `/ready` alert |
-| API read-path latency (p95) | < 2s for graph/investigation endpoints | `hermes.api.request.duration` histogram |
-| Provider freshness (required providers) | Stale ≤ `HERMES_PROVIDER_STALE_HOURS` (default 24h) | `ProviderRuntime.health()` freshness field |
+| API availability (`/ready` returns non-503) | 99.0% monthly | `aiops.api.requests` status class + `/ready` alert |
+| API read-path latency (p95) | < 2s for graph/investigation endpoints | `aiops.api.request.duration` histogram |
+| Provider freshness (required providers) | Stale ≤ `AIOPS_PROVIDER_STALE_HOURS` (default 24h) | `ProviderRuntime.health()` freshness field |
 | Copilot answer latency (p95, Foundry configured) | < 15s including one retry | Foundry client timeout (`FOUNDRY_TIMEOUT_SECONDS`, default 60s) + retry backoff |
-| Background refresh cadence | Every `HERMES_PROVIDER_REFRESH_SECONDS` (default 30s) | `_start_background_refresh` thread |
+| Background refresh cadence | Every `AIOPS_PROVIDER_REFRESH_SECONDS` (default 30s) | `_start_background_refresh` thread |
 
 A monthly SLO review compares actual Log Analytics data against these
 targets; see `READINESS_REVIEW.md` for the review cadence during the pilot.
@@ -47,7 +47,7 @@ core reliability pattern: a failed refresh **never replaces a working
 provider** — it marks that provider `degraded`, schedules a bounded retry,
 and continues serving the last good snapshot. `/health` accurately reports
 the failure while `/ready` still passes if the stale snapshot is within
-`HERMES_PROVIDER_STALE_HOURS`. Two locks (`_state_lock` for reads,
+`AIOPS_PROVIDER_STALE_HOURS`. Two locks (`_state_lock` for reads,
 `_refresh_lock` for serializing actual refresh execution) mean a health
 probe is never blocked behind a slow loader.
 
@@ -77,7 +77,7 @@ platform-managed database (`infra/terraform/persistence.tf`,
 
 - **Connection registry, risk exceptions, cached CVE enrichment, dataset
   generations** — OneLake/Fabric Lakehouse. Recovery relies on Fabric's own
-  workspace/capacity backup and versioning guarantees, not a Hermes-specific
+  workspace/capacity backup and versioning guarantees, not a AIOps-specific
   backup job. Fabric capacity and workspace-level access are the operator's
   responsibility per the Fabric admin's retention policy.
 - **Ontology publication** — `docs/ONTOLOGY_RUNBOOK.md` documents the

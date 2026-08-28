@@ -17,7 +17,7 @@ from fabric_pipelines.topology_pipeline import (
     derive_edges,
     to_topology_edge_row,
 )
-from onboarding.graph_normalize import _add_edge as hermes_add_edge
+from onboarding.graph_normalize import _add_edge as aiops_add_edge
 from storage.onelake_writer import OneLakeWriter
 
 
@@ -37,19 +37,19 @@ def test_derive_edges_produces_expected_entities_and_predicates():
     assert (SUBNET_ID, "protectedBy", NSG_ID) in predicates_by_pair
 
 
-def test_protects_by_edge_relationship_id_matches_hermes_add_edge_scheme():
+def test_protects_by_edge_relationship_id_matches_aiops_add_edge_scheme():
     """Proves the tracer's `<done>` criterion: same subject/predicate/object/
     source input produces the exact same content-addressed relationshipId
-    Hermes's own `Normalizer._add_edge` would produce.
+    AIOps's own `Normalizer._add_edge` would produce.
     """
     _, edges = derive_edges(topology_comparison_scenario(), observed=OBSERVED_AT)
     pipeline_edge = to_topology_edge_row(
         next(edge for edge in edges if edge["predicate"] == "protectedBy")
     )
 
-    hermes_index: dict[str, dict] = {}
-    hermes_add_edge(
-        hermes_index,
+    aiops_index: dict[str, dict] = {}
+    aiops_add_edge(
+        aiops_index,
         pipeline_edge["subject_id"],
         pipeline_edge["predicate"],
         pipeline_edge["object_id"],
@@ -57,9 +57,9 @@ def test_protects_by_edge_relationship_id_matches_hermes_add_edge_scheme():
         OBSERVED_AT,
         0.99,
     )
-    hermes_edge = next(iter(hermes_index.values()))
+    aiops_edge = next(iter(aiops_index.values()))
 
-    assert hermes_edge["relationshipId"] == pipeline_edge["relationship_id"]
+    assert aiops_edge["relationshipId"] == pipeline_edge["relationship_id"]
     # Independently recompute the hash to prove the scheme itself, not just
     # cross-agreement between the two ports of the same function.
     expected_digest = hashlib.sha256(

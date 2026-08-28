@@ -10,7 +10,7 @@ Infer and maintain these operational relationships with evidence and confidence:
 - Application → ServiceBus
 - Application → AKSCluster
 
-Raw telemetry remains in Azure Monitor, Log Analytics, Application Insights, and OpenTelemetry. Hermes stores only normalized endpoint-pair evidence windows and accepted/proposed relationships.
+Raw telemetry remains in Azure Monitor, Log Analytics, Application Insights, and OpenTelemetry. AIOps stores only normalized endpoint-pair evidence windows and accepted/proposed relationships.
 
 ## 2. Source capability assessment
 
@@ -23,7 +23,7 @@ Raw telemetry remains in Azure Monitor, Log Analytics, Application Insights, and
 | Defender for Cloud | Security assessments, attack-path/security context, affected resource IDs | Risk/attack-path enrichment; not a general runtime application-dependency authority. |
 | Azure Monitor metrics | Service/resource health and activity | Corroborating activity/freshness, not endpoint identity. |
 
-## 3. Reuse from Hermes
+## 3. Reuse from AIOps
 
 - Azure MCP Monitor KQL tools for bounded interactive investigations and source validation.
 - Native MCP client dynamic discovery and tool allowlisting.

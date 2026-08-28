@@ -56,7 +56,7 @@ def test_store_can_retain_raw_queries_when_explicitly_enabled(tmp_path: Path) ->
     assert (tmp_path / "current/queries/resources.jsonl").exists()
 
 
-def test_generation_written_through_hermes_shim_reads_through_neutral_store(tmp_path: Path) -> None:
+def test_generation_written_through_aiops_shim_reads_through_neutral_store(tmp_path: Path) -> None:
     payload = json.loads(FIXTURE.read_text())
     graph = Normalizer().normalize(payload, datetime(2026, 8, 17, tzinfo=UTC))
 

@@ -34,7 +34,7 @@ def generate_ontology_metadata(entities: dict[str, list[dict]]) -> dict[str, Any
             "properties": dict(sorted(properties.items())),
         }
     return {
-        "name": "HermesAzureOperationalContext",
+        "name": "AIOpsAzureOperationalContext",
         "schemaVersion": "1.0.0",
         "entityTypes": entity_types,
         "relationshipTypes": RELATIONSHIP_TYPES,

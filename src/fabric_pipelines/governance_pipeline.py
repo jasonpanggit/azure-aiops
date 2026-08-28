@@ -1,9 +1,9 @@
 """Governance domain pipeline for Fabric.
 
-Ports Hermes governance domain logic (IdentityRiskEngine, SpnGovernanceEngine,
+Ports the governance domain logic (IdentityRiskEngine, SpnGovernanceEngine,
 FinOpsEngine) to the API-triggered Fabric sync path. Consumes Fabric-backed inventory and
 Azure Advisor/Cost Management data; generates assessment_governance_findings output
-matching Hermes engine byte-for-byte on test scenario.
+matching the original engine byte-for-byte on test scenario.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 
 from intelligence.governance.finops import FinOpsEngine
 
-# Import Hermes governance contracts to reuse existing logic
+# Import AIOps governance contracts to reuse existing logic
 from intelligence.governance.identity import (
     STALE_ACCESS_DAYS,
     IdentityRiskEngine,

@@ -98,7 +98,7 @@ class FakeSecretWriter:
 
     def store(self, *, connection_id: str, secret_value: str) -> str:
         self.stored.append((connection_id, secret_value))
-        return f"keyvault://kv-test/secrets/hermes-conn-{connection_id}/v1"
+        return f"keyvault://kv-test/secrets/aiops-conn-{connection_id}/v1"
 
 
 def build_service(
@@ -166,11 +166,11 @@ def test_add_stores_submitted_client_secret_in_key_vault(tmp_path: Path) -> None
     assert writer.stored == [("prod-core", "client-secret-value")]
     assert (
         detail["credential"]["secret_ref"]
-        == "keyvault://kv-test/secrets/hermes-conn-prod-core/v1"
+        == "keyvault://kv-test/secrets/aiops-conn-prod-core/v1"
     )
     stored = (tmp_path / "state" / "subscription_connections.json").read_text()
     assert "client-secret-value" not in stored
-    assert "keyvault://kv-test/secrets/hermes-conn-prod-core/v1" in stored
+    assert "keyvault://kv-test/secrets/aiops-conn-prod-core/v1" in stored
 
 
 def test_add_rejects_secret_ref_and_client_secret_together(tmp_path: Path) -> None:
@@ -480,7 +480,7 @@ def test_update_stores_rotated_client_secret(tmp_path: Path) -> None:
     assert writer.stored == [("prod-core", "rotated-secret")]
     assert (
         detail["credential"]["secret_ref"]
-        == "keyvault://kv-test/secrets/hermes-conn-prod-core/v1"
+        == "keyvault://kv-test/secrets/aiops-conn-prod-core/v1"
     )
 
 
@@ -532,7 +532,7 @@ def test_key_vault_writer_returns_versioned_reference() -> None:
 
         def set_secret(self, name: str, value: str):
             assert self.vault == "kv-prod"
-            assert name == "hermes-conn-prod-core"
+            assert name == "aiops-conn-prod-core"
             assert value == "from-user"
             return Secret()
 
@@ -540,7 +540,7 @@ def test_key_vault_writer_returns_versioned_reference() -> None:
 
     assert (
         writer.store(connection_id="prod-core", secret_value="from-user")
-        == "keyvault://kv-prod/secrets/hermes-conn-prod-core/version-1"
+        == "keyvault://kv-prod/secrets/aiops-conn-prod-core/version-1"
     )
 
 

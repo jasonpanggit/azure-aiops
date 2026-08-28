@@ -226,7 +226,7 @@ def test_guard_no_direct_inventory_dataset_reads_outside_inventory() -> None:
     assert offenders == []
 
 
-def test_guard_hermes_has_no_inventory_lifecycle_ownership_symbols() -> None:
+def test_guard_aiops_has_no_inventory_lifecycle_ownership_symbols() -> None:
     allowed = {"src/onboarding/cli.py"}
     patterns = re.compile(
         r"_fetch_software_inventory|normalize_configuration_data|_inventory_specs|"

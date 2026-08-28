@@ -6,7 +6,7 @@ An AI-powered operations platform for Azure that enables operators to move from 
 
 **Status:** Phase 7 (Unified Resource Inventory) - Planning stage. See [`.planning/STATE.md`](.planning/STATE.md) for roadmap and current progress.
 
-For existing ARG connector capabilities and Hermes integration, see [`docs/PRODUCTION_RUNTIME_ACTIVATION.md`](docs/PRODUCTION_RUNTIME_ACTIVATION.md).
+For existing ARG connector capabilities and AIOps integration, see [`docs/PRODUCTION_RUNTIME_ACTIVATION.md`](docs/PRODUCTION_RUNTIME_ACTIVATION.md).
 
 ## What is implemented
 
@@ -18,7 +18,7 @@ For existing ARG connector capabilities and Hermes integration, see [`docs/PRODU
 - **Authorization boundaries** enforced via Entra/RBAC scope
 
 ### ARG Connector (Brownfield Foundation)
-The existing Hermes Azure Resource Graph connector provides:
+The existing AIOps Azure Resource Graph connector provides:
 - Azure MCP subscription discovery
 - ARG extraction and normalization for Resources, ResourceContainers, ResourceChanges, PatchAssessmentResources, and Advisor recommendations
 - Normalized entities: Subscription, Resource Group, Resource, Virtual Machine, Arc Server, Patch Assessment, Advisor Recommendation
@@ -26,7 +26,7 @@ The existing Hermes Azure Resource Graph connector provides:
 - Atomic JSONL/Parquet publication with idempotent behavior
 - Incremental watermarking and accumulated change history
 - OneLake/Delta persistence and Fabric Ontology projection
-- Read-only agent queries and Hermes plugin integration
+- Read-only agent queries and AIOps plugin integration
 
 See `docs/architecture.md` for architecture diagram and `IMPLEMENTATION_SUMMARY.md` for verification results.
 
@@ -68,7 +68,7 @@ Authenticate with your normal enterprise-approved Azure CLI flow before running.
 ├── tests/                          # Test suite (no live Azure credentials required)
 ├── docs/                           # Architecture, runbooks, and API documentation
 ├── infra/                          # Infrastructure and deployment templates
-├── skills/                         # Hermes skill plugins
+├── skills/                         # AIOps skill plugins
 ├── live-data/                      # Local runtime data (datasets, state, cache)
 ├── pyproject.toml                  # Python project definition
 ├── config.example.yaml             # ARG connector configuration template
@@ -108,12 +108,12 @@ storage:
 
 **On demand:**
 ```bash
-uv run hermes-arg sync --config config.yaml
+uv run aiops-inventory sync --config config.yaml
 ```
 
-**Scheduled (via Hermes cron):**
+**Scheduled (via AIOps cron):**
 ```bash
-uv run hermes-arg schedule --config config.yaml --schedule "every 30m"
+uv run aiops-inventory schedule --config config.yaml --schedule "every 30m"
 ```
 
 ### 4. Sync to Fabric (optional)
@@ -121,7 +121,7 @@ uv run hermes-arg schedule --config config.yaml --schedule "every 30m"
 ```bash
 cp fabric.config.example.yaml fabric.config.yaml
 # Edit fabric.config.yaml with workspace and Lakehouse IDs
-uv run hermes-arg fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
+uv run aiops-inventory fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
 ```
 
 ### 5. Run tests
@@ -151,9 +151,9 @@ Normalized datasets sync to Microsoft Fabric Lakehouse via OneLake, building que
 
 **Operator commands:**
 ```bash
-uv run hermes-arg fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
-uv run hermes-arg ontology "Who owns this VM?" --entity vm-prod-01 --config fabric.config.yaml
-uv run hermes-arg ontology "What applications are affected by patch failures?" --config fabric.config.yaml
+uv run aiops-inventory fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
+uv run aiops-inventory ontology "Who owns this VM?" --entity vm-prod-01 --config fabric.config.yaml
+uv run aiops-inventory ontology "What applications are affected by patch failures?" --config fabric.config.yaml
 ```
 
 See `src/fabric/`, `src/storage/`, and `docs/FABRIC_INTEGRATION.md`.
@@ -162,7 +162,7 @@ See `src/fabric/`, `src/storage/`, and `docs/FABRIC_INTEGRATION.md`.
 The Semantic Layer assembles safe application, service, resource, subscription, ownership, compliance, patching, dependency, impact, risk, lifecycle, cost, security, and health context over Fabric Ontology. Agents receive evidence-backed reasoning through `operations_analysis`.
 
 ```bash
-uv run hermes-arg semantic \
+uv run aiops-inventory semantic \
   "What is the blast radius of this failure?" \
   --subject vm-identity \
   --config fabric.config.yaml
@@ -194,14 +194,14 @@ uv sync --extra test
 cp config.example.yaml config.yaml
 
 # Run once
-uv run hermes-arg sync --config config.yaml
+uv run aiops-inventory sync --config config.yaml
 
 # Or schedule
-uv run hermes-arg schedule --config config.yaml --schedule "every 30m"
+uv run aiops-inventory schedule --config config.yaml --schedule "every 30m"
 
 # Query the ontology
-uv run hermes-arg query "Show me all VMs." --output-dir live-data
-uv run hermes-arg query "Show me non-compliant servers." --output-dir live-data
+uv run aiops-inventory query "Show me all VMs." --output-dir live-data
+uv run aiops-inventory query "Show me non-compliant servers." --output-dir live-data
 ```
 
 ### Running the web frontend
@@ -218,16 +218,16 @@ npm run dev
 uv run --extra test pytest -v
 ```
 
-Test coverage spans ARG extraction, normalization, storage, Fabric sync, Hermes plugin integration, and data quality—all without live Azure credentials.
+Test coverage spans ARG extraction, normalization, storage, Fabric sync, AIOps plugin integration, and data quality—all without live Azure credentials.
 
-## Hermes Plugin Integration
+## AIOps Plugin Integration
 
-The repository registers as a Hermes plugin (`plugin.yaml`, `__init__.py`):
-- **CLI commands:** `hermes azure-graph`, `hermes-arg fabric`, `hermes-arg ontology`, `hermes-arg semantic`
+The repository registers as a AIOps plugin (`plugin.yaml`, `__init__.py`):
+- **CLI commands:** `aiops azure-graph`, `aiops-inventory fabric`, `aiops-inventory ontology`, `aiops-inventory semantic`
 - **Agent tool:** `operations_analysis` (read-only reasoning over operational context)
 - **Toolset:** `azure_operational_context` (evidence and graph queries)
 
-Set `HERMES_FABRIC_CONFIG` to the trusted Fabric configuration path. The agent schema cannot supply paths, credentials, workspace IDs, or Lakehouse IDs—all are operator-managed.
+Set `AIOPS_FABRIC_CONFIG` to the trusted Fabric configuration path. The agent schema cannot supply paths, credentials, workspace IDs, or Lakehouse IDs—all are operator-managed.
 
 ## Production Notes
 
@@ -293,7 +293,7 @@ Azure Monitor Logs / ConfigurationData ┘       │
                               DatasetStore immutable generation
                               JSONL + Parquet + manifest + current pointer
                                   │                         │
-                                  │                         └─> Hermes context queries
+                                  │                         └─> AIOps context queries
                                   v
                          FabricSyncService / DeltaWriter
                                   │
@@ -306,7 +306,7 @@ Azure Monitor Logs / ConfigurationData ┘       │
                                   │
                          ┌────────┴────────┐
                          v                 v
-                    FastAPI API       Hermes agents
+                    FastAPI API       AIOps agents
                          │             (read-only tools)
                          v
                     Next.js web workbench
@@ -390,7 +390,7 @@ investigation, inventory, approvals, and other API-backed views. The web layer
 does not query Azure or Fabric directly and does not fabricate unavailable
 capabilities.
 
-Hermes integration is provided by `plugin.yaml`, `__init__.py`, and
+AIOps integration is provided by `plugin.yaml`, `__init__.py`, and
 `src/onboarding/plugin.py`. The `operations_analysis` tool and the
 `azure_operational_context` toolset provide read-only operational reasoning.
 Current context-query helpers read the published snapshot and support a bounded
@@ -412,10 +412,10 @@ following boundaries are the approved evolution of that path:
   The characterization tests and extraction/inversion work for this boundary
   are planned; the current co-located projection is not evidence that the
   extraction is complete.
-- **Phase 8 — Resource identity plane:** migrate Hermes discovery and semantic
+- **Phase 8 — Resource identity plane:** migrate AIOps discovery and semantic
   modelling to the inventory resource contract. `ResourceObservation` must be
   lossless for raw properties and per-family watermarks. Until that contract
-  and migration are implemented, Hermes still contains its existing ARG
+  and migration are implemented, AIOps still contains its existing ARG
   connector path.
 - **Phase 9 — API, agents, and web pivot:** rewire consumers to the unified
   inventory provider. Existing API routers already resolve providers, but the

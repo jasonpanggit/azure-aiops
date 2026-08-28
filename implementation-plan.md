@@ -1,14 +1,14 @@
 # Implementation Plan
 
-> **For Hermes:** Implement only after the discovery artifacts and architecture decisions are approved. Follow the codebase Footprint Ladder: extend existing code → CLI + skill → service-gated tool → standalone plugin → MCP → core tool only as a last resort.
+> **For AIOps:** Implement only after the discovery artifacts and architecture decisions are approved. Follow the codebase Footprint Ladder: extend existing code → CLI + skill → service-gated tool → standalone plugin → MCP → core tool only as a last resort.
 
 ## 1. Delivery principles
 
 - Azure systems remain systems of record.
 - Fabric Ontology is the system of context.
-- Hermes is the self-maintaining orchestration, inference, confidence, learning, and stewardship engine.
+- AIOps is the self-maintaining orchestration, inference, confidence, learning, and stewardship engine.
 - Build a standalone HOG plugin/project integration, not Azure-specific core sprawl.
-- Reuse Hermes cron, webhooks, MCP client, registry/toolsets, delegation, Kanban, session state, monitoring, skills, and memory boundaries.
+- Reuse AIOps cron, webhooks, MCP client, registry/toolsets, delegation, Kanban, session state, monitoring, skills, and memory boundaries.
 - Use deterministic source adapters and queries before agents.
 - Keep all source and publication operations idempotent, observable, and reversible.
 - No autonomous operational mutation in these phases.
@@ -30,11 +30,11 @@ Authoritative Subscription, ResourceGroup, Resource, VirtualMachine, AKSCluster,
 
 ### Reusable components
 
-- Hermes native MCP client and dynamic tool registry.
+- AIOps native MCP client and dynamic tool registry.
 - Azure MCP subscription/group/Compute/AKS/Insights tools for interactive validation.
 - Direct ARG REST/SDK for arbitrary deterministic queries.
-- Hermes cron for incremental/full reconciliation and durable watermarks.
-- Hermes webhooks for normalized Event Grid triggers.
+- AIOps cron for incremental/full reconciliation and durable watermarks.
+- AIOps webhooks for normalized Event Grid triggers.
 - Plugin system for HOG adapters; no core-tool additions.
 - Session state and gateway monitoring.
 
@@ -42,7 +42,7 @@ Authoritative Subscription, ResourceGroup, Resource, VirtualMachine, AKSCluster,
 
 - Standalone HOG plugin/package with source registry, canonical contracts, watermarks, schema validation, and OneLake publication adapter.
 - Versioned ARG query pack and ARM identity normalization.
-- Event Grid Resource Notifications → managed Function/Logic App → signed Hermes webhook integration.
+- Event Grid Resource Notifications → managed Function/Logic App → signed AIOps webhook integration.
 - Resource change/tag/owner mapping policy.
 - Fabric canonical tables and initial ontology binding.
 
@@ -72,7 +72,7 @@ ArcMachine and Patch context linked to resources/applications without replacing 
 
 - Phase 1 ARG adapter/query pack.
 - ARG resource types and Update Manager extension tables.
-- Hermes cron/webhook/reconciliation framework.
+- AIOps cron/webhook/reconciliation framework.
 - Azure MCP group listing for targeted inspection only.
 - Steward confidence/lifecycle contracts.
 
@@ -108,7 +108,7 @@ Observed `calls`, `connectsTo`, `hosts`, and `dependsOn` relationships for SQL, 
 
 - Azure MCP Monitor tools: workspace/table discovery, bounded KQL, metrics, activity logs.
 - Direct Azure Monitor Query SDK/API for scheduled deterministic queries.
-- Existing Hermes cron scripts/monitor mode.
+- Existing AIOps cron scripts/monitor mode.
 - OpenTelemetry conventions and App Insights data model.
 - Delegation for ambiguous endpoint analysis.
 - Gateway OTLP monitoring for HOG runtime health.
@@ -146,7 +146,7 @@ Finding and Incident entities linked to affected resources/applications/services
 
 - LAW KQL path where Sentinel/Defender data already exists.
 - Resource/identity resolution from earlier phases.
-- Hermes webhooks/cron reconciliation.
+- AIOps webhooks/cron reconciliation.
 - Incident-learning and steward review workflow.
 - Azure MCP Resource Health/Advisor for complementary context, not Sentinel/Defender replacement.
 
@@ -181,7 +181,7 @@ Application, BusinessService, Team, Person, CostCentre, ownership/support relati
 
 ### Reusable components
 
-- Hermes plugin framework and generic webhooks.
+- AIOps plugin framework and generic webhooks.
 - Microsoft Teams gateway and teams_pipeline patterns where operationally useful.
 - Entra access through Microsoft Graph adapter.
 - Azure DevOps REST/service hooks and existing GitHub/document skills as design patterns.
@@ -222,7 +222,7 @@ Accepted FailurePattern, RootCause, impact, and mitigation knowledge learned fro
 
 - Incident projections from Phase 4.
 - `document-to-action-items`, `meeting-action-items`, `teams-meeting-pipeline`, `grounded-citations`, and OCR/document skills.
-- Hermes agents/delegation for candidate extraction.
+- AIOps agents/delegation for candidate extraction.
 - Kanban for causal/pattern review.
 - Cron/webhooks for lifecycle triggers.
 - Session history for resumable investigations.
@@ -262,7 +262,7 @@ Foundry agents safely consume Fabric context and approved live Azure tools.
 - Bundled `azure-foundry-provider` for model inference where appropriate.
 - Microsoft Foundry Agent Service/Fabric IQ tool integration.
 - Fabric Ontology preview MCP endpoint as optional consumption adapter.
-- Hermes native MCP client/server and tool allowlisting.
+- AIOps native MCP client/server and tool allowlisting.
 - Azure MCP read-only Monitor/Resource Health/Advisor/resource inspection tools.
 - Agent evaluation infrastructure and redacted gateway monitoring.
 
@@ -305,11 +305,11 @@ Complete before or alongside Phase 1:
 
 ## 4. Repository placement recommendation
 
-Do not add Azure-specific modules to Hermes core initially.
+Do not add Azure-specific modules to AIOps core initially.
 
 Recommended delivery form:
 
-- standalone HOG repository or `~/.hermes/plugins/hermes-operations-graph` plugin package;
+- standalone HOG repository or `~/.aiops/plugins/aiops-operations-graph` plugin package;
 - project-specific skills/query assets in that repository;
 - Azure Function/Logic App infrastructure definitions for event normalization;
 - Fabric ontology/OneLake mappings under source control;

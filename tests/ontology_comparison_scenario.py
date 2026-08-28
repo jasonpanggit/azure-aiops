@@ -1,4 +1,4 @@
-"""Shared curated-snapshot fixture for the full Hermes operational-context-
+"""Shared curated-snapshot fixture for the full AIOps operational-context-
 graph comparison (extends the D-04a topology-only comparison in
 ``tests/topology_comparison_scenario.py`` to the complete ontology surface).
 
@@ -9,7 +9,7 @@ infers (structural inventory hierarchy, tag-derived business context,
 subscription-connection lineage, management-group hierarchy, cost/patch/
 advisor edges, and the full re-derived network topology edge set), so the
 Fabric-native ``ontology_pipeline`` parity tests exercise the same breadth
-Hermes itself does -- not just a VM + PatchAssessment + AdvisorRecommendation
+AIOps itself does -- not just a VM + PatchAssessment + AdvisorRecommendation
 sample.
 
 Kept as a single source of truth (shared fixture, not per-arm fixtures) so
@@ -89,7 +89,7 @@ def _payload(**overrides: Any) -> str:
 def ontology_comparison_scenario() -> list[dict[str, Any]]:
     """Returns raw inventory-shaped rows (``resource_id``/``payload_json``
     envelope, matching what ``EntityBuilder.build``/``ontology_pipeline.
-    derive_entities`` both consume) covering the full Hermes ontology
+    derive_entities`` both consume) covering the full AIOps ontology
     surface: every ``TAG_ENTITY_TYPES``/``RESOURCE_ENTITY_TYPES`` entity
     type, subscription-connection lineage (with health/environment/
     application/business-service edges), management-group hierarchy,

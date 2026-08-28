@@ -16,18 +16,18 @@ from opentelemetry import metrics
 
 class ApiTelemetry:
     def __init__(self, meter: Any = None) -> None:
-        self._meter = meter or metrics.get_meter("hermes.api")
+        self._meter = meter or metrics.get_meter("aiops.api")
         self._requests = self._meter.create_counter(
-            "hermes.api.requests",
+            "aiops.api.requests",
             description="Operations API requests by route, method and status class",
         )
         self._latency = self._meter.create_histogram(
-            "hermes.api.request.duration",
+            "aiops.api.request.duration",
             unit="ms",
             description="Operations API request latency",
         )
         self._denied = self._meter.create_counter(
-            "hermes.api.authorization.denied",
+            "aiops.api.authorization.denied",
             description="Requests rejected by authentication or authorization",
         )
 

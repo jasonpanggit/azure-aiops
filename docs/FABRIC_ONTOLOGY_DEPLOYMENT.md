@@ -32,7 +32,7 @@ fabric:
     ontology_name: "Operational_Context_Graph"
 ```
 
-Leave `ontology_id` empty on first deployment. Hermes resolves an existing item by exact name or creates it. After creation, capture the immutable item ID and set `ontology_id` for deterministic production operation.
+Leave `ontology_id` empty on first deployment. AIOps resolves an existing item by exact name or creates it. After creation, capture the immutable item ID and set `ontology_id` for deterministic production operation.
 
 No ontology entity values or environment values require manual authoring. Entity and relationship definitions are generated from the maintained model; instances are bound to OneLake Delta tables.
 
@@ -41,9 +41,9 @@ The public engine contract is implemented by `ontology_manager`, `entity_builder
 ## Deploy and verify
 
 ```bash
-uv run hermes-arg fabric "Sync operational ontology" --config /secure/fabric.config.yaml
-uv run hermes-arg fabric "Show ontology health" --config /secure/fabric.config.yaml
-uv run hermes-arg ontology "Find resources with missing ownership" --config /secure/fabric.config.yaml
+uv run aiops-inventory fabric "Sync operational ontology" --config /secure/fabric.config.yaml
+uv run aiops-inventory fabric "Show ontology health" --config /secure/fabric.config.yaml
+uv run aiops-inventory ontology "Find resources with missing ownership" --config /secure/fabric.config.yaml
 ```
 
 In Fabric:

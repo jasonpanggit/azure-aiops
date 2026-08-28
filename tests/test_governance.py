@@ -788,7 +788,7 @@ def _client(tmp_path, snapshot: GovernanceSnapshot | None = None):
         READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),)),
     }
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(principals),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
@@ -915,7 +915,7 @@ def _scoped_client(tmp_path, subscription: str):
         ),
     }
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(principals),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),

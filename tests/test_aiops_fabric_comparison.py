@@ -1,5 +1,5 @@
 """D-04a comparison harness: one bounded blast-radius scenario run against
-both ``SemanticEngine`` (Hermes) and ``fabric_pipelines.topology_pipeline``
+both ``SemanticEngine`` (AIOps) and ``fabric_pipelines.topology_pipeline``
 (Fabric-native) arms, using the identical shared curated snapshot from
 ``tests/topology_comparison_scenario`` (Pitfall 3 -- one fixture, not two).
 
@@ -33,7 +33,7 @@ from onboarding.graph_normalize import Normalizer
 _OBSERVED_DT = datetime.fromisoformat(OBSERVED_AT.replace("Z", "+00:00"))
 
 
-def _hermes_arm(root_id: str):
+def _aiops_arm(root_id: str):
     scenario = topology_comparison_scenario()
     graph, elapsed = timed(
         Normalizer().normalize, scenario, _OBSERVED_DT, run_id="comparison-harness"
@@ -49,7 +49,7 @@ def _hermes_arm(root_id: str):
     # re-applying the same filter and checking nothing further is dropped.
     filtered, _ = filter_dangling_edges(raw_edges, entity_ids)
     return build_arm_result(
-        arm_name="hermes",
+        arm_name="semantic",
         root_id=root_id,
         entity_ids=entity_ids,
         edges=filtered,
@@ -78,26 +78,26 @@ def _fabric_arm(root_id: str):
 
 def test_shared_scenario_comparable_impact_both_arms():
     root_id = NSG_ID.lower()
-    hermes_result, _ = _hermes_arm(root_id)
+    semantic_result, _ = _aiops_arm(root_id)
     fabric_result, _ = _fabric_arm(root_id)
 
-    report = compare(hermes_result, fabric_result, root_id=root_id)
+    report = compare(semantic_result, fabric_result, root_id=root_id)
 
     assert report.root_id == root_id
     assert report.impacted_ids_match, (
-        f"impacted sets diverge: hermes_only={report.hermes_only} "
+        f"impacted sets diverge: semantic_only={report.semantic_only} "
         f"fabric_only={report.fabric_only}"
     )
     # D-04's five dimensions must all be present -- never a partial report.
     assert report.latency_seconds
     assert "note" in report.operational_cost_proxy
-    assert report.hermes_missing_evidence == []
+    assert report.semantic_missing_evidence == []
     assert report.fabric_missing_evidence == []
-    assert report.hermes_scope_violations == []
+    assert report.semantic_scope_violations == []
     assert report.fabric_scope_violations == []
     # Subnet and VNet (containment/protection chain) must both be reachable
     # from the NSG root through the protectedBy edge, in both arms.
-    assert VNET_ID.lower() in hermes_result.impacted_ids
+    assert VNET_ID.lower() in semantic_result.impacted_ids
     assert VNET_ID.lower() in fabric_result.impacted_ids
 
 
@@ -106,7 +106,7 @@ def test_non_accepted_edge_state_stays_explicit_in_both_arms():
     into both arms' output as explicit -- not dropped, not silently
     upgraded to "accepted" (D-05)."""
     root_id = NSG_ID.lower()
-    hermes_result, hermes_graph = _hermes_arm(root_id)
+    semantic_result, semantic_graph = _aiops_arm(root_id)
     fabric_result, (fabric_entities, fabric_edges) = _fabric_arm(root_id)
 
     # Inject one deliberately-stale/unauthorized-looking edge directly into
@@ -119,8 +119,8 @@ def test_non_accepted_edge_state_stays_explicit_in_both_arms():
     subject = NSG_ID.lower()
     obj = VNET_ID.lower()
 
-    hermes_stale_edge = {
-        "relationshipId": "stale-hermes-0001",
+    semantic_stale_edge = {
+        "relationshipId": "stale-semantic-0001",
         "subjectId": subject,
         "predicate": stale_predicate,
         "objectId": obj,
@@ -138,17 +138,17 @@ def test_non_accepted_edge_state_stays_explicit_in_both_arms():
         "assertionState": "conflicting",
     }
 
-    hermes_edges = hermes_result.edges + [edge_view_from_camel_case(hermes_stale_edge)]
+    semantic_edges = semantic_result.edges + [edge_view_from_camel_case(semantic_stale_edge)]
     fabric_edges_view = fabric_result.edges + [edge_view_from_camel_case(fabric_stale_edge)]
 
-    hermes_with_stale = build_arm_result(
-        arm_name="hermes",
+    semantic_with_stale = build_arm_result(
+        arm_name="semantic",
         root_id=root_id,
-        entity_ids=hermes_result.entity_ids,
-        edges=hermes_edges,
-        query_count=hermes_result.query_count,
-        latency_seconds=hermes_result.latency_seconds,
-        supplementary=hermes_result.supplementary,
+        entity_ids=semantic_result.entity_ids,
+        edges=semantic_edges,
+        query_count=semantic_result.query_count,
+        latency_seconds=semantic_result.latency_seconds,
+        supplementary=semantic_result.supplementary,
     )
     fabric_with_stale = build_arm_result(
         arm_name="fabric",
@@ -160,9 +160,9 @@ def test_non_accepted_edge_state_stays_explicit_in_both_arms():
         supplementary=fabric_result.supplementary,
     )
 
-    report = compare(hermes_with_stale, fabric_with_stale, root_id=root_id)
+    report = compare(semantic_with_stale, fabric_with_stale, root_id=root_id)
 
-    assert "conflicting" in report.non_accepted_states["hermes"]
+    assert "conflicting" in report.non_accepted_states["semantic"]
     assert "conflicting" in report.non_accepted_states["fabric"]
 
 
@@ -178,10 +178,10 @@ def test_dangling_edge_dropped_consistently_by_both_arms():
     scenario = topology_comparison_scenario()
 
     graph = Normalizer().normalize(scenario, _OBSERVED_DT, run_id="comparison-harness")
-    hermes_entity_ids = {
+    semantic_entity_ids = {
         str(entity["id"]) for rows in graph.entities.values() for entity in rows
     }
-    hermes_raw_edges = [edge_view_from_camel_case(edge) for edge in graph.relationships]
+    semantic_raw_edges = [edge_view_from_camel_case(edge) for edge in graph.relationships]
 
     entities, edges = derive_edges(scenario, observed=OBSERVED_AT)
     fabric_entity_ids = {str(entity["entity_id"]) for entity in entities}
@@ -199,8 +199,8 @@ def test_dangling_edge_dropped_consistently_by_both_arms():
         "derive_edges() should no longer emit dangling edges after the CR-01 fix"
     )
 
-    hermes_filtered, hermes_dropped_any = filter_dangling_edges(
-        hermes_raw_edges, hermes_entity_ids
+    semantic_filtered, semantic_dropped_any = filter_dangling_edges(
+        semantic_raw_edges, semantic_entity_ids
     )
     fabric_filtered, fabric_dropped_any = filter_dangling_edges(
         fabric_raw_edges, fabric_entity_ids
@@ -208,15 +208,15 @@ def test_dangling_edge_dropped_consistently_by_both_arms():
 
     # Both arms now filter internally, so re-applying the harness filter
     # finds nothing further to drop in either case.
-    assert hermes_dropped_any is False
+    assert semantic_dropped_any is False
     assert fabric_dropped_any is False
 
     # Once both arms pass through the shared harness filter, neither
     # arm's *comparable* edge set contains a dangling edge -- consistent
     # end state, which is what the comparison actually measures.
     assert all(
-        edge.subject_id in hermes_entity_ids and edge.object_id in hermes_entity_ids
-        for edge in hermes_filtered
+        edge.subject_id in semantic_entity_ids and edge.object_id in semantic_entity_ids
+        for edge in semantic_filtered
     )
     assert all(
         edge.subject_id in fabric_entity_ids and edge.object_id in fabric_entity_ids

@@ -2,7 +2,7 @@
 
 Persistence is secret-free by construction: only ``secret_ref`` pointers are
 written to storage. Storage is pluggable (see :mod:`onboarding.store`):
-a single JSON file for local dev, or a OneLake document when ``HERMES_HOME``
+a single JSON file for local dev, or a OneLake document when ``AIOPS_HOME``
 points at Fabric -- same code path either way.
 """
 

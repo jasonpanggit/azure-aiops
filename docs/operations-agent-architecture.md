@@ -16,7 +16,7 @@ Interactive standalone artifact: `docs/operations-agent-core-architecture.html`.
 
 ```mermaid
 flowchart LR
-    U[Hermes agent or operator] --> OA[operations_analysis / OperationsAgent]
+    U[AIOps agent or operator] --> OA[operations_analysis / OperationsAgent]
     OA --> CR[ContextRouter]
     CR --> OR[OperationalReasoner]
     OR --> HA[HealthAnalyzer]
@@ -38,7 +38,7 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    participant H as Hermes
+    participant H as AIOps
     participant A as OperationsAgent
     participant R as ContextRouter
     participant S as SemanticEngine

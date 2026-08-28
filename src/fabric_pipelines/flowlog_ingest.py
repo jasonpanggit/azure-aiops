@@ -27,7 +27,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-#: Distinguishes fixture-derived edges from both Hermes's own source tag and
+#: Distinguishes fixture-derived edges from both AIOps's own source tag and
 #: this pipeline's identity-derived edges (`topology_pipeline.SOURCE_TAG`),
 #: so provenance never implies live-traffic validation it cannot back up.
 FIXTURE_SOURCE_TAG = "fabric_pipeline:flowlog_fixture"
@@ -168,7 +168,7 @@ def _add_edge(
     subject: str, predicate: str, obj: str, source: str, observed: str, confidence: float
 ) -> dict[str, Any]:
     """Same content-addressed ID scheme as ``topology_pipeline._add_edge`` /
-    Hermes's ``normalize._add_edge`` -- one relationship-ID derivation rule
+    AIOps's ``normalize._add_edge`` -- one relationship-ID derivation rule
     across the whole comparison arm, not a second one invented here."""
     digest = hashlib.sha256(f"{subject}|{predicate}|{obj}|{source}".encode()).hexdigest()[:24]
     return {

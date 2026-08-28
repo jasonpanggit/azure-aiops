@@ -19,8 +19,8 @@ azure:
     lookback_days: 30
 
 storage:
-  # output_dir is intentionally unset: it inherits HERMES_HOME, which Terraform
-  # points at the Fabric lakehouse (abfss://.../Files/hermes). That keeps durable
+  # output_dir is intentionally unset: it inherits AIOPS_HOME, which Terraform
+  # points at the Fabric lakehouse (abfss://.../Files/aiops). That keeps durable
   # state in OneLake so the connection registry survives Container Apps
   # revisions -- a container-local path is wiped on every deploy, which left
   # /api/v1/inventory/refresh reporting "No active subscription connections are

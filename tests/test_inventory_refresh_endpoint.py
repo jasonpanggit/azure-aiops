@@ -5,7 +5,7 @@ trigger) can invoke the same `InventoryPipeline` refresh used by the
 `inventory-refresh` CLI, without duplicating acquisition/normalization logic
 inside Fabric. See `src/onboarding/inventory_refresh.py`.
 
-Authenticated by a dedicated shared secret (`HERMES_REFRESH_TRIGGER_SECRET`)
+Authenticated by a dedicated shared secret (`AIOPS_REFRESH_TRIGGER_SECRET`)
 rather than the Entra principal flow, because the caller is a Fabric Web
 activity on a schedule, not an interactive/gateway-authenticated user.
 """
@@ -33,10 +33,10 @@ SECRET = "trigger-secret-0123456789"
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setenv("HERMES_REFRESH_TRIGGER_SECRET", SECRET)
+    monkeypatch.setenv("AIOPS_REFRESH_TRIGGER_SECRET", SECRET)
     payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(
             {"unused-token-0123456789": Principal(subject="unused", grants=(Grant("reader"),))}
         ),
@@ -48,7 +48,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 
 def _auth(secret: str = SECRET) -> dict[str, str]:
-    return {"x-hermes-trigger-secret": secret}
+    return {"x-aiops-trigger-secret": secret}
 
 
 def test_refresh_requires_trigger_secret(client: TestClient) -> None:
@@ -64,7 +64,7 @@ def test_refresh_rejects_wrong_trigger_secret(client: TestClient) -> None:
 def test_refresh_returns_provider_unavailable_when_secret_unconfigured(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("HERMES_REFRESH_TRIGGER_SECRET", raising=False)
+    monkeypatch.delenv("AIOPS_REFRESH_TRIGGER_SECRET", raising=False)
     response = client.post("/api/v1/inventory/refresh", headers=_auth())
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "provider_unavailable"
@@ -73,7 +73,7 @@ def test_refresh_returns_provider_unavailable_when_secret_unconfigured(
 def test_refresh_returns_provider_unavailable_when_arg_config_unconfigured(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("HERMES_ARG_CONFIG", raising=False)
+    monkeypatch.delenv("AIOPS_ARG_CONFIG", raising=False)
     response = client.post("/api/v1/inventory/refresh", headers=_auth())
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "provider_unavailable"
@@ -84,8 +84,8 @@ def test_refresh_runs_shared_pipeline_and_returns_manifest(
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("output_dir: " + str(tmp_path / "out"), encoding="utf-8")
-    monkeypatch.setenv("HERMES_ARG_CONFIG", str(config_path))
-    monkeypatch.delenv("HERMES_FABRIC_CONFIG", raising=False)
+    monkeypatch.setenv("AIOPS_ARG_CONFIG", str(config_path))
+    monkeypatch.delenv("AIOPS_FABRIC_CONFIG", raising=False)
 
     with patch(
         "api.inventory_orchestration.run_inventory_refresh_all_connections",
@@ -105,7 +105,7 @@ def test_refresh_wraps_pipeline_failure_as_internal_error(
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("output_dir: " + str(tmp_path / "out"), encoding="utf-8")
-    monkeypatch.setenv("HERMES_ARG_CONFIG", str(config_path))
+    monkeypatch.setenv("AIOPS_ARG_CONFIG", str(config_path))
 
     with patch(
         "api.inventory_orchestration.run_inventory_refresh_all_connections",

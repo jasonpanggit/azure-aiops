@@ -1,4 +1,4 @@
-"""Characterization test (Phase 8 Task 2): proves that feeding Hermes's real
+"""Characterization test (Phase 8 Task 2): proves that feeding AIOps's real
 normalizers via `InventoryReadAdapter` produces byte-identical NormalizedGraph
 output compared to a direct-ARG payload, for identity + network fixtures
 covering the deepest nested property-access pattern flagged in Pitfall 1

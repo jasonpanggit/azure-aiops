@@ -83,7 +83,7 @@ def _context(tmp_path, agent, *, engine=None, principals=None):
         ADMIN_TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),))
     }
     return ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(principals),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),

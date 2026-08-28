@@ -17,14 +17,14 @@ fabric:
     ontology_id: ""
 ```
 
-Set `HERMES_FABRIC_CONFIG` to this operator-managed configuration before running
+Set `AIOPS_FABRIC_CONFIG` to this operator-managed configuration before running
 the API or deploying the ACA revision. The API identity must be allowed to
 resolve the workspace, create the validation lakehouse and ontology when they do
 not exist, and write Fabric tables.
 
 ## Validation sequence
 
-1. Build and push new `hermes-api` and `hermes-web` images to the existing ACR.
+1. Build and push new `aiops-api` and `aiops-web` images to the existing ACR.
 2. Deploy new ACA revisions with the same image tag.
 3. Open the web Workbench and onboard a test subscription connection.
 4. Run **Validate**, then **Sync** from the Connections page.

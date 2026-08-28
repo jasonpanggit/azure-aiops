@@ -77,8 +77,8 @@ Supply the timestamp of the last completed Fabric generation. Do not use request
 
 The implemented weights and thresholds are documented in `docs/PATCH_INTELLIGENCE.md`. Changing them is a model-governance change: update tests, methodology documentation, sample reports, and approval records together.
 
-## Hermes tool exposure
+## AIOps tool exposure
 
 Expose only `operations_analysis` from toolset `azure_operational_context`. Patch commands are enum-bounded in the same tool schema; `Show Security Exposure` and `Executive Brief` are canonical user-facing forms, while the earlier `Analyze Security Exposure` and `Generate Executive Brief` aliases remain compatible. Do not register raw Delta, ARG, or Ontology traversal tools for agents.
 
-Caller authentication and authorization remain the Hermes gateway/toolset boundary. Grant `azure_operational_context` only to principals permitted to view the configured enterprise portfolio. The plugin then enforces the fixed `Enterprise` / `PatchPortfolio` contract and will not interpret caller-supplied subscription or application labels as authorization scopes.
+Caller authentication and authorization remain the AIOps gateway/toolset boundary. Grant `azure_operational_context` only to principals permitted to view the configured enterprise portfolio. The plugin then enforces the fixed `Enterprise` / `PatchPortfolio` contract and will not interpret caller-supplied subscription or application labels as authorization scopes.

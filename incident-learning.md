@@ -18,7 +18,7 @@ The ontology should gain evidence-backed:
 - affected Resources, Applications, and BusinessServices;
 - mitigation effectiveness.
 
-Hermes must not copy complete incident journals, security evidence, attachments, source code, or sensitive telemetry into memory or Fabric.
+AIOps must not copy complete incident journals, security evidence, attachments, source code, or sensitive telemetry into memory or Fabric.
 
 ## 2. Reuse-first architecture
 
@@ -29,7 +29,7 @@ RCA/Postmortem documents ────┤
 Azure DevOps references ─────┘
           │
           ▼
-Hermes webhook/cron orchestration
+AIOps webhook/cron orchestration
           │
           ├─ deterministic identity + field extraction
           ├─ document-to-action-items / meeting-action-items patterns
@@ -41,7 +41,7 @@ Incident / FailurePattern / RootCause / Runbook assertions
 OneLake canonical projection → Fabric Ontology
 ```
 
-### Reused Hermes components
+### Reused AIOps components
 
 - **Webhooks:** event-triggered incident updates after managed source adapters validate and sign events.
 - **Cron:** reconciliation of active/closed incidents, deferred postmortem availability, and stale review queues.
@@ -202,16 +202,16 @@ Starting scores:
 
 Adjust for source authority, exact identifiers, independent corroboration, recency, contradiction, and steward disposition. Incident provisional edges decay quickly if not confirmed after resolution.
 
-## 10. Hermes operational memory boundary
+## 10. AIOps operational memory boundary
 
-Use Hermes built-in/external memory for:
+Use AIOps built-in/external memory for:
 
 - stable user/operator preferences;
 - glossary aliases and approved procedures;
 - lessons about source quirks;
 - retrieval of prior conversation decisions.
 
-Do not store as Hermes memory:
+Do not store as AIOps memory:
 
 - live incident state;
 - resource inventory;

@@ -5,12 +5,12 @@ an optimistic-concurrency revision counter. This module supplies two
 interchangeable backends for that payload:
 
 - :class:`FileRegistryStore` -- a single JSON file under
-  ``$HERMES_HOME/state/subscription_connections.json``. Used when
-  ``HERMES_HOME`` is a local path (development).
+  ``$AIOPS_HOME/state/subscription_connections.json``. Used when
+  ``AIOPS_HOME`` is a local path (development).
 - :class:`OneLakeRegistryStore` -- persists the same JSON payload as a
   document in OneLake, guarded by the same revision counter
   (compare-and-swap). This is the production backend whenever
-  ``HERMES_HOME`` points at OneLake, since it survives container
+  ``AIOPS_HOME`` points at OneLake, since it survives container
   restarts/redeploys without requiring a mounted volume or a separate
   database.
 

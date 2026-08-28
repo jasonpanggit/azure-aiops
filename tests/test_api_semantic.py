@@ -30,7 +30,7 @@ SCOPED_TOKEN = "retail-reader-token-01234567"
 def client(tmp_path) -> TestClient:
     engine = _build_engine(make_connection())
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(
             {TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),))}
         ),
@@ -55,7 +55,7 @@ def retail_scoped_client(tmp_path) -> TestClient:
         subscription_id="sub-wealth",
     )
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(
             {
                 SCOPED_TOKEN: Principal(

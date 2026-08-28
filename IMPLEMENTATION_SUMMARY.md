@@ -2,7 +2,7 @@
 
 ## Delivered
 
-The first Hermes Operations Graph vertical slice is implemented as a standalone, modular Hermes plugin and Python package.
+The first AIOps Operations Graph vertical slice is implemented as a standalone, modular AIOps plugin and Python package.
 
 ### Azure acquisition
 
@@ -21,10 +21,10 @@ The first Hermes Operations Graph vertical slice is implemented as a standalone,
 - Accumulates and deduplicates incremental resource-change history.
 - Uses semantic hashes for change detection while refreshing observation timestamps, preserves creation timestamps, and rejects concurrent writers.
 
-### Hermes integration
+### AIOps integration
 
-- On-demand: `uv run hermes-arg sync --config config.yaml`.
-- Scheduled: `uv run hermes-arg schedule --config config.yaml --schedule 'every 30m'`; this creates a script-only Hermes cron job rather than a custom scheduler.
+- On-demand: `uv run aiops-inventory sync --config config.yaml`.
+- Scheduled: `uv run aiops-inventory schedule --config config.yaml --schedule 'every 30m'`; this creates a script-only AIOps cron job rather than a custom scheduler.
 - Primary read-only agent tool: `operations_analysis` in toolset `azure_operational_context`; it consumes the Semantic Knowledge Layer internally.
 - Direct Azure-dataset and raw Ontology query tools are no longer registered for agent use.
 - Agent responses expose compact validated semantic projections rather than Azure IDs, raw properties, lineage, or Delta rows.
@@ -38,16 +38,16 @@ The first Hermes Operations Graph vertical slice is implemented as a standalone,
 - Disables sensitive raw query datasets by default and makes retention explicit.
 - Removes caller-selected data roots from the agent schema and rejects symlink escapes.
 - Validates both the atomic `current` pointer and every dataset path remain inside the trusted root.
-- Loads the Hermes tool without importing ingestion-only PyArrow/PyYAML dependencies.
+- Loads the AIOps tool without importing ingestion-only PyArrow/PyYAML dependencies.
 - Uses a preinstalled Azure MCP executable by default, parallel ARG queries, and bounded command timeouts.
 
 ## Verification performed
 
 - Current unit and mock integration suite: 561 tests passed.
 - Ruff static analysis and Bandit security scanning passed with no findings.
-- Source distribution and wheel builds succeeded; the wheel installed into a clean Python 3.11 virtual environment and exposed the `hermes-arg` CLI.
-- Hermes directory-plugin loading registers only `operations_analysis`; Semantic/Fabric diagnostics and synchronization remain operator CLI/API functionality.
-- A schedule integration check in an isolated temporary `HERMES_HOME` created an active script-only 30-minute Hermes cron job and executable wrapper.
+- Source distribution and wheel builds succeeded; the wheel installed into a clean Python 3.11 virtual environment and exposed the `aiops-inventory` CLI.
+- AIOps directory-plugin loading registers only `operations_analysis`; Semantic/Fabric diagnostics and synchronization remain operator CLI/API functionality.
+- A schedule integration check in an isolated temporary `AIOPS_HOME` created an active script-only 30-minute AIOps cron job and executable wrapper.
 - Live Azure MCP subscription discovery succeeded.
 - Live ARG ingestion completed for one configured subscription.
 - Live result set contained 71 resources, six resource containers, 104 accumulated changes, two patch-assessment summaries, and 125 Advisor recommendations.
@@ -89,7 +89,7 @@ The implemented scope now includes OneLake/Lakehouse persistence, Fabric Ontolog
 - Validates canonical identities and timestamps, rejects duplicate changes/incidents/deviations, ignores inactive deviations, bounds nested output, enforces a serialized response cap, and redacts literal/percent/base64/hex identifiers and GUIDs.
 - Documents architecture, configuration, operational verification, and testing in `docs/CHANGE_INTELLIGENCE.md`, `docs/CHANGE_INTELLIGENCE_CONFIG.md`, and `docs/CHANGE_INTELLIGENCE_RUNBOOK.md`.
 - Adds the requested eight-module enterprise framework, first-class change/baseline/drift/deviation/authorization ontology entities, named network/identity/ownership/tag/policy drift, four timeline windows, and application/service/subscription compliance.
-- Registers ten requested `ChangePortfolio` commands in both the Operations Agent and Hermes plugin schema while retaining prior aliases.
+- Registers ten requested `ChangePortfolio` commands in both the Operations Agent and AIOps plugin schema while retaining prior aliases.
 
 ## Predictive Operations Intelligence
 
@@ -132,7 +132,7 @@ Implemented enterprise Lakehouse persistence as the governed foundation for Onto
 - Required-field, schema, duplicate, orphan-relationship, and subscription-consistency validation.
 - Catalog metadata generation, shortcut creation, and Fabric table-registration verification.
 - OpenTelemetry duration and row-count instruments.
-- Hermes agent/CLI commands for sync, refresh, status, last sync, and validation.
+- AIOps agent/CLI commands for sync, refresh, status, last sync, and validation.
 
 ## Microsoft Fabric Operational Context Graph
 
@@ -141,7 +141,7 @@ Implemented enterprise Lakehouse persistence as the governed foundation for Onto
 - Deterministic structural, tag-derived, compliance, recommendation, ownership, and service relationships with lineage and semantic metadata.
 - Incremental graph synchronization, semantic fingerprints, ontology versions, and soft retirement for removed entities and relationships.
 - Typed OneLake entity/relationship projections bound to a Microsoft Fabric Ontology item through the documented public-definition REST API.
-- Operator graph traversal remains available through `hermes-arg ontology`; the Operations Agent consumes only governed Semantic Layer APIs.
+- Operator graph traversal remains available through `aiops-inventory ontology`; the Operations Agent consumes only governed Semantic Layer APIs.
 - Application, infrastructure, and business context views; ontology health and quality Delta reports; OpenTelemetry graph metrics.
 - No custom graph database and no Cosmos DB dependency.
 

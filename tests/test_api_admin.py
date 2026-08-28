@@ -33,7 +33,7 @@ class FakeSecretClient:
 
 def _client(tmp_path):
     secret_client = FakeSecretClient()
-    onboarding = SubscriptionOnboardingService(tmp_path / "hermes")
+    onboarding = SubscriptionOnboardingService(tmp_path / "aiops")
     onboarding.secret_writer = KeyVaultSecretWriter(
         "ops-kv", client_factory=lambda _vault: secret_client
     )

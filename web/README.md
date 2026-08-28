@@ -1,7 +1,7 @@
 # Azure AI Operations Workbench (Prompt 15)
 
 Next.js 14 (App Router) + TypeScript + Fluent UI v9 + MSAL frontend for the
-Hermes Operations API (`docs/OPERATIONS_API.md`). This is the UI foundation
+AIOps Operations API (`docs/OPERATIONS_API.md`). This is the UI foundation
 only — it renders what the API can already answer and is explicit ("Not
 Found In Codebase" style messaging) about the parts it cannot, rather than
 fabricating data.
@@ -63,23 +63,23 @@ injects a single local subscription connection that references the secret as
 `env://AZURE_CLIENT_SECRET`, removes any previous fixture-only demo connection,
 and runs initial discovery/sync against that subscription without persisting the
 secret. If those values are absent or still placeholders, it falls back to
-seeding `.hermes-local` from `tests/fixtures/mock_arg_responses.json`.
+seeding `.aiops-local` from `tests/fixtures/mock_arg_responses.json`.
 
 Both paths use token auth and local file-backed registry storage. Set
-`HERMES_DEV_TOKEN=local-dev-token-1234` in `.env.local` to avoid `401`
+`AIOPS_DEV_TOKEN=local-dev-token-1234` in `.env.local` to avoid `401`
 responses from the browser.
 
-Override `HERMES_API_HOST`, `HERMES_API_PORT`, `HERMES_API_TOKENS`, or
-`HERMES_API_CORS_ORIGINS` when needed. For live Azure-backed local development,
-run `HERMES_LOCAL_SEED=0 npm run start:api`; that preserves the existing
+Override `AIOPS_API_HOST`, `AIOPS_API_PORT`, `AIOPS_API_TOKENS`, or
+`AIOPS_API_CORS_ORIGINS` when needed. For live Azure-backed local development,
+run `AIOPS_LOCAL_SEED=0 npm run start:api`; that preserves the existing
 Postgres-backed registry path and live connection sync behavior.
-Set `HERMES_LOCAL_AUTO_SYNC=0` to inject the SPN connection without syncing at
+Set `AIOPS_LOCAL_AUTO_SYNC=0` to inject the SPN connection without syncing at
 startup.
 
 Without `NEXT_PUBLIC_ENTRA_CLIENT_ID` set, the app runs in **dev-token
-mode**: a banner is shown and `HERMES_DEV_TOKEN` is sent as the
+mode**: a banner is shown and `AIOPS_DEV_TOKEN` is sent as the
 bearer token on every call. This must match a key configured in the API's
-`HERMES_API_TOKENS` (see `docs/OPERATIONS_API.md`). Never use dev-token mode
+`AIOPS_API_TOKENS` (see `docs/OPERATIONS_API.md`). Never use dev-token mode
 against a production API.
 
 ## Testing

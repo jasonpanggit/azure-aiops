@@ -18,7 +18,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           <MessageBarBody>
             <MessageBarTitle>Development mode</MessageBarTitle>
             No Entra ID app registration configured (NEXT_PUBLIC_ENTRA_CLIENT_ID is unset). Using
-            HERMES_DEV_TOKEN for API calls. Do not use this configuration in production.
+            AIOPS_DEV_TOKEN for API calls. Do not use this configuration in production.
           </MessageBarBody>
         </MessageBar>
         {children}

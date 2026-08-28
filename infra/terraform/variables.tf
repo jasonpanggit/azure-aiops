@@ -111,13 +111,13 @@ variable "image_tag" {
 variable "api_image_repository" {
   description = "Repository name for the Operations API image."
   type        = string
-  default     = "hermes-api"
+  default     = "aiops-api"
 }
 
 variable "web_image_repository" {
   description = "Repository name for the Operations Workbench image."
   type        = string
-  default     = "hermes-web"
+  default     = "aiops-web"
 }
 
 variable "deploy_images" {
@@ -203,7 +203,7 @@ variable "entra_api_audience" {
 }
 
 variable "entra_grants_json" {
-  description = "JSON subject-to-Hermes-grants map; Entra app roles must assert each configured role."
+  description = "JSON subject-to-AIOps-grants map; Entra app roles must assert each configured role."
   type        = string
   sensitive   = true
 
@@ -238,7 +238,7 @@ variable "nvd_api_key" {
 
 variable "refresh_trigger_secret" {
   description = <<-EOT
-    Shared secret checked against the x-hermes-trigger-secret header on
+    Shared secret checked against the x-aiops-trigger-secret header on
     POST /api/v1/inventory/refresh. This endpoint is called by the Fabric
     Data Pipeline's Web activity on a schedule to run inventory
     acquisition + normalization + OneLake publication. Leave empty to

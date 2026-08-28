@@ -1,6 +1,6 @@
 # Operations API
 
-The Operations API is the HTTP surface that makes Hermes the backend for the
+The Operations API is the HTTP surface that makes AIOps the backend for the
 Azure AI Operations Workbench UI.
 
 **The API owns no business logic.** Every route composes an existing service —
@@ -20,12 +20,12 @@ When no context is supplied, one is assembled from the environment:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `HERMES_HOME` | `~/.hermes` | Connection registry and dataset root. |
-| `HERMES_API_AUTH` | `token` | `token` or `gateway` (upstream-asserted identity). |
-| `HERMES_API_TOKENS` | — | Required when `HERMES_API_AUTH=token`. JSON: `{"<token>": {"subject": "...", "grants": [{"role": "admin"}]}}`. |
-| `HERMES_API_GATEWAY_GRANTS` | — | Required when `HERMES_API_AUTH=gateway`. JSON: `{"user@contoso.com": [{"role": "reader", "scope": {"subscription": ["..."]}}]}`. |
-| `HERMES_API_CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated browser origins allowed to call the API. |
-| `HERMES_CONNECTION_KEY_VAULT` | — | Key Vault name used to store one-time client secrets submitted by the workbench before Hermes persists the returned `keyvault://...` reference. |
+| `AIOPS_HOME` | `~/.aiops` | Connection registry and dataset root. |
+| `AIOPS_API_AUTH` | `token` | `token` or `gateway` (upstream-asserted identity). |
+| `AIOPS_API_TOKENS` | — | Required when `AIOPS_API_AUTH=token`. JSON: `{"<token>": {"subject": "...", "grants": [{"role": "admin"}]}}`. |
+| `AIOPS_API_GATEWAY_GRANTS` | — | Required when `AIOPS_API_AUTH=gateway`. JSON: `{"user@contoso.com": [{"role": "reader", "scope": {"subscription": ["..."]}}]}`. |
+| `AIOPS_API_CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated browser origins allowed to call the API. |
+| `AIOPS_CONNECTION_KEY_VAULT` | — | Key Vault name used to store one-time client secrets submitted by the workbench before AIOps persists the returned `keyvault://...` reference. |
 
 Misconfiguration fails at **startup**, not as a 500 on the first request: token
 mode with no tokens, malformed token JSON, and an unknown auth mode all refuse
@@ -38,8 +38,8 @@ data yet, the provider returns `None` and routes report `upstream_unavailable`
 rather than implying an empty estate.
 
 For local browser testing, run the API and web app separately. The API must be
-running on port 8080 and the web app's `HERMES_DEV_TOKEN` must
-match one of the keys in `HERMES_API_TOKENS`; otherwise requests will be
+running on port 8080 and the web app's `AIOPS_DEV_TOKEN` must
+match one of the keys in `AIOPS_API_TOKENS`; otherwise requests will be
 rejected with `401`. CORS preflight requests from the default Next.js origins
 are enabled by default.
 
@@ -56,17 +56,17 @@ When local SPN values are configured (`AZURE_SUBSCRIPTION_ID`,
 subscription connection backed by `env://AZURE_CLIENT_SECRET` so the workbench
 can run real discovery/sync without persisting the secret. Startup removes any
 previous fixture-only demo connection and runs initial sync for the SPN
-connection; set `HERMES_LOCAL_AUTO_SYNC=0` to skip that sync. Without SPN
-values, startup falls back to a fixture-backed `.hermes-local` snapshot.
+connection; set `AIOPS_LOCAL_AUTO_SYNC=0` to skip that sync. Without SPN
+values, startup falls back to a fixture-backed `.aiops-local` snapshot.
 
-Set `HERMES_LOCAL_SEED=0` for the existing live Azure-backed local development
+Set `AIOPS_LOCAL_SEED=0` for the existing live Azure-backed local development
 mode, which uses the OneLake-backed registry. Live subscription onboarding and
 sync still use `build_connection_ingestion()` and the Azure Resource Graph
 client path.
 
 The subscription onboarding route accepts either a pre-existing `secret_ref` or
 a one-time `credential.client_secret`. When `client_secret` is supplied,
-`HERMES_CONNECTION_KEY_VAULT` must name the vault where the API runtime identity
+`AIOPS_CONNECTION_KEY_VAULT` must name the vault where the API runtime identity
 can write secrets. The response and registry contain only the returned
 `keyvault://<vault>/secrets/<name>/<version>` reference.
 
@@ -83,7 +83,7 @@ from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 
 context = ApiContext(
-    onboarding=SubscriptionOnboardingService("~/.hermes"),
+    onboarding=SubscriptionOnboardingService("~/.aiops"),
     authenticator=StaticTokenAuthenticator(principals),
     authorizer=Authorizer(),
     telemetry=ApiTelemetry(),
@@ -148,7 +148,7 @@ Two authenticators ship:
   development and tests.
 - `HeaderPrincipalAuthenticator` — consumes an identity asserted by an upstream
   gateway (App Service Easy Auth, APIM). Gateway identity **does not grant
-  authorization by itself**: `HERMES_API_GATEWAY_GRANTS` maps a subject to
+  authorization by itself**: `AIOPS_API_GATEWAY_GRANTS` maps a subject to
   explicit grants and must be configured before the process starts.
 
 Direct JWKS/Entra token validation is **not implemented**. `Authenticator` is a
@@ -224,7 +224,7 @@ never echo the submitted value.
 
 Every response includes `X-Correlation-ID`. Supply a valid
 `X-Correlation-ID` request header to retain an existing trace identifier;
-otherwise Hermes generates one. API logs include only the correlation ID,
+otherwise AIOps generates one. API logs include only the correlation ID,
 templated route, method, status, and duration — never request payloads,
 headers, principals, or scopes.
 
@@ -260,7 +260,7 @@ notice. The UI must display it rather than treating the result as complete.
 Request bodies use `extra="forbid"`, so a stray top-level `client_secret` field
 is rejected with `400` rather than silently ignored. `CredentialReferenceModel`
 accepts either `secret_ref` or one-time `client_secret`; no secret material is
-returned, and Hermes persists only the Key Vault reference.
+returned, and AIOps persists only the Key Vault reference.
 
 ### Context (Semantic Knowledge Layer)
 
@@ -347,9 +347,9 @@ matters most on security-facing views.
 Emitted through the OpenTelemetry metrics API already used by the intelligence
 engines:
 
-- `hermes.api.requests` (counter) — by route, method, status **class**
-- `hermes.api.request.duration` (histogram, ms)
-- `hermes.api.authorization.denied` (counter)
+- `aiops.api.requests` (counter) — by route, method, status **class**
+- `aiops.api.request.duration` (histogram, ms)
+- `aiops.api.authorization.denied` (counter)
 
 Route labels are **templated paths**, not concrete URLs, and status is recorded
 as `2xx`/`4xx` rather than per-status. No payloads, headers, principals, or

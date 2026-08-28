@@ -170,7 +170,7 @@ function isInventoryProviderUnavailable(error: Error | ApiError | null): error i
 
 function inventoryUnavailableMessage(error: Error | ApiError): string {
   if (!isInventoryProviderUnavailable(error)) return error.message;
-  return "The API has no active inventory snapshot. Run the ARG/Log Analytics inventory ingestion job with `uv run hermes-arg sync --config config.yaml`, or set `HERMES_INVENTORY_FIXTURE` for local demo data. Installed Software also requires server-owned Log Analytics workspace mappings for ConfigurationData.";
+  return "The API has no active inventory snapshot. Run the ARG/Log Analytics inventory ingestion job with `uv run aiops-inventory sync --config config.yaml`, or set `AIOPS_INVENTORY_FIXTURE` for local demo data. Installed Software also requires server-owned Log Analytics workspace mappings for ConfigurationData.";
 }
 
 function InventorySetupHint({ error }: { error: Error | ApiError | null }) {
@@ -178,12 +178,12 @@ function InventorySetupHint({ error }: { error: Error | ApiError | null }) {
   return (
     <StatePanel
       title="Inventory data is not loaded"
-      message="You do not need the Hermes semantic graph or operations agent. Inventory data is published by the Fabric ingestion pipeline; installed software additionally needs ConfigurationData workspace mappings."
+      message="You do not need the AIOps semantic graph or operations agent. Inventory data is published by the Fabric ingestion pipeline; installed software additionally needs ConfigurationData workspace mappings."
       tone="error"
       action={(
         <div className="setup-hint">
-          <code>uv run hermes-arg sync --config config.yaml</code>
-          <span className="muted">Local demo alternative: set HERMES_INVENTORY_FIXTURE=tests/fixtures/mock_inventory_arg.json before starting the API.</span>
+          <code>uv run aiops-inventory sync --config config.yaml</code>
+          <span className="muted">Local demo alternative: set AIOPS_INVENTORY_FIXTURE=tests/fixtures/mock_inventory_arg.json before starting the API.</span>
         </div>
       )}
     />

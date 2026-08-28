@@ -5,8 +5,8 @@ The Lakehouse persistence layer feeds the Fabric-native Operational Context Grap
 ```mermaid
 flowchart LR
     ARG[Azure Resource Graph]
-    NORM[Hermes normalized generation]
-    CMD[Operator hermes-arg fabric command]
+    NORM[AIOps normalized generation]
+    CMD[Operator aiops-inventory fabric command]
     SYNC[FabricSyncService]
     DQ[DataQualityValidator]
     MAP[InventoryDatasetMapper]

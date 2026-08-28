@@ -64,7 +64,7 @@ def _client(tmp_path, *, with_provider: bool = True) -> TestClient:
         )
 
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(_principals()),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),

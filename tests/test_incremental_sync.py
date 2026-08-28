@@ -734,7 +734,7 @@ def test_mapper_reads_remote_snapshot_via_provided_filesystem(tmp_path: Path) ->
     """
     import fsspec
 
-    remote_root = f"abfss://ws-hermes@onelake.dfs.fabric.microsoft.com/lakehouse/Files/hermes/connections/demo-{uuid4().hex}"
+    remote_root = f"abfss://ws-aiops@onelake.dfs.fabric.microsoft.com/lakehouse/Files/aiops/connections/demo-{uuid4().hex}"
     store = DatasetStore(remote_root)
     memory_fs = fsspec.filesystem("memory")
     store.fs = memory_fs  # swap the real ADLS backend for an in-memory one

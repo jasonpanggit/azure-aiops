@@ -27,7 +27,7 @@ from .configuration_drift_engine import ConfigurationDriftEngine
 
 class ChangeTelemetry:
     def __init__(self, meter=None):
-        meter = meter or metrics.get_meter("hermes.change_intelligence", "0.1.0")
+        meter = meter or metrics.get_meter("aiops.change_intelligence", "0.1.0")
         self.analysis_duration = meter.create_histogram("change.analysis.duration", unit="s")
         self.drift_duration = meter.create_histogram("change.drift.duration", unit="s")
         self.risk_duration = meter.create_histogram("change.risk.duration", unit="s")

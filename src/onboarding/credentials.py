@@ -47,7 +47,7 @@ class SecretProvider(Protocol):
 
 
 class SecretWriter(Protocol):
-    """Stores a secret value and returns the durable reference Hermes should keep."""
+    """Stores a secret value and returns the durable reference AIOps should keep."""
 
     def store(self, *, connection_id: str, secret_value: str) -> str: ...
 
@@ -298,7 +298,7 @@ def key_vault_secret_name(connection_id: str) -> str:
     suffix = re.sub(r"[^0-9A-Za-z-]+", "-", str(connection_id or "").strip()).strip("-")
     if not suffix:
         raise SecretStorageError("connection_id is required to name the Key Vault secret")
-    return f"hermes-conn-{suffix}"[:127]
+    return f"aiops-conn-{suffix}"[:127]
 
 
 def _secret_version(secret: Any) -> str:
