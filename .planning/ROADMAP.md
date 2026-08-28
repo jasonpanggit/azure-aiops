@@ -125,7 +125,7 @@ Plans:
 **Goal:** Operators can inspect authorized, evidence-backed OS and installed-software inventory across Azure VMs and Arc-enabled servers, understand lifecycle risk, and export exact software/version matches for follow-up.
 **Requirements**: INV-01, INV-02, INV-03, INV-04, INV-05, INV-06
 **Depends on:** Phase 5
-**Plans:** 9/9 plans executed
+**Plans:** 9 plans
 
 Plans:
 
@@ -232,7 +232,7 @@ Plans:
 **Goal:** As a platform operator, I want the API and UI powered by unified inventory, so that every surface reflects one source of truth about what resources exist.
 **Requirements**: INV-09, INV-10
 **Depends on:** Phase 8
-**Plans:** 6/6 plans executed
+**Plans:** 9/9 plans executed
 
 Plans:
 
@@ -242,6 +242,9 @@ Plans:
 - [x] 09-04-PLAN.md — Close stale/partial finding and complete snapshot resource-scope validation
 - [x] 09-05-PLAN.md — Implement real bounded contextual orchestration and configurable Fabric IQ runtime wiring
 - [x] 09-06-PLAN.md — Isolate, fix, or precisely assign the three full backend suite failures
+- [ ] 09-07-PLAN.md — Deliver the governed read-only Operations MCP server contract and adapter
+- [ ] 09-08-PLAN.md — Put the Operations MCP server behind Azure API Management with Terraform, policy, and rollback
+- [ ] 09-09-PLAN.md — Integrate named Foundry specialists and optional Fabric IQ grounding with live smoke validation
 
 **UI hint:** yes
 
