@@ -42,5 +42,24 @@ The failures remain visible rather than being skipped, xfailed, or weakened:
 4. Any future change to these areas must rerun its isolated test and compare the failure
    set against this record before being attributed to Phase 9.
 
+## Final Verification
+
+The Phase 9 focused backend command passed:
+
+```text
+134 passed
+```
+
+The plan's isolated three-test command and the complete backend command both retain the
+same three failures listed above:
+
+```text
+3 failed, 1532 passed, 2 warnings
+```
+
+The focused command is the Phase 9 regression gate; the full-suite command is the
+cross-domain baseline gate. Neither command was weakened.
+
 **Residual status:** three pre-existing failures remain in the full backend suite; zero
-Phase 9-caused failures were found.
+Phase 9-caused failures were found. Follow-up ownership remains with the governance,
+situation/ontology, and storage domains respectively.
