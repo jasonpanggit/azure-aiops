@@ -118,7 +118,7 @@ Plans:
 | 6. Software and OS Inventory Visibility | 9/9 | Code-complete, UAT pending | - |
 | 7. Unified Resource Inventory | 6/6 | Implementation complete; live verification pending | - |
 | 8. Resource Identity Plane | 3/3 | In Progress|  |
-| 9. Consumer Pivot | 5/6 | In Progress|  |
+| 9. Consumer Pivot | 6/6 | In Progress|  |
 
 ### Phase 6: Software and OS Inventory Visibility
 
@@ -232,7 +232,7 @@ Plans:
 **Goal:** As a platform operator, I want the API and UI powered by unified inventory, so that every surface reflects one source of truth about what resources exist.
 **Requirements**: INV-09, INV-10
 **Depends on:** Phase 8
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans executed
 
 Plans:
 
@@ -241,7 +241,7 @@ Plans:
 - [x] 09-03-PLAN.md — Deliver the accessible contextual Copilot drawer across supported pages
 - [x] 09-04-PLAN.md — Close stale/partial finding and complete snapshot resource-scope validation
 - [x] 09-05-PLAN.md — Implement real bounded contextual orchestration and configurable Fabric IQ runtime wiring
-- [ ] 09-06-PLAN.md — Isolate, fix, or precisely assign the three full backend suite failures
+- [x] 09-06-PLAN.md — Isolate, fix, or precisely assign the three full backend suite failures
 
 **UI hint:** yes
 
