@@ -138,6 +138,8 @@ def deterministic_network_findings(snapshot: PageSnapshot) -> list[dict[str, Any
             "finding_id": f"{check_id}:{row.evidence_id}",
             "resource_ids": [row.resource_id] if row.resource_id else [],
             "check_id": check_id,
+            "policy_id": check_id,
+            "source_status": status,
             "status": "verified" if verified else ("hypothesis" if status == "ok" else status),
             "summary": issue,
             "evidence_refs": [row.evidence_id],
