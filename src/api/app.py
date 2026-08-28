@@ -36,6 +36,7 @@ from .routers import (
     twin,
     vulnerability,
 )
+from .routers import mcp as mcp_routes
 from .routers import context as context_routes
 from .routers import copilot as copilot_routes
 from .routers import governance as governance_routes
@@ -235,6 +236,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     app.include_router(inventory.router)
     app.include_router(governance_routes.router)
     app.include_router(multi_agent.router)
+    app.include_router(mcp_routes.router)
     app.include_router(network.router)
     app.include_router(operations.router)
     app.include_router(patching.router)
