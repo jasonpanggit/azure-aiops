@@ -12,7 +12,7 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
-import { vulnerabilityApi } from "@/lib/services";
+import { buildCopilotSnapshot, copilotEvidenceRows, vulnerabilityApi } from "@/lib/services";
 
 /** Service- and reachability-aware vulnerability prioritization workspace. */
 export default function ExposurePage() {
@@ -506,6 +506,18 @@ export default function ExposurePage() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Vulnerability exposure"
+        snapshot={buildCopilotSnapshot({
+          pageKind: "vulnerability",
+          pageId: "exposure",
+          scope,
+          filters: { query: query ? [query] : [], reachable: reachableOnly ? ["true"] : [] },
+          evidence: copilotEvidenceRows("vulnerability", [
+            ...(summary.data?.evidence ?? []),
+            ...(exposures.data?.evidence ?? []),
+            ...(patches.data?.evidence ?? []),
+            ...(servers.data?.evidence ?? []),
+          ], [...filteredCves, ...filteredPatches, ...filteredServers]),
+        })}
         starterQuestions={[
           { label: "Which CVEs affect our highest-risk service?", tool: "cve_exposure", toolArguments: {} },
           { label: "What should be patched first?", tool: "cve_exposure", toolArguments: {} },

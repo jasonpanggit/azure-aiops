@@ -14,7 +14,7 @@ import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
-import { networkApi, operationsApi, vulnerabilityApi } from "@/lib/services";
+import { buildCopilotSnapshot, copilotEvidenceRows, networkApi, operationsApi, vulnerabilityApi } from "@/lib/services";
 import type { NetworkGap, RemediationOpportunity, RemediationPlan, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 
 type BacklogKind = "plan" | "opportunity" | "network" | "vulnerability" | "patch" | "lifecycle" | "configuration" | "incident" | "identity";
@@ -273,6 +273,24 @@ function RemediationContent() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel={fromBusinessService || "Remediation"}
+        snapshot={buildCopilotSnapshot({
+          pageKind: "patch",
+          pageId: "remediation",
+          scope,
+          filters: {
+            category: category === "all" ? [] : [category],
+            business_service: fromBusinessService ? [fromBusinessService] : [],
+            cve: fromCve ? [fromCve] : [],
+          },
+          selectedResources: selected ? [{ resource_id: selected.id, resource_type: selected.kind, name: selected.title }] : [],
+          evidence: copilotEvidenceRows("remediation", [
+            ...(plans.data?.evidence ?? []),
+            ...(opportunities.data?.evidence ?? []),
+            ...(networkGaps.data?.evidence ?? []),
+            ...(ruleFindings.data?.evidence ?? []),
+            ...(exposures.data?.evidence ?? []),
+          ], backlog),
+        })}
         starterQuestions={[
           { label: "What should be fixed first?", tool: "remediation_opportunities", toolArguments: {} },
           { label: "Highest risk-reduction remediation plans", tool: "remediation_plans", toolArguments: {} },

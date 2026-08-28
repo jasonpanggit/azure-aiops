@@ -8,7 +8,7 @@ import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { useScope } from "@/lib/scope-context";
-import { situationsApi } from "@/lib/services";
+import { buildCopilotSnapshot, copilotEvidenceRows, situationsApi } from "@/lib/services";
 import { rankDurableSituations, type SituationPriority } from "@/lib/situations";
 import type { DurableSituation, Envelope } from "@/lib/types";
 
@@ -129,6 +129,13 @@ export default function SituationsPage() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Situations queue"
+        snapshot={buildCopilotSnapshot({
+          pageKind: "incident",
+          pageId: "situations",
+          scope,
+          filters: { query: query ? [query] : [], priority: priority === "all" ? [] : [priority], page: [String(page)] },
+          evidence: copilotEvidenceRows("situations", envelope?.evidence ?? [], situations),
+        })}
         starterQuestions={[
           { label: "Which situations are highest priority?", tool: "incidents", toolArguments: {} },
           { label: "What should be fixed first?", tool: "remediation_opportunities", toolArguments: {} },

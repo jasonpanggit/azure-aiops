@@ -14,7 +14,7 @@ import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
-import { networkApi, vulnerabilityApi } from "@/lib/services";
+import { buildCopilotSnapshot, copilotEvidenceRows, networkApi, vulnerabilityApi } from "@/lib/services";
 import type { NetworkGap, NetworkTopology, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 
 type ViolationType =
@@ -518,6 +518,16 @@ export default function CompliancePage() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Security posture"
+        snapshot={buildCopilotSnapshot({
+          pageKind: "governance",
+          pageId: "compliance-posture",
+          scope,
+          filters: { policy: [policy.name], selected: selectedId ? [selectedId] : [] },
+          evidence: copilotEvidenceRows("governance", evidence, [
+            ...violations,
+            ...(selected ? [selected] : []),
+          ]),
+        })}
         starterQuestions={[
           { label: "Which PROD workloads bypass the firewall?", tool: "firewall_nsg_gaps", toolArguments: {} },
           { label: "Which CVEs affect our critical services?", tool: "cve_exposure", toolArguments: {} },

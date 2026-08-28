@@ -11,7 +11,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useScope } from "@/lib/scope-context";
-import { connectionsApi, networkApi, situationsApi, vulnerabilityApi } from "@/lib/services";
+import { buildCopilotSnapshot, copilotEvidenceRows, connectionsApi, networkApi, situationsApi, vulnerabilityApi } from "@/lib/services";
 import { rankDurableSituations } from "@/lib/situations";
 import type {
   Envelope,
@@ -163,6 +163,17 @@ export default function Home() {
             open={copilotOpen}
             onClose={() => setCopilotOpen(false)}
             contextLabel="Operations overview"
+            snapshot={buildCopilotSnapshot({
+              pageKind: "resource",
+              pageId: "operations-overview",
+              scope,
+              filters: { view: ["overview"] },
+              evidence: copilotEvidenceRows("overview", evidence, [
+                ...situations.slice(0, 50),
+                ...(state.network?.data ? [state.network.data] : []),
+                ...(state.vulnerabilities?.data ? [state.vulnerabilities.data] : []),
+              ]),
+            })}
             starterQuestions={[
               { label: "What needs attention right now?", tool: "incidents", toolArguments: {} },
               { label: "Which services have the highest risk?", tool: "cve_exposure", toolArguments: {} },

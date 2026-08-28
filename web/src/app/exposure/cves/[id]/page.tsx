@@ -14,7 +14,7 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
-import { vulnerabilityApi } from "@/lib/services";
+import { buildCopilotSnapshot, copilotEvidenceRows, vulnerabilityApi } from "@/lib/services";
 import type { CveDetail } from "@/lib/types";
 
 /** Blends CVSS severity, real-world exploitation likelihood (EPSS), and CISA KEV status into a single
@@ -397,6 +397,17 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel={data.cve.cve_id}
+        snapshot={buildCopilotSnapshot({
+          pageKind: "vulnerability",
+          pageId: `cve:${data.cve.cve_id}`,
+          scope,
+          selectedResources: [{ resource_id: data.cve.cve_id, resource_type: "CVE", name: data.cve.cve_id }],
+          evidence: copilotEvidenceRows("cve", [...(detail.data?.evidence ?? []), ...(attackPath.data?.evidence ?? [])], [
+            data.cve,
+            ...(data.findings ?? []),
+            ...(attackPath.data?.data?.nodes ?? []),
+          ]),
+        })}
         starterQuestions={[
           {
             label: `Explain ${data.cve.cve_id} and how it could impact our systems`,

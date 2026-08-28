@@ -676,6 +676,9 @@ textarea:focus-visible {
   align-content: center;
   justify-items: center;
   min-height: 180px;
+  align-self: center;
+  justify-self: center;
+  margin: 0 auto;
 }
 
 .posture-orbit-ring {
@@ -3424,6 +3427,37 @@ body.topology-fullscreen-open {
   min-width: 0;
 }
 
+.compliance-detail details {
+  min-width: 0;
+  margin-top: 4px;
+}
+
+.compliance-detail summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.compliance-detail details[open] summary {
+  margin-bottom: 10px;
+}
+
+.compliance-detail details .structured-data,
+.compliance-detail details .structured-list,
+.compliance-detail details .structured-list-item {
+  min-width: 0;
+}
+
+.compliance-detail details .structured-row {
+  grid-template-columns: minmax(110px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.compliance-detail details .structured-row dt {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .compliance-detail dl {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
@@ -3888,6 +3922,63 @@ body.topology-fullscreen-open {
   box-shadow: 0 6px 16px -8px rgba(76, 60, 200, 0.55);
 }
 
+.copilot-drawer-trigger:focus-visible,
+.copilot-drawer-close:focus-visible,
+.copilot-drawer-expand:focus-visible,
+.copilot-prompts button:focus-visible {
+  outline: 3px solid var(--color-focus, #60a5fa);
+  outline-offset: 2px;
+}
+
+.copilot-drawer-trigger .copilot-mark {
+  width: 24px;
+  height: 24px;
+  font-size: 15px;
+  border-radius: 7px;
+}
+
+.copilot-drawer-trigger-label {
+  white-space: nowrap;
+}
+
+.copilot-live-status {
+  min-height: 22px;
+  margin-bottom: 10px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.copilot-synthesis-mode {
+  margin: 0 0 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.copilot-findings {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.copilot-finding {
+  padding: 10px 12px;
+  border-left: 3px solid var(--color-border);
+  background: var(--color-surface-subtle);
+}
+
+.copilot-finding-verified { border-left-color: var(--color-success, #16804c); }
+.copilot-finding-hypothesis { border-left-color: var(--color-warning, #b7791f); }
+.copilot-finding-unavailable,
+.copilot-finding-denied { border-left-color: var(--color-critical, #b42318); }
+.copilot-finding p { margin: 4px 0; }
+.copilot-finding small { color: var(--color-text-muted); }
+
+@media (max-width: 640px) {
+  .copilot-drawer { width: 100% !important; }
+  .copilot-drawer-trigger-label { display: none; }
+  .copilot-drawer-trigger { padding: 7px; border-radius: 50%; }
+}
+
 .copilot-drawer-trigger:hover {
   filter: brightness(1.05);
 }
@@ -4334,6 +4425,10 @@ body.topology-fullscreen-open {
     grid-template-columns: minmax(0, 1fr) 170px;
   }
 
+  .posture-orbit {
+    min-height: 160px;
+  }
+
   .command-center-facts {
     grid-column: 1 / -1;
     grid-template-columns: repeat(3, 1fr);
@@ -4513,8 +4608,8 @@ body.topology-fullscreen-open {
   }
 
   .posture-orbit {
-    min-height: 180px;
-    margin: 4px auto -2px;
+    min-height: 160px;
+    margin: 12px auto 8px;
   }
 
   .command-center-facts {
