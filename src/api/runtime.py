@@ -459,23 +459,33 @@ def _enrichment_cache(name: str) -> EnrichmentCache:
     return _enrichment_cache_for(name, str(aiops_home()))
 
 
-def _resolve_kb_to_cves(kb_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
-    """Resolve KB ids to real CVE ids via the public MSRC Security Update
-    Guide feed, memoized with a TTL so repeated requests don't re-query MSRC
-    for the same KBs. Returns an empty tuple for KBs MSRC has no CVE for
-    (e.g. Servicing Stack Updates, which are commonly advisory-only) and an
-    empty dict entirely on any network failure, so callers can safely fall
-    back to the `KB-<kbId>` proxy identifier.
+def _resolve_kb_metadata(kb_ids: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+    """Resolve KB ids to their MSRC metadata (CVE ids and publication date).
+
+    Cached alongside the CVE mapping because both come from the same single
+    MSRC query -- fetching the publication date separately would double the
+    request volume against a public, unauthenticated feed for no benefit.
+    Returns an empty dict on any network failure so callers fall back to the
+    `KB-<kbId>` proxy identifier and an unknown date.
     """
-    resolved: dict[str, tuple[str, ...]] = {}
+    resolved: dict[str, dict[str, Any]] = {}
     to_fetch: list[str] = []
     cache = _enrichment_cache("msrc_kb_cve")
     for kb_id in kb_ids:
         hit, value = cache.get(kb_id)
-        if hit:
-            resolved[kb_id] = tuple(value or ())
-        else:
+        if not hit:
             to_fetch.append(kb_id)
+            continue
+        # Entries cached before publication dates were captured are plain
+        # CVE-id lists. Read them as "CVEs known, date unknown" rather than
+        # discarding the cache and re-querying MSRC for every KB.
+        if isinstance(value, Mapping):
+            resolved[kb_id] = {
+                "cve_ids": tuple(value.get("cve_ids") or ()),
+                "published_at": str(value.get("published_at") or ""),
+            }
+        else:
+            resolved[kb_id] = {"cve_ids": tuple(value or ()), "published_at": ""}
     if to_fetch:
         try:
             updates = MsrcKbLookupConnector().fetch(tuple(to_fetch))
@@ -485,14 +495,35 @@ def _resolve_kb_to_cves(kb_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
         fetched_kbs = {update.kb_id for update in updates}
         pending: dict[str, Any] = {}
         for update in updates:
-            pending[update.kb_id] = list(update.cve_ids)
-            resolved[update.kb_id] = update.cve_ids
+            entry = {
+                "cve_ids": list(update.cve_ids),
+                "published_at": update.published_at,
+            }
+            pending[update.kb_id] = entry
+            resolved[update.kb_id] = {
+                "cve_ids": update.cve_ids,
+                "published_at": update.published_at,
+            }
         for kb_id in to_fetch:
             if kb_id not in fetched_kbs:
-                pending[kb_id] = []
-                resolved[kb_id] = ()
+                pending[kb_id] = {"cve_ids": [], "published_at": ""}
+                resolved[kb_id] = {"cve_ids": (), "published_at": ""}
         cache.set_many(pending)
     return resolved
+
+
+def _resolve_kb_to_cves(kb_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+    """Resolve KB ids to real CVE ids via the public MSRC Security Update
+    Guide feed, memoized with a TTL so repeated requests don't re-query MSRC
+    for the same KBs. Returns an empty tuple for KBs MSRC has no CVE for
+    (e.g. Servicing Stack Updates, which are commonly advisory-only) and an
+    empty dict entirely on any network failure, so callers can safely fall
+    back to the `KB-<kbId>` proxy identifier.
+    """
+    return {
+        kb_id: tuple(entry.get("cve_ids") or ())
+        for kb_id, entry in _resolve_kb_metadata(kb_ids).items()
+    }
 
 
 # Failed enrichment lookups (e.g. NVD 429 rate-limiting) are cached for a
@@ -647,7 +678,10 @@ def _build_vulnerability_service(
     # have no CVE association in MSRC's data; those keep the `KB-<kbId>`
     # proxy identifier used before this connector was wired in, which is
     # factually correct rather than a bug.
-    kb_to_cves = _resolve_kb_to_cves(tuple({item["missing_kb"] for item in findings}))
+    kb_metadata = _resolve_kb_metadata(tuple({item["missing_kb"] for item in findings}))
+    kb_to_cves = {
+        kb_id: tuple(entry.get("cve_ids") or ()) for kb_id, entry in kb_metadata.items()
+    }
     expanded_findings: list[dict[str, Any]] = []
     for item in findings:
         cve_ids = kb_to_cves.get(item["missing_kb"]) or (
@@ -680,7 +714,17 @@ def _build_vulnerability_service(
     service = VulnerabilityIntelligenceService.from_rows(
         findings=findings,
         security_updates=[
-            {"kb_id": item["missing_kb"], "cve_ids": [item["cve_id"]]} for item in findings
+            {
+                "kb_id": item["missing_kb"],
+                "cve_ids": [item["cve_id"]],
+                # MSRC's release date is the KB's actual publication. Falling
+                # back to the assessment's observation date would be wrong,
+                # so an unresolved KB stays honestly blank.
+                "published_at": (
+                    kb_metadata.get(item["missing_kb"], {}).get("published_at") or ""
+                ),
+            }
+            for item in findings
         ],
         cves=cve_rows,
         freshness=freshness,

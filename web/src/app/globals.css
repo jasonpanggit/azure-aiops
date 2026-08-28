@@ -1495,12 +1495,67 @@ textarea:focus-visible {
 }
 
 .table-footer {
-  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px;
   font-size: 11px;
   color: var(--color-text-muted);
-  text-align: right;
   background: var(--color-surface-subtle);
   border-top: 1px solid var(--color-border);
+}
+
+.table-footer-range {
+  white-space: nowrap;
+}
+
+.table-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.table-footer-size {
+  height: 26px;
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.table-footer-pages {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.table-footer .button {
+  min-height: 26px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.table-footer-page {
+  min-width: 26px;
+  padding: 0 5px;
+  justify-content: center;
+}
+
+.table-footer-page.is-active {
+  color: var(--color-brand-contrast, #fff);
+  background: var(--color-brand);
+  border-color: var(--color-brand);
+}
+
+.table-footer-gap {
+  padding: 0 2px;
+  color: var(--color-text-muted);
 }
 
 .breadcrumb {
@@ -3140,6 +3195,14 @@ body.topology-fullscreen-open {
 .cvss-radar-label {
   font-size: 9px;
   fill: var(--color-text-secondary);
+}
+
+/* Table-cell variant: small enough to repeat on every CVE row, so the vector
+   reads as a comparable shape instead of a wall of near-identical strings. */
+.cvss-radar-chart-compact {
+  display: block;
+  width: 60px;
+  height: 60px;
 }
 
 .cve-description {

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.auth import (
     EntraJwtAuthenticator,
+    GatewayOrDirectAuthenticator,
     HeaderPrincipalAuthenticator,
     StaticTokenAuthenticator,
 )
@@ -83,7 +84,33 @@ def test_gateway_mode_builds_a_resolver(monkeypatch):
         "AIOPS_API_GATEWAY_GRANTS",
         '{"d@e.com": [{"role": "reader", "scope": {"subscription": ["sub-1"]}}]}',
     )
-    assert isinstance(build_authenticator(), HeaderPrincipalAuthenticator)
+    monkeypatch.setenv("AIOPS_ENTRA_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("AIOPS_ENTRA_AUDIENCE", "api://aiops")
+
+    # APIM fronts only the MCP route, so gateway mode must still accept the
+    # direct Entra tokens the browser sends to every other route.
+    authenticator = build_authenticator()
+    assert isinstance(authenticator, GatewayOrDirectAuthenticator)
+    assert isinstance(authenticator.gateway, HeaderPrincipalAuthenticator)
+    assert isinstance(authenticator.direct, EntraJwtAuthenticator)
+
+
+def test_gateway_mode_refuses_to_start_without_entra_identity(monkeypatch):
+    """Gateway mode without Entra config would 401 every browser request.
+
+    That is the misconfiguration that locked the web app out of the whole
+    API, so it must fail loudly at startup rather than silently at runtime.
+    """
+    monkeypatch.setenv("AIOPS_API_AUTH", "gateway")
+    monkeypatch.setenv(
+        "AIOPS_API_GATEWAY_GRANTS",
+        '{"d@e.com": [{"role": "reader"}]}',
+    )
+    monkeypatch.delenv("AIOPS_ENTRA_TENANT_ID", raising=False)
+    monkeypatch.delenv("AIOPS_ENTRA_AUDIENCE", raising=False)
+
+    with pytest.raises(RuntimeError, match="AIOPS_ENTRA_TENANT_ID"):
+        build_authenticator()
 
 
 def test_entra_mode_requires_identity_and_builds_validator(monkeypatch):
@@ -176,6 +203,10 @@ def test_configured_fabric_iq_loader_returns_governed_adapter(monkeypatch):
     result = adapter.run("relationships", {"subject": "network"}, Scope.from_mapping({}))
     assert result.status == "ok"
     assert result.data["metadata"]["identity_authority"] is False
+    # The runtime answers from the OneLake ontology projection, not from a
+    # Fabric IQ query surface, so a citation must not claim Fabric IQ.
+    assert result.data["metadata"]["provenance"] == "onelake-ontology-projection"
+    assert result.data["metadata"]["source"] == "onelake-ontology-projection"
 
 
 def test_inventory_runtime_loader_reads_active_generation_metadata(

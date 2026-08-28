@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { CvssRadarChart } from "@/components/ui/CvssRadarChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
@@ -131,7 +132,13 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                     </td>
                     <td><StatusBadge label={cve.cvss?.severity || cve.severity} tone={statusTone(cve.cvss?.severity || cve.severity)} compact /></td>
                     <td>{cve.cvss?.base_score ? cve.cvss.base_score.toFixed(1) : "—"}</td>
-                    <td>{cve.cvss?.vector || "—"}</td>
+                    <td>
+                      {cve.cvss?.vector ? (
+                        <CvssRadarChart vector={cve.cvss.vector} radius={26} compact />
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
