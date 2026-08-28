@@ -9,6 +9,7 @@ business logic.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
 import uuid
 from collections.abc import Callable
@@ -40,6 +41,8 @@ from .registry import (
 )
 from .sync import ConnectionSyncCoordinator, SyncResult
 from .validation import ConnectionValidator, ValidationReport
+
+logger = logging.getLogger(__name__)
 
 _CONNECTION_ID = re.compile(r"^[a-z0-9][a-z0-9-_]{1,62}$")
 _GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
@@ -416,12 +419,12 @@ class SubscriptionOnboardingService:
                     message=message,
                 )
                 self._save_operation_state(connection_id, sync_state=state)
-            except Exception:  # noqa: BLE001 - a lost progress tick is not fatal
-                pass
+            except Exception:
+                logger.debug("Unable to persist sync progress for %s", connection_id, exc_info=True)
 
         try:
             connection = self.registry.get(connection_id)
-            result, state = self.sync_coordinator.run(
+            _result, state = self.sync_coordinator.run(
                 connection,
                 mode=mode,
                 run_id=run_id,
@@ -445,8 +448,8 @@ class SubscriptionOnboardingService:
                     message=message,
                 )
                 self._save_operation_state(connection_id, sync_state=failed_state)
-            except Exception:  # noqa: BLE001 - best effort; nothing else can be done here
-                pass
+            except Exception:
+                logger.exception("Unable to persist failed sync state for %s", connection_id)
 
     def _save_operation_state(
         self,
