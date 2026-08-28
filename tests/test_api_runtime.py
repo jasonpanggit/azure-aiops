@@ -17,6 +17,8 @@ from api.auth import (
 )
 from api.providers import STALE, ProviderRuntime, ProviderSpec
 from api.runtime import aiops_home, build_authenticator, build_context
+from api.runtime import _load_fabric_iq_adapter
+from api.scope import Scope
 from intelligence.inventory.normalization import normalize_os_inventory
 from onboarding.credentials import KeyVaultSecretWriter
 from onboarding.local_seed import seed_local_environment
@@ -158,6 +160,22 @@ def test_context_loads_local_seeded_snapshot(monkeypatch, tmp_path):
     assert context.semantic_provider() is not None
     assert context.network_provider is not None
     assert context.network_provider() is not None
+
+
+def test_configured_fabric_iq_loader_returns_governed_adapter(monkeypatch):
+    class FakeService:
+        def ontology_query(self, question, *, entity=""):
+            return {"answer": question, "entity": entity}
+
+    class FakeRuntime:
+        service = FakeService()
+
+    monkeypatch.setattr("api.runtime._fabric_runtime_from_environment", lambda: FakeRuntime())
+    adapter = _load_fabric_iq_adapter()
+    assert adapter is not None
+    result = adapter.run("relationships", {"subject": "network"}, Scope.from_mapping({}))
+    assert result.status == "ok"
+    assert result.data["metadata"]["identity_authority"] is False
 
 
 def test_inventory_runtime_loader_reads_active_generation_metadata(
