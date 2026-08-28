@@ -3,29 +3,29 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_phase: 09 — consumer-pivot
-current_plan: 6
+current_plan: 8
 status: in_progress
-stopped_at: Completed 09-07-PLAN.md
-last_updated: "2026-08-28T09:15:43.072Z"
+stopped_at: Completed 09-08-PLAN.md; 09-09 intentionally not executed
+last_updated: "2026-08-28T10:09:17.769Z"
 last_activity: 2026-08-28
 last_activity_desc: "Completed quick task 260828-gc7: Automate subscription connection validation and initial sync"
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 38
-  completed_plans: 34
+  completed_plans: 35
 current_phase_name: consumer-pivot
 current_plan_name: consumer-pivot
-total_plans_in_phase: 6
+total_plans_in_phase: 9
 ---
 
 ## Current Position
 
 Current Phase: 09 — consumer-pivot
-Current Plan: 6
-Total Plans in Phase: 6
-Status: Phase complete — ready for verification
-Progress: [█████████░] 89% (31/35 plans)
+Current Plan: 8
+Total Plans in Phase: 9
+Status: In progress — 09-09 intentionally not executed
+Progress: [█████████░] 92% (35/38 plans)
 
 # PHASE 08 HALTED AND CLOSED
 
@@ -71,6 +71,7 @@ Last activity: 2026-08-28 - Completed quick task 260828-gc7: Automate subscripti
 | Phase 09 P05 | 12min | 2 tasks | 4 files |
 | Phase 09 P06 | 20min | 2 tasks | 1 files |
 | Phase 09 P07 | 20min | 2 tasks | 8 files |
+| Phase 09 P08 | 25min | 2 tasks | 12 files |
 
 ## Decisions
 
@@ -87,9 +88,15 @@ Last activity: 2026-08-28 - Completed quick task 260828-gc7: Automate subscripti
 - [Phase ?]: Phase 09 plan 06: classify full-suite failures using detached pre-Phase-9 reproduction; retain three baseline failures without weakening tests.
 - [Phase ?]: MCP exposes exactly ten reviewed read-only tools and dispatches only through TOOL_REGISTRY.
 - [Phase ?]: Snapshot replay returns the recorded ledger without silent provider rehydration.
+- [Phase ?]: Phase 09 plan 08: use a dedicated Developer-tier APIM instance in Australia East for isolated MCP gateway ownership and rollback.
+- [Phase ?]: Phase 09 plan 08: keep API-side effective-scope enforcement authoritative; APIM caller headers and subscription keys are not authorization grants.
 
 ## Session
 
-**Last session:** 2026-08-28T09:15:43.064Z
-**Stopped at:** Completed 09-07-PLAN.md
+**Last session:** 2026-08-28T10:09:17.761Z
+**Stopped at:** Completed 09-08-PLAN.md; 09-09 intentionally not executed
 **Resume file:** None
+
+### Caveats
+
+- 09-09 remains unexecuted by request; Phase 9 is not complete.
