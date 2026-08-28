@@ -55,3 +55,25 @@ def test_context_route_rejects_unknown_version_and_wider_scope(tmp_path):
         headers=HEADERS,
     )
     assert response.status_code == 400
+
+
+def test_context_loop_preserves_status_and_exposes_policy_grounding(tmp_path):
+    body = _body()
+    body["snapshot"]["evidence"] = [
+        {
+            "evidence_id": "seg-1",
+            "section": "network",
+            "resource_id": "vnet-1",
+            "status": "denied",
+            "data": {"category": "segmentation", "issue": "Unverified segment boundary"},
+        }
+    ]
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+    response = client.post("/api/v1/copilot/investigate-context", json=body, headers=HEADERS)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    finding = data["findings"][0]
+    assert finding["policy_id"] == "NET-SEG-001"
+    assert finding["source_status"] == "denied"
+    assert finding["actionable"] is False
+    assert data["stages"] == ["plan", "observe", "delegate", "reassess"]
