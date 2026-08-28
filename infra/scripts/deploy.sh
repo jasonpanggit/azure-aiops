@@ -108,6 +108,11 @@ case "${command}" in
   destroy)
     terraform destroy -input=false "${tf_vars[@]}" "$@"
     ;;
+  import)
+    # Adopts a resource that already exists in Azure/Fabric into state, so a
+    # subsequent apply updates it instead of recreating it.
+    terraform import -input=false "${tf_vars[@]}" "$@"
+    ;;
   output)
     # No -var needed: outputs are read from state.
     terraform output "$@"
@@ -117,7 +122,7 @@ case "${command}" in
     ;;
   *)
     echo "deploy: unknown command '${command}'" >&2
-    echo "usage: deploy.sh {init|validate|fmt|plan|apply|destroy|output}" >&2
+    echo "usage: deploy.sh {init|validate|fmt|plan|apply|import|destroy|output}" >&2
     exit 1
     ;;
 esac
