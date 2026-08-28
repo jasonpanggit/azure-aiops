@@ -48,15 +48,22 @@ from network.flow import FlowQuery
 from network.models import PRIVATE_LINK_RESOURCE_TYPES
 from network.service import NetworkIntelligenceService
 from onboarding.credentials import KeyVaultSecretWriter
+from onboarding.monitor_prometheus import (
+    resource_scoped_endpoint,
+    workspace_scoped_endpoint,
+)
 from onboarding.registry import ConnectionRegistry
 from onboarding.runtime import (
     build_connection_arg_client,
+    build_connection_logs_client,
     build_connection_monitor_metrics_client,
+    build_connection_prometheus_client,
     build_onboarding_service,
 )
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
 from operations.foundry_agent import FoundryPromptAgent
+from operations.tools import FabricIQToolAdapter
 from operations.patching import (
     InMemoryPatchRunStore,
     PatchingService,
@@ -889,6 +896,36 @@ def _fabric_runtime_from_environment() -> FabricRuntime | None:
     return build_runtime(config)
 
 
+def _load_fabric_iq_adapter() -> FabricIQToolAdapter | None:
+    """Resolve optional Fabric IQ enrichment through the managed Fabric runtime.
+
+    The runtime's ontology service is a semantic source only.  The adapter
+    receives the request scope and stamps its response; it is never used to
+    enumerate inventory or authorize a resource.
+    """
+    runtime = _fabric_runtime_from_environment()
+    if runtime is None:
+        return None
+
+    def query(kind: str, args: dict[str, Any], scope: Any) -> dict[str, Any]:
+        subject = str(args.get("subject") or "").strip()
+        if not subject:
+            raise ValueError("Fabric IQ subject is required")
+        result = runtime.service.ontology_query(
+            f"{kind} context for {subject}", entity=kind
+        )
+        if not isinstance(result, dict):
+            raise TypeError("Fabric IQ returned an invalid result")
+        return {
+            "data": result,
+            "freshness": str(result.get("freshness") or "runtime"),
+            "authorization": "scope-checked",
+            "provenance": "fabric-runtime-ontology",
+        }
+
+    return FabricIQToolAdapter(query=query)
+
+
 def _fabric_network_service(runtime: FabricRuntime) -> NetworkIntelligenceService:
     snapshot = runtime.service.semantic_snapshot()
     return NetworkIntelligenceService.from_rows(
@@ -1076,6 +1113,11 @@ def _build_provider_runtime(
     specs["copilot"] = ProviderSpec(
         loader=_load_foundry_agent,
         configured=foundry_configured,
+        required=False,
+    )
+    specs["fabric_iq"] = ProviderSpec(
+        loader=_load_fabric_iq_adapter,
+        configured=_fabric_is_configured(),
         required=False,
     )
     # Inventory is optional for readiness but never synthesized as an empty
@@ -1526,6 +1568,64 @@ def build_context() -> ApiContext:
             )
             return list(observation.rows)
 
+        def law_lister(connection: Any) -> list[dict[str, Any]]:
+            observation = live_resources.query(
+                QuerySpec(
+                    name="live_law_workspaces",
+                    table="Resources",
+                    query=(
+                        "Resources "
+                        "| where type =~ 'microsoft.operationalinsights/workspaces' "
+                        "| project id, name, subscriptionId, resourceGroup, "
+                        "workspaceId=tostring(properties.customerId)"
+                    ),
+                    incremental=False,
+                ),
+                subscription_ids=[str(connection.subscription_id)],
+            )
+            return list(observation.rows)
+
+        def amw_lister(connection: Any) -> list[dict[str, Any]]:
+            # Azure Monitor Workspaces (the OTel/managed-Prometheus counterpart
+            # to a Log Analytics workspace). Each row is turned into a
+            # PrometheusEndpoint: workspace-scoped when ARG already exposes
+            # the resource's own query endpoint, otherwise resource-scoped
+            # against the shared regional endpoint using this connection's
+            # subscription as the scoping id (broadest scope available without
+            # per-resource lookups, and consistent with how the classic path
+            # merges across every workspace in scope rather than one per VM).
+            observation = live_resources.query(
+                QuerySpec(
+                    name="live_amw_workspaces",
+                    table="Resources",
+                    query=(
+                        "Resources "
+                        "| where type =~ 'microsoft.monitor/accounts' "
+                        "| project id, name, subscriptionId, resourceGroup, location, "
+                        "prometheusQueryEndpoint=tostring(properties.metrics.prometheusQueryEndpoint)"
+                    ),
+                    incremental=False,
+                ),
+                subscription_ids=[str(connection.subscription_id)],
+            )
+            rows: list[dict[str, Any]] = []
+            for row in observation.rows:
+                query_endpoint = str(row.get("prometheusQueryEndpoint") or "").strip()
+                region = str(row.get("location") or "").strip()
+                try:
+                    if query_endpoint:
+                        endpoint = workspace_scoped_endpoint(query_endpoint)
+                    elif region:
+                        endpoint = resource_scoped_endpoint(
+                            region, str(connection.subscription_id)
+                        )
+                    else:
+                        continue
+                except ValueError:
+                    continue
+                rows.append({**row, "endpoint": endpoint})
+            return rows
+
         return ResourceHealthService(
             lambda: [
                 connection
@@ -1534,6 +1634,14 @@ def build_context() -> ApiContext:
             ],
             resource_lister,
             lambda connection: build_connection_monitor_metrics_client(
+                arg_config, connection, onboarding.resolver
+            ),
+            law_lister=law_lister,
+            guest_performance_reader_factory=lambda connection: build_connection_logs_client(
+                arg_config, connection, onboarding.resolver
+            ),
+            amw_lister=amw_lister,
+            otel_performance_reader_factory=lambda connection: build_connection_prometheus_client(
                 arg_config, connection, onboarding.resolver
             ),
         )
@@ -1577,5 +1685,5 @@ def build_context() -> ApiContext:
         inventory_read_port_provider=lambda: providers.get(
             "inventory_read_port", optional=True
         ),
-        fabric_iq_provider=lambda: None,
+        fabric_iq_provider=lambda: providers.get("fabric_iq", optional=True),
     )
