@@ -845,6 +845,7 @@ textarea:focus-visible {
 .metric-card {
   position: relative;
   min-height: 124px;
+  min-width: 0;
   padding: 17px 18px;
   overflow: hidden;
   background: linear-gradient(145deg, #fff 0%, #fbfdff 100%);
@@ -905,6 +906,14 @@ textarea:focus-visible {
   font-size: 30px;
   font-weight: 650;
   line-height: 1;
+  overflow-wrap: anywhere;
+}
+
+.metric-value-text {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: normal;
 }
 
 .metric-detail {
@@ -3191,6 +3200,7 @@ body.topology-fullscreen-open {
   display: grid;
   grid-template-columns: minmax(0, 1.7fr) minmax(300px, 0.8fr);
   gap: 16px;
+  align-items: start;
 }
 
 .plan-list,
@@ -3219,19 +3229,34 @@ body.topology-fullscreen-open {
   gap: 20px;
 }
 
+.plan-row-summary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.plan-row-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .plan-row-heading h3 {
   margin-top: 7px;
+  overflow-wrap: anywhere;
 }
 
 .plan-row-heading p {
   margin-top: 3px;
   color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .plan-risk {
   display: flex;
   min-width: 84px;
   flex-direction: column;
+  flex-shrink: 0;
   text-align: right;
 }
 
@@ -3279,6 +3304,10 @@ body.topology-fullscreen-open {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.simulation-grid .metric-card {
+  min-width: 0;
 }
 
 .remediation-section {

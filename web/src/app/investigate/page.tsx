@@ -413,9 +413,9 @@ export default function InvestigationWorkspacePage() {
           </div>
         </section>
         <section className="metric-grid investigation-summary-grid">
-          <MetricCard label="Accountable owner" value={owner} detail={selected ? `Focused on ${selected.label}` : "Mapped from semantic ownership and incident impact"} />
+          <MetricCard label="Accountable owner" value={owner} detail={selected ? `Focused on ${selected.label}` : "Mapped from semantic ownership and incident impact"} size="text" />
           <MetricCard label="Trend" value={timeline.length ? "Active" : "Quiet"} detail={`${activeIncidents.length} active situations, ${state.exposures?.data?.length ?? 0} vulnerability exposures`} tone={activeIncidents.length ? "warning" : "success"} />
-          <MetricCard label="Required decision" value={decision} detail="Advisory only; operator approval remains required" tone="warning" />
+          <MetricCard label="Required decision" value={decision} detail="Advisory only; operator approval remains required" tone="warning" size="text" />
         </section>
       </div>
 
