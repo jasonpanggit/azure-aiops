@@ -521,7 +521,11 @@ def run_context_investigation(
     findings = deterministic_network_findings(snapshot) if snapshot.page_kind == "network" else []
     stages = ["plan", "observe"]
     tool_calls: list[dict[str, Any]] = []
-    warnings: list[str] = []
+    warnings: list[str] = [
+        f"Source {record.source} is {record.status}; findings are uncertainty-qualified"
+        for record in snapshot.freshness
+        if record.status != "fresh"
+    ]
     if snapshot.rechecks:
         stages.append("request-evidence")
         for evidence_id in snapshot.rechecks:
