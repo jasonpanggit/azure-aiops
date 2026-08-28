@@ -16,12 +16,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from api.scope import Scope
-from operations.tools import (
-    STATUS_DENIED,
-    ToolResult,
-    call_tool,
-)
 
 LOGGER = logging.getLogger("aiops.mcp")
 MCP_VERSION = "2025-03-26"
@@ -134,7 +128,7 @@ class MCPServer:
         *,
         context: Any,
         principal: Any,
-        scope: Scope,
+        scope: Any,
         correlation_id: str,
     ) -> dict[str, Any]:
         request_id = payload.get("id")
@@ -181,6 +175,10 @@ class MCPServer:
 
         self.calls += 1
         started = time.monotonic()
+        # Lazy import avoids making the API package import its application
+        # while the governed registry is itself being imported.
+        from operations.tools import STATUS_DENIED, ToolResult, call_tool
+
         result: ToolResult = call_tool(name, args, context=context, scope=scope)
         output = result.to_dict()
         if not _safe_size(output, MAX_RESPONSE_BYTES):
