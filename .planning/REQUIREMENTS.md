@@ -60,7 +60,7 @@ Requirements for the controlled Azure pilot.
 - [x] **INV-06**: A single Software Inventory page provides OS Inventory and Installed Software tabs with summary cards/charts, required filters, lifecycle badges, machine drill-down, and safe software/version CSV export.
 - [x] **INV-07**: Inventory is an independent domain that owns its own acquisition, normalization, retention, source status, and Fabric/OneLake-backed publication, so an inventory refresh does not depend on a semantic-graph sync run.
 - [x] **INV-08**: Platform represents every observed Azure resource family, including PaaS, through a common scope-enforced resource observation contract that preserves per-family identity, placement, SKU/tier/runtime, and provenance.
-- [ ] **INV-09**: Inventory availability and source status are reported per family, so a missing or degraded family degrades that family only and never blanks the inventory capability.
+- [x] **INV-09**: Inventory availability and source status are reported per family, so a missing or degraded family degrades that family only and never blanks the inventory capability.
 - [x] **INV-10**: Other subsystems, including the semantic graph, consume inventory exclusively through one scope-enforced Fabric-backed inventory contract rather than re-deriving resource lists from raw datasets.
 - [x] **INV-11**: Inventory owns the resource identity plane — enumeration, type, placement, tags, containment hierarchy, raw provider properties, and per-family watermarks — losslessly enough that graph construction, relationship modelling, and semantic traversal need no separate resource acquisition path.
 - [x] **INV-12**: Inventory is bounded to resource identity and does not absorb assessments about resources; patch, vulnerability, policy, advisor, metric, and health domains retain their own contracts and join to inventory by resource ID.
@@ -146,7 +146,7 @@ Traceability is populated during roadmap creation.
 | INV-06 | Phase 6 | Complete |
 | INV-07 | Phase 7, Phase 8 | Complete |
 | INV-08 | Phase 7, Phase 8 | Complete |
-| INV-09 | Phase 7, Phase 9 | Not started |
+| INV-09 | Phase 7, Phase 9 | Complete |
 | INV-10 | Phase 7, Phase 8, Phase 9 | In Progress |
 | INV-11 | Phase 8 | Complete |
 | INV-12 | Phase 8 | Complete |
