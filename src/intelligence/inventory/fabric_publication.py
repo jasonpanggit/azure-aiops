@@ -49,8 +49,12 @@ class InventoryFabricPublisher:
                     "skipped": write.result.skipped,
                     "version": write.result.version,
                 }
-            if logical_name != "inventory/resource_observations":
-                published_datasets[logical_name] = list(rows)
+            # Every dataset is written under both its logical ("inventory/x")
+            # and Fabric table ("inventory_x") name. Readers -- the connection
+            # merge in combine.py and the republish path -- address datasets by
+            # logical name, so omitting it here makes the rows unreadable and
+            # the next republish silently writes the dataset back as empty.
+            published_datasets[logical_name] = list(rows)
             published_datasets[contract.table_name] = list(rows)
 
         metadata = {

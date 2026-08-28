@@ -19,6 +19,7 @@ EXPECTED_INVENTORY_DATASETS = {
     "inventory/source_status",
     "inventory/software_observations",
     "inventory/software_source_status",
+    "inventory/resource_observations",
 }
 EXPECTED_MACHINE_KEYS = [
     "computer_name",

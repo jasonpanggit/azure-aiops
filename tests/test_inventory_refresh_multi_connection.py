@@ -60,12 +60,20 @@ def _build_registry(tmp_path: Path) -> None:
 
 
 class FakePipeline:
-    def __init__(self, root: Path, rows: list[dict[str, Any]], *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        root: Path,
+        rows: list[dict[str, Any]],
+        *,
+        fail: bool = False,
+        resource_rows: list[dict[str, Any]] | None = None,
+    ) -> None:
         from storage.datasets import DatasetStore
 
         self.store = DatasetStore(root)
         self._rows = rows
         self._fail = fail
+        self._resource_rows = resource_rows or []
 
     def refresh(self):
         if self._fail:
@@ -78,7 +86,7 @@ class FakePipeline:
                 "inventory/source_status": [{"source_type": "azure_vm", "state": "ready"}],
                 "inventory/software_observations": [],
                 "inventory/software_source_status": [{"state": "ready"}],
-                "inventory/resource_observations": [],
+                "inventory/resource_observations": self._resource_rows,
             },
             {},
             {"runId": "run-1", "status": "completed", "startedAt": "2026-01-01T00:00:00Z"},
@@ -109,6 +117,14 @@ def test_refresh_all_connections_merges_successful_connections_and_isolates_fail
         "conn-a": FakePipeline(
             tmp_path / "connections" / "conn-a",
             [{"resource_id": "/subscriptions/aaa/vm1", "connection_id": "conn-a"}],
+            resource_rows=[
+                {
+                    "resource_id": "/subscriptions/aaa/sites/app1",
+                    "connection_id": "conn-a",
+                    "family": "paas",
+                    "resource_type": "microsoft.web/sites",
+                }
+            ],
         ),
         "conn-b": FakePipeline(
             tmp_path / "connections" / "conn-b",
@@ -136,4 +152,8 @@ def test_refresh_all_connections_merges_successful_connections_and_isolates_fail
     combined_store = DatasetStore(tmp_path / "compat")
     combined_os = combined_store.read_dataset("inventory/os_observations")
     assert [row["resource_id"] for row in combined_os] == ["/subscriptions/aaa/vm1"]
+    combined_resources = combined_store.read_dataset("inventory/resource_observations")
+    assert [row["resource_id"] for row in combined_resources] == [
+        "/subscriptions/aaa/sites/app1"
+    ]
     assert result["combined_manifest"]["sourceConnectionIds"] == ["conn-a"]
