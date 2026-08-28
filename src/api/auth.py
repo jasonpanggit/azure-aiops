@@ -17,6 +17,7 @@ protocol below.
 from __future__ import annotations
 
 import hmac
+import secrets
 from collections.abc import Callable, Mapping
 from typing import Protocol
 
@@ -80,16 +81,28 @@ class HeaderPrincipalAuthenticator:
         *,
         subject_header: str = "x-ms-client-principal-name",
         roles_header: str = "x-ms-client-principal-roles",
+        assertion_header: str = "x-aiops-gateway-assertion",
+        assertion_value: str = "",
         grants_resolver: Callable[[str, list[str]], tuple[Grant, ...]] | None = None,
     ) -> None:
         self.subject_header = subject_header.casefold()
         self.roles_header = roles_header.casefold()
+        self.assertion_header = assertion_header.casefold()
+        self.assertion_value = str(assertion_value or "").strip()
         # Maps an authenticated gateway subject to concrete, explicitly
         # configured grants. Header roles alone are never authorization.
         self.grants_resolver = grants_resolver
 
     def authenticate(self, headers: Mapping[str, str]) -> Principal:
         folded = {str(key).casefold(): value for key, value in headers.items()}
+        assertion = str(folded.get(self.assertion_header) or "").strip()
+        if not self.assertion_value or not secrets.compare_digest(
+            assertion, self.assertion_value
+        ):
+            raise ApiError(
+                ErrorCode.UNAUTHENTICATED,
+                "A validated gateway assertion is required",
+            )
         subject = str(folded.get(self.subject_header) or "").strip()
         if not subject:
             raise ApiError(

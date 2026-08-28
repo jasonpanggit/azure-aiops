@@ -53,6 +53,15 @@ output "entra_web_client_id" {
   value       = var.entra_web_client_id
 }
 
+output "apim_gateway_url" {
+  description = "Non-secret APIM MCP gateway URL, or null when APIM is disabled."
+  value       = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/mcp" : null
+}
+
+output "apim_resource_id" {
+  description = "APIM resource identifier; no credentials or policy values are exposed."
+  value       = var.enable_apim ? azurerm_api_management.main[0].id : null
+}
 
 
 output "fabric_workspace_id" {

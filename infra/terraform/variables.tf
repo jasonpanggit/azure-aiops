@@ -260,6 +260,82 @@ variable "api_external_ingress" {
 }
 
 # ---------------------------------------------------------------------------
+# Azure API Management MCP gateway
+# ---------------------------------------------------------------------------
+
+variable "enable_apim" {
+  description = "Whether to provision the approved Operations MCP APIM facade."
+  type        = bool
+  default     = false
+}
+
+variable "apim_name" {
+  description = "Existing or approved APIM service name. Empty derives one from the deployment name."
+  type        = string
+  default     = ""
+}
+
+variable "apim_sku" {
+  description = "APIM SKU; must be confirmed for MCP support before apply."
+  type        = string
+  default     = "Developer"
+  validation {
+    condition     = contains(["Basic", "Basic_v2", "Developer", "Standard", "Standard_v2", "Premium", "Premium_v2"], var.apim_sku)
+    error_message = "apim_sku must be an APIM tier that supports the approved MCP gateway."
+  }
+}
+
+variable "apim_virtual_network_type" {
+  description = "APIM network mode. Internal requires an approved private backend/DNS design."
+  type        = string
+  default     = "None"
+  validation {
+    condition     = contains(["None", "External", "Internal"], var.apim_virtual_network_type)
+    error_message = "apim_virtual_network_type must be None, External, or Internal."
+  }
+}
+
+variable "apim_publisher_name" {
+  description = "APIM publisher display name."
+  type        = string
+  default     = "Azure AI Operations"
+}
+
+variable "apim_publisher_email" {
+  description = "APIM publisher contact email; use an approved operational address."
+  type        = string
+  default     = ""
+}
+
+variable "apim_audience" {
+  description = "Entra audience accepted by the APIM MCP policy; never use a client-declared audience."
+  type        = string
+  default     = ""
+}
+
+variable "apim_revision" {
+  description = "MCP API revision kept for reversible gateway rollout."
+  type        = string
+  default     = "1"
+}
+
+variable "apim_subscription_limit" {
+  description = "Maximum approved product subscriptions; subscription keys are consumer controls, not grants."
+  type        = number
+  default     = 10
+}
+
+variable "apim_gateway_assertion" {
+  description = "Non-secret deployment marker overwritten by APIM and required by gateway-only API mode."
+  type        = string
+  default     = "aiops-apim-v1"
+  validation {
+    condition     = can(regex("^[a-z0-9-]{8,64}$", var.apim_gateway_assertion))
+    error_message = "apim_gateway_assertion must be a bounded lowercase deployment marker."
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Azure AI Foundry
 # ---------------------------------------------------------------------------
 

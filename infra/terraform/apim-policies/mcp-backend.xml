@@ -1,0 +1,19 @@
+<policies>
+  <inbound>
+    <base />
+    <set-backend-service base-url="${backend_url}" />
+    <forward-request timeout="30" />
+  </inbound>
+  <backend><base /></backend>
+  <outbound>
+    <base />
+    <set-header name="Authorization" exists-action="delete" />
+    <set-header name="X-AIOps-Gateway-Assertion" exists-action="delete" />
+    <set-header name="Set-Cookie" exists-action="delete" />
+  </outbound>
+  <on-error>
+    <base />
+    <set-header name="Authorization" exists-action="delete" />
+    <set-header name="X-AIOps-Gateway-Assertion" exists-action="delete" />
+  </on-error>
+</policies>

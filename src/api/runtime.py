@@ -112,6 +112,7 @@ ENV_APPROVED_SEARCH_API_ENDPOINT = "APPROVED_SEARCH_API_ENDPOINT"
 ENV_APPROVED_SEARCH_API_KEY = "APPROVED_SEARCH_API_KEY"
 # Opt-in switch for real Azure patch execution. Absent it, patch runs refuse.
 ENV_PATCH_EXECUTION = "AIOPS_PATCH_EXECUTION"
+ENV_GATEWAY_ASSERTION = "AIOPS_GATEWAY_ASSERTION"
 
 AUTH_GATEWAY = "gateway"
 AUTH_ENTRA = "entra"
@@ -190,7 +191,10 @@ def _gateway_grants():
 def build_authenticator():
     mode = (os.environ.get(ENV_AUTH_MODE) or AUTH_TOKEN).strip().casefold()
     if mode == AUTH_GATEWAY:
-        return HeaderPrincipalAuthenticator(grants_resolver=_gateway_grants())
+        return HeaderPrincipalAuthenticator(
+            grants_resolver=_gateway_grants(),
+            assertion_value=os.environ.get(ENV_GATEWAY_ASSERTION, ""),
+        )
     if mode == AUTH_ENTRA:
         return EntraJwtAuthenticator(
             tenant_id=os.environ.get(ENV_ENTRA_TENANT_ID, ""),
