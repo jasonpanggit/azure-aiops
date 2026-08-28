@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -68,7 +69,13 @@ class ConnectorConfig:
         azure = payload.get("azure") or {}
         cost = azure.get("cost_management") or {}
         storage = payload.get("storage") or {}
-        raw_output_dir = str(storage.get("output_dir") or "./data")
+        # Falling back to HERMES_HOME keeps the refresh path's output root
+        # identical to the root the API reads the connection registry from.
+        # Divergent roots silently split the registry in two: connections get
+        # registered under one prefix and looked up under another.
+        raw_output_dir = str(
+            storage.get("output_dir") or os.environ.get("HERMES_HOME") or "./data"
+        )
         if is_onelake_uri(raw_output_dir):
             output_dir: Path | str = raw_output_dir
         else:
