@@ -1,4 +1,4 @@
-import { forceReauthentication, getAccessToken, refreshAccessToken } from "./auth";
+import { clearReauthenticationAttempt, forceReauthentication, getAccessToken, refreshAccessToken } from "./auth";
 import { ApiError, type ApiErrorBody, type Envelope } from "./types";
 
 /**
@@ -156,6 +156,12 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
         void forceReauthentication();
       }
     }
+  }
+
+  // A successful authenticated call proves the session is usable again, so
+  // re-arm the one-shot re-authentication guard for a future genuine expiry.
+  if (!options.anonymous && response.ok) {
+    clearReauthenticationAttempt();
   }
 
   const responseCorrelationId = response.headers.get("X-Correlation-ID") ?? correlationId;

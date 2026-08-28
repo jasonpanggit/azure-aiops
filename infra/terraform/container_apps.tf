@@ -106,6 +106,11 @@ resource "azurerm_container_app" "api" {
       cpu    = var.api_cpu
       memory = var.api_memory
 
+      # APIM fronts only the governed MCP route, so "gateway" here does not
+      # mean "every caller arrives via APIM". It selects an authenticator that
+      # accepts a validated gateway assertion *or* a direct Entra token, since
+      # the browser calls all non-MCP routes directly and the APIM inbound
+      # policy strips the caller's Authorization header.
       env {
         name  = "AIOPS_API_AUTH"
         value = var.enable_apim ? "gateway" : "entra"

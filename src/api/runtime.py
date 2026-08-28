@@ -82,6 +82,7 @@ from storage.onelake_documents import OneLakeDocumentStore
 
 from .auth import (
     EntraJwtAuthenticator,
+    GatewayOrDirectAuthenticator,
     HeaderPrincipalAuthenticator,
     StaticTokenAuthenticator,
 )
@@ -197,9 +198,30 @@ def _gateway_grants():
 def build_authenticator():
     mode = (os.environ.get(ENV_AUTH_MODE) or AUTH_TOKEN).strip().casefold()
     if mode == AUTH_GATEWAY:
-        return HeaderPrincipalAuthenticator(
-            grants_resolver=_gateway_grants(),
+        resolver = _gateway_grants()
+        gateway = HeaderPrincipalAuthenticator(
+            grants_resolver=resolver,
             assertion_value=os.environ.get(ENV_GATEWAY_ASSERTION, ""),
+        )
+        # APIM fronts only the governed MCP route; the browser calls every
+        # other route directly and can never produce a gateway assertion.
+        # Pair the two so enabling APIM does not lock the web app out of the
+        # entire API. Entra config is required for that direct path -- without
+        # it, gateway mode would silently 401 all browser traffic.
+        tenant_id = os.environ.get(ENV_ENTRA_TENANT_ID, "").strip()
+        audience = os.environ.get(ENV_ENTRA_AUDIENCE, "").strip()
+        if not tenant_id or not audience:
+            raise RuntimeError(
+                f"{ENV_AUTH_MODE}={AUTH_GATEWAY} requires {ENV_ENTRA_TENANT_ID} and "
+                f"{ENV_ENTRA_AUDIENCE} so non-gateway callers can still authenticate."
+            )
+        return GatewayOrDirectAuthenticator(
+            gateway=gateway,
+            direct=EntraJwtAuthenticator(
+                tenant_id=tenant_id,
+                audience=audience,
+                grants_resolver=resolver,
+            ),
         )
     if mode == AUTH_ENTRA:
         return EntraJwtAuthenticator(

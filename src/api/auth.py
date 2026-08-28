@@ -207,3 +207,37 @@ class EntraJwtAuthenticator:
                 "Entra principal has no configured AIOps grants",
             )
         return Principal(subject=subject, grants=grants)
+
+
+class GatewayOrDirectAuthenticator:
+    """Accepts either a validated gateway assertion or a direct Entra token.
+
+    APIM fronts only the governed MCP route, and its inbound policy *deletes*
+    the caller's ``Authorization`` header before forwarding a gateway
+    assertion. Browser traffic reaches the API directly and can only ever
+    present an Entra bearer token. A single global mode cannot serve both:
+    ``gateway`` locks every browser call out with "A validated gateway
+    assertion is required", while ``entra`` rejects APIM-forwarded MCP calls
+    that carry no bearer token at all.
+
+    Routing on the presence of the gateway assertion header keeps both trust
+    boundaries intact rather than weakening either. A request bearing the
+    header is validated against the configured assertion secret exactly as
+    before -- a forged or absent value still fails -- and every other request
+    must pass full Entra JWT validation.
+    """
+
+    def __init__(
+        self,
+        *,
+        gateway: HeaderPrincipalAuthenticator,
+        direct: EntraJwtAuthenticator,
+    ) -> None:
+        self.gateway = gateway
+        self.direct = direct
+
+    def authenticate(self, headers: Mapping[str, str]) -> Principal:
+        folded = {str(key).casefold(): value for key, value in headers.items()}
+        if str(folded.get(self.gateway.assertion_header) or "").strip():
+            return self.gateway.authenticate(headers)
+        return self.direct.authenticate(headers)
