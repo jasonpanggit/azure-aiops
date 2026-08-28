@@ -6,6 +6,8 @@ import { useScope } from "@/lib/scope-context";
 const { list } = vi.hoisted(() => ({ list: vi.fn() }));
 
 vi.mock("@/lib/services", () => ({
+  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
+  copilotEvidenceRows: () => [],
   situationsApi: { list },
 }));
 

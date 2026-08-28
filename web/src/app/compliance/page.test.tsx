@@ -10,6 +10,8 @@ const { exposures, gaps, ruleFindings, topology } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/services", () => ({
+  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
+  copilotEvidenceRows: () => [],
   networkApi: { topology, gaps, ruleFindings },
   vulnerabilityApi: { exposures },
 }));
@@ -117,7 +119,7 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
     expect(screen.getAllByText("Payroll").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/CVE-2026-0001/).length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: "Open remediation" })).toHaveAttribute("href", "/remediation?business_service=Payroll");
-    expect(screen.getByRole("link", { name: /Which PROD workloads bypass the firewall/ })).toHaveAttribute("href", expect.stringContaining("/copilot?q="));
+    expect(screen.getByRole("button", { name: "Ask Copilot about posture" })).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Policy pack name"), { target: { value: "Payroll landing-zone policy" } });
     expect(window.localStorage.getItem("aiops.architecture-policy.v1")).toContain("Payroll landing-zone policy");
