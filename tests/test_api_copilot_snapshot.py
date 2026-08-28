@@ -17,7 +17,7 @@ def _body():
             "evidence": [{
                 "evidence_id": "route-1",
                 "section": "route",
-                "resource_id": "route-1",
+                "resource_id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Network/routeTables/route-1",
                 "data": {"finding": "Default route bypasses firewall", "compliant": False},
             }],
         }
@@ -45,7 +45,7 @@ def test_context_route_rejects_unknown_version_and_wider_scope(tmp_path):
     out_of_scope = _body()
     out_of_scope["snapshot"]["scope"] = {"declared": {"subscription": ["other-sub"]}}
     out_of_scope["snapshot"]["selected_resources"] = [{
-        "resource_id": "resource-1",
+        "resource_id": "/subscriptions/other-sub/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet",
         "resource_type": "Microsoft.Network/virtualNetworks",
         "attributes": {"subscription": "other-sub"},
     }]
@@ -63,7 +63,7 @@ def test_context_loop_preserves_status_and_exposes_policy_grounding(tmp_path):
         {
             "evidence_id": "seg-1",
             "section": "network",
-            "resource_id": "vnet-1",
+            "resource_id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet",
             "status": "denied",
             "data": {"category": "segmentation", "issue": "Unverified segment boundary"},
         }

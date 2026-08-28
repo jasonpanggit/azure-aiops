@@ -47,6 +47,43 @@ def test_scope_and_evidence_references_are_validated():
         snapshot(rechecks=["missing"])
 
 
+def test_scope_validation_derives_id_only_resource_attributes_and_checks_evidence():
+    page = snapshot(
+        selected_resources=[{
+            "resource_id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/hub",
+            "resource_type": "Microsoft.Network/virtualNetworks",
+        }],
+        evidence=[{
+            "evidence_id": "nsg-1",
+            "section": "nsg",
+            "resource_id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Network/networkSecurityGroups/hub",
+            "data": {"finding": "Inbound any-source rule", "compliant": False},
+        }],
+    )
+    page.validate_effective_scope(Scope.from_mapping({"subscription": ["sub-1"]}))
+
+    out_of_scope = page.model_copy(deep=True)
+    out_of_scope.evidence[0].resource_id = (
+        "/subscriptions/sub-2/resourceGroups/rg/providers/"
+        "Microsoft.Network/networkSecurityGroups/hub"
+    )
+    with pytest.raises(ValueError, match="evidence resource"):
+        out_of_scope.validate_effective_scope(
+            Scope.from_mapping({"subscription": ["sub-1"]})
+        )
+
+
+def test_scope_validation_rejects_unverifiable_resource_ids():
+    page = snapshot(
+        selected_resources=[{
+            "resource_id": "not-an-azure-resource-id",
+            "resource_type": "Microsoft.Network/virtualNetworks",
+        }]
+    )
+    with pytest.raises(ValueError, match="canonical resource ID"):
+        page.validate_effective_scope(Scope.unrestricted())
+
+
 def test_network_findings_are_deterministic_and_cited():
     findings = deterministic_network_findings(snapshot().model_copy(deep=True))
     assert findings[0]["check_id"] == "NET-NSG-001"
