@@ -784,6 +784,8 @@ export interface ConnectionValidationReport {
   status: string;
   passed: boolean;
   checks: Array<Record<string, unknown>>;
+  failed_required?: string[];
+  failed_optional?: string[];
   health: ConnectionHealthDetail;
 }
 
@@ -793,6 +795,19 @@ export interface ConnectionSyncResult {
   sync_state: SyncState;
   health: ConnectionHealthDetail;
   [key: string]: unknown;
+}
+
+export interface ConnectionInitialSync {
+  connection_id: string;
+  status: string;
+  run_id?: string;
+  reason?: string;
+  sync_state: SyncState;
+}
+
+export interface ConnectionCreateResult extends SubscriptionConnection {
+  validation: ConnectionValidationReport;
+  initial_sync: ConnectionInitialSync;
 }
 
 export interface ConnectionCreateRequest {
@@ -1965,4 +1980,3 @@ export interface ResourceHealthSnapshot {
   warnings: string[];
   unavailable_metrics: string[];
 }
-

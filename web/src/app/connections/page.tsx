@@ -118,8 +118,31 @@ export default function ConnectionsPage() {
       },
     };
     try {
-      await connectionsApi.create(payload);
-      setActionMessage("Subscription connection created. Validate access, then run the initial sync.");
+      const result = await connectionsApi.create(payload);
+      const { validation, initial_sync: initialSync } = result.data;
+      if (!validation.passed) {
+        setActionError(`Validation failed: ${validation.health.details ?? validation.failed_required?.join(", ") ?? "required access checks did not pass"}`);
+      } else if (initialSync.status.toLowerCase() === "failed") {
+        setActionError(initialSync.sync_state.message ?? "Initial sync failed.");
+      } else {
+        setActionMessage(
+          validation.status === "degraded"
+            ? "Subscription connection validated with optional checks degraded. Initial sync queued."
+            : "Subscription connection validated. Initial sync queued."
+        );
+        setSyncProgress({ connectionId: result.data.connection_id, state: initialSync.sync_state });
+        const finalState = await pollSyncState(result.data.connection_id);
+        setSyncProgress(null);
+        if (finalState.status.toLowerCase() === "failed") {
+          setActionError(finalState.message ?? finalState.stage_message ?? "Initial sync failed.");
+        } else {
+          setActionMessage(
+            validation.status === "degraded"
+              ? "Subscription connection validated with optional checks degraded. Initial sync completed."
+              : "Subscription connection validated and initial sync completed."
+          );
+        }
+      }
       setForm(EMPTY_FORM);
       setShowOnboarding(false);
       setRefreshKey((value) => value + 1);
@@ -127,43 +150,6 @@ export default function ConnectionsPage() {
       setActionError(reason instanceof Error ? reason.message : "Unable to create subscription connection.");
     } finally {
       setSubmitting(false);
-    }
-  }
-
-  async function runAction(connection: SubscriptionConnection, action: "validate" | "sync") {
-    setActionError("");
-    setActionMessage("");
-    setRunningAction(`${action}:${connection.connection_id}`);
-    try {
-      if (action === "validate") {
-        const result = await connectionsApi.validate(connection.connection_id);
-        if (result.data.status.toLowerCase() === "failed") {
-          setRefreshKey((value) => value + 1);
-          throw new Error("Validation failed");
-        }
-        setActionMessage(`Validation completed for ${connection.name}.`);
-        setRefreshKey((value) => value + 1);
-      } else {
-        const result = await connectionsApi.sync(connection.connection_id, "initial");
-        setSyncProgress({ connectionId: connection.connection_id, state: result.data.sync_state });
-        if (result.data.status.toLowerCase() === "failed") {
-          setRefreshKey((value) => value + 1);
-          throw new Error(String(result.data.sync_state.message ?? result.data.message ?? "Sync failed"));
-        }
-        const finalState = await pollSyncState(connection.connection_id);
-        setSyncProgress(null);
-        setRefreshKey((value) => value + 1);
-        if (finalState.status.toLowerCase() === "failed") {
-          throw new Error(String(finalState.message ?? finalState.stage_message ?? "Sync failed"));
-        }
-        setActionMessage(`Sync completed for ${connection.name}.`);
-        return;
-      }
-    } catch (reason) {
-      setSyncProgress(null);
-      setActionError(reason instanceof Error ? reason.message : `Unable to ${action} connection.`);
-    } finally {
-      setRunningAction("");
     }
   }
 
@@ -480,26 +466,6 @@ export default function ConnectionsPage() {
                     <td>
                       <div className="row-actions">
                         <button type="button" className="button button-quiet" onClick={() => startEdit(connection)}>Edit</button>
-                        <button
-                          type="button"
-                          className="button button-quiet"
-                          disabled={Boolean(runningAction)}
-                          onClick={() => runAction(connection, "validate")}
-                        >
-                          {runningAction === `validate:${connection.connection_id}` ? "Validating…" : "Validate"}
-                        </button>
-                        <button
-                          type="button"
-                          className="button button-quiet"
-                          disabled={Boolean(runningAction)}
-                          onClick={() => runAction(connection, "sync")}
-                        >
-                          {runningAction === `sync:${connection.connection_id}`
-                            ? syncProgress?.connectionId === connection.connection_id
-                              ? `${SYNC_STAGE_LABELS[syncProgress.state.stage ?? ""] ?? "Syncing"}…`
-                              : "Syncing…"
-                            : "Sync"}
-                        </button>
                         <button
                           type="button"
                           className="button button-quiet"

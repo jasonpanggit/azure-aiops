@@ -7,6 +7,7 @@ import type {
   ChangeAssessmentSources,
   ChangeAssessmentSummary,
   ConnectionCreateRequest,
+  ConnectionCreateResult,
   ConnectionHealthReport,
   ConnectionSyncResult,
   ConnectionUpdateRequest,
@@ -111,7 +112,7 @@ export const connectionsApi = {
   get: (id: string) => apiRequest<SubscriptionConnection>(`/subscription-connections/${encodeURIComponent(id)}`),
 
   create: (payload: ConnectionCreateRequest) =>
-    apiRequest<SubscriptionConnection>("/subscription-connections", { method: "POST", body: payload }),
+    apiRequest<ConnectionCreateResult>("/subscription-connections", { method: "POST", body: payload }),
 
   update: (id: string, payload: ConnectionUpdateRequest) =>
     apiRequest<SubscriptionConnection>(`/subscription-connections/${encodeURIComponent(id)}`, {
