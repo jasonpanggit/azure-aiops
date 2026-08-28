@@ -376,7 +376,7 @@ variable "foundry_specialists" {
     version = string
   }))
   default = {
-    network           = { name = "aiops-network-agent", version = "2026.08.1" }
+    network = { name = "aiops-network-agent", version = "2026.08.1" }
   }
 }
 
