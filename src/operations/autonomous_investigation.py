@@ -26,7 +26,7 @@ from operations.tools import (
     call_tool,
 )
 from operations.page_context import PageSnapshot, deterministic_network_findings
-from operations.foundry_agent import specialist_catalog
+from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
 
 AGENT_TIMEOUT_SECONDS = 8.0
 MAX_RETRIES = 1
@@ -48,6 +48,7 @@ class AgentDefinition:
     tools: tuple[str, ...]
     keywords: tuple[str, ...]
     depends_on: tuple[str, ...] = ()
+    contract_version: str = SPECIALIST_CONTRACT_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -57,6 +58,7 @@ class AgentDefinition:
             "tools": list(self.tools),
             "keywords": list(self.keywords),
             "depends_on": list(self.depends_on),
+            "contract_version": self.contract_version,
         }
 
 
@@ -198,6 +200,49 @@ def _summarize_tool(tool: str, result: Any) -> str:
     return " — ".join(parts)
 
 
+def _snapshot_observations(snapshot: PageSnapshot) -> list[dict[str, Any]]:
+    """Summarize visible page evidence for Foundry contextual narration."""
+    observations: list[dict[str, Any]] = []
+    for row in snapshot.evidence:
+        if row.section == "source":
+            continue
+        data = row.data
+        label = _label(data)
+        summary = (
+            str(
+                data.get("finding")
+                or data.get("issue")
+                or data.get("title")
+                or data.get("summary")
+                or label
+            ).strip()
+            if isinstance(data, Mapping)
+            else ""
+        )
+        if not summary:
+            summary = f"{row.section} evidence submitted"
+        observations.append(
+            {
+                "finding_id": f"SNAPSHOT-{row.section.upper()}:{row.evidence_id}",
+                "resource_ids": [row.resource_id] if row.resource_id else [],
+                "check_id": str(data.get("check") or row.section) if isinstance(data, Mapping) else row.section,
+                "policy_id": str(data.get("rule_id") or data.get("policy_id") or row.section) if isinstance(data, Mapping) else row.section,
+                "source_status": row.status,
+                "status": "observed" if row.status == STATUS_OK else row.status,
+                "summary": summary,
+                "evidence_refs": [row.evidence_id],
+                "confidence": str(data.get("confidence") or data.get("severity") or "medium") if isinstance(data, Mapping) else "medium",
+                "uncertainty": [] if row.status == STATUS_OK else ["source did not return confirmed records"],
+                "stale": row.status == STATUS_UNAVAILABLE,
+                "next_check": "",
+                "actionable": row.status == STATUS_OK,
+                "page_kind": snapshot.page_kind,
+                "details": data,
+            }
+        )
+    return observations[:MAX_CONTEXT_TOOL_CALLS]
+
+
 def _agent_run(agent: AgentDefinition, objective: str, *, context: Any, scope: Scope) -> dict[str, Any]:
     started = time.monotonic()
     subject = _extract_subject(objective)
@@ -232,7 +277,11 @@ def _agent_run(agent: AgentDefinition, objective: str, *, context: Any, scope: S
                 if retry.status != STATUS_UNAVAILABLE:
                     result = retry
                     break
-        call = {"tool": tool, "arguments": args, "status": result.status, "warning": result.warning, "attempts": attempts}
+        call = {
+            "tool": tool, "arguments": args, "status": result.status,
+            "warning": result.warning, "attempts": attempts,
+            "result": result.to_dict(),
+        }
         calls.append(call)
         evidence.extend(item.to_dict() for item in result.evidence)
         findings.append(
@@ -521,7 +570,11 @@ def run_context_investigation(
     requests are mapped to a small allowlist of scope-bound Network tools.
     """
     started = time.monotonic()
-    findings = deterministic_network_findings(snapshot) if snapshot.page_kind == "network" else []
+    findings = (
+        deterministic_network_findings(snapshot)
+        if snapshot.page_kind == "network"
+        else _snapshot_observations(snapshot)
+    )
     stages = ["plan", "observe"]
     tool_calls: list[dict[str, Any]] = []
     agent_runs: list[dict[str, Any]] = []
@@ -536,6 +589,8 @@ def run_context_investigation(
     page_specialists = {
         "network": ("network",),
         "vulnerability": ("vulnerability", "patch"),
+        "compliance": ("governance", "remediation"),
+        "remediation": ("remediation", "governance"),
         "patch": ("patch",),
         "incident": ("incident", "change"),
         "governance": ("governance",),
@@ -561,10 +616,37 @@ def run_context_investigation(
             "id": agent.id,
             "name": catalog.get("name") or agent.name,
             "version": catalog.get("version") or "deterministic",
+            "contract_version": agent.contract_version,
         }
         agent_runs.append(run)
         tool_calls.extend({**call, "specialist": agent.id, "operation": "delegate"} for call in run["tool_calls"])
         remaining_tools -= len(run["tool_calls"])
+        if agent.id == "network" and remaining_tools:
+            # Fabric IQ is enrichment only: the subject must already be visible
+            # in the submitted page snapshot, never inferred from a rehydrated
+            # provider query.
+            subject = next(
+                (resource.resource_id for resource in snapshot.selected_resources), ""
+            )
+            for iq_tool in (
+                "fabric_iq_relationships",
+                "fabric_iq_topology",
+                "fabric_iq_policy_context",
+            )[:remaining_tools]:
+                result = call_tool(
+                    iq_tool, {"subject": subject}, context=context, scope=scope
+                )
+                tool_calls.append({
+                    "tool": iq_tool,
+                    "arguments": {"subject": subject},
+                    "status": result.status,
+                    "warning": result.warning,
+                    "attempts": 1,
+                    "result": result.to_dict(),
+                    "specialist": agent.id,
+                    "operation": "enrichment",
+                })
+                remaining_tools -= 1
 
     if snapshot.rechecks and time.monotonic() - started < timeout_seconds and remaining_tools:
         stages.append("request-evidence")
@@ -614,16 +696,42 @@ def run_context_investigation(
     # Reassessment is a fresh deterministic evaluation of the submitted state;
     # provider results remain visible as observations and never become an
     # alternate inventory identity source.
-    findings = deterministic_network_findings(snapshot) if snapshot.page_kind == "network" else findings
+    findings = (
+        deterministic_network_findings(snapshot)
+        if snapshot.page_kind == "network"
+        else _snapshot_observations(snapshot)
+    )
     agent = _resolve_foundry_agent(context)
     synthesis_mode = "deterministic"
     narration = ""
     if agent is not None:
         try:
-            answer = agent.answer(
-                question=snapshot.question,
-                context={"page_kind": snapshot.page_kind, "findings": findings},
-            )
+            grounding = {
+                "page_kind": snapshot.page_kind,
+                "findings": findings,
+                "tool_results": [
+                    call.get("result") for call in tool_calls if call.get("result")
+                ][:MAX_CONTEXT_TOOL_CALLS],
+                "fabric_iq": [
+                    call.get("result") for call in tool_calls
+                    if str(call.get("tool", "")).startswith("fabric_iq_")
+                ][:3],
+            }
+            if hasattr(agent, "answer_findings") and snapshot.page_kind == "network":
+                answer = agent.answer_findings(
+                    question=snapshot.question,
+                    context=grounding,
+                    evidence_refs={
+                        ref for finding in findings for ref in finding.get("evidence_refs", [])
+                    },
+                    resource_ids={
+                        resource.resource_id for resource in snapshot.selected_resources
+                    } | {
+                        row.resource_id for row in snapshot.evidence if row.resource_id
+                    },
+                )
+            else:
+                answer = agent.answer(question=snapshot.question, context=grounding)
             narration = str(getattr(answer, "text", "") or "").strip()
             if narration:
                 synthesis_mode = "foundry"
@@ -650,6 +758,9 @@ def run_context_investigation(
         "synthesis": {
             "mode": synthesis_mode,
             "narration": narration,
+            "specialist_contract_version": (
+                SPECIALIST_CONTRACT_VERSION if snapshot.page_kind == "network" else ""
+            ),
             "warning": warnings[-1] if warnings and "Foundry" in warnings[-1] else "",
         },
         "warnings": warnings,

@@ -850,7 +850,9 @@ def _load_foundry_agent() -> FoundryPromptAgent | None:
     """
     global _foundry_agent
     if _foundry_agent is _UNSET:
-        candidate = FoundryPromptAgent.from_env()
+        # Phase 09 binds only the Network specialist. The shared client still
+        # supports legacy narration configuration as a compatibility fallback.
+        candidate = FoundryPromptAgent.from_env("network")
         if candidate is not None:
             candidate.validate_access()
         _foundry_agent = candidate
@@ -906,13 +908,31 @@ def _fabric_runtime_from_environment() -> FabricRuntime | None:
     return build_runtime(config)
 
 
+#: Provenance for the ontology projection this runtime actually queries.
+#:
+#: ``sync_service.ontology_query`` reads the ``ontology`` Delta tables from
+#: OneLake and traverses them in-process via ``OntologyQueryService`` -- it
+#: does **not** call a Fabric IQ ontology/graph query surface. Evidence
+#: citations must name the source that was really consulted, so this path is
+#: labelled as the local projection it is. When the Fabric IQ traversal
+#: surface is wired (``fabric_pipelines/ontology_binding.py``), that path
+#: gets its own provenance value rather than reusing this one.
+_ONTOLOGY_PROJECTION_PROVENANCE = "onelake-ontology-projection"
+
+
 def _load_fabric_iq_adapter() -> FabricIQToolAdapter | None:
-    """Resolve optional Fabric IQ enrichment through the managed Fabric runtime.
+    """Resolve optional semantic enrichment through the managed Fabric runtime.
 
     The runtime's ontology service is a semantic source only.  The adapter
     receives the request scope and stamps its response; it is never used to
     enumerate inventory or authorize a resource.
+
+    The enrichment is served today by the OneLake ontology projection, not by
+    Fabric IQ itself; responses are stamped accordingly so a downstream
+    citation never overstates the source.
     """
+    if not _truthy("AIOPS_ENABLE_FABRIC_IQ"):
+        return None
     runtime = _fabric_runtime_from_environment()
     if runtime is None:
         return None
@@ -920,20 +940,20 @@ def _load_fabric_iq_adapter() -> FabricIQToolAdapter | None:
     def query(kind: str, args: dict[str, Any], scope: Any) -> dict[str, Any]:
         subject = str(args.get("subject") or "").strip()
         if not subject:
-            raise ValueError("Fabric IQ subject is required")
+            raise ValueError("Ontology enrichment subject is required")
         result = runtime.service.ontology_query(
             f"{kind} context for {subject}", entity=kind
         )
         if not isinstance(result, dict):
-            raise TypeError("Fabric IQ returned an invalid result")
+            raise TypeError("Ontology enrichment returned an invalid result")
         return {
             "data": result,
             "freshness": str(result.get("freshness") or "runtime"),
             "authorization": "scope-checked",
-            "provenance": "fabric-runtime-ontology",
+            "provenance": _ONTOLOGY_PROJECTION_PROVENANCE,
         }
 
-    return FabricIQToolAdapter(query=query)
+    return FabricIQToolAdapter(query=query, source=_ONTOLOGY_PROJECTION_PROVENANCE)
 
 
 def _fabric_network_service(runtime: FabricRuntime) -> NetworkIntelligenceService:
@@ -1113,7 +1133,10 @@ def _build_provider_runtime(
 
     foundry_configured = bool(
         os.environ.get("FOUNDRY_PROJECT_ENDPOINT", "").strip()
-        and os.environ.get("FOUNDRY_AGENT_NAME", "").strip()
+        and (
+            os.environ.get("FOUNDRY_NETWORK_AGENT_NAME", "").strip()
+            or os.environ.get("FOUNDRY_AGENT_NAME", "").strip()
+        )
     )
     bootstrap = _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT")
     specs = {

@@ -177,6 +177,21 @@ resource "azurerm_container_app" "api" {
       }
 
       env {
+        name  = "AIOPS_ENABLE_FABRIC_IQ"
+        value = tostring(var.enable_fabric_iq)
+      }
+
+      env {
+        name  = "FOUNDRY_NETWORK_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "network", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_NETWORK_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "network", { name = "", version = "" }).version
+      }
+
+      env {
         name  = "AIOPS_PROVIDER_REFRESH_SECONDS"
         value = "30"
       }

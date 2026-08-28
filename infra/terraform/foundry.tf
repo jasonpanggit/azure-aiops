@@ -9,7 +9,32 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  foundry_specialists_json = jsonencode(var.foundry_specialists)
+  foundry_specialist_instructions = {
+    network           = <<-EOT
+      You are the Network Agent specialist. Analyze only the supplied deterministic
+      findings, governed tool results, and explicitly cited page evidence. Return
+      JSON with exactly one top-level key, "findings", whose array entries contain
+      exactly: finding_id, resource_ids, check_id, policy_id, evidence_refs,
+      confidence, uncertainty, freshness, actionable, next_check, summary.
+      Every evidence_refs value must name supplied evidence. Never invent policy
+      results, resources, or freshness. Never execute or suggest an unapproved
+      production mutation. Use actionable=false for stale, partial, unavailable,
+      or uncertain evidence. next_check must be one bounded read-only check.
+    EOT
+    vulnerability     = "Analyze supplied vulnerability and exposure evidence. Prioritize exploitable or business-impacting findings using only the supplied records, distinguish facts from inference, cite evidence, call out stale or missing data, and recommend bounded validation or remediation steps without inventing CVEs, assets, or fixes."
+    patch             = "Analyze supplied patch and software-lifecycle evidence. Identify missing, stale, or risky patch posture, explain business and technical impact from the supplied records, distinguish facts from inference, cite evidence, and recommend bounded next checks or approval-gated actions without claiming a patch was applied."
+    incident          = "Analyze supplied incident, health, and dependency evidence. Establish the observed timeline and affected scope, identify likely contributing relationships only when supported, distinguish facts from inference, cite evidence, and recommend safe bounded investigation steps without declaring an unproven root cause."
+    change            = "Analyze supplied change and dependency evidence for operational risk and blast radius. Compare observed change context with affected services and controls, distinguish facts from inference, cite evidence, and recommend bounded validation or approval-gated follow-up without approving or executing changes."
+    governance        = "Analyze supplied governance, compliance, identity, and policy evidence. Identify control gaps and their scope, distinguish observed facts from derived inferences and unknowns, cite evidence and freshness, and recommend bounded remediation or evidence requests without inventing policy results."
+    remediation       = "Analyze supplied findings and remediation context. Produce a bounded, approval-aware remediation proposal tied to cited evidence, including prerequisites, uncertainty, and rollback or validation checks. Never execute changes, invent missing details, or present a hypothesis as an approved plan."
+    executive_summary = "Synthesize supplied specialist findings for an engineering decision-maker. Lead with the direct operational answer, summarize material risk and scope, cite evidence, distinguish facts from inference and unknowns, and state the next bounded decision or evidence request. Do not add unsupported claims."
+  }
+  foundry_specialists_json = jsonencode({
+    for id, specialist in var.foundry_specialists : id => merge(specialist, {
+      prompt = lookup(local.foundry_specialist_instructions, id, local.agent_instructions)
+      model  = var.foundry_model_name
+    })
+  })
   # The custom subdomain is mandatory for token-based (Entra) authentication
   # and for the agent data-plane endpoint. It is part of a global DNS name, so
   # it carries the unique suffix.
@@ -92,6 +117,15 @@ resource "azurerm_cognitive_deployment" "chat" {
 resource "azurerm_role_assignment" "apps_foundry_user" {
   scope                            = azurerm_cognitive_account_project.ops.id
   role_definition_name             = "Foundry Agent Consumer"
+  principal_id                     = azurerm_user_assigned_identity.apps.principal_id
+  skip_service_principal_aad_check = true
+}
+
+# The Responses API used by prompt agents requires the project runtime data
+# action in addition to the legacy agent interaction action above.
+resource "azurerm_role_assignment" "apps_foundry_runtime_user" {
+  scope                            = azurerm_cognitive_account_project.ops.id
+  role_definition_name             = "Foundry Project Runtime User"
   principal_id                     = azurerm_user_assigned_identity.apps.principal_id
   skip_service_principal_aad_check = true
 }

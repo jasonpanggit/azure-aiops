@@ -55,6 +55,8 @@ SPECIALIST_IDS = (
     "executive_summary",
 )
 DEFAULT_TIMEOUT_SECONDS = 60.0
+SPECIALIST_CONTRACT_VERSION = "network-finding.v1"
+_MUTATION_WORDS = ("delete", "create", "update", "modify", "execute", "apply", "remediate")
 
 # Entra scope for the Foundry data plane. Distinct from the ARM scope: an ARM
 # token is rejected by the agents endpoint.
@@ -170,6 +172,68 @@ class AgentAnswer:
             "grounded": self.grounded,
             "agent_version": self.agent_version,
         }
+
+
+def parse_specialist_findings(
+    text: str,
+    *,
+    evidence_refs: set[str],
+    resource_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Validate the small, cited contract emitted by a specialist.
+
+    Foundry is an untrusted narrator.  This parser deliberately accepts no
+    prose wrapper and requires every claim to point at evidence supplied by the
+    local orchestrator.
+    """
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise FoundryAgentError("Foundry specialist output is not valid JSON") from exc
+    if not isinstance(payload, dict) or set(payload) != {"findings"}:
+        raise FoundryAgentError("Foundry specialist output must contain only findings")
+    findings = payload["findings"]
+    if not isinstance(findings, list) or len(findings) > 25:
+        raise FoundryAgentError("Foundry specialist findings are not bounded")
+    validated: list[dict[str, Any]] = []
+    required = {
+        "finding_id", "resource_ids", "check_id", "policy_id", "evidence_refs",
+        "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary",
+    }
+    for finding in findings:
+        if not isinstance(finding, dict) or set(finding) != required:
+            raise FoundryAgentError("Foundry specialist finding schema is invalid")
+        if not isinstance(finding["finding_id"], str) or not finding["finding_id"].strip():
+            raise FoundryAgentError("Foundry finding id is required")
+        if not isinstance(finding["resource_ids"], list) or any(
+            not isinstance(value, str) or not value.startswith("/subscriptions/")
+            for value in finding["resource_ids"]
+        ):
+            raise FoundryAgentError("Foundry finding resource IDs are invalid")
+        if resource_ids is not None and not set(finding["resource_ids"]) <= resource_ids:
+            raise FoundryAgentError("Foundry finding introduced an uncited resource")
+        refs = finding["evidence_refs"]
+        if not isinstance(refs, list) or not refs or not set(refs) <= evidence_refs:
+            raise FoundryAgentError("Foundry finding citation is missing or invalid")
+        if finding["confidence"] not in {"high", "medium", "low", "unknown"}:
+            raise FoundryAgentError("Foundry finding confidence is invalid")
+        if finding["freshness"] not in {"fresh", "stale", "partial", "unavailable", "unknown"}:
+            raise FoundryAgentError("Foundry finding freshness is invalid")
+        if not isinstance(finding["uncertainty"], list) or any(
+            not isinstance(value, str) for value in finding["uncertainty"]
+        ):
+            raise FoundryAgentError("Foundry finding uncertainty is invalid")
+        if not isinstance(finding["actionable"], bool) or not isinstance(finding["next_check"], str):
+            raise FoundryAgentError("Foundry finding action contract is invalid")
+        if len(finding["next_check"]) > 240 or not finding["next_check"].strip():
+            raise FoundryAgentError("Foundry finding next check is not bounded")
+        if not isinstance(finding["summary"], str) or not finding["summary"].strip():
+            raise FoundryAgentError("Foundry finding summary is required")
+        text_values = json.dumps(finding, ensure_ascii=False).casefold()
+        if any(word in text_values for word in _MUTATION_WORDS):
+            raise FoundryAgentError("Foundry specialist output contains mutation instructions")
+        validated.append(finding)
+    return validated
 
 
 class _TokenProvider:
@@ -400,6 +464,27 @@ class FoundryPromptAgent:
             text=text,
             agent_name=self.agent_name,
             model=str(response.get("model") or ""),
+            grounded=True,
+            agent_version=self.agent_version,
+        )
+
+    def answer_findings(
+        self,
+        *,
+        question: str,
+        context: Any,
+        evidence_refs: set[str],
+        resource_ids: set[str] | None = None,
+    ) -> AgentAnswer:
+        """Request and strictly validate a specialist finding response."""
+        answer = self.answer(question=question, context=context)
+        findings = parse_specialist_findings(
+            answer.text, evidence_refs=evidence_refs, resource_ids=resource_ids
+        )
+        return AgentAnswer(
+            text=answer.text,
+            agent_name=answer.agent_name,
+            model=answer.model,
             grounded=True,
             agent_version=self.agent_version,
         )
