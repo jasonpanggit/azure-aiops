@@ -1085,6 +1085,11 @@ def _build_provider_runtime(
         configured=True,
         required=False,
     )
+    specs["inventory_read_port"] = ProviderSpec(
+        loader=lambda: _load_inventory_read_port(),
+        configured=True,
+        required=False,
+    )
     # FinOps/identity/SPN governance is a projection of the same ontology
     # snapshot as the other providers above, always configured (it reads
     # from whatever has synced) but never required for overall readiness:
@@ -1312,6 +1317,14 @@ def _load_inventory_service() -> Any:
         eol_review=eol_review,
         mapping_repository=mapping_repository,
     )
+
+
+def _load_inventory_read_port() -> Any:
+    """Build the internal identity contract over the active inventory."""
+    from intelligence.inventory.read_port import InventoryReadPort
+
+    service = _load_inventory_service()
+    return InventoryReadPort(service) if service is not None else None
 
 
 def _load_eol_review_service() -> Any:
@@ -1561,4 +1574,7 @@ def build_context() -> ApiContext:
         provider_runtime=providers,
         situation_provider=_load_situation_provider,
         inventory_provider=lambda: providers.get("inventory", optional=True),
+        inventory_read_port_provider=lambda: providers.get(
+            "inventory_read_port", optional=True
+        ),
     )

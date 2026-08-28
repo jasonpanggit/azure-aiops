@@ -34,6 +34,97 @@ class InventoryReadAdapter:
             "resources": _resources_to_arg_rows(resource_rows),
         }
 
+    @staticmethod
+    def from_output_dir(output_dir: str) -> "InventoryReadAdapter":
+        """Compatibility factory for the legacy local query seam.
+
+        The adapter owns the old graph-shaped storage translation. Consumers
+        still receive an InventoryReadPort and never open a dataset themselves.
+        """
+        from intelligence.inventory.service import InventoryService
+        from storage.datasets import DatasetStore
+
+        service = InventoryService.from_store(DatasetStore(output_dir))
+        if service is not None:
+            from intelligence.inventory.read_port import InventoryReadPort
+
+            return InventoryReadAdapter(InventoryReadPort(service), output_dir)
+        return InventoryReadAdapter(None, output_dir, legacy=True)
+
+    def __init__(
+        self,
+        port: Any | None = None,
+        output_dir: str | None = None,
+        legacy: bool = False,
+    ) -> None:
+        self.port = port
+        self.output_dir = output_dir
+        self.legacy = legacy
+
+    def resources(self, scope: Any) -> list[dict[str, Any]]:
+        if self.port is None:
+            if not self.legacy or not self.output_dir:
+                return []
+            rows = self._legacy_rows("VirtualMachine") + self._legacy_rows("ArcServer")
+            return [
+                {
+                    "family": "os",
+                    "resource_id": row.get("id"),
+                    "resource_name": row.get("name"),
+                    "resource_type": row.get("resourceType") or row.get("type"),
+                    "subscription_id": row.get("subscriptionId"),
+                    "resource_group": row.get("resourceGroup"),
+                    "environment": row.get("environment", ""),
+                    "source_type": "arc" if "hybridcompute" in str(row.get("resourceType") or row.get("type", "")).casefold() else "azure_vm",
+                    "os_name": row.get("osName", ""),
+                    "os_version": row.get("osVersion", ""),
+                    "observed_at": row.get("lastObservedTimestamp", ""),
+                }
+                for row in rows
+            ]
+        return list(self.port.list_resources(scope, limit=10_000)["resources"])
+
+    def patch_assessments(self) -> list[dict[str, Any]]:
+        """Read patch-domain rows for the compatibility query projection.
+
+        Patch assessments are deliberately not exposed by InventoryReadPort:
+        they are joined to identity rows by resource ID in the consumer.
+        """
+        if not self.output_dir:
+            return []
+        return self._legacy_rows("PatchAssessment")
+
+    def recommendations(self) -> list[dict[str, Any]]:
+        if not self.output_dir:
+            return []
+        return self._legacy_rows("AdvisorRecommendation")
+
+    def _legacy_rows(self, entity: str) -> list[dict[str, Any]]:
+        """Read only the compatibility graph projection with path checks."""
+        from pathlib import Path
+        import json
+
+        root = Path(self.output_dir).expanduser().resolve()
+        current = root / "current"
+        resolved_root = current.resolve(strict=True)
+        try:
+            resolved_root.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Current dataset pointer resolves outside configured data root: {current}"
+            ) from exc
+        path = (current / "entities" / entity).with_suffix(".jsonl")
+        if not path.exists():
+            return []
+        resolved = path.resolve(strict=True)
+        try:
+            resolved.relative_to(resolved_root)
+        except ValueError as exc:
+            raise ValueError(f"Dataset path resolves outside configured data root: {path}") from exc
+        if not resolved.is_file():
+            raise ValueError(f"Dataset path is not a regular file: {path}")
+        return [json.loads(line) for line in resolved.read_text().splitlines() if line.strip()]
+
 
 def _containment_to_arg_rows(containment_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []

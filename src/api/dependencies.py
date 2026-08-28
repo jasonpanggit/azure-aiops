@@ -100,6 +100,7 @@ class ApiContext:
     situation_provider: Callable[[], Any] | None = None
     # OS inventory is a read-only projection of the active immutable generation.
     inventory_provider: Callable[[], Any] | None = None
+    inventory_read_port_provider: Callable[[], Any] | None = None
 
     def resolve_provider(self, name: str, *, optional: bool = False) -> Any:
         """Resolve a provider through the managed runtime or legacy callable."""
@@ -142,6 +143,14 @@ class ApiContext:
 
     def semantic(self) -> SemanticEngine:
         return self.resolve_provider("semantic")
+
+    def inventory_read_port(self) -> Any:
+        """Resolve the scope-enforcing identity read port.
+
+        Consumers receive this contract rather than the inventory service so
+        the service cannot be used to bypass the request's effective scope.
+        """
+        return self.resolve_provider("inventory_read_port")
 
 
 def get_context(request: Request) -> ApiContext:
