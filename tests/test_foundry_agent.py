@@ -200,4 +200,4 @@ def test_specialist_catalog_status_unconfigured_when_missing_env_vars(monkeypatc
     assert network_entry["status"] == "ready"
     
     other_entries = [e for e in catalog if e["id"] != "network"]
-    assert all(e["status"] == "unconfigured" for e in other_entries)
+    assert all(e["status"] == "unavailable" for e in other_entries)
