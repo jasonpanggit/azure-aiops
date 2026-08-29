@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { AttackPathGraphView } from "@/components/ui/AttackPathGraphView";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
@@ -12,6 +12,8 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { RiskGauge } from "@/components/ui/RiskGauge";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
 import { buildCopilotSnapshot, copilotEvidenceRows, vulnerabilityApi } from "@/lib/services";
@@ -47,6 +49,9 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
   const [expiresAt, setExpiresAt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const findings = useMemo(() => detail.data?.data.findings ?? [], [detail.data]);
+  const findingsPaging = useTablePagination(findings);
 
   if (detail.loading) {
     return (
@@ -358,7 +363,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
               </tr>
             </thead>
             <tbody>
-              {data.findings.map((finding) => (
+              {findingsPaging.pageRows.map((finding) => (
                 <tr key={finding.finding_id}>
                   <td><strong>{finding.server_id}</strong><div className="table-secondary"><Link className="table-primary-link" href={`/exposure/kbs/${encodeURIComponent(finding.missing_kb)}`}>{finding.missing_kb}</Link></div></td>
                   <td><strong>{finding.application || "Unmapped application"}</strong><div className="table-secondary">{finding.business_service || "Unmapped service"}</div></td>
@@ -391,6 +396,15 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          total={findingsPaging.total}
+          pageRows={findingsPaging.pageRows.length}
+          page={findingsPaging.page}
+          onPageChange={findingsPaging.setPage}
+          pageSize={findingsPaging.pageSize}
+          onPageSizeChange={findingsPaging.setPageSize}
+          label="findings"
+        />
       </section>
 
       <CopilotDrawer

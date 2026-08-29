@@ -4,6 +4,7 @@
     <validate-azure-ad-token tenant-id="${tenant_id}">
       <audiences>
         <audience>${audience}</audience>
+        <audience>${audience_id}</audience>
       </audiences>
     </validate-azure-ad-token>
     <set-backend-service base-url="${backend_url}" />

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 from intelligence.health.service import ResourceHealthService, _cpu_status
 
@@ -127,3 +128,265 @@ def test_snapshot_truncates_at_max_resources():
     # capped rather than warned; the warning only fires when multiple
     # connections' results *combined* exceed the cap.
     assert len(snapshot.resources) == 2
+
+
+class _FakeGuestPerformanceReader:
+    def __init__(self, by_workspace: dict[str, dict[str, dict[str, float]]] | None = None, error=None):
+        self.by_workspace = by_workspace or {}
+        self.error = error
+        self.queried: list[str] = []
+
+    def query_guest_performance(self, workspace_id: str) -> dict:
+        self.queried.append(workspace_id)
+        if self.error is not None:
+            raise self.error
+        return self.by_workspace.get(workspace_id, {})
+
+
+def test_snapshot_merges_guest_performance_when_workspace_discovered():
+    connection = _connection()
+    metrics_client = _FakeMetricsClient(
+        {"Percentage CPU": {"value": 10.0, "unit": "Percent", "timestamp": "t"}}
+    )
+    vm_row = _vm_row()
+    reader = _FakeGuestPerformanceReader(
+        {"law-1": {vm_row["id"].casefold(): {"memory_percent": 55.5, "disk_free_percent": 20.0}}}
+    )
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [vm_row],
+        metrics_client_factory=lambda _conn: metrics_client,
+        law_lister=lambda _conn: [{"workspaceId": "law-1"}],
+        guest_performance_reader_factory=lambda _conn: reader,
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    resource = snapshot.resources[0]
+    assert resource.memory_percent == 55.5
+    assert resource.disk_free_percent == 20.0
+    assert reader.queried == ["law-1"]
+    assert snapshot.to_dict()["unavailable_metrics"] == []
+
+
+def test_snapshot_reports_metrics_unavailable_when_no_workspace_discovered():
+    connection = _connection()
+    metrics_client = _FakeMetricsClient(
+        {"Percentage CPU": {"value": 10.0, "unit": "Percent", "timestamp": "t"}}
+    )
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [_vm_row()],
+        metrics_client_factory=lambda _conn: metrics_client,
+        law_lister=lambda _conn: [],
+        guest_performance_reader_factory=lambda _conn: _FakeGuestPerformanceReader(),
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    resource = snapshot.resources[0]
+    assert resource.memory_percent is None
+    assert resource.disk_free_percent is None
+    assert snapshot.to_dict()["unavailable_metrics"] == [
+        "memory_percent",
+        "disk_free_percent",
+    ]
+
+
+def test_snapshot_guest_performance_failure_does_not_block_cpu_metrics():
+    connection = _connection()
+    metrics_client = _FakeMetricsClient(
+        {"Percentage CPU": {"value": 33.0, "unit": "Percent", "timestamp": "t"}}
+    )
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [_vm_row()],
+        metrics_client_factory=lambda _conn: metrics_client,
+        law_lister=lambda _conn: [{"workspaceId": "law-1"}],
+        guest_performance_reader_factory=lambda _conn: _FakeGuestPerformanceReader(
+            error=RuntimeError("workspace unreachable")
+        ),
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    resource = snapshot.resources[0]
+    assert resource.cpu_percent == 33.0
+    assert resource.memory_percent is None
+    assert snapshot.warnings == ()
+
+
+def test_snapshot_law_lister_failure_adds_warning_but_keeps_metrics():
+    connection = _connection()
+    metrics_client = _FakeMetricsClient(
+        {"Percentage CPU": {"value": 33.0, "unit": "Percent", "timestamp": "t"}}
+    )
+
+    def failing_law_lister(_conn):
+        raise RuntimeError("ARG query failed")
+
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [_vm_row()],
+        metrics_client_factory=lambda _conn: metrics_client,
+        law_lister=failing_law_lister,
+        guest_performance_reader_factory=lambda _conn: _FakeGuestPerformanceReader(),
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    assert snapshot.resources[0].cpu_percent == 33.0
+    assert len(snapshot.warnings) == 1
+    assert "Log Analytics workspaces" in snapshot.warnings[0]
+
+
+class _FakeOtelPerformanceReader:
+    def __init__(self, by_endpoint: dict[Any, dict[str, dict[str, float]]] | None = None, error=None):
+        self.by_endpoint = by_endpoint or {}
+        self.error = error
+        self.queried: list[Any] = []
+
+    def query_guest_performance(self, endpoint: Any) -> dict:
+        self.queried.append(endpoint)
+        if self.error is not None:
+            raise self.error
+        return self.by_endpoint.get(endpoint, {})
+
+
+def test_snapshot_merges_otel_guest_performance_when_amw_discovered():
+    connection = _connection()
+    metrics_client = _FakeMetricsClient(
+        {"Percentage CPU": {"value": 10.0, "unit": "Percent", "timestamp": "t"}}
+    )
+    vm_row = _vm_row()
+    reader = _FakeOtelPerformanceReader(
+        {"endpoint-1": {vm_row["id"].casefold(): {"memory_percent": 61.0, "disk_free_percent": 15.0}}}
+    )
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [vm_row],
+        metrics_client_factory=lambda _conn: metrics_client,
+        amw_lister=lambda _conn: [{"endpoint": "endpoint-1"}],
+        otel_performance_reader_factory=lambda _conn: reader,
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    resource = snapshot.resources[0]
+    assert resource.memory_percent == 61.0
+    assert resource.disk_free_percent == 15.0
+    assert reader.queried == ["endpoint-1"]
+    assert snapshot.to_dict()["unavailable_metrics"] == []
+
+
+def test_snapshot_prefers_otel_over_classic_for_same_resource():
+    connection = _connection()
+    metrics_client = _FakeMetricsClient(
+        {"Percentage CPU": {"value": 10.0, "unit": "Percent", "timestamp": "t"}}
+    )
+    vm_row = _vm_row()
+    classic_reader = _FakeGuestPerformanceReader(
+        {"law-1": {vm_row["id"].casefold(): {"memory_percent": 30.0, "disk_free_percent": 40.0}}}
+    )
+    otel_reader = _FakeOtelPerformanceReader(
+        {"endpoint-1": {vm_row["id"].casefold(): {"memory_percent": 61.0, "disk_free_percent": 15.0}}}
+    )
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [vm_row],
+        metrics_client_factory=lambda _conn: metrics_client,
+        law_lister=lambda _conn: [{"workspaceId": "law-1"}],
+        guest_performance_reader_factory=lambda _conn: classic_reader,
+        amw_lister=lambda _conn: [{"endpoint": "endpoint-1"}],
+        otel_performance_reader_factory=lambda _conn: otel_reader,
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    resource = snapshot.resources[0]
+    assert resource.memory_percent == 61.0
+    assert resource.disk_free_percent == 15.0
+
+
+def test_snapshot_merges_classic_and_otel_for_different_resources():
+    connection = _connection()
+    metrics_client = _FakeMetricsClient(
+        {"Percentage CPU": {"value": 10.0, "unit": "Percent", "timestamp": "t"}}
+    )
+    classic_vm = _vm_row("vm-classic")
+    otel_vm = _vm_row("vm-otel")
+    classic_reader = _FakeGuestPerformanceReader(
+        {"law-1": {classic_vm["id"].casefold(): {"memory_percent": 30.0, "disk_free_percent": 40.0}}}
+    )
+    otel_reader = _FakeOtelPerformanceReader(
+        {"endpoint-1": {otel_vm["id"].casefold(): {"memory_percent": 61.0, "disk_free_percent": 15.0}}}
+    )
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [classic_vm, otel_vm],
+        metrics_client_factory=lambda _conn: metrics_client,
+        law_lister=lambda _conn: [{"workspaceId": "law-1"}],
+        guest_performance_reader_factory=lambda _conn: classic_reader,
+        amw_lister=lambda _conn: [{"endpoint": "endpoint-1"}],
+        otel_performance_reader_factory=lambda _conn: otel_reader,
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    by_name = {r.resource_name: r for r in snapshot.resources}
+    assert by_name["vm-classic"].memory_percent == 30.0
+    assert by_name["vm-otel"].memory_percent == 61.0
+    assert snapshot.to_dict()["unavailable_metrics"] == []
+
+
+def test_snapshot_otel_failure_does_not_block_classic_or_cpu_metrics():
+    connection = _connection()
+    metrics_client = _FakeMetricsClient(
+        {"Percentage CPU": {"value": 33.0, "unit": "Percent", "timestamp": "t"}}
+    )
+    vm_row = _vm_row()
+    classic_reader = _FakeGuestPerformanceReader(
+        {"law-1": {vm_row["id"].casefold(): {"memory_percent": 30.0, "disk_free_percent": 40.0}}}
+    )
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [vm_row],
+        metrics_client_factory=lambda _conn: metrics_client,
+        law_lister=lambda _conn: [{"workspaceId": "law-1"}],
+        guest_performance_reader_factory=lambda _conn: classic_reader,
+        amw_lister=lambda _conn: [{"endpoint": "endpoint-1"}],
+        otel_performance_reader_factory=lambda _conn: _FakeOtelPerformanceReader(
+            error=RuntimeError("AMW unreachable")
+        ),
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    resource = snapshot.resources[0]
+    assert resource.cpu_percent == 33.0
+    assert resource.memory_percent == 30.0
+    assert snapshot.warnings == ()
+
+
+def test_snapshot_amw_lister_failure_adds_warning_but_keeps_metrics():
+    connection = _connection()
+    metrics_client = _FakeMetricsClient(
+        {"Percentage CPU": {"value": 33.0, "unit": "Percent", "timestamp": "t"}}
+    )
+
+    def failing_amw_lister(_conn):
+        raise RuntimeError("ARG query failed")
+
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [_vm_row()],
+        metrics_client_factory=lambda _conn: metrics_client,
+        amw_lister=failing_amw_lister,
+        otel_performance_reader_factory=lambda _conn: _FakeOtelPerformanceReader(),
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    assert snapshot.resources[0].cpu_percent == 33.0
+    assert len(snapshot.warnings) == 1
+    assert "Azure Monitor Workspaces" in snapshot.warnings[0]

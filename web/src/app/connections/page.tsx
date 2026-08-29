@@ -1,11 +1,13 @@
 "use client";
 
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
@@ -70,7 +72,8 @@ export default function ConnectionsPage() {
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ connectionId: string; state: SyncState } | null>(null);
   const connections = useApi(() => connectionsApi.list(scope), [scope, refreshKey]);
-  const rows = connections.data?.data ?? [];
+  const rows = useMemo(() => connections.data?.data ?? [], [connections.data]);
+  const rowsPaging = useTablePagination(rows);
   const healthy = rows.filter((connection) => connection.health_status === "healthy").length;
   const stale = rows.filter((connection) => connection.health_status === "stale").length;
   const failed = rows.filter((connection) => ["failed", "unhealthy"].includes(connection.health_status)).length;
@@ -453,7 +456,7 @@ export default function ConnectionsPage() {
             <table className="operations-table">
               <thead><tr><th>Connection</th><th>Business context</th><th>Health</th><th>Sync</th><th>Last successful sync</th><th>Actions</th></tr></thead>
               <tbody>
-                {rows.map((connection) => (
+                {rowsPaging.pageRows.map((connection) => (
                   <tr key={connection.connection_id}>
                     <td><strong>{connection.name}</strong><div className="table-secondary">{connection.subscription_id}</div></td>
                     <td><strong>{connection.business_service || "Service not mapped"}</strong><div className="table-secondary">{connection.environment || "Environment not mapped"} · {connection.criticality || "Criticality not set"}</div></td>
@@ -481,6 +484,15 @@ export default function ConnectionsPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            total={rowsPaging.total}
+            pageRows={rowsPaging.pageRows.length}
+            page={rowsPaging.page}
+            onPageChange={rowsPaging.setPage}
+            pageSize={rowsPaging.pageSize}
+            onPageSizeChange={rowsPaging.setPageSize}
+            label="connections"
+          />
         </div>
       )}
     </div>

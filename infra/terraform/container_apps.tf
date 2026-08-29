@@ -152,6 +152,11 @@ resource "azurerm_container_app" "api" {
       }
 
       env {
+        name  = "AIOPS_API_AUTH"
+        value = "gateway"
+      }
+
+      env {
         name  = "AIOPS_GATEWAY_ASSERTION"
         value = var.apim_gateway_assertion
       }

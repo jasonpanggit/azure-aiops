@@ -123,27 +123,41 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions, s
         : await copilotApi.investigate(nextQuestion, scope, { sessionId: sessionId.current, tool, toolArguments });
       const result = envelope.data as typeof envelope.data & {
         answer?: CopilotAnswer | null;
-        synthesis?: CopilotAnswer | null;
+        synthesis?: {
+          mode?: "foundry" | "deterministic";
+          narration?: string;
+          warning?: string;
+        } | null;
         synthesis_mode?: "foundry" | "deterministic";
         synthesis_agent?: string;
         findings?: CopilotContextFinding[];
         stages?: string[];
       };
+      const contextualNarration = result.synthesis?.narration?.trim()
+        ? {
+            text: result.synthesis.narration,
+            agent_name: result.synthesis_agent || (result.synthesis.mode === "foundry" ? "Foundry specialist" : "deterministic"),
+            model: result.synthesis.mode === "foundry" ? "Foundry" : "Deterministic",
+            grounded: true,
+          }
+        : null;
+      const narration = result.answer ?? contextualNarration;
+      const synthesisMode = result.synthesis_mode ?? result.synthesis?.mode;
       setTurns((current) => [
         ...current,
         {
           question: nextQuestion,
           toolCalls: envelope.data.tool_calls,
-          narration: result.synthesis ?? result.answer ?? null,
+          narration,
           evidence: envelope.evidence ?? [],
           knowledgeVersion: envelope.knowledge_version,
           warnings: [...(envelope.warnings ?? []), ...(result.warnings ?? [])],
           findings: result.findings,
-          synthesisMode: result.synthesis_mode,
+          synthesisMode,
           snapshot: submittedSnapshot,
         },
       ]);
-      setStage(result.synthesis_mode === "deterministic" ? "fallback" : result.findings?.some((finding) => finding.status !== "verified") ? "partial" : "idle");
+      setStage(synthesisMode === "deterministic" ? "fallback" : result.findings?.some((finding) => finding.status !== "verified") ? "partial" : "idle");
     } catch (reason) {
       setTurns((current) => [
         ...current,

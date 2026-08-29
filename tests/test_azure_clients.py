@@ -281,13 +281,22 @@ def test_monitor_metrics_client_returns_latest_average_per_metric() -> None:
 
     assert metrics["Percentage CPU"]["value"] == 42.5
     assert metrics["Percentage CPU"]["unit"] == "Percent"
+    assert metrics["Percentage CPU"]["series"] == [
+        {"timestamp": "2026-08-23T00:05:00Z", "value": 42.5}
+    ]
     assert metrics["Network In Total"]["value"] == 1024.0
     assert credential.scopes == ["https://management.azure.com/.default"]
-    assert requests[0]["headers"]["Authorization"] == "******"
+    assert requests[0]["headers"]["Authorization"] == "Bearer connection-token"
     assert requests[0]["url"].endswith(
         "subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1/providers/microsoft.insights/metrics"
     )
     assert "Percentage CPU" in requests[0]["params"]["metricnames"]
+    # The timespan must never contain a literal "+" (UTC offset), since some
+    # transports decode "+" back to a space and Azure Monitor then rejects the
+    # timespan as an invalid ISO 8601 interval.
+    timespan = requests[0]["params"]["timespan"]
+    assert "+" not in timespan
+    assert timespan.count("Z") == 2
 
 
 def test_monitor_metrics_client_retries_throttled_requests() -> None:

@@ -17,6 +17,20 @@ ConfigurationData
           SoftwareName, CurrentVersion, Publisher, SoftwareType
 | order by _ResourceId asc, SoftwareName asc, CurrentVersion asc
 """.strip()
+
+# Guest performance counters written by the "classic" (logs-based) Azure
+# Monitor Agent perf collection path. These cover the two signals the
+# platform Metrics API cannot provide for an ordinary VM: memory utilization
+# and disk free space. Windows and Linux report different counter names for
+# the same concept, so both are queried and normalized to one row per
+# resource with the latest sample for each metric.
+GUEST_PERFORMANCE_QUERY = """
+Perf
+| where (ObjectName == "Memory" and CounterName in ("% Committed Bytes In Use", "% Used Memory"))
+   or (ObjectName == "LogicalDisk" and CounterName == "% Free Space" and InstanceName == "_Total")
+| summarize arg_max(TimeGenerated, CounterValue) by _ResourceId, CounterName
+| project _ResourceId, CounterName, CounterValue
+""".strip()
 _WORKSPACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -59,6 +73,36 @@ class AzureMonitorLogsClient:
         self.requester = requester or httpx.request
 
     def query_configuration_data(self, workspace_id: str) -> list[dict[str, Any]]:
+        return self._execute(workspace_id, CONFIGURATION_DATA_QUERY, "ConfigurationData")
+
+    query = query_configuration_data
+
+    def query_guest_performance(self, workspace_id: str) -> dict[str, dict[str, float]]:
+        """Latest memory/disk-free guest performance counters, keyed by resource ID.
+
+        Returns ``{resource_id_lower: {"memory_percent": ..., "disk_free_percent": ...}}``.
+        Memory is normalized to "percent used" and disk to "percent free" so the
+        caller can merge these directly into a utilization snapshot alongside the
+        platform Metrics API's CPU/network/disk-IO readings.
+        """
+        rows = self._execute(workspace_id, GUEST_PERFORMANCE_QUERY, "guest performance")
+        by_resource: dict[str, dict[str, float]] = {}
+        for row in rows:
+            resource_id = str(row.get("_ResourceId") or "").strip().casefold()
+            counter = str(row.get("CounterName") or "")
+            value = row.get("CounterValue")
+            if not resource_id or not isinstance(value, (int, float)):
+                continue
+            bucket = by_resource.setdefault(resource_id, {})
+            if counter in ("% Committed Bytes In Use", "% Used Memory"):
+                bucket["memory_percent"] = float(value)
+            elif counter == "% Free Space":
+                bucket["disk_free_percent"] = float(value)
+        return by_resource
+
+    def _execute(
+        self, workspace_id: str, query: str, label: str
+    ) -> list[dict[str, Any]]:
         workspace = _validated_workspace_id(workspace_id)
         token = self.credential.get_token(LOGS_QUERY_SCOPE)
         access_token = getattr(token, "token", "")
@@ -72,24 +116,20 @@ class AzureMonitorLogsClient:
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
             },
-            json={"query": CONFIGURATION_DATA_QUERY},
+            json={"query": query},
             timeout=self.limits.timeout_seconds,
         )
         if response.status_code >= 400:
             detail = response.text.strip()[:512] or f"HTTP {response.status_code}"
-            raise RuntimeError(f"Logs ConfigurationData query failed: {detail}")
+            raise RuntimeError(f"Logs {label} query failed: {detail}")
         content = response.content
         if len(content) > self.limits.max_response_bytes:
-            raise RuntimeError(
-                "Logs ConfigurationData response exceeded the configured byte limit"
-            )
+            raise RuntimeError(f"Logs {label} response exceeded the configured byte limit")
         try:
             payload = response.json()
         except ValueError as exc:
-            raise RuntimeError("Logs ConfigurationData response was not valid JSON") from exc
+            raise RuntimeError(f"Logs {label} response was not valid JSON") from exc
         return parse_logs_tables(payload, max_rows=self.limits.max_rows)
-
-    query = query_configuration_data
 
 
 def parse_logs_tables(payload: Any, *, max_rows: int = 25_000) -> list[dict[str, Any]]:

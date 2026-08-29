@@ -1,7 +1,11 @@
+"use client";
+
 import Link from "next/link";
 import type { SituationSummary } from "@/lib/situations";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { StatusBadge, statusTone } from "./ui/StatusBadge";
+import { TablePagination } from "./ui/TablePagination";
+import { useTablePagination } from "@/lib/use-table-pagination";
 
 export interface SituationTableProps {
   situations: SituationSummary[];
@@ -10,8 +14,11 @@ export interface SituationTableProps {
 
 /** Ranked Situation queue optimized for fast operational scanning. */
 export function SituationTable({ situations, compact = false }: SituationTableProps) {
+  const situationPaging = useTablePagination(situations);
+
   return (
-    <div className="table-scroll">
+    <>
+      <div className="table-scroll">
       <table className="operations-table">
         <thead>
           <tr>
@@ -25,7 +32,7 @@ export function SituationTable({ situations, compact = false }: SituationTablePr
           </tr>
         </thead>
         <tbody>
-          {situations.map((situation) => (
+          {situationPaging.pageRows.map((situation) => (
             <tr key={situation.id}>
               <td>
                 <StatusBadge
@@ -82,6 +89,16 @@ export function SituationTable({ situations, compact = false }: SituationTablePr
           ))}
         </tbody>
       </table>
-    </div>
+      </div>
+      <TablePagination
+        total={situationPaging.total}
+        pageRows={situationPaging.pageRows.length}
+        page={situationPaging.page}
+        onPageChange={situationPaging.setPage}
+        pageSize={situationPaging.pageSize}
+        onPageSizeChange={situationPaging.setPageSize}
+        label="situations"
+      />
+    </>
   );
 }

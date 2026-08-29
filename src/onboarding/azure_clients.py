@@ -438,10 +438,17 @@ class AzureMonitorMetricsClient:
         interval: str,
     ) -> httpx.Response:
         response: httpx.Response | None = None
+        # Azure Monitor's Metrics API rejects a literal "+00:00" UTC offset in
+        # the timespan query parameter with a BadRequest ("Detected invalid
+        # time interval input") once the "+" survives transport as a raw
+        # character instead of being percent-encoded — some intermediary
+        # (e.g. an ASGI test client or proxy) can decode it back to a space
+        # per application/x-www-form-urlencoded rules. Using the "Z" suffix
+        # (equivalent to +00:00 for UTC) sidesteps this entirely.
         params = {
             "api-version": self.api_version,
             "metricnames": ",".join(metric_names),
-            "timespan": f"{start.isoformat()}/{end.isoformat()}",
+            "timespan": f"{_iso_z(start)}/{_iso_z(end)}",
             "interval": interval,
             "aggregation": "Average",
         }
@@ -450,7 +457,7 @@ class AzureMonitorMetricsClient:
                 "GET",
                 self.endpoint_template.format(resource_id=resource_id.lstrip("/")),
                 params=params,
-                headers={"Authorization": "******"},
+                headers={"Authorization": f"Bearer {access_token}"},
                 timeout=self.timeout,
             )
             if response.status_code not in {429, 503} or attempt >= self.max_retries:
@@ -461,7 +468,23 @@ class AzureMonitorMetricsClient:
         return response
 
 
+def _iso_z(value: datetime) -> str:
+    """Format a timezone-aware UTC datetime with a "Z" suffix rather than
+    "+00:00", so the timespan query parameter never contains a literal "+"
+    character (see the comment at its call site)."""
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 def _parse_metrics_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Parse an Azure Monitor Metrics list response into a per-metric dict.
+
+    Each entry keeps both the most recent non-null value (for status/threshold
+    checks and the data table) and the full ordered series of
+    ``{timestamp, value}`` points across the queried window (for trend
+    charts). The series is intentionally the full timeseries the platform
+    Metrics API already returned in this single call -- no extra requests are
+    needed to plot a trend line.
+    """
     metrics = payload.get("value") if isinstance(payload, dict) else None
     if not isinstance(metrics, list):
         return {}
@@ -476,6 +499,7 @@ def _parse_metrics_payload(payload: dict[str, Any]) -> dict[str, Any]:
         timeseries = metric.get("timeseries") or []
         latest_value: float | None = None
         latest_timestamp = ""
+        points: list[dict[str, Any]] = []
         if isinstance(timeseries, list):
             for series in timeseries:
                 if not isinstance(series, dict):
@@ -488,10 +512,12 @@ def _parse_metrics_payload(payload: dict[str, Any]) -> dict[str, Any]:
                         continue
                     latest_value = float(value)
                     latest_timestamp = str(point.get("timeStamp") or "")
+                    points.append({"timestamp": latest_timestamp, "value": latest_value})
         result[str(name)] = {
             "value": latest_value,
             "unit": unit,
             "timestamp": latest_timestamp,
+            "series": points,
         }
     return result
 

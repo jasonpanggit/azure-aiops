@@ -28,14 +28,18 @@ done
 # Reuse this idempotent single-agent path for each entry so old callers that
 # provide only FOUNDRY_AGENT_NAME remain fully compatible.
 if [[ -n "${FOUNDRY_SPECIALISTS_JSON:-}" ]]; then
-  while IFS=$'\t' read -r specialist_name specialist_version; do
+  while IFS=$'\t' read -r specialist_name specialist_version specialist_model specialist_prompt_b64; do
     [[ -z "${specialist_name}" ]] && continue
+    specialist_prompt=$(printf '%s' "${specialist_prompt_b64}" | python3 -c \
+      'import base64,sys; print(base64.b64decode(sys.stdin.read()).decode())')
     FOUNDRY_AGENT_NAME="${specialist_name}" \
     FOUNDRY_AGENT_VERSION="${specialist_version}" \
+    FOUNDRY_AGENT_MODEL="${specialist_model:-$FOUNDRY_AGENT_MODEL}" \
+    FOUNDRY_AGENT_PROMPT="${specialist_prompt:-$FOUNDRY_AGENT_PROMPT}" \
     FOUNDRY_SPECIALISTS_JSON="" \
     "$0"
   done < <(FOUNDRY_SPECIALISTS_JSON="$FOUNDRY_SPECIALISTS_JSON" python3 -c \
-    'import json,os; d=json.loads(os.environ["FOUNDRY_SPECIALISTS_JSON"]); [print(f"{v[\"name\"]}\t{v.get(\"version\", \"\")}") for v in d.values()]')
+    'import base64,json,os; d=json.loads(os.environ["FOUNDRY_SPECIALISTS_JSON"]); [print(f"{v[\"name\"]}\t{v.get(\"version\", \"\")}\t{v.get(\"model\", \"\")}\t{base64.b64encode(v.get(\"prompt\", \"\").encode()).decode()}") for v in d.values()]')
   exit 0
 fi
 

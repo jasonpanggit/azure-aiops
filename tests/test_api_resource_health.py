@@ -14,6 +14,7 @@ from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
+from api.routers import resource_health as resource_health_router
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from intelligence.health.service import ResourceHealthService
@@ -55,8 +56,10 @@ def _connection():
     return SimpleNamespace(connection_id="conn-1", subscription_id=PROD_SUB, is_active=True)
 
 
-def _client(tmp_path, *, with_provider: bool = True) -> TestClient:
+def _client(tmp_path, *, with_provider: bool = True, call_counter: list[int] | None = None) -> TestClient:
     def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:
+        if call_counter is not None:
+            call_counter.append(1)
         return ResourceHealthService(
             connections=lambda: [_connection()],
             resource_lister=lambda _conn: [_vm_row("vm-1")],
@@ -73,6 +76,13 @@ def _client(tmp_path, *, with_provider: bool = True) -> TestClient:
         ),
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_resource_health_cache():
+    resource_health_router._resource_health_cache.clear()
+    yield
+    resource_health_router._resource_health_cache.clear()
 
 
 @pytest.fixture
@@ -104,7 +114,7 @@ def test_carries_evidence_naming_the_engine(client):
     assert evidence["timestamp"]
 
 
-def test_admin_without_subscription_scope_gets_unavailable_error(client):
+def test_admin_without_subscription_scope_and_no_onboarded_subscriptions_gets_unavailable_error(client):
     response = client.get("/api/v1/resource-health", headers=_auth(ADMIN_TOKEN))
 
     assert response.status_code >= 400
@@ -120,3 +130,107 @@ def test_missing_provider_reports_unavailable(tmp_path):
     assert response.status_code >= 400
     body = response.json()
     assert body["error"]["details"]["capability"] == "resource_health"
+
+
+def test_admin_without_subscription_scope_defaults_to_all_onboarded_subscriptions(tmp_path):
+    """No filter selected (unrestricted scope) means "all onboarded
+    subscriptions" for resource health too, matching every other page --
+    it should not require the caller to pick one explicitly."""
+    onboarding = SubscriptionOnboardingService(tmp_path / "aiops-2")
+    onboarding.registry.list = lambda *, include_disabled=False: [_connection()]  # type: ignore[method-assign]
+
+    def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:
+        assert subscription_ids == [PROD_SUB]
+        return ResourceHealthService(
+            connections=lambda: [_connection()],
+            resource_lister=lambda _conn: [_vm_row("vm-1")],
+            metrics_client_factory=lambda _conn: _FakeMetricsClient(),
+        )
+
+    scoped_context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        hybrid_resource_health_provider=hybrid_resource_health,
+    )
+    scoped_client = TestClient(create_app(scoped_context), raise_server_exceptions=False)
+
+    response = scoped_client.get("/api/v1/resource-health", headers=_auth(ADMIN_TOKEN))
+
+    assert response.status_code == 200
+    resources = response.json()["data"]["resources"]
+    assert len(resources) == 1
+    assert resources[0]["resource_name"] == "vm-1"
+
+
+def test_second_request_within_ttl_is_served_from_cache(tmp_path):
+    calls: list[int] = []
+    client = _client(tmp_path, call_counter=calls)
+
+    first = client.get("/api/v1/resource-health", headers=_auth())
+    second = client.get("/api/v1/resource-health", headers=_auth())
+
+    assert first.status_code == second.status_code == 200
+    assert len(calls) == 1
+    assert first.json()["data"]["cached"] is False
+    assert second.json()["data"]["cached"] is True
+
+
+def test_force_refresh_bypasses_the_cache(tmp_path):
+    calls: list[int] = []
+    client = _client(tmp_path, call_counter=calls)
+
+    client.get("/api/v1/resource-health", headers=_auth())
+    refreshed = client.get(
+        "/api/v1/resource-health?force_refresh=true", headers=_auth()
+    )
+
+    assert refreshed.status_code == 200
+    assert len(calls) == 2
+    assert refreshed.json()["data"]["cached"] is False
+
+
+def test_expired_cache_entry_triggers_a_live_refresh(tmp_path, monkeypatch):
+    calls: list[int] = []
+    client = _client(tmp_path, call_counter=calls)
+
+    fake_time = [1000.0]
+    monkeypatch.setattr(resource_health_router.time, "monotonic", lambda: fake_time[0])
+
+    client.get("/api/v1/resource-health", headers=_auth())
+    fake_time[0] += resource_health_router._RESOURCE_HEALTH_CACHE_TTL_SECONDS + 1
+    expired = client.get("/api/v1/resource-health", headers=_auth())
+
+    assert len(calls) == 2
+    assert expired.json()["data"]["cached"] is False
+
+
+def test_different_subscription_scopes_do_not_share_a_cache_entry(tmp_path):
+    other_token = "other-token-0123456789abcdef"
+    principals = _principals()
+    principals[other_token] = Principal(
+        subject="other@example.com",
+        grants=(Grant("reader", Scope.from_mapping({"subscription": ["other-sub"]})),),
+    )
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(principals),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        hybrid_resource_health_provider=(
+            lambda subscription_ids: ResourceHealthService(
+                connections=lambda: [_connection()],
+                resource_lister=lambda _conn: [_vm_row("vm-1")],
+                metrics_client_factory=lambda _conn: _FakeMetricsClient(),
+            )
+        ),
+    )
+    scoped_client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    scoped_client.get("/api/v1/resource-health", headers=_auth())
+    scoped_client.get("/api/v1/resource-health", headers=_auth(other_token))
+
+    assert (
+        len(resource_health_router._resource_health_cache) == 2
+    ), "each distinct subscription scope should get its own cache entry"

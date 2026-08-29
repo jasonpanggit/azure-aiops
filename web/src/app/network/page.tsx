@@ -14,7 +14,7 @@ import { titleize } from "@/lib/format";
 import { presentVerdict } from "@/lib/flow-verdict";
 import { useScope } from "@/lib/scope-context";
 import { buildCopilotSnapshot, copilotEvidenceRows, networkApi } from "@/lib/services";
-import type { FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
+import type { CopilotEvidenceRow, FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
 
 type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
 
@@ -33,11 +33,30 @@ export default function NetworkPage() {
     ...(topology.data?.evidence ?? []),
     ...(gaps.data?.evidence ?? []),
     ...(findings.data?.evidence ?? []),
+    ...(bypass.data?.evidence ?? []),
   ];
   const warnings = [
     ...(topology.data?.warnings ?? []),
     ...(gaps.data?.warnings ?? []),
     ...(findings.data?.warnings ?? []),
+    ...(bypass.data?.warnings ?? []),
+  ];
+  const bypassGaps = bypass.data?.data.gaps ?? [];
+  const networkCopilotRecords = [
+    {
+      check: "topology",
+      compliant: true,
+      summary,
+      connection_ids: topology.data?.data.topology.connection_ids ?? [],
+      unresolved_peer_vnet_ids: topology.data?.data.topology.unresolved_peer_vnet_ids ?? [],
+    },
+    ...(gaps.data?.data.gaps ?? []).map(networkGapEvidence),
+    ...(findings.data?.data.findings ?? []).map(ruleFindingEvidence),
+  ];
+  const networkCopilotEvidence = [
+    ...copilotEvidenceRows("source", evidence),
+    ...copilotEvidenceRows("network", [], networkCopilotRecords),
+    ...bypassGaps.map(firewallBypassEvidence),
   ];
 
   return (
@@ -173,10 +192,7 @@ export default function NetworkPage() {
             resource_type: "Microsoft.Network/virtualNetworks",
             name: hub.name,
           })) ?? [],
-          evidence: copilotEvidenceRows("network", evidence, [
-            ...(gaps.data?.data.gaps ?? []),
-            ...(findings.data?.data.findings ?? []),
-          ]),
+          evidence: networkCopilotEvidence,
         })}
         starterQuestions={[
           {
@@ -494,6 +510,60 @@ function ruleListItem(finding: RuleFinding): FindingListItem {
     detail: finding.detail,
     recommendation: finding.recommendation,
     basis: "Observed Azure control configuration",
+  };
+}
+
+function networkGapEvidence(gap: NetworkGap): Record<string, unknown> {
+  return {
+    check: gap.category,
+    finding: gap.title,
+    issue: gap.detail,
+    compliant: false,
+    severity: gap.severity,
+    resource_id: gap.resource_id,
+    resource_name: gap.resource_name,
+    resource_type: gap.resource_type,
+    recommendation: gap.recommendation,
+    basis: gap.basis,
+    connection_id: gap.connection_id,
+    subscription_id: gap.subscription_id,
+    environment: gap.environment,
+    vnet_id: gap.vnet_id,
+    evidence: gap.evidence,
+  };
+}
+
+function ruleFindingEvidence(finding: RuleFinding): Record<string, unknown> {
+  return {
+    check: finding.category,
+    finding: finding.title,
+    issue: finding.detail,
+    compliant: false,
+    severity: finding.severity,
+    rule_id: finding.rule_id,
+    rule_name: finding.rule_name,
+    control: finding.control,
+    control_id: finding.control_id,
+    recommendation: finding.recommendation,
+    connection_id: finding.connection_id,
+    subscription_id: finding.subscription_id,
+    environment: finding.environment,
+    evidence: finding.evidence,
+  };
+}
+
+function firewallBypassEvidence(gap: NetworkGap, index: number): CopilotEvidenceRow {
+  return {
+    evidence_id: `network:firewall-bypass:${gap.gap_id || index}`,
+    resource_id: gap.resource_id,
+    section: "firewall",
+    status: "ok",
+    data: {
+      ...networkGapEvidence(gap),
+      check: "firewall",
+      finding: gap.title || "Firewall inspection bypass path",
+      issue: gap.detail || "Spoke traffic can bypass the hub firewall inspection path.",
+    },
   };
 }
 

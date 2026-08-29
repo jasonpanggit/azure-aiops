@@ -355,12 +355,37 @@ export interface CopilotPageSnapshotInput {
   question?: string; rechecks?: string[];
 }
 
+function isCanonicalAzureResourceId(value: string | null | undefined): value is string {
+  const parts = String(value ?? "").split("/").filter(Boolean);
+  const providerIndex = parts.findIndex((part) => part.toLowerCase() === "providers");
+  return (
+    String(value ?? "").startsWith("/") &&
+    parts.length > providerIndex + 2 &&
+    parts[0]?.toLowerCase() === "subscriptions" &&
+    Boolean(parts[1]) &&
+    providerIndex >= 0
+  );
+}
+
+function validatedCopilotResource(resource: CopilotSelectedResource): CopilotSelectedResource | null {
+  return isCanonicalAzureResourceId(resource.resource_id) ? resource : null;
+}
+
+function validatedCopilotEvidence(row: CopilotEvidenceRow): CopilotEvidenceRow {
+  if (!row.resource_id || isCanonicalAzureResourceId(row.resource_id)) return row;
+  const { resource_id: resourceId, data, ...rest } = row;
+  return {
+    ...rest,
+    data: { ...data, resource_id: resourceId },
+  };
+}
+
 export function buildCopilotSnapshot(input: CopilotPageSnapshotInput): CopilotPageSnapshot {
   return {
     version: "1", page_kind: input.pageKind, page_id: input.pageId,
-    selected_resources: (input.selectedResources ?? []).slice(0, 50),
+    selected_resources: (input.selectedResources ?? []).map(validatedCopilotResource).filter((resource): resource is CopilotSelectedResource => Boolean(resource)).slice(0, 50),
     filters: input.filters ?? {}, freshness: (input.freshness ?? []).slice(0, 32),
-    scope: { declared: input.scope, authorized: true }, evidence: (input.evidence ?? []).slice(0, 200),
+    scope: { declared: input.scope, authorized: true }, evidence: (input.evidence ?? []).map(validatedCopilotEvidence).slice(0, 200),
     question: input.question?.trim() || "Summarize the visible page evidence.", rechecks: input.rechecks ?? [],
   };
 }
@@ -371,7 +396,7 @@ export function copilotEvidenceRows(
 ): CopilotEvidenceRow[] {
   const rows: CopilotEvidenceRow[] = evidence.map((item, index) => ({
     evidence_id: `${section}:${item.source_table || "source"}:${index}`,
-    resource_id: item.resource_id || undefined, section,
+    resource_id: isCanonicalAzureResourceId(item.resource_id) ? item.resource_id : undefined, section,
     data: { source_engine: item.source_engine, source_table: item.source_table },
     status, observed_at: item.timestamp,
   }));

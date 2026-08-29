@@ -34,4 +34,27 @@ describe("supported Copilot page contracts", () => {
     expect(rows).toHaveLength(200);
     expect(rows[0].data).toEqual({ id: 0 });
   });
+
+  it("keeps non-Azure page identifiers out of scope-validated resource ID fields", () => {
+    const snapshot = buildCopilotSnapshot({
+      pageKind: "vulnerability",
+      pageId: "cve:CVE-2026-0001",
+      scope: { subscription: ["sub-1"] },
+      selectedResources: [{ resource_id: "CVE-2026-0001", resource_type: "CVE", name: "CVE-2026-0001" }],
+      evidence: [
+        {
+          evidence_id: "cve:visible:0",
+          resource_id: "CVE-2026-0001",
+          section: "cve",
+          status: "ok",
+          data: { cve_id: "CVE-2026-0001" },
+        },
+      ],
+    });
+
+    expect(snapshot.selected_resources).toEqual([]);
+    expect(snapshot.evidence[0].resource_id).toBeUndefined();
+    expect(snapshot.evidence[0].data.resource_id).toBe("CVE-2026-0001");
+    expect(snapshot.evidence[0].data.cve_id).toBe("CVE-2026-0001");
+  });
 });

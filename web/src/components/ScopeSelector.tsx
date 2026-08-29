@@ -10,21 +10,18 @@ import {
 } from "@fluentui/react-components";
 import { FilterRegular } from "@fluentui/react-icons";
 import { useState } from "react";
-import {
-  SCOPE_DIMENSIONS,
-  SCOPE_DIMENSION_LABELS,
-  type ScopeDimension,
-} from "@/lib/scope";
 import { buildScopeOptions, type ScopeOptions } from "@/lib/scope-options";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi } from "@/lib/services";
 
 const EMPTY_OPTIONS = buildScopeOptions([]);
+const DIMENSION = "subscription" as const;
 
 /**
- * Global data-backed scope selector for every Operations API dimension.
- * Values come from the caller's accessible subscription connections rather
- * than accepting unvalidated free text.
+ * Global data-backed operating-context selector. The caller may select one
+ * or more subscriptions; every other scope dimension has been retired from
+ * this control. Values come from the caller's accessible subscription
+ * connections rather than accepting unvalidated free text.
  */
 export function ScopeSelector() {
   const { scope, setScope, clearScope } = useScope();
@@ -32,21 +29,11 @@ export function ScopeSelector() {
   const [options, setOptions] = useState<ScopeOptions>(EMPTY_OPTIONS);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [activeDimension, setActiveDimension] = useState<ScopeDimension>("business_service");
 
-  const activeCount = SCOPE_DIMENSIONS.reduce(
-    (count, dimension) => count + (scope[dimension]?.length ?? 0),
-    0
-  );
-  const primaryContext =
-    scope.business_service?.[0] ??
-    scope.application?.[0] ??
-    scope.environment?.[0] ??
-    scope.subscription_connection?.[0] ??
-    scope.subscription?.[0] ??
-    "All operations";
-  const selectedValues = scope[activeDimension] ?? [];
-  const availableOptions = options[activeDimension].filter(
+  const selectedValues = scope[DIMENSION] ?? [];
+  const activeCount = selectedValues.length;
+  const primaryContext = selectedValues[0] ?? "All subscriptions";
+  const availableOptions = options[DIMENSION].filter(
     (option) => !selectedValues.includes(option.value)
   );
 
@@ -69,15 +56,19 @@ export function ScopeSelector() {
 
   function addValue(value: string) {
     if (!value) return;
-    const existing = scope[activeDimension] ?? [];
+    const existing = scope[DIMENSION] ?? [];
     if (existing.includes(value)) return;
-    setScope({ ...scope, [activeDimension]: [...existing, value] });
+    setScope({ ...scope, [DIMENSION]: [...existing, value] });
   }
 
-  function removeValue(dimension: ScopeDimension, value: string) {
-    const remaining = (scope[dimension] ?? []).filter((current) => current !== value);
-    const next = { ...scope, [dimension]: remaining };
-    if (remaining.length === 0) delete next[dimension];
+  function removeValue(value: string) {
+    const remaining = selectedValues.filter((current) => current !== value);
+    const next: typeof scope = { ...scope };
+    if (remaining.length === 0) {
+      delete next.subscription;
+    } else {
+      next.subscription = remaining;
+    }
     setScope(next);
   }
 
@@ -98,25 +89,11 @@ export function ScopeSelector() {
       <PopoverSurface style={{ width: 400 }} className="scope-popover">
         <div className="scope-popover-heading">
           <strong>Operating context</strong>
-          <span>Select known values from your accessible subscription connections.</span>
+          <span>Select one or more subscriptions from your accessible connections.</span>
         </div>
 
         <label className="scope-select-field">
-          <span>Filter by</span>
-          <select
-            value={activeDimension}
-            onChange={(event) => setActiveDimension(event.target.value as ScopeDimension)}
-          >
-            {SCOPE_DIMENSIONS.map((dimension) => (
-              <option key={dimension} value={dimension}>
-                {SCOPE_DIMENSION_LABELS[dimension]}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="scope-select-field">
-          <span>{SCOPE_DIMENSION_LABELS[activeDimension]}</span>
+          <span>Subscription</span>
           <select
             value=""
             disabled={loading || availableOptions.length === 0}
@@ -126,7 +103,7 @@ export function ScopeSelector() {
               {loading
                 ? "Loading values…"
                 : availableOptions.length
-                  ? `Select ${SCOPE_DIMENSION_LABELS[activeDimension].toLowerCase()}`
+                  ? "Select subscription"
                   : "No additional values available"}
             </option>
             {availableOptions.map((option) => (
@@ -146,22 +123,20 @@ export function ScopeSelector() {
           </div>
         )}
 
-        <div className="scope-selections">
-          {SCOPE_DIMENSIONS.filter((dimension) => (scope[dimension]?.length ?? 0) > 0).map(
-            (dimension) => (
-              <div key={dimension}>
-                <div>{SCOPE_DIMENSION_LABELS[dimension]}</div>
-                <TagGroup onDismiss={(_, data) => removeValue(dimension, data.value)}>
-                  {(scope[dimension] ?? []).map((value) => (
-                    <Tag key={value} value={value} dismissible>
-                      {value}
-                    </Tag>
-                  ))}
-                </TagGroup>
-              </div>
-            )
-          )}
-        </div>
+        {selectedValues.length > 0 && (
+          <div className="scope-selections">
+            <div>
+              <div>Subscription</div>
+              <TagGroup onDismiss={(_, data) => removeValue(data.value)}>
+                {selectedValues.map((value) => (
+                  <Tag key={value} value={value} dismissible>
+                    {value}
+                  </Tag>
+                ))}
+              </TagGroup>
+            </div>
+          </div>
+        )}
 
         {activeCount > 0 && (
           <Button appearance="secondary" onClick={clearScope} style={{ marginTop: 12 }}>

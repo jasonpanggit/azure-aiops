@@ -327,12 +327,12 @@ The current client posts a Responses request with `agent_reference`, passes cont
 | A2 | A native MCP adapter is preferable to APIM REST-to-MCP import for preserving existing tool statuses/evidence. `[ASSUMED]` | Could require a REST facade if APIM/client compatibility is better; validate with target clients. |
 | A3 | The target tenant permits Fabric IQ preview integration and required ontology permissions. `[ASSUMED]` | Fabric grounding may remain disabled or require a separate tenant rollout. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Where should the MCP server run?** Recommendation: same API Container App initially so it shares providers and scope; confirm ingress/network policy before exposing it through APIM.
-2. **Does the target APIM tier/provider support the documented MCP management resources?** Verify ARM API `2025-09-01-preview`, Terraform provider support, and region availability before locking IaC.
-3. **Should Foundry call APIM MCP directly or should local orchestration call the registry?** Recommendation: local orchestration remains canonical for this phase; APIM is for external/approved consumers until end-to-end identity propagation is proven.
-4. **Which Fabric IQ identity reads ontology data?** Confirm project managed identity, Fabric workspace/item role, geography, and data processing boundary before enabling.
+1. **Where should the MCP server run?** It will run as a read-only surface in the existing API Container App first, reusing its provider registry, scope enforcement, evidence contracts, and managed identity. APIM will be the only public gateway; direct MCP ingress remains disabled or restricted to the APIM backend path.
+2. **Does the target APIM tier/provider support the documented MCP management resources?** No APIM resource currently exists in `aiops-dev-rg`, so Phase 9 will provision a conventional APIM API/policy facade through the supported AzureRM resources rather than depending on preview-native MCP management resources. MCP protocol compatibility is implemented and tested by the backend contract, while APIM provides HTTPS routing, Entra validation, quotas, and observability.
+3. **Should Foundry call APIM MCP directly or should local orchestration call the registry?** Local orchestration remains canonical in Phase 9. It invokes the governed in-process registry for the page Copilot and Foundry specialists; APIM exposes the same read-only contracts for separately authorized external/agent consumers after identity propagation is validated.
+4. **Which Fabric IQ identity reads ontology data?** The API Container App's existing user-assigned managed identity is the runtime identity. Fabric IQ remains optional and must use the existing governed Fabric connection/configuration, with workspace/item permissions and geography validated by the live smoke test before enablement. No specialist receives direct unrestricted Fabric credentials.
 
 ## Metadata
 

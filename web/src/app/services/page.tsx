@@ -6,6 +6,8 @@ import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi, operationsApi } from "@/lib/services";
@@ -63,6 +65,8 @@ export default function ServicesPage() {
     );
   }, [connections.data, incidents.data]);
 
+  const servicesPaging = useTablePagination(services);
+
   const error = connections.error ?? incidents.error;
 
   return (
@@ -98,7 +102,7 @@ export default function ServicesPage() {
                 </tr>
               </thead>
               <tbody>
-                {services.map((service) => (
+                {servicesPaging.pageRows.map((service) => (
                   <tr key={service.name}>
                     <td>
                       <Link className="table-primary-link" href={`/services/${encodeURIComponent(service.name)}`}>
@@ -120,6 +124,15 @@ export default function ServicesPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            total={servicesPaging.total}
+            pageRows={servicesPaging.pageRows.length}
+            page={servicesPaging.page}
+            onPageChange={servicesPaging.setPage}
+            pageSize={servicesPaging.pageSize}
+            onPageSizeChange={servicesPaging.setPageSize}
+            label="services"
+          />
         </div>
       )}
     </div>

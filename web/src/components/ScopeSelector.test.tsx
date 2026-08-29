@@ -38,27 +38,18 @@ describe("ScopeSelector", () => {
     });
   });
 
-  it("selects business services and subscription connections from dropdown menus", async () => {
+  it("selects one or more subscriptions from the dropdown menu", async () => {
     render(
       <ScopeProvider>
         <ScopeSelector />
       </ScopeProvider>
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /All operations/i }));
+    fireEvent.click(screen.getByRole("button", { name: /All subscriptions/i }));
     await waitFor(() => expect(listAll).toHaveBeenCalled());
 
-    const valueMenu = await screen.findByLabelText("Business Service");
-    fireEvent.change(valueMenu, { target: { value: "Payments" } });
-    expect(screen.getAllByText("Payments")).toHaveLength(2);
-
-    fireEvent.change(screen.getByLabelText("Filter by"), {
-      target: { value: "subscription_connection" },
-    });
-    fireEvent.change(screen.getByLabelText("Subscription Connection"), {
-      target: { value: "prod-east" },
-    });
-
-    expect(screen.getByText("prod-east")).toBeInTheDocument();
+    const subscriptionMenu = await screen.findByLabelText("Subscription");
+    fireEvent.change(subscriptionMenu, { target: { value: "sub-001" } });
+    expect(screen.getAllByText("sub-001")).toHaveLength(2);
   });
 });

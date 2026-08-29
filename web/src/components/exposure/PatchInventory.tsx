@@ -3,6 +3,8 @@
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import type { ScopeSelection } from "@/lib/scope";
 import { patchingApi } from "@/lib/services";
@@ -55,6 +57,11 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
       )
     );
   }, [targets.data, query]);
+
+  const recentRuns = useMemo(() => runs.data?.data ?? [], [runs.data]);
+
+  const targetPaging = useTablePagination(filteredTargets);
+  const runPaging = useTablePagination(recentRuns);
 
   const selectedFor = useCallback((targetId: string) => selection[targetId] ?? [], [selection]);
 
@@ -124,7 +131,6 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
   }
 
   const warnings = targets.data?.warnings ?? [];
-  const recentRuns = runs.data?.data ?? [];
 
   return (
     <section className="card queue-card" data-testid="patch-inventory">
@@ -209,7 +215,7 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
               </tr>
             </thead>
             <tbody>
-              {filteredTargets.map((target) => {
+              {targetPaging.pageRows.map((target) => {
                 const selected = selectedFor(target.target_id);
                 const isOpen = expanded === target.target_id;
                 return (
@@ -351,6 +357,15 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
           </table>
         </div>
       )}
+      <TablePagination
+        total={targetPaging.total}
+        pageRows={targetPaging.pageRows.length}
+        page={targetPaging.page}
+        onPageChange={targetPaging.setPage}
+        pageSize={targetPaging.pageSize}
+        onPageSizeChange={targetPaging.setPageSize}
+        label="targets"
+      />
 
       {recentRuns.length > 0 && (
         <div className="card-body">
@@ -367,7 +382,7 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
                 </tr>
               </thead>
               <tbody>
-                {recentRuns.map((run) => (
+                {runPaging.pageRows.map((run) => (
                   <tr key={run.run_id}>
                     <td>
                       <code>{run.run_id}</code>
@@ -388,6 +403,15 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            total={runPaging.total}
+            pageRows={runPaging.pageRows.length}
+            page={runPaging.page}
+            onPageChange={runPaging.setPage}
+            pageSize={runPaging.pageSize}
+            onPageSizeChange={runPaging.setPageSize}
+            label="runs"
+          />
         </div>
       )}
     </section>

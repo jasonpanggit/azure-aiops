@@ -1,11 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { useMemo } from "react";
 import { CvssRadarChart } from "@/components/ui/CvssRadarChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
 import { kbApi } from "@/lib/services";
@@ -14,6 +17,11 @@ import { kbApi } from "@/lib/services";
 export default function KbDetailPage({ params }: { params: { id: string } }) {
   const { scope } = useScope();
   const detail = useApi(() => kbApi.detail(decodeURIComponent(params.id), scope), [params.id, scope]);
+
+  const cves = useMemo(() => detail.data?.data.cves ?? [], [detail.data]);
+  const cvesPaging = useTablePagination(cves);
+  const findings = useMemo(() => detail.data?.data.findings ?? [], [detail.data]);
+  const findingsPaging = useTablePagination(findings);
 
   if (detail.loading) {
     return (
@@ -111,6 +119,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
             </p>
           </div>
         ) : (
+          <>
           <div className="table-scroll">
             <table className="operations-table">
               <thead>
@@ -122,7 +131,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                 </tr>
               </thead>
               <tbody>
-                {data.cves.map((cve) => (
+                {cvesPaging.pageRows.map((cve) => (
                   <tr key={cve.cve_id}>
                     <td>
                       <Link className="table-primary-link" href={`/exposure/cves/${encodeURIComponent(cve.cve_id)}`}>
@@ -144,6 +153,16 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            total={cvesPaging.total}
+            pageRows={cvesPaging.pageRows.length}
+            page={cvesPaging.page}
+            onPageChange={cvesPaging.setPage}
+            pageSize={cvesPaging.pageSize}
+            onPageSizeChange={cvesPaging.setPageSize}
+            label="CVEs"
+          />
+          </>
         )}
       </section>
 
@@ -167,7 +186,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
               </tr>
             </thead>
             <tbody>
-              {data.findings.map((finding) => {
+              {findingsPaging.pageRows.map((finding) => {
                 const isKbProxy = finding.cve_id.startsWith("KB-");
                 return (
                 <tr key={finding.finding_id}>
@@ -191,6 +210,15 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          total={findingsPaging.total}
+          pageRows={findingsPaging.pageRows.length}
+          page={findingsPaging.page}
+          onPageChange={findingsPaging.setPage}
+          pageSize={findingsPaging.pageSize}
+          onPageSizeChange={findingsPaging.setPageSize}
+          label="findings"
+        />
       </section>
     </div>
   );

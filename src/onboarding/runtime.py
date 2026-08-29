@@ -23,6 +23,7 @@ from .discovery_source import AzureResourceGraphSource, CostActualsSource
 from .ingestion_service import IngestionService
 from .metadata import BusinessMetadata
 from .monitor_logs import AzureMonitorLogsClient, LogsQueryLimits
+from .monitor_prometheus import AzureMonitorPrometheusClient
 from .registry import ConnectionRegistry
 from .service import SubscriptionOnboardingService
 from .sync import ConnectionSyncCoordinator
@@ -207,6 +208,43 @@ def build_connection_monitor_metrics_client(
     )
 
 
+def build_connection_logs_client(
+    config: ConnectorConfig,
+    connection: SubscriptionConnection,
+    resolver: CredentialResolver | None = None,
+) -> AzureMonitorLogsClient:
+    """Build a Logs Query client authenticated with one connection SPN.
+
+    Mirrors :func:`build_connection_monitor_metrics_client` but targets the
+    Azure Monitor Logs Query API (KQL), used for classic guest performance
+    counters (memory/disk-free) that the platform Metrics API cannot supply.
+    """
+    credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
+    return AzureMonitorLogsClient(
+        credential_resolver.build(connection.credential),
+        limits=LogsQueryLimits(timeout_seconds=config.command_timeout_seconds),
+    )
+
+
+def build_connection_prometheus_client(
+    config: ConnectorConfig,
+    connection: SubscriptionConnection,
+    resolver: CredentialResolver | None = None,
+) -> AzureMonitorPrometheusClient:
+    """Build an Azure Monitor Prometheus client authenticated with one connection SPN.
+
+    Mirrors :func:`build_connection_logs_client` but targets the managed-
+    Prometheus PromQL API, used for OpenTelemetry-based guest metrics
+    (memory/disk-free) that land in an Azure Monitor Workspace instead of a
+    Log Analytics workspace.
+    """
+    credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
+    return AzureMonitorPrometheusClient(
+        credential_resolver.build(connection.credential),
+        timeout=config.command_timeout_seconds,
+    )
+
+
 def connection_context(connection: SubscriptionConnection) -> dict[str, str]:
     """Connection identity and business metadata stamped onto every ingested row.
 
@@ -303,7 +341,9 @@ __all__ = [
     "build_connection_cost_client",
     "build_connection_ingestion",
     "build_connection_inventory_pipeline",
+    "build_connection_logs_client",
     "build_connection_monitor_metrics_client",
+    "build_connection_prometheus_client",
     "build_onboarding_service",
     "connection_context",
 ]

@@ -1,55 +1,49 @@
 ---
 phase: 09-consumer-pivot
-verified: 2026-08-28T07:40:00Z
-status: gaps_found
-score: 5/10 must-haves verified
+verified: 2026-08-28T08:02:42Z
+status: human_needed
+score: 8/10 must-haves verified
 behavior_unverified: 1
 overrides_applied: 0
-gaps:
-  - truth: "Network findings distinguish stale or partial evidence from verified actionable findings."
-    status: failed
-    reason: "A stale freshness record still produces status=verified, confidence=high, and actionable=true."
-    artifacts:
-      - path: "src/operations/page_context.py"
-        issue: "deterministic_network_findings sets stale=true but derives status/actionable from row.status only."
-    missing:
-      - "Downgrade stale/partial findings to an uncertainty-qualified non-actionable state."
-  - truth: "The contextual Copilot request is scope-safe for all submitted snapshot evidence and selected resources."
-    status: failed
-    reason: "Effective-scope validation checks selected-resource attributes only when supplied and does not validate evidence row resource IDs or resource IDs without attributes."
-    artifacts:
-      - path: "src/operations/page_context.py"
-        issue: "validate_effective_scope does not scope-check evidence rows and conditionally checks selected resource attributes."
-      - path: "src/api/routers/copilot.py"
-        issue: "The route relies on the incomplete snapshot scope validation before returning findings."
-    missing:
-      - "Validate every selected/evidence resource against server-derived effective scope or reject unverifiable rows."
-  - truth: "The bounded plan/observe/delegate/request-evidence/reassess loop performs governed bounded delegation rather than only labeling stages."
-    status: failed
-    reason: "run_context_investigation appends delegate/reassess labels but performs no specialist delegation, no concurrency budget, and no reassessment; named rechecks are only copied into ledger tool_calls."
-    artifacts:
-      - path: "src/operations/autonomous_investigation.py"
-        issue: "Context loop has stage labels and a timeout check, but no governed specialist execution or bounded concurrency enforcement."
-    missing:
-      - "Implement or explicitly narrow the contextual loop contract and test actual delegation, evidence requests, reassessment, concurrency, and timeout behavior."
-  - truth: "Fabric IQ is wired as an opt-in governed enrichment when configured, while remaining non-authoritative for identity."
-    status: failed
-    reason: "ApiContext exposes fabric_iq_provider, but production runtime unconditionally wires fabric_iq_provider=lambda: None; no configured provider can reach the adapter."
-    artifacts:
-      - path: "src/api/runtime.py"
-        issue: "Runtime wiring makes Fabric IQ permanently unavailable."
-      - path: "src/operations/tools.py"
-        issue: "The adapter exists, but is not reachable from the managed runtime."
-    missing:
-      - "Add runtime/provider configuration for a real or explicitly injected governed Fabric IQ adapter."
+re_verification:
+  previous_status: gaps_found
+  previous_score: 5/10
+  gaps_closed:
+    - "Network findings distinguish stale or partial evidence from verified actionable findings."
+    - "The contextual Copilot request is scope-safe for all submitted snapshot evidence and selected resources."
+    - "The bounded plan/observe/delegate/request-evidence/reassess loop performs governed delegation rather than only labeling stages."
+    - "Fabric IQ is wired as an opt-in governed enrichment when configured, while remaining non-authoritative for identity."
+  gaps_remaining:
+    - "Exact visible page-state replay and tenant-dependent provider behavior require human verification."
+    - "Repository-wide classification of raw inventory/identity reads versus authorized acquisition seams remains a human/owner decision."
+  regressions: []
+behavior_unverified_items:
+  - truth: "Supported pages submit exactly the bounded visible page state to the shared contextual API."
+    test: "On each supported page, change filters and selected resources, open Copilot, and submit a question."
+    expected: "The request and returned ledger contain only the current visible filters, selections, freshness, scope, and named evidence rows."
+    why_human: "Unit tests cover snapshot construction and one drawer submission, but not every rendered page's live state transition through the browser and API."
+human_verification:
+  - test: "Exact visible snapshot replay across supported pages"
+    expected: "Home, Network, exposure/CVE, compliance, situations, and remediation send the exact currently rendered bounded state; no hidden rehydration or broader scope appears."
+    why_human: "The browser state, rendered rows, API payload, and ledger replay must be compared together."
+  - test: "Accessible contextual drawer UX"
+    expected: "Launcher and drawer remain discoverable and operable by keyboard and screen reader at desktop and narrow widths; focus, Escape, live status, retry, partial, fallback, and error states are understandable."
+    why_human: "Visual, responsive, and assistive-technology behavior cannot be established by source inspection or shallow component tests."
+  - test: "Configured Fabric IQ and Foundry behavior in the target tenant"
+    expected: "Configured specialists and IQ operations return attributable version/provenance, freshness, authorization, bounded scope-safe data, and identity_authority=false; disabled or denied dependencies preserve deterministic findings."
+    why_human: "Tenant permissions, deployment identity, preview availability, and external data-plane behavior are not reproducible in this repository."
+  - test: "Repository-wide inventory identity ownership decision"
+    expected: "Confirm remaining raw dataset reads are authorized ingestion/publication seams, not consumers; all resource-identity consumers use InventoryReadPort."
+    why_human: "Static guards cover the declared consumer paths, while acquisition/normalization code still reads raw datasets and needs domain-owner classification."
 ---
 
 # Phase 9: Consumer Pivot Verification Report
 
 **Phase Goal:** As a platform operator, I want the API and UI powered by unified inventory, so that every surface reflects one source of truth about what resources exist.
-**Verified:** 2026-08-28T07:40:00Z
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+
+**Verified:** 2026-08-28T08:02:42Z
+**Status:** human_needed
+**Re-verification:** Yes — after gap closure plans 09-04, 09-05, and 09-06
 
 ## Goal Achievement
 
@@ -57,65 +51,65 @@ gaps:
 
 | # | Truth | Status | Evidence |
 |---|---|---|---|
-| 1 | API identity providers resolve through the inventory read port with unchanged route contracts. | ✓ VERIFIED | `src/api/runtime.py` registers `inventory_read_port`; `InventoryReadPort` is runtime-bound and focused runtime/read-port tests pass. |
-| 2 | `agent_queries.py` uses inventory identity while patch assessments remain a separate domain join. | ✓ VERIFIED | `ContextQueryService` reads `_adapter.resources()` and joins patch rows by `targetResourceId`; focused agent-query tests pass. |
-| 3 | Per-family degradation preserves usable rows and family status. | ✓ VERIFIED | `InventoryReadPort.list_resources()` returns rows, `family_availability`, and warnings together; focused inventory/runtime tests pass. |
-| 4 | Supported pages submit bounded typed visible context through the shared drawer. | ⚠️ PRESENT_BEHAVIOR_UNVERIFIED | Typed builder, six page integrations, and drawer tests exist; no browser/API runtime test proves each page's rendered state is the exact submitted state. |
-| 5 | The shared drawer is accessible and `/agents` remains the full workspace. | ✓ VERIFIED | Shared `CopilotDrawer`/`CopilotDrawerButton`, dialog semantics, Escape handling, live status, and independent `/agents` route are present; focused tests and lint pass. Visual/assistive verification remains human-only. |
-| 6 | Loading, partial, deterministic fallback, retry, and failure states are distinct and honest. | ✓ VERIFIED | Drawer has separate live-region strings and retry/fallback/partial branches; focused Copilot tests pass. |
-| 7 | Operations Copilot is bounded and agentic across plan/observe/delegate/request-evidence/reassess. | ✗ FAILED | The contextual function emits stage names but does not delegate a specialist or perform reassessment; it only records named recheck IDs. |
-| 8 | Network findings are deterministic, cited, uncertainty-qualified, and non-actionable when evidence is stale/partial. | ✗ FAILED | Deterministic checks include check/policy IDs and evidence refs, but an independently probed stale snapshot returned `status=verified`, `confidence=high`, `stale=true`, and `actionable=true`. |
-| 9 | Foundry specialists have a separate boundary and deterministic fallback; Fabric IQ is governed and optional. | ✗ FAILED | Specialist catalog/provisioning metadata and fallback tests pass, but runtime Fabric IQ wiring is hardcoded to `None`. |
-| 10 | No consumer reads raw inventory or identity datasets directly. | ? UNCERTAIN | The phase guard passes for its limited paths, but it is not repository-wide; `src/onboarding/query_catalog.py` still defines `Resources`/`ResourceContainers` acquisition specs and `graph_normalize.py` retains ARG provenance. Human/owner decision is needed on whether these are authorized acquisition seams or prohibited consumers. |
+| 1 | API resource-identity providers resolve through the inventory read port with unchanged route contracts. | ✓ VERIFIED | `src/api/runtime.py` registers `inventory_read_port`; focused Phase 9 backend suite passed 134 tests. |
+| 2 | `agent_queries.py` reads servers/VMs through inventory identity while patch assessments remain a separate domain join. | ✓ VERIFIED | `ContextQueryService` calls `InventoryReadAdapter.resources()` and joins patch rows by `targetResourceId`; `test_agent_queries.py` and consumer guards pass. |
+| 3 | Web resource-identity pages use unified inventory and preserve per-family availability/warnings. | ✓ VERIFIED | Inventory/read-port status contracts and page integration tests pass; no page-level raw identity read was found in the audited paths. |
+| 4 | Page-level Copilot submits the exact bounded page state it displays to the shared orchestrator. | ⚠️ PRESENT_BEHAVIOR_UNVERIFIED | All six supported integrations call `buildCopilotSnapshot`; focused drawer test proves one exact typed submission, but every page's live rendered-state transition is not browser-proven. |
+| 5 | The accessible shared drawer preserves `/agents` as the full workspace. | ✓ VERIFIED | `CopilotDrawer` has dialog labeling, focus, Escape, live status, retry and staged rendering; `/agents` remains a separate route. Focused web tests and lint pass. Visual/AT checks remain human-only. |
+| 6 | Loading, partial, deterministic fallback, retry, failure, and Foundry narration are distinct and honest. | ✓ VERIFIED | Drawer has separate status branches; API returns deterministic findings and explicit warnings; focused backend/web tests pass. |
+| 7 | Operations Copilot performs a bounded plan/observe/delegate/request-evidence/reassess loop. | ✓ VERIFIED | `run_context_investigation` invokes allowlisted `_agent_run` tools, named rechecks, deterministic reassessment, specialist metadata, budgets, retry/timeout handling, ledger calls, and human controls. A fresh probe observed `network_topology`, `firewall_nsg_gaps`, and recheck execution with all five stages. |
+| 8 | Network findings are cited and stale/partial/unavailable evidence is uncertainty-qualified and non-actionable. | ✓ VERIFIED | `deterministic_network_findings` downgrades degraded freshness to `hypothesis`, medium/low confidence, `stale=true`, and `actionable=false`; focused snapshot/network tests pass. |
+| 9 | Foundry specialists have a separate boundary and deterministic fallback; Fabric IQ is configurable, governed, and optional. | ✓ VERIFIED | Runtime resolves `_load_fabric_iq_adapter` through optional `ProviderRuntime`; adapter allowlists operations, scope-filters/bounds payloads, stamps provenance/freshness/authorization and `identity_authority=false`; runtime/adapter/fallback tests pass. |
+| 10 | No consumer anywhere reads raw inventory or identity datasets directly. | ? UNCERTAIN | Declared identity consumers pass `test_inventory_consumer_guards.py`, but raw reads remain in ingestion/activation/normalization acquisition seams. Their consumer-versus-authorized-publication classification needs owner confirmation. |
 
-**Score:** 5/10 truths verified (1 present, behavior-unverified)
+**Score:** 8/10 truths verified (1 present, behavior-unverified; 1 uncertain)
 
 ## Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |---|---|---|---|
-| `src/operations/page_context.py` | Versioned bounded snapshot and finding contracts | ⚠️ PARTIAL | Substantive and used, but evidence/resource scope enforcement and stale-state semantics are incomplete. |
-| `src/api/routers/copilot.py` | Snapshot-aware API route and ledger response | ✓ VERIFIED | `POST /api/v1/copilot/investigate-context` validates, runs, stores, and returns snapshot hash/version and ledger data. |
-| `src/operations/autonomous_investigation.py` | Governed bounded contextual orchestration | ✗ STUB/PARTIAL | Legacy autonomous orchestration is substantive; contextual path is mostly stage bookkeeping. |
-| `src/onboarding/agent_queries.py` | Inventory-read-port identity consumer | ✓ VERIFIED | Runtime adapter path and patch-domain separation are present. |
-| `src/operations/foundry_agent.py` | Separate specialist metadata and fallback client | ✓ VERIFIED | Eight specialist IDs, versions, legacy Network fallback, retries, circuit breaker, and curated prompt are present. |
-| `src/operations/tools.py` | Allowlisted Fabric IQ boundary | ⚠️ ORPHANED | Adapter and allowlisted tools exist, but runtime always supplies no provider. |
-| `web/src/components/ui/CopilotDrawer.tsx` | Shared accessible staged drawer | ✓ VERIFIED | Shared component renders cited findings/tool status and explicit fallback/error states. |
-| `web/src/app/{page,network,exposure,compliance,situations,remediation}.tsx` | Page-specific snapshot wiring | ✓ VERIFIED | All six planned page paths call the shared builder/drawer; exact runtime payload behavior is not browser-proven. |
+| `src/operations/page_context.py` | Bounded snapshot, scope validation, freshness-aware findings | ✓ VERIFIED | Canonical IDs validate selected/evidence resources; stale/partial/unavailable findings downgrade safely. |
+| `src/api/routers/copilot.py` | Validate before contextual orchestration and return ledger | ✓ VERIFIED | `investigate_context` calls `validate_effective_scope` before `run_context_investigation`, then stores/returns the ledger. |
+| `src/operations/autonomous_investigation.py` | Real bounded contextual orchestration | ✓ VERIFIED | Actual tool handler calls, rechecks, reassessment, budgets, statuses, ledger metadata, and human controls are implemented and probe-exercised. |
+| `src/onboarding/agent_queries.py` | Inventory-read-port identity consumer | ✓ VERIFIED | Resource identity flows through `InventoryReadAdapter`; patch rows remain separate. |
+| `src/operations/tools.py` | Governed allowlisted Fabric IQ boundary | ✓ VERIFIED | Adapter is scope-filtered, bounded, metadata-stamped, optional, and non-authoritative. |
+| `src/api/runtime.py` | Configurable Fabric IQ provider wiring | ✓ VERIFIED | Environment/configured Fabric runtime reaches the adapter; no config returns explicit unavailable. |
+| `web/src/components/ui/CopilotDrawer.tsx` | Shared accessible staged drawer | ✓ VERIFIED | Component is substantive, imported by supported pages, and focused tests/lint pass; visual/AT behavior is human-gated. |
+| `.planning/phases/09-consumer-pivot/09-REGRESSION-OWNERSHIP.md` | Evidence-backed residual failure ownership | ✓ VERIFIED | Three failures reproduce at pre-Phase-9 boundary and remain visible without skips/xfails. |
 
 ## Key Link Verification
 
 | From | To | Via | Status | Details |
 |---|---|---|---|---|
-| Page components | Context API | `CopilotDrawer` → `copilotApi.investigateContext` | ✓ WIRED | Drawer posts the supplied typed snapshot with the current question. |
-| Context API | Scope enforcement | `investigate_context` → `snapshot.validate_effective_scope` | ✗ NOT_WIRED | Validator does not cover evidence resource IDs or selected resources lacking attributes. |
-| Context API | Deterministic Network checks | `run_context_investigation` → `deterministic_network_findings` | ✓ WIRED | Submitted evidence is consumed directly. |
-| Findings | Foundry narration | `run_context_investigation` → optional `foundry_agent.answer` | ✓ WIRED | Foundry receives findings only; fallback is explicit. |
-| Runtime | Fabric IQ tools | `ApiContext.fabric_iq_provider` → adapter | ✗ NOT_WIRED | Runtime provider is unconditionally `lambda: None`. |
-| Agent queries | Inventory identity | `ContextQueryService` → `InventoryReadAdapter` → `InventoryReadPort` | ✓ WIRED | Patch rows remain separate compatibility/domain data. |
-| `/agents` | Full investigation workspace | page → `/agents/catalog`, `/agents/investigations` | ✓ WIRED | Existing activity, reconciliation, evaluation, ledger, and human-control UI remains. |
+| Context API | Scope enforcement | `investigate_context` → `snapshot.validate_effective_scope` | ✓ WIRED | Selected and evidence resource IDs are canonicalized and checked against effective scope before orchestration. |
+| Context API | Deterministic findings | `run_context_investigation` → `deterministic_network_findings` | ✓ WIRED | Submitted evidence is consumed directly; freshness controls status/confidence/actionability. |
+| Context loop | Governed tools/ledger | `_agent_run`/named rechecks → `call_tool` → `tool_calls` | ✓ WIRED | Fresh probe recorded delegate and request-evidence calls; reassessment recomputes findings. |
+| Runtime | Fabric IQ | `ProviderRuntime.get("fabric_iq")` → `_load_fabric_iq_adapter` | ✓ WIRED | Configured runtime reaches `FabricIQToolAdapter`; optional failure is explicit unavailable. |
+| Agent queries | Inventory identity | `ContextQueryService` → `InventoryReadAdapter` → `InventoryReadPort` | ✓ WIRED | Focused identity and consumer-guard tests pass. |
+| Pages | Context API | page `buildCopilotSnapshot` → `CopilotDrawer` → `investigateContext` | ✓ WIRED | Six supported pages use the common path; exact browser state replay remains human-gated. |
 
 ## Data-Flow Trace (Level 4)
 
 | Artifact | Data variable | Source | Produces Real Data | Status |
 |---|---|---|---|---|
-| Network snapshot | `evidence` | Rendered topology/gap/rule results | Yes | ✓ FLOWING |
-| Context findings | `snapshot.evidence` | Submitted page snapshot | Yes | ⚠️ HOLLOW scope boundary |
-| Agent query identity | `resources` | Runtime-bound `InventoryReadPort` over inventory service | Yes | ✓ FLOWING |
-| Fabric IQ enrichment | `raw` in `FabricIQToolAdapter.run` | Runtime provider | No in production runtime | ✗ DISCONNECTED |
-| Foundry narration | curated findings/context | Optional configured Foundry agent | Tenant-dependent | ⚠️ EXTERNAL/UNCERTAIN |
+| Context findings | `snapshot.evidence` | Submitted page evidence | Yes | ✓ FLOWING |
+| Agent query identity | `resources` | Runtime-bound `InventoryReadPort` | Yes | ✓ FLOWING |
+| Fabric IQ enrichment | adapter `raw` | Managed Fabric runtime ontology query | Configured path | ✓ FLOWING (optional) |
+| Foundry narration | curated findings/context | Optional configured Foundry agent | Tenant-dependent | ⚠️ EXTERNAL / HUMAN |
+| Page Copilot snapshot | filters/resources/evidence | Rendered page state | Typed builder path | ⚠️ BROWSER REPLAY HUMAN |
 
 ## Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |---|---|---|---|
-| Phase 9 backend focused tests | `uv run python -m pytest tests/test_page_context.py tests/test_api_copilot_snapshot.py tests/test_api_copilot_investigation.py tests/test_network_analysis.py tests/test_agent_queries.py tests/test_inventory_read_port.py tests/test_api_runtime.py tests/test_foundry_agent.py tests/test_fabric_client.py tests/test_inventory_consumer_guards.py -q` | 115 tests passed | ✓ PASS |
-| Web focused Copilot tests | `cd web && npm test -- --run ...Copilot... ...agents/page.test.tsx` | 5 tests passed | ✓ PASS |
-| Web lint | `cd web && npm run lint` | No ESLint warnings/errors | ✓ PASS |
-| Production build | `cd web && npm run build` | Build succeeded; repeated MSAL `window is not defined` prerender messages | ✓ PASS |
-| Stale finding invariant | direct Python probe using stale freshness | Returned actionable verified finding | ✗ FAIL |
-| Full backend suite | `uv run python -m pytest -q` | 3 failures, 1532 passed, 2 warnings; all three reproduce at detached pre-Phase-9 boundary `1b730f77` | ⚠️ BASELINE FAILURES — ownership recorded in `09-REGRESSION-OWNERSHIP.md`; no Phase 9 regression |
+| Focused Phase 9 backend suites | `uv run python -m pytest tests/test_page_context.py tests/test_api_copilot_snapshot.py tests/test_api_copilot_investigation.py tests/test_network_analysis.py tests/test_agent_queries.py tests/test_inventory_read_port.py tests/test_api_runtime.py tests/test_foundry_agent.py tests/test_fabric_client.py tests/test_inventory_consumer_guards.py -q` | 134 passed | ✓ PASS |
+| Governed contextual loop | Fresh `uv run python -c ...` probe after normal app import | Delegate tools and named evidence recheck executed; stages were plan/observe/delegate/request-evidence/reassess; hidden reasoning false | ✓ PASS |
+| Focused web Copilot tests | `cd web && npm test -- --run src/components/ui/CopilotDrawer.test.tsx src/components/ui/CopilotDrawerButton.test.tsx src/components/ui/CopilotPageIntegrations.test.tsx` | 4 tests passed | ✓ PASS |
+| Web lint | `cd web && npm run lint` | No warnings/errors | ✓ PASS |
 | Full web suite | `cd web && npm test -- --run` | Exit code 0 | ✓ PASS |
+| Production build | `cd web && npm run build` | Build succeeded; existing MSAL `window is not defined` prerender messages | ✓ PASS |
+| Three documented backend failures | Isolated three-test command | All three failed with the documented assertions | ⚠️ BASELINE |
+| Full backend suite | `uv run python -m pytest -q` | `3 failed, 1532 passed, 2 warnings`; exact residual set matches ownership record | ⚠️ BASELINE |
 
 ## Probe Execution
 
@@ -125,8 +119,8 @@ No phase-declared or conventional `scripts/*/tests/probe-*.sh` probe was found.
 
 | Requirement | Source Plan | Description | Status | Evidence |
 |---|---|---|---|---|
-| INV-09 | 09-01, 09-02, 09-03 | Per-family availability/status never blanks the whole inventory capability | ⚠️ NEEDS HUMAN / PARTIAL | Read-port status is preserved and web tests pass, but live page state and all-family degradation are not browser/live verified. |
-| INV-10 | 09-01, 09-02, 09-03 | Consumers use one scope-enforced inventory contract and no raw identity reads | ✗ BLOCKED | Main agent-query path is migrated, but contextual snapshot scope validation is incomplete and repository-wide guard coverage is not exhaustive. |
+| INV-09 | 09-01 through 09-06 | Per-family availability/status remains usable instead of blanking inventory | ⚠️ NEEDS HUMAN | Read-port and focused web/backend checks preserve statuses and warnings; live degraded-family page behavior remains untested. |
+| INV-10 | 09-01 through 09-06 | Consumers use one scope-enforced inventory contract and no raw identity reads | ⚠️ NEEDS HUMAN | Main identity path and snapshot scope boundary pass; repository-wide acquisition-seam classification remains unresolved. |
 
 No additional Phase 9 requirement IDs are mapped in `REQUIREMENTS.md`; no orphaned Phase 9 requirement was found.
 
@@ -134,39 +128,44 @@ No additional Phase 9 requirement IDs are mapped in `REQUIREMENTS.md`; no orphan
 
 | File | Line | Pattern | Severity | Impact |
 |---|---:|---|---|---|
-| `src/operations/page_context.py` | 148-150 | Stale evidence sets `stale` but does not affect verified/actionable classification | 🛑 Blocker | Operators may treat stale evidence as verified remediation-capable evidence. |
-| `src/api/runtime.py` | 1652 | `fabric_iq_provider=lambda: None` | 🛑 Blocker | Fabric IQ adapter cannot be used when configured. |
-| `src/operations/autonomous_investigation.py` | 522-540 | Contextual loop records stage names without specialist delegation/reassessment | 🛑 Blocker | The claimed bounded agentic loop is not implemented end-to-end. |
-| `src/operations/page_context.py` | 104 | Conditional scope check only for resources with attributes; no evidence-row check | 🛑 Blocker | Out-of-scope snapshot evidence can become returned findings. |
 | `web/src/components/ui/CopilotDrawer.tsx` | 305 | `placeholder` input text | ℹ️ Info | Normal form affordance, not an implementation stub. |
+| `src/api/app.py` / dependency stack | build/test output | Existing deprecation warnings (`on_event`, httpx/TestClient) | ℹ️ Info | Does not fail Phase 9 tests or affect the verified goal. |
+
+No `TBD`, `FIXME`, or `XXX` markers were found in Phase 9 implementation files.
 
 ## Human Verification Required
 
-### 1. Contextual page UX and assistive technology
+### 1. Exact visible snapshot replay
 
-**Test:** Open Network, home, exposure, CVE detail, compliance, situations, and remediation at desktop and narrow widths. Launch with mouse and keyboard, inspect focus, Escape, dialog/live-region behavior, and submit a question.
-**Expected:** The page stays visible, the drawer is discoverable and operable by keyboard/screen reader, and citations correspond to the exact visible state.
-**Why human:** Visual, responsive, and assistive-technology behavior cannot be established by source inspection or shallow unit tests.
+**Test:** On home, Network, exposure/CVE, compliance, situations, and remediation, alter filters/selections and submit through the drawer.
+**Expected:** The ledger hash and evidence rows correspond exactly to the visible state at submission, without hidden rehydration.
+**Why human:** This requires comparing browser-rendered state with the live request and ledger.
 
-### 2. Foundry specialist and Fabric IQ tenant availability
+### 2. Accessible page UX
 
-**Test:** In the target tenant, verify each configured specialist name/version and invoke a governed Fabric IQ relationship/topology/policy query, then disable each dependency.
-**Expected:** Specialist identity/version is attributable; IQ results carry scope, freshness, provenance, and authorization metadata; unavailable/denied states preserve deterministic findings and never replace inventory identity.
-**Why human:** Tenant permissions, preview availability, deployment identity, and data-plane behavior are external runtime properties.
+**Test:** Use mouse, keyboard, and a screen reader at desktop and narrow widths; launch, navigate, close with Escape, submit, retry, and inspect partial/fallback/error states.
+**Expected:** The current page remains visible and the shared drawer is discoverable, operable, and understandable.
+**Why human:** Visual, responsive, and assistive-technology behavior cannot be proven by repository tests.
 
-### 3. Exact visible snapshot replay
+### 3. Tenant-dependent specialists and Fabric IQ
 
-**Test:** On each supported page, change filters and selection, open Copilot, submit a question, and compare the ledger snapshot hash/evidence rows with what was rendered.
-**Expected:** Only the bounded named state visible at submission is cited; no hidden page query or broader rehydration appears.
-**Why human:** The current tests assert builder shape but do not exercise the browser state transition and API payload together.
+**Test:** In the target tenant, invoke configured specialist and Fabric IQ relationship/topology/policy paths, then disable or deny them.
+**Expected:** Results retain source/provenance/freshness/authorization and `identity_authority=false`; deterministic inventory/findings remain usable on fallback.
+**Why human:** External permissions, preview availability, deployment identity, and data-plane behavior are not available to automated verification.
+
+### 4. Inventory consumer ownership boundary
+
+**Test:** Have the inventory/ingestion owners classify raw reads in acquisition, activation, and normalization code.
+**Expected:** Those reads are authorized publication/acquisition internals, and every actual identity consumer remains on `InventoryReadPort`.
+**Why human:** Static guard scope cannot decide domain ownership intent.
 
 ## Gaps Summary
 
-Phase 9 has substantial implementation and its focused checks pass. Earlier verification blockers were addressed by Plans 04 and 05. The full backend suite still has three failures outside the Phase 9 focused path; detached-boundary reproduction and commit/file provenance in `09-REGRESSION-OWNERSHIP.md` establish that they are pre-existing governance, situation/ontology, and storage failures rather than consumer-pivot regressions.
+Plans 09-04 and 09-05 close the prior implementation blockers: canonical selected/evidence scope validation, stale/partial downgrade semantics, actual governed delegation/evidence/reassessment, and configurable optional Fabric IQ are present, wired, and focused-tested. Plan 09-06's three full-suite failures were independently reproduced and are explicitly pre-Phase-9 governance, situation/ontology, and storage baseline failures; they remain visible and are not hidden by skips or weakened assertions.
 
-The existing UI and specialist catalog are substantive and wired, but the exact page-state replay and tenant-dependent Foundry/IQ behavior still require human verification after the blockers are closed.
+The remaining gate is human verification, not an observed Phase 9 implementation blocker: exact browser snapshot replay, accessible/responsive/assistive UX, target-tenant provider behavior, and owner classification of raw acquisition seams.
 
 ---
 
-_Verified: 2026-08-28T07:40:00Z_
+_Verified: 2026-08-28T08:02:42Z_
 _Verifier: the agent (gsd-verifier)_

@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TablePagination } from "@/components/ui/TablePagination";
+import { DEFAULT_PAGE_SIZE } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { downloadCsv, serializeCsv } from "@/lib/csv";
 import { formatDateTime } from "@/lib/format";
@@ -33,11 +34,8 @@ import type {
 type InventoryTab = "os" | "software" | "azure";
 
 // Page sizes for the server-paginated tables. Kept below the API's `limit`
-// cap (500) and small enough that a page fits on screen without the operator
-// hunting for the pagination controls.
-const OS_PAGE_SIZE = 50;
-const SOFTWARE_PAGE_SIZE = 50;
-const AZURE_PAGE_SIZE = 50;
+// cap (500). The top-level tables let the operator pick their own row count;
+// the inline drill-downs stay fixed so a nested table can't dominate the page.
 const AZURE_DETAIL_PAGE_SIZE = 25;
 const OS_DETAIL_PAGE_SIZE = 25;
 const SOFTWARE_DETAIL_PAGE_SIZE = 25;
@@ -274,6 +272,9 @@ export default function InventoryPage() {
   const [azurePage, setAzurePage] = useState(0);
   const [osPage, setOsPage] = useState(0);
   const [softwarePage, setSoftwarePage] = useState(0);
+  const [azurePageSize, setAzurePageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [osPageSize, setOsPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [softwarePageSize, setSoftwarePageSize] = useState(DEFAULT_PAGE_SIZE);
   const [allResourcesExporting, setAllResourcesExporting] = useState(false);
   const [allResourcesError, setAllResourcesError] = useState<string | null>(null);
   const effectiveScope = useMemo(
@@ -283,14 +284,14 @@ export default function InventoryPage() {
     [scope, subscriptionFilter],
   );
   const scopeKey = useMemo(() => JSON.stringify(effectiveScope), [effectiveScope]);
-  const inventory = useApi(() => inventoryApi.os(effectiveScope, osPage * OS_PAGE_SIZE, OS_PAGE_SIZE), [scopeKey, refreshKey, osPage]);
-  const softwareInventory = useApi(() => inventoryApi.software(effectiveScope, softwarePage * SOFTWARE_PAGE_SIZE, SOFTWARE_PAGE_SIZE), [scopeKey, refreshKey, softwarePage]);
+  const inventory = useApi(() => inventoryApi.os(effectiveScope, osPage * osPageSize, osPageSize), [scopeKey, refreshKey, osPage, osPageSize]);
+  const softwareInventory = useApi(() => inventoryApi.software(effectiveScope, softwarePage * softwarePageSize, softwarePageSize), [scopeKey, refreshKey, softwarePage, softwarePageSize]);
   const narrative = useApi(() => inventoryApi.narrative(effectiveScope), [scopeKey, refreshKey]);
   const mappings = useApi(
     () => inventoryApi.mappings(effectiveScope),
     [scopeKey, refreshKey],
   );
-  const azureInventory = useApi(() => inventoryApi.paas(effectiveScope, azurePage * AZURE_PAGE_SIZE, AZURE_PAGE_SIZE), [scopeKey, refreshKey, azurePage]);
+  const azureInventory = useApi(() => inventoryApi.paas(effectiveScope, azurePage * azurePageSize, azurePageSize), [scopeKey, refreshKey, azurePage, azurePageSize]);
 
   const azureGroups = useMemo(() => azureInventory.data?.data.groups ?? [], [azureInventory.data]);
   const azureProviders = useMemo(
@@ -896,6 +897,11 @@ export default function InventoryPage() {
                 pageRows={softwareGroups.length}
                 page={softwarePage}
                 onPageChange={setSoftwarePage}
+                pageSize={softwarePageSize}
+                onPageSizeChange={(size) => {
+                  setSoftwarePageSize(size);
+                  setSoftwarePage(0);
+                }}
                 label="software titles"
               />
             </section>
@@ -1136,6 +1142,11 @@ export default function InventoryPage() {
                 pageRows={azureGroups.length}
                 page={azurePage}
                 onPageChange={setAzurePage}
+                pageSize={azurePageSize}
+                onPageSizeChange={(size) => {
+                  setAzurePageSize(size);
+                  setAzurePage(0);
+                }}
                 label="resource types"
               />
             </section>
@@ -1344,6 +1355,11 @@ export default function InventoryPage() {
                 pageRows={groups.length}
                 page={osPage}
                 onPageChange={setOsPage}
+                pageSize={osPageSize}
+                onPageSizeChange={(size) => {
+                  setOsPageSize(size);
+                  setOsPage(0);
+                }}
                 label="OS groups"
               />
             </section>

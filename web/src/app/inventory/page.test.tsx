@@ -386,17 +386,34 @@ describe("Inventory OS tracer", () => {
   it("advances the OS group table to the next page and refetches at the new offset", async () => {
     os.mockResolvedValue({
       ...envelope(collection),
-      pagination: { offset: 0, limit: 50, total: 120, next_offset: 50 },
+      pagination: { offset: 0, limit: 20, total: 120, next_offset: 20 },
     });
 
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
     expect(await screen.findByText(/of 120 OS groups/)).toBeInTheDocument();
-    expect(os).toHaveBeenCalledWith(expect.anything(), 0, 50);
+    expect(os).toHaveBeenCalledWith(expect.anything(), 0, 20);
 
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
 
-    await waitFor(() => expect(os).toHaveBeenCalledWith(expect.anything(), 50, 50));
+    await waitFor(() => expect(os).toHaveBeenCalledWith(expect.anything(), 20, 20));
+  });
+
+  it("refetches from the first offset when the operator picks a larger page size", async () => {
+    os.mockResolvedValue({
+      ...envelope(collection),
+      pagination: { offset: 0, limit: 20, total: 120, next_offset: 20 },
+    });
+
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+
+    expect(await screen.findByText(/of 120 OS groups/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("combobox", { name: /rows per page for OS groups/i }), {
+      target: { value: "100" },
+    });
+
+    await waitFor(() => expect(os).toHaveBeenCalledWith(expect.anything(), 0, 100));
   });
 
   it("lists Azure resources by type and drills into a group", async () => {
