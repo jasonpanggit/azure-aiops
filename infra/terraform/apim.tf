@@ -4,13 +4,15 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  apim_name       = coalesce(var.apim_name, "${local.base}-apim")
-  apim_api_name   = "${local.base}-mcp"
-  mcp_backend_url = "${local.api_base_url}/api/v1/mcp"
-  apim_audience   = coalesce(var.apim_audience, var.entra_api_audience)
+  apim_name        = coalesce(var.apim_name, "${local.base}-apim")
+  apim_api_name    = "${local.base}-mcp"
+  mcp_backend_url  = "${local.api_base_url}/api/v1/mcp"
+  apim_audience    = coalesce(var.apim_audience, var.entra_api_audience)
+  apim_audience_id = replace(local.apim_audience, "api://", "")
   mcp_policy_vars = {
     tenant_id         = var.tenant_id
     audience          = local.apim_audience
+    audience_id       = local.apim_audience_id
     backend_url       = local.mcp_backend_url
     gateway_assertion = var.apim_gateway_assertion
   }
@@ -38,7 +40,7 @@ resource "azurerm_api_management_api" "mcp" {
   path                  = "mcp"
   protocols             = ["https"]
   service_url           = local.mcp_backend_url
-  subscription_required = true
+  subscription_required = false
   import {
     content_format = "openapi+json"
     content_value = jsonencode({
@@ -53,6 +55,25 @@ resource "azurerm_api_management_api" "mcp" {
         }
       }
     })
+  }
+}
+
+# APIM's native MCP inventory is identified by apiType=``mcp``. The azurerm
+# provider can proxy an HTTP API but cannot emit this preview-only API type.
+resource "azapi_resource" "mcp_server" {
+  count     = var.enable_apim ? 1 : 0
+  type      = "Microsoft.ApiManagement/service/apis@2025-09-01-preview"
+  name      = "${local.base}-mcp-server"
+  parent_id = azurerm_api_management.main[0].id
+  body = {
+    properties = {
+      type        = "mcp"
+      displayName = "Operations MCP Server"
+      description = "Governed read-only Operations MCP server"
+      path        = "mcp-server"
+      protocols   = ["https"]
+      serviceUrl  = local.mcp_backend_url
+    }
   }
 }
 
