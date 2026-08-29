@@ -39,3 +39,165 @@ def test_specialist_prompt_never_advertises_acquisition_or_mutation_tools(monkey
     prompt = agent.build_prompt("check topology", {"findings": ["scoped"]})
     assert "delete" not in prompt.casefold()
     assert "acquire" not in prompt.casefold()
+
+
+# Phase 6: Test coverage for 7 new specialist agents
+
+
+def test_vulnerability_agent_from_env_returns_configured_agent(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_VULNERABILITY_AGENT_NAME", "vulnerability-agent")
+    monkeypatch.setenv("FOUNDRY_VULNERABILITY_AGENT_VERSION", "2026.08.1")
+
+    agent = FoundryPromptAgent.from_env("vulnerability")
+
+    assert agent is not None
+    assert agent.agent_name == "vulnerability-agent"
+    assert agent.specialist_id == "vulnerability"
+    assert agent.agent_version == "2026.08.1"
+
+
+def test_patch_agent_from_env_returns_configured_agent(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_PATCH_AGENT_NAME", "patch-agent")
+    monkeypatch.setenv("FOUNDRY_PATCH_AGENT_VERSION", "2026.08.1")
+
+    agent = FoundryPromptAgent.from_env("patch")
+
+    assert agent is not None
+    assert agent.agent_name == "patch-agent"
+    assert agent.specialist_id == "patch"
+    assert agent.agent_version == "2026.08.1"
+
+
+def test_incident_agent_from_env_returns_configured_agent(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_INCIDENT_AGENT_NAME", "incident-agent")
+    monkeypatch.setenv("FOUNDRY_INCIDENT_AGENT_VERSION", "2026.08.1")
+
+    agent = FoundryPromptAgent.from_env("incident")
+
+    assert agent is not None
+    assert agent.agent_name == "incident-agent"
+    assert agent.specialist_id == "incident"
+    assert agent.agent_version == "2026.08.1"
+
+
+def test_change_agent_from_env_returns_configured_agent(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_CHANGE_AGENT_NAME", "change-agent")
+    monkeypatch.setenv("FOUNDRY_CHANGE_AGENT_VERSION", "2026.08.1")
+
+    agent = FoundryPromptAgent.from_env("change")
+
+    assert agent is not None
+    assert agent.agent_name == "change-agent"
+    assert agent.specialist_id == "change"
+    assert agent.agent_version == "2026.08.1"
+
+
+def test_governance_agent_from_env_returns_configured_agent(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_GOVERNANCE_AGENT_NAME", "governance-agent")
+    monkeypatch.setenv("FOUNDRY_GOVERNANCE_AGENT_VERSION", "2026.08.1")
+
+    agent = FoundryPromptAgent.from_env("governance")
+
+    assert agent is not None
+    assert agent.agent_name == "governance-agent"
+    assert agent.specialist_id == "governance"
+    assert agent.agent_version == "2026.08.1"
+
+
+def test_remediation_agent_from_env_returns_configured_agent(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_REMEDIATION_AGENT_NAME", "remediation-agent")
+    monkeypatch.setenv("FOUNDRY_REMEDIATION_AGENT_VERSION", "2026.08.1")
+
+    agent = FoundryPromptAgent.from_env("remediation")
+
+    assert agent is not None
+    assert agent.agent_name == "remediation-agent"
+    assert agent.specialist_id == "remediation"
+    assert agent.agent_version == "2026.08.1"
+
+
+def test_executive_summary_agent_from_env_returns_configured_agent(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_EXECUTIVE_SUMMARY_AGENT_NAME", "executive-summary-agent")
+    monkeypatch.setenv("FOUNDRY_EXECUTIVE_SUMMARY_AGENT_VERSION", "2026.08.1")
+
+    agent = FoundryPromptAgent.from_env("executive_summary")
+
+    assert agent is not None
+    assert agent.agent_name == "executive-summary-agent"
+    assert agent.specialist_id == "executive_summary"
+    assert agent.agent_version == "2026.08.1"
+
+
+def test_unconfigured_specialist_agent_returns_none(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    # Do not set any specialist-specific env vars
+
+    agent = FoundryPromptAgent.from_env("vulnerability")
+
+    assert agent is None
+
+
+def test_specialist_agent_falls_back_to_legacy_foundry_config(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_AGENT_NAME", "legacy-copilot")
+    monkeypatch.delenv("FOUNDRY_VULNERABILITY_AGENT_NAME", raising=False)
+
+    agent = FoundryPromptAgent.from_env("vulnerability")
+
+    assert agent is not None
+    assert agent.agent_name == "legacy-copilot"
+    assert agent.specialist_id == "vulnerability"
+
+
+def test_all_specialist_agents_have_distinct_ids_and_versions(monkeypatch) -> None:
+    endpoint = "https://example"
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", endpoint)
+    
+    agents = {}
+    for specialist in SPECIALIST_IDS:
+        monkeypatch.setenv(f"FOUNDRY_{specialist.upper()}_AGENT_NAME", f"{specialist}-agent")
+        monkeypatch.setenv(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", f"2026.08.{SPECIALIST_IDS.index(specialist)}")
+        agent = FoundryPromptAgent.from_env(specialist)
+        agents[specialist] = agent
+
+    assert len(agents) == len(SPECIALIST_IDS)
+    assert all(agents[s] is not None for s in SPECIALIST_IDS)
+    
+    specialist_ids = [agents[s].specialist_id for s in SPECIALIST_IDS]
+    assert specialist_ids == list(SPECIALIST_IDS)
+    
+    versions = [agents[s].agent_version for s in SPECIALIST_IDS]
+    assert len(set(versions)) == len(SPECIALIST_IDS)
+
+
+def test_specialist_catalog_status_ready_when_all_configured(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    for specialist in SPECIALIST_IDS:
+        monkeypatch.setenv(f"FOUNDRY_{specialist.upper()}_AGENT_NAME", f"{specialist}-agent")
+        monkeypatch.setenv(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "2026.08.1")
+
+    catalog = specialist_catalog()
+
+    assert all(entry["status"] == "ready" for entry in catalog)
+
+
+def test_specialist_catalog_status_unconfigured_when_missing_env_vars(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    # Only configure network agent; others are unconfigured
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "network-agent")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_VERSION", "2026.08.1")
+
+    catalog = specialist_catalog()
+
+    network_entry = next(e for e in catalog if e["id"] == "network")
+    assert network_entry["status"] == "ready"
+    
+    other_entries = [e for e in catalog if e["id"] != "network"]
+    assert all(e["status"] == "unconfigured" for e in other_entries)
