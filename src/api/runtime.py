@@ -17,7 +17,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import cache
 from pathlib import Path
 from typing import Any
