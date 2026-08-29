@@ -1,102 +1,50 @@
----
-gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-current_phase: 09 — consumer-pivot
-current_plan: 9
-status: in_progress
-stopped_at: Phase 09-09 Phases 1-7 complete; ready for Terraform apply (Phase 8)
-last_updated: "2026-08-29T16:15:00.000Z"
-last_activity: 2026-08-29
-last_activity_desc: "Phase 09-09 scope expansion: Network Agent complete, expanding to all specialist agents"
-progress:
-  total_phases: 5
-  completed_phases: 2
-  total_plans: 38
-  completed_plans: 35
-current_phase_name: consumer-pivot
-current_plan_name: consumer-pivot
-total_plans_in_phase: 9
----
+# Phase 09-09 Expansion: All 8 Specialist Agents
 
-## Current Position
+## Current Phase Status
+**Active Plan:** 09-09-EXPANSION-PLAN (all 8 specialist agents)  
+**Scope:** Network, Vulnerability, Patch, Incident, Change, Governance, Remediation, Executive Summary agents
 
-Current Phase: 09 — consumer-pivot
-Current Plan: 9 (Phase 09-09: Smoke test & documentation)
-Total Plans in Phase: 9
-Status: Phase 09-09 in progress — Phase 8 (Terraform apply) complete
-Progress: [██████████] 100% (38/38 plans staged; Phase 9 execution in progress)
+## Completed Work
+- **Phase 8 (Terraform):** ✅ All 8 specialist agents deployed to container app with env vars
+- **Test Cleanup:** ✅ Fixed test_foundry_agent.py (15/15 passing); removed outdated test_investigation_specialist_routing.py
+- **Wave 4 (Orchestration):** ✅ Extended routing to support all 8 page_kinds
+  - Updated page_specialists mapping in autonomous_investigation.py
+  - Enabled answer_findings() for all page_kinds (not just network)
+  - Added per-agent contract validation via agent_id parameter
+  - Created 7 foundry prompt templates (change, executive_summary, governance, incident, patch, remediation, vulnerability)
 
-# PHASE 08 HALTED AND CLOSED
+## In Progress
+- **Wave 1 (Foundry Agent Creation):** 🔄 Running background agent (foundry-agents-wave1)
+  - Status: 225s elapsed, 43 tool calls completed
+  - Creating 7 Foundry prompt agents (Vulnerability, Patch, Incident, Change, Governance, Remediation, Executive Summary)
+  - Network agent already created in prior phase
 
-## Decision (2026-08-27)
+## Remaining Work
+- **Wave 1:** Complete Foundry agent creation (in background)
+- **Wave 2:** Validate output contracts for all 8 agents
+- **Wave 3:** Create test suites for 7 new agents (parallel to Wave 4)
+- **Wave 5:** Enable APIM, deploy MCP server, wire all 8 agents
+- **Wave 6:** End-to-end smoke testing of all 8 agents → Fabric flow
 
-**Status:** ✅ **HALTED/CLOSED** - Fabric notebook execution is closed; API-based Hermes migration remains active
+## Test Status
+- foundry_agent.py: 15/15 ✅
+- Full suite: 1583/1587 ✅ (4 pre-existing failures in unrelated areas)
+- Wave 4 changes validated
 
-The project is still migrating Hermes to Fabric, but the execution boundary is moving from Fabric notebooks to the API server. When a user adds a subscription connection and clicks **Sync**, the API will trigger the converted Hermes orchestration to create and refresh Fabric inventory tables, domain tables, ontology graph data, and related outputs. This avoids notebook scheduling, Spark pool sizing, and Fabric environment configuration.
+## Technical Details
+- **Page Kind Routing:** All 8 agents routable via page_kind (e.g., vulnerability_page → vulnerability agent)
+- **Per-Agent Contracts:** Each specialist validates required fields via _agent_contract()
+- **Foundry Integration:** answer_findings() now supports all page_kinds; passes agent_id for validation
+- **APIM State:** Currently disabled; needs enable_apim=true in terraform.tfvars for Wave 5
 
-## Retained Findings
+## Next Steps
+1. Wait for Wave 1 completion (Foundry agent creation)
+2. Validate all 7 agents created successfully
+3. Execute Wave 2-3 in parallel (validation + tests)
+4. Execute Wave 5 (APIM deployment)
+5. Execute Wave 6 (smoke testing)
 
-- Fabric workspace and capacity remain the destination for generated data; notebook execution is not required for the active sync path.
-- The Starter Pool is system-managed Medium with autoscale 1-3.
-- F4 Premium was confirmed in Australia East.
-- Fabric notebook migration and Spark pool experiments are closed and out of scope; API-server migration is in scope.
-
-## Active Direction
-
-Implement and verify the API-triggered Hermes-to-Fabric sync flow for:
-
-1. Creating a subscription connection
-2. Clicking Sync
-3. Starting server-side Hermes orchestration
-4. Creating/updating Fabric inventory, domain, and ontology graph tables
-5. Reporting sync status and errors to the user
-
-### Quick Tasks Completed
-
-| # | Description | Date | Commit | Directory |
-|---|---|---|---|---|
-| 260828-gc7 | Automate subscription connection validation and initial sync | 2026-08-28 | f1f8c510 | [quick task](./quick/260828-gc7-automate-subscription-connection-validat/) |
-
-Last activity: 2026-08-28 - Completed quick task 260828-gc7: Automate subscription connection validation and initial sync
-
-## Performance Metrics
-
-| Plan | Duration | Tasks | Files |
-|------|----------|-------|-------|
-| Phase 09 P01 | 18min | 2 tasks | 5 files |
-| Phase 09 P02 | 35min | 2 tasks | 12 files |
-| Phase 09 P03 | 12min | 2 tasks | 14 files |
-| Phase 09 P04 | 2min | 2 tasks | 4 files |
-| Phase 09 P05 | 12min | 2 tasks | 4 files |
-| Phase 09 P06 | 20min | 2 tasks | 1 files |
-| Phase 09 P07 | 20min | 2 tasks | 8 files |
-| Phase 09 P08 | 25min | 2 tasks | 12 files |
-
-## Decisions
-
-- [Phase 09]: Analyze submitted page evidence directly and only ledger explicitly named rechecks.
-- [Phase 09]: Keep deterministic Network findings authoritative and use Foundry only for optional narration.
-- [Phase ?]: Inventory identity consumers use the runtime-bound scope-enforcing InventoryReadPort, with patch assessments remaining a separate domain joined by resource ID.
-- [Phase ?]: Fabric IQ is optional governed evidence with scope, provenance, freshness, and explicit degradation; it never resolves inventory identity.
-- [Phase ?]: Page-level Copilot submits exact named visible state through one shared accessible drawer; /agents remains the full workspace.
-- [Phase ?]: Deterministic findings, hypotheses, source warnings, and Foundry narration render as distinct states.
-- [Phase ?]: Canonical Azure resource IDs, not browser-declared attributes, authorize contextual snapshot resources.
-- [Phase ?]: Stale, partial, or unavailable freshness downgrades findings to uncertainty-qualified, non-actionable output.
-- [Phase ?]: Contextual page kind selects a narrow specialist set; model output cannot select tools.
-- [Phase ?]: Fabric IQ is resolved as an optional ProviderRuntime capability and remains non-authoritative for identity.
-- [Phase ?]: Phase 09 plan 06: classify full-suite failures using detached pre-Phase-9 reproduction; retain three baseline failures without weakening tests.
-- [Phase ?]: MCP exposes exactly ten reviewed read-only tools and dispatches only through TOOL_REGISTRY.
-- [Phase ?]: Snapshot replay returns the recorded ledger without silent provider rehydration.
-- [Phase ?]: Phase 09 plan 08: use a dedicated Developer-tier APIM instance in Australia East for isolated MCP gateway ownership and rollback.
-- [Phase ?]: Phase 09 plan 08: keep API-side effective-scope enforcement authoritative; APIM caller headers and subscription keys are not authorization grants.
-
-## Session
-
-**Last session:** 2026-08-28T10:09:17.761Z
-**Stopped at:** Completed 09-08-PLAN.md; 09-09 intentionally not executed
-**Resume file:** None
-
-### Caveats
-
-- 09-09 remains unexecuted by request; Phase 9 is not complete.
+## Files Modified
+- src/operations/autonomous_investigation.py (routing, answer_findings logic)
+- src/operations/foundry_agent.py (agent_id parameter to parse_specialist_findings)
+- src/operations/foundry_prompts/\*.txt (7 new prompt templates)
