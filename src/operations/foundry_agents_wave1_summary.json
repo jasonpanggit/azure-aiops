@@ -1,0 +1,57 @@
+{
+  "timestamp": "2026-08-29T07:37:59Z",
+  "endpoint": "https://aiops-dev-ai-g6ludc.services.ai.azure.com/api/projects/aiops-dev-ops",
+  "model": "gpt-5-mini",
+  "version": "2026.08.1",
+  "agents": [
+    {
+      "agent_id": "vulnerability",
+      "name": "aiops-vulnerability-agent",
+      "version": "2026.08.1",
+      "status": "success",
+      "http_status": "200"
+    },
+    {
+      "agent_id": "patch",
+      "name": "aiops-patch-agent",
+      "version": "2026.08.1",
+      "status": "success",
+      "http_status": "200"
+    },
+    {
+      "agent_id": "incident",
+      "name": "aiops-incident-agent",
+      "version": "2026.08.1",
+      "status": "success",
+      "http_status": "200"
+    },
+    {
+      "agent_id": "change",
+      "name": "aiops-change-agent",
+      "version": "2026.08.1",
+      "status": "success",
+      "http_status": "200"
+    },
+    {
+      "agent_id": "governance",
+      "name": "aiops-governance-agent",
+      "version": "2026.08.1",
+      "status": "success",
+      "http_status": "200"
+    },
+    {
+      "agent_id": "remediation",
+      "name": "aiops-remediation-agent",
+      "version": "2026.08.1",
+      "status": "success",
+      "http_status": "200"
+    },
+    {
+      "agent_id": "executive_summary",
+      "name": "aiops-executive-summary-agent",
+      "version": "2026.08.1",
+      "status": "success",
+      "http_status": "200"
+    }
+  ]
+}
