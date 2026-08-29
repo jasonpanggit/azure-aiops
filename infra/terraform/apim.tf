@@ -85,13 +85,13 @@ resource "azapi_resource" "mcp_server" {
   schema_validation_enabled = false
   body = {
     properties = {
-      type                  = "mcp"
-      displayName           = "Operations MCP Server"
-      description           = "Governed read-only Operations MCP server"
-      path                  = "mcp-server"
-      protocols             = ["https"]
-      subscriptionRequired  = false
-      backendId             = azapi_resource.mcp_backend[0].name
+      type                 = "mcp"
+      displayName          = "Operations MCP Server"
+      description          = "Governed read-only Operations MCP server"
+      path                 = "mcp-server"
+      protocols            = ["https"]
+      subscriptionRequired = false
+      backendId            = azapi_resource.mcp_backend[0].name
       mcpProperties = {
         endpoints = {
           mcp = {
@@ -109,6 +109,23 @@ resource "azurerm_api_management_api_policy" "mcp" {
   api_management_name = azurerm_api_management.main[0].name
   resource_group_name = azurerm_resource_group.main.name
   xml_content         = templatefile("${path.module}/apim-policies/mcp-inbound.xml", local.mcp_policy_vars)
+}
+
+# The native MCP surface (azapi_resource.mcp_server) is a separate API from
+# the plain HTTP-proxy one above and needs its own policy attachment -- the
+# azurerm resource type doesn't know about `apis` created via azapi, so this
+# is itself an azapi child resource under the same api.
+resource "azapi_resource" "mcp_server_policy" {
+  count     = var.enable_apim ? 1 : 0
+  type      = "Microsoft.ApiManagement/service/apis/policies@2024-06-01-preview"
+  name      = "policy"
+  parent_id = azapi_resource.mcp_server[0].id
+  body = {
+    properties = {
+      format = "xml"
+      value  = templatefile("${path.module}/apim-policies/mcp-inbound.xml", local.mcp_policy_vars)
+    }
+  }
 }
 
 resource "azurerm_api_management_product" "mcp" {

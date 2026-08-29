@@ -7,6 +7,20 @@
         <audience>${audience_id}</audience>
       </audiences>
     </validate-azure-ad-token>
+    <set-variable name="aiopsCallerId" value="@{
+      var authHeader = context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;);
+      var parts = authHeader.Split(' ');
+      var token = parts.Length > 1 ? parts[1] : authHeader;
+      var jwt = default(Jwt);
+      if (string.IsNullOrEmpty(token) || !token.TryParseJwt(out jwt)) {
+        return context.RequestId.ToString();
+      }
+      var oid = jwt.Claims.GetValueOrDefault(&quot;oid&quot;, new string[0]);
+      var appid = jwt.Claims.GetValueOrDefault(&quot;azp&quot;, jwt.Claims.GetValueOrDefault(&quot;appid&quot;, new string[0]));
+      if (oid.Length > 0) { return oid[0]; }
+      if (appid.Length > 0) { return appid[0]; }
+      return context.RequestId.ToString();
+    }" />
     <set-backend-service base-url="${backend_url}" />
     <set-header name="X-Correlation-ID" exists-action="override">
       <value>@(context.RequestId.ToString())</value>
@@ -21,7 +35,7 @@
     <set-header name="X-AIOps-Subscription" exists-action="delete" />
     <set-header name="X-AIOps-Principal" exists-action="delete" />
     <set-header name="X-MS-Client-Principal-Name" exists-action="override">
-      <value>@(context.User.Id)</value>
+      <value>@((string)context.Variables["aiopsCallerId"])</value>
     </set-header>
     <set-header name="X-MS-Client-Principal-Roles" exists-action="override">
       <value></value>
@@ -29,11 +43,8 @@
     <set-header name="X-AIOps-Gateway-Assertion" exists-action="override">
       <value>${gateway_assertion}</value>
     </set-header>
-    <rate-limit-by-key calls="60" renewal-period="60" counter-key="@(context.User.Id)" />
-    <quota-by-key calls="10000" renewal-period="86400" counter-key="@(context.User.Id)" />
-    <check-header name="Content-Type" failed-check-httpcode="415" failed-check-error-message="MCP requires JSON" ignore-case="true">
-      <value>application/json</value>
-    </check-header>
+    <rate-limit-by-key calls="60" renewal-period="60" counter-key="@((string)context.Variables[&quot;aiopsCallerId&quot;])" />
+    <quota-by-key calls="10000" renewal-period="86400" counter-key="@((string)context.Variables[&quot;aiopsCallerId&quot;])" />
   </inbound>
   <backend><base /></backend>
   <outbound><base /></outbound>

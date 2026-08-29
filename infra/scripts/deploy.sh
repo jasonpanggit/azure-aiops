@@ -119,6 +119,17 @@ verify_images_exist() {
     esac
   done
 
+  # CLI flags win, but terraform.tfvars is the normal source of truth (it is
+  # written by build-and-push.sh). Without this fallback a plain `apply` did
+  # no verification at all, so a stale or half-pushed tag sailed through.
+  local tfvars="${tf_dir}/terraform.tfvars"
+  if [[ -f "${tfvars}" ]]; then
+    [[ -n "${deploy_images}" ]] || deploy_images="$(
+      awk -F'=' '/^[ \t]*deploy_images[ \t]*=/ {gsub(/[ \t"]/,"",$2); print $2}' "${tfvars}" | tail -1)"
+    [[ -n "${image_tag}" ]] || image_tag="$(
+      awk -F'=' '/^[ \t]*image_tag[ \t]*=/ {gsub(/[ \t"]/,"",$2); print $2}' "${tfvars}" | tail -1)"
+  fi
+
   [[ "${deploy_images}" == "true" && -n "${image_tag}" ]] || return 0
   command -v az >/dev/null 2>&1 || return 0
 
@@ -175,6 +186,53 @@ capture_apim_snapshot() {
   printf '%s\n' "${snapshot_dir}"
 }
 
+# Terraform can report success while the Container Apps revision still serves
+# the previous image (a failed revision rollout does not fail the apply), so
+# confirm what is actually running matches the tag that was just deployed.
+report_running_images() {
+  command -v az >/dev/null 2>&1 || return 0
+  local tfvars="${tf_dir}/terraform.tfvars" expected rg
+  [[ -f "${tfvars}" ]] || return 0
+  expected="$(awk -F'=' '/^[ \t]*image_tag[ \t]*=/ {gsub(/[ \t"]/,"",$2); print $2}' "${tfvars}" | tail -1)"
+  [[ -n "${expected}" ]] || return 0
+  rg="$(terraform output -raw resource_group_name 2>/dev/null || true)"
+  [[ -n "${rg}" ]] || return 0
+
+  echo
+  echo "deploy: waiting for revisions to serve ${expected}..."
+
+  # A Container Apps rollout takes roughly a minute to activate, so poll
+  # rather than reading once -- checking immediately after apply would report
+  # drift on every single successful deploy.
+  local attempt drift=1 report=""
+  for attempt in $(seq 1 20); do
+    drift=0
+    report=""
+    while IFS=$'\t' read -r name image; do
+      [[ -n "${name}" ]] || continue
+      if [[ "${image}" == *":${expected}" ]]; then
+        report+="  ok    ${name} -> ${image##*/}"$'\n'
+      else
+        report+="  DRIFT ${name} -> ${image##*/}"$'\n'
+        drift=1
+      fi
+    done < <(az containerapp list -g "${rg}" \
+      --query "[].[name,properties.template.containers[0].image]" -o tsv 2>/dev/null)
+
+    [[ "${drift}" -eq 0 ]] && break
+    sleep 15
+  done
+
+  printf '%s' "${report}"
+
+  if [[ "${drift}" -eq 1 ]]; then
+    echo "deploy: a revision is not serving ${expected} after 5m; check status with" >&2
+    echo "  az containerapp revision list -g ${rg} -n <app> -o table" >&2
+    return 1
+  fi
+  echo "deploy: all apps serving ${expected}."
+}
+
 if [[ ! -d .terraform ]]; then
   terraform init -input=false
 fi
@@ -187,6 +245,7 @@ case "${command}" in
     verify_images_exist "$@"
     capture_apim_snapshot
     terraform apply -input=false "${tf_vars[@]}" "$@"
+    report_running_images
     ;;
   destroy)
     terraform destroy -input=false "${tf_vars[@]}" "$@"

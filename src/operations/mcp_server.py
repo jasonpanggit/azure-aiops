@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 
 LOGGER = logging.getLogger("aiops.mcp")
-MCP_VERSION = "2025-03-26"
+MCP_VERSION = "2025-06-18"
 MAX_MESSAGE_BYTES = 128 * 1024
 MAX_ARGUMENT_BYTES = 32 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
@@ -36,6 +36,12 @@ REVIEWED_TOOLS = (
     "fabric_iq_relationships",
     "fabric_iq_topology",
     "fabric_iq_policy_context",
+    "cve_exposure",
+    "cve_detail",
+    "cve_attack_path",
+    "incidents",
+    "remediation_plans",
+    "remediation_opportunities",
 )
 
 
@@ -63,6 +69,9 @@ class ToolArguments(BaseModel):
     destination: str | None = Field(default=None, min_length=1, max_length=512)
     port: int | None = Field(default=None, ge=1, le=65535)
     protocol: str | None = Field(default=None, min_length=1, max_length=16)
+    business_service: str | None = Field(default=None, min_length=1, max_length=512)
+    cve_id: str | None = Field(default=None, min_length=1, max_length=64)
+    incident_id: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 _REQUIRED: dict[str, tuple[str, ...]] = {
@@ -74,12 +83,21 @@ _REQUIRED: dict[str, tuple[str, ...]] = {
     "fabric_iq_relationships": ("subject",),
     "fabric_iq_topology": ("subject",),
     "fabric_iq_policy_context": ("subject",),
+    "cve_detail": ("cve_id",),
+    "cve_attack_path": ("cve_id",),
+}
+
+# Optional (non-required) arguments per tool, kept separate from _REQUIRED so
+# a tool can accept a field without forcing the caller to supply it.
+_OPTIONAL: dict[str, tuple[str, ...]] = {
+    "cve_exposure": ("business_service",),
+    "incidents": ("incident_id",),
 }
 
 
 def _schema(name: str) -> dict[str, Any]:
     properties: dict[str, Any] = {}
-    for field in _REQUIRED.get(name, ()):
+    for field in _REQUIRED.get(name, ()) + _OPTIONAL.get(name, ()):
         properties[field] = {"type": "string", "minLength": 1, "maxLength": 512}
     if name == "traffic_flow":
         properties.update({
@@ -144,12 +162,11 @@ class MCPServer:
 
         if request.method == "initialize":
             requested = str(request.params.get("protocolVersion") or MCP_VERSION)
-            if requested not in {MCP_VERSION, "2024-11-05"}:
-                return _error(-32602, "Unsupported MCP protocol version", request.id)
+            supported = requested if requested in {MCP_VERSION, "2024-11-05", "2025-03-26"} else MCP_VERSION
             return {
                 "jsonrpc": "2.0", "id": request.id,
                 "result": {
-                    "protocolVersion": MCP_VERSION,
+                    "protocolVersion": supported,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "aiops-operations", "version": "1.0.0"},
                 },
@@ -201,7 +218,7 @@ class MCPServer:
         return {
             "jsonrpc": "2.0", "id": request.id,
             "result": {
-                "content": [{"type": "json", "json": output}],
+                "content": [{"type": "text", "text": json.dumps(output)}],
                 "isError": result.status in {STATUS_DENIED},
                 "structuredContent": output,
             },

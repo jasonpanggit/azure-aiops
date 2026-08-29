@@ -156,6 +156,15 @@ def _plan(question: str) -> list[tuple[str, dict[str, Any]]]:
         incident_ids = re.findall(r"\bINC-[A-Za-z0-9-]+\b", question, flags=re.IGNORECASE)
         add("incidents", {"incident_id": incident_ids[0]} if incident_ids else {})
 
+    inventory_markers = ("vm", "vms", "virtual machine", "server", "servers", "storage account", "list of resources", "show resources")
+    if any(marker in lowered for marker in inventory_markers):
+        resource_type = ""
+        if "vm" in lowered or "virtual machine" in lowered or "server" in lowered:
+            resource_type = "Microsoft.Compute/virtualMachines"
+        elif "storage account" in lowered:
+            resource_type = "Microsoft.Storage/storageAccounts"
+        add("inventory_resources", {"resource_type": resource_type} if resource_type else {})
+
     if "remediat" in lowered or "should be fixed" in lowered or "prioritiz" in lowered:
         add("remediation_opportunities", {})
         add("remediation_plans", {})

@@ -628,6 +628,40 @@ def _tool_remediation_opportunities(tool_context: ToolContext, args: Mapping[str
     return _provider_result(tool_context, "remediation", run)
 
 
+def _tool_inventory_resources(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    resource_type = str(args.get("resource_type") or "").strip()
+    family = str(args.get("family") or "").strip() or None
+
+    def run(port: Any) -> ToolResult:
+        result = port.list_resources(
+            tool_context.scope,
+            family=family,
+            resource_type=resource_type or None,
+            limit=_MAX_ITEMS,
+        )
+        rows = result.get("resources") or []
+        if not rows:
+            return ToolResult(status=STATUS_EMPTY)
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(
+                {
+                    "resources": rows,
+                    "total": result.get("total", len(rows)),
+                }
+            ),
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.inventory.InventoryReadPort",
+                    source_table="inventory/resource_observations",
+                    confidence=CONFIDENCE_HIGH,
+                ),
+            ),
+        )
+
+    return _provider_result(tool_context, "inventory_read_port", run)
+
+
 def _tool_search(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     query = str(args.get("query") or "").strip()
     if not query:
@@ -747,6 +781,15 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             description="Prioritized remediation opportunities.",
             parameters={},
             handler=_tool_remediation_opportunities,
+        ),
+        ToolSpec(
+            name="inventory_resources",
+            description="Scoped inventory resource listing (e.g. VMs, storage accounts), optionally filtered by ARM resource type or family.",
+            parameters={
+                "resource_type": "Optional ARM resource type, e.g. Microsoft.Compute/virtualMachines",
+                "family": "Optional inventory family (e.g. os, paas)",
+            },
+            handler=_tool_inventory_resources,
         ),
         ToolSpec(
             name="search",
