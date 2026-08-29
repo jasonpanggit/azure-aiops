@@ -95,6 +95,16 @@ class ApiContext:
     # with the Copilot degrading to retrieval-only answers.
     foundry_agent_provider: Callable[[], Any] | None = None
     provider_runtime: ProviderRuntime | None = None
+    # Specialist agents for domain-specific analysis. Each resolves independently
+    # using FoundryPromptAgent.from_env(specialist_id) to read per-agent env vars.
+    # All are optional; missing specialists degrade to generic Copilot narration.
+    vulnerability_agent_provider: Callable[[], Any] | None = None
+    patch_agent_provider: Callable[[], Any] | None = None
+    incident_agent_provider: Callable[[], Any] | None = None
+    change_agent_provider: Callable[[], Any] | None = None
+    governance_agent_provider: Callable[[], Any] | None = None
+    remediation_agent_provider: Callable[[], Any] | None = None
+    executive_summary_agent_provider: Callable[[], Any] | None = None
     # Durable situation/evidence read model, resolved per request like the
     # semantic snapshot so a newly synchronized generation is visible.
     situation_provider: Callable[[], Any] | None = None
@@ -141,6 +151,26 @@ class ApiContext:
         route reports it as a warning on an otherwise complete answer.
         """
         return self.resolve_provider("copilot", optional=True)
+
+    def specialist_agent(self, agent_id: str) -> Any | None:
+        """Resolve a specialist agent by id, or ``None`` when unavailable.
+
+        Specialist agents (vulnerability, patch, incident, change, governance,
+        remediation, executive_summary) are optional. Missing agents degrade to
+        generic Copilot narration or retrieval-only responses.
+        """
+        agent_id = (agent_id or "").strip().lower()
+        if agent_id in (
+            "vulnerability",
+            "patch",
+            "incident",
+            "change",
+            "governance",
+            "remediation",
+            "executive_summary",
+        ):
+            return self.resolve_provider(f"{agent_id}_agent", optional=True)
+        return None
 
     def semantic(self) -> SemanticEngine:
         return self.resolve_provider("semantic")
