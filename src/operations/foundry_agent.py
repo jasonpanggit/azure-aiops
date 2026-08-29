@@ -174,64 +174,122 @@ class AgentAnswer:
         }
 
 
+def _agent_contract(agent_id: str) -> dict[str, Any]:
+    """Return validation contract for each specialist agent.
+    
+    Base required fields are common to all agents:
+    finding_id, resource_ids, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary
+    
+    Agent-specific required fields vary by domain.
+    """
+    contracts = {
+        "network": {
+            "required": {"finding_id", "resource_ids", "check_id", "policy_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"topology_gaps", "firewall_rules", "traffic_paths", "blast_radius"},
+        },
+        "vulnerability": {
+            "required": {"finding_id", "resource_ids", "cve_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"affected_services", "exploitability_score", "reachability", "remediation_impact"},
+        },
+        "patch": {
+            "required": {"finding_id", "resource_ids", "kb_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"patch_priority", "validation_steps", "rollback_plan", "sla_impact"},
+        },
+        "incident": {
+            "required": {"finding_id", "incident_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"timeline", "root_causes", "unknowns", "validation_steps"},
+        },
+        "change": {
+            "required": {"finding_id", "resource_ids", "change_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"deployment_date", "affected_services", "correlation_confidence", "rollback_available"},
+        },
+        "governance": {
+            "required": {"finding_id", "resource_ids", "owner_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"approval_required", "policy_violations", "exceptions", "accountability"},
+        },
+        "remediation": {
+            "required": {"finding_id", "resource_ids", "remediation_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"remediation_options", "rollback_plan", "validation_steps", "risk_assessment", "approval_required"},
+        },
+        "executive_summary": {
+            "required": {"finding_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"business_impact", "priority", "recommended_actions", "affected_domains"},
+        },
+    }
+    return contracts.get(agent_id.casefold(), contracts["network"])
+
+
 def parse_specialist_findings(
     text: str,
     *,
     evidence_refs: set[str],
     resource_ids: set[str] | None = None,
+    agent_id: str = "network",
 ) -> list[dict[str, Any]]:
     """Validate the small, cited contract emitted by a specialist.
 
-    Foundry is an untrusted narrator.  This parser deliberately accepts no
+    Foundry is an untrusted narrator. This parser deliberately accepts no
     prose wrapper and requires every claim to point at evidence supplied by the
-    local orchestrator.
+    local orchestrator. Each agent has domain-specific required fields.
     """
+    contract = _agent_contract(agent_id)
+    required = contract["required"]
+    
     try:
         payload = json.loads(text)
     except (TypeError, json.JSONDecodeError) as exc:
-        raise FoundryAgentError("Foundry specialist output is not valid JSON") from exc
+        raise FoundryAgentError(f"{agent_id} specialist output is not valid JSON") from exc
     if not isinstance(payload, dict) or set(payload) != {"findings"}:
-        raise FoundryAgentError("Foundry specialist output must contain only findings")
+        raise FoundryAgentError(f"{agent_id} specialist output must contain only findings")
     findings = payload["findings"]
     if not isinstance(findings, list) or len(findings) > 25:
-        raise FoundryAgentError("Foundry specialist findings are not bounded")
+        raise FoundryAgentError(f"{agent_id} specialist findings are not bounded")
+    
     validated: list[dict[str, Any]] = []
-    required = {
-        "finding_id", "resource_ids", "check_id", "policy_id", "evidence_refs",
-        "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary",
-    }
     for finding in findings:
         if not isinstance(finding, dict) or set(finding) != required:
-            raise FoundryAgentError("Foundry specialist finding schema is invalid")
+            raise FoundryAgentError(
+                f"{agent_id} specialist finding schema is invalid; expected {required}, got {set(finding)}"
+            )
         if not isinstance(finding["finding_id"], str) or not finding["finding_id"].strip():
-            raise FoundryAgentError("Foundry finding id is required")
-        if not isinstance(finding["resource_ids"], list) or any(
-            not isinstance(value, str) or not value.startswith("/subscriptions/")
-            for value in finding["resource_ids"]
-        ):
-            raise FoundryAgentError("Foundry finding resource IDs are invalid")
-        if resource_ids is not None and not set(finding["resource_ids"]) <= resource_ids:
-            raise FoundryAgentError("Foundry finding introduced an uncited resource")
+            raise FoundryAgentError(f"{agent_id} finding id is required")
+        
+        # Validate resource_ids if present (not required for incident, executive_summary)
+        if "resource_ids" in required:
+            if not isinstance(finding["resource_ids"], list) or any(
+                not isinstance(value, str) or not value.startswith("/subscriptions/")
+                for value in finding["resource_ids"]
+            ):
+                raise FoundryAgentError(f"{agent_id} finding resource IDs are invalid")
+            if resource_ids is not None and not set(finding["resource_ids"]) <= resource_ids:
+                raise FoundryAgentError(f"{agent_id} finding introduced an uncited resource")
+        
+        # Validate agent-specific domain fields
         refs = finding["evidence_refs"]
         if not isinstance(refs, list) or not refs or not set(refs) <= evidence_refs:
-            raise FoundryAgentError("Foundry finding citation is missing or invalid")
+            raise FoundryAgentError(f"{agent_id} finding citation is missing or invalid")
+        
+        # Validate common fields
         if finding["confidence"] not in {"high", "medium", "low", "unknown"}:
-            raise FoundryAgentError("Foundry finding confidence is invalid")
+            raise FoundryAgentError(f"{agent_id} finding confidence is invalid")
         if finding["freshness"] not in {"fresh", "stale", "partial", "unavailable", "unknown"}:
-            raise FoundryAgentError("Foundry finding freshness is invalid")
+            raise FoundryAgentError(f"{agent_id} finding freshness is invalid")
         if not isinstance(finding["uncertainty"], list) or any(
             not isinstance(value, str) for value in finding["uncertainty"]
         ):
-            raise FoundryAgentError("Foundry finding uncertainty is invalid")
+            raise FoundryAgentError(f"{agent_id} finding uncertainty is invalid")
         if not isinstance(finding["actionable"], bool) or not isinstance(finding["next_check"], str):
-            raise FoundryAgentError("Foundry finding action contract is invalid")
+            raise FoundryAgentError(f"{agent_id} finding action contract is invalid")
         if len(finding["next_check"]) > 240 or not finding["next_check"].strip():
-            raise FoundryAgentError("Foundry finding next check is not bounded")
+            raise FoundryAgentError(f"{agent_id} finding next check is not bounded")
         if not isinstance(finding["summary"], str) or not finding["summary"].strip():
-            raise FoundryAgentError("Foundry finding summary is required")
+            raise FoundryAgentError(f"{agent_id} finding summary is required")
+        
+        # Reject mutation instructions
         text_values = json.dumps(finding, ensure_ascii=False).casefold()
         if any(word in text_values for word in _MUTATION_WORDS):
-            raise FoundryAgentError("Foundry specialist output contains mutation instructions")
+            raise FoundryAgentError(f"{agent_id} specialist output contains mutation instructions")
+        
         validated.append(finding)
     return validated
 

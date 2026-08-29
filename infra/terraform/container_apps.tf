@@ -202,6 +202,76 @@ resource "azurerm_container_app" "api" {
       }
 
       env {
+        name  = "FOUNDRY_VULNERABILITY_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "vulnerability", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_VULNERABILITY_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "vulnerability", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_PATCH_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "patch", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_PATCH_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "patch", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_INCIDENT_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "incident", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_INCIDENT_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "incident", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_CHANGE_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "change", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_CHANGE_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "change", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_GOVERNANCE_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "governance", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_GOVERNANCE_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "governance", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_REMEDIATION_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "remediation", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_REMEDIATION_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "remediation", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_EXECUTIVE_SUMMARY_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "executive_summary", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_EXECUTIVE_SUMMARY_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "executive_summary", { name = "", version = "" }).version
+      }
+
+      env {
         name  = "AIOPS_PROVIDER_REFRESH_SECONDS"
         value = "30"
       }

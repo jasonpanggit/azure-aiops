@@ -229,6 +229,55 @@ def _overall_status(calls: list[ToolCallRecord]) -> str:
     return STATUS_DENIED
 
 
+def _specialist_agent_for_context(
+    question: str, page_kind: str | None = None
+) -> str | None:
+    """Select specialist agent by page context or question keywords.
+
+    Returns agent id (e.g., "vulnerability", "patch") if a specialist match is found,
+    else None (fallback to generic Copilot agent).
+
+    Mapping:
+    - page_kind takes priority (e.g., vulnerability_page → vulnerability)
+    - Otherwise keyword matching against question
+    - Fallback order: network, then None (generic)
+    """
+    if not page_kind and not question:
+       return None
+
+    # Page context takes absolute priority
+    page_to_agent = {
+       "vulnerability_page": "vulnerability",
+       "patch_page": "patch",
+       "incident_page": "incident",
+       "change_page": "change",
+       "governance_page": "governance",
+       "remediation_page": "remediation",
+       "executive_summary_page": "executive_summary",
+       "network_page": "network",
+    }
+    if page_kind and page_kind in page_to_agent:
+       return page_to_agent[page_kind]
+
+    # Fallback: keyword matching
+    q_lower = question.lower()
+    keywords = {
+       "vulnerability": ("cve", "vulnerab", "exploit", "exposure", "risk"),
+       "patch": ("patch", "kb", "update", "sla"),
+       "incident": ("incident", "outage", "alert", "root cause", "timeline"),
+       "change": ("change", "changed", "deployment", "configuration"),
+       "governance": ("owner", "approval", "governance", "policy", "scope", "exception"),
+       "remediation": ("remediat", "fix", "mitigat", "rollback", "plan"),
+       "executive_summary": ("executive", "summary", "decision"),
+       "network": ("network", "traffic", "firewall", "nsg", "route", "blast", "hub"),
+    }
+    for agent_id, agent_keywords in keywords.items():
+       if any(kw in q_lower for kw in agent_keywords):
+           return agent_id
+
+    return None
+
+
 def _narration_context(calls: list[ToolCallRecord]) -> dict[str, Any]:
     """Compact, labeled context for the model -- observed facts only.
 
@@ -256,12 +305,16 @@ def run_investigation(
     scope: Scope,
     hint_tool: str | None = None,
     hint_args: dict[str, Any] | None = None,
+    page_kind: str | None = None,
 ) -> Investigation:
     """Plan, execute, and narrate one Copilot turn.
 
     ``hint_tool``/``hint_args`` let a UI "starter question" bypass the
     heuristic planner and call a known tool directly (e.g. a button on the
     vulnerability page that always means ``cve_exposure``).
+
+    ``page_kind`` (e.g., "vulnerability_page") routes to a specialist agent
+    instead of the generic Copilot agent.
     """
     plan = [(hint_tool, hint_args or {})] if hint_tool else _plan(question)
     calls: list[ToolCallRecord] = []
@@ -278,7 +331,16 @@ def run_investigation(
             warnings.append(f"{call.tool}: {call.result.warning or 'not permitted for this scope'}")
 
     answer: dict[str, Any] | None = None
-    agent = context.foundry_agent() if hasattr(context, "foundry_agent") else None
+    
+    # Select specialist agent by page context, or fallback to generic Copilot agent
+    specialist_id = _specialist_agent_for_context(question, page_kind)
+    if specialist_id and hasattr(context, "specialist_agent"):
+        agent = context.specialist_agent(specialist_id)
+    elif hasattr(context, "foundry_agent"):
+        agent = context.foundry_agent()
+    else:
+        agent = None
+    
     if fact_status in (STATUS_OK, "partial") or calls:
         if agent is None:
             warnings.append(
@@ -290,7 +352,7 @@ def run_investigation(
                 agent_answer = agent.answer(question=question, context=narration_context)
                 answer = agent_answer.to_dict()
             except FoundryAgentError as exc:
-                _LOGGER.warning("copilot_narration_failed error=%s", exc)
+                _LOGGER.warning("copilot_narration_failed specialist=%s error=%s", specialist_id, exc)
                 if getattr(context, "provider_runtime", None) is not None:
                     context.provider_runtime.record_failure("copilot", exc)
                 warnings.append("The Foundry prompt agent could not be reached; showing tool results only.")
