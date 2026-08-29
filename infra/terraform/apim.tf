@@ -58,21 +58,47 @@ resource "azurerm_api_management_api" "mcp" {
   }
 }
 
-# APIM's native MCP inventory is identified by apiType=``mcp``. The azurerm
-# provider can proxy an HTTP API but cannot emit this preview-only API type.
-resource "azapi_resource" "mcp_server" {
+# Backend pointing at the existing (already MCP-protocol-speaking) Operations
+# tool server. The native MCP API references this backend + endpoint template
+# instead of a bare serviceUrl so APIM proxies real JSON-RPC MCP traffic and
+# surfaces the backend's tools/resources through the MCP server blade.
+resource "azapi_resource" "mcp_backend" {
   count     = var.enable_apim ? 1 : 0
-  type      = "Microsoft.ApiManagement/service/apis@2025-09-01-preview"
-  name      = "${local.base}-mcp-server"
+  type      = "Microsoft.ApiManagement/service/backends@2024-06-01-preview"
+  name      = "${local.base}-mcp-backend"
   parent_id = azurerm_api_management.main[0].id
   body = {
     properties = {
-      type        = "mcp"
-      displayName = "Operations MCP Server"
-      description = "Governed read-only Operations MCP server"
-      path        = "mcp-server"
-      protocols   = ["https"]
-      serviceUrl  = local.mcp_backend_url
+      protocol = "http"
+      url      = local.mcp_backend_url
+    }
+  }
+}
+
+# APIM's native MCP inventory is identified by apiType=``mcp``. The azurerm
+# provider can proxy an HTTP API but cannot emit this preview-only API type.
+resource "azapi_resource" "mcp_server" {
+  count                     = var.enable_apim ? 1 : 0
+  type                      = "Microsoft.ApiManagement/service/apis@2024-06-01-preview"
+  name                      = "${local.base}-mcp-server"
+  parent_id                 = azurerm_api_management.main[0].id
+  schema_validation_enabled = false
+  body = {
+    properties = {
+      type                  = "mcp"
+      displayName           = "Operations MCP Server"
+      description           = "Governed read-only Operations MCP server"
+      path                  = "mcp-server"
+      protocols             = ["https"]
+      subscriptionRequired  = false
+      backendId             = azapi_resource.mcp_backend[0].name
+      mcpProperties = {
+        endpoints = {
+          mcp = {
+            uriTemplate = "/"
+          }
+        }
+      }
     }
   }
 }
