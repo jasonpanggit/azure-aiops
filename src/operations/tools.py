@@ -133,11 +133,17 @@ class ToolContext:
 
 @dataclass(frozen=True)
 class FabricIQToolAdapter:
-    """Small governed boundary for optional Fabric IQ semantic enrichment.
+    """Small governed boundary for optional semantic graph enrichment.
 
-    Fabric IQ is deliberately a relationship/policy context source, never an
-    inventory enumerator. The adapter stamps every response before it reaches
-    the investigation ledger or a model.
+    The bound source is deliberately a relationship/policy context source,
+    never an inventory enumerator. The adapter stamps every response before it
+    reaches the investigation ledger or a model.
+
+    ``source`` names the surface that actually answered, and callers must set
+    it to match: the current runtime binding answers from the OneLake ontology
+    projection, while a Fabric IQ traversal binding would set ``"fabric-iq"``.
+    Leaving the default in place while serving a different surface would put a
+    false source on an evidence citation.
     """
 
     query: Callable[[str, Mapping[str, Any], Scope], Mapping[str, Any]]
@@ -750,19 +756,19 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         ),
         ToolSpec(
             name="fabric_iq_relationships",
-            description="Optional scope-checked Fabric IQ relationship context; never inventory identity.",
+            description="Optional scope-checked semantic relationship context; never inventory identity. Cite the returned metadata.source, not Fabric IQ.",
             parameters={"subject": "Resource or domain subject already in caller evidence"},
             handler=lambda context, args: _fabric_iq_result(context, "relationships", args),
         ),
         ToolSpec(
             name="fabric_iq_topology",
-            description="Optional Fabric IQ topology context with source and freshness metadata.",
+            description="Optional semantic topology context; cite the returned metadata.source and freshness.",
             parameters={"subject": "Topology subject already in caller evidence"},
             handler=lambda context, args: _fabric_iq_result(context, "topology", args),
         ),
         ToolSpec(
             name="fabric_iq_policy_context",
-            description="Optional Fabric IQ policy context; deterministic checks remain authoritative.",
+            description="Optional semantic policy context; deterministic checks remain authoritative.",
             parameters={"subject": "Policy subject already in caller evidence"},
             handler=lambda context, args: _fabric_iq_result(context, "policy", args),
         ),
