@@ -537,7 +537,10 @@ class FoundryPromptAgent:
         """Request and strictly validate a specialist finding response."""
         answer = self.answer(question=question, context=context)
         findings = parse_specialist_findings(
-            answer.text, evidence_refs=evidence_refs, resource_ids=resource_ids
+            answer.text, 
+            evidence_refs=evidence_refs, 
+            resource_ids=resource_ids,
+            agent_id=self.specialist_id,
         )
         return AgentAnswer(
             text=answer.text,

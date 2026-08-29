@@ -572,7 +572,7 @@ def run_context_investigation(
     started = time.monotonic()
     findings = (
         deterministic_network_findings(snapshot)
-        if snapshot.page_kind == "network"
+        if snapshot.page_kind in ("network", "network_page")
         else _snapshot_observations(snapshot)
     )
     stages = ["plan", "observe"]
@@ -586,7 +586,19 @@ def run_context_investigation(
     ]
     # Contextual selection is deliberately narrower than the full autonomous
     # catalog: page kind, not model output, chooses the specialist.
+    # Each page_kind maps to one or more specialists; specialists are invoked
+    # in order and bounded by MAX_CONTEXT_SPECIALISTS.
     page_specialists = {
+        # Direct page_kind → specialist mappings (preferred for Phase 09-09 expansion)
+        "network_page": ("network",),
+        "vulnerability_page": ("vulnerability",),
+        "patch_page": ("patch",),
+        "incident_page": ("incident",),
+        "change_page": ("change",),
+        "governance_page": ("governance",),
+        "remediation_page": ("remediation",),
+        "executive_summary_page": ("executive_summary",),
+        # Legacy mappings (preserved for backward compatibility)
         "network": ("network",),
         "vulnerability": ("vulnerability", "patch"),
         "compliance": ("governance", "remediation"),
@@ -698,7 +710,7 @@ def run_context_investigation(
     # alternate inventory identity source.
     findings = (
         deterministic_network_findings(snapshot)
-        if snapshot.page_kind == "network"
+        if snapshot.page_kind in ("network", "network_page")
         else _snapshot_observations(snapshot)
     )
     agent = _resolve_foundry_agent(context)
@@ -717,7 +729,10 @@ def run_context_investigation(
                     if str(call.get("tool", "")).startswith("fabric_iq_")
                 ][:3],
             }
-            if hasattr(agent, "answer_findings") and snapshot.page_kind == "network":
+            # Use answer_findings for all page_kinds to enable strict validation
+            # per-specialist contract. answer_findings routes to the correct agent
+            # based on page_kind → specialist_id mapping established in orchestration.
+            if hasattr(agent, "answer_findings"):
                 answer = agent.answer_findings(
                     question=snapshot.question,
                     context=grounding,
@@ -759,7 +774,7 @@ def run_context_investigation(
             "mode": synthesis_mode,
             "narration": narration,
             "specialist_contract_version": (
-                SPECIALIST_CONTRACT_VERSION if snapshot.page_kind == "network" else ""
+                SPECIALIST_CONTRACT_VERSION if synthesis_mode == "foundry" else ""
             ),
             "warning": warnings[-1] if warnings and "Foundry" in warnings[-1] else "",
         },
