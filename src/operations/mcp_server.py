@@ -22,7 +22,11 @@ MCP_VERSION = "2025-06-18"
 MAX_MESSAGE_BYTES = 128 * 1024
 MAX_ARGUMENT_BYTES = 32 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
-MAX_CALLS = 25
+MAX_CALLS = 100_000  # Coarse per-process circuit breaker, not a per-caller
+# limiter (real per-caller throttling lives in APIM's rate-limit-by-key /
+# quota-by-key policies). This only exists to bound a single container's
+# lifetime tool-call volume before a restart; keep it high enough that no
+# legitimate multi-tool-call agent turn can ever exhaust it.
 MAX_TOOL_NAME = 64
 
 REVIEWED_TOOLS = (
@@ -158,7 +162,13 @@ class MCPServer:
         except ValidationError:
             return _error(-32600, "Invalid MCP request", request_id)
         if self.calls >= MAX_CALLS and request.method == "tools/call":
-            return _error(-32005, "MCP call budget exhausted", request.id)
+            return {
+                "jsonrpc": "2.0", "id": request.id,
+                "result": {
+                    "content": [{"type": "text", "text": "MCP call budget exhausted"}],
+                    "isError": True,
+                },
+            }
 
         if request.method == "initialize":
             requested = str(request.params.get("protocolVersion") or MCP_VERSION)
@@ -178,18 +188,41 @@ class MCPServer:
 
         name = str(request.params.get("name") or "")
         arguments = request.params.get("arguments") or {}
+
+        def _tool_error(message: str) -> dict[str, Any]:
+            # MCP reserves JSON-RPC-level errors for protocol failures; tool
+            # execution problems (bad args, unknown tool) must be reported as
+            # a normal result with isError=true so MCP clients that only ever
+            # parse result.content[0] (e.g. the Foundry .NET MCP SDK) don't
+            # choke on a missing `result` key.
+            return {
+                "jsonrpc": "2.0", "id": request.id,
+                "result": {
+                    "content": [{"type": "text", "text": message}],
+                    "isError": True,
+                },
+            }
+
         if name not in REVIEWED_TOOLS:
-            return _error(-32602, "Unknown or unauthorized tool", request.id)
+            return _tool_error("Unknown or unauthorized tool")
         if not isinstance(arguments, Mapping) or not _safe_size(arguments, MAX_ARGUMENT_BYTES):
-            return _error(-32602, "Invalid or oversized tool arguments", request.id)
+            return _tool_error("Invalid or oversized tool arguments")
+        # LLM tool callers commonly send an empty string for an optional
+        # field to mean "no filter" rather than omitting the key entirely.
+        # Treat blank strings the same as an absent argument so a
+        # perfectly-reasonable model call isn't rejected as invalid.
+        cleaned_arguments = {
+            key: value for key, value in arguments.items()
+            if not (isinstance(value, str) and value.strip() == "")
+        }
         try:
-            validated = ToolArguments.model_validate(arguments)
+            validated = ToolArguments.model_validate(cleaned_arguments)
             args = validated.model_dump(exclude_none=True)
             missing = [field for field in _REQUIRED.get(name, ()) if field not in args]
             if missing:
                 raise ValueError("required tool arguments are missing")
         except (ValidationError, ValueError):
-            return _error(-32602, "Invalid tool arguments", request.id)
+            return _tool_error("Invalid tool arguments")
 
         self.calls += 1
         started = time.monotonic()

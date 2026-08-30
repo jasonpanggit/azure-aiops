@@ -38,10 +38,19 @@ change. Do not delete or mutate production resources through MCP.
 |---|---|---|
 | Focused Network/Fabric IQ tests | PASS | 21 passed |
 | Smoke shell syntax | PENDING | Requires operator-run tenant credentials |
-| Live APIM → MCP → specialist path | PENDING | Requires `AIOPS_MCP_BEARER_TOKEN` |
+| Live APIM → MCP → specialist path (all 8 agents) | PASS | Manually verified via curl against `/openai/v1/responses` for `aiops-network-agent`, `aiops-vulnerability-agent`, `aiops-incident-agent`, `aiops-remediation-agent`, `aiops-patch-agent`, `aiops-change-agent`, `aiops-governance-agent`, `aiops-executive-summary-agent` — all returned HTTP 200 with tool-backed, evidence-cited output |
+| Native `/mcp-server` APIM auth policy | PASS | `mcp-inbound.xml` now attached; unauthenticated-gap closed |
+| `foundry_agent.py` production client compatibility | PASS | `_extract_text` verified against a real live tool-calling response (`mcp_call`/`mcp_list_tools`/`message` items); error surfacing verified via `_post_once` |
 | APIM/Container App/Application Insights correlation | PENDING | Operator telemetry review |
 | Fabric IQ approved enablement | DISABLED | Tenant governance decision required |
 | Rollback rehearsal | PENDING | Must be run by deployment operator |
+
+Bugs found and fixed during this validation pass (see `.planning/STATE.md` for
+full detail): APIM `/mcp-server` 500 (JWT/header handling), MCP tool-error
+response format (was crashing the Foundry .NET MCP client), a per-process
+lifetime `MAX_CALLS=25` cap on the MCP dispatcher (raised to 100,000 — real
+throttling is APIM's rate-limit-by-key/quota-by-key), and Pydantic rejecting
+empty-string optional tool arguments (a common LLM "no filter" pattern).
 
 No credentials, tenant tokens, or raw live payloads are recorded in this
 document.
