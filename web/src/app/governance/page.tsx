@@ -35,6 +35,16 @@ function download(name: string, payload: unknown): void {
   URL.revokeObjectURL(url);
 }
 
+const EDITABLE_POLICY_SECTIONS = [
+  "onboarding_policy",
+  "architecture_policy",
+  "vulnerability_policy",
+  "agent_policy",
+  "retention_policy",
+] as const;
+
+type PolicySection = (typeof EDITABLE_POLICY_SECTIONS)[number];
+
 export default function GovernancePage() {
   const { scope } = useScope();
   const [tab, setTab] = useState<Tab>("reviews");
@@ -42,10 +52,18 @@ export default function GovernancePage() {
   const [packLabel, setPackLabel] = useState("");
   const [busy, setBusy] = useState("");
   const [actionError, setActionError] = useState("");
+  const [draft, setDraft] = useState<Record<string, Record<string, unknown>> | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+  const [saveError, setSaveError] = useState("");
 
+  const [settingsRefresh, setSettingsRefresh] = useState(0);
   const audiences = useApi(() => governanceApi.accessReviewKinds(), []);
   const kinds = useApi(() => governanceApi.exportKinds(), []);
-  const settings = useApi(() => governanceApi.settings(scope), [scope]);
+  const settings = useApi(
+    () => governanceApi.settings(scope),
+    [scope, settingsRefresh],
+  );
 
   async function generate(label: string, loader: () => Promise<{ data: unknown }>) {
     setBusy(label);
@@ -67,6 +85,50 @@ export default function GovernancePage() {
   const currentSettings = settings.data?.data;
   const roles = useMemo(() => currentSettings?.roles ?? [], [currentSettings]);
   const rolesPaging = useTablePagination(roles);
+
+  // Seed the editable draft once per fresh settings read; edits then live only
+  // in local state until explicitly saved, so a background refetch never
+  // clobbers unsaved operator input.
+  const settingsVersion = currentSettings ? JSON.stringify(currentSettings) : "";
+  useMemo(() => {
+    if (!currentSettings) return;
+    setDraft(
+      Object.fromEntries(
+        EDITABLE_POLICY_SECTIONS.map((section) => [
+          section,
+          { ...(currentSettings[section] as Record<string, unknown> | undefined) },
+        ]),
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsVersion]);
+
+  function setField(section: PolicySection, key: string, value: unknown) {
+    setSaveMessage("");
+    setSaveError("");
+    setDraft((prev) => ({
+      ...(prev ?? {}),
+      [section]: { ...(prev?.[section] ?? {}), [key]: value },
+    }));
+  }
+
+  async function saveSettings() {
+    if (!draft) return;
+    setSaving(true);
+    setSaveMessage("");
+    setSaveError("");
+    try {
+      await governanceApi.updateSettings(draft);
+      setSaveMessage("Policy settings saved.");
+      setSettingsRefresh((n) => n + 1);
+    } catch (error) {
+      setSaveError(
+        error instanceof Error ? error.message : "Unable to save settings.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="page-container">
@@ -290,53 +352,59 @@ export default function GovernancePage() {
                   label="roles"
                 />
 
-                <div className="table-scroll">
-                  <table className="operations-table">
-                    <thead>
-                      <tr>
-                        <th>Policy</th>
-                        <th>Setting</th>
-                        <th>Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(
-                        [
-                          "onboarding_policy",
-                          "architecture_policy",
-                          "vulnerability_policy",
-                          "agent_policy",
-                          "retention_policy",
-                        ] as const
-                      ).flatMap((section) => {
-                        const values = currentSettings[section];
-                        if (!values || typeof values !== "object") return [];
-                        return Object.entries(values as Record<string, unknown>).map(
-                          ([key, value]) => (
-                            <tr key={`${section}.${key}`}>
-                              <td>{titleize(section.replace("_policy", ""))}</td>
-                              <td>{titleize(key)}</td>
-                              <td>
-                                {typeof value === "boolean" ? (
-                                  <StatusBadge
-                                    label={value ? "enabled" : "disabled"}
-                                    tone={value ? "success" : "neutral"}
-                                    compact
-                                  />
-                                ) : (
-                                  <span className="table-wrap">
-                                    {Array.isArray(value)
-                                      ? value.join(", ")
-                                      : String(value)}
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          ),
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                <div className="policy-editor">
+                  {EDITABLE_POLICY_SECTIONS.map((section) => {
+                    const values = draft?.[section] ?? {};
+                    const entries = Object.entries(values);
+                    if (entries.length === 0) return null;
+                    return (
+                      <div key={section} className="policy-editor-group">
+                        <h3>{titleize(section.replace("_policy", ""))}</h3>
+                        {entries.map(([key, value]) => (
+                          <label key={key} className="policy-editor-field">
+                            <span>{titleize(key)}</span>
+                            {typeof value === "boolean" ? (
+                              <input
+                                type="checkbox"
+                                checked={value}
+                                onChange={(e) =>
+                                  setField(section, key, e.target.checked)
+                                }
+                              />
+                            ) : typeof value === "number" ? (
+                              <input
+                                type="number"
+                                value={value}
+                                onChange={(e) =>
+                                  setField(section, key, Number(e.target.value))
+                                }
+                              />
+                            ) : (
+                              <span className="table-wrap muted">
+                                {Array.isArray(value) ? value.join(", ") : String(value)}
+                              </span>
+                            )}
+                          </label>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="policy-editor-actions">
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={saveSettings}
+                    disabled={saving || !draft}
+                  >
+                    {saving ? "Saving..." : "Save policy settings"}
+                  </button>
+                  {saveMessage && <p role="status">{saveMessage}</p>}
+                  {saveError && (
+                    <p role="alert" className="text-critical">
+                      {saveError}
+                    </p>
+                  )}
                 </div>
               </>
             )}
