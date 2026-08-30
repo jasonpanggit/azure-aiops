@@ -347,3 +347,79 @@ MCP tools. One line presented as nine broken agents. Fixed in `d43f0891`.
 **Revisit if:** cross-page questions require composing several specialists in one
 answer. MAF remains the right tool for that, and adopting it later is unblocked —
 prompt agents are reusable as MAF-invoked agents.
+
+## Evaluation — Microsoft Agent Framework (2026-08-30, supersedes the entry above)
+
+The earlier entry dismissed MAF on stale assumptions. Re-evaluated against current
+facts and a read-only audit of our own governance layer. **Revised verdict: MAF is
+a credible future target, but is not the next step.**
+
+### What changed
+
+MAF reached **1.0 GA on 2026-04-03** (Python + .NET, MIT, production-supported;
+successor to AutoGen and Semantic Kernel). It ships the things the earlier entry
+assumed we would have to reimplement:
+
+- native **MCP** support (agents consumable *and* exposable as MCP tools)
+- first-class **Foundry** integration (`FoundryChatClient`)
+- **human-in-the-loop approvals** (Agent Harness / ToolApprovalAgent middleware)
+- **OpenTelemetry** instrumentation, checkpointing, durable session state
+
+The "you'd reimplement your governance in someone else's abstractions" argument is
+therefore weaker than stated. It is not zero, but it is not wholesale either.
+
+### Audit of our governance layer (read-only, 2026-08-30)
+
+Core: `src/operations/*.py` = **3,363 lines**, covered by **209 test functions**
+across 21 files (~4,178 lines).
+
+**Portable to MAF as-is (~1,100 lines)** — pure functions, no loop coupling:
+- `page_context.py:160` `deterministic_network_findings` (~74 L, snapshot → findings)
+- `tools.py:693` `TOOL_REGISTRY` + `call_tool:829` (unknown tool → `STATUS_DENIED`,
+  deliberately never revealing that a tool exists)
+- `tools.py:54` `_filter_scoped` / `:264` scope denial; `page_context.py:126`
+  `validate_effective_scope`
+- all of `foundry_agent.py` — per-agent field contracts (`:181-270`), the
+  `evidence_refs` citation validator (`:268`), `_CircuitBreaker` (`:102`), retry/backoff
+
+**Coupled to the custom loop, would need reimplementation (~500-600 lines)**, all in
+`autonomous_investigation.py`: ledger assembly + `InvestigationLedgerStore:836`,
+deterministic selection (`page_specialists:612`, `_select_agents:103`), the shared
+`remaining_tools` budget and per-turn `AgentDefinition` re-narrowing (`:635-680`),
+wall-clock `stop_reason` propagation, `_deterministic_plan:351`, `_failed_run:808`.
+
+### Findings that outrank the MAF question
+
+1. **Approval gates do not gate.** There is no enforcing check anywhere in the
+   operations layer — no `requires_approval`, no `dry_run` guard. `human_controls.
+   available_actions` (`:570`, `:795`) is ledger *metadata*, and `record_decision:851`
+   appends to `approvals` **after** the fact. The sole `requires_approval: True` is a
+   static field on generated plans (`remediation_generator.py:79`). Migrating to MAF
+   would not fix this; it is a gap in our design, and MAF's ToolApprovalAgent is a
+   genuine reason to reconsider later.
+2. **The audit ledger is not durable.** `InvestigationLedgerStore` is an in-memory
+   `OrderedDict` in a module-level singleton (`_LEDGER_STORE:877`), FIFO-evicted at
+   `MAX_LEDGER_ENTRIES = 1000`, lost on every container restart. For an audit trail
+   backing operator decisions on production infrastructure, this is the highest-risk
+   item found — and it is independent of any orchestration framework.
+3. **The model never selects the specialist.** Routing is the static `page_kind` dict
+   at `:612`. Question-keyword routing (`_select_agents:103`) already exists but is
+   wired only to the autonomous path, never the page drawer — which is precisely why
+   the Network page answers network-shaped questions regardless of what was asked.
+
+### Decision
+
+Do not migrate now. Sequence:
+
+1. **Durable ledger** — highest risk, framework-independent, needed either way.
+2. **Enforcing approval gate** — close the real HITL gap before adding orchestration.
+3. **Question-aware routing** — wire `_select_agents` into the page path (~1 day,
+   reuses tested code, fixes the complaint that motivated this).
+4. **Reassess MAF** once 1-3 land. By then the portable ~1,100 lines carry over
+   cleanly, and the ~500-600 coupled lines are what MAF replaces rather than what we
+   port. Prompt agents remain reusable as MAF-invoked agents, so nothing is a dead end.
+
+Deprecation is **not** a forcing function: we are on the current Responses API with
+zero exposure to the Aug 2026 Assistants retirement or the Mar 2026 connected-agent
+removal (verified by grep — no `assistants`/`/threads`/`/runs` usage). Migrate for
+capability when we need it, not for survival.
