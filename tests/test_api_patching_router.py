@@ -138,7 +138,12 @@ def test_trigger_installs_only_allowlisted_patches(client: TestClient) -> None:
     response = client.post(
         "/api/v1/patching/runs",
         headers=_auth(),
-        json={"target_id": VM_ID, "patch_ids": ["KB600001"], "reason": "Emergency patch"},
+        json={
+            "target_id": VM_ID,
+            "patch_ids": ["KB600001"],
+            "reason": "Emergency patch",
+            "approved_by": "manager@example.com",
+        },
     )
     assert response.status_code == 202, response.text
     run = response.json()["data"]
@@ -173,6 +178,7 @@ def test_aks_node_image_upgrade_takes_exactly_one_version(client: TestClient) ->
             "patch_ids": available[:1],
             "reason": "Node image refresh",
             "node_pool": "systempool",
+            "approved_by": "manager@example.com",
         },
     )
     assert ok.status_code == 202, ok.text
@@ -231,7 +237,12 @@ def test_unconfigured_adapter_refuses_but_records_the_attempt(build_client) -> N
     response = client.post(
         "/api/v1/patching/runs",
         headers=_auth(),
-        json={"target_id": VM_ID, "patch_ids": ["KB600001"], "reason": "No adapter"},
+        json={
+            "target_id": VM_ID,
+            "patch_ids": ["KB600001"],
+            "reason": "No adapter",
+            "approved_by": "manager@example.com",
+        },
     )
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "provider_unavailable"
@@ -240,6 +251,18 @@ def test_unconfigured_adapter_refuses_but_records_the_attempt(build_client) -> N
     recorded = client.patch_store.list()  # type: ignore[attr-defined]
     assert len(recorded) == 1
     assert recorded[0].state == "failed"
+
+
+def test_trigger_without_an_approver_is_refused_at_the_http_boundary(client: TestClient) -> None:
+    """The gate must hold through the route, not only in the service."""
+    response = client.post(
+        "/api/v1/patching/runs",
+        headers=_auth(),
+        json={"target_id": VM_ID, "patch_ids": ["KB600001"], "reason": "Unapproved"},
+    )
+    assert response.status_code == 400
+    assert "approver" in response.json()["error"]["message"].casefold()
+    assert client.patch_store.list() == []  # type: ignore[attr-defined]
 
 
 def test_reader_cannot_trigger_a_run(client: TestClient) -> None:

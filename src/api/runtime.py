@@ -63,6 +63,7 @@ from onboarding.runtime import (
 )
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
+from operations.autonomous_investigation import configure_ledger_store
 from operations.foundry_agent import SPECIALIST_IDS, FoundryPromptAgent
 from operations.patching import (
     InMemoryPatchRunStore,
@@ -78,7 +79,6 @@ from semantic.live_operations import (
 )
 from semantic.live_provider import ConnectionScopedLiveResourceProvider
 from semantic.semantic_engine import SemanticEngine
-from operations.autonomous_investigation import configure_ledger_store
 from storage.fs import is_onelake_uri
 from storage.onelake_documents import OneLakeDocumentStore
 
@@ -1359,6 +1359,7 @@ def _load_patching_service(vulnerability_loader: Callable[[], Any]) -> Any | Non
         service,
         store=_patch_run_store,
         adapter=_patch_execution_adapter(),
+        require_human_approval=_require_human_approval,
     )
 
 
@@ -1396,6 +1397,23 @@ def _governance_connections() -> list[dict[str, Any]]:
         connection.to_dict() if hasattr(connection, "to_dict") else dict(connection)
         for connection in connections
     ]
+
+
+def _require_human_approval() -> bool:
+    """Read ``agent_policy.require_human_approval`` at the moment of use.
+
+    Fails closed: if the settings document is unreadable we require approval
+    rather than silently allowing an unapproved change to a customer host.
+    """
+    try:
+        settings = _settings_store().read()
+    except Exception:
+        _LOGGER.warning("could not read enterprise settings; requiring approval", exc_info=True)
+        return True
+    agent_policy = settings.get("agent_policy")
+    if not isinstance(agent_policy, Mapping):
+        return True
+    return bool(agent_policy.get("require_human_approval", True))
 
 
 def _settings_store() -> EnterpriseSettingsStore:
@@ -1698,7 +1716,10 @@ def build_context() -> ApiContext:
         if service is None:
             return None
         return PatchingService(
-            service, store=_patch_run_store, adapter=_patch_execution_adapter()
+            service,
+            store=_patch_run_store,
+            adapter=_patch_execution_adapter(),
+            require_human_approval=_require_human_approval,
         )
 
     def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:

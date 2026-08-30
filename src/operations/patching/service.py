@@ -9,7 +9,7 @@ available-patch allowlist before any adapter is called.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -65,10 +65,19 @@ class PatchingService:
         store: PatchRunStore | None = None,
         adapter: PatchExecutionAdapter | None = None,
         patch_assessments: Iterable[dict[str, Any]] | None = None,
+        require_human_approval: Callable[[], bool] | bool = True,
     ) -> None:
         self._vulnerability = vulnerability_service
         self._store: PatchRunStore = store or InMemoryPatchRunStore()
         self._adapter: PatchExecutionAdapter = adapter or UnconfiguredPatchExecutionAdapter()
+        # Resolved per call, not captured at construction: an administrator who
+        # turns approval back on must not have to wait for a replica restart.
+        # Defaults to True so a service built without the policy fails closed.
+        self._require_human_approval: Callable[[], bool] = (
+            require_human_approval
+            if callable(require_human_approval)
+            else (lambda value=require_human_approval: bool(value))
+        )
         # Optional Update Manager assessment rows, keyed by target id. When
         # present they are authoritative for what is installable; without them
         # the projection falls back to the KBs implied by open findings, which
@@ -207,6 +216,51 @@ class PatchingService:
     def run(self, run_id: str) -> PatchRun | None:
         return self._store.get(str(run_id or "").strip())
 
+    def _authorize_approval(
+        self, *, requested_by: str, approved_by: str, dry_run: bool
+    ) -> str:
+        """Return the validated approver, or raise before Azure is touched.
+
+        ``approved_by`` arrives from the request body, so it is a claim by the
+        caller rather than a verified identity. Enforcing two things closes the
+        gap that made it decorative:
+
+        - When ``agent_policy.require_human_approval`` is on (the default), a
+          named approver is mandatory. Previously it defaulted to the
+          requester, so the field could simply be omitted.
+        - The approver may never be the requester. Separation of duties is the
+          entire point of recording an approver; self-approval records an
+          audit trail that asserts something nobody actually did.
+
+        ``dry_run`` is exempt: it validates and short-circuits before
+        ``adapter.submit`` and changes nothing.
+
+        This is an authorization check on a claimed identity, not proof of it.
+        Verifying the approver against Entra, and capturing their consent
+        rather than the requester's assertion of it, is a separate step.
+        """
+        requester = str(requested_by or "").strip()
+        approver = str(approved_by or "").strip()
+        if dry_run:
+            return approver or requester
+        if not self._require_human_approval():
+            return approver or requester
+        if not approver:
+            raise PatchValidationError(
+                "This patch run needs a named approver: enterprise settings "
+                "require human approval before changing a host",
+                details={
+                    "requested_by": requester,
+                    "setting": "agent_policy.require_human_approval",
+                },
+            )
+        if approver.casefold() == requester.casefold():
+            raise PatchValidationError(
+                "The approver must be someone other than the requester",
+                details={"requested_by": requester, "approved_by": approver},
+            )
+        return approver
+
     def trigger(
         self,
         *,
@@ -255,6 +309,10 @@ class PatchingService:
                 details={"target_id": target.target_id},
             )
 
+        approver = self._authorize_approval(
+            requested_by=requested_by, approved_by=approved_by, dry_run=dry_run
+        )
+
         timestamp = _now()
         run = PatchRun(
             run_id=str(uuid.uuid4()),
@@ -264,7 +322,7 @@ class PatchingService:
             patch_ids=selected,
             state=RUN_STATE_PENDING,
             requested_by=requested_by,
-            approved_by=approved_by or requested_by,
+            approved_by=approver,
             reason=reason,
             reboot_setting=reboot_setting,
             dry_run=dry_run,
