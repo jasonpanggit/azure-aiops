@@ -78,6 +78,7 @@ from semantic.live_operations import (
 )
 from semantic.live_provider import ConnectionScopedLiveResourceProvider
 from semantic.semantic_engine import SemanticEngine
+from operations.autonomous_investigation import configure_ledger_store
 from storage.fs import is_onelake_uri
 from storage.onelake_documents import OneLakeDocumentStore
 
@@ -758,12 +759,21 @@ _risk_exception_store: dict[str, RiskException] = {}
 _RISK_EXCEPTION_DOCUMENT = "state/risk_exceptions.json"
 
 
-def _risk_exception_documents() -> Any:
-    """Return the OneLake document store, or None for a local home."""
+def _document_store() -> Any:
+    """Return the OneLake document store, or None for a local home.
+
+    Shared by every caller that keeps small revisioned control-plane documents
+    (risk exceptions, investigation ledgers).
+    """
     root = aiops_home()
     if not is_onelake_uri(root):
         return None
     return OneLakeDocumentStore(str(root))
+
+
+def _risk_exception_documents() -> Any:
+    """Return the OneLake document store, or None for a local home."""
+    return _document_store()
 
 
 def _read_risk_exceptions() -> tuple[Any, dict[str, Any], int]:
@@ -1555,6 +1565,10 @@ def build_context() -> ApiContext:
     """Assemble the default context from the environment."""
     onboarding = _onboarding_service()
     providers = _build_provider_runtime(onboarding)
+    # Investigation ledgers are the audit trail for operator decisions, so they
+    # are written through to OneLake and survive replica restarts. A local
+    # AIOPS_HOME has no document store; the ledger falls back to memory.
+    configure_ledger_store(_document_store())
     arg_config = (
         ConnectorConfig.load(os.environ[ENV_ARG_CONFIG])
         if os.environ.get(ENV_ARG_CONFIG, "").strip()

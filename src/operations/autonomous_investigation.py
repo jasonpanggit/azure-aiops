@@ -16,7 +16,7 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from api.scope import Scope
 from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
@@ -831,25 +831,107 @@ def _failed_run(agent: AgentDefinition, reason: str) -> dict[str, Any]:
     }
 
 
+class LedgerDocumentStore(Protocol):
+    """The subset of ``OneLakeDocumentStore`` the ledger needs.
+
+    Declared structurally so tests can substitute a dictionary-backed double
+    without importing the storage layer.
+    """
+
+    def read(self, name: str) -> dict[str, Any]: ...
+
+    def put(self, name: str, payload: dict[str, Any]) -> None: ...
+
+
+def _ledger_document_name(ledger_id: str) -> str:
+    """Map a ledger id to its document path.
+
+    One document per ledger rather than a single collection document. A ledger
+    carries full tool-call payloads and findings, so a combined document would
+    force a read-modify-write of the entire audit history on every
+    investigation and put every replica in compare-and-swap contention. Ledger
+    ids are server-generated (``mai-<uuid12>``), so writes never collide and
+    ``put`` is safe: two writers cannot target the same document.
+    """
+    return f"ledgers/{ledger_id}.json"
+
+
 @dataclass
 class InvestigationLedgerStore:
-    """Bounded principal-scoped ledger store for autonomous investigations."""
+    """Principal-scoped ledger store for autonomous investigations.
+
+    Ledgers are the audit trail for operator decisions taken against
+    production infrastructure, so they are retained indefinitely and are never
+    evicted. When a ``documents`` store is supplied every ledger is persisted
+    as its own OneLake document and survives replica restarts; the in-memory
+    map is then a read-through cache. Without one -- local development and
+    most tests -- behaviour falls back to the previous bounded in-memory store
+    so nothing grows without limit in a process that has no durable home.
+    """
 
     max_entries: int = MAX_LEDGER_ENTRIES
     ledgers: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
+    documents: LedgerDocumentStore | None = None
+
+    @property
+    def is_durable(self) -> bool:
+        return self.documents is not None
+
+    def _persist(self, ledger: dict[str, Any]) -> None:
+        """Write the ledger through to durable storage, best-effort.
+
+        A storage outage must not fail the investigation the operator is
+        running, so persistence failures are logged and the in-memory copy is
+        still served. The warning is the signal that the audit trail has a
+        hole in it.
+        """
+        if self.documents is None:
+            return
+        try:
+            self.documents.put(_ledger_document_name(ledger["ledger_id"]), ledger)
+        except Exception:  # noqa: BLE001 - never fail a run on an audit write
+            _LOGGER.warning(
+                "failed to persist investigation ledger %s; it exists only in memory",
+                ledger["ledger_id"],
+                exc_info=True,
+            )
 
     def add(self, ledger: dict[str, Any]) -> dict[str, Any]:
         self.ledgers[ledger["ledger_id"]] = ledger
         self.ledgers.move_to_end(ledger["ledger_id"])
+        # Eviction bounds memory only. A durable store keeps every ledger, so
+        # evicting here costs nothing: `get` re-reads it on demand.
         while len(self.ledgers) > self.max_entries:
             self.ledgers.popitem(last=False)
+        self._persist(ledger)
         return ledger
 
     def get(self, ledger_id: str, principal_subject: str) -> dict[str, Any] | None:
         ledger = self.ledgers.get(ledger_id)
+        if ledger is None and self.documents is not None:
+            ledger = self._load(ledger_id)
         if ledger is None or ledger.get("created_by") != principal_subject:
             return None
         return ledger
+
+    def _load(self, ledger_id: str) -> dict[str, Any] | None:
+        """Rehydrate an evicted or another replica's ledger from storage."""
+        assert self.documents is not None
+        try:
+            payload = self.documents.read(_ledger_document_name(ledger_id))
+        except Exception:  # noqa: BLE001 - a read outage is a miss, not a crash
+            _LOGGER.warning("failed to read investigation ledger %s", ledger_id, exc_info=True)
+            return None
+        # The document store reads a missing *or corrupt* document as {}. For a
+        # cache that is fine; for an audit record it is not, so require the
+        # identity to match rather than trusting whatever came back.
+        if not payload or payload.get("ledger_id") != ledger_id:
+            return None
+        self.ledgers[ledger_id] = payload
+        self.ledgers.move_to_end(ledger_id)
+        while len(self.ledgers) > self.max_entries:
+            self.ledgers.popitem(last=False)
+        return payload
 
     def record_decision(self, ledger_id: str, principal_subject: str, action: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         ledger = self.get(ledger_id, principal_subject)
@@ -865,6 +947,9 @@ class InvestigationLedgerStore:
         elif action in {"accept_finding", "reject_finding", "assign_owner", "request_more_evidence"}:
             ledger["status"] = "human_review_in_progress"
         ledger["updated_at"] = _now()
+        # An approval that vanishes on restart is worse than no approval at
+        # all, so decisions are written through like the initial ledger.
+        self._persist(ledger)
         return ledger
 
 
@@ -872,4 +957,18 @@ _LEDGER_STORE = InvestigationLedgerStore()
 
 
 def ledger_store() -> InvestigationLedgerStore:
+    return _LEDGER_STORE
+
+
+def configure_ledger_store(documents: LedgerDocumentStore | None) -> InvestigationLedgerStore:
+    """Attach durable storage to the process-wide ledger store.
+
+    Called once during API startup. Ledgers already held in memory are flushed
+    so a store configured after the first investigation does not leave a gap
+    at the head of the audit trail.
+    """
+    _LEDGER_STORE.documents = documents
+    if documents is not None:
+        for ledger in list(_LEDGER_STORE.ledgers.values()):
+            _LEDGER_STORE._persist(ledger)
     return _LEDGER_STORE
