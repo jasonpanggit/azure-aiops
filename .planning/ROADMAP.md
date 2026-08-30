@@ -469,3 +469,81 @@ orchestration. So the MAF question is not "does it work" but "do we want
 model-chosen delegation at all, given governance depends on deterministic
 selection?" That is now the real question, and it should be answered against
 measured agent quality rather than framework features.
+
+## Decision: MAF is now a measurable question, and the answer is "not yet" (2026-08-30)
+
+Two earlier records argued this from framework features. Both were arguing
+without an instrument. There is one now, and it changes what the question is.
+
+### What the instrument found
+
+`scripts/evaluate_agents.py` scores ten fixed questions against a deployment.
+Its first three runs found three defects, none of which had been visible from
+one-off probes:
+
+1. **A metric that measured the caller, not the agent.** Groundedness was
+   scored over snapshot-derived findings, so investigations whose specialists
+   returned real resource IDs scored 0.0. Fixed in `ab017125`.
+2. **A latency failure masquerading as a routing regression.** A 108s
+   wall-clock timeout dropped a specialist; scoring routing on timed-out runs
+   would have made the routing score a latency proxy. Now scored separately.
+3. **One malformed tool call aborting entire investigations.** Foundry returns
+   HTTP 400 for the *whole response* when any tool result carries
+   `isError=true`. The governance specialist, routed onto the incident page,
+   called `business_service_context` with no service name -- there is none in
+   "what is the root cause of the latest incident?" -- and the operator got
+   "Foundry narration unavailable" in ~6s with every other specialist's
+   evidence discarded. Fixed in `78733fc7`.
+
+The third is the one that matters for this decision. It had been dismissed as
+Foundry flakiness. It was our bug, in our MCP server, and no framework change
+would have fixed it.
+
+### Measured baseline
+
+    routing_rate           1.0    (9 scored, 1 wall-clock timeout)
+    narration_rate         1.0    was 0.8 before the MCP fix
+    groundedness_mean      0.44   was 0.29
+    tool_correctness_mean  1.0
+    latency_ms_median      25.6s
+
+`groundedness` is a data-availability signal, not answer quality: `gov-owner`
+scores 0.0 while correctly answering "I cannot determine who owns this from
+the governed sources", and `vuln-remediate` scores 0.0 while naming a specific
+KB and VM. Read as "how much did the deterministic layer have to stand on."
+
+### The decision
+
+**Stay on Foundry prompt agents. Revisit MAF against this baseline, not against
+its feature list.**
+
+Three reasons, in order of weight:
+
+1. **The defects were ours.** Every failure the harness surfaced was in our
+   routing, our metrics, or our MCP server. A framework migration would have
+   carried all three across unchanged and cost weeks.
+2. **MAF's headline capability is the one we are deliberately not adopting.**
+   Its value is model-driven multi-agent orchestration. Our governance
+   properties -- scope filtering applied to a fixed registry before execution,
+   a ledger complete because selection was deterministic, graceful degradation
+   when a specialist fails -- all rest on *not* letting a model choose what
+   runs. Adopting MAF to then suppress its main feature is a poor trade.
+3. **Zero deprecation exposure.** Prompt agents and the Responses API are the
+   current supported surface. Nothing forces a move.
+
+### What would change the answer
+
+Concrete triggers, so this is falsifiable rather than a preference:
+
+- Latency: median 25.6s is tolerable for investigation, poor for chat. If
+  interactive latency becomes a requirement, MAF's streaming and parallel tool
+  execution are a real argument.
+- A question genuinely needing multi-turn planning -- where the second tool
+  call depends on the first's *content*, not just its presence. Nothing in the
+  current ten cases does.
+- `routing_rate` falling as the catalog grows. Keyword routing is deterministic
+  and auditable, but it does not generalise. If it drops below ~0.8 with more
+  specialists, an LLM router earns its governance cost.
+
+Re-run `python3 scripts/evaluate_agents.py --baseline .planning/eval/baseline.json`
+before re-opening this. Argue from the numbers.
