@@ -307,3 +307,43 @@ findings.
 **Revisit when:** Microsoft Agent Framework orchestration is warranted if
 cross-page questions need several specialists composed in one answer. That is
 a deliberate future change, not a gap in this phase.
+
+## Decision record — Microsoft Agent Framework evaluation (2026-08-30)
+
+**Question:** Should Phase 09-09 migrate to Microsoft Agent Framework (MAF) for future-proofing?
+
+**Decision:** No. Continue on Foundry prompt agents + Responses API.
+
+**Evidence — we already use the current surface, not the deprecated one:**
+
+| Surface | Retirement | Our usage |
+|---|---|---|
+| Assistants API | 2026-08-26 | not used |
+| threads / runs | 2026-08-26 | not used |
+| Connected agents | removed 2026-03-16 | not used |
+| Portal workflow designer | 2026-12-01 | not used |
+| Responses API (`/openai/v1/responses`) | current | **in use** |
+| Prompt agents | current, supported in new Agent Service | **in use** (9 agents) |
+
+Verified by `grep` for `assistants|/threads|/runs` in `src/operations/foundry_agent.py`
+— zero matches. Sole endpoint is `/openai/v1/responses` (line 511).
+
+**Why MAF does not apply:** MAF is a client-side orchestration SDK that calls the
+same Responses API underneath. It would replace our local routing layer, not our
+transport. Our governance controls (scope enforcement, audit ledger, human approval
+gates, deterministic fallback) live in that layer; migrating means reimplementing
+them in a third-party abstraction for no deprecation benefit.
+
+**What was actually broken:** one sentence in `_build_prompt` — "using only the
+operational context below" — forbade every specialist from calling its own governed
+MCP tools. One line presented as nine broken agents. Fixed in `d43f0891`.
+
+**Live verification after fix (3 of 9 specialists, distinct tool selection per domain):**
+- `network` — called `network_topology`, `hub_dependents`; correctly answered no dependents on demo-vnet
+- `vulnerability` — called `cve_exposure`, `cve_detail` x3; returned CVE list for vm1
+- `governance` — called `fabric_iq_policy_context` + 5 others; correctly answered
+  "I cannot determine" rather than speculating (grounding working as designed)
+
+**Revisit if:** cross-page questions require composing several specialists in one
+answer. MAF remains the right tool for that, and adopting it later is unblocked —
+prompt agents are reusable as MAF-invoked agents.
