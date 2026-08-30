@@ -2,7 +2,7 @@
 
 ```mermaid
 sequenceDiagram
-    participant Agent as Hermes Agent / CLI
+    participant Agent as AIOps Agent / CLI
     participant Source as Normalized ARG generation
     participant Quality as Data Quality
     participant State as ingestion_state Delta

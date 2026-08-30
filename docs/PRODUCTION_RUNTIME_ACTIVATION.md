@@ -9,31 +9,31 @@ Resource Graph discovery. Production mode never loads fixture or mock data.
 
 | Setting | Purpose |
 | --- | --- |
-| `HERMES_RUNTIME_MODE=production` | Disables direct fixture/local snapshot providers. |
-| `HERMES_LOCAL_SEED=0` | Prevents local fixture seeding. |
-| `HERMES_HOME` | OneLake root (`abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>/Files/hermes`) holding the connection registry, risk exceptions, cached CVE enrichment, and isolated discovery generations. |
-| `HERMES_API_AUTH=entra` | Validates browser access tokens directly against Entra JWKS. |
-| `HERMES_ENTRA_TENANT_ID` | Entra tenant allowed to issue API tokens. |
-| `HERMES_ENTRA_AUDIENCE` | Exact API audience expected in the token `aud` claim. |
-| `HERMES_API_GATEWAY_GRANTS` | Explicit subject-to-role/scope authorization map. |
-| `HERMES_CONNECTION_KEY_VAULT` | Key Vault used for submitted SPN secrets. |
-| `HERMES_ENABLE_FABRIC=true` | Enables Fabric-backed runtime providers. |
+| `AIOPS_RUNTIME_MODE=production` | Disables direct fixture/local snapshot providers. |
+| `AIOPS_LOCAL_SEED=0` | Prevents local fixture seeding. |
+| `AIOPS_HOME` | OneLake root (`abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>/Files/aiops`) holding the connection registry, risk exceptions, cached CVE enrichment, and isolated discovery generations. |
+| `AIOPS_API_AUTH=entra` | Validates browser access tokens directly against Entra JWKS. |
+| `AIOPS_ENTRA_TENANT_ID` | Entra tenant allowed to issue API tokens. |
+| `AIOPS_ENTRA_AUDIENCE` | Exact API audience expected in the token `aud` claim. |
+| `AIOPS_API_GATEWAY_GRANTS` | Explicit subject-to-role/scope authorization map. |
+| `AIOPS_CONNECTION_KEY_VAULT` | Key Vault used for submitted SPN secrets. |
+| `AIOPS_ENABLE_FABRIC=true` | Enables Fabric-backed runtime providers. |
 | `FABRIC_WORKSPACE_ID` | Immutable Fabric workspace ID. |
 | `FABRIC_LAKEHOUSE_ID` | Immutable operational-context Lakehouse ID. |
 | `FABRIC_ONTOLOGY_NAME` | Published ontology item name. |
 | `AZURE_CLIENT_ID` | User-assigned managed identity selected by Azure Identity. |
 | `FOUNDRY_PROJECT_ENDPOINT` | Operations Copilot Foundry project endpoint. |
 | `FOUNDRY_AGENT_NAME` | Existing governed prompt-agent name. |
-| `HERMES_PROVIDER_REFRESH_SECONDS` | Safe provider refresh interval; default `30`. |
-| `HERMES_PROVIDER_STALE_HOURS` | Freshness threshold; default `24`. |
-| `HERMES_AKV_BOOTSTRAP_ENABLED` | Enables the startup sync of explicitly mapped container secrets into Key Vault. |
-| `HERMES_AKV_BOOTSTRAP_SECRETS` | JSON map of Key Vault names to secret-backed environment variables. |
+| `AIOPS_PROVIDER_REFRESH_SECONDS` | Safe provider refresh interval; default `30`. |
+| `AIOPS_PROVIDER_STALE_HOURS` | Freshness threshold; default `24`. |
+| `AIOPS_AKV_BOOTSTRAP_ENABLED` | Enables the startup sync of explicitly mapped container secrets into Key Vault. |
+| `AIOPS_AKV_BOOTSTRAP_SECRETS` | JSON map of Key Vault names to secret-backed environment variables. |
 
 The Container App identity requires:
 
 - Key Vault secret read/write access for connection credential references.
 - `Contributor` on the Fabric workspace and access to its capacity/Lakehouse;
-  this also grants the OneLake read/write that `HERMES_HOME` needs.
+  this also grants the OneLake read/write that `AIOPS_HOME` needs.
 - `Azure AI User`/Foundry Agent Consumer access to the Foundry project.
 - Network reachability to private Key Vault, OneLake, Fabric, and Foundry
   endpoints.
@@ -42,7 +42,7 @@ The Container App identity requires:
 
 The API image runs `api.akv_bootstrap` before Uvicorn starts. When enabled, it
 uses the API Container App's user-assigned managed identity (`AZURE_CLIENT_ID`)
-and writes only the allowlisted `HERMES_AKV_BOOTSTRAP_SECRETS` mappings.
+and writes only the allowlisted `AIOPS_AKV_BOOTSTRAP_SECRETS` mappings.
 
 The default deployment maps nothing (`{}`), because no secret-backed
 environment variable is required now that all durable state lives in OneLake
@@ -72,7 +72,7 @@ Create protected connector and Fabric configuration files from
 not inline SPN secrets.
 
 ```bash
-uv run hermes-arg subscriptions add hub-prod \
+uv run aiops-inventory subscriptions add hub-prod \
   --config /secure/config.yaml \
   --tenant-id "$HUB_TENANT_ID" \
   --subscription-id "$HUB_SUBSCRIPTION_ID" \
@@ -83,7 +83,7 @@ uv run hermes-arg subscriptions add hub-prod \
   --environment prod \
   --project-owner "Platform Operations"
 
-uv run hermes-arg subscriptions add spoke-prod \
+uv run aiops-inventory subscriptions add spoke-prod \
   --config /secure/config.yaml \
   --tenant-id "$SPOKE_TENANT_ID" \
   --subscription-id "$SPOKE_SUBSCRIPTION_ID" \
@@ -94,7 +94,7 @@ uv run hermes-arg subscriptions add spoke-prod \
   --environment prod \
   --project-owner "Payments Operations"
 
-uv run hermes-arg activate \
+uv run aiops-inventory activate \
   --config /secure/config.yaml \
   --fabric-config /secure/fabric.config.yaml \
   --connection-id hub-prod \
@@ -169,7 +169,7 @@ az rest --method PATCH \
 
 Verify with `az ad app show --id "$ENTRA_WEB_CLIENT_ID" --query api.requestedAccessTokenVersion`
 (expect `2`). Also confirm `identifierUris` includes the exact
-`HERMES_ENTRA_AUDIENCE` value and `api.oauth2PermissionScopes` has an enabled
+`AIOPS_ENTRA_AUDIENCE` value and `api.oauth2PermissionScopes` has an enabled
 delegated scope (e.g. `access_as_user`) matching `NEXT_PUBLIC_ENTRA_API_SCOPE`.
 After changing `requestedAccessTokenVersion`, users must sign out/in again —
 already-cached v1.0 tokens remain invalid until MSAL acquires a fresh token.
@@ -177,7 +177,7 @@ already-cached v1.0 tokens remain invalid until MSAL acquires a fresh token.
 #### App roles (required for grants to resolve)
 
 `EntraJwtAuthenticator` reads the token's `roles` claim and intersects it with
-each subject's roles from `HERMES_API_GATEWAY_GRANTS`
+each subject's roles from `AIOPS_API_GATEWAY_GRANTS`
 (`src/api/runtime.py:_gateway_grants`). Entra only ever populates a `roles`
 claim when **both** of the following are true:
 
@@ -186,8 +186,8 @@ claim when **both** of the following are true:
    app's service principal.
 
 If either is missing, every token carries an empty `roles` claim and every
-principal is rejected with `Entra principal has no configured Hermes grants`,
-even though `HERMES_API_GATEWAY_GRANTS` correctly lists the subject. This is a
+principal is rejected with `Entra principal has no configured AIOps grants`,
+even though `AIOPS_API_GATEWAY_GRANTS` correctly lists the subject. This is a
 one-time, admin-only setup step — run
 [`infra/scripts/configure-entra-app-roles.sh`](../infra/scripts/configure-entra-app-roles.sh)
 as a tenant/app admin (requires `Application.ReadWrite.All` or app ownership;
@@ -195,13 +195,13 @@ the deployment SPN itself typically cannot grant this to itself):
 
 ```bash
 ENTRA_WEB_CLIENT_ID="306c1437-0e7d-43bd-940b-79b878166331" \
-HERMES_API_GATEWAY_GRANTS='{"admin@contoso.com":[{"role":"admin"}]}' \
+AIOPS_API_GATEWAY_GRANTS='{"admin@contoso.com":[{"role":"admin"}]}' \
 ./infra/scripts/configure-entra-app-roles.sh
 ```
 
 The script defines `admin`/`operator`/`reader` app roles on the app
 registration (idempotent) and assigns each subject in
-`HERMES_API_GATEWAY_GRANTS` the app role matching their highest configured
+`AIOPS_API_GATEWAY_GRANTS` the app role matching their highest configured
 role. Affected users must sign out and back in (or otherwise force MSAL to
 acquire a fresh token) before the new `roles` claim takes effect.
 
@@ -222,10 +222,10 @@ to change.
 API_URL="$(terraform -chdir=infra/terraform output -raw api_url)" \
 WEB_URL="$(terraform -chdir=infra/terraform output -raw web_url)" \
 API_TOKEN="$(az account get-access-token \
-  --resource "$HERMES_ENTRA_API_AUDIENCE" \
+  --resource "$AIOPS_ENTRA_API_AUDIENCE" \
   --query accessToken -o tsv)" \
-HERMES_ARG_CONFIG=/secure/config.yaml \
-HERMES_FABRIC_CONFIG=/secure/fabric.config.yaml \
+AIOPS_ARG_CONFIG=/secure/config.yaml \
+AIOPS_FABRIC_CONFIG=/secure/fabric.config.yaml \
 HUB_CONNECTION_ID=hub-prod \
 SPOKE_CONNECTION_ID=spoke-prod \
 infra/scripts/validate-runtime-e2e.sh

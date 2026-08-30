@@ -1,8 +1,8 @@
-# Hermes Operations Graph — Architecture
+# AIOps Operations Graph — Architecture
 
 ## 1. Purpose
 
-Hermes Operations Graph (HOG) is an Azure-first operational context and digital-twin platform. It connects authoritative operational data already held by Azure and enterprise systems into a governed graph that answers questions such as:
+AIOps Operations Graph (HOG) is an Azure-first operational context and digital-twin platform. It connects authoritative operational data already held by Azure and enterprise systems into a governed graph that answers questions such as:
 
 - What resources, applications, and business services are affected by this incident?
 - Who owns them, what do they depend on, and which runbook applies?

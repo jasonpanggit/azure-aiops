@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from hermes_arg_connector.normalize import normalize_evidence_payloads
+from onboarding.graph_normalize import normalize_evidence_payloads
 
 
 def test_representative_families_share_envelope_and_failed_status_does_not_advance_watermark() -> None:

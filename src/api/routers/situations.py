@@ -36,7 +36,7 @@ def list_situations(
     return envelope(
         rows[page.offset : page.offset + page.limit],
         evidence=Evidence(
-            source_engine="hermes.situations",
+            source_engine="aiops.situations",
             source_table="silver_situations",
             timestamp=max((str(row.get("last_observed_at") or "") for row in rows), default=""),
             confidence="high" if rows else "unknown",
@@ -69,7 +69,7 @@ def get_situation(situation_id: str, context: Context, scope: ReadScope) -> dict
         row,
         evidence=[
             Evidence(
-                source_engine="hermes.situations",
+                source_engine="aiops.situations",
                 source_table="silver_situation_evidence",
                 timestamp=str(item.get("observed_at") or ""),
                 resource_id=str((item.get("resource_ids") or [""])[0]),

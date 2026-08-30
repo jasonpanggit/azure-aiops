@@ -8,7 +8,6 @@ import pytest
 
 from storage.datasets import DatasetStore
 
-
 PAYLOADS = (
     {
         "id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Web/sites/app-1",
@@ -240,3 +239,39 @@ def test_default_family_registry_binds_current_families_to_fabric_contracts() ->
     )
     assert {"azure_vm", "arc", "logs"} <= registry.source_types
     assert resource_family.raw_payload_internal_only is True
+
+
+def test_published_resource_rows_are_readable_by_logical_name(tmp_path: Path) -> None:
+    """Resource rows must survive a publish -> read-back by logical name.
+
+    The connection merge (``combine.publish_combined_inventory_snapshot``) and
+    the republish path both address datasets by their logical
+    ``inventory/resource_observations`` name. When the publisher wrote resource
+    rows only under the Fabric table name, every reader saw an empty dataset and
+    the next republish persisted that emptiness -- Azure inventory silently
+    vanished while OS/software survived.
+    """
+    from intelligence.inventory.fabric_publication import InventoryFabricPublisher
+    from intelligence.inventory.models import ResourceObservation
+
+    rows = [
+        ResourceObservation.from_provider_row(
+            row,
+            family="paas",
+            observed_at="2026-08-26T06:00:00Z",
+            ingestion_run_id="run-1",
+            query_version="resource-observation-v1",
+        ).to_fabric_row()
+        for row in PAYLOADS
+    ]
+
+    store = DatasetStore(tmp_path)
+    InventoryFabricPublisher(store).publish(
+        {"inventory/resource_observations": rows},
+        query_results={},
+        run_metadata={"runId": "run-1", "status": "completed"},
+    )
+
+    assert {row["resource_id"] for row in store.read_dataset("inventory/resource_observations")} == {
+        row["resource_id"] for row in rows
+    }

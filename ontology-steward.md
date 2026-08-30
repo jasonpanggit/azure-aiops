@@ -1,8 +1,8 @@
-# Hermes Ontology Steward Design
+# AIOps Ontology Steward Design
 
 ## 1. Mission
 
-The Ontology Steward keeps the Operational Context Graph accurate, explainable, current, and governed. It is a set of deterministic policies and workflows orchestrated by Hermes—not an autonomous LLM that silently edits operational truth.
+The Ontology Steward keeps the Operational Context Graph accurate, explainable, current, and governed. It is a set of deterministic policies and workflows orchestrated by AIOps—not an autonomous LLM that silently edits operational truth.
 
 Responsibilities:
 
@@ -16,9 +16,9 @@ Responsibilities:
 - coordinate Fabric publication and refresh health;
 - route consequential ambiguity to humans.
 
-## 2. Reused Hermes capabilities
+## 2. Reused AIOps capabilities
 
-| Hermes capability | Steward use |
+| AIOps capability | Steward use |
 |---|---|
 | Cron scheduler | Periodic deterministic quality scans, source watermark checks, decay calculations, and publication verification. |
 | Cron monitor mode | Run the agent only when stable quality output changes. |
@@ -26,7 +26,7 @@ Responsibilities:
 | Webhooks | Immediate targeted checks after source/ontology events. |
 | Kanban | Human review queue with assignment, comments, attachments, review/changes lifecycle, and audit. |
 | Delegation | Parallel source validation or blast-radius analysis. |
-| Tool registry/plugins | Service-gated steward tools outside Hermes core. |
+| Tool registry/plugins | Service-gated steward tools outside AIOps core. |
 | MCP client | Azure/Fabric/source tools discovered at runtime. |
 | Session SQLite/FTS | Investigation and decision conversation audit. |
 | Built-in memory/skills | Stable policy preferences and reusable procedures—not live graph state. |
@@ -261,4 +261,4 @@ Expose through Fabric/Power BI or Azure Workbooks. Do not build a custom monitor
 - Source contradictions remain visible.
 - Fabric publication can roll back.
 - Unchanged quality scans do not consume agent runs.
-- Operational graph data never relies on Hermes conversation memory as authority.
+- Operational graph data never relies on AIOps conversation memory as authority.

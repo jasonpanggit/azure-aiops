@@ -44,7 +44,19 @@ ENV_CIRCUIT_RESET_SECONDS = "FOUNDRY_CIRCUIT_BREAKER_RESET_SECONDS"
 # The Foundry "projects (new)" data plane is versioned with the literal string
 # `v1`, not a date. See the Microsoft quickstart sample for prompt agents.
 DEFAULT_API_VERSION = "v1"
+SPECIALIST_IDS = (
+    "network",
+    "vulnerability",
+    "patch",
+    "incident",
+    "change",
+    "governance",
+    "remediation",
+    "executive_summary",
+)
 DEFAULT_TIMEOUT_SECONDS = 60.0
+SPECIALIST_CONTRACT_VERSION = "network-finding.v1"
+_MUTATION_WORDS = ("delete", "create", "update", "modify", "execute", "apply", "remediate")
 
 # Entra scope for the Foundry data plane. Distinct from the ARM scope: an ARM
 # token is rejected by the agents endpoint.
@@ -150,6 +162,7 @@ class AgentAnswer:
     agent_name: str
     model: str = ""
     grounded: bool = True
+    agent_version: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -157,7 +170,128 @@ class AgentAnswer:
             "agent_name": self.agent_name,
             "model": self.model,
             "grounded": self.grounded,
+            "agent_version": self.agent_version,
         }
+
+
+def _agent_contract(agent_id: str) -> dict[str, Any]:
+    """Return validation contract for each specialist agent.
+    
+    Base required fields are common to all agents:
+    finding_id, resource_ids, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary
+    
+    Agent-specific required fields vary by domain.
+    """
+    contracts = {
+        "network": {
+            "required": {"finding_id", "resource_ids", "check_id", "policy_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"topology_gaps", "firewall_rules", "traffic_paths", "blast_radius"},
+        },
+        "vulnerability": {
+            "required": {"finding_id", "resource_ids", "cve_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"affected_services", "exploitability_score", "reachability", "remediation_impact"},
+        },
+        "patch": {
+            "required": {"finding_id", "resource_ids", "kb_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"patch_priority", "validation_steps", "rollback_plan", "sla_impact"},
+        },
+        "incident": {
+            "required": {"finding_id", "incident_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"timeline", "root_causes", "unknowns", "validation_steps"},
+        },
+        "change": {
+            "required": {"finding_id", "resource_ids", "change_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"deployment_date", "affected_services", "correlation_confidence", "rollback_available"},
+        },
+        "governance": {
+            "required": {"finding_id", "resource_ids", "owner_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"approval_required", "policy_violations", "exceptions", "accountability"},
+        },
+        "remediation": {
+            "required": {"finding_id", "resource_ids", "remediation_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"remediation_options", "rollback_plan", "validation_steps", "risk_assessment", "approval_required"},
+        },
+        "executive_summary": {
+            "required": {"finding_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
+            "domain_fields": {"business_impact", "priority", "recommended_actions", "affected_domains"},
+        },
+    }
+    return contracts.get(agent_id.casefold(), contracts["network"])
+
+
+def parse_specialist_findings(
+    text: str,
+    *,
+    evidence_refs: set[str],
+    resource_ids: set[str] | None = None,
+    agent_id: str = "network",
+) -> list[dict[str, Any]]:
+    """Validate the small, cited contract emitted by a specialist.
+
+    Foundry is an untrusted narrator. This parser deliberately accepts no
+    prose wrapper and requires every claim to point at evidence supplied by the
+    local orchestrator. Each agent has domain-specific required fields.
+    """
+    contract = _agent_contract(agent_id)
+    required = contract["required"]
+    
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise FoundryAgentError(f"{agent_id} specialist output is not valid JSON") from exc
+    if not isinstance(payload, dict) or set(payload) != {"findings"}:
+        raise FoundryAgentError(f"{agent_id} specialist output must contain only findings")
+    findings = payload["findings"]
+    if not isinstance(findings, list) or len(findings) > 25:
+        raise FoundryAgentError(f"{agent_id} specialist findings are not bounded")
+    
+    validated: list[dict[str, Any]] = []
+    for finding in findings:
+        if not isinstance(finding, dict) or set(finding) != required:
+            raise FoundryAgentError(
+                f"{agent_id} specialist finding schema is invalid; expected {required}, got {set(finding)}"
+            )
+        if not isinstance(finding["finding_id"], str) or not finding["finding_id"].strip():
+            raise FoundryAgentError(f"{agent_id} finding id is required")
+        
+        # Validate resource_ids if present (not required for incident, executive_summary)
+        if "resource_ids" in required:
+            if not isinstance(finding["resource_ids"], list) or any(
+                not isinstance(value, str) or not value.startswith("/subscriptions/")
+                for value in finding["resource_ids"]
+            ):
+                raise FoundryAgentError(f"{agent_id} finding resource IDs are invalid")
+            if resource_ids is not None and not set(finding["resource_ids"]) <= resource_ids:
+                raise FoundryAgentError(f"{agent_id} finding introduced an uncited resource")
+        
+        # Validate agent-specific domain fields
+        refs = finding["evidence_refs"]
+        if not isinstance(refs, list) or not refs or not set(refs) <= evidence_refs:
+            raise FoundryAgentError(f"{agent_id} finding citation is missing or invalid")
+        
+        # Validate common fields
+        if finding["confidence"] not in {"high", "medium", "low", "unknown"}:
+            raise FoundryAgentError(f"{agent_id} finding confidence is invalid")
+        if finding["freshness"] not in {"fresh", "stale", "partial", "unavailable", "unknown"}:
+            raise FoundryAgentError(f"{agent_id} finding freshness is invalid")
+        if not isinstance(finding["uncertainty"], list) or any(
+            not isinstance(value, str) for value in finding["uncertainty"]
+        ):
+            raise FoundryAgentError(f"{agent_id} finding uncertainty is invalid")
+        if not isinstance(finding["actionable"], bool) or not isinstance(finding["next_check"], str):
+            raise FoundryAgentError(f"{agent_id} finding action contract is invalid")
+        if len(finding["next_check"]) > 240 or not finding["next_check"].strip():
+            raise FoundryAgentError(f"{agent_id} finding next check is not bounded")
+        if not isinstance(finding["summary"], str) or not finding["summary"].strip():
+            raise FoundryAgentError(f"{agent_id} finding summary is required")
+        
+        # Reject mutation instructions
+        text_values = json.dumps(finding, ensure_ascii=False).casefold()
+        if any(word in text_values for word in _MUTATION_WORDS):
+            raise FoundryAgentError(f"{agent_id} specialist output contains mutation instructions")
+        
+        validated.append(finding)
+    return validated
 
 
 class _TokenProvider:
@@ -223,6 +357,8 @@ class FoundryPromptAgent:
         retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
         circuit_breaker: _CircuitBreaker | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        specialist_id: str = "network",
+        agent_version: str = "",
     ) -> None:
         endpoint = str(project_endpoint or "").strip().rstrip("/")
         name = str(agent_name or "").strip()
@@ -239,16 +375,24 @@ class FoundryPromptAgent:
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self._breaker = circuit_breaker or _CircuitBreaker()
         self._sleep = sleep
+        self.specialist_id = specialist_id
+        self.agent_version = agent_version
 
     @classmethod
-    def from_env(cls) -> FoundryPromptAgent | None:
+    def from_env(cls, specialist_id: str | None = None) -> FoundryPromptAgent | None:
         """Build from the environment, or ``None`` when unconfigured.
 
         Returning ``None`` (rather than raising) is what lets a deployment run
         without Foundry: the Copilot then answers with retrieval only.
         """
         endpoint = os.environ.get(ENV_PROJECT_ENDPOINT, "").strip()
-        agent_name = os.environ.get(ENV_AGENT_NAME, "").strip()
+        specialist = (specialist_id or "").strip().casefold()
+        specialist_name = (
+            os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_NAME", "").strip()
+            if specialist
+            else ""
+        )
+        agent_name = specialist_name or os.environ.get(ENV_AGENT_NAME, "").strip()
         if not endpoint or not agent_name:
             return None
         try:
@@ -282,6 +426,12 @@ class FoundryPromptAgent:
             max_retries=max_retries,
             circuit_breaker=_CircuitBreaker(
                 failure_threshold=circuit_threshold, reset_seconds=circuit_reset
+            ),
+            specialist_id=specialist or "network",
+            agent_version=(
+                os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
+                if specialist
+                else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
             ),
         )
 
@@ -356,7 +506,7 @@ class FoundryPromptAgent:
         system prompt (created at deploy time) cannot be overridden by anything
         that came out of the knowledge layer.
         """
-        prompt = _build_prompt(question=question, context=context)
+        prompt = self.build_prompt(question, context)
         response = self._post(
             "/openai/v1/responses",
             {
@@ -373,6 +523,39 @@ class FoundryPromptAgent:
             agent_name=self.agent_name,
             model=str(response.get("model") or ""),
             grounded=True,
+            agent_version=self.agent_version,
+        )
+
+    def answer_findings(
+        self,
+        *,
+        question: str,
+        context: Any,
+        evidence_refs: set[str],
+        resource_ids: set[str] | None = None,
+    ) -> AgentAnswer:
+        """Request and strictly validate a specialist finding response."""
+        answer = self.answer(question=question, context=context)
+        findings = parse_specialist_findings(
+            answer.text, 
+            evidence_refs=evidence_refs, 
+            resource_ids=resource_ids,
+            agent_id=self.specialist_id,
+        )
+        return AgentAnswer(
+            text=answer.text,
+            agent_name=answer.agent_name,
+            model=answer.model,
+            grounded=True,
+            agent_version=self.agent_version,
+        )
+
+    def build_prompt(self, question: str, context: Any) -> str:
+        """Expose the bounded, evidence-only prompt for contract testing."""
+        return _build_prompt(
+            question=question,
+            context=context,
+            specialist_id=self.specialist_id,
         )
 
 
@@ -382,12 +565,15 @@ class FoundryPromptAgent:
 _MAX_CONTEXT_CHARS = 24_000
 
 
-def _build_prompt(*, question: str, context: Any) -> str:
+def _build_prompt(
+    *, question: str, context: Any, specialist_id: str = "network"
+) -> str:
     """Frame the retrieved context as the only admissible evidence."""
     serialized = json.dumps(context, default=str, ensure_ascii=False)
     if len(serialized) > _MAX_CONTEXT_CHARS:
         serialized = serialized[:_MAX_CONTEXT_CHARS] + "\u2026(truncated)"
     return (
+        f"You are the {specialist_id} specialist. "
         "Answer the operator's question using only the operational context "
         "below. It was retrieved from the governed knowledge graph. If the "
         "context does not contain the answer, say so explicitly and do not "
@@ -431,3 +617,26 @@ def _extract_text(response: dict[str, Any]) -> str:
             elif isinstance(part, str) and part.strip():
                 fragments.append(part)
     return "\n".join(fragments).strip()
+
+
+def specialist_catalog() -> list[dict[str, Any]]:
+    """Return independent release metadata without claiming unavailable agents exist."""
+    endpoint = os.environ.get(ENV_PROJECT_ENDPOINT, "").strip()
+    entries: list[dict[str, Any]] = []
+    for specialist in SPECIALIST_IDS:
+        prefix = f"FOUNDRY_{specialist.upper()}_AGENT"
+        name = os.environ.get(f"{prefix}_NAME", "").strip()
+        version = os.environ.get(f"{prefix}_VERSION", "").strip()
+        if not name and specialist == "network":
+            name = os.environ.get(ENV_AGENT_NAME, "").strip()
+            version = version or os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
+        entries.append(
+            {
+                "id": specialist,
+                "name": name,
+                "version": version,
+                "status": "ready" if endpoint and name and version else "unavailable",
+                "configured": bool(endpoint and name and version),
+            }
+        )
+    return entries

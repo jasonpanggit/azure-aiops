@@ -1,0 +1,2590 @@
+{
+  "summary": {
+    "total_tables_referenced": 265,
+    "active_required": 16,
+    "legacy_supporting": 197,
+    "unknown": 52
+  },
+  "active_required": {
+    "ontology_entities": {
+      "files": [
+        "src/operations/tools.py:243",
+        "src/operations/tools.py:256",
+        "src/operations/tools.py:269",
+        "src/operations/tools.py:299",
+        "src/operations/tools.py:325",
+        "src/operations/tools.py:360",
+        "src/operations/tools.py:385",
+        "src/operations/tools.py:597",
+        "src/semantic/semantic_registry.py:42",
+        "src/semantic/semantic_registry.py:50",
+        "src/semantic/semantic_registry.py:52",
+        "src/api/runtime.py:251",
+        "src/api/routers/copilot.py:191",
+        "src/api/routers/context.py:180",
+        "src/api/routers/context.py:202",
+        "src/api/routers/context.py:216",
+        "src/api/routers/context.py:228",
+        "src/api/routers/context.py:240",
+        "src/api/routers/context.py:257",
+        "src/api/routers/context.py:278",
+        "src/api/routers/context.py:294",
+        "src/api/routers/network.py:30",
+        "src/api/routers/governance.py:50",
+        "src/fabric/data_agent_manager.py:3",
+        "src/fabric/data_agent_manager.py:70",
+        "src/fabric/data_agent_manager.py:191",
+        "src/fabric/data_agent_manager.py:209",
+        "src/fabric/schema_registry.py:261",
+        "src/fabric/telemetry.py:15",
+        "src/fabric/telemetry.py:40",
+        "src/fabric/dataset_mapper.py:391",
+        "src/fabric/dataset_mapper.py:428",
+        "src/fabric/dataset_mapper.py:432",
+        "src/fabric/sync_service.py:185",
+        "src/fabric/sync_service.py:673",
+        "src/fabric/sync_service.py:1088",
+        "src/fabric/sync_service.py:1095",
+        "src/fabric/sync_service.py:1101",
+        "src/fabric/sync_service.py:1152",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:81",
+        "src/fabric_pipelines/notebook_manager.py:130",
+        "src/fabric_pipelines/notebook_manager.py:204",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:11",
+        "scripts/verify-ontology-live-parity.py:3",
+        "scripts/verify-ontology-live-parity.py:55",
+        "tests/test_fabric_sql_endpoint.py:128",
+        "tests/test_fabric_sql_endpoint.py:132",
+        "tests/test_api_semantic.py:92",
+        "tests/test_situations_ontology.py:22",
+        "tests/test_situations_ontology.py:24",
+        "tests/test_incremental_sync.py:86",
+        "tests/test_incremental_sync.py:155",
+        "tests/test_incremental_sync.py:582",
+        "tests/test_api_primitives.py:273",
+        "tests/test_ontology_pipeline.py:293",
+        "tests/test_semantic_models.py:28",
+        "tests/validate_fabric_cutover.py:119",
+        "tests/validate_fabric_cutover.py:120",
+        "tests/validate_fabric_cutover.py:123",
+        "tests/validate_fabric_cutover.py:131",
+        "tests/validate_fabric_cutover.py:265",
+        "tests/test_relationship_suggestions.py:108",
+        "tests/validation_fabric_notebooks_live.py:160",
+        "tests/validation_fabric_notebooks_live.py:173"
+      ],
+      "count": 64
+    },
+    "ontology_entities_and_relationships": {
+      "files": [
+        "tests/test_remediation_repository_and_reports.py:4"
+      ],
+      "count": 1
+    },
+    "ontology_entities_and_relationships_to_delta_tables": {
+      "files": [
+        "tests/test_ontology_pipeline.py:277"
+      ],
+      "count": 1
+    },
+    "ontology_entities_contract": {
+      "files": [
+        "src/fabric_pipelines/ontology_fabric_contracts.py:79",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:115",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:120",
+        "src/fabric_pipelines/ontology_pipeline.py:35",
+        "src/fabric_pipelines/ontology_pipeline.py:113"
+      ],
+      "count": 6
+    },
+    "ontology_entities_exists": {
+      "files": [
+        "tests/validate_fabric_cutover.py:34",
+        "tests/validate_fabric_cutover.py:50",
+        "tests/validate_fabric_cutover.py:118",
+        "tests/validate_fabric_cutover.py:126",
+        "tests/validate_fabric_cutover.py:249"
+      ],
+      "count": 7
+    },
+    "ontology_entities_expected_count": {
+      "files": [
+        "tests/validate_fabric_cutover.py:92",
+        "tests/validate_fabric_cutover.py:157",
+        "tests/validate_fabric_cutover.py:161"
+      ],
+      "count": 3
+    },
+    "ontology_entities_with_typed_links": {
+      "files": [
+        "tests/test_situations_ontology.py:5"
+      ],
+      "count": 1
+    },
+    "ontology_relationships": {
+      "files": [
+        "src/operations/tools.py:282",
+        "src/operations/tools.py:472",
+        "src/semantic/semantic_registry.py:43",
+        "src/semantic/semantic_registry.py:50",
+        "src/semantic/semantic_registry.py:53",
+        "src/api/runtime.py:252",
+        "src/api/routers/graph.py:43",
+        "src/api/routers/context.py:310",
+        "src/fabric/data_agent_manager.py:3",
+        "src/fabric/data_agent_manager.py:70",
+        "src/fabric/data_agent_manager.py:84",
+        "src/fabric/data_agent_manager.py:191",
+        "src/fabric/data_agent_manager.py:209",
+        "src/fabric/schema_registry.py:262",
+        "src/fabric/telemetry.py:16",
+        "src/fabric/telemetry.py:41",
+        "src/fabric/dataset_mapper.py:305",
+        "src/fabric/dataset_mapper.py:307",
+        "src/fabric/dataset_mapper.py:392",
+        "src/fabric/dataset_mapper.py:439",
+        "src/fabric/sync_service.py:674",
+        "src/fabric/sync_service.py:1089",
+        "src/fabric/sync_service.py:1096",
+        "src/fabric/sync_service.py:1137",
+        "src/fabric/sync_service.py:1155",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:98",
+        "src/fabric_pipelines/notebook_manager.py:131",
+        "src/fabric_pipelines/relationship_suggestion_parser.py:94",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:5",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:11",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:93",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:130",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:160",
+        "scripts/verify-ontology-live-parity.py:3",
+        "scripts/verify-ontology-live-parity.py:56",
+        "tests/test_situations_ontology.py:22",
+        "tests/test_situations_ontology.py:25",
+        "tests/test_incremental_sync.py:586",
+        "tests/test_ontology_pipeline.py:294",
+        "tests/test_semantic_models.py:29",
+        "tests/test_semantic_models.py:78",
+        "tests/validate_fabric_cutover.py:136",
+        "tests/validate_fabric_cutover.py:137",
+        "tests/validate_fabric_cutover.py:145",
+        "tests/validate_fabric_cutover.py:265",
+        "tests/test_relationship_suggestions.py:108",
+        "tests/validation_fabric_notebooks_live.py:160",
+        "tests/validation_fabric_notebooks_live.py:174"
+      ],
+      "count": 48
+    },
+    "ontology_relationships_contract": {
+      "files": [
+        "src/fabric_pipelines/ontology_fabric_contracts.py:96",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:116",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:122",
+        "src/fabric_pipelines/ontology_pipeline.py:36",
+        "src/fabric_pipelines/ontology_pipeline.py:116",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:4",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:28",
+        "tests/test_relationship_suggestions.py:27",
+        "tests/test_relationship_suggestions.py:30"
+      ],
+      "count": 10
+    },
+    "ontology_relationships_exists": {
+      "files": [
+        "tests/validate_fabric_cutover.py:35",
+        "tests/validate_fabric_cutover.py:51",
+        "tests/validate_fabric_cutover.py:135",
+        "tests/validate_fabric_cutover.py:140",
+        "tests/validate_fabric_cutover.py:250"
+      ],
+      "count": 7
+    },
+    "ontology_relationships_expected_count": {
+      "files": [
+        "tests/validate_fabric_cutover.py:93",
+        "tests/validate_fabric_cutover.py:174",
+        "tests/validate_fabric_cutover.py:178"
+      ],
+      "count": 3
+    },
+    "topology_edges": {
+      "files": [
+        "src/fabric_pipelines/flowlog_ingest.py:89",
+        "src/fabric_pipelines/impact_context_builder.py:32",
+        "src/fabric_pipelines/impact_context_builder.py:64",
+        "src/fabric_pipelines/ontology_binding.py:1",
+        "src/fabric_pipelines/ontology_binding.py:83",
+        "src/fabric_pipelines/topology_pipeline.py:60",
+        "src/fabric_pipelines/topology_pipeline.py:208",
+        "src/fabric_pipelines/topology_fabric_contracts.py:84",
+        "src/fabric_pipelines/notebook_manager.py:85",
+        "tests/test_topology_pipeline.py:105",
+        "tests/test_topology_pipeline.py:174",
+        "tests/test_topology_pipeline.py:175",
+        "tests/test_impact_context_builder.py:14"
+      ],
+      "count": 13
+    },
+    "topology_edges_contract": {
+      "files": [
+        "src/fabric_pipelines/topology_pipeline.py:39",
+        "src/fabric_pipelines/topology_pipeline.py:348",
+        "src/fabric_pipelines/topology_fabric_contracts.py:82",
+        "src/fabric_pipelines/topology_fabric_contracts.py:101",
+        "src/fabric_pipelines/topology_fabric_contracts.py:105"
+      ],
+      "count": 6
+    },
+    "topology_entities": {
+      "files": [
+        "src/fabric_pipelines/ontology_binding.py:1",
+        "src/fabric_pipelines/ontology_binding.py:79",
+        "src/fabric_pipelines/topology_pipeline.py:60",
+        "src/fabric_pipelines/topology_fabric_contracts.py:68",
+        "src/fabric_pipelines/notebook_manager.py:84",
+        "tests/test_topology_pipeline.py:104",
+        "tests/test_topology_pipeline.py:169",
+        "tests/test_topology_pipeline.py:170",
+        "tests/test_topology_pipeline.py:171"
+      ],
+      "count": 9
+    },
+    "topology_entities_and_edges_to_delta_tables": {
+      "files": [
+        "tests/test_topology_pipeline.py:86",
+        "tests/test_ontology_pipeline.py:279"
+      ],
+      "count": 2
+    },
+    "topology_entities_contract": {
+      "files": [
+        "src/fabric_pipelines/ontology_binding.py:36",
+        "src/fabric_pipelines/topology_pipeline.py:40",
+        "src/fabric_pipelines/topology_pipeline.py:345",
+        "src/fabric_pipelines/topology_fabric_contracts.py:66",
+        "src/fabric_pipelines/topology_fabric_contracts.py:100",
+        "src/fabric_pipelines/topology_fabric_contracts.py:106"
+      ],
+      "count": 7
+    }
+  },
+  "legacy_supporting": {
+    "bronze_advisor": {
+      "files": [
+        "src/fabric/schema_registry.py:75",
+        "src/fabric/dataset_mapper.py:320"
+      ],
+      "count": 2
+    },
+    "bronze_cost_actuals": {
+      "files": [
+        "src/fabric/schema_registry.py:76",
+        "src/fabric/dataset_mapper.py:324"
+      ],
+      "count": 2
+    },
+    "bronze_one": {
+      "files": [
+        "tests/test_incremental_sync.py:780"
+      ],
+      "count": 1
+    },
+    "bronze_patchassessment": {
+      "files": [
+        "src/fabric/schema_registry.py:89",
+        "src/fabric/dataset_mapper.py:332"
+      ],
+      "count": 2
+    },
+    "bronze_patchassessmentdetail": {
+      "files": [
+        "src/fabric/schema_registry.py:90",
+        "src/fabric/dataset_mapper.py:336"
+      ],
+      "count": 2
+    },
+    "bronze_patchinstallation": {
+      "files": [
+        "src/fabric/schema_registry.py:91",
+        "src/fabric/dataset_mapper.py:340"
+      ],
+      "count": 2
+    },
+    "bronze_resource_changes": {
+      "files": [
+        "src/fabric/schema_registry.py:92",
+        "src/fabric/dataset_mapper.py:344",
+        "src/fabric/sync_service.py:195",
+        "src/fabric/sync_service.py:241",
+        "tests/test_incremental_sync.py:462"
+      ],
+      "count": 5
+    },
+    "bronze_resourcegroups": {
+      "files": [
+        "src/fabric/schema_registry.py:74",
+        "src/fabric/dataset_mapper.py:316"
+      ],
+      "count": 2
+    },
+    "bronze_resources": {
+      "files": [
+        "src/fabric/schema_registry.py:72",
+        "src/fabric/dataset_mapper.py:311",
+        "src/fabric/sync_service.py:675",
+        "src/fabric/sync_service.py:692",
+        "src/fabric/sync_service.py:701",
+        "tests/test_fabric_sql_endpoint.py:82",
+        "tests/test_fabric_sql_endpoint.py:85",
+        "tests/test_fabric_sql_endpoint.py:86",
+        "tests/test_fabric_sql_endpoint.py:100",
+        "tests/test_fabric_sql_endpoint.py:112",
+        "tests/test_fabric_sql_endpoint.py:121",
+        "tests/test_data_quality.py:40",
+        "tests/test_data_quality.py:54",
+        "tests/test_data_quality.py:66",
+        "tests/test_data_quality.py:148",
+        "tests/test_fabric_commands.py:21",
+        "tests/test_onelake_writer.py:27",
+        "tests/test_onelake_writer.py:30",
+        "tests/test_onelake_writer.py:48",
+        "tests/test_delta_tables.py:103",
+        "tests/test_delta_tables.py:174",
+        "tests/test_delta_tables.py:181",
+        "tests/test_incremental_sync.py:66",
+        "tests/test_incremental_sync.py:504",
+        "tests/test_incremental_sync.py:578",
+        "tests/test_incremental_sync.py:696",
+        "tests/test_incremental_sync.py:725",
+        "tests/test_incremental_sync.py:754",
+        "tests/test_incremental_sync.py:758",
+        "tests/test_fabric_client.py:384",
+        "tests/test_fabric_client.py:390",
+        "tests/test_fabric_client.py:395"
+      ],
+      "count": 32
+    },
+    "bronze_silver_ontology_and_state": {
+      "files": [
+        "tests/test_incremental_sync.py:51"
+      ],
+      "count": 1
+    },
+    "bronze_subscriptions": {
+      "files": [
+        "src/fabric/schema_registry.py:73",
+        "src/fabric/dataset_mapper.py:312"
+      ],
+      "count": 2
+    },
+    "bronze_three": {
+      "files": [
+        "tests/test_incremental_sync.py:782"
+      ],
+      "count": 1
+    },
+    "bronze_two": {
+      "files": [
+        "tests/test_incremental_sync.py:781"
+      ],
+      "count": 1
+    },
+    "bronze_virtual_machines": {
+      "files": [
+        "tests/test_incremental_sync.py:758"
+      ],
+      "count": 1
+    },
+    "inventory_and_catalogs": {
+      "files": [
+        "tests/test_incremental_sync.py:386"
+      ],
+      "count": 1
+    },
+    "inventory_and_history": {
+      "files": [
+        "tests/test_incremental_sync.py:367"
+      ],
+      "count": 1
+    },
+    "inventory_and_lineage": {
+      "files": [
+        "tests/test_graph_queries.py:70"
+      ],
+      "count": 1
+    },
+    "inventory_arc_os": {
+      "files": [
+        "src/intelligence/inventory/normalization.py:175",
+        "src/intelligence/inventory/sources/arg.py:41",
+        "tests/test_incremental_sync.py:615",
+        "tests/test_incremental_sync.py:654",
+        "tests/test_inventory_provider.py:115",
+        "tests/test_inventory_provider.py:132",
+        "tests/test_inventory_provider.py:222",
+        "tests/test_inventory_retention_characterization.py:66",
+        "tests/fixtures/mock_inventory_arg.json:109"
+      ],
+      "count": 11
+    },
+    "inventory_arg": {
+      "files": [
+        "tests/test_inventory_refresh_endpoint.py:30",
+        "tests/test_inventory_refresh_cli.py:25",
+        "tests/test_api_runtime.py:170",
+        "tests/test_api_runtime.py:208",
+        "tests/test_inventory_fabric_contract.py:238",
+        "tests/inventory_harness.py:53",
+        "tests/test_incremental_sync.py:648",
+        "tests/test_api_inventory_router.py:28",
+        "tests/test_inventory_provider.py:19",
+        "tests/test_inventory_retention_characterization.py:63"
+      ],
+      "count": 10
+    },
+    "inventory_bound_is_checked_before_context_calls": {
+      "files": [
+        "tests/test_lifecycle_v2_hardening.py:45"
+      ],
+      "count": 1
+    },
+    "inventory_bound_is_checked_before_enrichment": {
+      "files": [
+        "tests/test_incident_v2_hardening.py:430"
+      ],
+      "count": 1
+    },
+    "inventory_bound_precedes_context_calls_and_requires_identity": {
+      "files": [
+        "tests/test_patch_v2_hardening.py:51"
+      ],
+      "count": 1
+    },
+    "inventory_citation_is_not_rendered": {
+      "files": [
+        "tests/test_inventory_provider.py:641"
+      ],
+      "count": 1
+    },
+    "inventory_command": {
+      "files": [
+        "tests/test_plugin_schedule.py:40"
+      ],
+      "count": 1
+    },
+    "inventory_contract_end_to_end_from_refresh_to_api_envelope": {
+      "files": [
+        "tests/test_inventory_characterization.py:104"
+      ],
+      "count": 1
+    },
+    "inventory_contract_maps_every_logical_dataset_to_fabric_table": {
+      "files": [
+        "tests/test_inventory_fabric_contract.py:102"
+      ],
+      "count": 1
+    },
+    "inventory_contract_quality_rejects_invalid_required_and_status_rows": {
+      "files": [
+        "tests/test_inventory_fabric_contract.py:131"
+      ],
+      "count": 1
+    },
+    "inventory_contract_rejects_duplicate_identity_and_assessment_fields": {
+      "files": [
+        "tests/test_inventory_fabric_contract.py:166"
+      ],
+      "count": 1
+    },
+    "inventory_contract_schemas_cover_characterized_row_keys": {
+      "files": [
+        "tests/test_inventory_fabric_contract.py:120"
+      ],
+      "count": 1
+    },
+    "inventory_custom": {
+      "files": [
+        "tests/test_inventory_family_availability.py:98"
+      ],
+      "count": 1
+    },
+    "inventory_dataset": {
+      "files": [
+        "src/intelligence/inventory/fabric_contracts.py:312",
+        "src/intelligence/inventory/fabric_contracts.py:373",
+        "src/intelligence/inventory/fabric_publication.py:9",
+        "src/intelligence/inventory/fabric_publication.py:37",
+        "tests/test_inventory_resource_contract.py:127",
+        "tests/test_inventory_resource_contract.py:137",
+        "tests/test_inventory_fabric_contract.py:133",
+        "tests/test_inventory_fabric_contract.py:136",
+        "tests/test_inventory_fabric_contract.py:146",
+        "tests/test_inventory_fabric_contract.py:168",
+        "tests/test_inventory_fabric_contract.py:199",
+        "tests/test_inventory_fabric_contract.py:200"
+      ],
+      "count": 12
+    },
+    "inventory_dataset_reads_outside_inventory": {
+      "files": [
+        "tests/test_inventory_read_port.py:218"
+      ],
+      "count": 1
+    },
+    "inventory_datasets": {
+      "files": [
+        "src/intelligence/inventory/combine.py:19",
+        "src/intelligence/inventory/combine.py:196",
+        "tests/test_inventory_characterization.py:17",
+        "tests/test_inventory_characterization.py:112"
+      ],
+      "count": 4
+    },
+    "inventory_detail": {
+      "files": [
+        "src/api/routers/inventory.py:236",
+        "src/api/routers/inventory.py:301",
+        "src/api/routers/inventory.py:505"
+      ],
+      "count": 3
+    },
+    "inventory_detection": {
+      "files": [
+        "tests/test_governance.py:252"
+      ],
+      "count": 1
+    },
+    "inventory_entities": {
+      "files": [
+        "tests/inventory_harness.py:211",
+        "tests/inventory_harness.py:220"
+      ],
+      "count": 2
+    },
+    "inventory_entity_rows": {
+      "files": [
+        "src/fabric/dataset_mapper.py:285",
+        "src/fabric/dataset_mapper.py:292",
+        "src/fabric/dataset_mapper.py:303"
+      ],
+      "count": 3
+    },
+    "inventory_fabric_contracts": {
+      "files": [
+        "src/intelligence/inventory/fabric_contracts.py:190",
+        "src/intelligence/inventory/fabric_contracts.py:286",
+        "src/intelligence/inventory/fabric_contracts.py:292",
+        "src/intelligence/inventory/fabric_contracts.py:298",
+        "src/intelligence/inventory/fabric_contracts.py:365",
+        "src/intelligence/inventory/fabric_publication.py:9",
+        "src/intelligence/inventory/fabric_publication.py:40",
+        "src/intelligence/inventory/fabric_publication.py:62",
+        "tests/test_inventory_fabric_contract.py:103",
+        "tests/test_inventory_fabric_contract.py:107"
+      ],
+      "count": 10
+    },
+    "inventory_fabric_schemas_by_table": {
+      "files": [
+        "src/intelligence/inventory/fabric_contracts.py:284",
+        "src/intelligence/inventory/fabric_contracts.py:366",
+        "src/fabric/schema_registry.py:406",
+        "src/fabric/schema_registry.py:409"
+      ],
+      "count": 4
+    },
+    "inventory_family_remains_visible_without_erasing_other_family": {
+      "files": [
+        "tests/test_inventory_provider.py:208"
+      ],
+      "count": 1
+    },
+    "inventory_fixture": {
+      "files": [
+        "src/api/runtime.py:1235"
+      ],
+      "count": 1
+    },
+    "inventory_fixture_remains_valid_json": {
+      "files": [
+        "tests/test_inventory_retention_characterization.py:62"
+      ],
+      "count": 1
+    },
+    "inventory_generation_publishes_successful_family_when_arc_fails": {
+      "files": [
+        "tests/test_incremental_sync.py:591"
+      ],
+      "count": 1
+    },
+    "inventory_golden": {
+      "files": [
+        "tests/test_inventory_characterization.py:16"
+      ],
+      "count": 1
+    },
+    "inventory_harness": {
+      "files": [
+        "tests/test_inventory_fabric_contract.py:211",
+        "tests/test_inventory_fabric_contract.py:229",
+        "tests/test_inventory_characterization.py:7",
+        "tests/test_inventory_retention_characterization.py:9"
+      ],
+      "count": 4
+    },
+    "inventory_host_type": {
+      "files": [
+        "tests/test_vulnerability_intelligence.py:295"
+      ],
+      "count": 1
+    },
+    "inventory_kind": {
+      "files": [
+        "src/intelligence/vulnerability/service.py:347",
+        "src/intelligence/vulnerability/service.py:376",
+        "src/intelligence/vulnerability/service.py:639",
+        "src/operations/patching/service.py:106",
+        "src/operations/patching/service.py:107",
+        "src/operations/patching/service.py:108",
+        "src/operations/patching/service.py:124",
+        "src/operations/patching/service.py:149",
+        "src/operations/patching/service.py:159",
+        "src/operations/patching/service.py:262",
+        "src/operations/patching/azure_adapter.py:204",
+        "src/operations/patching/azure_adapter.py:206",
+        "src/operations/patching/azure_adapter.py:210",
+        "src/operations/patching/azure_adapter.py:220",
+        "src/operations/patching/azure_adapter.py:222",
+        "src/operations/patching/models.py:74",
+        "src/operations/patching/models.py:76",
+        "src/operations/patching/models.py:136",
+        "src/operations/patching/models.py:167",
+        "src/operations/patching/models.py:204",
+        "src/operations/patching/models.py:243",
+        "tests/test_api_patching_router.py:125",
+        "tests/test_patching_azure_adapter.py:57",
+        "tests/test_patching_azure_adapter.py:71",
+        "tests/test_patching_azure_adapter.py:127",
+        "tests/test_patching_azure_adapter.py:128",
+        "tests/test_patching_azure_adapter.py:145",
+        "tests/test_patching_azure_adapter.py:149",
+        "tests/test_patching_azure_adapter.py:167",
+        "tests/test_patching_azure_adapter.py:174",
+        "tests/test_patching_azure_adapter.py:186",
+        "tests/test_patching_azure_adapter.py:189",
+        "tests/test_vulnerability_intelligence.py:338",
+        "tests/test_vulnerability_intelligence.py:340",
+        "tests/test_vulnerability_intelligence.py:341",
+        "tests/test_api_vulnerability_router.py:182"
+      ],
+      "count": 41
+    },
+    "inventory_kind_and_operation": {
+      "files": [
+        "tests/test_api_patching_router.py:122"
+      ],
+      "count": 1
+    },
+    "inventory_latest_state_deduplicates_by_exact_source_and_resource": {
+      "files": [
+        "tests/test_inventory_provider.py:173"
+      ],
+      "count": 1
+    },
+    "inventory_lifecycle_ownership_symbols": {
+      "files": [
+        "tests/test_inventory_read_port.py:229"
+      ],
+      "count": 1
+    },
+    "inventory_log_analytics_workspace_specs": {
+      "files": [
+        "src/intelligence/inventory/pipeline.py:17",
+        "src/intelligence/inventory/pipeline.py:70",
+        "src/intelligence/inventory/sources/arg.py:79",
+        "src/intelligence/inventory/sources/arg.py:107"
+      ],
+      "count": 4
+    },
+    "inventory_log_analytics_workspaces": {
+      "files": [
+        "src/intelligence/inventory/pipeline.py:90",
+        "src/intelligence/inventory/sources/arg.py:91",
+        "tests/test_inventory_refresh_cli.py:28",
+        "tests/test_inventory_fabric_contract.py:239",
+        "tests/inventory_harness.py:63",
+        "tests/inventory_harness.py:72",
+        "tests/test_inventory_provider.py:413"
+      ],
+      "count": 7
+    },
+    "inventory_manifest": {
+      "files": [
+        "tests/inventory_harness.py:208",
+        "tests/inventory_harness.py:225"
+      ],
+      "count": 2
+    },
+    "inventory_matches_identity_source_arg": {
+      "files": [
+        "tests/inventory_harness.py:199"
+      ],
+      "count": 1
+    },
+    "inventory_narrative": {
+      "files": [
+        "src/intelligence/inventory/narrative.py:34",
+        "src/intelligence/inventory/narrative.py:222",
+        "src/api/routers/inventory.py:22",
+        "src/api/routers/inventory.py:273",
+        "src/api/routers/inventory.py:276",
+        "tests/test_inventory_provider.py:607",
+        "tests/test_inventory_provider.py:633"
+      ],
+      "count": 7
+    },
+    "inventory_narrative_returns_fact_only_fallback_with_scoped_sources": {
+      "files": [
+        "tests/test_api_inventory_router.py:331"
+      ],
+      "count": 1
+    },
+    "inventory_narrative_sends_only_aggregates_and_preserves_facts": {
+      "files": [
+        "tests/test_api_inventory_router.py:350"
+      ],
+      "count": 1
+    },
+    "inventory_narrative_timeout_and_malformed_output_are_fact_only": {
+      "files": [
+        "tests/test_api_inventory_router.py:388"
+      ],
+      "count": 1
+    },
+    "inventory_native_vm_os": {
+      "files": [
+        "src/intelligence/inventory/normalization.py:174",
+        "src/intelligence/inventory/sources/arg.py:25",
+        "tests/test_api_runtime.py:174",
+        "tests/test_api_runtime.py:211",
+        "tests/test_inventory_paas.py:71",
+        "tests/test_incremental_sync.py:612",
+        "tests/test_incremental_sync.py:653",
+        "tests/test_inventory_provider.py:114",
+        "tests/test_inventory_provider.py:131",
+        "tests/test_inventory_provider.py:211",
+        "tests/test_inventory_provider.py:412",
+        "tests/test_inventory_provider.py:438",
+        "tests/test_inventory_retention_characterization.py:65",
+        "tests/fixtures/mock_inventory_arg.json:77"
+      ],
+      "count": 18
+    },
+    "inventory_network_security_groups": {
+      "files": [
+        "src/fabric_pipelines/notebook_manager.py:73",
+        "scripts/seed-topology-fixtures.py:2"
+      ],
+      "count": 2
+    },
+    "inventory_network_vnets": {
+      "files": [
+        "src/fabric_pipelines/notebook_manager.py:72",
+        "scripts/seed-topology-fixtures.py:2"
+      ],
+      "count": 2
+    },
+    "inventory_observations": {
+      "files": [
+        "src/intelligence/inventory/normalization.py:211",
+        "src/intelligence/inventory/normalization.py:299"
+      ],
+      "count": 2
+    },
+    "inventory_os": {
+      "files": [
+        "tests/test_inventory_read_port.py:234"
+      ],
+      "count": 1
+    },
+    "inventory_os_observations": {
+      "files": [
+        "src/intelligence/inventory/fabric_contracts.py:193",
+        "tests/test_inventory_refresh_cli.py:88",
+        "tests/test_inventory_refresh_cli.py:91",
+        "tests/test_inventory_fabric_contract.py:12",
+        "tests/test_inventory_fabric_contract.py:265",
+        "tests/test_inventory_fabric_contract.py:271"
+      ],
+      "count": 6
+    },
+    "inventory_os_specs": {
+      "files": [
+        "src/intelligence/inventory/pipeline.py:18",
+        "src/intelligence/inventory/pipeline.py:71",
+        "src/intelligence/inventory/sources/arg.py:16",
+        "src/intelligence/inventory/sources/arg.py:108",
+        "tests/test_inventory_provider.py:15",
+        "tests/test_inventory_provider.py:112"
+      ],
+      "count": 6
+    },
+    "inventory_pipeline": {
+      "files": [
+        "src/hermes_arg_connector/inventory_refresh.py:40",
+        "src/hermes_arg_connector/inventory_refresh.py:53",
+        "src/onboarding/runtime.py:107",
+        "src/onboarding/runtime.py:209",
+        "tests/test_inventory_refresh_multi_connection.py:124"
+      ],
+      "count": 5
+    },
+    "inventory_pipeline_notebook": {
+      "files": [
+        "tests/validation_fabric_notebooks_live.py:35"
+      ],
+      "count": 1
+    },
+    "inventory_provider": {
+      "files": [
+        "src/api/runtime.py:1515",
+        "src/api/dependencies.py:98",
+        "tests/test_inventory_refresh_endpoint.py:45",
+        "tests/test_inventory_read_port.py:113",
+        "tests/test_inventory_paas.py:99",
+        "tests/test_api_inventory_router.py:87"
+      ],
+      "count": 6
+    },
+    "inventory_read_adapter": {
+      "files": [
+        "src/hermes_arg_connector/service.py:11",
+        "tests/test_network_normalize_from_inventory.py:16"
+      ],
+      "count": 2
+    },
+    "inventory_read_port": {
+      "files": [
+        "src/hermes_arg_connector/service.py:31",
+        "src/hermes_arg_connector/service.py:56",
+        "src/hermes_arg_connector/service.py:143",
+        "src/hermes_arg_connector/service.py:145",
+        "src/hermes_arg_connector/service.py:150",
+        "src/hermes_arg_connector/service.py:151",
+        "tests/inventory_harness.py:133",
+        "tests/inventory_harness.py:165",
+        "tests/inventory_harness.py:171"
+      ],
+      "count": 11
+    },
+    "inventory_refresh": {
+      "files": [
+        "src/hermes_arg_connector/inventory_refresh.py:106",
+        "src/hermes_arg_connector/inventory_refresh.py:215",
+        "src/hermes_arg_connector/cli.py:180",
+        "src/hermes_arg_connector/cli.py:182",
+        "src/api/routers/inventory.py:91",
+        "src/api/routers/inventory.py:130",
+        "scripts/seed-topology-fixtures.py:11",
+        "tests/test_inventory_refresh_endpoint.py:6",
+        "tests/test_inventory_refresh_endpoint.py:91",
+        "tests/test_inventory_refresh_endpoint.py:111",
+        "tests/test_inventory_refresh_multi_connection.py:99"
+      ],
+      "count": 12
+    },
+    "inventory_refresh_all_connections": {
+      "files": [
+        "src/hermes_arg_connector/inventory_refresh.py:22",
+        "src/hermes_arg_connector/inventory_refresh.py:119",
+        "src/hermes_arg_connector/inventory_refresh.py:215",
+        "src/api/routers/inventory.py:96",
+        "src/api/routers/inventory.py:131",
+        "src/api/routers/inventory.py:135",
+        "tests/test_inventory_refresh_endpoint.py:91",
+        "tests/test_inventory_refresh_endpoint.py:111",
+        "tests/test_inventory_refresh_multi_connection.py:3",
+        "tests/test_inventory_refresh_multi_connection.py:100",
+        "tests/test_inventory_refresh_multi_connection.py:127"
+      ],
+      "count": 11
+    },
+    "inventory_refresh_cli_publishes_to_configured_local_onelake": {
+      "files": [
+        "tests/test_inventory_refresh_cli.py:11"
+      ],
+      "count": 1
+    },
+    "inventory_refresh_publishes_os_rows_without_hermes_sync": {
+      "files": [
+        "tests/test_inventory_fabric_contract.py:210"
+      ],
+      "count": 1
+    },
+    "inventory_refresh_writes_arg_and_law_rows_to_onelake_delta_tables": {
+      "files": [
+        "tests/test_inventory_fabric_contract.py:228"
+      ],
+      "count": 1
+    },
+    "inventory_registry": {
+      "files": [
+        "src/intelligence/inventory/service.py:258",
+        "src/intelligence/inventory/service.py:260",
+        "src/intelligence/inventory/registry.py:53",
+        "src/intelligence/inventory/registry.py:97",
+        "src/intelligence/inventory/registry.py:103",
+        "tests/test_inventory_resource_contract.py:226",
+        "tests/test_inventory_resource_contract.py:228"
+      ],
+      "count": 7
+    },
+    "inventory_relationships": {
+      "files": [
+        "tests/inventory_harness.py:211",
+        "tests/inventory_harness.py:223"
+      ],
+      "count": 2
+    },
+    "inventory_resource": {
+      "files": [
+        "tests/test_inventory_read_port.py:234"
+      ],
+      "count": 1
+    },
+    "inventory_resource_observations": {
+      "files": [
+        "src/intelligence/inventory/fabric_contracts.py:262",
+        "src/intelligence/inventory/service.py:227",
+        "tests/test_inventory_resource_contract.py:197",
+        "tests/test_inventory_resource_contract.py:213",
+        "tests/test_inventory_fabric_contract.py:267",
+        "tests/test_inventory_paas.py:86"
+      ],
+      "count": 6
+    },
+    "inventory_resource_specs": {
+      "files": [
+        "src/intelligence/inventory/pipeline.py:19",
+        "src/intelligence/inventory/pipeline.py:71",
+        "src/intelligence/inventory/sources/arg.py:59",
+        "src/intelligence/inventory/sources/arg.py:109"
+      ],
+      "count": 4
+    },
+    "inventory_resources": {
+      "files": [
+        "src/intelligence/inventory/pipeline.py:112",
+        "src/intelligence/inventory/sources/arg.py:66",
+        "src/api/routers/inventory.py:321",
+        "src/fabric_pipelines/notebook_manager.py:118",
+        "scripts/seed-ontology-fixtures.py:2",
+        "tests/test_inventory_paas.py:69"
+      ],
+      "count": 6
+    },
+    "inventory_root": {
+      "files": [
+        "tests/inventory_harness.py:205",
+        "tests/inventory_harness.py:208",
+        "tests/inventory_harness.py:212"
+      ],
+      "count": 3
+    },
+    "inventory_rows_preserve_source_identity_and_image_uncertainty": {
+      "files": [
+        "tests/test_inventory_provider.py:125"
+      ],
+      "count": 1
+    },
+    "inventory_runtime_loader_reads_active_generation_metadata": {
+      "files": [
+        "tests/test_api_runtime.py:165"
+      ],
+      "count": 1
+    },
+    "inventory_runtime_marks_old_generation_stale_without_erasing_rows": {
+      "files": [
+        "tests/test_api_runtime.py:203"
+      ],
+      "count": 1
+    },
+    "inventory_service": {
+      "files": [
+        "src/api/runtime.py:1076",
+        "src/api/runtime.py:1223",
+        "tests/test_api_runtime.py:195",
+        "tests/test_api_runtime.py:197",
+        "tests/test_api_runtime.py:231",
+        "tests/test_api_runtime.py:233"
+      ],
+      "count": 6
+    },
+    "inventory_snapshot": {
+      "files": [
+        "src/intelligence/inventory/combine.py:28",
+        "src/intelligence/inventory/combine.py:218",
+        "src/hermes_arg_connector/inventory_refresh.py:80",
+        "src/hermes_arg_connector/inventory_refresh.py:84"
+      ],
+      "count": 4
+    },
+    "inventory_software": {
+      "files": [
+        "tests/test_inventory_read_port.py:234"
+      ],
+      "count": 1
+    },
+    "inventory_software_observations": {
+      "files": [
+        "src/intelligence/inventory/fabric_contracts.py:226",
+        "tests/test_inventory_refresh_cli.py:89",
+        "tests/test_inventory_fabric_contract.py:14",
+        "tests/test_inventory_fabric_contract.py:266",
+        "tests/test_inventory_fabric_contract.py:277"
+      ],
+      "count": 5
+    },
+    "inventory_software_source_status": {
+      "files": [
+        "src/intelligence/inventory/fabric_contracts.py:243",
+        "src/intelligence/inventory/fabric_contracts.py:247",
+        "tests/test_inventory_fabric_contract.py:15",
+        "tests/test_inventory_fabric_contract.py:268"
+      ],
+      "count": 4
+    },
+    "inventory_source_status": {
+      "files": [
+        "src/intelligence/inventory/fabric_contracts.py:207",
+        "src/intelligence/inventory/fabric_contracts.py:211",
+        "tests/test_inventory_fabric_contract.py:13",
+        "tests/test_inventory_read_port.py:233"
+      ],
+      "count": 4
+    },
+    "inventory_source_status_and_rows_have_family_query_versions": {
+      "files": [
+        "tests/test_incremental_sync.py:647"
+      ],
+      "count": 1
+    },
+    "inventory_specs": {
+      "files": [
+        "tests/test_inventory_read_port.py:232"
+      ],
+      "count": 1
+    },
+    "inventory_time": {
+      "files": [
+        "src/intelligence/inventory/normalization.py:304",
+        "src/intelligence/inventory/normalization.py:309"
+      ],
+      "count": 3
+    },
+    "inventory_timestamp_and_watermark_preservation_is_empirically_absent": {
+      "files": [
+        "tests/test_inventory_retention_characterization.py:49"
+      ],
+      "count": 1
+    },
+    "inventory_view": {
+      "files": [
+        "tests/test_api_vulnerability_router.py:177"
+      ],
+      "count": 1
+    },
+    "inventory_waste_reason": {
+      "files": [
+        "src/intelligence/governance/finops.py:272",
+        "src/intelligence/governance/finops.py:286"
+      ],
+      "count": 2
+    },
+    "ontology_and_state": {
+      "files": [
+        "tests/test_incremental_sync.py:51"
+      ],
+      "count": 1
+    },
+    "ontology_application_context": {
+      "files": [
+        "src/fabric/schema_registry.py:263",
+        "src/fabric/dataset_mapper.py:393"
+      ],
+      "count": 2
+    },
+    "ontology_application_entities": {
+      "files": [
+        "tests/test_ontology_sync.py:47"
+      ],
+      "count": 1
+    },
+    "ontology_binding": {
+      "files": [
+        "src/fabric_pipelines/notebook_manager.py:17",
+        "src/fabric_pipelines/notebook_manager.py:66",
+        "tests/test_topology_pipeline.py:145",
+        "tests/test_topology_pipeline.py:147"
+      ],
+      "count": 4
+    },
+    "ontology_binding_registers_topology_tables_without_inferring_relationships": {
+      "files": [
+        "tests/test_topology_pipeline.py:144"
+      ],
+      "count": 1
+    },
+    "ontology_bindings": {
+      "files": [
+        "tests/test_incremental_sync.py:509"
+      ],
+      "count": 1
+    },
+    "ontology_business_context": {
+      "files": [
+        "src/fabric/schema_registry.py:267",
+        "src/fabric/dataset_mapper.py:397"
+      ],
+      "count": 2
+    },
+    "ontology_cfg": {
+      "files": [
+        "scripts/deploy-ontology-notebook.py:72",
+        "scripts/deploy-ontology-notebook.py:73",
+        "scripts/deploy-ontology-notebook.py:74",
+        "scripts/deploy-ontology-notebook.py:76"
+      ],
+      "count": 4
+    },
+    "ontology_comparison_scenario": {
+      "files": [
+        "scripts/verify-ontology-live-parity.py:5",
+        "scripts/verify-ontology-live-parity.py:34",
+        "scripts/verify-ontology-live-parity.py:71",
+        "scripts/seed-ontology-fixtures.py:11",
+        "scripts/seed-ontology-fixtures.py:52",
+        "scripts/seed-ontology-fixtures.py:101",
+        "tests/test_ontology_pipeline.py:35",
+        "tests/test_ontology_pipeline.py:44",
+        "tests/test_ontology_pipeline.py:225",
+        "tests/ontology_comparison_scenario.py:89",
+        "tests/ontology_comparison_scenario.py:469",
+        "tests/test_hermes_fabric_ontology_comparison.py:3",
+        "tests/test_hermes_fabric_ontology_comparison.py:47",
+        "tests/test_hermes_fabric_ontology_comparison.py:69",
+        "tests/test_hermes_fabric_ontology_comparison.py:90"
+      ],
+      "count": 19
+    },
+    "ontology_compliance_context": {
+      "files": [
+        "src/fabric/schema_registry.py:266",
+        "src/fabric/dataset_mapper.py:396"
+      ],
+      "count": 2
+    },
+    "ontology_context_query": {
+      "files": [
+        "tests/test_plugin_schedule.py:38"
+      ],
+      "count": 1
+    },
+    "ontology_counts_are_independent_of_public_output_limit": {
+      "files": [
+        "tests/test_incident_v2_hardening.py:205"
+      ],
+      "count": 1
+    },
+    "ontology_definition": {
+      "files": [
+        "tests/test_ontology_pipeline.py:317",
+        "tests/test_ontology_pipeline.py:318",
+        "tests/test_ontology_pipeline.py:322",
+        "tests/test_ontology_pipeline.py:326",
+        "tests/test_ontology_sync.py:74"
+      ],
+      "count": 5
+    },
+    "ontology_deployment": {
+      "files": [
+        "tests/test_operational_context_graph_v2_requirements.py:233"
+      ],
+      "count": 1
+    },
+    "ontology_duration": {
+      "files": [
+        "src/fabric/telemetry.py:24",
+        "src/fabric/telemetry.py:45"
+      ],
+      "count": 2
+    },
+    "ontology_entity": {
+      "files": [
+        "src/intelligence/change/change_intelligence.py:229",
+        "src/intelligence/change/change_intelligence.py:233",
+        "src/intelligence/change/change_intelligence.py:237",
+        "src/intelligence/change/change_intelligence.py:244",
+        "src/intelligence/change/change_intelligence.py:248",
+        "src/intelligence/change/change_intelligence.py:294",
+        "src/fabric/schema_registry.py:44",
+        "src/fabric/schema_registry.py:261",
+        "src/fabric/schema_registry.py:263",
+        "src/fabric/schema_registry.py:264",
+        "src/fabric/schema_registry.py:265",
+        "src/fabric/schema_registry.py:266",
+        "src/fabric/schema_registry.py:267",
+        "src/fabric/schema_registry.py:403",
+        "src/fabric/dataset_mapper.py:426",
+        "src/fabric/dataset_mapper.py:814",
+        "tests/test_incremental_sync.py:124"
+      ],
+      "count": 17
+    },
+    "ontology_entity_ids_are_stable_when_earlier_evidence_is_inserted": {
+      "files": [
+        "tests/test_incident_v2_hardening.py:488"
+      ],
+      "count": 1
+    },
+    "ontology_entity_schema": {
+      "files": [
+        "src/fabric_pipelines/ontology_fabric_contracts.py:30",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:82"
+      ],
+      "count": 2
+    },
+    "ontology_entity_table": {
+      "files": [
+        "src/fabric/dataset_mapper.py:408",
+        "src/fabric/dataset_mapper.py:911",
+        "src/fabric/sync_service.py:24",
+        "src/fabric/sync_service.py:1105",
+        "src/fabric/sync_service.py:1126"
+      ],
+      "count": 5
+    },
+    "ontology_entity_types": {
+      "files": [
+        "src/fabric/dataset_mapper.py:47",
+        "src/fabric/dataset_mapper.py:407",
+        "src/fabric/sync_service.py:21",
+        "src/fabric/sync_service.py:1104",
+        "src/fabric/sync_service.py:1127",
+        "tests/test_network_ontology.py:15",
+        "tests/test_network_ontology.py:307",
+        "tests/test_network_ontology.py:311",
+        "tests/test_network_ontology.py:315",
+        "tests/test_network_ontology.py:364"
+      ],
+      "count": 11
+    },
+    "ontology_errors": {
+      "files": [
+        "src/fabric/telemetry.py:25",
+        "src/fabric/telemetry.py:47"
+      ],
+      "count": 2
+    },
+    "ontology_fabric_contracts": {
+      "files": [
+        "src/fabric_pipelines/ontology_fabric_contracts.py:114",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:121",
+        "src/fabric_pipelines/ontology_pipeline.py:34",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:4",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:26",
+        "tests/test_relationship_suggestions.py:27"
+      ],
+      "count": 6
+    },
+    "ontology_files": {
+      "files": [
+        "tests/test_storage.py:86",
+        "tests/test_storage.py:87",
+        "tests/test_storage.py:88"
+      ],
+      "count": 3
+    },
+    "ontology_graph": {
+      "files": [
+        "tests/test_network_semantic.py:59"
+      ],
+      "count": 1
+    },
+    "ontology_hash": {
+      "files": [
+        "src/storage/datasets.py:108",
+        "src/storage/datasets.py:109",
+        "src/storage/datasets.py:110",
+        "src/storage/datasets.py:111"
+      ],
+      "count": 4
+    },
+    "ontology_health": {
+      "files": [
+        "src/api/runtime.py:958",
+        "src/fabric/schema_registry.py:268",
+        "src/fabric/dataset_mapper.py:398",
+        "src/fabric/sync_service.py:140",
+        "src/fabric/sync_service.py:191",
+        "src/fabric/sync_service.py:299",
+        "src/fabric/sync_service.py:314",
+        "src/fabric/sync_service.py:369",
+        "src/fabric/commands.py:44"
+      ],
+      "count": 10
+    },
+    "ontology_id": {
+      "files": [
+        "src/ontology/ontology_manager.py:17",
+        "src/ontology/ontology_manager.py:18",
+        "src/ontology/ontology_manager.py:19",
+        "src/ontology/ontology_manager.py:22",
+        "src/ontology/ontology_manager.py:36",
+        "src/ontology/ontology_manager.py:38",
+        "src/ontology/ontology_manager.py:42",
+        "src/ontology/ontology_manager.py:45",
+        "src/ontology/ontology_publisher.py:44",
+        "src/ontology/ontology_publisher.py:50",
+        "src/api/runtime.py:877",
+        "src/fabric/config.py:23",
+        "src/fabric/config.py:255",
+        "src/fabric/config.py:413",
+        "src/fabric/config.py:414",
+        "src/fabric/runtime.py:423",
+        "src/fabric/runtime.py:475",
+        "src/fabric/sync_service.py:66",
+        "src/fabric/sync_service.py:89",
+        "src/fabric/sync_service.py:1140",
+        "src/fabric_pipelines/ontology_binding.py:73",
+        "src/fabric_pipelines/ontology_binding.py:86",
+        "tests/test_topology_pipeline.py:166",
+        "tests/test_ontology_sync.py:44"
+      ],
+      "count": 32
+    },
+    "ontology_infrastructure_context": {
+      "files": [
+        "src/fabric/schema_registry.py:264",
+        "src/fabric/dataset_mapper.py:394"
+      ],
+      "count": 2
+    },
+    "ontology_lag": {
+      "files": [
+        "src/semantic/semantic_engine.py:38",
+        "src/semantic/semantic_engine.py:1836",
+        "tests/test_semantic_v2_requirements.py:163",
+        "tests/test_semantic_v2_requirements.py:183"
+      ],
+      "count": 4
+    },
+    "ontology_lakehouse": {
+      "files": [
+        "src/fabric/data_agent_manager.py:217",
+        "scripts/deploy-relationship-suggestion-agent.py:85"
+      ],
+      "count": 2
+    },
+    "ontology_lifecycle_product_entities": {
+      "files": [
+        "tests/test_incremental_sync.py:159"
+      ],
+      "count": 1
+    },
+    "ontology_manager": {
+      "files": [
+        "src/ontology/__init__.py:4",
+        "src/graphify-out/cache/stat-index.json:1",
+        "src/fabric/runtime.py:9",
+        "src/fabric_pipelines/ontology_binding.py:13",
+        "src/fabric_pipelines/notebook_manager.py:8",
+        "tests/test_ontology_sync.py:6",
+        "tests/test_operational_context_graph_v2_requirements.py:20"
+      ],
+      "count": 7
+    },
+    "ontology_metadata": {
+      "files": [
+        "src/hermes_arg_connector/storage.py:8",
+        "src/hermes_arg_connector/storage.py:33",
+        "src/hermes_arg_connector/ontology.py:21",
+        "src/situations/store.py:9",
+        "src/situations/store.py:49",
+        "src/fabric_pipelines/ontology_pipeline.py:14",
+        "src/fabric_pipelines/ontology_pipeline.py:28",
+        "src/fabric_pipelines/ontology_pipeline.py:81",
+        "src/fabric_pipelines/ontology_pipeline.py:82",
+        "src/fabric_pipelines/ontology_pipeline.py:89",
+        "src/fabric_pipelines/ontology_pipeline.py:233",
+        "src/fabric_pipelines/ontology_pipeline.py:268",
+        "src/fabric_pipelines/ontology_pipeline.py:286",
+        "src/fabric_pipelines/ontology_pipeline.py:299",
+        "src/fabric_pipelines/notebook_manager.py:93",
+        "src/fabric_pipelines/notebook_manager.py:110",
+        "src/fabric_pipelines/notebook_manager.py:125",
+        "src/onboarding/activation.py:12",
+        "src/onboarding/activation.py:123",
+        "scripts/verify-ontology-live-parity.py:33",
+        "tests/test_storage.py:19",
+        "tests/test_ontology_pipeline.py:4",
+        "tests/test_ontology_pipeline.py:9",
+        "tests/test_ontology_pipeline.py:10",
+        "tests/test_ontology_pipeline.py:26",
+        "tests/test_ontology_pipeline.py:30",
+        "tests/test_ontology_pipeline.py:258",
+        "tests/test_ontology_pipeline.py:259",
+        "tests/test_ontology_pipeline.py:264",
+        "tests/test_ontology_pipeline.py:269",
+        "tests/test_ontology_pipeline.py:291",
+        "tests/test_ontology_pipeline.py:305",
+        "tests/test_ontology_pipeline.py:332",
+        "tests/test_hermes_fabric_ontology_comparison.py:7",
+        "tests/test_hermes_fabric_ontology_comparison.py:10",
+        "tests/test_hermes_fabric_ontology_comparison.py:24",
+        "tests/test_hermes_fabric_ontology_comparison.py:25",
+        "tests/test_hermes_fabric_ontology_comparison.py:41",
+        "tests/test_hermes_fabric_ontology_comparison.py:44",
+        "tests/test_hermes_fabric_ontology_comparison.py:75",
+        "tests/test_hermes_fabric_ontology_comparison.py:93"
+      ],
+      "count": 42
+    },
+    "ontology_metadata_matches_generate_ontology_metadata_exactly": {
+      "files": [
+        "tests/test_ontology_pipeline.py:257"
+      ],
+      "count": 1
+    },
+    "ontology_metadata_schema": {
+      "files": [
+        "tests/test_hermes_fabric_ontology_comparison.py:143"
+      ],
+      "count": 1
+    },
+    "ontology_missing_ownership": {
+      "files": [
+        "src/fabric/telemetry.py:20",
+        "src/fabric/telemetry.py:43"
+      ],
+      "count": 2
+    },
+    "ontology_missing_tags": {
+      "files": [
+        "src/fabric/telemetry.py:23",
+        "src/fabric/telemetry.py:44"
+      ],
+      "count": 2
+    },
+    "ontology_modules_and_enterprise_entity_contract": {
+      "files": [
+        "tests/test_operational_context_graph_v2_requirements.py:157"
+      ],
+      "count": 1
+    },
+    "ontology_name": {
+      "files": [
+        "src/ontology/ontology_manager.py:17",
+        "src/ontology/ontology_manager.py:20",
+        "src/ontology/ontology_manager.py:22",
+        "src/ontology/ontology_publisher.py:45",
+        "src/ontology/ontology_publisher.py:49",
+        "src/ontology/ontology_publisher.py:50",
+        "src/ontology/ontology_publisher.py:65",
+        "src/ontology/ontology_publisher.py:67",
+        "src/ontology/ontology_publisher.py:79",
+        "src/ontology/ontology_publisher.py:81",
+        "src/ontology/ontology_publisher.py:112",
+        "src/api/runtime.py:878",
+        "src/api/runtime.py:879",
+        "src/fabric/config.py:24",
+        "src/fabric/config.py:256",
+        "src/fabric/config.py:257",
+        "src/fabric/config.py:413",
+        "src/fabric/config.py:414",
+        "src/fabric/runtime.py:424",
+        "src/fabric/runtime.py:476",
+        "src/fabric/sync_service.py:67",
+        "src/fabric/sync_service.py:90",
+        "src/fabric/sync_service.py:1141",
+        "src/fabric_pipelines/ontology_binding.py:74",
+        "src/fabric_pipelines/ontology_binding.py:85",
+        "src/fabric_pipelines/ontology_binding.py:86",
+        "src/fabric_pipelines/ontology_binding.py:93",
+        "src/fabric_pipelines/ontology_binding.py:100",
+        "src/fabric_pipelines/ontology_binding.py:106",
+        "tests/test_topology_pipeline.py:167",
+        "tests/test_incremental_sync.py:530",
+        "tests/test_incremental_sync.py:535",
+        "tests/test_ontology_sync.py:45"
+      ],
+      "count": 41
+    },
+    "ontology_notebook_cells": {
+      "files": [
+        "src/fabric_pipelines/notebook_manager.py:95",
+        "src/fabric_pipelines/notebook_manager.py:328",
+        "src/fabric_pipelines/notebook_manager.py:361",
+        "src/fabric_pipelines/notebook_manager.py:368"
+      ],
+      "count": 4
+    },
+    "ontology_notebook_definition": {
+      "files": [
+        "src/fabric_pipelines/notebook_manager.py:328",
+        "src/fabric_pipelines/notebook_manager.py:351",
+        "src/fabric_pipelines/notebook_manager.py:497",
+        "src/fabric_pipelines/notebook_manager.py:538",
+        "scripts/deploy-ontology-notebook.py:36",
+        "scripts/deploy-ontology-notebook.py:89",
+        "tests/test_ontology_pipeline.py:314",
+        "tests/test_ontology_pipeline.py:317"
+      ],
+      "count": 8
+    },
+    "ontology_notebook_definition_authors_genuine_fabric_hosted_notebook_item": {
+      "files": [
+        "tests/test_ontology_pipeline.py:299"
+      ],
+      "count": 1
+    },
+    "ontology_notebook_display_name": {
+      "files": [
+        "src/fabric_pipelines/notebook_manager.py:37",
+        "src/fabric_pipelines/notebook_manager.py:327",
+        "src/fabric_pipelines/notebook_manager.py:367",
+        "src/fabric_pipelines/notebook_manager.py:528",
+        "scripts/deploy-ontology-notebook.py:34",
+        "scripts/deploy-ontology-notebook.py:73",
+        "tests/test_ontology_pipeline.py:312",
+        "tests/test_ontology_pipeline.py:324"
+      ],
+      "count": 8
+    },
+    "ontology_orphans": {
+      "files": [
+        "src/fabric/telemetry.py:19",
+        "src/fabric/telemetry.py:42"
+      ],
+      "count": 2
+    },
+    "ontology_parity_report_shows_zero_diff": {
+      "files": [
+        "tests/test_hermes_fabric_ontology_comparison.py:154"
+      ],
+      "count": 1
+    },
+    "ontology_path": {
+      "files": [
+        "src/storage/datasets.py:242",
+        "src/storage/datasets.py:243",
+        "src/storage/datasets.py:244"
+      ],
+      "count": 3
+    },
+    "ontology_payload": {
+      "files": [
+        "src/fabric/config.py:155",
+        "src/fabric/config.py:254",
+        "src/fabric/config.py:255",
+        "src/fabric/config.py:257"
+      ],
+      "count": 4
+    },
+    "ontology_pipeline": {
+      "files": [
+        "src/fabric/data_agent_manager.py:140",
+        "src/fabric/data_agent_manager.py:210",
+        "src/fabric_pipelines/notebook_manager.py:91",
+        "src/fabric_pipelines/notebook_manager.py:108",
+        "src/fabric_pipelines/relationship_suggestion_parser.py:93",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:81",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:93",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:129",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:162",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:179",
+        "scripts/deploy-ontology-notebook.py:72",
+        "tests/test_relationship_suggestion_feedback_loop.py:3",
+        "tests/test_relationship_suggestion_feedback_loop.py:20",
+        "tests/test_ontology_pipeline.py:23",
+        "tests/ontology_comparison_scenario.py:11",
+        "tests/ontology_comparison_scenario.py:16",
+        "tests/ontology_comparison_scenario.py:91",
+        "tests/test_hermes_fabric_ontology_comparison.py:9",
+        "tests/test_hermes_fabric_ontology_comparison.py:23",
+        "tests/test_hermes_fabric_ontology_comparison.py:26",
+        "tests/test_hermes_fabric_ontology_comparison.py:39"
+      ],
+      "count": 21
+    },
+    "ontology_pipeline_notebook": {
+      "files": [
+        "src/fabric/data_agent_manager.py:3",
+        "src/fabric_pipelines/notebook_manager.py:37",
+        "scripts/deploy-ontology-notebook.py:7",
+        "scripts/verify-ontology-live-parity.py:4",
+        "scripts/seed-ontology-fixtures.py:4",
+        "tests/validate_fabric_cutover.py:266"
+      ],
+      "count": 6
+    },
+    "ontology_projection": {
+      "files": [
+        "src/intelligence/remediation/plan_repository.py:37",
+        "tests/test_remediation_hardening.py:107",
+        "tests/test_remediation_repository_and_reports.py:7"
+      ],
+      "count": 3
+    },
+    "ontology_projection_is_referentially_complete": {
+      "files": [
+        "tests/test_remediation_hardening.py:104"
+      ],
+      "count": 1
+    },
+    "ontology_publication": {
+      "files": [
+        "src/api/runtime.py:956",
+        "src/api/runtime.py:964",
+        "src/api/providers.py:325",
+        "src/api/providers.py:326",
+        "src/api/app.py:340"
+      ],
+      "count": 5
+    },
+    "ontology_publisher": {
+      "files": [
+        "src/ontology/publisher.py:3",
+        "src/graphify-out/cache/stat-index.json:1",
+        "src/fabric/runtime.py:10",
+        "src/fabric/runtime.py:453",
+        "src/fabric/runtime.py:455",
+        "src/fabric/runtime.py:474",
+        "src/fabric/sync_service.py:65",
+        "src/fabric/sync_service.py:88",
+        "src/fabric/sync_service.py:1123",
+        "src/fabric/sync_service.py:1139",
+        "src/fabric_pipelines/ontology_binding.py:20",
+        "src/fabric_pipelines/ontology_binding.py:236",
+        "tests/test_incremental_sync.py:529",
+        "tests/test_ontology_sync.py:7",
+        "tests/test_operational_context_graph_v2_hardening.py:10"
+      ],
+      "count": 17
+    },
+    "ontology_quality_report": {
+      "files": [
+        "src/fabric/schema_registry.py:279",
+        "src/fabric/dataset_mapper.py:401"
+      ],
+      "count": 2
+    },
+    "ontology_quality_row": {
+      "files": [
+        "src/fabric/dataset_mapper.py:402",
+        "src/fabric/dataset_mapper.py:949"
+      ],
+      "count": 2
+    },
+    "ontology_query": {
+      "files": [
+        "src/hermes_arg_connector/cli.py:247",
+        "src/fabric/sync_service.py:362"
+      ],
+      "count": 2
+    },
+    "ontology_rel_": {
+      "files": [
+        "src/fabric/schema_registry.py:400",
+        "src/fabric/dataset_mapper.py:916",
+        "src/fabric/sync_service.py:1098",
+        "src/fabric/sync_service.py:1156"
+      ],
+      "count": 4
+    },
+    "ontology_rel_hosted_on_application_virtual_machine": {
+      "files": [
+        "tests/test_ontology_sync.py:52"
+      ],
+      "count": 1
+    },
+    "ontology_rel_situation_affects_resource": {
+      "files": [
+        "src/fabric/dataset_mapper.py:440"
+      ],
+      "count": 1
+    },
+    "ontology_relationship": {
+      "files": [
+        "src/intelligence/change/change_intelligence.py:238",
+        "src/intelligence/change/change_intelligence.py:241",
+        "src/intelligence/change/change_intelligence.py:245",
+        "src/intelligence/change/change_intelligence.py:297",
+        "src/fabric/schema_registry.py:54",
+        "src/fabric/schema_registry.py:262",
+        "src/fabric/schema_registry.py:401",
+        "src/fabric/dataset_mapper.py:435",
+        "src/fabric/dataset_mapper.py:848"
+      ],
+      "count": 9
+    },
+    "ontology_relationship_schema": {
+      "files": [
+        "src/fabric_pipelines/ontology_fabric_contracts.py:55",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:99"
+      ],
+      "count": 2
+    },
+    "ontology_relationship_table": {
+      "files": [
+        "src/fabric/dataset_mapper.py:416",
+        "src/fabric/dataset_mapper.py:424",
+        "src/fabric/dataset_mapper.py:915",
+        "src/fabric/sync_service.py:25",
+        "src/fabric/sync_service.py:1114",
+        "src/fabric/sync_service.py:1119",
+        "src/fabric/sync_service.py:1130",
+        "src/fabric/sync_service.py:1134"
+      ],
+      "count": 8
+    },
+    "ontology_relationship_types": {
+      "files": [
+        "src/fabric/dataset_mapper.py:151",
+        "src/fabric/dataset_mapper.py:423",
+        "src/fabric/sync_service.py:22",
+        "src/fabric/sync_service.py:1118",
+        "src/fabric/sync_service.py:1131",
+        "tests/test_network_ontology.py:15",
+        "tests/test_network_ontology.py:320",
+        "tests/test_network_ontology.py:324"
+      ],
+      "count": 9
+    },
+    "ontology_rows": {
+      "files": [
+        "src/api/runtime.py:229",
+        "src/api/runtime.py:336",
+        "src/api/runtime.py:348",
+        "src/api/runtime.py:364",
+        "src/api/runtime.py:1165",
+        "tests/test_api_runtime_vulnerability_correlation.py:53",
+        "tests/test_api_runtime_vulnerability_correlation.py:91",
+        "tests/test_api_runtime_vulnerability_correlation.py:106",
+        "tests/test_api_runtime_vulnerability_correlation.py:115",
+        "tests/test_api_runtime_vulnerability_correlation.py:124",
+        "tests/test_api_runtime_vulnerability_correlation.py:135",
+        "tests/test_api_runtime_vulnerability_correlation.py:144",
+        "tests/test_api_runtime_vulnerability_correlation.py:192"
+      ],
+      "count": 18
+    },
+    "ontology_runbook": {
+      "files": [
+        "tests/test_operational_context_graph_v2_requirements.py:234"
+      ],
+      "count": 1
+    },
+    "ontology_situation_entities": {
+      "files": [
+        "src/fabric/dataset_mapper.py:429"
+      ],
+      "count": 1
+    },
+    "ontology_started": {
+      "files": [
+        "src/fabric/sync_service.py:139",
+        "src/fabric/sync_service.py:299",
+        "src/fabric/sync_service.py:314"
+      ],
+      "count": 3
+    },
+    "ontology_subscription_context": {
+      "files": [
+        "src/fabric/schema_registry.py:265",
+        "src/fabric/dataset_mapper.py:395"
+      ],
+      "count": 2
+    },
+    "ontology_sync": {
+      "files": [
+        "src/ontology/__init__.py:5",
+        "src/graphify-out/cache/stat-index.json:1",
+        "src/fabric/dataset_mapper.py:11",
+        "src/fabric/sync_service.py:13",
+        "tests/test_operational_context_graph_v2_requirements.py:14",
+        "tests/test_operational_context_graph_v2_hardening.py:11"
+      ],
+      "count": 6
+    },
+    "ontology_synchronized_at": {
+      "files": [
+        "src/intelligence/predeploy/discovery.py:80",
+        "src/semantic/operational_twin.py:138",
+        "src/semantic/semantic_engine.py:54",
+        "src/semantic/semantic_engine.py:91",
+        "src/semantic/semantic_engine.py:92",
+        "src/semantic/semantic_engine.py:93",
+        "src/semantic/semantic_engine.py:150",
+        "src/semantic/semantic_engine.py:198",
+        "src/semantic/semantic_engine.py:211",
+        "src/semantic/semantic_engine.py:220",
+        "src/semantic/semantic_engine.py:1836",
+        "src/fabric/sync_service.py:540",
+        "src/fabric/sync_service.py:584",
+        "src/fabric/sync_service.py:679",
+        "tests/test_api_twin.py:131"
+      ],
+      "count": 17
+    },
+    "ontology_validator": {
+      "files": [
+        "src/ontology/sync_validator.py:3",
+        "src/ontology/ontology_sync.py:9",
+        "src/ontology/graph_queries.py:8",
+        "src/graphify-out/cache/stat-index.json:1",
+        "src/fabric/dataset_mapper.py:12",
+        "src/fabric/sync_service.py:14",
+        "tests/test_predictive_v2_hardening.py:15",
+        "tests/test_change_v2_requirements.py:19",
+        "tests/test_situations_ontology.py:2",
+        "tests/test_incident_v2_requirements.py:18"
+      ],
+      "count": 10
+    },
+    "ontology_version": {
+      "files": [
+        "src/intelligence/predictive/predictive_engine.py:61",
+        "src/intelligence/predictive/predictive_engine.py:68",
+        "src/intelligence/change/change_intelligence.py:295",
+        "src/intelligence/change/change_intelligence.py:298",
+        "src/intelligence/incidents/causality_graph.py:89",
+        "src/intelligence/incidents/causality_graph.py:117",
+        "src/ontology/relationship_builder.py:83",
+        "src/ontology/relationship_builder.py:96",
+        "src/ontology/ontology_validator.py:53",
+        "src/ontology/ontology_validator.py:72",
+        "src/ontology/ontology_sync.py:57",
+        "src/ontology/ontology_sync.py:109",
+        "src/ontology/ontology_sync.py:114",
+        "src/ontology/ontology_sync.py:120",
+        "src/ontology/ontology_sync.py:123",
+        "src/ontology/ontology_sync.py:168",
+        "src/ontology/ontology_publisher.py:18",
+        "src/ontology/entity_builder.py:407",
+        "src/ontology/entity_builder.py:457",
+        "src/ontology/entity_builder.py:563",
+        "src/semantic/semantic_validator.py:88",
+        "src/semantic/semantic_validator.py:144",
+        "src/api/runtime.py:953",
+        "src/api/runtime.py:961",
+        "src/api/runtime.py:1029",
+        "src/api/providers.py:30",
+        "src/api/providers.py:54",
+        "src/api/providers.py:71",
+        "src/api/providers.py:210",
+        "src/api/providers.py:211",
+        "src/api/providers.py:296",
+        "src/api/providers.py:297",
+        "src/api/providers.py:300",
+        "src/api/providers.py:302",
+        "src/api/providers.py:320",
+        "src/api/app.py:337",
+        "src/fabric/schema_registry.py:51",
+        "src/fabric/schema_registry.py:68",
+        "src/fabric/dataset_mapper.py:835",
+        "src/fabric/dataset_mapper.py:886",
+        "src/fabric/sync_service.py:612",
+        "src/fabric/sync_service.py:657",
+        "src/fabric/sync_service.py:1076",
+        "src/fabric/sync_service.py:1092",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:48",
+        "src/fabric_pipelines/ontology_fabric_contracts.py:75",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:217",
+        "src/fabric_pipelines/relationship_suggestions_contract.py:230",
+        "src/onboarding/activation.py:175",
+        "tests/test_relationship_suggestion_feedback_loop.py:103",
+        "tests/test_api_providers.py:34",
+        "tests/test_operational_context_graph_v2_requirements.py:191",
+        "tests/test_operational_context_graph_v2_hardening.py:34",
+        "tests/test_operational_context_graph_v2_hardening.py:64",
+        "tests/test_operational_context_graph_v2_hardening.py:95",
+        "tests/test_operational_context_graph_v2_hardening.py:127",
+        "tests/test_operational_context_graph_v2_hardening.py:261"
+      ],
+      "count": 63
+    },
+    "ontology_virtual_machine_entities": {
+      "files": [
+        "tests/test_incremental_sync.py:537",
+        "tests/test_incremental_sync.py:579",
+        "tests/test_ontology_sync.py:48"
+      ],
+      "count": 3
+    },
+    "silver_alerts": {
+      "files": [
+        "src/fabric/schema_registry.py:209"
+      ],
+      "count": 1
+    },
+    "silver_compliance": {
+      "files": [
+        "src/fabric/schema_registry.py:102",
+        "src/fabric/dataset_mapper.py:355",
+        "src/fabric/dataset_mapper.py:573",
+        "src/fabric/sync_service.py:676",
+        "src/fabric/sync_service.py:685",
+        "tests/test_data_quality.py:124"
+      ],
+      "count": 6
+    },
+    "silver_cost_actuals": {
+      "files": [
+        "src/fabric/schema_registry.py:113",
+        "src/fabric/dataset_mapper.py:328",
+        "tests/test_incremental_sync.py:67"
+      ],
+      "count": 3
+    },
+    "silver_expected_configurations": {
+      "files": [
+        "src/fabric/schema_registry.py:245"
+      ],
+      "count": 1
+    },
+    "silver_iac_changes": {
+      "files": [
+        "src/fabric/schema_registry.py:242"
+      ],
+      "count": 1
+    },
+    "silver_identity_changes": {
+      "files": [
+        "src/fabric/schema_registry.py:239"
+      ],
+      "count": 1
+    },
+    "silver_incident_history": {
+      "files": [
+        "src/fabric/schema_registry.py:220"
+      ],
+      "count": 1
+    },
+    "silver_incidents": {
+      "files": [
+        "src/fabric/schema_registry.py:198"
+      ],
+      "count": 1
+    },
+    "silver_lifecycle_history": {
+      "files": [
+        "src/fabric/schema_registry.py:188",
+        "src/fabric/sync_service.py:188",
+        "src/fabric/sync_service.py:243",
+        "tests/test_incremental_sync.py:160",
+        "tests/test_incremental_sync.py:203",
+        "tests/test_incremental_sync.py:243",
+        "tests/test_incremental_sync.py:289"
+      ],
+      "count": 7
+    },
+    "silver_network_changes": {
+      "files": [
+        "src/fabric/schema_registry.py:236"
+      ],
+      "count": 1
+    },
+    "silver_observed_configurations": {
+      "files": [
+        "src/fabric/schema_registry.py:248"
+      ],
+      "count": 1
+    },
+    "silver_ontology_and_state": {
+      "files": [
+        "tests/test_incremental_sync.py:51"
+      ],
+      "count": 1
+    },
+    "silver_patch_findings": {
+      "files": [
+        "src/semantic/live_operations.py:140",
+        "src/api/runtime.py:573",
+        "src/api/runtime.py:912",
+        "src/fabric/schema_registry.py:151",
+        "src/fabric/dataset_mapper.py:367",
+        "tests/test_api_runtime_vulnerability_correlation.py:171",
+        "tests/test_live_provider.py:109",
+        "tests/test_live_provider.py:110"
+      ],
+      "count": 8
+    },
+    "silver_patch_history": {
+      "files": [
+        "src/fabric/schema_registry.py:140",
+        "src/fabric/dataset_mapper.py:359",
+        "src/fabric/sync_service.py:242"
+      ],
+      "count": 3
+    },
+    "silver_patch_installations": {
+      "files": [
+        "src/fabric/schema_registry.py:126",
+        "src/fabric/dataset_mapper.py:363"
+      ],
+      "count": 2
+    },
+    "silver_patch_policies": {
+      "files": [
+        "src/fabric/schema_registry.py:164",
+        "src/fabric/sync_service.py:144"
+      ],
+      "count": 2
+    },
+    "silver_policy_deviations": {
+      "files": [
+        "src/fabric/schema_registry.py:230"
+      ],
+      "count": 1
+    },
+    "silver_predictive_history": {
+      "files": [
+        "src/fabric/schema_registry.py:251"
+      ],
+      "count": 1
+    },
+    "silver_remediation_action_catalog": {
+      "files": [
+        "src/fabric/schema_registry.py:254"
+      ],
+      "count": 1
+    },
+    "silver_remediation_approval_policies": {
+      "files": [
+        "src/fabric/schema_registry.py:257"
+      ],
+      "count": 1
+    },
+    "silver_resource_relationships": {
+      "files": [
+        "src/ontology/relationship_builder.py:312",
+        "src/fabric/schema_registry.py:260",
+        "src/fabric/dataset_mapper.py:377",
+        "src/fabric/sync_service.py:1155",
+        "src/fabric/data_quality.py:100",
+        "tests/test_data_quality.py:141"
+      ],
+      "count": 6
+    },
+    "silver_security_deviations": {
+      "files": [
+        "src/fabric/schema_registry.py:233"
+      ],
+      "count": 1
+    },
+    "silver_server_inventory": {
+      "files": [
+        "src/fabric/schema_registry.py:101",
+        "src/fabric/dataset_mapper.py:351"
+      ],
+      "count": 2
+    },
+    "silver_situation_evidence": {
+      "files": [
+        "src/api/routers/situations.py:73",
+        "src/fabric/schema_registry.py:332",
+        "src/fabric/dataset_mapper.py:379"
+      ],
+      "count": 3
+    },
+    "silver_situation_links": {
+      "files": [
+        "src/fabric/schema_registry.py:354",
+        "src/fabric/dataset_mapper.py:382"
+      ],
+      "count": 2
+    },
+    "silver_situations": {
+      "files": [
+        "src/api/routers/situations.py:40",
+        "src/fabric/schema_registry.py:310",
+        "src/fabric/dataset_mapper.py:378"
+      ],
+      "count": 3
+    },
+    "silver_vm_inventory": {
+      "files": [
+        "src/fabric/schema_registry.py:100",
+        "src/fabric/dataset_mapper.py:348",
+        "tests/test_onelake_writer.py:51",
+        "tests/test_incremental_sync.py:82",
+        "tests/test_incremental_sync.py:577"
+      ],
+      "count": 5
+    }
+  },
+  "unknown": {
+    "assessment_change_findings": {
+      "files": [
+        "src/fabric_pipelines/change_pipeline.py:12",
+        "src/fabric_pipelines/notebook_manager.py:191"
+      ],
+      "count": 2
+    },
+    "assessment_count": {
+      "files": [
+        "src/ontology/graph_queries.py:385",
+        "tests/test_graph_queries.py:158"
+      ],
+      "count": 2
+    },
+    "assessment_detail": {
+      "files": [
+        "src/hermes_arg_connector/normalize.py:124",
+        "src/hermes_arg_connector/normalize.py:528"
+      ],
+      "count": 2
+    },
+    "assessment_details": {
+      "files": [
+        "src/hermes_arg_connector/normalize.py:123",
+        "src/hermes_arg_connector/queries.py:97",
+        "src/semantic/live_operations.py:108",
+        "tests/test_live_provider.py:106"
+      ],
+      "count": 4
+    },
+    "assessment_domain_fields": {
+      "files": [
+        "tests/test_inventory_resource_contract.py:126"
+      ],
+      "count": 1
+    },
+    "assessment_excludes_other_subscriptions_entirely": {
+      "files": [
+        "tests/test_predeploy.py:556"
+      ],
+      "count": 1
+    },
+    "assessment_fields": {
+      "files": [
+        "src/intelligence/inventory/fabric_contracts.py:322",
+        "src/intelligence/inventory/fabric_contracts.py:343",
+        "src/intelligence/inventory/fabric_contracts.py:344",
+        "src/intelligence/inventory/fabric_contracts.py:345",
+        "src/intelligence/inventory/fabric_contracts.py:346",
+        "tests/test_inventory_resource_contract.py:142",
+        "tests/test_inventory_fabric_contract.py:166",
+        "tests/test_inventory_fabric_contract.py:206"
+      ],
+      "count": 9
+    },
+    "assessment_governance_findings": {
+      "files": [
+        "src/fabric_pipelines/governance_pipeline.py:5",
+        "src/fabric_pipelines/notebook_manager.py:170",
+        "src/fabric_pipelines/notebook_manager.py:175"
+      ],
+      "count": 3
+    },
+    "assessment_id": {
+      "files": [
+        "src/intelligence/predeploy/service.py:106",
+        "src/intelligence/predeploy/service.py:126",
+        "src/intelligence/predeploy/service.py:131",
+        "src/intelligence/predeploy/service.py:132",
+        "src/intelligence/predeploy/service.py:147",
+        "src/hermes_arg_connector/normalize.py:516",
+        "src/hermes_arg_connector/normalize.py:539",
+        "src/hermes_arg_connector/normalize.py:752",
+        "src/api/routers/predeploy.py:123",
+        "src/api/routers/predeploy.py:127",
+        "src/api/routers/predeploy.py:132",
+        "src/api/routers/predeploy.py:135",
+        "src/api/routers/predeploy.py:136",
+        "src/api/routers/predeploy.py:139",
+        "src/api/routers/predeploy.py:140",
+        "src/api/routers/predeploy.py:146",
+        "src/api/routers/predeploy.py:150",
+        "src/api/routers/predeploy.py:162",
+        "src/api/routers/predeploy.py:177",
+        "src/fabric_pipelines/predeploy_pipeline.py:58",
+        "tests/test_predeploy.py:672",
+        "tests/test_predeploy.py:685",
+        "tests/test_predeploy.py:709",
+        "tests/test_predeploy.py:727",
+        "tests/test_predeploy.py:741",
+        "tests/ontology_comparison_scenario.py:37",
+        "tests/ontology_comparison_scenario.py:202",
+        "tests/ontology_comparison_scenario.py:456"
+      ],
+      "count": 32
+    },
+    "assessment_is_explainable_and_bounded": {
+      "files": [
+        "tests/test_remediation_risk_and_priority.py:4"
+      ],
+      "count": 1
+    },
+    "assessment_is_not_non_compliant": {
+      "files": [
+        "tests/test_agent_queries.py:44"
+      ],
+      "count": 1
+    },
+    "assessment_is_retrievable_after_submission": {
+      "files": [
+        "tests/test_predeploy.py:663"
+      ],
+      "count": 1
+    },
+    "assessment_is_unknown_not_healthy_or_compliant": {
+      "files": [
+        "tests/test_patch_compliance.py:47"
+      ],
+      "count": 1
+    },
+    "assessment_lifecycle_findings": {
+      "files": [
+        "src/fabric_pipelines/notebook_manager.py:183",
+        "src/fabric_pipelines/lifecycle_pipeline.py:16"
+      ],
+      "count": 2
+    },
+    "assessment_patch_compliance": {
+      "files": [
+        "src/fabric_pipelines/patch_pipeline.py:12",
+        "src/fabric_pipelines/notebook_manager.py:187"
+      ],
+      "count": 2
+    },
+    "assessment_predeploy_evaluations": {
+      "files": [
+        "src/fabric_pipelines/predeploy_pipeline.py:11",
+        "src/fabric_pipelines/notebook_manager.py:195"
+      ],
+      "count": 2
+    },
+    "assessment_present": {
+      "files": [
+        "src/intelligence/patch/patch_compliance_engine.py:19",
+        "src/intelligence/patch/patch_compliance_engine.py:86"
+      ],
+      "count": 2
+    },
+    "assessment_projection": {
+      "files": [
+        "src/api/routers/patching.py:42"
+      ],
+      "count": 1
+    },
+    "assessment_routes_require_authentication": {
+      "files": [
+        "tests/test_predeploy.py:691"
+      ],
+      "count": 1
+    },
+    "assessment_rows": {
+      "files": [
+        "src/intelligence/patch/patch_analyzer.py:41",
+        "src/intelligence/patch/patch_analyzer.py:42"
+      ],
+      "count": 2
+    },
+    "assessment_sources": {
+      "files": [
+        "src/api/routers/predeploy.py:57"
+      ],
+      "count": 1
+    },
+    "assessment_status_does_not_become_healthy": {
+      "files": [
+        "tests/test_patch_v2_hardening.py:379"
+      ],
+      "count": 1
+    },
+    "assessment_tables": {
+      "files": [
+        "tests/validate_fabric_cutover.py:96",
+        "tests/validate_fabric_cutover.py:225",
+        "tests/validate_fabric_cutover.py:229"
+      ],
+      "count": 3
+    },
+    "assessment_tables_present": {
+      "files": [
+        "tests/validate_fabric_cutover.py:40",
+        "tests/validate_fabric_cutover.py:56",
+        "tests/validate_fabric_cutover.py:217",
+        "tests/validate_fabric_cutover.py:222",
+        "tests/validate_fabric_cutover.py:255"
+      ],
+      "count": 7
+    },
+    "assessment_unknown_score_and_level_are_consistent": {
+      "files": [
+        "tests/test_semantic_v2_hardening.py:514"
+      ],
+      "count": 1
+    },
+    "assessment_vulnerability_findings": {
+      "files": [
+        "src/fabric_pipelines/vulnerability_pipeline.py:18",
+        "src/fabric_pipelines/notebook_manager.py:179"
+      ],
+      "count": 2
+    },
+    "operational_context_graph": {
+      "files": [
+        "src/api/runtime.py:879",
+        "src/fabric/data_agent_manager.py:4",
+        "src/fabric/config.py:24",
+        "src/fabric/config.py:257",
+        "src/fabric/sync_service.py:67",
+        "src/fabric_pipelines/impact_context_builder.py:17",
+        "src/fabric_pipelines/notebook_manager.py:212",
+        "scripts/deploy-relationship-suggestion-agent.py:3",
+        "tests/test_incremental_sync.py:530",
+        "tests/test_incremental_sync.py:535",
+        "tests/validate_fabric_cutover.py:83",
+        "tests/validate_fabric_cutover.py:123",
+        "tests/test_relationship_suggestions.py:75",
+        "tests/validation_fabric_notebooks_live.py:27"
+      ],
+      "count": 14
+    },
+    "topology_cfg": {
+      "files": [
+        "scripts/deploy-assessment-notebooks.py:86",
+        "scripts/deploy-assessment-notebooks.py:87",
+        "scripts/deploy-topology-notebook.py:61",
+        "scripts/deploy-topology-notebook.py:62",
+        "scripts/deploy-topology-notebook.py:63",
+        "scripts/deploy-topology-notebook.py:64",
+        "scripts/deploy-ontology-notebook.py:71",
+        "scripts/deploy-ontology-notebook.py:76",
+        "scripts/deploy-topology-environment.py:110",
+        "scripts/deploy-topology-environment.py:111",
+        "scripts/deploy-topology-environment.py:112"
+      ],
+      "count": 11
+    },
+    "topology_comparison_ontology": {
+      "files": [
+        "tests/test_topology_pipeline.py:167"
+      ],
+      "count": 1
+    },
+    "topology_comparison_scenario": {
+      "files": [
+        "src/fabric_pipelines/comparison_report.py:3",
+        "scripts/seed-topology-fixtures.py:14",
+        "scripts/seed-topology-fixtures.py:45",
+        "scripts/seed-topology-fixtures.py:133",
+        "tests/test_topology_pipeline.py:8",
+        "tests/test_topology_pipeline.py:13",
+        "tests/test_topology_pipeline.py:26",
+        "tests/test_topology_pipeline.py:46",
+        "tests/test_topology_pipeline.py:77",
+        "tests/test_topology_pipeline.py:90",
+        "tests/test_topology_pipeline.py:115",
+        "tests/test_topology_pipeline.py:124",
+        "tests/topology_comparison_scenario.py:30",
+        "tests/topology_comparison_scenario.py:125",
+        "tests/topology_comparison_scenario.py:147",
+        "tests/test_hermes_fabric_comparison.py:4",
+        "tests/test_hermes_fabric_comparison.py:25",
+        "tests/test_hermes_fabric_comparison.py:31",
+        "tests/test_hermes_fabric_comparison.py:57",
+        "tests/test_hermes_fabric_comparison.py:172",
+        "tests/ontology_comparison_scenario.py:3"
+      ],
+      "count": 23
+    },
+    "topology_contains_resource_level_network_nodes": {
+      "files": [
+        "tests/test_network_topology.py:141"
+      ],
+      "count": 1
+    },
+    "topology_content_part": {
+      "files": [
+        "tests/test_ontology_pipeline.py:339",
+        "tests/test_ontology_pipeline.py:342"
+      ],
+      "count": 2
+    },
+    "topology_decoded": {
+      "files": [
+        "tests/test_ontology_pipeline.py:342",
+        "tests/test_ontology_pipeline.py:343"
+      ],
+      "count": 2
+    },
+    "topology_definition": {
+      "files": [
+        "tests/test_ontology_pipeline.py:335",
+        "tests/test_ontology_pipeline.py:336",
+        "tests/test_ontology_pipeline.py:340"
+      ],
+      "count": 3
+    },
+    "topology_edge_row": {
+      "files": [
+        "src/fabric_pipelines/topology_pipeline.py:309",
+        "src/fabric_pipelines/topology_pipeline.py:409",
+        "src/fabric_pipelines/notebook_manager.py:61",
+        "src/fabric_pipelines/notebook_manager.py:79",
+        "tests/test_topology_pipeline.py:19",
+        "tests/test_topology_pipeline.py:33",
+        "tests/test_topology_pipeline.py:47",
+        "tests/test_topology_pipeline.py:78",
+        "tests/test_topology_pipeline.py:91",
+        "tests/test_topology_pipeline.py:116"
+      ],
+      "count": 10
+    },
+    "topology_edge_schema": {
+      "files": [
+        "src/fabric_pipelines/topology_fabric_contracts.py:51",
+        "src/fabric_pipelines/topology_fabric_contracts.py:85"
+      ],
+      "count": 2
+    },
+    "topology_entity_columns": {
+      "files": [
+        "src/fabric_pipelines/ontology_binding.py:39",
+        "src/fabric_pipelines/ontology_binding.py:112",
+        "src/fabric_pipelines/ontology_binding.py:124",
+        "src/fabric_pipelines/ontology_binding.py:156",
+        "src/fabric_pipelines/ontology_binding.py:257"
+      ],
+      "count": 5
+    },
+    "topology_entity_row": {
+      "files": [
+        "src/fabric_pipelines/topology_pipeline.py:71",
+        "src/fabric_pipelines/topology_pipeline.py:273"
+      ],
+      "count": 2
+    },
+    "topology_entity_schema": {
+      "files": [
+        "src/fabric_pipelines/topology_fabric_contracts.py:30",
+        "src/fabric_pipelines/topology_fabric_contracts.py:69"
+      ],
+      "count": 2
+    },
+    "topology_fabric_contracts": {
+      "files": [
+        "src/fabric_pipelines/ontology_fabric_contracts.py:3",
+        "src/fabric_pipelines/ontology_binding.py:36",
+        "src/fabric_pipelines/topology_pipeline.py:38",
+        "src/fabric_pipelines/topology_fabric_contracts.py:99",
+        "src/fabric_pipelines/topology_fabric_contracts.py:107"
+      ],
+      "count": 5
+    },
+    "topology_pipeline": {
+      "files": [
+        "src/fabric_pipelines/flowlog_ingest.py:31",
+        "src/fabric_pipelines/flowlog_ingest.py:170",
+        "src/fabric_pipelines/ontology_pipeline.py:8",
+        "src/fabric_pipelines/ontology_pipeline.py:19",
+        "src/fabric_pipelines/ontology_pipeline.py:46",
+        "src/fabric_pipelines/ontology_pipeline.py:250",
+        "src/fabric_pipelines/comparison_report.py:2",
+        "src/fabric_pipelines/comparison_report.py:19",
+        "src/fabric_pipelines/notebook_manager.py:16",
+        "src/fabric_pipelines/notebook_manager.py:61",
+        "scripts/deploy-assessment-notebooks.py:86",
+        "scripts/deploy-topology-notebook.py:61",
+        "scripts/deploy-ontology-notebook.py:71",
+        "scripts/deploy-topology-environment.py:110",
+        "scripts/deploy-topology-environment.py:148",
+        "tests/test_topology_pipeline.py:16",
+        "tests/topology_comparison_scenario.py:6",
+        "tests/topology_comparison_scenario.py:34",
+        "tests/test_hermes_fabric_comparison.py:2",
+        "tests/test_hermes_fabric_comparison.py:23",
+        "tests/test_ontology_pipeline.py:6"
+      ],
+      "count": 21
+    },
+    "topology_pipeline_env": {
+      "files": [
+        "scripts/deploy-topology-environment.py:111"
+      ],
+      "count": 1
+    },
+    "topology_pipeline_notebook": {
+      "files": [
+        "src/fabric_pipelines/notebook_manager.py:31",
+        "scripts/seed-topology-fixtures.py:4",
+        "scripts/deploy-topology-notebook.py:62",
+        "scripts/deploy-topology-environment.py:3",
+        "tests/validation_fabric_notebooks_live.py:36"
+      ],
+      "count": 5
+    },
+    "topology_platform_part": {
+      "files": [
+        "tests/test_ontology_pipeline.py:336",
+        "tests/test_ontology_pipeline.py:337"
+      ],
+      "count": 2
+    },
+    "topology_platform_payload": {
+      "files": [
+        "tests/test_ontology_pipeline.py:337",
+        "tests/test_ontology_pipeline.py:338"
+      ],
+      "count": 2
+    },
+    "topology_records_every_connection": {
+      "files": [
+        "tests/test_network_topology.py:130"
+      ],
+      "count": 1
+    },
+    "topology_relationships": {
+      "files": [
+        "src/network/topology.py:194",
+        "src/network/topology.py:749"
+      ],
+      "count": 2
+    },
+    "topology_resources": {
+      "files": [
+        "src/network/topology.py:193",
+        "src/network/topology.py:559",
+        "src/network/topology.py:751"
+      ],
+      "count": 3
+    },
+    "topology_summary_reports_enforcement": {
+      "files": [
+        "tests/test_network_semantic.py:212"
+      ],
+      "count": 1
+    },
+    "topology_tables_without_inferring_relationships": {
+      "files": [
+        "tests/test_topology_pipeline.py:144"
+      ],
+      "count": 1
+    },
+    "topology_triple_is_derived": {
+      "files": [
+        "tests/test_network_semantic.py:87"
+      ],
+      "count": 1
+    },
+    "topology_triple_is_emitted": {
+      "files": [
+        "tests/test_network_ontology.py:343"
+      ],
+      "count": 1
+    }
+  }
+}

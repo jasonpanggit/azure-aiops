@@ -25,7 +25,7 @@ from .rollback_planner import RollbackPlanner
 
 class RemediationTelemetry:
     def __init__(self, meter=None) -> None:
-        meter = meter or metrics.get_meter("hermes.remediation_planning", "0.1.0")
+        meter = meter or metrics.get_meter("aiops.remediation_planning", "0.1.0")
         self.plan_generation_latency = meter.create_histogram(
             "remediation.plan.generation.latency", unit="s"
         )

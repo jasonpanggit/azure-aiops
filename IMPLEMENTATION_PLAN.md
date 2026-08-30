@@ -1,6 +1,6 @@
-# Hermes Operations Graph Implementation Plan
+# AIOps Operations Graph Implementation Plan
 
-> **For Hermes:** Execute this plan phase-by-phase only after architecture approval. Use test-driven delivery, security review, and two-stage review (spec compliance, then quality) for implementation tasks.
+> **For AIOps:** Execute this plan phase-by-phase only after architecture approval. Use test-driven delivery, security review, and two-stage review (spec compliance, then quality) for implementation tasks.
 
 **Goal:** Deliver a self-maintaining, Azure-first Operational Context Graph and Fabric digital twin that links authoritative Azure and enterprise operational sources without replacing their inventory, telemetry, CMDB, monitoring, incident, or patch functions.
 

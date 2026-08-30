@@ -12,7 +12,7 @@
 ```bash
 uv run --extra test pytest tests/test_predictive_*.py -q
 uv run --extra test ruff check src tests
-hermes plugins doctor --ci .
+aiops plugins doctor --ci .
 ```
 
 Smoke checks:

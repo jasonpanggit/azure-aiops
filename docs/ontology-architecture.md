@@ -6,7 +6,7 @@ Standalone architecture, ontology, and traversal diagrams are available in [oper
 
 - Azure Resource Graph is authoritative for Azure inventory and resource-change observations.
 - OneLake Delta tables are the canonical governed persistence layer.
-- Microsoft Fabric Ontology is the authoritative semantic layer. Hermes does not implement a graph database.
+- Microsoft Fabric Ontology is the authoritative semantic layer. AIOps does not implement a graph database.
 - Cosmos DB is not used; the implementation has no supplemental state requirement that OneLake Delta state cannot satisfy.
 
 ```mermaid
@@ -34,7 +34,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
   participant ARG as Azure Resource Graph
-  participant H as Hermes sync
+  participant H as AIOps sync
   participant OL as OneLake Delta
   participant F as Fabric REST API
   participant O as Fabric Ontology

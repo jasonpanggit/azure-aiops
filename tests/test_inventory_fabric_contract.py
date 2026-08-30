@@ -207,12 +207,12 @@ def test_inventory_contract_rejects_duplicate_identity_and_assessment_fields() -
     assert SOURCE_STATES == {"ready", "partial", "stale", "degraded", "unavailable"}
 
 
-def test_standalone_inventory_refresh_publishes_os_rows_without_hermes_sync(tmp_path) -> None:
+def test_standalone_inventory_refresh_publishes_os_rows_without_aiops_sync(tmp_path) -> None:
     from inventory_harness import refresh_inventory
 
-    from hermes_arg_connector.storage import DatasetStore
     from intelligence.inventory.fabric_contracts import fabric_table_for_logical_name
     from intelligence.inventory.service import InventoryService
+    from onboarding.ingestion_storage import DatasetStore
 
     manifest = refresh_inventory(tmp_path)
     store = DatasetStore(tmp_path)
@@ -228,14 +228,15 @@ def test_standalone_inventory_refresh_publishes_os_rows_without_hermes_sync(tmp_
 def test_inventory_refresh_writes_arg_and_law_rows_to_onelake_delta_tables(tmp_path) -> None:
     from inventory_harness import _InventorySource, _LogsSource
 
-    from hermes_arg_connector.config import ConnectorConfig
     from intelligence.inventory.fabric_publication import InventoryFabricPublisher
     from intelligence.inventory.onelake_publication import InventoryOneLakePublisher
     from intelligence.inventory.pipeline import InventoryPipeline
+    from onboarding.config import ConnectorConfig
     from storage.datasets import DatasetStore
     from storage.onelake_writer import OneLakeWriter
 
     fixture = json.loads((Path(__file__).parent / "fixtures" / "mock_inventory_arg.json").read_text())
+    fixture.setdefault("inventory_log_analytics_workspaces", [{"workspaceId": "workspace-1"}])
     software_rows = json.loads(
         (Path(__file__).parent / "fixtures" / "mock_configurationdata.json").read_text()
     )
@@ -244,7 +245,6 @@ def test_inventory_refresh_writes_arg_and_law_rows_to_onelake_delta_tables(tmp_p
         output_dir=tmp_path / "compat",
         subscriptions=("sub-a", "sub-b"),
         connection_context={"connection_id": "connection-1"},
-        logs_workspaces={"connection-1": "workspace-1"},
         cost_management_enabled=False,
     )
     publisher = InventoryFabricPublisher(

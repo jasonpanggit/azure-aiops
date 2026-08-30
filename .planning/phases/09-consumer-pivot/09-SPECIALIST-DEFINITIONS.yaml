@@ -1,0 +1,111 @@
+# Specialist Agent Definitions
+# These define the contract, tools, and validation schema for each specialist agent
+
+specialists:
+  network:
+    name: Network Agent
+    role: Investigates topology, traffic paths, firewall/NSG gaps, and blast radius
+    tools: [network_topology, firewall_nsg_gaps]
+    keywords: [network, traffic, firewall, nsg, route, blast, hub]
+    contract_version: network-finding.v1
+    required_fields: [finding_id, resource_ids, check_id, policy_id, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary]
+    domain_fields: [topology_gaps, firewall_rules, traffic_paths, blast_radius]
+    prompt: |
+      Analyze the provided network topology, firewall, and NSG evidence to identify gaps, misconfigurations, 
+      and blast-radius concerns against Azure best practices. Each finding must cite specific evidence items, 
+      include affected resource IDs, and be either actionable or marked as hypothesis/uncertainty.
+
+  vulnerability:
+    name: Vulnerability Agent
+    role: Investigates CVE exposure, reachability, exploitability, and affected services
+    tools: [cve_exposure, risk_context]
+    keywords: [cve, vulnerab, exploit, exposure, risk]
+    contract_version: vulnerability-finding.v1
+    required_fields: [finding_id, resource_ids, cve_id, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary]
+    domain_fields: [affected_services, exploitability_score, reachability, remediation_impact]
+    prompt: |
+      Analyze CVE exposure data and risk context to identify which services are vulnerable, 
+      how they could be exploited, and what remediation impact they face. Each finding must 
+      include affected resource IDs, CVE identifiers, and either recommend action or mark as hypothesis.
+
+  patch:
+    name: Patch Agent
+    role: Investigates patch priorities, KB remediation, and validation expectations
+    tools: [cve_exposure, remediation_plans]
+    keywords: [patch, kb, update, sla]
+    contract_version: patch-finding.v1
+    required_fields: [finding_id, resource_ids, kb_id, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary]
+    domain_fields: [patch_priority, validation_steps, rollback_plan, sla_impact]
+    prompt: |
+      Analyze patch priorities and remediation plans to identify which resources need immediate patching, 
+      what validation is required before/after patching, and what rollback strategy applies. 
+      Each finding must include KB IDs, affected resources, and validation scope.
+
+  incident:
+    name: Incident Agent
+    role: Investigates incident timeline, root-cause candidates, unknowns, and validation steps
+    tools: [incidents]
+    keywords: [incident, outage, alert, root cause, timeline]
+    contract_version: incident-finding.v1
+    required_fields: [finding_id, incident_id, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary]
+    domain_fields: [timeline, root_causes, unknowns, validation_steps]
+    prompt: |
+      Analyze incident data to construct a timeline, identify root-cause candidates, 
+      and suggest validation steps to confirm/eliminate hypotheses. Surface unknowns explicitly. 
+      Each finding must cite incident IDs and timeline sources, distinguishing confirmed facts from hypotheses.
+
+  change:
+    name: Change Agent
+    role: Investigates recent changes and correlates them to operational symptoms
+    tools: [incidents, search]
+    keywords: [change, changed, deployment, configuration]
+    contract_version: change-finding.v1
+    required_fields: [finding_id, resource_ids, change_id, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary]
+    domain_fields: [deployment_date, affected_services, correlation_confidence, rollback_available]
+    prompt: |
+      Analyze recent changes and correlate them to observed incidents and symptoms. 
+      Identify which deployments/configurations could have caused observed issues, 
+      and whether rollback or validation is recommended. Each finding must include change identifiers 
+      and affected resource IDs with explicit confidence about causation.
+
+  governance:
+    name: Governance Agent
+    role: Investigates owners, scope, approvals, exceptions, and policy/accountability context
+    tools: [business_service_context, application_context, risk_context]
+    keywords: [owner, approval, governance, policy, scope, exception]
+    contract_version: governance-finding.v1
+    required_fields: [finding_id, resource_ids, owner_id, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary]
+    domain_fields: [approval_required, policy_violations, exceptions, accountability]
+    prompt: |
+      Analyze ownership, approval context, and policy alignment to identify governance gaps, 
+      missing approvals, and policy violations. Each finding must identify the responsible owner, 
+      cite governance sources, and distinguish confirmed violations from missing documentation.
+
+  remediation:
+    name: Remediation Agent
+    role: Investigates safe remediation options, rollback, validation, and governed handoff
+    tools: [remediation_opportunities, remediation_plans]
+    keywords: [remediat, fix, mitigat, rollback, plan]
+    contract_version: remediation-finding.v1
+    required_fields: [finding_id, resource_ids, remediation_id, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary]
+    domain_fields: [remediation_options, rollback_plan, validation_steps, risk_assessment, approval_required]
+    prompt: |
+      Analyze remediation opportunities and plans to identify safe, bounded remediation options 
+      with rollback and validation strategies. Each finding must include remediation identifiers, 
+      risk assessment, and validation scope. No autonomous action capability — all findings are 
+      recommendations for human approval only.
+
+  executive_summary:
+    name: Executive Summary Agent
+    role: Synthesizes grounded findings into business impact, decisions, and recommended plan
+    tools: []  # Receives findings from all other agents
+    keywords: [executive, summary, decision]
+    depends_on: [network, vulnerability, patch, incident, change, governance, remediation]
+    contract_version: executive-finding.v1
+    required_fields: [finding_id, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary]
+    domain_fields: [business_impact, priority, recommended_actions, stakeholder_communication]
+    prompt: |
+      Synthesize findings from all specialist agents into an executive narrative that describes 
+      business impact, recommended priority, and a clear action plan. Each finding must synthesize 
+      multiple sources, surface disagreements explicitly, and remain grounded in specialist findings 
+      (no invention). Distinguish decisions made from unknowns requiring further investigation.

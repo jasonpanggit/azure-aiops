@@ -1,14 +1,18 @@
 "use client";
 
+import { useMemo } from "react";
+
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
 import { formatDateTime, titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
+import { useTablePagination } from "@/lib/use-table-pagination";
 
 function rotationTone(status: string): "critical" | "warning" | "success" | "neutral" {
   if (status === "expired") return "critical";
@@ -33,6 +37,18 @@ export default function IdentityPage() {
   const stale = useApi(() => governanceApi.staleAccess(scope), [scope]);
   const nonHuman = useApi(() => governanceApi.nonHumanIdentities(scope), [scope]);
   const spn = useApi(() => governanceApi.spnCredentials(scope), [scope]);
+
+  const principalRows = useMemo(() => principals.data?.data.principals ?? [], [principals.data]);
+  const ownerRows = useMemo(() => owners.data?.data.owners ?? [], [owners.data]);
+  const staleRows = useMemo(() => stale.data?.data.assignments ?? [], [stale.data]);
+  const nonHumanRows = useMemo(() => nonHuman.data?.data.identities ?? [], [nonHuman.data]);
+  const spnRows = useMemo(() => spn.data?.data.credentials ?? [], [spn.data]);
+
+  const principalsPaging = useTablePagination(principalRows);
+  const ownersPaging = useTablePagination(ownerRows);
+  const stalePaging = useTablePagination(staleRows);
+  const nonHumanPaging = useTablePagination(nonHumanRows);
+  const spnPaging = useTablePagination(spnRows);
 
   const loading = summary.loading || principals.loading || spn.loading;
   const error = summary.error ?? principals.error ?? spn.error;
@@ -139,7 +155,7 @@ export default function IdentityPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {principals.data?.data.principals.map((row) => (
+                      {principalsPaging.pageRows.map((row) => (
                         <tr key={row.principal_id}>
                           <td>
                             <span className="table-primary-link">
@@ -180,6 +196,15 @@ export default function IdentityPage() {
                   </table>
                 </div>
               )}
+              <TablePagination
+                total={principalsPaging.total}
+                pageRows={principalsPaging.pageRows.length}
+                page={principalsPaging.page}
+                onPageChange={principalsPaging.setPage}
+                pageSize={principalsPaging.pageSize}
+                onPageSizeChange={principalsPaging.setPageSize}
+                label="principals"
+              />
             </div>
           </section>
 
@@ -209,7 +234,7 @@ export default function IdentityPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {owners.data?.data.owners.map((row, index) => (
+                      {ownersPaging.pageRows.map((row, index) => (
                         <tr key={`${row.principal_id}-${row.scope}-${index}`}>
                           <td>
                             <span className="table-wrap">{row.principal_id}</span>
@@ -232,6 +257,15 @@ export default function IdentityPage() {
                   </table>
                 </div>
               )}
+              <TablePagination
+                total={ownersPaging.total}
+                pageRows={ownersPaging.pageRows.length}
+                page={ownersPaging.page}
+                onPageChange={ownersPaging.setPage}
+                pageSize={ownersPaging.pageSize}
+                onPageSizeChange={ownersPaging.setPageSize}
+                label="owners"
+              />
             </div>
           </section>
 
@@ -264,7 +298,7 @@ export default function IdentityPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {stale.data?.data.assignments.map((row, index) => (
+                      {stalePaging.pageRows.map((row, index) => (
                         <tr key={`${row.assignment_id}-${index}`}>
                           <td>
                             <span className="table-wrap">{row.principal_id}</span>
@@ -287,6 +321,15 @@ export default function IdentityPage() {
                   </table>
                 </div>
               )}
+              <TablePagination
+                total={stalePaging.total}
+                pageRows={stalePaging.pageRows.length}
+                page={stalePaging.page}
+                onPageChange={stalePaging.setPage}
+                pageSize={stalePaging.pageSize}
+                onPageSizeChange={stalePaging.setPageSize}
+                label="stale assignments"
+              />
             </div>
           </section>
 
@@ -314,7 +357,7 @@ export default function IdentityPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {nonHuman.data?.data.identities.map((row, index) => (
+                      {nonHumanPaging.pageRows.map((row, index) => (
                         <tr key={`${row.principal_id}-${index}`}>
                           <td>
                             <span className="table-primary-link">
@@ -334,6 +377,15 @@ export default function IdentityPage() {
                   </table>
                 </div>
               )}
+              <TablePagination
+                total={nonHumanPaging.total}
+                pageRows={nonHumanPaging.pageRows.length}
+                page={nonHumanPaging.page}
+                onPageChange={nonHumanPaging.setPage}
+                pageSize={nonHumanPaging.pageSize}
+                onPageSizeChange={nonHumanPaging.setPageSize}
+                label="identities"
+              />
             </div>
           </section>
 
@@ -397,7 +449,7 @@ export default function IdentityPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {spn.data?.data.credentials.map((row, index) => (
+                      {spnPaging.pageRows.map((row, index) => (
                         <tr key={row.credential_id || index}>
                           <td>
                             <span className="table-primary-link">
@@ -447,6 +499,15 @@ export default function IdentityPage() {
                   </table>
                 </div>
               )}
+              <TablePagination
+                total={spnPaging.total}
+                pageRows={spnPaging.pageRows.length}
+                page={spnPaging.page}
+                onPageChange={spnPaging.setPage}
+                pageSize={spnPaging.pageSize}
+                onPageSizeChange={spnPaging.setPageSize}
+                label="credentials"
+              />
             </div>
           </section>
         </>

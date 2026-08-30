@@ -48,8 +48,60 @@ class InventoryReadPort:
             return None
         for row in self.list_resources(scope, limit=10_000)["resources"]:
             if str(row.get("resource_id") or "").casefold() == wanted:
-                return row
+                resolved = dict(row)
+                resolved["containment"] = self._containment_for(row)
+                return resolved
         return None
+
+    def list_containment(self, scope: Any) -> list[dict[str, Any]]:
+        """Return management-group/subscription/resource-group rows derived
+        in-process from existing observation data (no separate ResourceContainers
+        acquisition path — ROADMAP success criterion 2)."""
+        _require_scope(scope)
+        rows = self.list_resources(scope, limit=10_000)["resources"]
+        containment: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            subscription_id = str(row.get("subscription_id") or "").strip()
+            resource_group = str(row.get("resource_group") or "").strip()
+            if not subscription_id:
+                continue
+            subscription_key = f"/subscriptions/{subscription_id}".casefold()
+            if subscription_key not in containment:
+                containment[subscription_key] = {
+                    "id": subscription_key,
+                    "kind": "subscription",
+                    "parent_id": None,
+                    "subscription_id": subscription_id,
+                }
+            if resource_group:
+                rg_key = f"{subscription_key}/resourcegroups/{resource_group}".casefold()
+                if rg_key not in containment:
+                    containment[rg_key] = {
+                        "id": rg_key,
+                        "kind": "resource_group",
+                        "parent_id": subscription_key,
+                        "subscription_id": subscription_id,
+                        "resource_group": resource_group,
+                    }
+        return sorted(containment.values(), key=lambda item: item["id"])
+
+    def _containment_for(self, row: dict[str, Any]) -> dict[str, Any]:
+        subscription_id = str(row.get("subscription_id") or "").strip()
+        resource_group = str(row.get("resource_group") or "").strip()
+        subscription_key = f"/subscriptions/{subscription_id}".casefold() if subscription_id else ""
+        resource_group_key = (
+            f"{subscription_key}/resourcegroups/{resource_group}".casefold()
+            if subscription_key and resource_group
+            else ""
+        )
+        return {
+            # Management group ancestry is not yet carried on ResourceObservation
+            # rows (Phase 7 scope); left None until a management-group-aware
+            # ingestion source populates it. Absent, not fabricated.
+            "management_group_id": None,
+            "subscription_id": subscription_key or None,
+            "resource_group_id": resource_group_key or None,
+        }
 
 
 def _require_scope(scope: Any) -> None:

@@ -2,17 +2,17 @@
 
 ## Authentication
 
-- **Production auth mode**: `HERMES_API_AUTH=entra`. The API validates
+- **Production auth mode**: `AIOPS_API_AUTH=entra`. The API validates
   browser-supplied access tokens directly against Entra JWKS
   (`src/api/auth.py::EntraJwtAuthenticator`) — no bespoke token issuance.
-- **Tenant/audience pinning**: `HERMES_ENTRA_TENANT_ID` and
-  `HERMES_ENTRA_AUDIENCE` are required in production; a token from another
+- **Tenant/audience pinning**: `AIOPS_ENTRA_TENANT_ID` and
+  `AIOPS_ENTRA_AUDIENCE` are required in production; a token from another
   tenant or issued for a different audience is rejected.
-- **Static-token mode** (`HERMES_API_AUTH=token`) and **gateway mode**
-  (`HERMES_API_AUTH=gateway`) exist for local development and platforms that
+- **Static-token mode** (`AIOPS_API_AUTH=token`) and **gateway mode**
+  (`AIOPS_API_AUTH=gateway`) exist for local development and platforms that
   terminate auth upstream, respectively. Neither is used in the pilot
   production deployment (`infra/terraform/container_apps.tf` hardcodes
-  `HERMES_API_AUTH=entra` for the API Container App).
+  `AIOPS_API_AUTH=entra` for the API Container App).
 - **Dev token endpoint**: `/api/dev-token` exists only outside
   `NODE_ENV=production` in the web app; the production web image never
   serves it (`docs/PRODUCTION_RUNTIME_ACTIVATION.md`).
@@ -39,7 +39,7 @@ network, vulnerability, and twin routers.
 - **Subscription scope**: enforced identically to business-service scope —
   a connection-scoped grant restricts every read/operate action to that
   `SubscriptionConnection`'s discovered resources.
-- **Gateway grants**: `HERMES_API_GATEWAY_GRANTS` is an explicit
+- **Gateway grants**: `AIOPS_API_GATEWAY_GRANTS` is an explicit
   subject-to-role/scope JSON map, reviewed as part of onboarding a pilot
   tenant (who gets `admin`, who gets scoped `reader`).
 
@@ -71,7 +71,7 @@ connection (`docs/PRODUCTION_RUNTIME_ACTIVATION.md`):
   `RELIABILITY.md`.
 - **Startup secret bootstrap** (`src/api/akv_bootstrap.py`) only ever writes
   an explicit allowlisted `secret_name -> environment_variable` mapping
-  (`HERMES_AKV_BOOTSTRAP_SECRETS`, default `{}`); it never scans or persists
+  (`AIOPS_AKV_BOOTSTRAP_SECRETS`, default `{}`); it never scans or persists
   arbitrary environment variables, and a Key Vault write failure fails
   container startup rather than serving from a partially-synced vault.
 
@@ -79,12 +79,12 @@ connection (`docs/PRODUCTION_RUNTIME_ACTIVATION.md`):
 
 | Secret | Rotation mechanism | Cadence |
 | --- | --- | --- |
-| Discovery SPN client secrets | Customer/tenant-owned rotation in Entra; Hermes reads the current Key Vault version at connection time (no caching beyond the request lifecycle) | Per customer's Entra secret expiry policy (recommend ≤ 180 days) |
+| Discovery SPN client secrets | Customer/tenant-owned rotation in Entra; AIOps reads the current Key Vault version at connection time (no caching beyond the request lifecycle) | Per customer's Entra secret expiry policy (recommend ≤ 180 days) |
 | API bearer token (Key Vault, static-token mode only) | Manual rotation via Key Vault; not used in Entra-mode production | Dev/test only |
 | Managed identity | No secret material — Azure-managed, token-based | N/A |
 | Foundry data-plane token | Cached in-process with a 300s renewal margin before expiry (`src/operations/foundry_agent.py::_TokenProvider`); re-acquired transparently | Automatic, per-token TTL |
 
-Rotating a discovery SPN secret in Key Vault requires no Hermes redeploy —
+Rotating a discovery SPN secret in Key Vault requires no AIOps redeploy —
 the next connection use resolves the current version.
 
 ## Network isolation
@@ -98,7 +98,7 @@ the next connection use resolves the current version.
   user-assigned managed identity; no inbound public exposure to those
   services is required from the API.
 - The browser calls the API cross-origin from the web app's own domain;
-  `HERMES_API_CORS_ORIGINS` is pinned to the web app's FQDN, not `*`.
+  `AIOPS_API_CORS_ORIGINS` is pinned to the web app's FQDN, not `*`.
 
 ## Pilot security validation checklist
 
@@ -110,7 +110,7 @@ items are:
       provider-health alerts reach the on-call rotation.
 - [ ] Entra tenant/audience values reviewed against the pilot customer's
       actual tenant (not a dev/test tenant).
-- [ ] `HERMES_API_GATEWAY_GRANTS` reviewed line-by-line for the pilot
+- [ ] `AIOPS_API_GATEWAY_GRANTS` reviewed line-by-line for the pilot
       tenant's actual users/roles before go-live.
 - [ ] Discovery SPNs confirmed read-only (no write/contributor role) against
       their target subscriptions.

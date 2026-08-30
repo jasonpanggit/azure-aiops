@@ -1,11 +1,11 @@
-# Hermes Operations Graph — Repository Structure
+# AIOps Operations Graph — Repository Structure
 
 ## 1. Intent
 
 This is the target repository layout for delivery. The discovery phase creates documentation only; the directories below are planned, not an instruction to generate implementation scaffolding now.
 
 ```text
-hermes-operations-graph/
+aiops-operations-graph/
 ├── ARCHITECTURE.md
 ├── ONTOLOGY_SCHEMA.md
 ├── DATA_SOURCES.md

@@ -4,8 +4,8 @@
 
 This inventory was generated from the live environment on 2026-08-17. It is the current runtime-discovery artifact for this task; the pre-existing uppercase `AZURE_MCP_CAPABILITIES.md` documents an earlier stable/documentation baseline and must not override the live beta tool enumeration below.
 
-- Hermes Agent: `v0.20.2 (2026.8.16)`.
-- Configured Hermes MCP servers: **none** (`hermes mcp list`).
+- AIOps Agent: `v0.20.2 (2026.8.16)`.
+- Configured AIOps MCP servers: **none** (`aiops mcp list`).
 - Ephemeral Azure MCP discovery command: `npx -y @azure/mcp@latest`.
 - Resolved Azure MCP version: **3.0.0-beta.35** (`8c7fcd...`).
 - Azure authentication was not required to enumerate tool schemas; no Azure data operation was executed.
@@ -31,7 +31,7 @@ Current important gaps:
 
 ## 3. Reuse rules
 
-- Enable only exact read-only namespaces/tools required by the Foundry/Hermes profile.
+- Enable only exact read-only namespaces/tools required by the Foundry/AIOps profile.
 - Keep write/destructive tools disabled for discovery, stewardship, and incident learning.
 - Store underlying Azure source/query provenance, not merely `azure-mcp`.
 - Use Azure MCP Monitor KQL for interactive/targeted use; scheduled production queries remain versioned Azure Monitor Query SDK/API assets.
@@ -174,9 +174,9 @@ Before using any of them:
 4. record inputs/outputs and fallback source API;
 5. add compatibility tests.
 
-## 13. Hermes integration strategy
+## 13. AIOps integration strategy
 
-- Add Azure MCP through `hermes mcp add` only after pinning and security review.
+- Add Azure MCP through `aiops mcp add` only after pinning and security review.
 - Configure tool selection so only approved namespaces/sub-tools are exposed.
 - Disable MCP sampling unless a concrete trusted Azure MCP workflow needs server-initiated model calls.
 - Use a separate discovery identity with least-privilege Azure RBAC.

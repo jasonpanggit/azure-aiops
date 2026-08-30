@@ -17,11 +17,12 @@ const PRIMARY_NAV = [
   { href: "/twin", label: "Twin", short: "TW" },
   { href: "/compliance", label: "Compliance", short: "C" },
   { href: "/exposure", label: "Exposure", short: "E" },
-  { href: "/software-inventory", label: "Software Inventory", short: "SI" },
+  { href: "/inventory", label: "Inventory", short: "IN" },
   { href: "/changes", label: "Changes", short: "CH" },
   { href: "/remediation", label: "Remediation", short: "R" },
   { href: "/finops", label: "FinOps", short: "F" },
   { href: "/identity", label: "Identity", short: "ID" },
+  { href: "/resource-health", label: "Resource Health", short: "RH" },
 ] as const;
 
 const WORKBENCH_NAV = [

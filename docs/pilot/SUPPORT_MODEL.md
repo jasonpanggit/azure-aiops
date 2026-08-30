@@ -44,9 +44,9 @@ during an incident — this document does not duplicate them:
 | `/ready` returns 503 | `GET /health` — which provider is not `ready` | Upstream discovery/ontology/enrichment source down or stale | `OBSERVABILITY.md`, provider-specific runbook |
 | Copilot answers "narration unavailable" | Foundry circuit breaker state (`FoundryCircuitOpenError` in logs) | Foundry endpoint unreachable or repeatedly erroring | `RELIABILITY.md` §Foundry Copilot calls |
 | A subscription's data looks stale | `GET /api/v1/connections/{id}/health` | Discovery SPN auth failure, or ARG throttling | `docs/PRODUCTION_RUNTIME_ACTIVATION.md`, `DATA_SOURCES.md` |
-| A user sees no data / empty investigation | Confirm their grant's scope in `HERMES_API_GATEWAY_GRANTS` | Scope narrowing is working as designed — check grants, not a bug | `SECURITY.md` |
+| A user sees no data / empty investigation | Confirm their grant's scope in `AIOPS_API_GATEWAY_GRANTS` | Scope narrowing is working as designed — check grants, not a bug | `SECURITY.md` |
 | Saved investigation disappeared | Ask whether browser data/`localStorage` was cleared | Client-side-only persistence (known gap) | `DATA_GOVERNANCE.md` |
-| Deployment fails at container startup | Container App revision logs — `akv_bootstrap` failures fail loudly | Malformed `HERMES_AKV_BOOTSTRAP_SECRETS` or missing Key Vault RBAC | `src/api/akv_bootstrap.py`, `SECURITY.md` |
+| Deployment fails at container startup | Container App revision logs — `akv_bootstrap` failures fail loudly | Malformed `AIOPS_AKV_BOOTSTRAP_SECRETS` or missing Key Vault RBAC | `src/api/akv_bootstrap.py`, `SECURITY.md` |
 
 ## Escalation path
 

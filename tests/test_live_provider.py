@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_arg_connector.queries import QuerySpec
+from onboarding.query_catalog import QuerySpec
 from semantic.live_operations import live_incident_engine, live_vulnerability_service
 from semantic.live_provider import LiveResourceProvider
 

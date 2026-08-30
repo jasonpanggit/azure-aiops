@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hermes_arg_connector.config import ConnectorConfig
+from onboarding.config import ConnectorConfig
 
 
 def test_relative_output_dir_resolves_from_config_directory(tmp_path: Path) -> None:
@@ -18,7 +18,7 @@ def test_relative_output_dir_resolves_from_config_directory(tmp_path: Path) -> N
 
 def test_remote_output_dir_is_preserved_as_uri(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
-    root = "abfss://ws-hermes@onelake.dfs.fabric.microsoft.com/lakehouse/Files/discovery"
+    root = "abfss://ws-aiops@onelake.dfs.fabric.microsoft.com/lakehouse/Files/discovery"
     config.write_text(f"storage:\n  output_dir: {root}\n")
 
     loaded = ConnectorConfig.load(config)

@@ -2,12 +2,12 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { create, getConnection, list, mapMetadata, sync, updateConnection } = vi.hoisted(() => ({
+const { create, getConnection, health, list, mapMetadata, updateConnection } = vi.hoisted(() => ({
   create: vi.fn(),
   getConnection: vi.fn(),
+  health: vi.fn(),
   list: vi.fn(),
   mapMetadata: vi.fn(),
-  sync: vi.fn(),
   updateConnection: vi.fn(),
 }));
 
@@ -15,11 +15,11 @@ vi.mock("@/lib/services", () => ({
   connectionsApi: {
     create,
     get: getConnection,
+    health,
     list,
     mapMetadata,
     update: updateConnection,
     validate: vi.fn(),
-    sync,
   },
 }));
 
@@ -59,9 +59,9 @@ describe("Connections page onboarding", () => {
   beforeEach(() => {
     create.mockReset();
     getConnection.mockReset();
+    health.mockReset();
     list.mockReset();
     mapMetadata.mockReset();
-    sync.mockReset();
     updateConnection.mockReset();
     list.mockResolvedValue(emptyEnvelope);
   });
@@ -75,7 +75,24 @@ describe("Connections page onboarding", () => {
   });
 
   it("submits a client secret for server-side Key Vault storage", async () => {
-    create.mockResolvedValue({ ...emptyEnvelope, data: connection });
+    create.mockResolvedValue({
+      ...emptyEnvelope,
+      data: {
+        ...connection,
+        validation: {
+          status: "failed",
+          passed: false,
+          failed_required: ["spn_authentication"],
+          health: { details: "credential resolution failed" },
+        },
+        initial_sync: {
+          connection_id: "prod",
+          status: "not_started",
+          reason: "validation_failed",
+          sync_state: { status: "pending" },
+        },
+      },
+    });
 
     renderConnectionsPage();
     await screen.findByRole("heading", { name: "Onboard an Azure subscription" });
@@ -101,6 +118,7 @@ describe("Connections page onboarding", () => {
       )
     );
     expect(create.mock.calls[0][0].credential.secret_ref).toBeUndefined();
+    expect(await screen.findByText(/Validation failed: credential resolution failed/)).toBeInTheDocument();
   });
 
   it("opens onboarding from the page header action", async () => {
@@ -165,22 +183,84 @@ describe("Connections page onboarding", () => {
     expect(await screen.findByText("Subscription connection Production East was updated.")).toBeInTheDocument();
   });
 
-  it("runs an initial sync and reports backend sync failures", async () => {
-    list.mockResolvedValue({ ...emptyEnvelope, data: [connection] });
-    sync.mockResolvedValue({
+  it("automatically polls the initial sync and reports backend failures", async () => {
+    create.mockResolvedValue({
       ...emptyEnvelope,
       data: {
-        connection_id: "prod",
-        status: "failed",
-        sync_state: { status: "failed", message: "Credential could not be resolved" },
+        ...connection,
+        validation: { status: "healthy", passed: true, failed_required: [], health: {} },
+        initial_sync: {
+          connection_id: "prod",
+          status: "running",
+          sync_state: { status: "running", stage: "queued", progress_pct: 0 },
+        },
+      },
+    });
+    health.mockResolvedValue({
+      ...emptyEnvelope,
+      data: {
+        connections: [{
+          connection_id: "prod",
+          sync: { status: "failed", message: "Credential could not be resolved", stage_message: "Credential could not be resolved" },
+        }],
       },
     });
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
+    await screen.findByRole("heading", { name: "Onboard an Azure subscription" });
+    fireEvent.change(screen.getByLabelText("Connection ID *"), { target: { value: "PROD" } });
+    fireEvent.change(screen.getByLabelText("Display name *"), { target: { value: "Production" } });
+    fireEvent.change(screen.getByLabelText("Subscription ID *"), { target: { value: connection.subscription_id } });
+    fireEvent.change(screen.getByLabelText("Tenant ID *"), { target: { value: connection.tenant_id } });
+    fireEvent.change(screen.getByLabelText("Service principal client ID *"), { target: { value: connection.tenant_id } });
+    fireEvent.change(screen.getByLabelText("Client secret *"), { target: { value: "secret-value" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add subscription" }));
 
-    await waitFor(() => expect(sync).toHaveBeenCalledWith("prod", "initial"));
+    await waitFor(() => expect(health).toHaveBeenCalledWith("prod"));
     expect(await screen.findByText("Credential could not be resolved")).toBeInTheDocument();
-    expect(screen.queryByText("Sync completed for Production.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Validate" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sync" })).not.toBeInTheDocument();
+  });
+
+  it("automatically polls health until the initial sync succeeds", async () => {
+    list.mockResolvedValue(emptyEnvelope);
+    create.mockResolvedValue({
+      ...emptyEnvelope,
+      data: {
+        ...connection,
+        validation: { status: "healthy", passed: true, failed_required: [], health: {} },
+        initial_sync: {
+          connection_id: "prod",
+          status: "running",
+          sync_state: { status: "running", stage: "queued", progress_pct: 0 },
+        },
+      },
+    });
+    health.mockResolvedValue({
+        ...emptyEnvelope,
+        data: {
+          connections: [
+            {
+              connection_id: "prod",
+              sync: { status: "succeeded", stage: "succeeded", progress_pct: 100 },
+            },
+          ],
+        },
+      });
+
+    renderConnectionsPage();
+    await screen.findByRole("heading", { name: "Onboard an Azure subscription" });
+    fireEvent.change(screen.getByLabelText("Connection ID *"), { target: { value: "PROD" } });
+    fireEvent.change(screen.getByLabelText("Display name *"), { target: { value: "Production" } });
+    fireEvent.change(screen.getByLabelText("Subscription ID *"), { target: { value: connection.subscription_id } });
+    fireEvent.change(screen.getByLabelText("Tenant ID *"), { target: { value: connection.tenant_id } });
+    fireEvent.change(screen.getByLabelText("Service principal client ID *"), { target: { value: connection.tenant_id } });
+    fireEvent.change(screen.getByLabelText("Client secret *"), { target: { value: "secret-value" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add subscription" }));
+
+    expect(await screen.findByText("Subscription connection validated and initial sync completed.")).toBeInTheDocument();
+    expect(health).toHaveBeenCalledWith("prod");
+    expect(screen.queryByRole("button", { name: "Validate" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sync" })).not.toBeInTheDocument();
   });
 });

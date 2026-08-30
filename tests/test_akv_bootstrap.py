@@ -30,16 +30,16 @@ class Client:
 
 
 def test_disabled_bootstrap_is_a_noop():
-    assert sync_secrets(env={"HERMES_AKV_BOOTSTRAP_ENABLED": "false"}) == 0
+    assert sync_secrets(env={"AIOPS_AKV_BOOTSTRAP_ENABLED": "false"}) == 0
 
 
 def test_bootstrap_writes_missing_secrets_and_uses_explicit_mapping():
     client = Client()
     env = {
-        "HERMES_AKV_BOOTSTRAP_ENABLED": "true",
-        "HERMES_CONNECTION_KEY_VAULT": "ops-kv",
-        "HERMES_AKV_BOOTSTRAP_SECRETS": '{"api-tokens":"HERMES_API_TOKENS"}',
-        "HERMES_API_TOKENS": "opaque-token",
+        "AIOPS_AKV_BOOTSTRAP_ENABLED": "true",
+        "AIOPS_CONNECTION_KEY_VAULT": "ops-kv",
+        "AIOPS_AKV_BOOTSTRAP_SECRETS": '{"api-tokens":"AIOPS_API_TOKENS"}',
+        "AIOPS_API_TOKENS": "opaque-token",
         "AZURE_CLIENT_ID": "managed-identity-id",
     }
 
@@ -55,10 +55,10 @@ def test_bootstrap_writes_missing_secrets_and_uses_explicit_mapping():
 def test_bootstrap_does_not_create_a_new_version_when_value_is_unchanged():
     client = Client({"api-tokens": "opaque-token"})
     env = {
-        "HERMES_AKV_BOOTSTRAP_ENABLED": "true",
-        "HERMES_CONNECTION_KEY_VAULT": "ops-kv",
-        "HERMES_AKV_BOOTSTRAP_SECRETS": '{"api-tokens":"HERMES_API_TOKENS"}',
-        "HERMES_API_TOKENS": "opaque-token",
+        "AIOPS_AKV_BOOTSTRAP_ENABLED": "true",
+        "AIOPS_CONNECTION_KEY_VAULT": "ops-kv",
+        "AIOPS_AKV_BOOTSTRAP_SECRETS": '{"api-tokens":"AIOPS_API_TOKENS"}',
+        "AIOPS_API_TOKENS": "opaque-token",
     }
 
     assert sync_secrets(env=env, client_factory=lambda _vault, _identity: client) == 0
@@ -67,27 +67,27 @@ def test_bootstrap_does_not_create_a_new_version_when_value_is_unchanged():
 
 def test_enabled_bootstrap_requires_source_values():
     env = {
-        "HERMES_AKV_BOOTSTRAP_ENABLED": "true",
-        "HERMES_CONNECTION_KEY_VAULT": "ops-kv",
-        "HERMES_AKV_BOOTSTRAP_SECRETS": '{"api-tokens":"HERMES_API_TOKENS"}',
+        "AIOPS_AKV_BOOTSTRAP_ENABLED": "true",
+        "AIOPS_CONNECTION_KEY_VAULT": "ops-kv",
+        "AIOPS_AKV_BOOTSTRAP_SECRETS": '{"api-tokens":"AIOPS_API_TOKENS"}',
     }
-    with pytest.raises(RuntimeError, match="source HERMES_API_TOKENS is empty"):
+    with pytest.raises(RuntimeError, match="source AIOPS_API_TOKENS is empty"):
         sync_secrets(env=env, client_factory=lambda _vault, _identity: Client())
 
 
 def test_bootstrap_rejects_invalid_or_unsafe_mappings():
     base = {
-        "HERMES_AKV_BOOTSTRAP_ENABLED": "true",
-        "HERMES_CONNECTION_KEY_VAULT": "ops-kv",
-        "HERMES_API_TOKENS": "opaque-token",
+        "AIOPS_AKV_BOOTSTRAP_ENABLED": "true",
+        "AIOPS_CONNECTION_KEY_VAULT": "ops-kv",
+        "AIOPS_API_TOKENS": "opaque-token",
     }
     with pytest.raises(TypeError, match="must be a JSON object"):
         sync_secrets(
-            env={**base, "HERMES_AKV_BOOTSTRAP_SECRETS": "[]"},
+            env={**base, "AIOPS_AKV_BOOTSTRAP_SECRETS": "[]"},
             client_factory=lambda _vault, _identity: Client(),
         )
     with pytest.raises(RuntimeError, match="Key Vault-safe"):
         sync_secrets(
-            env={**base, "HERMES_AKV_BOOTSTRAP_SECRETS": '{"bad/name":"HERMES_API_TOKENS"}'},
+            env={**base, "AIOPS_AKV_BOOTSTRAP_SECRETS": '{"bad/name":"AIOPS_API_TOKENS"}'},
             client_factory=lambda _vault, _identity: Client(),
         )

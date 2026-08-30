@@ -131,6 +131,59 @@ class ToolContext:
     scope: Scope
 
 
+@dataclass(frozen=True)
+class FabricIQToolAdapter:
+    """Small governed boundary for optional semantic graph enrichment.
+
+    The bound source is deliberately a relationship/policy context source,
+    never an inventory enumerator. The adapter stamps every response before it
+    reaches the investigation ledger or a model.
+
+    ``source`` names the surface that actually answered, and callers must set
+    it to match: the current runtime binding answers from the OneLake ontology
+    projection, while a Fabric IQ traversal binding would set ``"fabric-iq"``.
+    Leaving the default in place while serving a different surface would put a
+    false source on an evidence citation.
+    """
+
+    query: Callable[[str, Mapping[str, Any], Scope], Mapping[str, Any]]
+    source: str = "fabric-iq"
+    allowed_kinds: tuple[str, ...] = ("relationships", "topology", "policy")
+
+    def run(self, kind: str, args: Mapping[str, Any], scope: Scope) -> ToolResult:
+        if kind not in self.allowed_kinds:
+            return ToolResult(status=STATUS_DENIED, warning="Fabric IQ operation is not allowlisted")
+        try:
+            raw = self.query(kind, args, scope)
+        except PermissionError:
+            return ToolResult(status=STATUS_DENIED, warning="Fabric IQ access is not authorized")
+        except (LookupError, RuntimeError, TimeoutError, ValueError, TypeError) as exc:
+            return ToolResult(status=STATUS_UNAVAILABLE, warning=f"Fabric IQ unavailable: {exc}")
+        if not isinstance(raw, Mapping):
+            return ToolResult(status=STATUS_UNAVAILABLE, warning="Fabric IQ returned an invalid result")
+        payload = _filter_scoped(dict(raw.get("data") or {}), scope)
+        if payload is _HIDDEN or not payload:
+            return ToolResult(status=STATUS_EMPTY)
+        metadata = {
+            "source": self.source,
+            "freshness": str(raw.get("freshness") or "unknown"),
+            "authorization": str(raw.get("authorization") or "scope-checked"),
+            "provenance": str(raw.get("provenance") or self.source),
+            "identity_authority": False,
+        }
+        return ToolResult(status=STATUS_OK, data={"enrichment": _bound(payload), "metadata": metadata})
+
+
+def _fabric_iq_result(tool_context: ToolContext, kind: str, args: Mapping[str, Any]) -> ToolResult:
+    provider = getattr(tool_context.context, "fabric_iq_provider", None)
+    adapter = provider() if callable(provider) else None
+    if adapter is None:
+        return ToolResult(status=STATUS_UNAVAILABLE, warning="Fabric IQ is unavailable")
+    if not isinstance(adapter, FabricIQToolAdapter):
+        return ToolResult(status=STATUS_UNAVAILABLE, warning="Fabric IQ provider is invalid")
+    return adapter.run(kind, args, tool_context.scope)
+
+
 def _network_scope(scope: Scope) -> NetworkScope:
     return NetworkScope(
         connection_ids=tuple(scope.dimensions.get("subscription_connection", ())),
@@ -575,6 +628,40 @@ def _tool_remediation_opportunities(tool_context: ToolContext, args: Mapping[str
     return _provider_result(tool_context, "remediation", run)
 
 
+def _tool_inventory_resources(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    resource_type = str(args.get("resource_type") or "").strip()
+    family = str(args.get("family") or "").strip() or None
+
+    def run(port: Any) -> ToolResult:
+        result = port.list_resources(
+            tool_context.scope,
+            family=family,
+            resource_type=resource_type or None,
+            limit=_MAX_ITEMS,
+        )
+        rows = result.get("resources") or []
+        if not rows:
+            return ToolResult(status=STATUS_EMPTY)
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(
+                {
+                    "resources": rows,
+                    "total": result.get("total", len(rows)),
+                }
+            ),
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.inventory.InventoryReadPort",
+                    source_table="inventory/resource_observations",
+                    confidence=CONFIDENCE_HIGH,
+                ),
+            ),
+        )
+
+    return _provider_result(tool_context, "inventory_read_port", run)
+
+
 def _tool_search(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     query = str(args.get("query") or "").strip()
     if not query:
@@ -696,10 +783,37 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             handler=_tool_remediation_opportunities,
         ),
         ToolSpec(
+            name="inventory_resources",
+            description="Scoped inventory resource listing (e.g. VMs, storage accounts), optionally filtered by ARM resource type or family.",
+            parameters={
+                "resource_type": "Optional ARM resource type, e.g. Microsoft.Compute/virtualMachines",
+                "family": "Optional inventory family (e.g. os, paas)",
+            },
+            handler=_tool_inventory_resources,
+        ),
+        ToolSpec(
             name="search",
             description="Intent-driven search over operational context (same intents as /search).",
             parameters={"query": "A supported search phrase"},
             handler=_tool_search,
+        ),
+        ToolSpec(
+            name="fabric_iq_relationships",
+            description="Optional scope-checked semantic relationship context; never inventory identity. Cite the returned metadata.source, not Fabric IQ.",
+            parameters={"subject": "Resource or domain subject already in caller evidence"},
+            handler=lambda context, args: _fabric_iq_result(context, "relationships", args),
+        ),
+        ToolSpec(
+            name="fabric_iq_topology",
+            description="Optional semantic topology context; cite the returned metadata.source and freshness.",
+            parameters={"subject": "Topology subject already in caller evidence"},
+            handler=lambda context, args: _fabric_iq_result(context, "topology", args),
+        ),
+        ToolSpec(
+            name="fabric_iq_policy_context",
+            description="Optional semantic policy context; deterministic checks remain authoritative.",
+            parameters={"subject": "Policy subject already in caller evidence"},
+            handler=lambda context, args: _fabric_iq_result(context, "policy", args),
         ),
     )
 }
@@ -738,6 +852,7 @@ __all__ = [
     "STATUS_UNAVAILABLE",
     "TOOL_REGISTRY",
     "ToolContext",
+    "FabricIQToolAdapter",
     "ToolResult",
     "ToolSpec",
     "call_tool",

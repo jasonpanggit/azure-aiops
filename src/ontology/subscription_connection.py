@@ -89,6 +89,14 @@ class SyncState:
     record_count: int = 0
     attempts: int = 0
     message: str | None = None
+    # Live-progress fields. ``status`` stays the coarse
+    # pending/running/succeeded/failed lifecycle used by freshness/health
+    # checks; ``stage``/``stage_message``/``progress_pct`` are updated
+    # in-place while a run is "running" so a client can poll one connection's
+    # sync_state and render a progress UI without a separate job store.
+    stage: str | None = None
+    stage_message: str | None = None
+    progress_pct: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", str(self.status or "pending").strip() or "pending")
@@ -98,6 +106,8 @@ class SyncState:
         object.__setattr__(self, "run_id", _normalize_optional(self.run_id))
         object.__setattr__(self, "source_version", _normalize_optional(self.source_version))
         object.__setattr__(self, "message", _normalize_optional(self.message))
+        object.__setattr__(self, "stage", _normalize_optional(self.stage))
+        object.__setattr__(self, "stage_message", _normalize_optional(self.stage_message))
         if isinstance(self.record_count, bool):
             raise TypeError("SyncState record_count must be an integer")
         if int(self.record_count) < 0:
@@ -106,6 +116,13 @@ class SyncState:
             raise TypeError("SyncState attempts must be an integer")
         if int(self.attempts) < 0:
             raise ValueError("SyncState attempts must be non-negative")
+        if self.progress_pct is not None:
+            if isinstance(self.progress_pct, bool):
+                raise TypeError("SyncState progress_pct must be an integer")
+            pct = int(self.progress_pct)
+            if not 0 <= pct <= 100:
+                raise ValueError("SyncState progress_pct must be between 0 and 100")
+            object.__setattr__(self, "progress_pct", pct)
 
     @classmethod
     def from_mapping(cls, value: Any) -> SyncState | None:
@@ -127,6 +144,13 @@ class SyncState:
             record_count=int(value.get("record_count") or value.get("recordCount") or 0),
             attempts=int(value.get("attempts") or 0),
             message=value.get("message"),
+            stage=value.get("stage"),
+            stage_message=value.get("stage_message") or value.get("stageMessage"),
+            progress_pct=(
+                int(value["progress_pct"])
+                if value.get("progress_pct") is not None
+                else (int(value["progressPct"]) if value.get("progressPct") is not None else None)
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -140,6 +164,9 @@ class SyncState:
             "record_count": self.record_count,
             "attempts": self.attempts,
             "message": self.message,
+            "stage": self.stage,
+            "stage_message": self.stage_message,
+            "progress_pct": self.progress_pct,
         }
 
 

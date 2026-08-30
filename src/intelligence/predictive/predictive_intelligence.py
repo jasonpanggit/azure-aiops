@@ -24,7 +24,7 @@ from .trend_detector import TrendDetector
 
 class PredictiveTelemetry:
     def __init__(self,meter=None):
-        meter=meter or metrics.get_meter("hermes.predictive_operations","0.1.0")
+        meter=meter or metrics.get_meter("aiops.predictive_operations","0.1.0")
         self.analysis_duration=meter.create_histogram("predictive.analysis.duration",unit="s")
         self.feature_duration=meter.create_histogram("predictive.feature.duration",unit="s")
         self.forecast_duration=meter.create_histogram("predictive.forecast.duration",unit="s")

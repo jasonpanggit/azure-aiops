@@ -15,6 +15,8 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/lib/services", () => ({
+  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
+  copilotEvidenceRows: () => [],
   networkApi: { gaps, ruleFindings },
   operationsApi: { remediationPlans, remediationOpportunities },
   vulnerabilityApi: { exposures },

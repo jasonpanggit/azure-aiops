@@ -266,6 +266,7 @@ class ResourceObservation:
             "resource_name": self.resource_name,
             "resource_type": self.resource_type,
             "family": self.family,
+            "tenant_id": self.tenant_id,
             "subscription_id": self.subscription_id,
             "resource_group": self.resource_group,
             "location": self.location,
@@ -277,6 +278,12 @@ class ResourceObservation:
             "os_version": self.os_version,
             "observed_at": self.observed_at,
             "query_version": self.query_version,
+            # Lossless raw provider properties/tags (INV-11): required so
+            # inventory read-port consumers (e.g. AIOps's normalizers via
+            # InventoryReadAdapter) can reconstruct the exact nested shapes
+            # ARG returned, without a separate ARG acquisition path.
+            "tags": self.tags,
+            "properties": self.provider_payload,
         }
 
 
@@ -461,7 +468,7 @@ class MachineObservation:
         else:
             evidence_rows = [
                 {
-                    "source_engine": "hermes_arg_connector",
+                    "source_engine": "onboarding",
                     "source_table": "Resources",
                     "observed_at": row.get("observed_at") or row.get("observedAt") or "",
                     "source_id": row.get("id") or row.get("resource_id") or "",
@@ -472,7 +479,7 @@ class MachineObservation:
             item
             if isinstance(item, InventoryEvidence)
             else InventoryEvidence(
-                source_engine=item.get("source_engine", "hermes_arg_connector"),
+                source_engine=item.get("source_engine", "onboarding"),
                 source_table=item.get("source_table", "Resources"),
                 observed_at=item.get("observed_at") or row.get("observed_at") or "",
                 source_id=item.get("source_id", ""),

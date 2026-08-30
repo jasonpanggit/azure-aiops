@@ -53,6 +53,10 @@ class ApiContext:
     hybrid_incident_provider: Callable[[list[str]], Any] | None = None
     hybrid_remediation_provider: Callable[[list[str]], Any] | None = None
     hybrid_patching_provider: Callable[[list[str]], Any] | None = None
+    # Live resource-health utilization (CPU/disk/network) via Azure Monitor
+    # Metrics. Resolved per request like the other hybrid providers since it
+    # performs a live per-connection Azure call rather than reading a snapshot.
+    hybrid_resource_health_provider: Callable[[list[str]], Any] | None = None
     # Same rationale for the intelligence engines: they are projections of a
     # snapshot, so they are resolved per request rather than pinned at startup.
     incident_provider: Callable[[], Any] | None = None
@@ -91,11 +95,23 @@ class ApiContext:
     # with the Copilot degrading to retrieval-only answers.
     foundry_agent_provider: Callable[[], Any] | None = None
     provider_runtime: ProviderRuntime | None = None
+    # Specialist agents for domain-specific analysis. Each resolves independently
+    # using FoundryPromptAgent.from_env(specialist_id) to read per-agent env vars.
+    # All are optional; missing specialists degrade to generic Copilot narration.
+    vulnerability_agent_provider: Callable[[], Any] | None = None
+    patch_agent_provider: Callable[[], Any] | None = None
+    incident_agent_provider: Callable[[], Any] | None = None
+    change_agent_provider: Callable[[], Any] | None = None
+    governance_agent_provider: Callable[[], Any] | None = None
+    remediation_agent_provider: Callable[[], Any] | None = None
+    executive_summary_agent_provider: Callable[[], Any] | None = None
     # Durable situation/evidence read model, resolved per request like the
     # semantic snapshot so a newly synchronized generation is visible.
     situation_provider: Callable[[], Any] | None = None
     # OS inventory is a read-only projection of the active immutable generation.
     inventory_provider: Callable[[], Any] | None = None
+    inventory_read_port_provider: Callable[[], Any] | None = None
+    fabric_iq_provider: Callable[[], Any] | None = None
 
     def resolve_provider(self, name: str, *, optional: bool = False) -> Any:
         """Resolve a provider through the managed runtime or legacy callable."""
@@ -136,8 +152,36 @@ class ApiContext:
         """
         return self.resolve_provider("copilot", optional=True)
 
+    def specialist_agent(self, agent_id: str) -> Any | None:
+        """Resolve a specialist agent by id, or ``None`` when unavailable.
+
+        Specialist agents (vulnerability, patch, incident, change, governance,
+        remediation, executive_summary) are optional. Missing agents degrade to
+        generic Copilot narration or retrieval-only responses.
+        """
+        agent_id = (agent_id or "").strip().lower()
+        if agent_id in (
+            "vulnerability",
+            "patch",
+            "incident",
+            "change",
+            "governance",
+            "remediation",
+            "executive_summary",
+        ):
+            return self.resolve_provider(f"{agent_id}_agent", optional=True)
+        return None
+
     def semantic(self) -> SemanticEngine:
         return self.resolve_provider("semantic")
+
+    def inventory_read_port(self) -> Any:
+        """Resolve the scope-enforcing identity read port.
+
+        Consumers receive this contract rather than the inventory service so
+        the service cannot be used to bypass the request's effective scope.
+        """
+        return self.resolve_provider("inventory_read_port")
 
 
 def get_context(request: Request) -> ApiContext:

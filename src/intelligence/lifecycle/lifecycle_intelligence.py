@@ -20,7 +20,7 @@ from .lifecycle_trend_engine import LifecycleTrendEngine
 
 class LifecycleTelemetry:
     def __init__(self, meter=None) -> None:
-        meter = meter or metrics.get_meter("hermes.lifecycle_intelligence", "0.1.0")
+        meter = meter or metrics.get_meter("aiops.lifecycle_intelligence", "0.1.0")
         self.analysis_duration = meter.create_histogram(
             "lifecycle.analysis.duration", unit="s"
         )

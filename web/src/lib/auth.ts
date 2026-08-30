@@ -7,7 +7,7 @@ import { type Configuration, LogLevel, PublicClientApplication } from "@azure/ms
  * environment variables at build/deploy time. In local development without
  * an Entra app registration, `getAccessToken()` degrades to a static dev
  * token fetched from the `/api/dev-token` route handler, which reads the
- * server-only `HERMES_DEV_TOKEN` env var (matching the API's
+ * server-only `AIOPS_DEV_TOKEN` env var (matching the API's
  * `StaticTokenAuthenticator`, see docs/OPERATIONS_API.md) so the UI is usable
  * without a tenant.
  */
@@ -86,8 +86,8 @@ export async function getAccessToken(): Promise<string | null> {
  * Entra, still silently (no interactive prompt). A cached token issued
  * before an app-role assignment change can otherwise be served from
  * sessionStorage indefinitely, missing the `roles` claim the API requires to
- * resolve Hermes grants. Call this once after an "Entra principal has no
- * configured Hermes grants" 401 to pick up a newly-assigned role without
+ * resolve AIOps grants. Call this once after an "Entra principal has no
+ * configured AIOps grants" 401 to pick up a newly-assigned role without
  * requiring the user to fully sign out.
  */
 export async function refreshAccessToken(): Promise<string | null> {
@@ -119,9 +119,50 @@ export async function refreshAccessToken(): Promise<string | null> {
  * refresh cannot recover from that; only a fresh interactive login can, so
  * this forces one instead of leaving the user stuck behind a permanent
  * "bearer token is required" error.
+ *
+ * Guarded so this can happen at most once per browser session. When the 401
+ * is caused by something a new sign-in cannot fix -- a server-side auth
+ * misconfiguration, or a principal with no configured AIOps grants -- the
+ * post-logout redirect returns to the same page, which re-issues the same
+ * failing request and logs the user straight back out. That is an infinite
+ * sign-in/sign-out loop with no way for the user to break out. After the
+ * first attempt the error is allowed to surface instead, so the UI can show
+ * an honest failure state.
  */
+const REAUTH_ATTEMPTED_KEY = "aiops.reauth-attempted";
+
+/** True when a forced re-authentication has already been tried this session. */
+export function hasAttemptedReauthentication(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.sessionStorage.getItem(REAUTH_ATTEMPTED_KEY) === "1";
+  } catch {
+    // sessionStorage unavailable (private mode/blocked): treat re-auth as
+    // already attempted so a failure can never become an unbreakable loop.
+    return true;
+  }
+}
+
+/** Clears the guard once a request succeeds, so a later genuine expiry can re-auth. */
+export function clearReauthenticationAttempt(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(REAUTH_ATTEMPTED_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export async function forceReauthentication(): Promise<void> {
   if (!isMsalConfigured) return;
+  if (hasAttemptedReauthentication()) return;
+
+  try {
+    window.sessionStorage.setItem(REAUTH_ATTEMPTED_KEY, "1");
+  } catch {
+    // Cannot persist the guard, so cannot guarantee loop termination.
+    return;
+  }
 
   const instance = getMsalInstance();
   const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];

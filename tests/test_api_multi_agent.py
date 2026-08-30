@@ -8,7 +8,6 @@ from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
-from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 
@@ -86,7 +85,7 @@ class _Semantic:
 
 def _client(tmp_path) -> TestClient:
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(
             {TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),))}
         ),

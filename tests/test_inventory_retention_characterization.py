@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from hermes_arg_connector.storage import DatasetStore
-from intelligence.inventory.service import InventoryService
-
 from inventory_harness import refresh_inventory
+
+from intelligence.inventory.service import InventoryService
+from onboarding.ingestion_storage import DatasetStore
 
 
 def test_failed_software_refresh_retains_rows_with_non_ready_state(tmp_path: Path) -> None:

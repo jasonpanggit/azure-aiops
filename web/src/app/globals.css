@@ -672,16 +672,23 @@ textarea:focus-visible {
 }
 
 .posture-orbit {
+  position: relative;
   display: grid;
   align-content: center;
   justify-items: center;
   min-height: 180px;
+  align-self: center;
+  justify-self: center;
+  margin: 0 auto;
 }
 
 .posture-orbit-ring {
   position: absolute;
+  top: 50%;
+  left: 50%;
   width: 164px;
   height: 164px;
+  transform: translate(-50%, -50%);
   border: 1px solid rgb(137 235 226 / 46%);
   border-radius: 50%;
   box-shadow: inset 0 0 30px rgb(93 226 210 / 12%), 0 0 32px rgb(93 226 210 / 14%);
@@ -996,6 +1003,7 @@ textarea:focus-visible {
 .metric-card {
   position: relative;
   min-height: 124px;
+  min-width: 0;
   box-sizing: border-box;
   padding: 17px 18px;
   overflow: hidden;
@@ -1057,6 +1065,14 @@ textarea:focus-visible {
   font-size: 30px;
   font-weight: 650;
   line-height: 1;
+  overflow-wrap: anywhere;
+}
+
+.metric-value-text {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: normal;
 }
 
 .metric-detail {
@@ -1641,12 +1657,67 @@ textarea:focus-visible {
 }
 
 .table-footer {
-  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px;
   font-size: 11px;
   color: var(--color-text-muted);
-  text-align: right;
   background: var(--color-surface-subtle);
   border-top: 1px solid var(--color-border);
+}
+
+.table-footer-range {
+  white-space: nowrap;
+}
+
+.table-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.table-footer-size {
+  height: 26px;
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.table-footer-pages {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.table-footer .button {
+  min-height: 26px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.table-footer-page {
+  min-width: 26px;
+  padding: 0 5px;
+  justify-content: center;
+}
+
+.table-footer-page.is-active {
+  color: var(--color-brand-contrast, #fff);
+  background: var(--color-brand);
+  border-color: var(--color-brand);
+}
+
+.table-footer-gap {
+  padding: 0 2px;
+  color: var(--color-text-muted);
 }
 
 .breadcrumb {
@@ -3291,6 +3362,14 @@ body.topology-fullscreen-open {
   fill: var(--color-text-secondary);
 }
 
+/* Table-cell variant: small enough to repeat on every CVE row, so the vector
+   reads as a comparable shape instead of a wall of near-identical strings. */
+.cvss-radar-chart-compact {
+  display: block;
+  width: 60px;
+  height: 60px;
+}
+
 .cve-description {
   margin-top: 10px;
   font-size: 13px;
@@ -3356,6 +3435,7 @@ body.topology-fullscreen-open {
   display: grid;
   grid-template-columns: minmax(0, 1.7fr) minmax(300px, 0.8fr);
   gap: 16px;
+  align-items: start;
 }
 
 .plan-list,
@@ -3384,19 +3464,34 @@ body.topology-fullscreen-open {
   gap: 20px;
 }
 
+.plan-row-summary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.plan-row-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .plan-row-heading h3 {
   margin-top: 7px;
+  overflow-wrap: anywhere;
 }
 
 .plan-row-heading p {
   margin-top: 3px;
   color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .plan-risk {
   display: flex;
   min-width: 84px;
   flex-direction: column;
+  flex-shrink: 0;
   text-align: right;
 }
 
@@ -3444,6 +3539,10 @@ body.topology-fullscreen-open {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.simulation-grid .metric-card {
+  min-width: 0;
 }
 
 .remediation-section {
@@ -3558,6 +3657,37 @@ body.topology-fullscreen-open {
   display: grid;
   gap: 12px;
   min-width: 0;
+}
+
+.compliance-detail details {
+  min-width: 0;
+  margin-top: 4px;
+}
+
+.compliance-detail summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.compliance-detail details[open] summary {
+  margin-bottom: 10px;
+}
+
+.compliance-detail details .structured-data,
+.compliance-detail details .structured-list,
+.compliance-detail details .structured-list-item {
+  min-width: 0;
+}
+
+.compliance-detail details .structured-row {
+  grid-template-columns: minmax(110px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.compliance-detail details .structured-row dt {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .compliance-detail dl {
@@ -3769,6 +3899,26 @@ body.topology-fullscreen-open {
   background: var(--color-success-subtle);
   border-color: #b9dfb7;
   border-left-color: var(--color-success);
+}
+
+.sync-progress-callout {
+  flex-direction: column;
+  margin-bottom: 14px;
+}
+
+.sync-progress-bar {
+  width: 100%;
+  height: 6px;
+  margin-top: 6px;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.sync-progress-bar-fill {
+  height: 100%;
+  background: var(--color-info);
+  transition: width 0.3s ease;
 }
 
 .connection-table {
@@ -4002,6 +4152,63 @@ body.topology-fullscreen-open {
   border-radius: var(--radius-sm);
   cursor: pointer;
   box-shadow: 0 6px 16px -8px rgba(76, 60, 200, 0.55);
+}
+
+.copilot-drawer-trigger:focus-visible,
+.copilot-drawer-close:focus-visible,
+.copilot-drawer-expand:focus-visible,
+.copilot-prompts button:focus-visible {
+  outline: 3px solid var(--color-focus, #60a5fa);
+  outline-offset: 2px;
+}
+
+.copilot-drawer-trigger .copilot-mark {
+  width: 24px;
+  height: 24px;
+  font-size: 15px;
+  border-radius: 7px;
+}
+
+.copilot-drawer-trigger-label {
+  white-space: nowrap;
+}
+
+.copilot-live-status {
+  min-height: 22px;
+  margin-bottom: 10px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.copilot-synthesis-mode {
+  margin: 0 0 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.copilot-findings {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.copilot-finding {
+  padding: 10px 12px;
+  border-left: 3px solid var(--color-border);
+  background: var(--color-surface-subtle);
+}
+
+.copilot-finding-verified { border-left-color: var(--color-success, #16804c); }
+.copilot-finding-hypothesis { border-left-color: var(--color-warning, #b7791f); }
+.copilot-finding-unavailable,
+.copilot-finding-denied { border-left-color: var(--color-critical, #b42318); }
+.copilot-finding p { margin: 4px 0; }
+.copilot-finding small { color: var(--color-text-muted); }
+
+@media (max-width: 640px) {
+  .copilot-drawer { width: 100% !important; }
+  .copilot-drawer-trigger-label { display: none; }
+  .copilot-drawer-trigger { padding: 7px; border-radius: 50%; }
 }
 
 .copilot-drawer-trigger:hover {
@@ -4492,6 +4699,10 @@ body.topology-fullscreen-open {
     grid-template-columns: minmax(0, 1fr) 170px;
   }
 
+  .posture-orbit {
+    min-height: 160px;
+  }
+
   .command-center-facts {
     grid-column: 1 / -1;
     grid-template-columns: repeat(3, 1fr);
@@ -4671,8 +4882,8 @@ body.topology-fullscreen-open {
   }
 
   .posture-orbit {
-    min-height: 180px;
-    margin: 4px auto -2px;
+    min-height: 160px;
+    margin: 12px auto 8px;
   }
 
   .command-center-facts {
@@ -4899,7 +5110,7 @@ body.topology-fullscreen-open {
   background: var(--color-surface-muted);
 }
 
-/* Software Inventory */
+/* Inventory */
 .page-shell {
   display: grid;
   gap: 18px;
@@ -5133,4 +5344,424 @@ body.topology-fullscreen-open {
   .detail-panel {
     padding: 14px;
   }
+}
+
+/* ==========================================================================
+   Inventory page visual treatment
+   Scoped to .inventory-page so shared components elsewhere are unaffected.
+   ========================================================================== */
+
+.inventory-page {
+  --inventory-accent: #0f6cbd;
+  --inventory-accent-deep: #0a4c86;
+}
+
+/* --- Tabs: pill switcher with an animated active indicator --------------- */
+
+.inventory-page .tab-list {
+  position: relative;
+  gap: 2px;
+  padding: 5px;
+  background: linear-gradient(145deg, #eaf0f6 0%, #f4f7fa 100%);
+  border-color: #d5dee7;
+  box-shadow: inset 0 1px 2px rgb(16 37 63 / 6%);
+}
+
+.inventory-page .tab-list [role="tab"] {
+  position: relative;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 20px;
+  font-size: 13.5px;
+  letter-spacing: .01em;
+  transition: color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.inventory-page .tab-list [role="tab"]:hover:not([aria-selected="true"]) {
+  color: var(--inventory-accent-deep);
+  background: rgb(255 255 255 / 60%);
+}
+
+.inventory-page .tab-list [role="tab"][aria-selected="true"] {
+  color: #fff;
+  background: linear-gradient(135deg, var(--inventory-accent) 0%, var(--inventory-accent-deep) 100%);
+  box-shadow: 0 4px 12px rgb(15 108 189 / 32%);
+  transform: translateY(-1px);
+}
+
+.inventory-page .tab-list [role="tab"]:focus-visible {
+  outline: 2px solid var(--inventory-accent);
+  outline-offset: 2px;
+}
+
+/* --- Metric cards: stronger hierarchy, accent gradient rail -------------- */
+
+.inventory-page .metric-grid {
+  gap: 14px;
+}
+
+.inventory-page .metric-card {
+  background: linear-gradient(150deg, #fff 0%, #f7fbff 100%);
+  border-radius: var(--radius-lg);
+}
+
+.inventory-page .metric-card::before {
+  width: 4px;
+  background: linear-gradient(180deg, var(--inventory-accent) 0%, #4aa3e8 100%);
+}
+
+.inventory-page .metric-card::after {
+  position: absolute;
+  top: -38px;
+  right: -38px;
+  width: 108px;
+  height: 108px;
+  content: "";
+  background: radial-gradient(circle, rgb(15 108 189 / 9%) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.inventory-page .metric-card:hover {
+  box-shadow: 0 14px 32px rgb(16 37 63 / 14%);
+  transform: translateY(-3px);
+}
+
+/* --- Dashboard panels: header accent + depth ---------------------------- */
+
+.inventory-page .inventory-dashboard,
+.inventory-page .detail-panel {
+  padding: 20px;
+  border-radius: var(--radius-lg);
+}
+
+.inventory-page .inventory-dashboard .card-header,
+.inventory-page .detail-panel .card-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.inventory-page .inventory-dashboard .card-header h2,
+.inventory-page .detail-panel .card-header h2 {
+  position: relative;
+  margin: 0;
+  padding-left: 12px;
+  font-size: 15px;
+}
+
+.inventory-page .inventory-dashboard .card-header h2::before,
+.inventory-page .detail-panel .card-header h2::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 4px;
+  height: 15px;
+  content: "";
+  background: linear-gradient(180deg, var(--inventory-accent) 0%, #4aa3e8 100%);
+  border-radius: 999px;
+  transform: translateY(-50%);
+}
+
+/* --- Ranked bars: gradient fill with grow-in animation ------------------- */
+
+.inventory-page .inventory-bar-row {
+  padding: 3px 0;
+  font-size: 13px;
+}
+
+.inventory-page .inventory-bar-row > span:first-child {
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.inventory-page .inventory-bar-row strong {
+  color: var(--inventory-accent-deep);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.inventory-page .inventory-bar {
+  height: 14px;
+  background: linear-gradient(90deg, var(--inventory-accent) 0%, #4aa3e8 100%);
+  box-shadow: 0 1px 3px rgb(15 108 189 / 30%);
+  transform-origin: left center;
+  animation: inventory-bar-grow 520ms cubic-bezier(.22, .8, .3, 1) both;
+}
+
+.inventory-page .inventory-bar-expired {
+  background: linear-gradient(90deg, var(--color-critical) 0%, #e0644f 100%);
+}
+
+.inventory-page .inventory-bar-expiring {
+  background: linear-gradient(90deg, var(--color-warning) 0%, #d9a441 100%);
+}
+
+.inventory-page .inventory-bar-supported {
+  background: linear-gradient(90deg, var(--color-success) 0%, #4bb04b 100%);
+}
+
+.inventory-page .inventory-bar-review {
+  background: linear-gradient(90deg, var(--color-text-muted) 0%, #a4aeb9 100%);
+}
+
+@keyframes inventory-bar-grow {
+  from {
+    opacity: .35;
+    transform: scaleX(0);
+  }
+
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+/* --- Filters: elevated toolbar ------------------------------------------ */
+
+.inventory-page .inventory-filters {
+  padding: 15px 16px;
+  background: linear-gradient(145deg, #fbfdff 0%, #f4f8fc 100%);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.inventory-page .inventory-filters label {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.inventory-page .inventory-filters input,
+.inventory-page .inventory-filters select {
+  min-height: 38px;
+  font-size: 13px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.inventory-page .inventory-filters input:focus,
+.inventory-page .inventory-filters select:focus {
+  border-color: var(--inventory-accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(15 108 189 / 15%);
+}
+
+/* --- Tables: sticky headers, zebra rows, accent hover ------------------- */
+
+.inventory-page .data-table-wrap,
+.inventory-page .table-scroll {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.inventory-page .data-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--color-text-secondary);
+  font-size: 10.5px;
+  font-weight: 700;
+  background: linear-gradient(180deg, #f3f7fb 0%, #eaf1f7 100%);
+  border-bottom: 2px solid #d5dee7;
+}
+
+.inventory-page .data-table tbody tr {
+  transition: background 130ms ease, box-shadow 130ms ease;
+}
+
+.inventory-page .data-table tbody tr:nth-child(even) td {
+  background: #fcfdfe;
+}
+
+.inventory-page .data-table tbody tr:hover td {
+  background: var(--color-brand-subtle);
+  box-shadow: inset 3px 0 0 var(--inventory-accent);
+}
+
+.inventory-page .data-table tbody tr[aria-selected="true"] td {
+  background: var(--color-brand-subtle);
+  box-shadow: inset 3px 0 0 var(--inventory-accent-deep);
+}
+
+.inventory-page .data-table td strong {
+  color: var(--color-text);
+  font-size: 13.5px;
+}
+
+/* Numeric-looking columns align cleanly */
+.inventory-page .data-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.inventory-page .data-table button,
+.inventory-page .detail-actions button {
+  font-weight: 650;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.inventory-page .data-table button:hover,
+.inventory-page .detail-actions button:hover {
+  color: #fff;
+  background: var(--inventory-accent);
+  border-color: var(--inventory-accent);
+  transform: translateY(-1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inventory-page .inventory-bar {
+    animation: none;
+  }
+
+  .inventory-page .tab-list [role="tab"],
+  .inventory-page .metric-card,
+  .inventory-page .data-table tbody tr,
+  .inventory-page .data-table button,
+  .inventory-page .detail-actions button {
+    transition: none;
+  }
+
+  .inventory-page .metric-card:hover,
+  .inventory-page .tab-list [role="tab"][aria-selected="true"],
+  .inventory-page .data-table button:hover,
+  .inventory-page .detail-actions button:hover {
+    transform: none;
+  }
+}
+
+/* Drill-down detail tables share the inventory table treatment. Without
+   these rules `.detail-table` inherits no spacing at all and its columns
+   collide, unlike the `.data-table` group listings above it. */
+.inventory-page .detail-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.inventory-page .detail-table th,
+.inventory-page .detail-table td {
+  padding: 10px 16px;
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.inventory-page .detail-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--color-text-secondary);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #f3f7fb 0%, #eaf1f7 100%);
+  border-bottom: 2px solid #d5dee7;
+}
+
+.inventory-page .detail-table tbody tr {
+  transition: background 130ms ease, box-shadow 130ms ease;
+}
+
+.inventory-page .detail-table tbody tr:nth-child(even) td {
+  background: #fcfdfe;
+}
+
+.inventory-page .detail-table tbody tr:hover td {
+  background: var(--color-brand-subtle);
+  box-shadow: inset 3px 0 0 var(--inventory-accent);
+}
+
+.inventory-page .detail-table tbody td {
+  border-bottom: 1px solid var(--color-border-subtle, #eef2f6);
+}
+
+/* Full-resource export affordance on the Azure tab. Kept visually distinct
+   from the group drill-down so operators can tell the estate-wide export
+   apart from the per-type one. */
+.inventory-page .inventory-export-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  border: 1px solid var(--color-border-subtle, #e3eaf1);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, #f7fafd 0%, #eef4fa 100%);
+  box-shadow: var(--shadow-card);
+}
+
+.inventory-page .inventory-export-bar > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.inventory-page .inventory-export-bar strong {
+  font-size: 13px;
+}
+
+.inventory-page .inventory-export-bar .muted {
+  font-size: 12px;
+}
+
+.inventory-page .inventory-export-bar button {
+  flex-shrink: 0;
+}
+
+.inventory-page .inventory-export-bar button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* Inline drill-down: the detail table renders directly beneath the row that
+   opened it, so an operator never has to scroll past the whole group table to
+   find what they just clicked. */
+.inventory-page tr.is-expanded > td {
+  background: var(--color-surface-accent, #eef4fa);
+  border-bottom-color: transparent;
+}
+
+.inventory-page tr.detail-row > td {
+  padding: 0 0 14px;
+  background: var(--color-surface-accent, #eef4fa);
+}
+
+.inventory-page .inline-detail {
+  margin: 0 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border-subtle, #e3eaf1);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface, #fff);
+  box-shadow: var(--shadow-card);
+}
+
+.inventory-page .inline-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.inventory-page .inline-detail-header .muted {
+  font-size: 12px;
+}
+
+.inventory-page .inline-detail .table-scroll {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.inventory-page .inline-detail .table-footer {
+  margin-top: 10px;
 }

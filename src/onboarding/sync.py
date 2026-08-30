@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from storage.fs import join_root, resolve_root
 from ontology.subscription_connection import SubscriptionConnection, SyncState
+from storage.fs import join_root, resolve_root
 
 DEFAULT_STALE_AFTER_HOURS = 24
 
@@ -46,12 +46,35 @@ class SyncResult:
         }
 
 
+#: Ordered stages a connection-scoped sync passes through when a
+#: ``publish_factory`` is configured. Exposed so callers (e.g. the API layer)
+#: can render a fixed progress sequence without guessing percentages.
+SYNC_STAGES: tuple[str, ...] = (
+    "queued",
+    "discovering",
+    "merging",
+    "publishing_ontology",
+    "writing_fabric_tables",
+    "succeeded",
+)
+
+
 class ConnectionSyncCoordinator:
     """Runs connection-scoped ingestion and maintains the connection's SyncState.
 
     ``ingestion_factory`` receives the connection and returns an object with a
     ``run()`` method. Keeping it injectable means the connection boundary owns
     scoping rather than the ingestion service inferring it from global config.
+
+    ``publish_factory``, if provided, is called with the connection after its
+    own ingestion succeeds and must return an object with a ``run()`` method
+    that rebuilds that connection's inventory/ontology publication and writes
+    the result to Fabric. This is the same publication work exposed by
+    ``aiops-inventory inventory-refresh``, made reachable from an interactive
+    "Sync" click without refreshing unrelated connections.
+    Leaving it ``None`` keeps this coordinator's existing per-connection-only
+    behavior (used by tests and any caller that does not want the merge step
+    to run inline).
     """
 
     def __init__(
@@ -60,9 +83,11 @@ class ConnectionSyncCoordinator:
         ingestion_factory: Callable[[SubscriptionConnection], Any] | None = None,
         clock: Callable[[], datetime] | None = None,
         stale_after_hours: int = DEFAULT_STALE_AFTER_HOURS,
+        publish_factory: Callable[[SubscriptionConnection], Any] | None = None,
     ) -> None:
         self.output_dir = resolve_root(str(output_dir))
         self.ingestion_factory = ingestion_factory
+        self.publish_factory = publish_factory
         self.clock = clock or (lambda: datetime.now(UTC))
         if stale_after_hours < 1:
             raise ValueError("stale_after_hours must be positive")
@@ -78,7 +103,18 @@ class ConnectionSyncCoordinator:
         *,
         mode: str = "initial",
         run_id: str | None = None,
+        progress_callback: Callable[[str, str, int], None] | None = None,
     ) -> tuple[SyncResult, SyncState]:
+        """Run one connection's sync.
+
+        ``progress_callback``, when given, is invoked as
+        ``callback(stage, stage_message, progress_pct)`` at each transition in
+        :data:`SYNC_STAGES` (or ``"failed"`` on error) *before* the final
+        return. Callers use this to persist live progress (e.g. into
+        ``SyncState``) while this method runs on a background thread; it is
+        best-effort and any exception it raises is swallowed rather than
+        allowed to corrupt the underlying ingestion/publish run.
+        """
         if mode not in {"initial", "scheduled", "manual"}:
             raise ValueError("sync mode must be initial, scheduled, or manual")
         if not connection.is_active:
@@ -95,11 +131,22 @@ class ConnectionSyncCoordinator:
                 "No ingestion factory is configured; cannot run a connection-scoped sync"
             )
 
+        def _report(stage: str, message: str, pct: int) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(stage, message, pct)
+            except Exception:  # noqa: BLE001 - progress reporting must never break sync
+                pass
+
+        _report("discovering", f"Running {mode} discovery for {connection.connection_id}", 10)
+
         try:
             manifest = self.ingestion_factory(connection).run()
         except Exception as exc:  # noqa: BLE001 - failures are recorded, not swallowed
             finished = self.clock()
             message = str(exc).strip() or exc.__class__.__name__
+            _report("failed", message, 100)
             state = SyncState(
                 status="failed",
                 last_synced_at=_iso(finished),
@@ -110,6 +157,9 @@ class ConnectionSyncCoordinator:
                 record_count=previous.record_count,
                 attempts=previous.attempts + 1,
                 message=message,
+                stage="failed",
+                stage_message=message,
+                progress_pct=100,
             )
             result = SyncResult(
                 connection_id=connection.connection_id,
@@ -122,28 +172,58 @@ class ConnectionSyncCoordinator:
             )
             return result, state
 
-        finished = self.clock()
         payload = manifest if isinstance(manifest, dict) else {}
         record_count = _record_count(payload)
+
+        publish_message: str | None = None
+        if self.publish_factory is not None:
+            _report("merging", "Merging inventory across active connections", 45)
+            try:
+                _report(
+                    "publishing_ontology",
+                    "Rebuilding ontology from the merged snapshot",
+                    65,
+                )
+                _report(
+                    "writing_fabric_tables",
+                    "Publishing ontology and inventory tables to Fabric",
+                    85,
+                )
+                self.publish_factory(connection).run()
+            except Exception as exc:  # noqa: BLE001 - publish failures are surfaced, not fatal
+                publish_message = (
+                    f"{mode} sync completed but Fabric publish failed: "
+                    f"{str(exc).strip() or exc.__class__.__name__}"
+                )
+
+        finished = self.clock()
+        message = publish_message or f"{mode} sync completed"
+        status = "failed" if publish_message else "succeeded"
+        _report(status, message, 100)
         state = SyncState(
-            status="succeeded",
+            status=status,
             last_synced_at=_iso(finished),
-            last_successful_sync_at=_iso(finished),
-            last_failed_at=previous.last_failed_at,
+            last_successful_sync_at=(
+                _iso(finished) if status == "succeeded" else previous.last_successful_sync_at
+            ),
+            last_failed_at=_iso(finished) if status == "failed" else previous.last_failed_at,
             run_id=identifier,
             source_version=str(payload.get("queryVersion") or previous.source_version or ""),
             record_count=record_count,
             attempts=previous.attempts + 1,
-            message=f"{mode} sync completed",
+            message=message,
+            stage=status,
+            stage_message=message,
+            progress_pct=100,
         )
         result = SyncResult(
             connection_id=connection.connection_id,
             run_id=identifier,
-            status="succeeded",
+            status=status,
             started_at=_iso(started),
             completed_at=_iso(finished),
             record_count=record_count,
-            message=f"{mode} sync completed",
+            message=message,
             manifest=payload or None,
         )
         return result, state
@@ -208,4 +288,4 @@ def _iso(value: datetime) -> str:
     return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-__all__ = ["DEFAULT_STALE_AFTER_HOURS", "ConnectionSyncCoordinator", "SyncResult"]
+__all__ = ["DEFAULT_STALE_AFTER_HOURS", "SYNC_STAGES", "ConnectionSyncCoordinator", "SyncResult"]

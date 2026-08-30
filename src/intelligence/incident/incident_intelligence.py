@@ -22,7 +22,7 @@ from .incident_summary_engine import IncidentSummaryEngine
 
 class IncidentTelemetry:
     def __init__(self, meter=None) -> None:
-        meter = meter or metrics.get_meter("hermes.incident_causality", "0.1.0")
+        meter = meter or metrics.get_meter("aiops.incident_causality", "0.1.0")
         self.analysis_duration = meter.create_histogram("incident.analysis.duration", unit="s")
         self.correlation_latency = meter.create_histogram("incident.correlation.latency", unit="s")
         self.causality_latency = meter.create_histogram("incident.causality.latency", unit="s")

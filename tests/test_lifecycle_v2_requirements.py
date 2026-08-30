@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from lifecycle_scenario import lifecycle_engine
 
-from hermes_arg_connector.plugin import OPERATIONS_AGENT_SCHEMA
 from intelligence.lifecycle.eol_catalog import EOLCatalog
 from intelligence.lifecycle.lifecycle_intelligence import LifecycleTelemetry
+from onboarding.plugin import OPERATIONS_AGENT_SCHEMA
 
 REQUESTED_MODULES = (
     "lifecycle_intelligence",

@@ -12,7 +12,7 @@ resource "azurerm_monitor_action_group" "ops" {
   count               = length(var.alert_email_addresses) > 0 ? 1 : 0
   name                = "${local.base}-ops-ag"
   resource_group_name = azurerm_resource_group.main.name
-  short_name          = "hermesops"
+  short_name          = "aiopsops"
 
   dynamic "email_receiver" {
     for_each = var.alert_email_addresses
@@ -79,7 +79,7 @@ resource "azurerm_monitor_metric_alert" "web_availability" {
   tags = local.tags
 }
 
-# Provider health / discovery freshness: `hermes.api.authorization.denied` and
+# Provider health / discovery freshness: `aiops.api.authorization.denied` and
 # request telemetry alone can't see provider staleness, so this alert queries
 # the structured `api_unhandled_error` / readiness-probe log lines the API
 # already emits to the Container App Environment's Log Analytics workspace.

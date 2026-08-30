@@ -43,7 +43,7 @@ def _principals() -> dict[str, Principal]:
 def _client(tmp_path, *, with_network: bool = True, network_policy_store=None) -> TestClient:
     service = build_service(network_rows()) if with_network else None
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(_principals()),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),

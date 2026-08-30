@@ -25,7 +25,7 @@ class BusinessMetadata:
     """Business context mapped onto a connection.
 
     All fields are optional so a connection can be created first and enriched
-    later via ``hermes subscriptions map``.
+    later via ``aiops subscriptions map``.
     """
 
     business_service: str | None = None

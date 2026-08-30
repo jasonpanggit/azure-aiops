@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 import pytest
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 
-from hermes_arg_connector.onelake_fs import OneLakeFileSystem
+from storage.onelake_fs import OneLakeFileSystem
 
 WORKSPACE = "workspace-id"
 
@@ -248,11 +248,11 @@ def test_resolve_fs_selects_the_dfs_native_backend(monkeypatch) -> None:
     monkeypatch.setattr(
         "azure.identity.DefaultAzureCredential", lambda *_args, **_kwargs: object()
     )
-    from hermes_arg_connector.fs import resolve_fs
+    from storage.fs import resolve_fs
 
     filesystem, root = resolve_fs(
-        "abfss://workspace-id@onelake.dfs.fabric.microsoft.com/lakehouse-id/Files/hermes"
+        "abfss://workspace-id@onelake.dfs.fabric.microsoft.com/lakehouse-id/Files/aiops"
     )
 
     assert isinstance(filesystem, OneLakeFileSystem)
-    assert root == "workspace-id/lakehouse-id/Files/hermes"
+    assert root == "workspace-id/lakehouse-id/Files/aiops"

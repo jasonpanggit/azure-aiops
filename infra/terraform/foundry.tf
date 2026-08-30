@@ -9,6 +9,92 @@
 # ---------------------------------------------------------------------------
 
 locals {
+  # Every specialist is a native Foundry MCP tool-caller: each carries a
+  # server_label/allowed_tools pair that becomes its agent definition's
+  # `tools` entry (see local.foundry_mcp_tool_config below). Tool names must
+  # match operations.mcp_server.REVIEWED_TOOLS exactly.
+  foundry_generic_context_tools = [
+    "business_service_context",
+    "application_context",
+    "impact_context",
+    "fabric_iq_relationships",
+    "fabric_iq_topology",
+    "fabric_iq_policy_context",
+  ]
+
+  foundry_specialist_tools = {
+    network = concat([
+      "network_topology",
+      "hub_dependents",
+      "traffic_flow",
+      "firewall_nsg_gaps",
+    ], local.foundry_generic_context_tools)
+    vulnerability = concat([
+      "cve_exposure",
+      "cve_detail",
+      "cve_attack_path",
+    ], local.foundry_generic_context_tools)
+    patch = local.foundry_generic_context_tools
+    incident = concat([
+      "incidents",
+    ], local.foundry_generic_context_tools)
+    change     = local.foundry_generic_context_tools
+    governance = local.foundry_generic_context_tools
+    remediation = concat([
+      "remediation_plans",
+      "remediation_opportunities",
+    ], local.foundry_generic_context_tools)
+    executive_summary = local.foundry_generic_context_tools
+  }
+
+  foundry_specialist_instructions = {
+    network           = <<-EOT
+      You are the Network Agent specialist. Immediately call the governed MCP
+      tools made available to you (network_topology, hub_dependents,
+      traffic_flow, firewall_nsg_gaps, and the generic business/application/
+      impact/fabric-IQ context tools) to retrieve the deterministic evidence
+      you need to answer -- never assume evidence that no tool call returned.
+      Never ask the user for permission or confirmation before calling a tool;
+      call every tool you need autonomously in the same turn and only then
+      respond. Return JSON with exactly one top-level key, "findings", whose
+      array entries contain exactly: finding_id, resource_ids, check_id,
+      policy_id, evidence_refs, confidence, uncertainty, freshness,
+      actionable, next_check, summary. Every evidence_refs value must name a
+      real tool result. Never invent policy results, resources, or freshness.
+      Never execute or suggest an unapproved production mutation. Use
+      actionable=false for stale, partial, unavailable, or uncertain
+      evidence. next_check must be one bounded read-only check.
+    EOT
+    vulnerability     = "You are the Vulnerability Agent specialist. Immediately call the governed MCP tools available to you (cve_exposure, cve_detail, cve_attack_path, and the generic business/application/impact/fabric-IQ context tools) to retrieve the evidence you need -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Prioritize exploitable or business-impacting findings using only real tool results, distinguish facts from inference, cite the tool call each claim came from, call out stale, empty, unavailable, or denied results, and recommend bounded validation or remediation steps without inventing CVEs, assets, or fixes."
+    patch             = "You are the Patch Agent specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) to ground your answer in real evidence -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Identify missing, stale, or risky patch posture, explain business and technical impact using only real tool results, distinguish facts from inference, cite the tool call each claim came from, and recommend bounded next checks or approval-gated actions without claiming a patch was applied or inventing evidence no tool returned."
+    incident          = "You are the Incident Agent specialist. Immediately call the governed MCP tools available to you (incidents, and the generic business/application/impact/fabric-IQ context tools) to retrieve the evidence you need -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Establish the observed timeline and affected scope, identify likely contributing relationships only when supported by real tool results, distinguish facts from inference, cite the tool call each claim came from, and recommend safe bounded investigation steps without declaring an unproven root cause."
+    change            = "You are the Change Agent specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) to retrieve real change and dependency evidence for operational risk and blast radius -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Compare observed context with affected services and controls, distinguish facts from inference, cite the tool call each claim came from, and recommend bounded validation or approval-gated follow-up without approving, executing changes, or inventing evidence no tool returned."
+    governance        = "You are the Governance Agent specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) to retrieve real governance, compliance, identity, and policy evidence -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Identify control gaps and their scope, distinguish observed facts from derived inferences and unknowns, cite the tool call each claim came from and its freshness, and recommend bounded remediation or evidence requests without inventing policy results."
+    remediation       = "You are the Remediation Agent specialist. Immediately call the governed MCP tools available to you (remediation_plans, remediation_opportunities, and the generic business/application/impact/fabric-IQ context tools) to retrieve the evidence you need -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Produce a bounded, approval-aware remediation proposal tied to real tool results, including prerequisites, uncertainty, and rollback or validation checks. Never execute changes, invent missing details, or present a hypothesis as an approved plan."
+    executive_summary = "You are the Executive Summary specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) as needed and synthesize alongside any specialist findings supplied to you for an engineering decision-maker -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Lead with the direct operational answer, summarize material risk and scope, cite the tool call or supplied finding each claim came from, distinguish facts from inference and unknowns, and state the next bounded decision or evidence request. Do not add unsupported claims."
+  }
+
+  # MCP tool-call config shared by every specialist agent definition. Only
+  # `allowed_tools` varies per specialist (local.foundry_specialist_tools).
+  foundry_mcp_tool_config = var.enable_apim ? {
+    type                  = "mcp"
+    server_label          = "operations-mcp"
+    server_url            = local.foundry_mcp_server_url
+    require_approval      = "never"
+    project_connection_id = local.foundry_mcp_connection_name
+  } : null
+
+  foundry_specialists_json = jsonencode({
+    for id, specialist in var.foundry_specialists : id => merge(specialist, {
+      prompt = lookup(local.foundry_specialist_instructions, id, local.agent_instructions)
+      model  = var.foundry_model_name
+      tools = local.foundry_mcp_tool_config == null ? [] : [
+        merge(local.foundry_mcp_tool_config, {
+          allowed_tools = lookup(local.foundry_specialist_tools, id, local.foundry_generic_context_tools)
+        })
+      ]
+    })
+  })
   # The custom subdomain is mandatory for token-based (Entra) authentication
   # and for the agent data-plane endpoint. It is part of a global DNS name, so
   # it carries the unique suffix.
@@ -21,6 +107,13 @@ locals {
   # versions, so it is composed from the subdomain instead — this form is
   # stable and is what the agent REST API documents.
   foundry_project_endpoint = "https://${local.foundry_subdomain}.services.ai.azure.com/api/projects/${local.foundry_project_name}"
+
+  # Points specialists at APIM's native MCP surface (see apim.tf's
+  # azapi_resource.mcp_server), not the plain HTTP-proxy API -- the native
+  # surface speaks real JSON-RPC MCP and is what the Foundry `mcp` tool type
+  # expects at `server_url`.
+  foundry_mcp_server_url      = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/mcp-server" : null
+  foundry_mcp_connection_name = "${local.base}-ops-mcp"
 }
 
 resource "azurerm_cognitive_account" "foundry" {
@@ -81,6 +174,45 @@ resource "azurerm_cognitive_deployment" "chat" {
 }
 
 # ---------------------------------------------------------------------------
+# Foundry -> APIM MCP project connection
+#
+# Lets specialist agents call the governed Operations MCP tools natively
+# instead of relying on a pre-fetch orchestrator. The connection authenticates
+# with the project's own system-assigned identity (ProjectManagedIdentity) --
+# APIM's inbound policy validates the resulting Entra token against
+# apim_audience and looks up the caller's grants by subject (see
+# entra_grants_json), exactly like any other MCP caller.
+#
+# `category = "RemoteTool"` is a preview-only connection category the azurerm
+# provider's connection resources do not yet expose, so this goes through
+# azapi_resource, mirroring apim.tf's mcp_server/mcp_backend pattern for the
+# same reason (preview-only API surface).
+resource "azapi_resource" "foundry_mcp_connection" {
+  count = var.enable_apim ? 1 : 0
+  type  = "Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview"
+  name  = local.foundry_mcp_connection_name
+  # The azapi provider's built-in schema for this resource type only
+  # recognizes the older/GA authType enum (ManagedIdentity, ApiKey, ...) and
+  # does not yet know about "ProjectManagedIdentity", which is only valid at
+  # this preview API version per the Foundry MCP-connection docs. Disable
+  # client-side validation rather than downgrade to a weaker auth type.
+  schema_validation_enabled = false
+  parent_id                 = azurerm_cognitive_account_project.ops.id
+  body = {
+    properties = {
+      authType      = "ProjectManagedIdentity"
+      category      = "RemoteTool"
+      target        = local.foundry_mcp_server_url
+      isSharedToAll = true
+      audience      = local.apim_audience
+      metadata = {
+        ApiType = "Azure"
+      }
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Data-plane access for the container apps
 #
 # "Azure AI User" is the least-privileged built-in role that permits invoking
@@ -91,6 +223,15 @@ resource "azurerm_cognitive_deployment" "chat" {
 resource "azurerm_role_assignment" "apps_foundry_user" {
   scope                            = azurerm_cognitive_account_project.ops.id
   role_definition_name             = "Foundry Agent Consumer"
+  principal_id                     = azurerm_user_assigned_identity.apps.principal_id
+  skip_service_principal_aad_check = true
+}
+
+# The Responses API used by prompt agents requires the project runtime data
+# action in addition to the legacy agent interaction action above.
+resource "azurerm_role_assignment" "apps_foundry_runtime_user" {
+  scope                            = azurerm_cognitive_account_project.ops.id
+  role_definition_name             = "Foundry Project Runtime User"
   principal_id                     = azurerm_user_assigned_identity.apps.principal_id
   skip_service_principal_aad_check = true
 }
@@ -114,7 +255,7 @@ resource "azurerm_role_assignment" "deployer_foundry_manager" {
 
 locals {
   agent_instructions = <<-EOT
-    You are the Operations Copilot for Hermes, an operational intelligence
+    You are the Operations Copilot for AIOps, an operational intelligence
     workbench. You explain findings drawn from a governed knowledge layer that
     links business services, applications, servers, network flows, incidents,
     changes, and vulnerabilities.
@@ -122,9 +263,12 @@ locals {
     You will be given a question and a JSON payload. The payload is either:
     (a) a flat set of retrieved records, or (b) a "facts" array where each
     entry is the result of one governed tool call, shaped as
-    {tool, status, data, warning}. Never call a tool yourself and never assume
-    a tool exists beyond what appears in the payload -- tool selection and
-    execution already happened before you were invoked.
+    {tool, status, data, warning}, or (c) a set of specialist agent findings
+    that those specialists already retrieved by calling their own governed MCP
+    tools. You are the orchestrator: you synthesize what is supplied rather
+    than calling tools yourself, and never assume a tool exists beyond what
+    appears in the payload -- retrieval and specialist delegation already
+    happened before you were invoked.
 
     Per-fact status meanings (only present in the "facts" array shape):
     - "ok": the tool observed real records. Treat "data" as ground truth.
@@ -181,6 +325,7 @@ resource "terraform_data" "foundry_agent" {
     agent_name   = var.foundry_agent_name
     model        = azurerm_cognitive_deployment.chat.name
     instructions = sha256(local.agent_instructions)
+    specialists  = sha256(local.foundry_specialists_json)
   }
 
   provisioner "local-exec" {
@@ -192,6 +337,7 @@ resource "terraform_data" "foundry_agent" {
       FOUNDRY_AGENT_NAME       = var.foundry_agent_name
       FOUNDRY_AGENT_MODEL      = azurerm_cognitive_deployment.chat.name
       FOUNDRY_AGENT_PROMPT     = local.agent_instructions
+      FOUNDRY_SPECIALISTS_JSON = local.foundry_specialists_json
       AZURE_TENANT_ID          = var.tenant_id
       AZURE_CLIENT_ID          = var.client_id
       AZURE_CLIENT_SECRET      = var.client_secret
@@ -202,5 +348,6 @@ resource "terraform_data" "foundry_agent" {
     azurerm_cognitive_deployment.chat,
     azurerm_cognitive_account_project.ops,
     azurerm_role_assignment.deployer_foundry_manager,
+    azapi_resource.foundry_mcp_connection,
   ]
 }

@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from hermes_arg_connector.normalize import Normalizer
+from onboarding.graph_normalize import Normalizer
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
 

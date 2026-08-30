@@ -12,8 +12,8 @@ from test_subscription_onboarding import (
     build_service,
 )
 
-from hermes_arg_connector import cli
-from hermes_arg_connector.local import DEFAULT_LOCAL_CONNECTION_ID
+from onboarding import cli
+from onboarding.local_seed import DEFAULT_LOCAL_CONNECTION_ID
 
 
 def _config(tmp_path: Path) -> str:
@@ -134,7 +134,7 @@ def test_cli_subscriptions_without_command_shows_usage(capsys) -> None:
 
 
 def test_cli_local_seeds_file_backed_api_snapshot(tmp_path, monkeypatch, capsys) -> None:
-    home = tmp_path / "hermes-local"
+    home = tmp_path / "aiops-local"
     fixture = Path("tests/fixtures/mock_arg_responses.json")
 
     assert _run(["local", "--home", str(home), "--fixture", str(fixture)]) == 0
@@ -153,7 +153,7 @@ def test_cli_local_spn_injects_env_backed_connection(tmp_path, monkeypatch, caps
     monkeypatch.setenv("AZURE_TENANT_ID", TENANT)
     monkeypatch.setenv("AZURE_CLIENT_ID", CLIENT)
     monkeypatch.setenv("AZURE_CLIENT_SECRET", "super-secret-value")
-    home = tmp_path / "hermes-local"
+    home = tmp_path / "aiops-local"
 
     assert _run(["local-spn", "--home", str(home), "--connection-id", "local-spn"]) == 0
 
@@ -170,7 +170,7 @@ def test_cli_local_spn_injects_env_backed_connection(tmp_path, monkeypatch, caps
 
 
 def test_cli_local_spn_removes_fixture_connection(tmp_path, monkeypatch, capsys) -> None:
-    home = tmp_path / "hermes-local"
+    home = tmp_path / "aiops-local"
     fixture = Path("tests/fixtures/mock_arg_responses.json")
     assert _run(["local", "--home", str(home), "--fixture", str(fixture)]) == 0
     capsys.readouterr()
@@ -203,7 +203,7 @@ def test_cli_local_spn_can_sync_after_injection(tmp_path, monkeypatch, capsys) -
         lambda config: FakeService(),
     )
 
-    assert _run(["local-spn", "--home", str(tmp_path / "hermes-local"), "--sync"]) == 0
+    assert _run(["local-spn", "--home", str(tmp_path / "aiops-local"), "--sync"]) == 0
 
     result = json.loads(capsys.readouterr().out)
     assert result["sync"] == {

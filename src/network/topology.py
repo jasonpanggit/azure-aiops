@@ -784,7 +784,7 @@ def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
                 str(semantic.get("object_id") or ""),
                 relationship_type,
                 label=relationship_type.replace("_", " "),
-                details={"source": "hermes_semantic_graph", "confidence": semantic.get("confidence")},
+                details={"source": "aiops_semantic_graph", "confidence": semantic.get("confidence")},
             )
 
     for vnet in snapshot.vnets:

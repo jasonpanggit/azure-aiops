@@ -3,8 +3,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from hermes_arg_connector.logs import (
+from onboarding.monitor_logs import (
     CONFIGURATION_DATA_QUERY,
+    GUEST_PERFORMANCE_QUERY,
     LOGS_QUERY_SCOPE,
     AzureMonitorLogsClient,
     LogsQueryLimits,
@@ -130,3 +131,90 @@ def test_logs_client_preserves_timeout_and_malformed_json_failures() -> None:
         AzureMonitorLogsClient(Credential(), requester=malformed_requester).query(
             "workspace-1"
         )
+
+
+def test_guest_performance_query_normalizes_windows_and_linux_counters() -> None:
+    def requester(method: str, url: str, **kwargs):
+        assert kwargs["json"] == {"query": GUEST_PERFORMANCE_QUERY}
+        return httpx.Response(
+            200,
+            json={
+                "tables": [
+                    {
+                        "columns": [
+                            {"name": "_ResourceId", "type": "string"},
+                            {"name": "CounterName", "type": "string"},
+                            {"name": "CounterValue", "type": "real"},
+                        ],
+                        "rows": [
+                            ["/subscriptions/s/vm-windows", "% Committed Bytes In Use", 42.5],
+                            ["/subscriptions/s/vm-windows", "% Free Space", 15.0],
+                            ["/subscriptions/s/vm-linux", "% Used Memory", 61.2],
+                            ["/subscriptions/s/vm-linux", "% Free Space", 8.3],
+                        ],
+                    }
+                ]
+            },
+        )
+
+    client = AzureMonitorLogsClient(Credential(), requester=requester)
+    result = client.query_guest_performance("workspace-1")
+
+    assert result == {
+        "/subscriptions/s/vm-windows": {"memory_percent": 42.5, "disk_free_percent": 15.0},
+        "/subscriptions/s/vm-linux": {"memory_percent": 61.2, "disk_free_percent": 8.3},
+    }
+
+
+def test_guest_performance_query_matches_resource_id_case_insensitively() -> None:
+    def requester(method: str, url: str, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "tables": [
+                    {
+                        "columns": [
+                            {"name": "_ResourceId", "type": "string"},
+                            {"name": "CounterName", "type": "string"},
+                            {"name": "CounterValue", "type": "real"},
+                        ],
+                        "rows": [["/Subscriptions/S/VM-Windows", "% Used Memory", 50.0]],
+                    }
+                ]
+            },
+        )
+
+    client = AzureMonitorLogsClient(Credential(), requester=requester)
+    result = client.query_guest_performance("workspace-1")
+
+    assert result == {"/subscriptions/s/vm-windows": {"memory_percent": 50.0}}
+
+
+def test_guest_performance_query_ignores_rows_with_missing_resource_id_or_non_numeric_value() -> (
+    None
+):
+    def requester(method: str, url: str, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "tables": [
+                    {
+                        "columns": [
+                            {"name": "_ResourceId", "type": "string"},
+                            {"name": "CounterName", "type": "string"},
+                            {"name": "CounterValue", "type": "dynamic"},
+                        ],
+                        "rows": [
+                            ["", "% Used Memory", 50.0],
+                            ["/subscriptions/s/vm", "% Used Memory", None],
+                            ["/subscriptions/s/vm", "% Used Memory", "not-a-number"],
+                        ],
+                    }
+                ]
+            },
+        )
+
+    client = AzureMonitorLogsClient(Credential(), requester=requester)
+    result = client.query_guest_performance("workspace-1")
+
+    assert result == {}

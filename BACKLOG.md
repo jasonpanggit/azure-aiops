@@ -1,4 +1,4 @@
-# Hermes Operations Graph — Product Backlog
+# AIOps Operations Graph — Product Backlog
 
 ## Backlog conventions
 

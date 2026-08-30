@@ -93,7 +93,7 @@ const ENTRY_TYPES: EntryType[] = [
   "RemediationPlan",
 ];
 
-const STORAGE_KEY = "hermes.investigations.v1";
+const STORAGE_KEY = "aiops.investigations.v1";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -413,9 +413,9 @@ export default function InvestigationWorkspacePage() {
           </div>
         </section>
         <section className="metric-grid investigation-summary-grid">
-          <MetricCard label="Accountable owner" value={owner} detail={selected ? `Focused on ${selected.label}` : "Mapped from semantic ownership and incident impact"} />
+          <MetricCard label="Accountable owner" value={owner} detail={selected ? `Focused on ${selected.label}` : "Mapped from semantic ownership and incident impact"} size="text" />
           <MetricCard label="Trend" value={timeline.length ? "Active" : "Quiet"} detail={`${activeIncidents.length} active situations, ${state.exposures?.data?.length ?? 0} vulnerability exposures`} tone={activeIncidents.length ? "warning" : "success"} />
-          <MetricCard label="Required decision" value={decision} detail="Advisory only; operator approval remains required" tone="warning" />
+          <MetricCard label="Required decision" value={decision} detail="Advisory only; operator approval remains required" tone="warning" size="text" />
         </section>
       </div>
 

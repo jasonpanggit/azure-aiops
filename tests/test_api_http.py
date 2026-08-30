@@ -38,7 +38,7 @@ class FakeSecretWriter:
 
     def store(self, *, connection_id: str, secret_value: str) -> str:
         self.stored.append((connection_id, secret_value))
-        return f"keyvault://kv-test/secrets/hermes-conn-{connection_id}/v1"
+        return f"keyvault://kv-test/secrets/aiops-conn-{connection_id}/v1"
 
 
 def _principals() -> dict[str, Principal]:
@@ -77,7 +77,7 @@ def _principals() -> dict[str, Principal]:
 @pytest.fixture
 def onboarding(tmp_path) -> SubscriptionOnboardingService:
     return SubscriptionOnboardingService(
-        tmp_path / "hermes",
+        tmp_path / "aiops",
         secret_writer=FakeSecretWriter(),
     )
 
@@ -307,6 +307,9 @@ class TestConnectionsCrud:
         assert created.status_code == 201
         body = created.json()
         assert body["data"]["connection_id"] == "conn-a"
+        assert body["data"]["validation"]["status"] == "failed"
+        assert body["data"]["initial_sync"]["status"] == "not_started"
+        assert "client_secret" not in created.text
         assert body["evidence"][0]["source_engine"].endswith(
             "SubscriptionOnboardingService"
         )
@@ -412,7 +415,7 @@ class TestConnectionsCrud:
         credential = response.json()["data"]["credential"]
         assert (
             credential["secret_ref"]
-            == "keyvault://kv-test/secrets/hermes-conn-conn-secret/v1"
+            == "keyvault://kv-test/secrets/aiops-conn-conn-secret/v1"
         )
         assert "from-user" not in response.text
 

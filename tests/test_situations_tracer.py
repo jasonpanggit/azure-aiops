@@ -9,9 +9,9 @@ from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
-from hermes_arg_connector.config import ConnectorConfig
-from hermes_arg_connector.normalize import Normalizer
-from hermes_arg_connector.service import IngestionService
+from onboarding.config import ConnectorConfig
+from onboarding.graph_normalize import Normalizer
+from onboarding.ingestion_service import IngestionService
 
 TOKEN = "situation-tracer-token-012345"
 

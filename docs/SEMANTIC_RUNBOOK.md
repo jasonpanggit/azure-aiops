@@ -11,9 +11,9 @@ Operate the read-only Semantic Layer above Fabric Ontology. Do not manually patc
 3. Run semantic smoke queries:
 
 ```bash
-uv run hermes-arg semantic "Find orphan resources" --config fabric.config.yaml
-uv run hermes-arg semantic "Find ownership gaps" --config fabric.config.yaml
-uv run hermes-arg semantic "What services are at operational risk?" --config fabric.config.yaml
+uv run aiops-inventory semantic "Find orphan resources" --config fabric.config.yaml
+uv run aiops-inventory semantic "Find ownership gaps" --config fabric.config.yaml
+uv run aiops-inventory semantic "What services are at operational risk?" --config fabric.config.yaml
 ```
 
 4. Run a known entity context and verify `freshness` and `knowledge_version`.
@@ -23,7 +23,7 @@ uv run hermes-arg semantic "What services are at operational risk?" --config fab
 ### VM failure
 
 ```bash
-uv run hermes-arg semantic \
+uv run aiops-inventory semantic \
   "What is the blast radius of this failure?" \
   --subject vm-identity \
   --config fabric.config.yaml

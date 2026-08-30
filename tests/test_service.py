@@ -5,10 +5,10 @@ import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from hermes_arg_connector.config import ConnectorConfig
-from hermes_arg_connector.queries import QueryCatalog
-from hermes_arg_connector.service import IngestionService, _merge_changes
-from hermes_arg_connector.source import AzureResourceGraphSource
+from onboarding.config import ConnectorConfig
+from onboarding.discovery_source import AzureResourceGraphSource
+from onboarding.ingestion_service import IngestionService, _merge_changes
+from onboarding.query_catalog import QueryCatalog
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
 

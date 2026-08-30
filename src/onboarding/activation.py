@@ -8,10 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from hermes_arg_connector.normalize import ENTITY_TYPES, NormalizedGraph
-from hermes_arg_connector.ontology import generate_ontology_metadata
+from onboarding.ontology_metadata import generate_ontology_metadata
 from onboarding.service import SubscriptionOnboardingService
 from storage.datasets import DatasetStore
+
+from .graph_normalize import ENTITY_TYPES, NormalizedGraph
 
 
 def publish_combined_snapshot(

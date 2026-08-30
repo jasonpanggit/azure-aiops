@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 
-# Refresh the Hermes semantic graph: discover Azure inventory via the
+# Refresh the AIOps semantic graph: discover Azure inventory via the
 # registered SPN connection, publish it to the Fabric/OneLake lakehouse, and
-# activate the ontology. This is the "hermes agent discovery" entry point.
+# activate the ontology. This is the "aiops agent discovery" entry point.
 #
 # Credentials are sourced from web/.env.local (the same SPN used by the local
 # frontend/API dev loop) rather than requiring them to be exported by hand.
@@ -41,26 +41,26 @@ done
 export PATH
 
 # `activate` (via build_onboarding_service) reads/writes its connection
-# registry at config.yaml's storage.output_dir, not HERMES_HOME. Register the
+# registry at config.yaml's storage.output_dir, not AIOPS_HOME. Register the
 # SPN connection there so `activate` can find it.
-HERMES_CONNECTION_ROOT="${HERMES_CONNECTION_ROOT:-$repo_root/live-data}"
-HERMES_LOCAL_CONNECTION_ID="${HERMES_LOCAL_CONNECTION_ID:-local-spn}"
+AIOPS_CONNECTION_ROOT="${AIOPS_CONNECTION_ROOT:-$repo_root/live-data}"
+AIOPS_LOCAL_CONNECTION_ID="${AIOPS_LOCAL_CONNECTION_ID:-local-spn}"
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}src"
 
 # Register/refresh the SPN connection metadata from env (idempotent).
-.venv/bin/hermes-arg local-spn \
-  --home "$HERMES_CONNECTION_ROOT" \
-  --connection-id "$HERMES_LOCAL_CONNECTION_ID"
+.venv/bin/aiops-inventory local-spn \
+  --home "$AIOPS_CONNECTION_ROOT" \
+  --connection-id "$AIOPS_LOCAL_CONNECTION_ID"
 
 # Discover -> publish to Fabric -> activate ontology.
-# HERMES_MCP_COMMAND_JSON lets callers override azure.mcp_command (e.g. to use
+# AIOPS_MCP_COMMAND_JSON lets callers override azure.mcp_command (e.g. to use
 # `npx -y @azure/mcp@latest` in environments without a preinstalled `azmcp`
 # binary) without editing the checked-in config.yaml.
-config_arg="${HERMES_CONFIG:-config.yaml}"
-if [ -n "${HERMES_MCP_COMMAND_JSON:-}" ]; then
-  tmp_config="$(mktemp -t hermes-config.XXXXXX.yaml)"
+config_arg="${AIOPS_CONFIG:-config.yaml}"
+if [ -n "${AIOPS_MCP_COMMAND_JSON:-}" ]; then
+  tmp_config="$(mktemp -t aiops-config.XXXXXX.yaml)"
   trap 'rm -f "$tmp_config"' EXIT
-  .venv/bin/python - "$config_arg" "$tmp_config" "$HERMES_MCP_COMMAND_JSON" "$repo_root" <<'PY'
+  .venv/bin/python - "$config_arg" "$tmp_config" "$AIOPS_MCP_COMMAND_JSON" "$repo_root" <<'PY'
 import sys
 import json
 import yaml
@@ -83,8 +83,8 @@ PY
   config_arg="$tmp_config"
 fi
 
-exec .venv/bin/hermes-arg activate \
+exec .venv/bin/aiops-inventory activate \
   --config "$config_arg" \
-  --fabric-config "${HERMES_FABRIC_CONFIG:-fabric.config.yaml}" \
-  --connection-id "$HERMES_LOCAL_CONNECTION_ID" \
+  --fabric-config "${AIOPS_FABRIC_CONFIG:-fabric.config.yaml}" \
+  --connection-id "$AIOPS_LOCAL_CONNECTION_ID" \
   "$@"

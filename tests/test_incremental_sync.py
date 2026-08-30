@@ -11,11 +11,10 @@ from deltalake import DeltaTable
 from fabric.data_quality import DataQualityValidator
 from fabric.dataset_mapper import InventoryDatasetMapper
 from fabric.sync_service import FabricSyncService
-from hermes_arg_connector.config import ConnectorConfig
-from hermes_arg_connector.normalize import Normalizer
-from hermes_arg_connector.service import IngestionService
-from hermes_arg_connector.storage import DatasetStore
 from intelligence.inventory.pipeline import InventoryPipeline
+from onboarding.config import ConnectorConfig
+from onboarding.graph_normalize import Normalizer
+from onboarding.ingestion_storage import DatasetStore
 from semantic.semantic_engine import SemanticEngine
 from storage.delta_writer import DeltaWriter
 from storage.onelake_writer import OneLakeWriter
@@ -735,7 +734,7 @@ def test_mapper_reads_remote_snapshot_via_provided_filesystem(tmp_path: Path) ->
     """
     import fsspec
 
-    remote_root = f"abfss://ws-hermes@onelake.dfs.fabric.microsoft.com/lakehouse/Files/hermes/connections/demo-{uuid4().hex}"
+    remote_root = f"abfss://ws-aiops@onelake.dfs.fabric.microsoft.com/lakehouse/Files/aiops/connections/demo-{uuid4().hex}"
     store = DatasetStore(remote_root)
     memory_fs = fsspec.filesystem("memory")
     store.fs = memory_fs  # swap the real ADLS backend for an in-memory one

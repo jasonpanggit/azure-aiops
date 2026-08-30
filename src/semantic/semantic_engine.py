@@ -28,7 +28,7 @@ from .semantic_validator import SemanticValidator
 
 class _SemanticTelemetry:
     def __init__(self, meter=None) -> None:
-        meter = meter or metrics.get_meter("hermes.operations_graph.semantic", "0.1.0")
+        meter = meter or metrics.get_meter("aiops.operations_graph.semantic", "0.1.0")
         self.query_latency = meter.create_histogram("semantic.query.latency", unit="s")
         self.traversal_latency = meter.create_histogram("semantic.graph.traversal.latency", unit="s")
         self.context_latency = meter.create_histogram("semantic.context.generation.latency", unit="s")

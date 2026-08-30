@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from storage.datasets import DatasetStore
 from intelligence.lifecycle import EOLCatalog
+from storage.datasets import DatasetStore
 
 from .eol_review import EOLReviewService
 from .mapping_repository import SoftwareMapping, SoftwareMappingRepository
@@ -17,9 +17,9 @@ from .models import (
     InventorySourceStatus,
     MachineObservation,
     OSGroup,
+    ResourceObservation,
     SoftwareGroup,
     SoftwareObservation,
-    ResourceObservation,
     group_key,
 )
 from .software_normalization import (

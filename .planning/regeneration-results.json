@@ -1,0 +1,28 @@
+{
+  "test_type": "full_fabric_notebook_regeneration",
+  "outputs_regenerated": [],
+  "outputs_missing": [
+    "assessment_governance_findings",
+    "change_assessments",
+    "lifecycle_assessments",
+    "ontology_entities",
+    "ontology_relationships",
+    "operational_context_graph",
+    "operational_context_impact_context",
+    "patch_assessments",
+    "predeploy_assessments",
+    "topology_edges",
+    "topology_entities",
+    "vulnerability_assessments"
+  ],
+  "regenerated_count": 0,
+  "missing_count": 12,
+  "total_tables_in_lakehouse": 0,
+  "notebooks_status": {
+    "succeeded": 8,
+    "failed": 1,
+    "failed_notebook": "impact_context_pipeline_notebook",
+    "failure_reason": "System_Cancelled_Session_Statements_Failed"
+  },
+  "phase_08_blocker": "impact_context_pipeline must be fixed before Phase 09 cutover"
+}

@@ -28,7 +28,7 @@ class OntologyManager:
             self.base_path,
             json_body={
                 "displayName": display_name,
-                "description": "Continuously maintained Hermes Operational Context Graph",
+                "description": "Continuously maintained AIOps Operational Context Graph",
                 "definition": definition,
             },
         )

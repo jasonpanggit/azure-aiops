@@ -19,12 +19,13 @@ infra/terraform/terraform.tfstate.backup
 infra/terraform/*.tfvars
 infra/terraform/*.tfvars.json
 
-# hermes
-#.hermes/
-#.hermes-local/
+# aiops
+.aiops/
+.aiops-local/
 
 # playwright test artifacts
 .playwright-mcp/
 
 # github
 #.github/
+dist/

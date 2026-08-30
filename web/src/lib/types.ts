@@ -139,6 +139,77 @@ export interface OsInventoryDetail {
   requested_scope: Record<string, string[]>;
 }
 
+export interface PaasInventoryGroup {
+  key: string;
+  resource_type: string;
+  sku: string;
+  tier: string;
+  resource_count: number;
+}
+
+export interface PaasInventoryResource {
+  resource_id: string;
+  resource_name: string;
+  resource_type: string;
+  family: string;
+  tenant_id: string;
+  subscription_id: string;
+  resource_group: string;
+  location: string;
+  sku: string;
+  tier: string;
+  runtime: string;
+  provisioning_state: string;
+  os_name: string;
+  os_version: string;
+  observed_at: string;
+  query_version: string;
+  tags: Record<string, string>;
+}
+
+export interface PaasInventoryCollection {
+  groups: PaasInventoryGroup[];
+  source_status: Record<string, InventorySourceStatus>;
+  observed_at: string;
+  query_version: string;
+  generation_id: string;
+  requested_scope: Record<string, string[]>;
+}
+
+export interface PaasInventoryDetail {
+  group: PaasInventoryGroup;
+  resources: PaasInventoryResource[];
+  source_status: Record<string, InventorySourceStatus>;
+  observed_at: string;
+  query_version: string;
+  generation_id: string;
+  requested_scope: Record<string, string[]>;
+}
+
+export interface FlatInventoryResource {
+  family: string;
+  resource_id: string;
+  resource_name: string;
+  resource_type: string;
+  subscription_id: string;
+  resource_group: string;
+  environment: string;
+}
+
+export interface InventoryFamilyAvailability {
+  family: string;
+  state: InventorySourceState;
+  row_count: number;
+  logical_dataset: string;
+}
+
+export interface FlatResourceCollection {
+  resources: FlatInventoryResource[];
+  family_availability: Record<string, InventoryFamilyAvailability>;
+  requested_scope: Record<string, string[]>;
+  query_version: string;
+}
+
 export interface InventoryNarrativeCitation {
   source_engine: string;
   source_table: string;
@@ -645,6 +716,9 @@ export interface SyncState {
   last_successful_sync_at?: string | null;
   run_id?: string | null;
   message?: string;
+  stage?: string | null;
+  stage_message?: string | null;
+  progress_pct?: number | null;
 }
 
 export interface SubscriptionConnection {
@@ -710,6 +784,8 @@ export interface ConnectionValidationReport {
   status: string;
   passed: boolean;
   checks: Array<Record<string, unknown>>;
+  failed_required?: string[];
+  failed_optional?: string[];
   health: ConnectionHealthDetail;
 }
 
@@ -719,6 +795,19 @@ export interface ConnectionSyncResult {
   sync_state: SyncState;
   health: ConnectionHealthDetail;
   [key: string]: unknown;
+}
+
+export interface ConnectionInitialSync {
+  connection_id: string;
+  status: string;
+  run_id?: string;
+  reason?: string;
+  sync_state: SyncState;
+}
+
+export interface ConnectionCreateResult extends SubscriptionConnection {
+  validation: ConnectionValidationReport;
+  initial_sync: ConnectionInitialSync;
 }
 
 export interface ConnectionCreateRequest {
@@ -1845,4 +1934,85 @@ export interface SoftwareMappingCollection {
   mappings: SoftwareMapping[];
   repository_revision: number;
   requested_scope: Record<string, string[]>;
+}
+
+// ---------------------------------------------------------------------------
+// Resource health -- live CPU/network/disk utilization via Azure Monitor
+// Metrics. Memory % and disk free % are not available from platform metrics
+// for an ordinary VM (they require Azure Monitor Agent + Log Analytics guest
+// counters), so every response names them in `unavailable_metrics` rather
+// than omitting the fields silently.
+// ---------------------------------------------------------------------------
+
+export type ResourceHealthStatus = "critical" | "warning" | "healthy" | "unknown";
+
+export interface MetricSeriesPoint {
+  timestamp: string;
+  value: number;
+}
+
+export interface ResourceUtilization {
+  resource_id: string;
+  resource_name: string;
+  resource_type: string;
+  subscription_id: string;
+  resource_group: string;
+  connection_id: string;
+  cpu_percent: number | null;
+  network_in_bytes: number | null;
+  network_out_bytes: number | null;
+  disk_read_bytes: number | null;
+  disk_write_bytes: number | null;
+  os_disk_queue_depth: number | null;
+  memory_percent: number | null;
+  disk_free_percent: number | null;
+  status: ResourceHealthStatus;
+  observed_at: string;
+  error: string;
+  unavailable_metrics: string[];
+  cpu_series: MetricSeriesPoint[];
+}
+
+export interface ResourceHealthSummary {
+  total: number;
+  critical: number;
+  warning: number;
+  healthy: number;
+  unknown: number;
+}
+
+export interface ResourceHealthSnapshot {
+  resources: ResourceUtilization[];
+  summary: ResourceHealthSummary;
+  observed_at: string;
+  warnings: string[];
+  unavailable_metrics: string[];
+  cached: boolean;
+  cache_ttl_seconds: number;
+}
+
+export type CopilotPageKind = "network" | "vulnerability" | "patch" | "incident" | "governance" | "resource";
+export type CopilotSnapshotStatus = "ok" | "empty" | "unavailable" | "denied";
+export interface CopilotSelectedResource { resource_id: string; resource_type: string; name?: string; attributes?: Record<string, string>; }
+export interface CopilotFreshnessRecord { source: string; observed_at: string; status: "fresh" | "stale" | "partial" | "unavailable"; }
+export interface CopilotScopeAuthorization { declared: Record<string, string[]>; authorized: boolean; }
+export interface CopilotEvidenceRow { evidence_id: string; resource_id?: string; section: string; data: Record<string, unknown>; status: CopilotSnapshotStatus; observed_at?: string; }
+export interface CopilotPageSnapshot {
+  version: "1"; page_kind: CopilotPageKind; page_id: string;
+  selected_resources: CopilotSelectedResource[]; filters: Record<string, string[]>;
+  freshness: CopilotFreshnessRecord[]; scope: CopilotScopeAuthorization;
+  evidence: CopilotEvidenceRow[]; question: string; rechecks: string[];
+}
+export interface CopilotContextFinding {
+  finding_id: string; resource_ids: string[]; check_id: string; policy_id: string; source_status: string;
+  status: "verified" | "hypothesis" | "partial" | "unavailable" | "denied"; summary: string;
+  evidence_refs: string[]; confidence: Confidence; uncertainty: string[]; stale: boolean;
+  next_check: string; actionable: boolean;
+}
+export interface CopilotContextResult {
+  page_kind: CopilotPageKind; page_id: string; snapshot_hash: string; stages: string[];
+  findings: CopilotContextFinding[]; tool_calls: Array<{ tool: string; arguments: Record<string, unknown>; status: CopilotSnapshotStatus; data: unknown; evidence: EvidenceItem[]; warning: string; }>;
+  synthesis_mode: "foundry" | "deterministic"; synthesis_agent: string;
+  synthesis: { text: string; agent_name: string; model: string; grounded: boolean } | null;
+  warnings: string[]; ledger_id?: string;
 }

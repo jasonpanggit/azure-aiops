@@ -6,10 +6,12 @@ import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
+import { useTablePagination } from "@/lib/use-table-pagination";
 
 const DIMENSIONS = [
   "subscription",
@@ -60,6 +62,14 @@ export default function FinOpsPage() {
     [opportunities.data],
   );
   const wasteRows = useMemo(() => waste.data?.data.waste ?? [], [waste.data]);
+  const attributionGroups = useMemo(
+    () => attribution.data?.data.groups ?? [],
+    [attribution.data],
+  );
+
+  const attributionPaging = useTablePagination(attributionGroups);
+  const opportunityPaging = useTablePagination(rows);
+  const wastePaging = useTablePagination(wasteRows);
 
   return (
     <div className="page-container">
@@ -216,7 +226,7 @@ export default function FinOpsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {attribution.data?.data.groups.map((group, index) => (
+                      {attributionPaging.pageRows.map((group, index) => (
                         <tr key={String(group[dimension] ?? index)}>
                           <td>
                             <span className="table-primary-link">
@@ -234,6 +244,15 @@ export default function FinOpsPage() {
                   </table>
                 </div>
               )}
+              <TablePagination
+                total={attributionPaging.total}
+                pageRows={attributionPaging.pageRows.length}
+                page={attributionPaging.page}
+                onPageChange={attributionPaging.setPage}
+                pageSize={attributionPaging.pageSize}
+                onPageSizeChange={attributionPaging.setPageSize}
+                label="groups"
+              />
             </div>
           </section>
 
@@ -266,7 +285,7 @@ export default function FinOpsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {rows.map((row, index) => (
+                      {opportunityPaging.pageRows.map((row, index) => (
                         <tr key={row.recommendation_id || row.resource_id || index}>
                           <td>
                             <span className="table-primary-link">
@@ -300,6 +319,15 @@ export default function FinOpsPage() {
                   </table>
                 </div>
               )}
+              <TablePagination
+                total={opportunityPaging.total}
+                pageRows={opportunityPaging.pageRows.length}
+                page={opportunityPaging.page}
+                onPageChange={opportunityPaging.setPage}
+                pageSize={opportunityPaging.pageSize}
+                onPageSizeChange={opportunityPaging.setPageSize}
+                label="opportunities"
+              />
             </div>
           </section>
 
@@ -331,7 +359,7 @@ export default function FinOpsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {wasteRows.map((row, index) => (
+                      {wastePaging.pageRows.map((row, index) => (
                         <tr key={row.resource_id || index}>
                           <td>
                             <span className="table-primary-link">
@@ -360,6 +388,15 @@ export default function FinOpsPage() {
                   </table>
                 </div>
               )}
+              <TablePagination
+                total={wastePaging.total}
+                pageRows={wastePaging.pageRows.length}
+                page={wastePaging.page}
+                onPageChange={wastePaging.setPage}
+                pageSize={wastePaging.pageSize}
+                onPageSizeChange={wastePaging.setPageSize}
+                label="waste items"
+              />
             </div>
           </section>
         </>

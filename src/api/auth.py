@@ -7,7 +7,7 @@ Ships a pluggable :class:`Authenticator` protocol plus two implementations:
 * :class:`HeaderPrincipalAuthenticator` — trusts principal identity asserted by
   an upstream gateway (App Service Easy Auth, API Management, an ingress that
   has already validated the Entra ID token). This is the production posture:
-  Hermes does not re-implement OIDC, it consumes a verified assertion.
+  AIOps does not re-implement OIDC, it consumes a verified assertion.
 
 Token validation against Entra ID directly is deliberately *not* implemented
 here; wiring a JWKS-validating authenticator is a drop-in replacement for the
@@ -17,6 +17,7 @@ protocol below.
 from __future__ import annotations
 
 import hmac
+import secrets
 from collections.abc import Callable, Mapping
 from typing import Protocol
 
@@ -80,16 +81,28 @@ class HeaderPrincipalAuthenticator:
         *,
         subject_header: str = "x-ms-client-principal-name",
         roles_header: str = "x-ms-client-principal-roles",
+        assertion_header: str = "x-aiops-gateway-assertion",
+        assertion_value: str = "",
         grants_resolver: Callable[[str, list[str]], tuple[Grant, ...]] | None = None,
     ) -> None:
         self.subject_header = subject_header.casefold()
         self.roles_header = roles_header.casefold()
+        self.assertion_header = assertion_header.casefold()
+        self.assertion_value = str(assertion_value or "").strip()
         # Maps an authenticated gateway subject to concrete, explicitly
         # configured grants. Header roles alone are never authorization.
         self.grants_resolver = grants_resolver
 
     def authenticate(self, headers: Mapping[str, str]) -> Principal:
         folded = {str(key).casefold(): value for key, value in headers.items()}
+        assertion = str(folded.get(self.assertion_header) or "").strip()
+        if not self.assertion_value or not secrets.compare_digest(
+            assertion, self.assertion_value
+        ):
+            raise ApiError(
+                ErrorCode.UNAUTHENTICATED,
+                "A validated gateway assertion is required",
+            )
         subject = str(folded.get(self.subject_header) or "").strip()
         if not subject:
             raise ApiError(
@@ -181,7 +194,7 @@ class EntraJwtAuthenticator:
             # asserted app-role claim and the resolved subject only -- useful
             # to distinguish "no roles claim" (app role not defined/assigned,
             # or a stale cached token issued before assignment) from
-            # "roles present but no matching HERMES_API_GATEWAY_GRANTS entry"
+            # "roles present but no matching AIOPS_API_GATEWAY_GRANTS entry"
             # (subject/casefold mismatch, or a role not listed for that
             # subject) without ever exposing token secrets.
             print(
@@ -191,6 +204,40 @@ class EntraJwtAuthenticator:
             )
             raise ApiError(
                 ErrorCode.UNAUTHENTICATED,
-                "Entra principal has no configured Hermes grants",
+                "Entra principal has no configured AIOps grants",
             )
         return Principal(subject=subject, grants=grants)
+
+
+class GatewayOrDirectAuthenticator:
+    """Accepts either a validated gateway assertion or a direct Entra token.
+
+    APIM fronts only the governed MCP route, and its inbound policy *deletes*
+    the caller's ``Authorization`` header before forwarding a gateway
+    assertion. Browser traffic reaches the API directly and can only ever
+    present an Entra bearer token. A single global mode cannot serve both:
+    ``gateway`` locks every browser call out with "A validated gateway
+    assertion is required", while ``entra`` rejects APIM-forwarded MCP calls
+    that carry no bearer token at all.
+
+    Routing on the presence of the gateway assertion header keeps both trust
+    boundaries intact rather than weakening either. A request bearing the
+    header is validated against the configured assertion secret exactly as
+    before -- a forged or absent value still fails -- and every other request
+    must pass full Entra JWT validation.
+    """
+
+    def __init__(
+        self,
+        *,
+        gateway: HeaderPrincipalAuthenticator,
+        direct: EntraJwtAuthenticator,
+    ) -> None:
+        self.gateway = gateway
+        self.direct = direct
+
+    def authenticate(self, headers: Mapping[str, str]) -> Principal:
+        folded = {str(key).casefold(): value for key, value in headers.items()}
+        if str(folded.get(self.gateway.assertion_header) or "").strip():
+            return self.gateway.authenticate(headers)
+        return self.direct.authenticate(headers)

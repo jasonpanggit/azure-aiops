@@ -1,13 +1,13 @@
 # Semantic Knowledge Layer architecture
 
-The Semantic Knowledge Layer is the sole read-only semantic interface exposed to Hermes agents. Microsoft Fabric Ontology remains authoritative for durable entities and relationship assertions; OneLake remains canonical persistence. The layer builds ephemeral indexes and bounded caches, not another database or a copy of operational source data.
+The Semantic Knowledge Layer is the sole read-only semantic interface exposed to AIOps agents. Microsoft Fabric Ontology remains authoritative for durable entities and relationship assertions; OneLake remains canonical persistence. The layer builds ephemeral indexes and bounded caches, not another database or a copy of operational source data.
 
 The layer deliberately separates two concerns:
 
 - **Semantic graph:** stable identity, ownership, dependencies, topology, business impact, confidence, evidence, and assertion lifecycle.
 - **Live observations:** current resource configuration, health, alerts, metrics, logs, patch state, and security findings, queried from their authoritative source through backend adapters.
 
-Hermes may use bounded source observations while inferring relationships, but it persists only semantic assertions. UI and agent responses combine live observations with the durable graph at query time.
+AIOps may use bounded source observations while inferring relationships, but it persists only semantic assertions. UI and agent responses combine live observations with the durable graph at query time.
 
 The public framework uses the exact modules `semantic_engine`, `semantic_registry`, `semantic_models`, `query_cache`, `indexes`, and `validator`. Compatibility implementations remain in the established `semantic_cache`, `semantic_indexes`, and `semantic_validator` modules without duplicating state.
 
@@ -34,7 +34,7 @@ flowchart LR
   SEARCH --> CACHE
   CACHE --> API[Semantic / hybrid APIs]
   API --> TOOL[operations_analysis via Operations Agent]
-  TOOL --> AGENTS[Hermes Operations Agent consumers]
+  TOOL --> AGENTS[AIOps Operations Agent consumers]
 
   AGENTS -. no direct source access .-> ARG
   AGENTS -. no direct source access .-> OL
@@ -83,7 +83,7 @@ All models are registered in `SemanticRegistry` with their required Ontology and
 
 ```mermaid
 sequenceDiagram
-  participant A as Hermes agent
+  participant A as AIOps agent
   participant T as operations_analysis
   participant E as Hybrid Query Service
   participant C as SemanticCache

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from hermes_arg_connector.network_normalize import NETWORK_ENTITY_TYPES
+from onboarding.network_normalize import NETWORK_ENTITY_TYPES
 from ontology.entity_builder import EntityBuilder
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator
@@ -93,6 +93,7 @@ ONTOLOGY_ENTITY_TYPES = (
     "BlastRadius",
     "DependencyChain",
     "OperationalFinding",
+    "Situation",
     # Network topology (Prompt 16)
     "VNet",
     "Subnet",
@@ -823,7 +824,7 @@ def _situation_ontology_entity(row: dict[str, Any], run_id: str) -> dict[str, An
         **result,
         "entity_type": "Situation",
         "name": payload["title"] or payload["situation_id"],
-        "resource_type": "hermes/situation",
+        "resource_type": "aiops/situation",
         "location": "",
         "payload_json": _canonical(payload),
         "lineage_json": _canonical({"source_resource_ids": row.get("affected_resource_ids") or []}),

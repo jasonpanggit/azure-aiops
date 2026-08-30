@@ -14,7 +14,7 @@ def test_semantic_model_serializes_relationship_assertions_only():
         object_type="Service",
         confidence=0.92,
         evidence=("tag:depends-on=svc:checkout",),
-        provenance={"model": "hermes", "run_id": "run-1"},
+        provenance={"model": "aiops", "run_id": "run-1"},
         lifecycle_status="proposed",
     )
 
@@ -23,7 +23,7 @@ def test_semantic_model_serializes_relationship_assertions_only():
     assert row["resource_id"] == "assertion:app:payments:depends_on:svc:checkout"
     assert row["confidence"] == 0.92
     assert row["evidence_json"] == ["tag:depends-on=svc:checkout"]
-    assert row["provenance_json"] == {"model": "hermes", "run_id": "run-1"}
+    assert row["provenance_json"] == {"model": "aiops", "run_id": "run-1"}
     assert "properties" not in row
     assert "status" not in row
 

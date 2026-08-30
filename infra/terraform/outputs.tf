@@ -53,6 +53,36 @@ output "entra_web_client_id" {
   value       = var.entra_web_client_id
 }
 
+output "apim_gateway_url" {
+  description = "Non-secret APIM MCP gateway URL, or null when APIM is disabled."
+  value       = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/mcp" : null
+}
+
+output "apim_resource_id" {
+  description = "APIM resource identifier; no credentials or policy values are exposed."
+  value       = var.enable_apim ? azurerm_api_management.main[0].id : null
+}
+
+output "apim_name" {
+  description = "APIM service name, or null when APIM is disabled."
+  value       = var.enable_apim ? azurerm_api_management.main[0].name : null
+}
+
+output "foundry_project_principal_id" {
+  description = <<-EOT
+    Object ID of the Foundry project's system-assigned identity. Add this as a
+    key in entra_grants_json (AIOPS_ENTRA_GRANTS_JSON) with the grants
+    specialist agents should be able to exercise over MCP, e.g.
+    {"<this value>": [{"role": "reader"}]}, then re-apply -- Foundry's MCP
+    connection authenticates as this identity when calling APIM.
+  EOT
+  value       = azurerm_cognitive_account_project.ops.identity[0].principal_id
+}
+
+output "apim_api_name" {
+  description = "APIM MCP API name, or null when APIM is disabled."
+  value       = var.enable_apim ? azurerm_api_management_api.mcp[0].name : null
+}
 
 
 output "fabric_workspace_id" {

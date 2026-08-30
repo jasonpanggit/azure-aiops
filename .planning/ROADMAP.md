@@ -13,7 +13,7 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
 - [ ] **Phase 5: Controlled Pilot Readiness** - Validate failure behavior, stale sources, authorization boundaries, rollout controls, and operator readiness.
 - [~] **Phase 6: Software and OS Inventory Visibility** - Deliver scoped, evidence-backed OS and installed-software inventory with lifecycle risk and export. *(code-complete; awaiting UAT sign-off)*
 - [ ] **Phase 7: Unified Resource Inventory** - Establish Fabric/OneLake-backed inventory as the unified data platform for every resource family including PaaS, consumed by the semantic graph and other subsystems rather than owned by them.
-- [ ] **Phase 8: Resource Identity Plane** - Extend inventory to own complete resource identity — all types, containment hierarchy, raw properties, and watermarks — so Hermes stops querying ARG for resource identity and consumes inventory for discovery and semantic modelling.
+- [x] **Phase 8: Resource Identity Plane** - Extend inventory to own complete resource identity — all types, containment hierarchy, raw properties, and watermarks — so Hermes stops querying ARG for resource identity and consumes inventory for graph construction, relationship modelling, and semantic traversal.
 - [ ] **Phase 9: Consumer Pivot** - Repoint API providers, agent queries, and affected web pages at the inventory read port so the UI is powered by unified inventory.
 
 ## Phase Details
@@ -117,15 +117,15 @@ Plans:
 | 5. Controlled Pilot Readiness | 0/TBD | Not started | - |
 | 6. Software and OS Inventory Visibility | 9/9 | Code-complete, UAT pending | - |
 | 7. Unified Resource Inventory | 6/6 | Implementation complete; live verification pending | - |
-| 8. Resource Identity Plane | 0/TBD | Not started | - |
-| 9. Consumer Pivot | 0/TBD | Not started | - |
+| 8. Resource Identity Plane | 3/3 | In Progress|  |
+| 9. Consumer Pivot | 9/9 | ✅ Complete — Operations MCP + Network Agent Integration | ✅ 2026-08-28 |
 
 ### Phase 6: Software and OS Inventory Visibility
 
 **Goal:** Operators can inspect authorized, evidence-backed OS and installed-software inventory across Azure VMs and Arc-enabled servers, understand lifecycle risk, and export exact software/version matches for follow-up.
 **Requirements**: INV-01, INV-02, INV-03, INV-04, INV-05, INV-06
 **Depends on:** Phase 5
-**Plans:** 9/9 plans executed
+**Plans:** 9 plans
 
 Plans:
 
@@ -199,13 +199,19 @@ The genuinely wide step is extracting `DatasetStore`/generation machinery, which
 
 ### Phase 8: Resource Identity Plane
 
-**Goal:** As a platform operator, I want unified inventory to own the complete resource identity plane, so that the Hermes semantic graph performs discovery and semantic modelling from inventory instead of querying ARG for resource identity itself.
+**Goal:** As a platform operator, I want unified inventory to own the complete resource identity plane, so that the Hermes semantic graph performs graph construction, relationship modelling, and semantic traversal from inventory instead of querying ARG for resource identity itself.
 **Requirements**: INV-07, INV-08, INV-10, INV-11, INV-12
 **Depends on:** Phase 7
-**Plans:** TBD
+**Plans:** 3/6 plans executed
+Plans:
+
+- [x] 08-01-PLAN.md — Extend inventory read port with containment hierarchy; prove lossless equivalence for Hermes's real normalizer read patterns
+- [x] 08-02-PLAN.md — Build the real Fabric-native topology-derivation pipeline (edges + NSG/flow-log network topology) and bind to Fabric IQ ontology
+- [x] 08-03-PLAN.md — Run the Hermes-vs-Fabric viability comparison, produce the report, and execute the operator-approved retain/reduce/remove decision
+
 **UI hint:** no
 
-**Context:** `queries.py:build()` issues ~20 ARG query specs, of which only `_inventory_specs()` is inventory — roughly 10% of what Hermes acquires. Hermes independently queries `Resources` and `ResourceContainers` for the same resource identity that inventory owns, then normalizes it into 14+ `ENTITY_TYPES`. That duplicate acquisition path is what this phase removes.
+**Context:** `queries.py:build()` issues ~20 deterministic ARG query specs, then `Normalizer` maps known payloads into known entity/relationship rows and ontology metadata is generated from emitted row shapes. That is coded acquisition and normalization, not autonomous/self-learning discovery. Hermes independently queries `Resources` and `ResourceContainers` for the same resource identity that inventory owns, then normalizes it into 14+ `ENTITY_TYPES`. That duplicate acquisition path is what this phase removes; Hermes remains only if it adds graph-specific value such as relationship inference, topology modelling, confidence/provenance modelling, bounded traversal, semantic query APIs, and agent-safe context packaging.
 
 **Scope boundary — identity vs. assessments.** Inventory owns the **resource identity plane**: what exists, of what type, where, with what attributes and containment. It does **not** absorb assessments *about* resources — patch compliance, vulnerabilities, policy state, advisor recommendations, metrics, health — which remain owned by their domains and join to inventory by resource ID. Nor does it absorb relationship/topology modelling, which is Hermes's actual job. Without this boundary the phase would produce a god module worse than the current coupling.
 
@@ -215,8 +221,9 @@ The genuinely wide step is extracting `DatasetStore`/generation machinery, which
   2. Inventory carries the containment hierarchy (management group → subscription → resource group → resource) so no consumer needs a separate `ResourceContainers` acquisition path.
   3. Inventory preserves the full raw property bag per resource, losslessly enough that Hermes's normalizers, network modelling, and identity modelling read everything they read today.
   4. Inventory exposes per-family freshness and watermarks sufficient for incremental sync, with no regression to full refresh.
-  5. Hermes performs discovery and semantic modelling from the inventory read port, with its ARG resource-identity queries removed.
+  5. Hermes builds and traverses the semantic graph from the inventory read port, with its ARG resource-identity queries removed and no separate "discovery agent" role preserved unless it adds graph-specific inference or context-packaging value.
   6. Assessment domains and relationship modelling are unchanged, joining to inventory by resource ID.
+  7. A real Fabric-native Spark/KQL pipeline is built that reproduces Hermes's current relationship/topology construction (entity/edge derivation from ARG identity data, plus NSG+flow-log-derived network topology) directly against the Fabric lakehouse and exposes it through Fabric IQ ontology, and the same blast-radius scenarios are run against its output for the viability comparison — the gate must be decided from an actual working Fabric pipeline, not a documentation-based estimate.
 
 **Primary risk:** criteria 3 and 4. If `ResourceObservation` projects a lossy subset of `properties`, or cannot express watermark semantics, Hermes must retain its own ARG path and the pivot fails. **Design the contract from Hermes's real read patterns, not from what the inventory UI displays.** See `07-RESEARCH.md` §7.3.
 
@@ -225,16 +232,38 @@ The genuinely wide step is extracting `DatasetStore`/generation machinery, which
 **Goal:** As a platform operator, I want the API and UI powered by unified inventory, so that every surface reflects one source of truth about what resources exist.
 **Requirements**: INV-09, INV-10
 **Depends on:** Phase 8
-**Plans:** TBD
+**Plans:** 8/9 plans executed
+
+Plans:
+
+- [x] 09-01-PLAN.md — Deliver the typed page-snapshot Network Copilot backend tracer and governed bounded findings loop
+- [x] 09-02-PLAN.md — Pivot inventory consumers to the read port and configure named Foundry/Fabric IQ seams
+- [x] 09-03-PLAN.md — Deliver the accessible contextual Copilot drawer across supported pages
+- [x] 09-04-PLAN.md — Close stale/partial finding and complete snapshot resource-scope validation
+- [x] 09-05-PLAN.md — Implement real bounded contextual orchestration and configurable Fabric IQ runtime wiring
+- [x] 09-06-PLAN.md — Isolate, fix, or precisely assign the three full backend suite failures
+- [x] 09-07-PLAN.md — Deliver the governed read-only Operations MCP server contract and adapter
+- [x] 09-08-PLAN.md — Put the Operations MCP server behind Azure API Management with Terraform, policy, and rollback
+- [ ] 09-09-PLAN.md — Integrate named Foundry specialists and optional Fabric IQ grounding with live smoke validation
+
 **UI hint:** yes
 
 **Context:** The API already has the right seam. `runtime.py` registers providers via `ProviderSpec`, and routers depend on providers rather than datasets — verified: no router reads `read_dataset` or `entities/` directly; only `runtime.py` does the wiring. The API pivot is therefore mostly a wiring change, not a router rewrite, and if route contracts hold, most web pages need no change.
 
 The exception is `hermes_arg_connector/agent_queries.py`, which reads `entities/VirtualMachine`, `entities/ArcServer`, and `entities/PatchAssessment` directly. Its server/VM reads are identity-plane and move to the read port; its `PatchAssessment` reads stay with the patch domain.
 
+The `/agents` page is not merely a static stub: `web/src/app/agents/page.tsx` calls `/api/v1/agents/catalog` and `/api/v1/agents/investigations`, and `src/api/routers/multi_agent.py` backs those routes with the deterministic `operations.autonomous_investigation` orchestrator. However, the specialist agents are currently in-process deterministic roles over governed tools, while Foundry is only an optional single `FoundryPromptAgent` narrator for already-collected evidence.
+
+Phase 9 should position Operations Copilot as the single orchestrator entry point across pages. Each page supplies its current scoped context — for example selected resource, topology view, investigation objective, active filters, source freshness, and evidence rows — and Operations Copilot routes that context to specialized agents such as Network, Vulnerability, Patch, Incident, Change, Governance, Remediation, and Executive Summary. The page-local experience should therefore be "ask the copilot about this page" rather than "open a different agent app"; the orchestrator decides which specialists to invoke and returns cited analysis, synthesis, uncertainty, and next checks back into the current page.
+
+Specialized LLM agents can provide page-specific analysis without fragmenting the UX. For example, a Network Agent on topology-oriented pages can compare the observed graph against design policy rules and Azure best practices, flag NSG/route/firewall/blast-radius gaps, explain evidence quality, and recommend bounded validation steps. Similar agents can analyze vulnerability exposure, patch urgency, incident timelines, change correlation, ownership/governance gaps, and remediation plans. Phase 9 planning should evaluate whether the specialist implementation remains deterministic with optional Foundry narration, uses Foundry prompt agents as specialist synthesizers, or migrates to Foundry-managed orchestration. Any option must preserve scoped evidence, visible uncertainty, no hidden chain-of-thought, human ledger controls, and degradation when Foundry is unavailable. Microsoft Foundry guidance favors prompt agents for managed no-code/low-code agents, hosted agents for custom orchestration, toolboxes/MCP for governed tools, and new Agent Service workflows over deprecated classic connected agents.
+
 **Success Criteria** (what must be TRUE):
 
   1. API providers serving resource identity resolve through the inventory read port, with route contracts unchanged.
   2. `agent_queries.py` reads servers and VMs from the read port rather than `entities/*`, while patch assessment reads remain with the patch domain.
   3. Web pages surfacing resource identity are audited and confirmed to render from unified inventory, with per-family availability surfaced rather than an all-or-nothing outage.
-  4. No consumer anywhere reads raw `inventory/*` or identity `entities/*` datasets directly.
+  4. Page-level Operations Copilot entry points pass bounded page context to the shared orchestrator instead of duplicating agent UX or bypassing scope/evidence contracts.
+  5. The `/agents` page and `/api/v1/agents/*` routes have an explicit Phase 9 implementation decision: retain deterministic in-process specialists with optional Foundry narration, integrate Foundry prompt agents as specialist synthesizers, or migrate to Foundry-managed agent orchestration. The selected path is tested against evidence grounding, scope isolation, audit ledger behavior, human controls, latency/timeouts, and Foundry-unavailable fallback.
+  6. Specialized agents, starting with Network Agent, can produce cited page-specific analysis against design policy and Azure best practices without inventing unsupported topology, ownership, or remediation claims.
+  7. No consumer anywhere reads raw `inventory/*` or identity `entities/*` datasets directly.

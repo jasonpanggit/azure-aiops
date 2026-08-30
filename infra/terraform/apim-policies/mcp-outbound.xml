@@ -1,0 +1,8 @@
+<policies>
+  <outbound>
+    <base />
+    <set-header name="X-Correlation-ID" exists-action="override">
+      <value>@(context.RequestId.ToString())</value>
+    </set-header>
+  </outbound>
+</policies>

@@ -55,7 +55,7 @@ semantic.search_operational_context(
 )
 ```
 
-## Hermes tool
+## AIOps tool
 
 The Semantic API remains available to trusted Python and operator CLI callers. Agents receive only `operations_analysis`, which consumes these APIs internally and adds bounded explainable reasoning and advisory recommendations.
 
@@ -74,12 +74,12 @@ Input:
 ## CLI
 
 ```bash
-uv run hermes-arg semantic \
+uv run aiops-inventory semantic \
   "Show application context" \
   --subject Payments \
   --config fabric.config.yaml
 
-uv run hermes-arg semantic \
+uv run aiops-inventory semantic \
   "What services are at operational risk?" \
   --config fabric.config.yaml
 ```
@@ -149,4 +149,4 @@ List/search responses return at most 50 items by default, include the total `cou
 - Invalid/dangling Ontology snapshot: `ValueError`; no engine is served
 - Missing Fabric persistence: runtime error until the first successful synchronization
 
-The Hermes tool boundary maps these exceptions to fixed, non-reflective error messages so caller-supplied resource identifiers are never echoed. Detailed exceptions remain available only to direct operator/Python callers.
+The AIOps tool boundary maps these exceptions to fixed, non-reflective error messages so caller-supplied resource identifiers are never echoed. Detailed exceptions remain available only to direct operator/Python callers.

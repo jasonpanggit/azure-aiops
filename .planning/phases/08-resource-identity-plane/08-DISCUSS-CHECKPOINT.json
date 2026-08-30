@@ -1,0 +1,97 @@
+{
+  "phase": "08",
+  "phase_name": "Resource Identity Plane",
+  "timestamp": "2026-08-27T08:32:18+08:00",
+  "areas_completed": ["Hermes viability test", "Unique graph value measurement"],
+  "areas_remaining": ["Removal/reduction path"],
+  "decisions": {
+    "Hermes viability test": [
+      {
+        "question": "What should be the pass condition for keeping Hermes?",
+        "answer": "Require demonstrated unique graph value in at least one end-to-end operator workflow.",
+        "options_presented": [
+          "Require demonstrated unique graph value in at least one end-to-end operator workflow",
+          "Keep it if it offers any technically unique capability, even without an operator workflow",
+          "Retain Hermes by default and only remove it if migration becomes impractical"
+        ],
+        "Unique graph value measurement": [
+          {
+            "question": "Which operator workflow should be the minimum proof case for Hermes’s unique value?",
+            "answer": "Bounded blast-radius analysis from a changed or unhealthy resource.",
+            "options_presented": [
+              "Bounded blast-radius analysis from a changed or unhealthy resource",
+              "Generic “show me resources” semantic search",
+              "OS/software inventory reporting"
+            ]
+          },
+          {
+            "question": "What would count as meaningful uniqueness in that proof case?",
+            "answer": "Hermes must produce a bounded, explainable dependency path with provenance/confidence and authorization-safe context that Fabric/API alone cannot provide.",
+            "options_presented": [
+              "Hermes must produce a bounded, explainable dependency path with provenance/confidence and authorization-safe context that Fabric/API alone cannot provide",
+              "Any result that is technically different from Fabric/API",
+              "Lower latency or lower implementation cost alone"
+            ]
+          },
+          {
+            "question": "How strict should the proof be about uncertainty and missing data?",
+            "answer": "Unknown, stale, conflicting, or unauthorized edges must remain explicit; unsupported certainty is a failure.",
+            "options_presented": [
+              "Unknown, stale, conflicting, or unauthorized edges must remain explicit; unsupported certainty is a failure",
+              "Allow inferred edges to appear as likely without detailed qualification",
+              "Prioritize a complete-looking graph over uncertainty reporting"
+            ]
+          },
+          {
+            "question": "Should the proof use production-like live data or a fixed reproducible dataset?",
+            "answer": "Use a fixed curated Fabric snapshot for repeatable comparison, with an optional live smoke test afterward.",
+            "options_presented": [
+              "Use a fixed curated Fabric snapshot for repeatable comparison, with an optional live smoke test afterward",
+              "Use only live Azure data",
+              "Use only synthetic fixtures"
+            ]
+          }
+        ]
+      },
+      {
+        "question": "Which Hermes capabilities should the viability test measure against Fabric IQ plus the API?",
+        "answer": "Bounded relationship/topology inference, blast-radius traversal, provenance/confidence, and agent-safe context packaging.",
+        "options_presented": [
+          "Bounded relationship/topology inference, blast-radius traversal, provenance/confidence, and agent-safe context packaging",
+          "Only graph traversal and relationship inference",
+          "Any semantic query or narration feature, including capabilities already available through Fabric/API"
+        ]
+      },
+      {
+        "question": "How should the comparison be evaluated?",
+        "answer": "Use the same curated Fabric snapshot and representative operator scenarios, comparing correctness, evidence links, authorization, latency, and operational cost.",
+        "options_presented": [
+          "Use the same curated Fabric snapshot and representative operator scenarios, comparing correctness, evidence links, authorization, latency, and operational cost",
+          "Compare only feature checklists and implementation effort",
+          "Use a live Azure environment with no fixed snapshot"
+        ]
+      },
+      {
+        "question": "If Hermes fails the viability gate, what is the intended outcome?",
+        "answer": "Remove Hermes as a runtime/domain and use Fabric IQ plus inventory/API directly; preserve only any small reusable graph utilities.",
+        "options_presented": [
+          "Remove Hermes as a runtime/domain and use Fabric IQ plus inventory/API directly; preserve only any small reusable graph utilities",
+          "Keep Hermes as a compatibility adapter but remove its discovery and ingestion responsibilities",
+          "Defer the decision until after Phase 9 consumer migration"
+        ]
+      }
+    ]
+  },
+  "deferred_ideas": [],
+  "canonical_refs": [
+    ".planning/ROADMAP.md",
+    ".planning/REQUIREMENTS.md",
+    ".planning/STATE.md",
+    ".planning/phases/07-unified-resource-inventory/07-CONTEXT.md",
+    "src/hermes_arg_connector/queries.py",
+    "src/hermes_arg_connector/normalize.py",
+    "src/hermes_arg_connector/ontology.py",
+    "src/hermes_arg_connector/agent_queries.py",
+    "src/semantic/semantic_engine.py"
+  ]
+}

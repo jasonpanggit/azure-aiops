@@ -9,6 +9,8 @@ from typing import Any, ClassVar, Protocol
 
 import httpx
 
+UTC = UTC
+
 
 class TokenCredential(Protocol):
     def get_token(self, *scopes: str): ...

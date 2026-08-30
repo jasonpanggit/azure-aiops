@@ -1,16 +1,31 @@
 "use client";
 
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi } from "@/lib/services";
-import type { BusinessMetadata, ConnectionCreateRequest, SubscriptionConnection } from "@/lib/types";
+import type { BusinessMetadata, ConnectionCreateRequest, SubscriptionConnection, SyncState } from "@/lib/types";
+
+const SYNC_POLL_INTERVAL_MS = 1500;
+const SYNC_POLL_TIMEOUT_MS = 10 * 60 * 1000;
+
+const SYNC_STAGE_LABELS: Record<string, string> = {
+  queued: "Queued",
+  discovering: "Discovering resources",
+  merging: "Merging inventory",
+  publishing_ontology: "Publishing ontology",
+  writing_fabric_tables: "Writing Fabric tables",
+  succeeded: "Completed",
+  failed: "Failed",
+};
 
 const EMPTY_FORM = {
   connectionId: "",
@@ -55,8 +70,10 @@ export default function ConnectionsPage() {
   const [editForm, setEditForm] = useState(EMPTY_EDIT_FORM);
   const [editLoading, setEditLoading] = useState(false);
   const [editSubmitting, setEditSubmitting] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<{ connectionId: string; state: SyncState } | null>(null);
   const connections = useApi(() => connectionsApi.list(scope), [scope, refreshKey]);
-  const rows = connections.data?.data ?? [];
+  const rows = useMemo(() => connections.data?.data ?? [], [connections.data]);
+  const rowsPaging = useTablePagination(rows);
   const healthy = rows.filter((connection) => connection.health_status === "healthy").length;
   const stale = rows.filter((connection) => connection.health_status === "stale").length;
   const failed = rows.filter((connection) => ["failed", "unhealthy"].includes(connection.health_status)).length;
@@ -104,8 +121,31 @@ export default function ConnectionsPage() {
       },
     };
     try {
-      await connectionsApi.create(payload);
-      setActionMessage("Subscription connection created. Validate access, then run the initial sync.");
+      const result = await connectionsApi.create(payload);
+      const { validation, initial_sync: initialSync } = result.data;
+      if (!validation.passed) {
+        setActionError(`Validation failed: ${validation.health.details ?? validation.failed_required?.join(", ") ?? "required access checks did not pass"}`);
+      } else if (initialSync.status.toLowerCase() === "failed") {
+        setActionError(initialSync.sync_state.message ?? "Initial sync failed.");
+      } else {
+        setActionMessage(
+          validation.status === "degraded"
+            ? "Subscription connection validated with optional checks degraded. Initial sync queued."
+            : "Subscription connection validated. Initial sync queued."
+        );
+        setSyncProgress({ connectionId: result.data.connection_id, state: initialSync.sync_state });
+        const finalState = await pollSyncState(result.data.connection_id);
+        setSyncProgress(null);
+        if (finalState.status.toLowerCase() === "failed") {
+          setActionError(finalState.message ?? finalState.stage_message ?? "Initial sync failed.");
+        } else {
+          setActionMessage(
+            validation.status === "degraded"
+              ? "Subscription connection validated with optional checks degraded. Initial sync completed."
+              : "Subscription connection validated and initial sync completed."
+          );
+        }
+      }
       setForm(EMPTY_FORM);
       setShowOnboarding(false);
       setRefreshKey((value) => value + 1);
@@ -116,34 +156,22 @@ export default function ConnectionsPage() {
     }
   }
 
-  async function runAction(connection: SubscriptionConnection, action: "validate" | "sync") {
-    setActionError("");
-    setActionMessage("");
-    setRunningAction(`${action}:${connection.connection_id}`);
-    try {
-      if (action === "validate") {
-        const result = await connectionsApi.validate(connection.connection_id);
-        if (result.data.status.toLowerCase() === "failed") {
-          setRefreshKey((value) => value + 1);
-          throw new Error("Validation failed");
+  /** Polls connection health until the background sync reaches a terminal stage, updating live progress. */
+  async function pollSyncState(connectionId: string): Promise<SyncState> {
+    const deadline = Date.now() + SYNC_POLL_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const report = await connectionsApi.health(connectionId);
+      const summary = report.data.connections.find((entry) => entry.connection_id === connectionId);
+      const state = summary?.sync;
+      if (state) {
+        setSyncProgress({ connectionId, state });
+        if (["succeeded", "failed"].includes(state.status.toLowerCase())) {
+          return state;
         }
-        setActionMessage(`Validation completed for ${connection.name}.`);
-      } else {
-        const result = await connectionsApi.sync(connection.connection_id, "initial");
-        if (result.data.status.toLowerCase() === "failed") {
-          setRefreshKey((value) => value + 1);
-          throw new Error(String(result.data.sync_state.message ?? result.data.message ?? "Sync failed"));
-        }
-        setActionMessage(
-          `Sync completed for ${connection.name}: ${result.data.record_count ?? 0} records discovered.`,
-        );
       }
-      setRefreshKey((value) => value + 1);
-    } catch (reason) {
-      setActionError(reason instanceof Error ? reason.message : `Unable to ${action} connection.`);
-    } finally {
-      setRunningAction("");
+      await new Promise((resolve) => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
     }
+    throw new Error("Timed out waiting for sync to complete.");
   }
 
   async function deleteConnection(connection: SubscriptionConnection) {
@@ -271,7 +299,7 @@ export default function ConnectionsPage() {
       {showOnboarding && (
         <form className="card onboarding-form" onSubmit={onboard}>
           <div className="card-header">
-            <div><h2>Onboard an Azure subscription</h2><p>Enter the service principal secret once. The API stores it in Azure Key Vault and Hermes keeps only the Key Vault reference.</p></div>
+            <div><h2>Onboard an Azure subscription</h2><p>Enter the service principal secret once. The API stores it in Azure Key Vault and AIOps keeps only the Key Vault reference.</p></div>
           </div>
           <div className="card-body">
             <h3>Azure connection</h3>
@@ -400,6 +428,19 @@ export default function ConnectionsPage() {
         </form>
       )}
 
+      {syncProgress && (
+        <div className="callout sync-progress-callout">
+          <strong>Syncing {rows.find((row) => row.connection_id === syncProgress.connectionId)?.name ?? syncProgress.connectionId}</strong>
+          <span>
+            {SYNC_STAGE_LABELS[syncProgress.state.stage ?? ""] ?? syncProgress.state.stage ?? "Working"}
+            {typeof syncProgress.state.progress_pct === "number" ? ` — ${syncProgress.state.progress_pct}%` : ""}
+            {syncProgress.state.stage_message ? `: ${syncProgress.state.stage_message}` : ""}
+          </span>
+          <div className="sync-progress-bar" role="progressbar" aria-valuenow={syncProgress.state.progress_pct ?? 0} aria-valuemin={0} aria-valuemax={100}>
+            <div className="sync-progress-bar-fill" style={{ width: `${syncProgress.state.progress_pct ?? 0}%` }} />
+          </div>
+        </div>
+      )}
       {actionMessage && <div className="callout callout-success"><strong>Complete</strong><span>{actionMessage}</span></div>}
       {actionError && <div className="callout callout-critical"><strong>Action failed</strong><span>{actionError}</span></div>}
 
@@ -415,7 +456,7 @@ export default function ConnectionsPage() {
             <table className="operations-table">
               <thead><tr><th>Connection</th><th>Business context</th><th>Health</th><th>Sync</th><th>Last successful sync</th><th>Actions</th></tr></thead>
               <tbody>
-                {rows.map((connection) => (
+                {rowsPaging.pageRows.map((connection) => (
                   <tr key={connection.connection_id}>
                     <td><strong>{connection.name}</strong><div className="table-secondary">{connection.subscription_id}</div></td>
                     <td><strong>{connection.business_service || "Service not mapped"}</strong><div className="table-secondary">{connection.environment || "Environment not mapped"} · {connection.criticality || "Criticality not set"}</div></td>
@@ -432,22 +473,6 @@ export default function ConnectionsPage() {
                           type="button"
                           className="button button-quiet"
                           disabled={Boolean(runningAction)}
-                          onClick={() => runAction(connection, "validate")}
-                        >
-                          {runningAction === `validate:${connection.connection_id}` ? "Validating…" : "Validate"}
-                        </button>
-                        <button
-                          type="button"
-                          className="button button-quiet"
-                          disabled={Boolean(runningAction)}
-                          onClick={() => runAction(connection, "sync")}
-                        >
-                          {runningAction === `sync:${connection.connection_id}` ? "Syncing…" : "Sync"}
-                        </button>
-                        <button
-                          type="button"
-                          className="button button-quiet"
-                          disabled={Boolean(runningAction)}
                           onClick={() => deleteConnection(connection)}
                         >
                           {runningAction === `delete:${connection.connection_id}` ? "Deleting…" : "Delete"}
@@ -459,6 +484,15 @@ export default function ConnectionsPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            total={rowsPaging.total}
+            pageRows={rowsPaging.pageRows.length}
+            page={rowsPaging.page}
+            onPageChange={rowsPaging.setPage}
+            pageSize={rowsPaging.pageSize}
+            onPageSizeChange={rowsPaging.setPageSize}
+            label="connections"
+          />
         </div>
       )}
     </div>

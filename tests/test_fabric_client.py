@@ -10,6 +10,8 @@ from fabric.config import FabricRuntimeConfig
 from fabric.fabric_client import FabricClient
 from fabric.lakehouse_manager import LakehouseManager
 from fabric.workspace_manager import WorkspaceManager
+from api.scope import Scope
+from operations.tools import FabricIQToolAdapter
 
 
 @dataclass
@@ -516,3 +518,22 @@ fabric:
 
     with pytest.raises(TypeError, match="fabric.remediation.max_plans"):
         FabricRuntimeConfig.load(config_path)
+
+
+def test_fabric_iq_adapter_stamps_governed_enrichment() -> None:
+    adapter = FabricIQToolAdapter(
+        query=lambda kind, args, scope: {
+            "data": {"subscription": "sub-a", "kind": kind},
+            "freshness": "fresh",
+            "provenance": "fabric-runtime",
+            "authorization": "managed-identity",
+        }
+    )
+    result = adapter.run(
+        "relationships",
+        {"subject": "network"},
+        Scope.from_mapping({"subscription": ["sub-a"]}),
+    )
+    assert result.status == "ok"
+    assert result.data["metadata"]["identity_authority"] is False
+    assert result.data["metadata"]["provenance"] == "fabric-runtime"

@@ -111,13 +111,13 @@ variable "image_tag" {
 variable "api_image_repository" {
   description = "Repository name for the Operations API image."
   type        = string
-  default     = "hermes-api"
+  default     = "aiops-api"
 }
 
 variable "web_image_repository" {
   description = "Repository name for the Operations Workbench image."
   type        = string
-  default     = "hermes-web"
+  default     = "aiops-web"
 }
 
 variable "deploy_images" {
@@ -203,7 +203,7 @@ variable "entra_api_audience" {
 }
 
 variable "entra_grants_json" {
-  description = "JSON subject-to-Hermes-grants map; Entra app roles must assert each configured role."
+  description = "JSON subject-to-AIOps-grants map; Entra app roles must assert each configured role."
   type        = string
   sensitive   = true
 
@@ -238,7 +238,7 @@ variable "nvd_api_key" {
 
 variable "refresh_trigger_secret" {
   description = <<-EOT
-    Shared secret checked against the x-hermes-trigger-secret header on
+    Shared secret checked against the x-aiops-trigger-secret header on
     POST /api/v1/inventory/refresh. This endpoint is called by the Fabric
     Data Pipeline's Web activity on a schedule to run inventory
     acquisition + normalization + OneLake publication. Leave empty to
@@ -257,6 +257,82 @@ variable "api_external_ingress" {
   EOT
   type        = bool
   default     = true
+}
+
+# ---------------------------------------------------------------------------
+# Azure API Management MCP gateway
+# ---------------------------------------------------------------------------
+
+variable "enable_apim" {
+  description = "Whether to provision the approved Operations MCP APIM facade."
+  type        = bool
+  default     = false
+}
+
+variable "apim_name" {
+  description = "Existing or approved APIM service name. Empty derives one from the deployment name."
+  type        = string
+  default     = ""
+}
+
+variable "apim_sku" {
+  description = "APIM SKU; must be confirmed for MCP support before apply."
+  type        = string
+  default     = "Developer"
+  validation {
+    condition     = contains(["Basic", "Basic_v2", "Developer", "Standard", "Standard_v2", "Premium", "Premium_v2"], var.apim_sku)
+    error_message = "apim_sku must be an APIM tier that supports the approved MCP gateway."
+  }
+}
+
+variable "apim_virtual_network_type" {
+  description = "APIM network mode. Internal requires an approved private backend/DNS design."
+  type        = string
+  default     = "None"
+  validation {
+    condition     = contains(["None", "External", "Internal"], var.apim_virtual_network_type)
+    error_message = "apim_virtual_network_type must be None, External, or Internal."
+  }
+}
+
+variable "apim_publisher_name" {
+  description = "APIM publisher display name."
+  type        = string
+  default     = "Azure AI Operations"
+}
+
+variable "apim_publisher_email" {
+  description = "APIM publisher contact email; use an approved operational address."
+  type        = string
+  default     = ""
+}
+
+variable "apim_audience" {
+  description = "Optional Entra audience accepted by the APIM MCP policy; defaults to the API audience and never uses a client-declared audience."
+  type        = string
+  default     = ""
+}
+
+variable "apim_revision" {
+  description = "MCP API revision kept for reversible gateway rollout."
+  type        = string
+  default     = "1"
+}
+
+variable "apim_subscription_limit" {
+  description = "Maximum approved product subscriptions; subscription keys are consumer controls, not grants."
+  type        = number
+  default     = 10
+}
+
+variable "apim_gateway_assertion" {
+  description = "Non-secret deployment marker overwritten by APIM and required by gateway-only API mode."
+  type        = string
+  default     = "aiops-apim-v1"
+  validation {
+    condition     = can(regex("^[a-z0-9-]{8,64}$", var.apim_gateway_assertion))
+    error_message = "apim_gateway_assertion must be a bounded lowercase deployment marker."
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -291,6 +367,30 @@ variable "foundry_agent_name" {
   description = "Name of the Foundry prompt agent that narrates Copilot answers."
   type        = string
   default     = "operations-copilot"
+}
+
+variable "foundry_specialists" {
+  description = "Independently named/versioned Foundry prompt specialists. Phase 09-09 expansion: all 8 agents deployed."
+  type = map(object({
+    name    = string
+    version = string
+  }))
+  default = {
+    network = { name = "aiops-network-agent", version = "2026.08.1" }
+    vulnerability = { name = "aiops-vulnerability-agent", version = "2026.08.1" }
+    patch = { name = "aiops-patch-agent", version = "2026.08.1" }
+    incident = { name = "aiops-incident-agent", version = "2026.08.1" }
+    change = { name = "aiops-change-agent", version = "2026.08.1" }
+    governance = { name = "aiops-governance-agent", version = "2026.08.1" }
+    remediation = { name = "aiops-remediation-agent", version = "2026.08.1" }
+    executive_summary = { name = "aiops-executive-summary-agent", version = "2026.08.1" }
+  }
+}
+
+variable "enable_fabric_iq" {
+  description = "Enable optional governed Fabric IQ enrichment. Identity remains owned by InventoryReadPort."
+  type        = bool
+  default     = false
 }
 
 variable "create_foundry_agent" {
@@ -350,7 +450,13 @@ variable "fabric_workspace_name" {
 variable "fabric_lakehouse_name" {
   description = "Lakehouse holding the operational context graph datasets."
   type        = string
-  default     = "operational_context_graph"
+  default     = "operational_context_graph_v2"
+}
+
+variable "fabric_ontology_name" {
+  description = "Fabric ontology item backing the operational context graph."
+  type        = string
+  default     = "Operational_Context_Ontology_v2"
 }
 
 variable "alert_email_addresses" {
@@ -369,4 +475,3 @@ variable "alert_provider_stale_threshold_hours" {
   type        = number
   default     = 6
 }
-

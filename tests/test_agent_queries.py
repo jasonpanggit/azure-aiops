@@ -4,7 +4,7 @@ import json
 from datetime import UTC
 from pathlib import Path
 
-from hermes_arg_connector.agent_queries import ContextQueryService, _failed
+from onboarding.agent_queries import ContextQueryService, _failed
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
 
@@ -12,8 +12,8 @@ FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
 def test_agent_queries_answer_required_questions(tmp_path: Path) -> None:
     from datetime import datetime
 
-    from hermes_arg_connector.normalize import Normalizer
-    from hermes_arg_connector.storage import DatasetStore
+    from onboarding.graph_normalize import Normalizer
+    from onboarding.ingestion_storage import DatasetStore
 
     payload = json.loads(FIXTURE.read_text())
     graph = Normalizer().normalize(payload, datetime(2026, 8, 17, tzinfo=UTC))

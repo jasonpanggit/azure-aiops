@@ -10,7 +10,7 @@ flow -- it does not require `az login` as a user.
 The pipeline has a single Web activity that POSTs to the deployed API's
 `/api/v1/inventory/refresh` trigger endpoint (see
 `src/api/routers/inventory.py`), authenticated via the same shared-secret
-header the endpoint itself validates (`x-hermes-trigger-secret`). Fabric
+header the endpoint itself validates (`x-aiops-trigger-secret`). Fabric
 owns *scheduling* only; all acquisition/normalization/publication logic
 stays in Python (`run_inventory_refresh`) so there is exactly one
 implementation of that logic to maintain.
@@ -84,7 +84,7 @@ def ensure_web_connection(client: httpx.Client, api_url: str, *, display_name: s
     and is NOT compatible with pipeline WebActivity; using it produces a
     misleading "datasetSettings are required for the connection 'Web'"
     runtime error. Authentication stays anonymous at the connection level
-    because the real auth is the `x-hermes-trigger-secret` header baked
+    because the real auth is the `x-aiops-trigger-secret` header baked
     into the activity's own `typeProperties.headers`.
     """
     existing = _find_existing_connection(client, display_name)
@@ -185,7 +185,7 @@ def build_pipeline_content(
                         "method": "POST",
                         "headers": {
                             "Content-Type": "application/json",
-                            "x-hermes-trigger-secret": trigger_secret,
+                            "x-aiops-trigger-secret": trigger_secret,
                         },
                         "body": "{}",
                     },
@@ -278,7 +278,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--workspace-id", required=True)
     parser.add_argument("--api-url", required=True, help="Base URL of the deployed API (e.g. https://aiops-dev-api.<region>.azurecontainerapps.io)")
-    parser.add_argument("--trigger-secret", required=True, help="Value of HERMES_REFRESH_TRIGGER_SECRET on the API")
+    parser.add_argument("--trigger-secret", required=True, help="Value of AIOPS_REFRESH_TRIGGER_SECRET on the API")
     parser.add_argument("--display-name", default="Inventory Refresh")
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     parser.add_argument(

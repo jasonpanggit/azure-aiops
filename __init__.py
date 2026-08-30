@@ -1,7 +1,7 @@
-"""Hermes directory-plugin entry point.
+"""AIOps directory-plugin entry point.
 
 The plugin installer copies the repository directory. Add the bundled src tree
-so the plugin remains importable without editing Hermes core.
+so the plugin remains importable without editing AIOps core.
 """
 
 import sys
@@ -11,6 +11,6 @@ _src = str(Path(__file__).resolve().parent / "src")
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from hermes_arg_connector.plugin import register
+from onboarding.plugin import register
 
 __all__ = ["register"]

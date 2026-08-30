@@ -14,7 +14,7 @@ import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
-import { networkApi, operationsApi, vulnerabilityApi } from "@/lib/services";
+import { buildCopilotSnapshot, copilotEvidenceRows, networkApi, operationsApi, vulnerabilityApi } from "@/lib/services";
 import type { NetworkGap, RemediationOpportunity, RemediationPlan, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 
 type BacklogKind = "plan" | "opportunity" | "network" | "vulnerability" | "patch" | "lifecycle" | "configuration" | "incident" | "identity";
@@ -273,6 +273,24 @@ function RemediationContent() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel={fromBusinessService || "Remediation"}
+        snapshot={buildCopilotSnapshot({
+          pageKind: "patch",
+          pageId: "remediation",
+          scope,
+          filters: {
+            category: category === "all" ? [] : [category],
+            business_service: fromBusinessService ? [fromBusinessService] : [],
+            cve: fromCve ? [fromCve] : [],
+          },
+          selectedResources: selected ? [{ resource_id: selected.id, resource_type: selected.kind, name: selected.title }] : [],
+          evidence: copilotEvidenceRows("remediation", [
+            ...(plans.data?.evidence ?? []),
+            ...(opportunities.data?.evidence ?? []),
+            ...(networkGaps.data?.evidence ?? []),
+            ...(ruleFindings.data?.evidence ?? []),
+            ...(exposures.data?.evidence ?? []),
+          ], backlog),
+        })}
         starterQuestions={[
           { label: "What should be fixed first?", tool: "remediation_opportunities", toolArguments: {} },
           { label: "Highest risk-reduction remediation plans", tool: "remediation_plans", toolArguments: {} },
@@ -361,21 +379,22 @@ function RemediationContent() {
                 return (
                 <article className={`plan-row ${selected?.id === item.id ? "plan-row-selected" : ""}`} key={item.id}>
                   <div className="plan-row-heading">
-                    <div>
-                      <StatusBadge label={decision || "draft"} tone={statusTone(decision)} />
-                      <StatusBadge label={titleize(item.kind)} tone="info" compact />
+                    <div className="plan-row-summary">
+                      <div className="plan-row-badges">
+                        <StatusBadge label={decision || "draft"} tone={statusTone(decision)} />
+                        <StatusBadge label={titleize(item.kind)} tone="info" compact />
+                      </div>
                       <h3>{item.title}</h3>
                       <p>{item.businessService || item.resource || "Scope not mapped"}</p>
+                      <p>{item.impact}</p>
                     </div>
                     <div className="plan-risk">
                       <strong>{Math.round(item.riskReduction)}%</strong>
                       <span>risk reduction</span>
                     </div>
                   </div>
-                  <p>{item.impact}</p>
-                  <button type="button" className="button" onClick={() => setSelectedId(item.id)}>Review plan</button>
                   <div className="plan-actions">
-                    <button type="button" className="button button-secondary" onClick={() => setSelectedId(item.id)}>View future-phase candidate</button>
+                    <button type="button" className="button button-secondary" onClick={() => setSelectedId(item.id)}>Review</button>
                   </div>
                 </article>
               )})}
@@ -396,7 +415,7 @@ function RemediationContent() {
                   <h3>{selected.title}</h3>
                   <div className="simulation-grid">
                     <MetricCard label="Projected risk reduction" value={`${Math.round(selected.riskReduction)}%`} detail="Current vs projected risk" tone="success" />
-                    <MetricCard label="Downtime risk" value={selected.downtimeRisk} detail="Requires maintenance-window review" tone="warning" />
+                    <MetricCard label="Downtime risk" value={selected.downtimeRisk} detail="Requires maintenance-window review" tone="warning" size="text" />
                     <MetricCard label="Compliance improvement" value={`${Math.round(selected.complianceImprovement)}%`} detail="Policy/SLA uplift estimate" />
                     <MetricCard label="Debt reduction" value={`${Math.round(selected.debtReduction)}%`} detail="Operational-debt reduction estimate" />
                   </div>

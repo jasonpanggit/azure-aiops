@@ -5,7 +5,6 @@ from typing import Any
 
 
 def fetch_software_inventory(
-    config: Any,
     logs_client: Any,
     subscriptions: list[str],
     started: datetime,
@@ -14,24 +13,20 @@ def fetch_software_inventory(
 ) -> tuple[list[dict], dict]:
     """Fetch ConfigurationData from every Log Analytics workspace in scope.
 
-    Workspace IDs are discovered dynamically via ARG (``discovered_workspaces``,
-    subscription-wide ``microsoft.operationalinsights/workspaces``) so newly
-    created or renamed workspaces are picked up automatically. A static
-    ``config.workspaces_for_connection()`` mapping, if configured, is merged in
-    as an explicit override/addition -- this keeps existing tests and any
-    intentional allowlisting working without requiring discovery.
+    Workspace IDs come entirely from dynamic ARG discovery
+    (``discovered_workspaces``, subscription-wide
+    ``microsoft.operationalinsights/workspaces``) -- there is no static or
+    hardcoded connection -> workspace mapping. Any workspace visible to the
+    connection's subscription scope is queried automatically.
     """
 
-    connection_id = str(getattr(config, "connection_context", {}).get("connection_id") or "")
-    configured = config.workspaces_for_connection(connection_id)
-    discovered = tuple(
+    workspaces = tuple(
         dict.fromkeys(
             str(row.get("workspaceId") or "").strip()
             for row in (discovered_workspaces or [])
             if str(row.get("workspaceId") or "").strip()
         )
     )
-    workspaces = tuple(dict.fromkeys((*discovered, *configured)))
     requested_scope = {"subscription": sorted(subscriptions)}
     query_version = "inventory-software-v1"
     if not workspaces:
@@ -41,7 +36,7 @@ def fetch_software_inventory(
             "observed_at": started.astimezone().replace(microsecond=0).isoformat(),
             "query_version": query_version,
             "row_count": 0,
-            "error": "No Log Analytics workspace was discovered or configured for this connection",
+            "error": "No Log Analytics workspace was discovered in this connection's scope",
             "workspace_count": 0,
             "requested_scope": requested_scope,
         }

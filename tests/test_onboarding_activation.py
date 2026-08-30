@@ -4,9 +4,9 @@ from dataclasses import dataclass
 
 import pytest
 
-from hermes_arg_connector.normalize import ENTITY_TYPES, NormalizedGraph
-from hermes_arg_connector.storage import DatasetStore
 from onboarding.activation import publish_combined_snapshot
+from onboarding.graph_normalize import ENTITY_TYPES, NormalizedGraph
+from onboarding.ingestion_storage import DatasetStore
 
 
 @dataclass(frozen=True)

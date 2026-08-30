@@ -1,4 +1,4 @@
-# Hermes Operations Graph — Azure MCP Server Capabilities
+# AIOps Operations Graph — Azure MCP Server Capabilities
 
 ## 1. Executive position
 

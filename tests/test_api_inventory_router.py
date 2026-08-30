@@ -12,7 +12,6 @@ from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
-from intelligence.inventory.software_normalization import normalize_configuration_data
 from intelligence.inventory import InventoryService
 from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
 from intelligence.inventory.eol_review import (
@@ -21,6 +20,7 @@ from intelligence.inventory.eol_review import (
     UnavailableLifecycleSearchProvider,
 )
 from intelligence.inventory.mapping_repository import SoftwareMappingRepository
+from intelligence.inventory.software_normalization import normalize_configuration_data
 from onboarding.service import SubscriptionOnboardingService
 
 TOKEN = "inventory-token-0123456789"
@@ -72,7 +72,7 @@ def client(tmp_path: Path) -> TestClient:
     payload["software_source_status"] = {"logs": {"state": "ready", "query_version": "inventory-software-v1"}}
     mapping_repository = SoftwareMappingRepository(tmp_path / "software-mappings.json")
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(
             {
                 TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),)),

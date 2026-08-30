@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from api.scope import Scope
-from hermes_arg_connector.config import ConnectorConfig
-from intelligence.inventory.software_normalization import normalize_configuration_data
-from storage.datasets import DatasetStore
 from intelligence.inventory import InventoryService, MachineObservation
-from intelligence.inventory.normalization import normalize_os_inventory
+from intelligence.inventory.normalization import canonicalize_os, normalize_os_inventory
 from intelligence.inventory.pipeline import InventoryPipeline
+from intelligence.inventory.software_normalization import normalize_configuration_data
 from intelligence.inventory.sources.arg import inventory_os_specs
-from intelligence.lifecycle import EOLCatalog
+from intelligence.lifecycle import EOLCatalog, LifecycleStatus
+from onboarding.config import ConnectorConfig
+from storage.datasets import DatasetStore
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_inventory_arg.json"
 SOFTWARE_FIXTURE = Path(__file__).parent / "fixtures" / "mock_configurationdata.json"
@@ -138,12 +138,13 @@ def test_generated_inventory_rows_preserve_source_identity_and_image_uncertainty
 
     native = next(row for row in observations if row["source_type"] == "azure_vm")
     arc = next(row for row in observations if row["source_type"] == "arc")
-    assert native["os_version"] == "Unknown"
+    assert native["os_name"] == "Windows Server"
+    assert native["os_version"] == "2019"
     assert native["image_sku"] == "2019-Datacenter"
     assert native["image_version"] == "latest"
     assert native["environment"] == "prod"
     assert arc["os_name"] == "Ubuntu"
-    assert arc["os_version"] == "22.04"
+    assert arc["os_version"] == "22.04 LTS"
     assert arc["environment"] == "prod"
     assert native["resource_id"].startswith("/subscriptions/sub-a/")
     assert native["evidence"][0]["query_version"] == "inventory-native-vm-os-v1"
@@ -161,7 +162,12 @@ def test_generated_inventory_rows_preserve_source_identity_and_image_uncertainty
     assert loaded is not None
     result = loaded.detail("Windows Server|2019", Scope.from_mapping({"subscription": ["sub-a"]}))
     assert result is not None
-    assert [row["source_type"] for row in result["data"]["machines"]] == ["arc"]
+    # Both the native VM (image SKU "2019-Datacenter") and the Arc machine
+    # resolve to the same lifecycle group, so both sources appear in the detail.
+    assert sorted(row["source_type"] for row in result["data"]["machines"]) == [
+        "arc",
+        "azure_vm",
+    ]
 
 
 def test_inventory_latest_state_deduplicates_by_exact_source_and_resource() -> None:
@@ -425,17 +431,15 @@ def _ingestion(
     tmp_path: Path,
     logs: _LogsSource,
     *,
-    workspaces: dict[str, str | tuple[str, ...]] | None = None,
     law_workspaces: list[dict] | None = None,
 ) -> InventoryPipeline:
-    if workspaces is None:
-        workspaces = {"connection-1": "workspace-1"}
+    if law_workspaces is None:
+        law_workspaces = [{"workspaceId": "workspace-1"}]
     inventory = json.loads(FIXTURE.read_text(encoding="utf-8"))["inventory_native_vm_os"]
     config = ConnectorConfig(
         output_dir=tmp_path,
         subscriptions=("sub-a",),
         connection_context={"connection_id": "connection-1"},
-        logs_workspaces=workspaces,
         cost_management_enabled=False,
     )
     return InventoryPipeline(
@@ -446,7 +450,7 @@ def _ingestion(
     )
 
 
-def test_configured_workspace_publishes_software_in_the_active_generation(
+def test_discovered_workspace_publishes_software_in_the_active_generation(
     tmp_path: Path,
 ) -> None:
     logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:2]
@@ -503,7 +507,7 @@ def test_successful_empty_workspace_replaces_previous_rows_as_ready_empty(
     assert loaded.software_source_status()["logs"]["row_count"] == 0
 
 
-def test_multiple_server_configured_workspaces_report_partial_without_browser_input(
+def test_multiple_discovered_workspaces_report_partial_without_browser_input(
     tmp_path: Path,
 ) -> None:
     logs = _LogsSource(
@@ -513,7 +517,7 @@ def test_multiple_server_configured_workspaces_report_partial_without_browser_in
     ingestion = _ingestion(
         tmp_path,
         logs,
-        workspaces={"connection-1": ("workspace-1", "workspace-2")},
+        law_workspaces=[{"workspaceId": "workspace-1"}, {"workspaceId": "workspace-2"}],
     )
 
     ingestion.refresh()
@@ -526,11 +530,11 @@ def test_multiple_server_configured_workspaces_report_partial_without_browser_in
     assert status["workspace_count"] == 2
 
 
-def test_missing_workspace_mapping_is_unavailable_and_never_queries_arbitrary_id(
+def test_no_discovered_workspaces_is_unavailable_and_never_queries_arbitrary_id(
     tmp_path: Path,
 ) -> None:
     logs = _LogsSource({"attacker-workspace": json.loads(SOFTWARE_FIXTURE.read_text())})
-    _ingestion(tmp_path, logs, workspaces={}).refresh()
+    _ingestion(tmp_path, logs, law_workspaces=[]).refresh()
     loaded = InventoryService.from_store(DatasetStore(tmp_path))
 
     assert logs.calls == []
@@ -545,7 +549,6 @@ def test_dynamic_law_discovery_queries_arg_discovered_workspace(tmp_path: Path) 
     ingestion = _ingestion(
         tmp_path,
         logs,
-        workspaces={},
         law_workspaces=[{"workspaceId": "discovered-ws", "name": "law-a"}],
     )
 
@@ -559,17 +562,15 @@ def test_dynamic_law_discovery_queries_arg_discovered_workspace(tmp_path: Path) 
     assert status["workspace_count"] == 1
 
 
-def test_discovered_and_configured_workspaces_are_merged_without_duplicates(
-    tmp_path: Path,
-) -> None:
+def test_discovered_workspaces_are_deduplicated(tmp_path: Path) -> None:
     logs_rows = json.loads(SOFTWARE_FIXTURE.read_text(encoding="utf-8"))[:1]
     logs = _LogsSource({"workspace-1": logs_rows, "discovered-ws": []})
     ingestion = _ingestion(
         tmp_path,
         logs,
-        workspaces={"connection-1": "workspace-1"},
         law_workspaces=[
             {"workspaceId": "discovered-ws"},
+            {"workspaceId": "workspace-1"},
             {"workspaceId": "workspace-1"},
         ],
     )
@@ -580,27 +581,6 @@ def test_discovered_and_configured_workspaces_are_merged_without_duplicates(
     assert logs.calls == ["discovered-ws", "workspace-1"]
     assert loaded is not None
     assert loaded.software_source_status()["logs"]["workspace_count"] == 2
-
-
-def test_workspace_configuration_is_validated_and_server_owned(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "azure:\n"
-        "  log_analytics_workspaces:\n"
-        "    connection-1: [workspace-1, workspace-2]\n"
-    )
-
-    config = ConnectorConfig.load(config_path)
-
-    assert config.workspaces_for_connection("CONNECTION-1") == (
-        "workspace-1",
-        "workspace-2",
-    )
-    with pytest.raises(ValueError, match="workspace ID"):
-        ConnectorConfig(
-            output_dir=tmp_path,
-            logs_workspaces={"connection-1": "../workspace"},
-        )
 
 
 def _write_payload(payload: dict) -> str:
@@ -670,3 +650,76 @@ def test_unsupported_inventory_citation_is_not_rendered() -> None:
 
     assert len(citations) == 1
     assert citations[0]["source_table"] == "Resources"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # Native VM: the OS is only discoverable from the marketplace image SKU.
+        (
+            {
+                "os_type": "Windows",
+                "image_publisher": "MicrosoftWindowsServer",
+                "image_offer": "WindowsServer",
+                "image_sku": "2016-datacenter-gensecond",
+            },
+            ("Windows Server", "2016"),
+        ),
+        # Arc: the agent reports a build number instead of a release year.
+        (
+            {
+                "os_name": "windows",
+                "os_version": "10.0.14393.9140",
+                "os_type": "Windows Server 2016 Datacenter",
+            },
+            ("Windows Server", "2016"),
+        ),
+        ({"os_name": "Ubuntu", "os_version": "22.04"}, ("Ubuntu", "22.04 LTS")),
+        (
+            {
+                "os_type": "Linux",
+                "image_publisher": "Canonical",
+                "image_offer": "0001-com-ubuntu-server-jammy",
+                "image_sku": "22_04-lts-gen2",
+            },
+            ("Ubuntu", "22.04 LTS"),
+        ),
+        (
+            {"os_name": "RHEL", "os_version": "8.9"},
+            ("Red Hat Enterprise Linux", "8"),
+        ),
+    ],
+)
+def test_canonicalize_os_emits_lifecycle_catalog_keys(
+    raw: dict[str, str], expected: tuple[str, str]
+) -> None:
+    """Normalization must emit the ``(product, version)`` pair the catalog is keyed on.
+
+    Regression guard: the catalog lookup is an exact match, so emitting
+    ``("Windows", "Windows Server 2016")`` silently degraded every machine to
+    "EOL date needs review" even though the release was well known.
+    """
+    assert canonicalize_os(**raw) == expected
+
+    product, version = expected
+    classification = EOLCatalog.default().classify_product(
+        product, version, now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    assert classification.support_end is not None
+    assert classification.status is not LifecycleStatus.UNKNOWN
+
+
+def test_both_sources_for_one_machine_agree_on_lifecycle_group() -> None:
+    """A VM seen as both a native VM and an Arc machine must land in one group."""
+    native = canonicalize_os(
+        os_type="Windows",
+        image_publisher="MicrosoftWindowsServer",
+        image_offer="WindowsServer",
+        image_sku="2016-datacenter-gensecond",
+    )
+    arc = canonicalize_os(
+        os_name="windows",
+        os_version="10.0.14393.9140",
+        os_type="Windows Server 2016 Datacenter",
+    )
+    assert native == arc

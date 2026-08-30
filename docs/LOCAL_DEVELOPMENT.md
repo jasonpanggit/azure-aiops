@@ -21,33 +21,33 @@ and starts the API with token auth.
 
 If `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and
 `AZURE_CLIENT_SECRET` are set, the API startup injects a local subscription
-connection into `.hermes-local/`. The connection stores only
+connection into `.aiops-local/`. The connection stores only
 `env://AZURE_CLIENT_SECRET`, so discovery can authenticate with the local SPN
 without persisting the secret. Startup also removes the fixture-only demo
 connection and runs initial sync for the SPN connection. Set
-`HERMES_LOCAL_AUTO_SYNC=0` to register the connection without syncing.
+`AIOPS_LOCAL_AUTO_SYNC=0` to register the connection without syncing.
 
 If any SPN value is missing or still a placeholder, `npm run start:api` falls
 back to a fixture-backed snapshot from `tests/fixtures/mock_arg_responses.json`.
 The API runtime reads both real synced data and fixture snapshots through the
 same `InventoryDatasetMapper` and Semantic Knowledge Layer.
 
-Set `HERMES_LOCAL_SEED=0` when you intentionally want the live Azure-backed
+Set `AIOPS_LOCAL_SEED=0` when you intentionally want the live Azure-backed
 local path instead. In that mode, `scripts/start-api.sh` uses the OneLake-backed
-registry (or a local directory when `HERMES_HOME` is a path) and live connection
+registry (or a local directory when `AIOPS_HOME` is a path) and live connection
 sync behavior.
 
 You can also seed without starting the server:
 
 ```bash
-uv run hermes-arg local --home .hermes-local
-uv run hermes-arg local-spn --home .hermes-local
+uv run aiops-inventory local --home .aiops-local
+uv run aiops-inventory local-spn --home .aiops-local
 ```
 
 ## Generate a deterministic source snapshot
 
 ```bash
-uv run hermes-arg sample \
+uv run aiops-inventory sample \
   --fixture tests/fixtures/mock_arg_responses.json \
   --output-dir sample-data
 ```
@@ -63,19 +63,19 @@ The local adapter writes the same Delta tables and metadata structure to `mock-f
 ## Exercise the end-to-end flow
 
 ```bash
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Sync Azure inventory to OneLake" \
   --config fabric.local.yaml
 
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Refresh inventory lakehouse" \
   --config fabric.local.yaml
 
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Validate inventory data" \
   --config fabric.local.yaml
 
-uv run hermes-arg fabric \
+uv run aiops-inventory fabric \
   "Show last Fabric sync" \
   --config fabric.local.yaml
 ```
@@ -86,7 +86,7 @@ A second refresh should report zero changes for inventory/entity/relationship ta
 
 ```bash
 uv run --extra test pytest
-uvx ruff check src tests hermes_plugin.py __init__.py
+uvx ruff check src tests aiops_plugin.py __init__.py
 uvx bandit -r src -q
 ```
 

@@ -2,11 +2,11 @@
 
 ## What this platform is
 
-Hermes Operations Graph (HOG) is an AIOps workbench that connects business
+AIOps Operations Graph (HOG) is an AIOps workbench that connects business
 risk, technical dependencies, network paths, vulnerabilities, changes,
 incidents, evidence, and Copilot reasoning into a single investigation
 surface. It is **not** a static dashboard over a periodic snapshot: durable
-semantic relationships (produced by the Hermes semantic engine) are composed
+semantic relationships (produced by the AIOps semantic engine) are composed
 at request time with live/near-real-time operational sources (Azure Resource
 Graph, Azure Monitor, Defender for Cloud, Update Manager, Sentinel/ITSM),
 so what you see reflects current reality, not a stale export.
@@ -33,7 +33,7 @@ Before onboarding a pilot subscription, confirm:
       Azure Resource Graph access available for a discovery SPN.
 - [ ] An Entra tenant the pilot's users authenticate against, with the
       Entra app registration's audience/tenant configured
-      (`HERMES_ENTRA_TENANT_ID`, `HERMES_ENTRA_AUDIENCE`).
+      (`AIOPS_ENTRA_TENANT_ID`, `AIOPS_ENTRA_AUDIENCE`).
 - [ ] A Microsoft Fabric workspace + capacity (F2 minimum) for the
       semantic graph's durable state.
 - [ ] An Azure AI Foundry project + governed prompt agent, if Copilot
@@ -56,7 +56,7 @@ Before onboarding a pilot subscription, confirm:
    `SECURITY.md`).
 2. Register the discovery connection(s):
    ```bash
-   uv run hermes-arg subscriptions add <connection-id> \
+   uv run aiops-inventory subscriptions add <connection-id> \
      --config /secure/config.yaml \
      --tenant-id "$TENANT_ID" \
      --subscription-id "$SUBSCRIPTION_ID" \
@@ -70,13 +70,13 @@ Before onboarding a pilot subscription, confirm:
    (Full command reference: `docs/PRODUCTION_RUNTIME_ACTIVATION.md`.)
 3. Activate and publish the first ontology generation:
    ```bash
-   uv run hermes-arg activate --config /secure/config.yaml \
+   uv run aiops-inventory activate --config /secure/config.yaml \
      --fabric-config /secure/fabric.config.yaml --connection-id <connection-id>
    ```
 4. Verify readiness: `GET /health` shows every configured provider `ready`,
    `GET /ready` returns 200.
 5. Run `infra/scripts/validate-runtime-e2e.sh` against the live deployment.
-6. Configure `HERMES_API_GATEWAY_GRANTS` for the pilot's actual named users
+6. Configure `AIOPS_API_GATEWAY_GRANTS` for the pilot's actual named users
    (reviewed per `SECURITY.md`'s checklist).
 7. Walk the demo script (below) with the pilot customer sponsor before
    declaring onboarding complete.

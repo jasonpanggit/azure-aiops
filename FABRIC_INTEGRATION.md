@@ -1,8 +1,8 @@
-# Hermes Operations Graph — Microsoft Fabric Integration
+# AIOps Operations Graph — Microsoft Fabric Integration
 
 ## 1. Role of Fabric
 
-Microsoft Fabric is the governed semantic and analytics plane for Hermes Operations Graph (HOG), not the source of operational truth. The integration uses:
+Microsoft Fabric is the governed semantic and analytics plane for AIOps Operations Graph (HOG), not the source of operational truth. The integration uses:
 
 - **OneLake/Lakehouse managed tables** for compact canonical graph projections and assertion history.
 - **Fabric IQ Ontology (preview)** for enterprise vocabulary, entity/relationship definitions, data bindings, graph construction, and business-level query.[1]

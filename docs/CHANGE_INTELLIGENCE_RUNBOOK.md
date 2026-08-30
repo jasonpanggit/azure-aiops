@@ -13,7 +13,7 @@
 ```bash
 uv run --extra test pytest tests/test_change_*.py tests/test_configuration_drift.py -q
 uv run --extra test ruff check src tests
-hermes plugins doctor --ci .
+aiops plugins doctor --ci .
 ```
 
 Smoke checks:

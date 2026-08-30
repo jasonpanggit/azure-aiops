@@ -399,7 +399,7 @@ class EntityBuilder:
             "payload_json": _canonical(payload or _source_payload(source)),
             "lineage_json": _canonical({"source_resource_ids": sorted(x for x in lineage_ids if x)}),
             "semantic_metadata_json": _canonical(
-                {"builder": "hermes-ontology", "discovery": source.get("discovery", "inventory")}
+                {"builder": "aiops-ontology", "discovery": source.get("discovery", "inventory")}
             ),
             "lifecycle_status": "active",
             "valid_from": timestamp,

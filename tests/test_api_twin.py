@@ -133,7 +133,7 @@ class _Semantic:
 
 def _client(tmp_path) -> TestClient:
     context = ApiContext(
-        onboarding=SubscriptionOnboardingService(tmp_path / "hermes"),
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(
             {TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),))}
         ),

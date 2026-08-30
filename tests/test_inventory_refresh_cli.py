@@ -5,7 +5,7 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from hermes_arg_connector import cli
+from onboarding import cli
 
 
 def test_inventory_refresh_cli_publishes_to_configured_local_onelake(
@@ -24,6 +24,10 @@ def test_inventory_refresh_cli_publishes_to_configured_local_onelake(
             fixture = json.loads(
                 (Path(__file__).parent / "fixtures" / "mock_inventory_arg.json").read_text()
             )
+            fixture.setdefault(
+                "inventory_log_analytics_workspaces",
+                [{"workspaceId": "workspace-1"}],
+            )
             return {spec.name: list(fixture.get(spec.name, [])) for spec in specs}
 
     class LogsClient:
@@ -38,8 +42,8 @@ def test_inventory_refresh_cli_publishes_to_configured_local_onelake(
     class Credential:
         pass
 
-    monkeypatch.setattr("hermes_arg_connector.source.AzureResourceGraphSource", AzureClient)
-    monkeypatch.setattr("hermes_arg_connector.logs.AzureMonitorLogsClient", LogsClient)
+    monkeypatch.setattr("onboarding.discovery_source.AzureResourceGraphSource", AzureClient)
+    monkeypatch.setattr("onboarding.monitor_logs.AzureMonitorLogsClient", LogsClient)
     monkeypatch.setattr("azure.identity.DefaultAzureCredential", Credential)
 
     config = tmp_path / "config.yaml"
@@ -52,8 +56,6 @@ def test_inventory_refresh_cli_publishes_to_configured_local_onelake(
                 "  subscriptions:",
                 "    - sub-a",
                 "    - sub-b",
-                "  logs_workspaces:",
-                "    connection-1: workspace-1",
             ]
         )
     )

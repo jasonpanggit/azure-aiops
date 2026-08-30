@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from hermes_arg_connector.queries import QuerySpec
+from onboarding.query_contract import QuerySpec
 
 
 class ResourceGraphReader(Protocol):

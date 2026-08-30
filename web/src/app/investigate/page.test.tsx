@@ -185,6 +185,6 @@ describe("Executive Investigation Workspace", () => {
     expect(await screen.findByText(/approve patch plan-1/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Save view locally" }));
-    await waitFor(() => expect(window.localStorage.getItem("hermes.investigations.v1")).toContain("BusinessService: Payments"));
+    await waitFor(() => expect(window.localStorage.getItem("aiops.investigations.v1")).toContain("BusinessService: Payments"));
   });
 });

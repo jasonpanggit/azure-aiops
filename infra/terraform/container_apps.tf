@@ -106,53 +106,68 @@ resource "azurerm_container_app" "api" {
       cpu    = var.api_cpu
       memory = var.api_memory
 
+      # APIM fronts only the governed MCP route, so "gateway" here does not
+      # mean "every caller arrives via APIM". It selects an authenticator that
+      # accepts a validated gateway assertion *or* a direct Entra token, since
+      # the browser calls all non-MCP routes directly and the APIM inbound
+      # policy strips the caller's Authorization header.
       env {
-        name  = "HERMES_API_AUTH"
-        value = "entra"
+        name  = "AIOPS_API_AUTH"
+        value = var.enable_apim ? "gateway" : "entra"
       }
 
       env {
-        name  = "HERMES_ENTRA_TENANT_ID"
+        name  = "AIOPS_ENTRA_TENANT_ID"
         value = var.tenant_id
       }
 
       env {
-        name  = "HERMES_ENTRA_AUDIENCE"
+        name  = "AIOPS_ENTRA_AUDIENCE"
         value = var.entra_api_audience
       }
 
       env {
-        name  = "HERMES_API_GATEWAY_GRANTS"
+        name  = "AIOPS_API_GATEWAY_GRANTS"
         value = var.entra_grants_json
       }
 
       # The browser calls the API cross-origin from the web app's own domain.
       env {
-        name  = "HERMES_API_CORS_ORIGINS"
+        name  = "AIOPS_API_CORS_ORIGINS"
         value = local.web_base_url
       }
 
-      # All durable state lives in OneLake, so HERMES_HOME points at the
+      # All durable state lives in OneLake, so AIOPS_HOME points at the
       # Fabric lakehouse. Fabric is therefore required in production; with
       # var.enable_fabric = false the API falls back to container-local disk,
       # which does not survive a revision.
       env {
-        name  = "HERMES_HOME"
-        value = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/hermes" : "/tmp/hermes"
+        name  = "AIOPS_HOME"
+        value = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops" : "/tmp/aiops"
       }
 
       env {
-        name  = "HERMES_RUNTIME_MODE"
+        name  = "AIOPS_RUNTIME_MODE"
         value = "production"
       }
 
       env {
-        name  = "HERMES_LOCAL_SEED"
+        name  = "AIOPS_API_AUTH"
+        value = "gateway"
+      }
+
+      env {
+        name  = "AIOPS_GATEWAY_ASSERTION"
+        value = var.apim_gateway_assertion
+      }
+
+      env {
+        name  = "AIOPS_LOCAL_SEED"
         value = "0"
       }
 
       env {
-        name  = "HERMES_ENABLE_FABRIC"
+        name  = "AIOPS_ENABLE_FABRIC"
         value = tostring(var.enable_fabric)
       }
 
@@ -168,16 +183,101 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "FABRIC_ONTOLOGY_NAME"
-        value = "Operational_Context_Graph"
+        value = var.fabric_ontology_name
       }
 
       env {
-        name  = "HERMES_PROVIDER_REFRESH_SECONDS"
+        name  = "AIOPS_ENABLE_FABRIC_IQ"
+        value = tostring(var.enable_fabric_iq)
+      }
+
+      env {
+        name  = "FOUNDRY_NETWORK_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "network", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_NETWORK_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "network", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_VULNERABILITY_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "vulnerability", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_VULNERABILITY_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "vulnerability", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_PATCH_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "patch", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_PATCH_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "patch", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_INCIDENT_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "incident", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_INCIDENT_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "incident", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_CHANGE_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "change", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_CHANGE_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "change", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_GOVERNANCE_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "governance", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_GOVERNANCE_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "governance", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_REMEDIATION_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "remediation", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_REMEDIATION_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "remediation", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "FOUNDRY_EXECUTIVE_SUMMARY_AGENT_NAME"
+        value = lookup(var.foundry_specialists, "executive_summary", { name = "", version = "" }).name
+      }
+
+      env {
+        name  = "FOUNDRY_EXECUTIVE_SUMMARY_AGENT_VERSION"
+        value = lookup(var.foundry_specialists, "executive_summary", { name = "", version = "" }).version
+      }
+
+      env {
+        name  = "AIOPS_PROVIDER_REFRESH_SECONDS"
         value = "30"
       }
 
       env {
-        name  = "HERMES_PROVIDER_STALE_HOURS"
+        name  = "AIOPS_PROVIDER_STALE_HOURS"
         value = "24"
       }
 
@@ -185,7 +285,7 @@ resource "azurerm_container_app" "api" {
       # instead of the OneLake connection registry; requires Key Vault Secrets
       # Officer (write) on azurerm_role_assignment.kv_apps below.
       env {
-        name  = "HERMES_CONNECTION_KEY_VAULT"
+        name  = "AIOPS_CONNECTION_KEY_VAULT"
         value = local.key_vault_name
       }
 
@@ -195,12 +295,12 @@ resource "azurerm_container_app" "api" {
       # OneLake there is no longer a default secret (previously the Postgres
       # connection string), so this is opt-in per environment.
       env {
-        name  = "HERMES_AKV_BOOTSTRAP_ENABLED"
+        name  = "AIOPS_AKV_BOOTSTRAP_ENABLED"
         value = var.akv_bootstrap_secrets_json == "{}" ? "false" : "true"
       }
 
       env {
-        name  = "HERMES_AKV_BOOTSTRAP_SECRETS"
+        name  = "AIOPS_AKV_BOOTSTRAP_SECRETS"
         value = var.akv_bootstrap_secrets_json
       }
 
@@ -215,6 +315,11 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "FOUNDRY_AGENT_NAME"
         value = var.foundry_agent_name
+      }
+
+      env {
+        name  = "FOUNDRY_SPECIALISTS_JSON"
+        value = jsonencode(var.foundry_specialists)
       }
 
       # Selects the user-assigned identity for DefaultAzureCredential, which
@@ -240,9 +345,19 @@ resource "azurerm_container_app" "api" {
       dynamic "env" {
         for_each = var.refresh_trigger_secret != "" ? [1] : []
         content {
-          name        = "HERMES_REFRESH_TRIGGER_SECRET"
+          name        = "AIOPS_REFRESH_TRIGGER_SECRET"
           secret_name = "refresh-trigger-secret"
         }
+      }
+
+      env {
+        name  = "AIOPS_ARG_CONFIG"
+        value = "/app/config.yaml"
+      }
+
+      env {
+        name  = "AIOPS_FABRIC_CONFIG"
+        value = "/app/fabric.config.yaml"
       }
 
       liveness_probe {
@@ -324,7 +439,7 @@ resource "azurerm_container_app" "web" {
       # Served to the browser at runtime by /api/config, so one image works in
       # every environment rather than being baked at build time.
       env {
-        name  = "HERMES_API_BASE_URL"
+        name  = "AIOPS_API_BASE_URL"
         value = local.api_base_url
       }
 

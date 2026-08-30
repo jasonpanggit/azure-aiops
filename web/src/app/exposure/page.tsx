@@ -11,9 +11,11 @@ import { OperationsSignalChart } from "@/components/ui/OperationsSignalChart";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
-import { vulnerabilityApi } from "@/lib/services";
+import { buildCopilotSnapshot, copilotEvidenceRows, vulnerabilityApi } from "@/lib/services";
 
 /** Service- and reachability-aware vulnerability prioritization workspace. */
 export default function ExposurePage() {
@@ -71,6 +73,10 @@ export default function ExposurePage() {
       ].some((value) => String(value ?? "").toLowerCase().includes(normalized));
     });
   }, [servers.data, query, reachableOnly]);
+
+  const serverPaging = useTablePagination(filteredServers);
+  const patchPaging = useTablePagination(filteredPatches);
+  const cvePaging = useTablePagination(filteredCves);
 
   const bestPatch = patches.data?.data[0];
   const serverInventoryCounts = useMemo(() => {
@@ -327,7 +333,7 @@ export default function ExposurePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredServers.map((server) => (
+                    {serverPaging.pageRows.map((server) => (
                       <tr key={server.server_id}>
                         <td>
                           <strong>{server.name || server.server_id}</strong>
@@ -366,6 +372,15 @@ export default function ExposurePage() {
                 </table>
               </div>
             )}
+            <TablePagination
+              total={serverPaging.total}
+              pageRows={serverPaging.pageRows.length}
+              page={serverPaging.page}
+              onPageChange={serverPaging.setPage}
+              pageSize={serverPaging.pageSize}
+              onPageSizeChange={serverPaging.setPageSize}
+              label="servers"
+            />
           </section>
 
           <PatchInventory scope={scope} query={query} />
@@ -396,10 +411,10 @@ export default function ExposurePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredPatches.map((patch, index) => (
+                    {patchPaging.pageRows.map((patch, index) => (
                       <tr key={patch.kb_id}>
                         <td>
-                          <span className="rank-number">{String(index + 1).padStart(2, "0")}</span>
+                          <span className="rank-number">{String(patchPaging.page * patchPaging.pageSize + index + 1).padStart(2, "0")}</span>
                         </td>
                         <td>
                           <Link className="table-primary-link" href={`/exposure/kbs/${encodeURIComponent(patch.kb_id)}`}>
@@ -441,6 +456,15 @@ export default function ExposurePage() {
                 </table>
               </div>
             )}
+            <TablePagination
+              total={patchPaging.total}
+              pageRows={patchPaging.pageRows.length}
+              page={patchPaging.page}
+              onPageChange={patchPaging.setPage}
+              pageSize={patchPaging.pageSize}
+              onPageSizeChange={patchPaging.setPageSize}
+              label="KBs"
+            />
           </section>
 
           <section className="card queue-card">
@@ -469,10 +493,10 @@ export default function ExposurePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredCves.map((exposure, index) => (
+                    {cvePaging.pageRows.map((exposure, index) => (
                       <tr key={exposure.cve_id}>
                         <td>
-                          <span className="rank-number">{String(index + 1).padStart(2, "0")}</span>
+                          <span className="rank-number">{String(cvePaging.page * cvePaging.pageSize + index + 1).padStart(2, "0")}</span>
                         </td>
                         <td>
                           <Link className="table-primary-link" href={`/exposure/cves/${encodeURIComponent(exposure.cve_id)}`}>
@@ -519,6 +543,15 @@ export default function ExposurePage() {
                 </table>
               </div>
             )}
+            <TablePagination
+              total={cvePaging.total}
+              pageRows={cvePaging.pageRows.length}
+              page={cvePaging.page}
+              onPageChange={cvePaging.setPage}
+              pageSize={cvePaging.pageSize}
+              onPageSizeChange={cvePaging.setPageSize}
+              label="CVEs"
+            />
           </section>
         </div>
       )}
@@ -527,6 +560,18 @@ export default function ExposurePage() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Vulnerability exposure"
+        snapshot={buildCopilotSnapshot({
+          pageKind: "vulnerability",
+          pageId: "exposure",
+          scope,
+          filters: { query: query ? [query] : [], reachable: reachableOnly ? ["true"] : [] },
+          evidence: copilotEvidenceRows("vulnerability", [
+            ...(summary.data?.evidence ?? []),
+            ...(exposures.data?.evidence ?? []),
+            ...(patches.data?.evidence ?? []),
+            ...(servers.data?.evidence ?? []),
+          ], [...filteredCves, ...filteredPatches, ...filteredServers]),
+        })}
         starterQuestions={[
           { label: "Which CVEs affect our highest-risk service?", tool: "cve_exposure", toolArguments: {} },
           { label: "What should be patched first?", tool: "cve_exposure", toolArguments: {} },

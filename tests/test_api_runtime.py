@@ -12,17 +12,18 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.auth import (
     EntraJwtAuthenticator,
+    GatewayOrDirectAuthenticator,
     HeaderPrincipalAuthenticator,
     StaticTokenAuthenticator,
 )
 from api.providers import STALE, ProviderRuntime, ProviderSpec
-from api.runtime import build_authenticator, build_context, hermes_home
-from hermes_arg_connector.local import seed_local_environment
-from hermes_arg_connector.normalize import Normalizer
-from hermes_arg_connector.storage import DatasetStore
+from api.runtime import aiops_home, build_authenticator, build_context
+from api.runtime import _load_fabric_iq_adapter
+from api.scope import Scope
 from intelligence.inventory.normalization import normalize_os_inventory
-from storage.datasets import DatasetStore as NeutralDatasetStore
 from onboarding.credentials import KeyVaultSecretWriter
+from onboarding.local_seed import seed_local_environment
+from storage.datasets import DatasetStore as NeutralDatasetStore
 
 TOKENS = '{"demo-token-0123456789abcdef": {"subject": "d@e.com", "grants": [{"role": "admin"}]}}'
 
@@ -30,68 +31,94 @@ TOKENS = '{"demo-token-0123456789abcdef": {"subject": "d@e.com", "grants": [{"ro
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch, tmp_path):
     for name in (
-        "HERMES_API_AUTH",
-        "HERMES_API_TOKENS",
-        "HERMES_API_GATEWAY_GRANTS",
-        "HERMES_CONNECTION_KEY_VAULT",
-        "HERMES_ENTRA_AUDIENCE",
-        "HERMES_ENTRA_TENANT_ID",
+        "AIOPS_API_AUTH",
+        "AIOPS_API_TOKENS",
+        "AIOPS_API_GATEWAY_GRANTS",
+        "AIOPS_CONNECTION_KEY_VAULT",
+        "AIOPS_ENTRA_AUDIENCE",
+        "AIOPS_ENTRA_TENANT_ID",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "aiops"))
 
 
-def test_home_follows_hermes_home(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "custom"))
-    assert hermes_home() == tmp_path / "custom"
+def test_home_follows_aiops_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "custom"))
+    assert aiops_home() == tmp_path / "custom"
 
 
 def test_default_auth_mode_requires_configured_tokens():
-    with pytest.raises(RuntimeError, match="HERMES_API_TOKENS"):
+    with pytest.raises(RuntimeError, match="AIOPS_API_TOKENS"):
         build_authenticator()
 
 
 def test_token_mode_requires_tokens(monkeypatch):
     """Refuse to start an API that cannot authenticate anyone."""
-    monkeypatch.setenv("HERMES_API_AUTH", "token")
-    with pytest.raises(RuntimeError, match="HERMES_API_TOKENS"):
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    with pytest.raises(RuntimeError, match="AIOPS_API_TOKENS"):
         build_authenticator()
 
 
 def test_token_mode_rejects_malformed_json(monkeypatch):
-    monkeypatch.setenv("HERMES_API_AUTH", "token")
-    monkeypatch.setenv("HERMES_API_TOKENS", "not json")
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", "not json")
     with pytest.raises(RuntimeError, match="valid JSON"):
         build_authenticator()
 
 
 def test_token_mode_builds_principals(monkeypatch):
-    monkeypatch.setenv("HERMES_API_AUTH", "token")
-    monkeypatch.setenv("HERMES_API_TOKENS", TOKENS)
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
     assert isinstance(build_authenticator(), StaticTokenAuthenticator)
 
 
 def test_gateway_mode_requires_explicit_grants(monkeypatch):
-    monkeypatch.setenv("HERMES_API_AUTH", "gateway")
-    with pytest.raises(RuntimeError, match="HERMES_API_GATEWAY_GRANTS"):
+    monkeypatch.setenv("AIOPS_API_AUTH", "gateway")
+    with pytest.raises(RuntimeError, match="AIOPS_API_GATEWAY_GRANTS"):
         build_authenticator()
 
 
 def test_gateway_mode_builds_a_resolver(monkeypatch):
-    monkeypatch.setenv("HERMES_API_AUTH", "gateway")
+    monkeypatch.setenv("AIOPS_API_AUTH", "gateway")
     monkeypatch.setenv(
-        "HERMES_API_GATEWAY_GRANTS",
+        "AIOPS_API_GATEWAY_GRANTS",
         '{"d@e.com": [{"role": "reader", "scope": {"subscription": ["sub-1"]}}]}',
     )
-    assert isinstance(build_authenticator(), HeaderPrincipalAuthenticator)
+    monkeypatch.setenv("AIOPS_ENTRA_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("AIOPS_ENTRA_AUDIENCE", "api://aiops")
+
+    # APIM fronts only the MCP route, so gateway mode must still accept the
+    # direct Entra tokens the browser sends to every other route.
+    authenticator = build_authenticator()
+    assert isinstance(authenticator, GatewayOrDirectAuthenticator)
+    assert isinstance(authenticator.gateway, HeaderPrincipalAuthenticator)
+    assert isinstance(authenticator.direct, EntraJwtAuthenticator)
+
+
+def test_gateway_mode_refuses_to_start_without_entra_identity(monkeypatch):
+    """Gateway mode without Entra config would 401 every browser request.
+
+    That is the misconfiguration that locked the web app out of the whole
+    API, so it must fail loudly at startup rather than silently at runtime.
+    """
+    monkeypatch.setenv("AIOPS_API_AUTH", "gateway")
+    monkeypatch.setenv(
+        "AIOPS_API_GATEWAY_GRANTS",
+        '{"d@e.com": [{"role": "reader"}]}',
+    )
+    monkeypatch.delenv("AIOPS_ENTRA_TENANT_ID", raising=False)
+    monkeypatch.delenv("AIOPS_ENTRA_AUDIENCE", raising=False)
+
+    with pytest.raises(RuntimeError, match="AIOPS_ENTRA_TENANT_ID"):
+        build_authenticator()
 
 
 def test_entra_mode_requires_identity_and_builds_validator(monkeypatch):
-    monkeypatch.setenv("HERMES_API_AUTH", "entra")
-    monkeypatch.setenv("HERMES_ENTRA_TENANT_ID", "tenant-id")
-    monkeypatch.setenv("HERMES_ENTRA_AUDIENCE", "api://hermes")
+    monkeypatch.setenv("AIOPS_API_AUTH", "entra")
+    monkeypatch.setenv("AIOPS_ENTRA_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("AIOPS_ENTRA_AUDIENCE", "api://aiops")
     monkeypatch.setenv(
-        "HERMES_API_GATEWAY_GRANTS",
+        "AIOPS_API_GATEWAY_GRANTS",
         '{"d@e.com": [{"role": "reader"}]}',
     )
 
@@ -99,7 +126,7 @@ def test_entra_mode_requires_identity_and_builds_validator(monkeypatch):
 
 
 def test_unknown_auth_mode_fails_loudly(monkeypatch):
-    monkeypatch.setenv("HERMES_API_AUTH", "anonymous")
+    monkeypatch.setenv("AIOPS_API_AUTH", "anonymous")
     with pytest.raises(RuntimeError, match="Unknown"):
         build_authenticator()
 
@@ -107,28 +134,28 @@ def test_unknown_auth_mode_fails_loudly(monkeypatch):
 def test_token_context_has_no_semantic_snapshot(monkeypatch):
     """Absent any synced connection data, the provider must say so (return
     None) rather than report an empty estate as if it were real data."""
-    monkeypatch.setenv("HERMES_API_AUTH", "token")
-    monkeypatch.setenv("HERMES_API_TOKENS", TOKENS)
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
     context = build_context()
     assert context.semantic_provider is not None
     assert context.semantic_provider() is None
 
 
 def test_context_wires_key_vault_secret_writer(monkeypatch):
-    monkeypatch.setenv("HERMES_API_AUTH", "token")
-    monkeypatch.setenv("HERMES_API_TOKENS", TOKENS)
-    monkeypatch.setenv("HERMES_CONNECTION_KEY_VAULT", "kv-hermes-prod")
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    monkeypatch.setenv("AIOPS_CONNECTION_KEY_VAULT", "kv-aiops-prod")
 
     context = build_context()
 
     assert isinstance(context.onboarding.secret_writer, KeyVaultSecretWriter)
-    assert context.onboarding.secret_writer.vault_name == "kv-hermes-prod"
+    assert context.onboarding.secret_writer.vault_name == "kv-aiops-prod"
 
 
 def test_factory_with_no_context_serves_requests(monkeypatch):
     """`uvicorn --factory api.app:create_app` must work, not 500 on every call."""
-    monkeypatch.setenv("HERMES_API_AUTH", "token")
-    monkeypatch.setenv("HERMES_API_TOKENS", TOKENS)
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     assert client.get("/health").json()["status"] == "ok"
@@ -147,12 +174,12 @@ def test_factory_with_no_context_serves_requests(monkeypatch):
 
 
 def test_context_loads_local_seeded_snapshot(monkeypatch, tmp_path):
-    home = tmp_path / "hermes-local"
+    home = tmp_path / "aiops-local"
     seed_local_environment(root=home, fixture="tests/fixtures/mock_arg_responses.json")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_API_AUTH", "token")
-    monkeypatch.setenv("HERMES_API_TOKENS", TOKENS)
-    monkeypatch.setenv("HERMES_RUNTIME_MODE", "demo")
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "demo")
 
     context = build_context()
 
@@ -162,10 +189,30 @@ def test_context_loads_local_seeded_snapshot(monkeypatch, tmp_path):
     assert context.network_provider() is not None
 
 
+def test_configured_fabric_iq_loader_returns_governed_adapter(monkeypatch):
+    class FakeService:
+        def ontology_query(self, question, *, entity=""):
+            return {"answer": question, "entity": entity}
+
+    class FakeRuntime:
+        service = FakeService()
+
+    monkeypatch.setattr("api.runtime._fabric_runtime_from_environment", lambda: FakeRuntime())
+    adapter = _load_fabric_iq_adapter()
+    assert adapter is not None
+    result = adapter.run("relationships", {"subject": "network"}, Scope.from_mapping({}))
+    assert result.status == "ok"
+    assert result.data["metadata"]["identity_authority"] is False
+    # The runtime answers from the OneLake ontology projection, not from a
+    # Fabric IQ query surface, so a citation must not claim Fabric IQ.
+    assert result.data["metadata"]["provenance"] == "onelake-ontology-projection"
+    assert result.data["metadata"]["source"] == "onelake-ontology-projection"
+
+
 def test_inventory_runtime_loader_reads_active_generation_metadata(
     monkeypatch, tmp_path
 ):
-    home = tmp_path / "hermes"
+    home = tmp_path / "aiops"
     fixture = json.loads(
         Path("tests/fixtures/mock_inventory_arg.json").read_text(encoding="utf-8")
     )
@@ -190,7 +237,7 @@ def test_inventory_runtime_loader_reads_active_generation_metadata(
             "status": "completed",
         },
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("AIOPS_HOME", str(home))
 
     from api.runtime import _load_inventory_service
 
@@ -203,7 +250,7 @@ def test_inventory_runtime_loader_reads_active_generation_metadata(
 def test_inventory_runtime_marks_old_generation_stale_without_erasing_rows(
     monkeypatch, tmp_path
 ):
-    home = tmp_path / "hermes"
+    home = tmp_path / "aiops"
     fixture = json.loads(
         Path("tests/fixtures/mock_inventory_arg.json").read_text(encoding="utf-8")
     )
@@ -226,7 +273,7 @@ def test_inventory_runtime_marks_old_generation_stale_without_erasing_rows(
             "status": "completed",
         },
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("AIOPS_HOME", str(home))
 
     from api.runtime import _load_inventory_service
 

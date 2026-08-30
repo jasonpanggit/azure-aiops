@@ -7,6 +7,7 @@ import type {
   ChangeAssessmentSources,
   ChangeAssessmentSummary,
   ConnectionCreateRequest,
+  ConnectionCreateResult,
   ConnectionHealthReport,
   ConnectionSyncResult,
   ConnectionUpdateRequest,
@@ -70,6 +71,8 @@ import type {
   SoftwareInventoryDetail,
   SoftwareMapping,
   SoftwareMappingCollection,
+  ResourceHealthSnapshot,
+  CopilotPageKind, CopilotPageSnapshot, CopilotSelectedResource, CopilotEvidenceRow, CopilotContextResult,
 } from "./types";
 
 async function listAllConnections(scope: ScopeSelection): Promise<Envelope<SubscriptionConnection[]>> {
@@ -110,7 +113,7 @@ export const connectionsApi = {
   get: (id: string) => apiRequest<SubscriptionConnection>(`/subscription-connections/${encodeURIComponent(id)}`),
 
   create: (payload: ConnectionCreateRequest) =>
-    apiRequest<SubscriptionConnection>("/subscription-connections", { method: "POST", body: payload }),
+    apiRequest<ConnectionCreateResult>("/subscription-connections", { method: "POST", body: payload }),
 
   update: (id: string, payload: ConnectionUpdateRequest) =>
     apiRequest<SubscriptionConnection>(`/subscription-connections/${encodeURIComponent(id)}`, {
@@ -202,6 +205,27 @@ export const inventoryApi = {
     query.set("offset", String(offset));
     query.set("limit", String(limit));
     return apiRequest<SoftwareInventoryDetail>(`/inventory/software/${encodeURIComponent(key)}`, { query });
+  },
+  paas: (scope: ScopeSelection = {}, offset = 0, limit = 200) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<import("./types").PaasInventoryCollection>("/inventory/paas", { query });
+  },
+  paasGroup: (key: string, scope: ScopeSelection = {}, offset = 0, limit = 200) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<import("./types").PaasInventoryDetail>(
+      `/inventory/paas/${encodeURIComponent(key)}`,
+      { query },
+    );
+  },
+  resources: (scope: ScopeSelection = {}, offset = 0, limit = 500) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<import("./types").FlatResourceCollection>("/inventory/resources", { query });
   },
   narrative: (scope: ScopeSelection = {}) =>
     apiRequest<InventoryNarrative>("/inventory/narrative", {
@@ -324,6 +348,64 @@ export interface CopilotInvestigation {
   warnings: string[];
 }
 
+export interface CopilotPageSnapshotInput {
+  pageKind: CopilotPageKind; pageId: string; scope: ScopeSelection;
+  filters?: Record<string, string[]>; selectedResources?: CopilotSelectedResource[];
+  evidence?: CopilotEvidenceRow[]; freshness?: CopilotPageSnapshot["freshness"];
+  question?: string; rechecks?: string[];
+}
+
+function isCanonicalAzureResourceId(value: string | null | undefined): value is string {
+  const parts = String(value ?? "").split("/").filter(Boolean);
+  const providerIndex = parts.findIndex((part) => part.toLowerCase() === "providers");
+  return (
+    String(value ?? "").startsWith("/") &&
+    parts.length > providerIndex + 2 &&
+    parts[0]?.toLowerCase() === "subscriptions" &&
+    Boolean(parts[1]) &&
+    providerIndex >= 0
+  );
+}
+
+function validatedCopilotResource(resource: CopilotSelectedResource): CopilotSelectedResource | null {
+  return isCanonicalAzureResourceId(resource.resource_id) ? resource : null;
+}
+
+function validatedCopilotEvidence(row: CopilotEvidenceRow): CopilotEvidenceRow {
+  if (!row.resource_id || isCanonicalAzureResourceId(row.resource_id)) return row;
+  const { resource_id: resourceId, data, ...rest } = row;
+  return {
+    ...rest,
+    data: { ...data, resource_id: resourceId },
+  };
+}
+
+export function buildCopilotSnapshot(input: CopilotPageSnapshotInput): CopilotPageSnapshot {
+  return {
+    version: "1", page_kind: input.pageKind, page_id: input.pageId,
+    selected_resources: (input.selectedResources ?? []).map(validatedCopilotResource).filter((resource): resource is CopilotSelectedResource => Boolean(resource)).slice(0, 50),
+    filters: input.filters ?? {}, freshness: (input.freshness ?? []).slice(0, 32),
+    scope: { declared: input.scope, authorized: true }, evidence: (input.evidence ?? []).map(validatedCopilotEvidence).slice(0, 200),
+    question: input.question?.trim() || "Summarize the visible page evidence.", rechecks: input.rechecks ?? [],
+  };
+}
+
+export function copilotEvidenceRows(
+  section: string, evidence: EvidenceItem[], records: unknown[] = [],
+  status: "ok" | "empty" | "unavailable" | "denied" = "ok",
+): CopilotEvidenceRow[] {
+  const rows: CopilotEvidenceRow[] = evidence.map((item, index) => ({
+    evidence_id: `${section}:${item.source_table || "source"}:${index}`,
+    resource_id: isCanonicalAzureResourceId(item.resource_id) ? item.resource_id : undefined, section,
+    data: { source_engine: item.source_engine, source_table: item.source_table },
+    status, observed_at: item.timestamp,
+  }));
+  return rows.concat(records.slice(0, 200).map((record, index): CopilotEvidenceRow => ({
+    evidence_id: `${section}:visible:${index}`, section,
+    data: (record && typeof record === "object" ? record : { value: record }) as Record<string, unknown>, status,
+  })));
+}
+
 export interface CopilotToolSpec {
   name: string;
   description: string;
@@ -373,6 +455,9 @@ export const copilotApi = {
     apiRequest<{ session_id: string; turns: CopilotInvestigation[] }>(
       `/copilot/history/${encodeURIComponent(sessionId)}`
     ),
+
+    investigateContext: (snapshot: CopilotPageSnapshot) =>
+      apiRequest<CopilotContextResult>("/copilot/investigate-context", { method: "POST", body: { snapshot } }),
 };
 
 // ---------------------------------------------------------------------------
@@ -468,6 +553,13 @@ export const networkApi = {
   updatePolicy: (changes: Record<string, unknown>) =>
     apiRequest<NetworkDesignPolicy>("/network/policy", {
       method: "PATCH",
+      body: changes,
+    }),
+
+  previewPolicy: (changes: Record<string, unknown>, scope: ScopeSelection = {}) =>
+    apiRequest<{ policy: NetworkDesignPolicy; gaps: NetworkGap[]; summary: NetworkSummary }>("/network/policy/preview", {
+      method: "POST",
+      query: scopeToSearchParams(scope),
       body: changes,
     }),
 };
@@ -611,6 +703,18 @@ export const healthApi = {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`health check failed: ${response.status}`);
     return (await response.json()) as HealthResponse;
+  },
+};
+
+export const resourceHealthApi = {
+  /** Live CPU/network/disk utilization for in-scope compute resources.
+   * Requires an explicit subscription scope -- unlike most routes there is
+   * no snapshot fallback, since a stale utilization reading would actively
+   * mislead an operator. */
+  snapshot: (scope: ScopeSelection = {}, forceRefresh = false) => {
+    const query = scopeToSearchParams(scope);
+    if (forceRefresh) query.set("force_refresh", "true");
+    return apiRequest<ResourceHealthSnapshot>("/resource-health", { query });
   },
 };
 

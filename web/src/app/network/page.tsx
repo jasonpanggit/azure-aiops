@@ -13,8 +13,8 @@ import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { presentVerdict } from "@/lib/flow-verdict";
 import { useScope } from "@/lib/scope-context";
-import { networkApi } from "@/lib/services";
-import type { FlowResult, NetworkPolicyRule, NetworkSeverity, RuleFinding } from "@/lib/types";
+import { buildCopilotSnapshot, copilotEvidenceRows, networkApi } from "@/lib/services";
+import type { CopilotEvidenceRow, FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
 
 type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
 
@@ -33,11 +33,30 @@ export default function NetworkPage() {
     ...(topology.data?.evidence ?? []),
     ...(gaps.data?.evidence ?? []),
     ...(findings.data?.evidence ?? []),
+    ...(bypass.data?.evidence ?? []),
   ];
   const warnings = [
     ...(topology.data?.warnings ?? []),
     ...(gaps.data?.warnings ?? []),
     ...(findings.data?.warnings ?? []),
+    ...(bypass.data?.warnings ?? []),
+  ];
+  const bypassGaps = bypass.data?.data.gaps ?? [];
+  const networkCopilotRecords = [
+    {
+      check: "topology",
+      compliant: true,
+      summary,
+      connection_ids: topology.data?.data.topology.connection_ids ?? [],
+      unresolved_peer_vnet_ids: topology.data?.data.topology.unresolved_peer_vnet_ids ?? [],
+    },
+    ...(gaps.data?.data.gaps ?? []).map(networkGapEvidence),
+    ...(findings.data?.data.findings ?? []).map(ruleFindingEvidence),
+  ];
+  const networkCopilotEvidence = [
+    ...copilotEvidenceRows("source", evidence),
+    ...copilotEvidenceRows("network", [], networkCopilotRecords),
+    ...bypassGaps.map(firewallBypassEvidence),
   ];
 
   return (
@@ -163,6 +182,18 @@ export default function NetworkPage() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Network topology"
+        snapshot={buildCopilotSnapshot({
+          pageKind: "network",
+          pageId: "network-topology",
+          scope,
+          filters: { tab: [tab] },
+          selectedResources: topology.data?.data.topology.hubs.slice(0, 50).map((hub) => ({
+            resource_id: hub.vnet_id,
+            resource_type: "Microsoft.Network/virtualNetworks",
+            name: hub.name,
+          })) ?? [],
+          evidence: networkCopilotEvidence,
+        })}
         starterQuestions={[
           {
             label: "Can UAT reach PROD?",
@@ -482,12 +513,75 @@ function ruleListItem(finding: RuleFinding): FindingListItem {
   };
 }
 
-/** Built-in rule ids that ship as defaults (mirrors `src/network/design.py`'s
- * `RULE_INTERNET_VIA_FIREWALL` / `RULE_NSG_OVERRIDE_DEFAULT_OUTBOUND`). These are
- * re-seeded on every read, so deleting them server-side is a no-op — the UI hides
- * the delete affordance for them rather than offering an action that silently
- * does nothing. */
-const BUILTIN_RULE_IDS = new Set(["internet-via-firewall", "nsg-override-default-outbound"]);
+function networkGapEvidence(gap: NetworkGap): Record<string, unknown> {
+  return {
+    check: gap.category,
+    finding: gap.title,
+    issue: gap.detail,
+    compliant: false,
+    severity: gap.severity,
+    resource_id: gap.resource_id,
+    resource_name: gap.resource_name,
+    resource_type: gap.resource_type,
+    recommendation: gap.recommendation,
+    basis: gap.basis,
+    connection_id: gap.connection_id,
+    subscription_id: gap.subscription_id,
+    environment: gap.environment,
+    vnet_id: gap.vnet_id,
+    evidence: gap.evidence,
+  };
+}
+
+function ruleFindingEvidence(finding: RuleFinding): Record<string, unknown> {
+  return {
+    check: finding.category,
+    finding: finding.title,
+    issue: finding.detail,
+    compliant: false,
+    severity: finding.severity,
+    rule_id: finding.rule_id,
+    rule_name: finding.rule_name,
+    control: finding.control,
+    control_id: finding.control_id,
+    recommendation: finding.recommendation,
+    connection_id: finding.connection_id,
+    subscription_id: finding.subscription_id,
+    environment: finding.environment,
+    evidence: finding.evidence,
+  };
+}
+
+function firewallBypassEvidence(gap: NetworkGap, index: number): CopilotEvidenceRow {
+  return {
+    evidence_id: `network:firewall-bypass:${gap.gap_id || index}`,
+    resource_id: gap.resource_id,
+    section: "firewall",
+    status: "ok",
+    data: {
+      ...networkGapEvidence(gap),
+      check: "firewall",
+      finding: gap.title || "Firewall inspection bypass path",
+      issue: gap.detail || "Spoke traffic can bypass the hub firewall inspection path.",
+    },
+  };
+}
+
+/** Analyzer-backed rule options. The ids must match the backend check registry. */
+const ANALYZER_RULES = [
+  ["internet-via-firewall", "Internet access must traverse the firewall"],
+  ["nsg-override-default-outbound", "NSGs must override default outbound"],
+  ["private-endpoints-preferred", "Private endpoints should be used when possible"],
+  ["nsg-on-every-subnet", "Every subnet should have an NSG"],
+  ["approved-peerings-only", "Only approved peerings should exist"],
+  ["bidirectional-peering", "Peerings should be bidirectional"],
+  ["private-dns-zone-link", "Private DNS zones should be linked"],
+  ["no-orphan-firewall-rules", "Firewall rules should not be orphaned"],
+  ["documented-dependencies", "Dependencies should be documented"],
+  ["hub-firewall-present", "Hub VNets should have a firewall"],
+] as const;
+
+const BUILTIN_RULE_IDS: Set<string> = new Set(ANALYZER_RULES.map(([ruleId]) => ruleId));
 
 const NEW_RULE_SEVERITIES: NetworkSeverity[] = ["low", "medium", "high", "critical"];
 
@@ -499,7 +593,13 @@ interface NewRuleForm {
   severity: NetworkSeverity;
 }
 
-const EMPTY_NEW_RULE: NewRuleForm = { rule_id: "", name: "", description: "", category: "custom", severity: "medium" };
+const EMPTY_NEW_RULE: NewRuleForm = {
+  rule_id: ANALYZER_RULES[0][0],
+  name: ANALYZER_RULES[0][1],
+  description: "",
+  category: "custom",
+  severity: "medium",
+};
 
 /** Editable rule-based network design policy. Gap analysis is checked against
  * this policy, so toggling, adding, or deleting a rule here immediately changes
@@ -516,6 +616,9 @@ function DesignPolicyWorkspace() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [newRule, setNewRule] = useState<NewRuleForm>(EMPTY_NEW_RULE);
   const [addError, setAddError] = useState("");
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ gaps: NetworkGap[]; summary: NetworkSummary } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   function toggleRule(rule: NetworkPolicyRule) {
     const nextEnabled = !(pending[rule.rule_id] ?? rule.enabled);
@@ -558,8 +661,8 @@ function DesignPolicyWorkspace() {
   function submitNewRule() {
     const rule_id = newRule.rule_id.trim();
     const name = newRule.name.trim();
-    if (!rule_id || !name) {
-      setAddError("Rule id and name are required.");
+    if (!BUILTIN_RULE_IDS.has(rule_id) || !name) {
+      setAddError("Select a supported analyzer and provide a name.");
       return;
     }
     setAddError("");
@@ -583,10 +686,56 @@ function DesignPolicyWorkspace() {
           return next;
         });
         setNewRule(EMPTY_NEW_RULE);
+        setEditingRuleId(null);
         setShowAddForm(false);
       })
       .catch((reason: unknown) => setAddError(reason instanceof Error ? reason.message : "Adding the rule failed"))
       .finally(() => setSavingId(null));
+  }
+
+  function editRule(rule: NetworkPolicyRule) {
+    setEditingRuleId(rule.rule_id);
+    setNewRule({
+      rule_id: rule.rule_id,
+      name: rule.name,
+      description: rule.description,
+      category: rule.category,
+      severity: rule.severity,
+    });
+    setPreview(null);
+    setAddError("");
+    setShowAddForm(true);
+  }
+
+  function previewRule() {
+    const rule_id = newRule.rule_id.trim();
+    const name = newRule.name.trim();
+    if (!BUILTIN_RULE_IDS.has(rule_id) || !name) {
+      setAddError("Select a supported analyzer and provide a name before previewing.");
+      return;
+    }
+    setPreviewing(true);
+    setAddError("");
+    networkApi
+      .previewPolicy(
+        {
+          rules: [
+            {
+              rule_id,
+              name,
+              description: newRule.description.trim(),
+              category: newRule.category.trim() || "custom",
+              severity: newRule.severity,
+              enabled: true,
+              parameters: {},
+            },
+          ],
+        },
+        scope
+      )
+      .then((result) => setPreview({ gaps: result.data.gaps, summary: result.data.summary }))
+      .catch((reason: unknown) => setAddError(reason instanceof Error ? reason.message : "Previewing the rule failed"))
+      .finally(() => setPreviewing(false));
   }
 
   if (policy.loading) {
@@ -611,7 +760,15 @@ function DesignPolicyWorkspace() {
             change the observed topology.
           </p>
         </div>
-        <button type="button" className="button" onClick={() => setShowAddForm((current) => !current)}>
+        <button
+          type="button"
+          className="button"
+          onClick={() => {
+            setShowAddForm((current) => !current);
+            setEditingRuleId(null);
+            setPreview(null);
+          }}
+        >
           {showAddForm ? "Cancel" : "Add rule"}
         </button>
       </div>
@@ -630,14 +787,25 @@ function DesignPolicyWorkspace() {
           {addError && <div className="callout callout-critical">{addError}</div>}
           <div className="policy-add-form-grid">
             <label>
-              Rule id
-              <input
-                type="text"
+              Analyzer
+              <select
                 value={newRule.rule_id}
-                onChange={(event) => setNewRule((current) => ({ ...current, rule_id: event.target.value }))}
-                placeholder="e.g. no-public-storage-endpoints"
+                onChange={(event) => {
+                  const selected = ANALYZER_RULES.find(([ruleId]) => ruleId === event.target.value);
+                  setNewRule((current) => ({
+                    ...current,
+                    rule_id: event.target.value,
+                    name: selected?.[1] ?? current.name,
+                  }));
+                }}
                 required
-              />
+              >
+                {ANALYZER_RULES.map(([ruleId, label]) => (
+                  <option key={ruleId} value={ruleId}>
+                    {label}
+                  </option>
+                ))}
+              </select>
             </label>
             <label>
               Name
@@ -681,9 +849,24 @@ function DesignPolicyWorkspace() {
               rows={2}
             />
           </label>
-          <button type="submit" className="button button-primary" disabled={savingId === newRule.rule_id.trim()}>
-            {savingId === newRule.rule_id.trim() ? "Saving…" : "Save rule"}
-          </button>
+          <div className="button-row">
+            <button type="button" className="button" onClick={previewRule} disabled={previewing || savingId === newRule.rule_id.trim()}>
+              {previewing ? "Previewing…" : "Preview rule"}
+            </button>
+            <button type="submit" className="button button-primary" disabled={savingId === newRule.rule_id.trim()}>
+              {savingId === newRule.rule_id.trim() ? "Saving…" : editingRuleId ? "Save changes" : "Save rule"}
+            </button>
+          </div>
+          {preview && (
+            <div className="callout callout-info" role="status">
+              Preview found <strong>{preview.gaps.length}</strong> gap{preview.gaps.length === 1 ? "" : "s"}.
+              {preview.gaps.length > 0 && (
+                <ul>
+                  {preview.gaps.slice(0, 5).map((gap) => <li key={gap.gap_id}>{gap.title}: {gap.resource_name}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
         </form>
       )}
       <div className="finding-list">
@@ -725,6 +908,9 @@ function DesignPolicyWorkspace() {
                       ? "Rule is checked during gap analysis"
                       : "Rule is excluded from gap analysis"}
                 </span>
+                <button type="button" className="button button-quiet" onClick={() => editRule(rule)} disabled={savingId === rule.rule_id}>
+                  Edit
+                </button>
                 {!isBuiltin && (
                   <button
                     type="button"

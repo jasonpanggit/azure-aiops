@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
@@ -63,6 +65,8 @@ export default function GovernancePage() {
   }
 
   const currentSettings = settings.data?.data;
+  const roles = useMemo(() => currentSettings?.roles ?? [], [currentSettings]);
+  const rolesPaging = useTablePagination(roles);
 
   return (
     <div className="page-container">
@@ -252,7 +256,7 @@ export default function GovernancePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {currentSettings.roles.map((role) => (
+                      {rolesPaging.pageRows.map((role) => (
                         <tr key={role.role_id}>
                           <td>
                             <span className="table-primary-link">{role.name}</span>
@@ -276,6 +280,15 @@ export default function GovernancePage() {
                     </tbody>
                   </table>
                 </div>
+                <TablePagination
+                  total={rolesPaging.total}
+                  pageRows={rolesPaging.pageRows.length}
+                  page={rolesPaging.page}
+                  onPageChange={rolesPaging.setPage}
+                  pageSize={rolesPaging.pageSize}
+                  onPageSizeChange={rolesPaging.setPageSize}
+                  label="roles"
+                />
 
                 <div className="table-scroll">
                   <table className="operations-table">

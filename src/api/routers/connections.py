@@ -109,7 +109,7 @@ def create_connection(
             **payload.metadata.model_dump(),
         },
     )
-    detail = context.onboarding.add(
+    lifecycle = context.onboarding.add_and_initialize(
         connection_id=payload.connection_id,
         name=payload.name,
         tenant_id=payload.tenant_id,
@@ -121,7 +121,7 @@ def create_connection(
         metadata=payload.metadata.model_dump(),
     )
     return envelope(
-        detail,
+        lifecycle,
         evidence=_evidence(payload.connection_id),
         scope=scope.to_dict(),
     )
@@ -236,18 +236,26 @@ def validate_connection(
     return envelope(report, evidence=_evidence(connection_id), scope=scope.to_dict())
 
 
-@router.post("/{connection_id}/sync", summary="Run a connection-scoped sync")
+@router.post("/{connection_id}/sync", summary="Start a connection-scoped sync")
 def sync_connection(
     connection_id: str,
     context: Context,
     principal: OperatePrincipal,
     payload: ConnectionSyncRequest | None = None,
 ) -> dict[str, Any]:
+    """Start a sync in the background and return immediately.
+
+    Discovery + merge + ontology + Fabric publish can take well past typical
+    HTTP client timeouts for a large subscription, so this endpoint only
+    queues the run (`sync_state.status == "running"`) and returns; poll
+    `GET /{connection_id}/health` for `sync_state.stage`/`stage_message`/
+    `progress_pct` until it reaches `succeeded` or `failed`.
+    """
     scope = _authorize_action(
         context, principal, ACTION_OPERATE, context.onboarding.detail(connection_id)
     )
     mode = payload.mode if payload else "manual"
-    result = context.onboarding.sync(connection_id, mode=mode)
+    result = context.onboarding.sync_async(connection_id, mode=mode)
     return envelope(result, evidence=_evidence(connection_id), scope=scope.to_dict())
 
 

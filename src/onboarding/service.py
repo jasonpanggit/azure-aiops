@@ -8,12 +8,15 @@ business logic.
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import re
+import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
-from storage.fs import resolve_root
 from ontology.subscription_connection import (
     BusinessServiceLinkage,
     CredentialReference,
@@ -21,6 +24,7 @@ from ontology.subscription_connection import (
     SubscriptionConnection,
     SyncState,
 )
+from storage.fs import resolve_root
 
 from .credentials import (
     CredentialResolver,
@@ -38,6 +42,8 @@ from .registry import (
 from .sync import ConnectionSyncCoordinator, SyncResult
 from .validation import ConnectionValidator, ValidationReport
 
+logger = logging.getLogger(__name__)
+
 _CONNECTION_ID = re.compile(r"^[a-z0-9][a-z0-9-_]{1,62}$")
 _GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
@@ -47,6 +53,14 @@ class OnboardingError(RuntimeError):
 
 
 class SubscriptionOnboardingService:
+    #: Shared across every instance rather than per-service so that repeated
+    #: `SubscriptionOnboardingService(...)` construction (e.g. one call per
+    #: API request in tests, or hot-reload in dev) doesn't leak a thread pool
+    #: per instance. Sync jobs are I/O-bound (Azure ARG calls, Fabric writes),
+    #: so a small bounded pool is enough to keep a handful of connections
+    #: syncing concurrently without unbounded thread growth.
+    _executor: ThreadPoolExecutor | None = None
+
     def __init__(
         self,
         output_dir: str,
@@ -68,6 +82,14 @@ class SubscriptionOnboardingService:
         self.secret_writer = secret_writer
         self.health = health_evaluator or HealthEvaluator(clock=clock)
         self.clock = clock or (lambda: datetime.now(UTC))
+
+    @classmethod
+    def _shared_executor(cls) -> ThreadPoolExecutor:
+        if cls._executor is None:
+            cls._executor = ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix="onboarding-sync"
+            )
+        return cls._executor
 
     def _credential_secret_ref(
         self,
@@ -146,6 +168,47 @@ class SubscriptionOnboardingService:
         )
         self.registry.add(connection)
         return self.detail(identifier)
+
+    def add_and_initialize(
+        self,
+        *,
+        connection_id: str,
+        name: str | None = None,
+        tenant_id: str,
+        subscription_id: str,
+        client_id: str,
+        secret_ref: str | None = None,
+        client_secret: str | None = None,
+        credential_id: str | None = None,
+        metadata: BusinessMetadata | dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a connection, validate it, and queue its first sync when safe."""
+        detail = self.add(
+            connection_id=connection_id,
+            name=name,
+            tenant_id=tenant_id,
+            subscription_id=subscription_id,
+            client_id=client_id,
+            secret_ref=secret_ref,
+            client_secret=client_secret,
+            credential_id=credential_id,
+            metadata=metadata,
+        )
+        identifier = detail["connection_id"]
+        validation = self.validate(identifier)
+        initial_sync: dict[str, Any] = {
+            "connection_id": identifier,
+            "status": "not_started",
+            "reason": "validation_failed",
+            "sync_state": self.registry.get(identifier).sync_state.to_dict(),
+        }
+        if validation["passed"]:
+            initial_sync = self.sync_async(identifier, mode="initial")
+        return {
+            **self.detail(identifier),
+            "validation": validation,
+            "initial_sync": initial_sync,
+        }
 
     def update(
         self,
@@ -281,6 +344,112 @@ class SubscriptionOnboardingService:
         state = saved.sync_state
         health = saved.health
         return {**result.to_dict(), "sync_state": state.to_dict(), "health": health.to_dict()}
+
+    def sync_async(
+        self, connection_id: str, *, mode: str = "initial", run_id: str | None = None
+    ) -> dict[str, Any]:
+        """Kick off a connection sync on a background thread and return
+        immediately with a "running" ``sync_state`` for the caller to poll
+        (via :meth:`health_report`).
+
+        A synchronous ``requests.post(".../sync")`` from a UI can time out
+        well before discovery + merge + Fabric publish finishes for a large
+        subscription; this lets the API respond in milliseconds while the
+        real work continues, with live stage/progress persisted onto the
+        connection's ``sync_state`` after every stage transition so a poller
+        sees incremental updates rather than only a final result.
+
+        Raises the same validation errors as :meth:`sync` synchronously
+        (unknown connection, disabled connection, bad mode) so callers get an
+        immediate 4xx instead of a background failure for cases that are
+        really request errors, not sync failures.
+        """
+        connection = self.registry.get(connection_id)
+        if mode not in {"initial", "scheduled", "manual"}:
+            raise OnboardingError("sync mode must be initial, scheduled, or manual")
+        if not connection.is_active:
+            raise OnboardingError(
+                f"Connection '{connection_id}' is disabled; enable it before syncing"
+            )
+
+        identifier = run_id or str(uuid.uuid4())
+        previous = connection.sync_state or SyncState()
+        running_state = SyncState(
+            status="running",
+            last_synced_at=previous.last_synced_at,
+            last_successful_sync_at=previous.last_successful_sync_at,
+            last_failed_at=previous.last_failed_at,
+            run_id=identifier,
+            source_version=previous.source_version,
+            record_count=previous.record_count,
+            attempts=previous.attempts,
+            message=f"{mode} sync queued",
+            stage="queued",
+            stage_message=f"{mode} sync queued",
+            progress_pct=0,
+        )
+        saved = self._save_operation_state(connection_id, sync_state=running_state)
+        self._shared_executor().submit(self._run_sync_job, connection_id, mode, identifier)
+        return {
+            "connection_id": connection_id,
+            "run_id": identifier,
+            "status": "running",
+            "sync_state": saved.sync_state.to_dict(),
+        }
+
+    def _run_sync_job(self, connection_id: str, mode: str, run_id: str) -> None:
+        """Background-thread worker for :meth:`sync_async`.
+
+        Runs on the shared executor, so this must not raise: any failure
+        constructing the connection/coordinator inputs is recorded onto
+        ``sync_state`` the same way a failed ``run()`` is, rather than being
+        lost to an unobserved thread exception.
+        """
+
+        def _on_progress(stage: str, message: str, pct: int) -> None:
+            try:
+                current = self.registry.get(connection_id).sync_state or SyncState()
+                state = dataclasses.replace(
+                    current,
+                    status="running" if stage not in {"succeeded", "failed"} else stage,
+                    run_id=run_id,
+                    stage=stage,
+                    stage_message=message,
+                    progress_pct=pct,
+                    message=message,
+                )
+                self._save_operation_state(connection_id, sync_state=state)
+            except Exception:
+                logger.debug("Unable to persist sync progress for %s", connection_id, exc_info=True)
+
+        try:
+            connection = self.registry.get(connection_id)
+            _result, state = self.sync_coordinator.run(
+                connection,
+                mode=mode,
+                run_id=run_id,
+                progress_callback=_on_progress,
+            )
+            health = self.health.from_sync(connection, state)
+            self._save_operation_state(connection_id, sync_state=state, health=health)
+        except Exception as exc:  # noqa: BLE001 - background job: record, don't raise
+            message = str(exc).strip() or exc.__class__.__name__
+            try:
+                current = self.registry.get(connection_id).sync_state or SyncState()
+                failed_state = dataclasses.replace(
+                    current,
+                    status="failed",
+                    run_id=run_id,
+                    last_failed_at=_iso(self.clock()),
+                    attempts=current.attempts + 1,
+                    stage="failed",
+                    stage_message=message,
+                    progress_pct=100,
+                    message=message,
+                )
+                self._save_operation_state(connection_id, sync_state=failed_state)
+            except Exception:
+                logger.exception("Unable to persist failed sync state for %s", connection_id)
 
     def _save_operation_state(
         self,

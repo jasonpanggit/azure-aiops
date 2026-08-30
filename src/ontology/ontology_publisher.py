@@ -146,7 +146,7 @@ class OntologyPublisher:
                     },
                 )
             )
-            binding_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"hermes:{entity_name}:{table_name}"))
+            binding_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"aiops:{entity_name}:{table_name}"))
             parts.append(
                 _part(
                     f"EntityTypes/{entity_id}/DataBindings/{binding_id}.json",
@@ -192,7 +192,7 @@ class OntologyPublisher:
             contextualization_id = str(
                 uuid.uuid5(
                     uuid.NAMESPACE_URL,
-                    f"hermes:{source_type}:{predicate}:{target_type}:{table_name}",
+                    f"aiops:{source_type}:{predicate}:{target_type}:{table_name}",
                 )
             )
             parts.append(

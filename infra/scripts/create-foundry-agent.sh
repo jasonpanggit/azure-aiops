@@ -13,6 +13,12 @@
 #   FOUNDRY_AGENT_MODEL       model deployment name
 #   FOUNDRY_AGENT_PROMPT      system instructions
 #   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+#
+# Optional:
+#   FOUNDRY_SPECIALISTS_JSON     map of specialists (name/version/model/prompt/tools)
+#   FOUNDRY_AGENT_TOOLS_JSON_B64 base64 JSON array of MCP tool definitions for
+#                                this single agent (only set on the recursive
+#                                per-specialist invocation)
 
 set -euo pipefail
 
@@ -23,6 +29,35 @@ for var in FOUNDRY_PROJECT_ENDPOINT FOUNDRY_AGENT_NAME FOUNDRY_AGENT_MODEL \
     exit 1
   fi
 done
+
+# A deployment may provide a catalog of independently released specialists.
+# Reuse this idempotent single-agent path for each entry so old callers that
+# provide only FOUNDRY_AGENT_NAME remain fully compatible.
+if [[ -n "${FOUNDRY_SPECIALISTS_JSON:-}" ]]; then
+  while IFS=$'\t' read -r specialist_name specialist_version specialist_model specialist_prompt_b64 specialist_tools_b64; do
+    [[ -z "${specialist_name}" ]] && continue
+    specialist_prompt=$(printf '%s' "${specialist_prompt_b64}" | python3 -c \
+      'import base64,sys; print(base64.b64decode(sys.stdin.read()).decode())')
+    FOUNDRY_AGENT_NAME="${specialist_name}" \
+    FOUNDRY_AGENT_VERSION="${specialist_version}" \
+    FOUNDRY_AGENT_MODEL="${specialist_model:-$FOUNDRY_AGENT_MODEL}" \
+    FOUNDRY_AGENT_PROMPT="${specialist_prompt:-$FOUNDRY_AGENT_PROMPT}" \
+    FOUNDRY_AGENT_TOOLS_JSON_B64="${specialist_tools_b64}" \
+    FOUNDRY_SPECIALISTS_JSON="" \
+    "$0"
+  done < <(FOUNDRY_SPECIALISTS_JSON="$FOUNDRY_SPECIALISTS_JSON" python3 -c '
+import base64, json, os
+d = json.loads(os.environ["FOUNDRY_SPECIALISTS_JSON"])
+for v in d.values():
+    name = v["name"]
+    version = v.get("version", "")
+    model = v.get("model", "")
+    prompt_b64 = base64.b64encode(v.get("prompt", "").encode()).decode()
+    tools_b64 = base64.b64encode(json.dumps(v.get("tools", [])).encode()).decode()
+    print(f"{name}\t{version}\t{model}\t{prompt_b64}\t{tools_b64}")
+')
+  exit 0
+fi
 
 API_VERSION="${FOUNDRY_API_VERSION:-v1}"
 endpoint="${FOUNDRY_PROJECT_ENDPOINT%/}"
@@ -41,19 +76,27 @@ create_body=$(
   FOUNDRY_AGENT_NAME="$FOUNDRY_AGENT_NAME" \
   FOUNDRY_AGENT_MODEL="$FOUNDRY_AGENT_MODEL" \
   FOUNDRY_AGENT_PROMPT="$FOUNDRY_AGENT_PROMPT" \
+  FOUNDRY_AGENT_TOOLS_JSON_B64="${FOUNDRY_AGENT_TOOLS_JSON_B64:-}" \
   python3 - <<'PY'
-import json, os
+import base64, json, os
+
+definition = {
+    "kind": "prompt",
+    "model": os.environ["FOUNDRY_AGENT_MODEL"],
+    "instructions": os.environ["FOUNDRY_AGENT_PROMPT"],
+}
+tools_b64 = os.environ.get("FOUNDRY_AGENT_TOOLS_JSON_B64", "")
+if tools_b64:
+    tools = json.loads(base64.b64decode(tools_b64).decode())
+    if tools:
+        definition["tools"] = tools
 
 # Built with json.dumps rather than a heredoc so the instructions — which are
 # multi-line and contain quotes — are escaped correctly.
 print(json.dumps({
     "name": os.environ["FOUNDRY_AGENT_NAME"],
-    "description": "Narrates grounded answers for the Hermes Operations Copilot.",
-    "definition": {
-        "kind": "prompt",
-        "model": os.environ["FOUNDRY_AGENT_MODEL"],
-        "instructions": os.environ["FOUNDRY_AGENT_PROMPT"],
-    },
+    "description": "Narrates grounded answers for the AIOps Operations Copilot.",
+    "definition": definition,
 }))
 PY
 )
@@ -63,16 +106,22 @@ PY
 version_body=$(
   FOUNDRY_AGENT_MODEL="$FOUNDRY_AGENT_MODEL" \
   FOUNDRY_AGENT_PROMPT="$FOUNDRY_AGENT_PROMPT" \
+  FOUNDRY_AGENT_TOOLS_JSON_B64="${FOUNDRY_AGENT_TOOLS_JSON_B64:-}" \
   python3 - <<'PY'
-import json, os
+import base64, json, os
 
-print(json.dumps({
-    "definition": {
-        "kind": "prompt",
-        "model": os.environ["FOUNDRY_AGENT_MODEL"],
-        "instructions": os.environ["FOUNDRY_AGENT_PROMPT"],
-    },
-}))
+definition = {
+    "kind": "prompt",
+    "model": os.environ["FOUNDRY_AGENT_MODEL"],
+    "instructions": os.environ["FOUNDRY_AGENT_PROMPT"],
+}
+tools_b64 = os.environ.get("FOUNDRY_AGENT_TOOLS_JSON_B64", "")
+if tools_b64:
+    tools = json.loads(base64.b64decode(tools_b64).decode())
+    if tools:
+        definition["tools"] = tools
+
+print(json.dumps({"definition": definition}))
 PY
 )
 

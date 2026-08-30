@@ -89,7 +89,7 @@ class CredentialReferenceModel(ApiModel):
     """Credential payload.
 
     ``client_secret`` is accepted only as one-time input on create/update. The
-    API stores it in Key Vault before handing the connection to Hermes, which
+    API stores it in Key Vault before handing the connection to AIOps, which
     persists only ``secret_ref``.
     """
 
