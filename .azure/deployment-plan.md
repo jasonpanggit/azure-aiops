@@ -39,6 +39,21 @@ then update the existing Azure Container Apps deployment.
   curl smoke test: `/health` 200, `/api/v1/subscription-connections/<id>/health`
   and `.../sync` for an unregistered id return clean `401` (auth-required),
   not a dropped connection.
+- 2026-08-30: Fixed compliance page evidence panel still squashing labels
+  into 1-char-per-line columns. Root cause: `.structured-data-nested` kept
+  `container-type: inline-size` (re-entering the 420px column breakpoint
+  inside a narrow parent cell) and `.compliance-detail dl` was a bare
+  descendant selector matching every nested `<dl>`, both fighting the
+  earlier ac41fe5e stacking fix. Set nested evidence `container-type:
+  normal` (always stacks) and scoped the plain violation field list to a
+  new `.compliance-fact-list` class (commit `637fad29`). Verified with a
+  static HTML harness reproducing the real evidence markup/CSS (not just
+  computed-style checks, which looked correct while the rendered layout
+  was still broken from a cache-stale reload) — labels now render stacked
+  above values at narrow widths. `npx vitest run` (156/156) and
+  `npx eslint src/app/compliance/page.tsx` passed. Built/pushed
+  `main-compliance-css-20260830-1548` (api+web), deployed via
+  `deploy.sh apply -auto-approve`; both apps serving the new tag.
 - 2026-08-22: Azure CLI account context resolved to subscription
   `a87a8e64-a52a-4aa8-a760-5e8919d23cd1`.
 - 2026-08-22: Terraform state resolved registry
