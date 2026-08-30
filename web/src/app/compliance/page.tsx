@@ -461,7 +461,7 @@ export default function CompliancePage() {
               <>
                 <h3>{selected.title}</h3>
                 <p>{selected.detail}</p>
-                <dl>
+                <dl className="compliance-fact-list">
                   <dt>Application</dt><dd>{selected.application || "Not mapped"}</dd>
                   <dt>Business service</dt><dd>{selected.businessService || "Not mapped"}</dd>
                   <dt>Owner</dt><dd>{selected.owner}</dd>

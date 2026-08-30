@@ -1302,6 +1302,12 @@ textarea:focus-visible {
 
 .structured-data-nested {
   margin-top: 2px;
+  /* Nested evidence blocks (rule lists, sub-objects, etc.) always render narrow,
+     inside a list item inside an already-constrained detail panel — always stack
+     label/value here rather than re-evaluating the container query, otherwise a
+     long label like "Source Address Prefix" gets squeezed into a ~120px column
+     and wraps one character per line. */
+  container-type: normal;
 }
 
 .structured-data-nested .structured-row {
@@ -1309,13 +1315,13 @@ textarea:focus-visible {
 }
 
 @container (min-width: 420px) {
-  .structured-data > .structured-row {
+  .structured-data:not(.structured-data-nested) > .structured-row {
     grid-template-columns: minmax(120px, 0.32fr) minmax(0, 1fr);
     gap: 12px;
     align-items: start;
   }
 
-  .structured-data > .structured-row dt {
+  .structured-data:not(.structured-data-nested) > .structured-row dt {
     padding-top: 2px;
   }
 }
@@ -3743,20 +3749,20 @@ body.topology-fullscreen-open {
   word-break: break-word;
 }
 
-.compliance-detail dl {
+.compliance-fact-list {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
   gap: 8px 12px;
 }
 
-.compliance-detail dt {
+.compliance-fact-list dt {
   color: var(--color-text-muted);
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
 }
 
-.compliance-detail dd {
+.compliance-fact-list dd {
   overflow-wrap: anywhere;
   word-break: break-word;
   color: var(--color-text-secondary);
