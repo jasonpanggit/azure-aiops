@@ -254,3 +254,11 @@ replaced.
 - No source code change was required — this was purely a deployment/build
   pipeline gap (missing env sourcing before an ad hoc build invocation), not a
   regression in `src/api/auth.py` or `web/src/lib` auth wiring.
+
+## Validation Proof (Admin page revamp + governance settings editor — 2026-08-30)
+
+- Commit: `53c9fac9` — trimmed `/admin` to Entra/Key Vault config only; wired previously-dead `governanceApi.updateSettings` into Governance page's Administration tab as an editable policy form.
+- Build/push: `main-admin-revamp-20260830-1420` (both `aiops-api` and `aiops-web`), ACR run `cr77`, succeeded in 3m24s.
+- Deploy: `deploy.sh apply -auto-approve` — 0 added / 3 changed / 0 destroyed. Confirmed both container apps serving `main-admin-revamp-20260830-1420`.
+- Pre-deploy checks: `npx eslint` clean on changed files; `npx tsc --noEmit` clean (pre-existing unrelated errors only in `CopilotDrawer.test.tsx`); `npm run build` succeeded (26/26 static pages); `npx vitest run` — 158/158 tests passed.
+- Post-deploy smoke check: `GET /admin` → 200, `GET /governance` → 200 on `https://aiops-dev-web.greenpond-732382e3.australiaeast.azurecontainerapps.io`.
