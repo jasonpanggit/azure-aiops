@@ -35,6 +35,13 @@ def _bearer_token(headers: Mapping[str, str]) -> str:
     raw = headers.get("authorization") or headers.get("Authorization") or ""
     prefix, _, token = str(raw).partition(" ")
     if prefix.strip().casefold() != "bearer" or not token.strip():
+        # Deliberately no header contents logged (a malformed value could
+        # still carry a fragment of a secret). This print is the only trace
+        # of "no bearer token" 401s -- without it, this rejection path is
+        # indistinguishable in logs from the JWT-invalid and grant-denied
+        # paths, which made a prior production incident (browser calls
+        # 401-ing in a burst then self-recovering) unresolvable from logs.
+        print(f"bearer_token_missing has_authorization={bool(raw)!r}")
         raise ApiError(ErrorCode.UNAUTHENTICATED, "A bearer token is required")
     return token.strip()
 
@@ -173,6 +180,10 @@ class EntraJwtAuthenticator:
                 options={"require": ["exp", "iat", "iss", "aud"]},
             )
         except jwt.PyJWTError as exc:
+            # No token contents logged -- exc's class name is enough to tell
+            # apart expiry, signature/JWKS-key-rollover, and audience/issuer
+            # mismatches without risking secret material in logs.
+            print(f"entra_token_invalid error={type(exc).__name__} reason={exc}")
             raise ApiError(
                 ErrorCode.UNAUTHENTICATED, "Entra access token is invalid"
             ) from exc

@@ -73,10 +73,13 @@ export async function getAccessToken(): Promise<string | null> {
   try {
     const result = await instance.acquireTokenSilent({ ...apiLoginRequest, account });
     return result.accessToken;
-  } catch {
-    // Silent acquisition failed (e.g. consent or interaction required).
-    // The caller-facing AuthProvider surfaces sign-in; API calls will 401
-    // until the user completes an interactive login.
+  } catch (error) {
+    // Silent acquisition failed (e.g. consent or interaction required, or a
+    // transient token-refresh hiccup). Logging here is the only client-side
+    // trace of *why* subsequent API calls will 401 -- previously this was
+    // swallowed entirely, so a burst of silent-acquisition failures looked
+    // identical in the console to a genuine server-side auth outage.
+    console.warn("getAccessToken: silent token acquisition failed", error);
     return null;
   }
 }
@@ -104,7 +107,8 @@ export async function refreshAccessToken(): Promise<string | null> {
       forceRefresh: true,
     });
     return result.accessToken;
-  } catch {
+  } catch (error) {
+    console.warn("refreshAccessToken: forced token refresh failed", error);
     return null;
   }
 }
