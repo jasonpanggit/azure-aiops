@@ -262,3 +262,11 @@ replaced.
 - Deploy: `deploy.sh apply -auto-approve` — 0 added / 3 changed / 0 destroyed. Confirmed both container apps serving `main-admin-revamp-20260830-1420`.
 - Pre-deploy checks: `npx eslint` clean on changed files; `npx tsc --noEmit` clean (pre-existing unrelated errors only in `CopilotDrawer.test.tsx`); `npm run build` succeeded (26/26 static pages); `npx vitest run` — 158/158 tests passed.
 - Post-deploy smoke check: `GET /admin` → 200, `GET /governance` → 200 on `https://aiops-dev-web.greenpond-732382e3.australiaeast.azurecontainerapps.io`.
+
+## Validation Proof (Admin page removed — 2026-08-30)
+
+- Commit: `ba023589` — removed `/admin` page, nav entry, `adminApi` client, backend `/admin/akv-config` router, and its dedicated test. The form wrote to Key Vault secrets that nothing in the running app ever read back (real auth config comes from Terraform vars -> container app env vars / `NEXT_PUBLIC_ENTRA_*` build-args, a separate path).
+- Build/push: `main-admin-removed-20260830-1435` (both images), ACR run `cr7a`, succeeded in 3m23s.
+- Deploy: `deploy.sh apply -auto-approve` — confirmed both container apps serving `main-admin-removed-20260830-1435`.
+- Pre-deploy checks: `npx eslint` clean; `npm run build` succeeded (`/admin` route no longer in build output); `npx vitest run` — 158/158 passed; backend `pytest tests/` — full suite green (test_api_admin.py removed cleanly, no other test depended on it).
+- Post-deploy smoke check: `GET /admin` → Next.js not-found content confirmed (route removed); `GET /governance` → 200 (Administration tab settings editor still functional).
