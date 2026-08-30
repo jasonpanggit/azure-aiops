@@ -851,6 +851,21 @@ def run_context_investigation(
             "specialists": len(agent_runs),
             "wall_clock_ms": round((time.monotonic() - started) * 1000, 2),
             "hidden_reasoning_exposed": False,
+            # Groundedness and tool correctness were computed for autonomous
+            # investigations but not for contextual ones, so the path that
+            # actually serves the page drawer could not be scored -- quality
+            # there could only be asserted, never measured. Same definitions
+            # as `_evaluate` so the two paths stay comparable.
+            "groundedness": round(
+                len([f for f in findings if f.get("evidence_count", 0) > 0])
+                / max(1, len(findings)),
+                3,
+            ),
+            "tool_correctness": round(
+                sum(call.get("status") != STATUS_DENIED for call in tool_calls)
+                / max(1, len(tool_calls)),
+                3,
+            ),
         },
     }
     return ledger
