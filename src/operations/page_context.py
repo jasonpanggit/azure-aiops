@@ -214,4 +214,20 @@ def deterministic_network_findings(snapshot: PageSnapshot) -> list[dict[str, Any
             "next_check": f"Recheck {row.evidence_id} through an allowlisted Network provider",
             "actionable": verified and not affected_by_freshness,
         })
-    return findings
+    deduplicated: list[dict[str, Any]] = []
+    seen: dict[tuple[tuple[str, ...], str, str], dict[str, Any]] = {}
+    for finding in findings:
+        key = (
+            tuple(sorted(str(value).casefold() for value in finding["resource_ids"])),
+            str(finding["check_id"]).casefold(),
+            " ".join(str(finding["summary"]).casefold().split()),
+        )
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = finding
+            deduplicated.append(finding)
+            continue
+        existing["evidence_refs"] = list(dict.fromkeys(
+            [*existing["evidence_refs"], *finding["evidence_refs"]]
+        ))
+    return deduplicated

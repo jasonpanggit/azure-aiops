@@ -9,6 +9,7 @@ human decisions, and evaluation metrics into an auditable task ledger.
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import time
 import uuid
 from collections import OrderedDict
@@ -27,6 +28,8 @@ from operations.tools import (
     STATUS_UNAVAILABLE,
     call_tool,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 AGENT_TIMEOUT_SECONDS = 8.0
 MAX_RETRIES = 1
@@ -431,8 +434,11 @@ def _synthesis(
             ),
             context=grounding,
         )
-    except Exception as exc:  # noqa: BLE001 - narration is optional; never fail the investigation.
-        synthesis["narration_warning"] = f"Foundry narration unavailable: {exc.__class__.__name__}"
+    except Exception as exc:
+        _LOGGER.warning("foundry_synthesis_failed error=%s", exc, exc_info=True)
+        synthesis["narration_warning"] = (
+            "Foundry narration unavailable; deterministic findings returned"
+        )
         return synthesis
 
     text = getattr(answer, "text", "") or ""
@@ -456,12 +462,27 @@ def _evaluate(started: float, agent_runs: list[dict[str, Any]], reconciliation: 
     }
 
 
-def _resolve_foundry_agent(context: Any) -> Any:
+def _resolve_foundry_agent(context: Any, specialist_id: str | None = None) -> Any:
     """Return the configured Foundry prompt agent, or ``None`` when unavailable.
 
     Narration is optional: a missing or misconfigured agent must degrade to the
     deterministic synthesis rather than fail the investigation.
     """
+    if specialist_id:
+        specialist_provider = getattr(context, "specialist_agent", None)
+        if callable(specialist_provider):
+            try:
+                specialist = specialist_provider(specialist_id)
+            except Exception as exc:
+                _LOGGER.warning(
+                    "foundry_specialist_resolve_failed specialist=%s error=%s",
+                    specialist_id,
+                    exc,
+                    exc_info=True,
+                )
+            else:
+                if specialist is not None:
+                    return specialist
     provider = getattr(context, "foundry_agent", None)
     if not callable(provider):
         return None
@@ -713,7 +734,9 @@ def run_context_investigation(
         if snapshot.page_kind in ("network", "network_page")
         else _snapshot_observations(snapshot)
     )
-    agent = _resolve_foundry_agent(context)
+    agent = _resolve_foundry_agent(
+        context, selected_ids[0] if selected_ids else None
+    )
     synthesis_mode = "deterministic"
     narration = ""
     if agent is not None:
@@ -729,29 +752,20 @@ def run_context_investigation(
                     if str(call.get("tool", "")).startswith("fabric_iq_")
                 ][:3],
             }
-            # Use answer_findings for all page_kinds to enable strict validation
-            # per-specialist contract. answer_findings routes to the correct agent
-            # based on page_kind → specialist_id mapping established in orchestration.
-            if hasattr(agent, "answer_findings"):
-                answer = agent.answer_findings(
-                    question=snapshot.question,
-                    context=grounding,
-                    evidence_refs={
-                        ref for finding in findings for ref in finding.get("evidence_refs", [])
-                    },
-                    resource_ids={
-                        resource.resource_id for resource in snapshot.selected_resources
-                    } | {
-                        row.resource_id for row in snapshot.evidence if row.resource_id
-                    },
-                )
-            else:
-                answer = agent.answer(question=snapshot.question, context=grounding)
+            answer = agent.answer(question=snapshot.question, context=grounding)
             narration = str(getattr(answer, "text", "") or "").strip()
             if narration:
                 synthesis_mode = "foundry"
-        except Exception as exc:  # noqa: BLE001 - fallback is part of the contract.
-            warnings.append(f"Foundry narration unavailable: {exc.__class__.__name__}")
+        except Exception as exc:
+            _LOGGER.warning(
+                "foundry_context_narration_failed specialist=%s error=%s",
+                selected_ids[0] if selected_ids else "",
+                exc,
+                exc_info=True,
+            )
+            warnings.append(
+                "Foundry narration unavailable; deterministic findings returned"
+            )
     if synthesis_mode == "deterministic" and agent is None:
         warnings.append("Foundry narration unavailable; deterministic findings returned")
     ledger_id = f"ctx-{uuid.uuid4().hex[:12]}"
@@ -773,9 +787,7 @@ def run_context_investigation(
         "synthesis": {
             "mode": synthesis_mode,
             "narration": narration,
-            "specialist_contract_version": (
-                SPECIALIST_CONTRACT_VERSION if synthesis_mode == "foundry" else ""
-            ),
+            "specialist_contract_version": "",
             "warning": warnings[-1] if warnings and "Foundry" in warnings[-1] else "",
         },
         "warnings": warnings,

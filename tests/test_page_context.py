@@ -92,6 +92,26 @@ def test_network_findings_are_deterministic_and_cited():
     assert findings[0]["next_check"]
 
 
+def test_equivalent_network_findings_are_deduplicated_and_keep_citations():
+    page = snapshot(evidence=[
+        {
+            "evidence_id": "nsg-1",
+            "section": "nsg",
+            "data": {"finding": "Inbound any-source rule", "compliant": False},
+        },
+        {
+            "evidence_id": "nsg-2",
+            "section": "nsg",
+            "data": {"finding": "  inbound ANY-source rule  ", "compliant": False},
+        },
+    ])
+
+    findings = deterministic_network_findings(page)
+
+    assert len(findings) == 1
+    assert findings[0]["evidence_refs"] == ["nsg-1", "nsg-2"]
+
+
 @pytest.mark.parametrize("freshness_status", ["stale", "partial", "unavailable"])
 def test_degraded_freshness_downgrades_verified_findings(freshness_status):
     page = snapshot(freshness=[{

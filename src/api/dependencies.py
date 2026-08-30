@@ -98,6 +98,7 @@ class ApiContext:
     # Specialist agents for domain-specific analysis. Each resolves independently
     # using FoundryPromptAgent.from_env(specialist_id) to read per-agent env vars.
     # All are optional; missing specialists degrade to generic Copilot narration.
+    network_agent_provider: Callable[[], Any] | None = None
     vulnerability_agent_provider: Callable[[], Any] | None = None
     patch_agent_provider: Callable[[], Any] | None = None
     incident_agent_provider: Callable[[], Any] | None = None
@@ -161,6 +162,7 @@ class ApiContext:
         """
         agent_id = (agent_id or "").strip().lower()
         if agent_id in (
+            "network",
             "vulnerability",
             "patch",
             "incident",

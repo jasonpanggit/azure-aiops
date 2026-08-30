@@ -376,13 +376,13 @@ variable "foundry_specialists" {
     version = string
   }))
   default = {
-    network = { name = "aiops-network-agent", version = "2026.08.1" }
-    vulnerability = { name = "aiops-vulnerability-agent", version = "2026.08.1" }
-    patch = { name = "aiops-patch-agent", version = "2026.08.1" }
-    incident = { name = "aiops-incident-agent", version = "2026.08.1" }
-    change = { name = "aiops-change-agent", version = "2026.08.1" }
-    governance = { name = "aiops-governance-agent", version = "2026.08.1" }
-    remediation = { name = "aiops-remediation-agent", version = "2026.08.1" }
+    network           = { name = "aiops-network-agent", version = "2026.08.1" }
+    vulnerability     = { name = "aiops-vulnerability-agent", version = "2026.08.1" }
+    patch             = { name = "aiops-patch-agent", version = "2026.08.1" }
+    incident          = { name = "aiops-incident-agent", version = "2026.08.1" }
+    change            = { name = "aiops-change-agent", version = "2026.08.1" }
+    governance        = { name = "aiops-governance-agent", version = "2026.08.1" }
+    remediation       = { name = "aiops-remediation-agent", version = "2026.08.1" }
     executive_summary = { name = "aiops-executive-summary-agent", version = "2026.08.1" }
   }
 }

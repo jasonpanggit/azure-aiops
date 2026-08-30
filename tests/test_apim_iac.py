@@ -23,7 +23,9 @@ def test_apim_policy_validates_token_limits_and_replaces_identity_headers():
         "X-AIOps-Validated-Gateway",
         "X-AIOps-Gateway-Assertion",
         "exists-action=\"delete\"",
-        "check-header",
+        "StartsWith",
+        "application/json",
+        "Unsupported Media Type",
     ):
         assert marker in policy
     assert "OneLake" not in policy

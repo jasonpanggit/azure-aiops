@@ -63,7 +63,7 @@ from onboarding.runtime import (
 )
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
-from operations.foundry_agent import FoundryPromptAgent
+from operations.foundry_agent import SPECIALIST_IDS, FoundryPromptAgent
 from operations.patching import (
     InMemoryPatchRunStore,
     PatchingService,
@@ -124,6 +124,7 @@ AUTH_TOKEN = "token"
 # so an unconfigured deployment is probed once rather than on every request.
 _UNSET: Any = object()
 _foundry_agent: Any = _UNSET
+_foundry_specialist_agents: dict[str, Any] = {}
 
 
 def aiops_home() -> Path | str:
@@ -933,6 +934,18 @@ def _load_foundry_agent() -> FoundryPromptAgent | None:
     return _foundry_agent
 
 
+def _load_foundry_specialist_agent(specialist_id: str) -> FoundryPromptAgent | None:
+    """Resolve and cache one page specialist independently of the narrator."""
+    if specialist_id == "network":
+        return _load_foundry_agent()
+    if specialist_id not in _foundry_specialist_agents:
+        candidate = FoundryPromptAgent.from_env(specialist_id)
+        if candidate is not None:
+            candidate.validate_access()
+        _foundry_specialist_agents[specialist_id] = candidate
+    return _foundry_specialist_agents[specialist_id]
+
+
 def _truthy(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     return default if raw is None else raw.strip().casefold() in {"1", "true", "yes", "on"}
@@ -1215,6 +1228,23 @@ def _build_provider_runtime(
         configured=foundry_configured,
         required=False,
     )
+    for specialist_id in SPECIALIST_IDS:
+        specialist_configured = bool(
+            os.environ.get("FOUNDRY_PROJECT_ENDPOINT", "").strip()
+            and (
+                os.environ.get(
+                    f"FOUNDRY_{specialist_id.upper()}_AGENT_NAME", ""
+                ).strip()
+                or os.environ.get("FOUNDRY_AGENT_NAME", "").strip()
+            )
+        )
+        specs[f"{specialist_id}_agent"] = ProviderSpec(
+            loader=lambda agent_id=specialist_id: _load_foundry_specialist_agent(
+                agent_id
+            ),
+            configured=specialist_configured,
+            required=False,
+        )
     specs["fabric_iq"] = ProviderSpec(
         loader=_load_fabric_iq_adapter,
         configured=_fabric_is_configured(),

@@ -65,6 +65,15 @@ const MIN_WIDTH = 420;
 const MAX_WIDTH = 1100;
 const WIDE_WIDTH = 760;
 
+function uniqueWarnings(...groups: Array<string[] | undefined>): string[] {
+  return Array.from(new Set(
+    groups
+      .flatMap((group) => group ?? [])
+      .map((warning) => warning.trim())
+      .filter(Boolean),
+  ));
+}
+
 export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions, snapshot }: CopilotDrawerProps) {
   const { scope } = useScope();
   const [question, setQuestion] = useState("");
@@ -151,8 +160,8 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions, s
           narration,
           evidence: envelope.evidence ?? [],
           knowledgeVersion: envelope.knowledge_version,
-          warnings: [...(envelope.warnings ?? []), ...(result.warnings ?? [])],
-          findings: result.findings,
+          warnings: uniqueWarnings(envelope.warnings, result.warnings),
+          findings: narration ? undefined : result.findings,
           synthesisMode,
           snapshot: submittedSnapshot,
         },

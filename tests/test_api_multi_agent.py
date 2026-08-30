@@ -10,8 +10,15 @@ from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
+from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
+from operations.autonomous_investigation import (
+    _resolve_foundry_agent,
+    run_context_investigation,
+)
+from operations.foundry_agent import AgentAnswer
+from operations.page_context import PageSnapshot
 
 TOKEN = "agents-token-0123456789abcdef"
 
@@ -204,3 +211,79 @@ def test_synthesis_degrades_without_foundry_agent(tmp_path):
     assert synthesis["recommended_plan"]
     assert synthesis["narration"] == ""
     assert ledger["evaluation"]["cost"]["llm_calls"] == 0
+
+
+def test_page_context_resolves_the_requested_specialist_before_generic_narrator():
+    specialist = object()
+    generic = object()
+
+    class Context:
+        def specialist_agent(self, agent_id):
+            assert agent_id == "vulnerability"
+            return specialist
+
+        def foundry_agent(self):
+            return generic
+
+    assert _resolve_foundry_agent(Context(), "vulnerability") is specialist
+
+
+def test_api_context_resolves_network_specialist_without_generic_fallback(tmp_path):
+    specialist = object()
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(
+            {TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        network_agent_provider=lambda: specialist,
+    )
+
+    assert context.specialist_agent("network") is specialist
+
+
+def test_contextual_network_specialist_answers_question_instead_of_emitting_findings(tmp_path):
+    class NetworkAgent:
+        def answer(self, *, question, context):
+            assert question == "Can UAT reach PROD?"
+            assert context["page_kind"] == "network"
+            return AgentAnswer(
+                text="The available evidence does not establish UAT-to-PROD reachability.",
+                agent_name="aiops-network-agent",
+            )
+
+        def answer_findings(self, **_kwargs):
+            raise AssertionError("contextual chat must request a direct answer")
+
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(
+            {TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        network_provider=lambda: _Network(),
+        network_agent_provider=lambda: NetworkAgent(),
+    )
+    page = PageSnapshot.model_validate({
+        "page_kind": "network",
+        "page_id": "network-topology",
+        "question": "Can UAT reach PROD?",
+        "scope": {"declared": {"subscription": ["sub-prod"]}},
+        "evidence": [{
+            "evidence_id": "network:visible:0",
+            "section": "network",
+            "data": {"check": "topology", "compliant": True},
+        }],
+    })
+
+    ledger = run_context_investigation(
+        page,
+        context=context,
+        scope=Scope.from_mapping({"subscription": ["sub-prod"]}),
+        principal_subject="operator@example.com",
+    )
+
+    assert ledger["synthesis"]["mode"] == "foundry"
+    assert ledger["synthesis"]["narration"].startswith("The available evidence")
