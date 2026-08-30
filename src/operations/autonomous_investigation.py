@@ -889,7 +889,7 @@ class InvestigationLedgerStore:
             return
         try:
             self.documents.put(_ledger_document_name(ledger["ledger_id"]), ledger)
-        except Exception:  # noqa: BLE001 - never fail a run on an audit write
+        except Exception:
             _LOGGER.warning(
                 "failed to persist investigation ledger %s; it exists only in memory",
                 ledger["ledger_id"],
@@ -919,7 +919,7 @@ class InvestigationLedgerStore:
         assert self.documents is not None
         try:
             payload = self.documents.read(_ledger_document_name(ledger_id))
-        except Exception:  # noqa: BLE001 - a read outage is a miss, not a crash
+        except Exception:
             _LOGGER.warning("failed to read investigation ledger %s", ledger_id, exc_info=True)
             return None
         # The document store reads a missing *or corrupt* document as {}. For a

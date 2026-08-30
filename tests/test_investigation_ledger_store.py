@@ -12,8 +12,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-import pytest
-
 from operations.autonomous_investigation import (
     InvestigationLedgerStore,
     _ledger_document_name,
