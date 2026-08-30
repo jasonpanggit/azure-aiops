@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { OperationsSignalChart } from "@/components/ui/OperationsSignalChart";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TablePagination } from "@/components/ui/TablePagination";
@@ -88,8 +89,27 @@ export default function ServicesPage() {
       ) : services.length === 0 ? (
         <StatePanel title="No business services mapped" message="Map subscription connections to business services to activate this operating view." />
       ) : (
-        <div className="card service-catalog">
-          <div className="table-scroll">
+        <>
+          <section className="card dashboard-visual-card service-overview-card">
+            <div className="card-header">
+              <div>
+                <h2>Service risk map</h2>
+                <p>Active situations grouped by business service.</p>
+              </div>
+              <span className="visual-card-kicker">{services.length} services</span>
+            </div>
+            <div className="card-body">
+              <OperationsSignalChart
+                signals={services.slice(0, 6).map((service) => ({
+                  label: service.name,
+                  value: service.situationCount,
+                  tone: service.criticalCount ? "critical" : service.situationCount ? "warning" : "success",
+                }))}
+              />
+            </div>
+          </section>
+          <div className="card service-catalog">
+            <div className="table-scroll">
             <table className="operations-table">
               <thead>
                 <tr>

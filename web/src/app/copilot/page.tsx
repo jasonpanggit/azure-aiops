@@ -101,11 +101,10 @@ function CopilotContent() {
       <PageHeader
         eyebrow="Evidence-based assistance"
         title="Operations Copilot"
-        description="Explore governed operational context. Answers are bounded by supported intents and keep their evidence visible."
+        description="Ask a scoped operational question and review the evidence behind the answer."
         metadata={
           <>
             <StatusBadge label="Read only" tone="info" />
-            <StatusBadge label="No autonomous actions" tone="warning" />
             {contextLabel && <span>Context: {contextLabel}</span>}
           </>
         }
@@ -144,14 +143,14 @@ function CopilotContent() {
                     {turn.toolCalls?.length ? (
                       <div className="copilot-tool-calls">
                         {turn.toolCalls.map((call, callIndex) => (
-                          <div className="copilot-tool-call" key={`${call.tool}-${callIndex}`}>
-                            <div className="copilot-tool-call-header">
+                          <details className="copilot-tool-call" key={`${call.tool}-${callIndex}`} open={callIndex === 0}>
+                            <summary className="copilot-tool-call-header">
                               <StatusBadge label={call.tool} tone="neutral" compact />
                               <StatusBadge label={call.status} tone={TOOL_STATUS_TONE[call.status] ?? "neutral"} compact />
-                            </div>
+                            </summary>
                             {call.warning && <p className="copilot-tool-warning">{call.warning}</p>}
                             {call.status === "ok" && call.data != null && <StructuredData value={call.data} />}
-                          </div>
+                          </details>
                         ))}
                       </div>
                     ) : (
@@ -169,18 +168,25 @@ function CopilotContent() {
               </div>
             </div>
           ))}
-          {loading && <div className="copilot-thinking"><span /><span /><span /> Correlating evidence</div>}
+          {loading && <div className="copilot-thinking"><span /><span /><span /> Reviewing evidence</div>}
         </section>
 
         <aside className="copilot-boundary card">
-          <div className="card-header"><h2>Trust boundary</h2></div>
-          <div className="card-body">
-            <dl>
-              <div><dt>Can do</dt><dd>Plan and run governed tool calls (topology, traffic-flow, CVE/KB exposure, incidents, remediation, ontology context) for supported questions.</dd></div>
-              <div><dt>Will show</dt><dd>Every tool call&apos;s status (ok / empty / unavailable / denied), evidence source, confidence, and freshness.</dd></div>
-              <div><dt>Will not do</dt><dd>Invent unsupported answers, hide unknowns, treat an unavailable provider as &quot;no results&quot;, or execute remediation.</dd></div>
-            </dl>
-          </div>
+          <details className="copilot-boundary-details" open>
+            <summary>
+              <span>
+                <strong>Trust boundary</strong>
+                <small>What Copilot can and cannot do</small>
+              </span>
+            </summary>
+            <div className="card-body">
+              <dl>
+                <div><dt>Grounded</dt><dd>Uses supported, governed tools in the selected scope.</dd></div>
+                <div><dt>Transparent</dt><dd>Shows status, evidence, confidence, and freshness.</dd></div>
+                <div><dt>Advisory</dt><dd>Does not invent answers or execute remediation.</dd></div>
+              </dl>
+            </div>
+          </details>
         </aside>
       </div>
 
