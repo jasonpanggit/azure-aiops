@@ -1,0 +1,205 @@
+{
+  "at": "2026-08-30T18:41:32.228576+00:00",
+  "api": "https://aiops-dev-api.greenpond-732382e3.australiaeast.azurecontainerapps.io",
+  "summary": {
+    "cases": 10,
+    "errors": 0,
+    "timeouts": 1,
+    "routing_pass": 9,
+    "routing_scored": 9,
+    "routing_rate": 1.0,
+    "narrated": 10,
+    "narration_rate": 1.0,
+    "groundedness_mean": 0.44,
+    "tool_correctness_mean": 1.0,
+    "latency_ms_median": 25639.7
+  },
+  "results": [
+    {
+      "case_id": "net-topology",
+      "ok": true,
+      "specialists": [
+        "network"
+      ],
+      "missing": [],
+      "groundedness": 1.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 25748.0,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Short answer: No other VNets depend on demo-vnet as a consumer. The things that depend on (or are hosted in / attached to) demo-vnet are the hub shared services and the resources contained in that VNet.\n\nEvidence:\n- hub_dependents (for vnet_id /.../virtualnetworks/demo-vnet)\n  - dependent_vnets: [] (no consumer VNets)\n  - shared_services:\n    - Azure Firewall (resource_id: /.../azurefirewalls/fire",
+      "narration": "Short answer: No other VNets depend on demo-vnet as a consumer. The things that depend on (or are hosted in / attached to) demo-vnet are the hub shared services and the resources contained in that VNet.\n\nEvidence:\n- hub_dependents (for vnet_id /.../virtualnetworks/demo-vnet)\n  - dependent_vnets: [] (no consumer VNets)\n  - shared_services:\n    - Azure Firewall (resource_id: /.../azurefirewalls/fire",
+      "error": ""
+    },
+    {
+      "case_id": "vuln-exposure",
+      "ok": true,
+      "specialists": [
+        "vulnerability"
+      ],
+      "missing": [],
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 139509.6,
+      "stop_reason": "wall_clock_timeout",
+      "timed_out": true,
+      "summary": "Answer: None \u2014 there are no CVEs in the current inventory that are exploitable from the Internet.\n\nEvidence (tool sources)\n- cve_exposure: every CVE returned by the exposure query has internet_exposed = false and reachable_server_count = 0 (data timestamp 2026-08-30T14:12:47.627595Z). Source: mcp_operations-mcp.cve_exposure.\n- cve_detail (CVE-2026-68820): this CVE is marked \"is_known_exploited = t",
+      "narration": "Answer: None \u2014 there are no CVEs in the current inventory that are exploitable from the Internet.\n\nEvidence (tool sources)\n- cve_exposure: every CVE returned by the exposure query has internet_exposed = false and reachable_server_count = 0 (data timestamp 2026-08-30T14:12:47.627595Z). Source: mcp_operations-mcp.cve_exposure.\n- cve_detail (CVE-2026-68820): this CVE is marked \"is_known_exploited = t",
+      "error": ""
+    },
+    {
+      "case_id": "patch-priority",
+      "ok": true,
+      "specialists": [
+        "patch"
+      ],
+      "missing": [],
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 26756.2,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Priority this week: Apply the 2026-08 Cumulative Update for Windows Server 2016 (KB5120418) to the affected Windows Server 2016 host(s) \u2014 schedule and test KB5120418 now, with CVE-2026-68820 addressed first.\n\nWhy (evidence):\n- All open findings in your current patch page reference the same missing update (missing_kb = KB5120418) and affect 1 server / 1 business service (tool results from intellige",
+      "narration": "Priority this week: Apply the 2026-08 Cumulative Update for Windows Server 2016 (KB5120418) to the affected Windows Server 2016 host(s) \u2014 schedule and test KB5120418 now, with CVE-2026-68820 addressed first.\n\nWhy (evidence):\n- All open findings in your current patch page reference the same missing update (missing_kb = KB5120418) and affect 1 server / 1 business service (tool results from intellige",
+      "error": ""
+    },
+    {
+      "case_id": "incident-cause",
+      "ok": true,
+      "specialists": [
+        "incident",
+        "change"
+      ],
+      "missing": [],
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 22897.3,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Answer: I cannot produce a root-cause candidate for the latest incident because there is no incident data available in the page context or from the Ops tools you have here.\n\nEvidence\n- Page context contains an incident page but no findings or incident identifier (page_kind: \"incident\", findings: []). (source: page context JSON you provided)\n- incidents lookup returned empty (mcp_operations-mcp.inc",
+      "narration": "Answer: I cannot produce a root-cause candidate for the latest incident because there is no incident data available in the page context or from the Ops tools you have here.\n\nEvidence\n- Page context contains an incident page but no findings or incident identifier (page_kind: \"incident\", findings: []). (source: page context JSON you provided)\n- incidents lookup returned empty (mcp_operations-mcp.inc",
+      "error": ""
+    },
+    {
+      "case_id": "gov-owner",
+      "ok": true,
+      "specialists": [
+        "governance"
+      ],
+      "missing": [],
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 19008.0,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Short answer: I cannot determine who owns the \"payments\" business service from the governed sources available right now \u2014 there is no owner record found and Fabric IQ is unavailable.\n\nEvidence (queries run just now):\n- business_service_context(name=\"payments\") \u2192 status: empty; warning: \"No semantic entity matches 'payments'\". (Observed fact; queried just now.)\n- application_context(name=\"payments\"",
+      "narration": "Short answer: I cannot determine who owns the \"payments\" business service from the governed sources available right now \u2014 there is no owner record found and Fabric IQ is unavailable.\n\nEvidence (queries run just now):\n- business_service_context(name=\"payments\") \u2192 status: empty; warning: \"No semantic entity matches 'payments'\". (Observed fact; queried just now.)\n- application_context(name=\"payments\"",
+      "error": ""
+    },
+    {
+      "case_id": "net-change",
+      "ok": true,
+      "specialists": [
+        "network",
+        "change"
+      ],
+      "missing": [],
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 25531.3,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Short answer: The hub Azure Firewall currently has no rules (rule_count = 0) while a 0.0.0.0/0 user route points spokes at that firewall \u2014 meaning if rules were recently removed, spoke egress that is routed via the firewall would now be blocked. Evidence below.\n\nObserved facts (from the environment)\n- Azure Firewall details: private_ip = 10.0.2.4, public_ips = [firewall-pip], rules = [], rule_coun",
+      "narration": "Short answer: The hub Azure Firewall currently has no rules (rule_count = 0) while a 0.0.0.0/0 user route points spokes at that firewall \u2014 meaning if rules were recently removed, spoke egress that is routed via the firewall would now be blocked. Evidence below.\n\nObserved facts (from the environment)\n- Azure Firewall details: private_ip = 10.0.2.4, public_ips = [firewall-pip], rules = [], rule_coun",
+      "error": ""
+    },
+    {
+      "case_id": "net-governance",
+      "ok": true,
+      "specialists": [
+        "network",
+        "governance"
+      ],
+      "missing": [],
+      "groundedness": 0.4,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 33853.6,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Owner: Jason. (Observed in the platform inventory.)\n\nApproval: No approval was found in the available data \u2014 I cannot confirm an approval.\n\nEvidence:\n- network_topology (shared_services/resources): the firewall entry lists owner = \"Jason\" (provider_resource_id /subscriptions/.../azurefirewalls/firewall and details.owner = \"Jason\").  \n- hub_dependents: the hub's shared service \"firewall\" also shows",
+      "narration": "Owner: Jason. (Observed in the platform inventory.)\n\nApproval: No approval was found in the available data \u2014 I cannot confirm an approval.\n\nEvidence:\n- network_topology (shared_services/resources): the firewall entry lists owner = \"Jason\" (provider_resource_id /subscriptions/.../azurefirewalls/firewall and details.owner = \"Jason\").  \n- hub_dependents: the hub's shared service \"firewall\" also shows",
+      "error": ""
+    },
+    {
+      "case_id": "net-cve",
+      "ok": true,
+      "specialists": [
+        "network",
+        "vulnerability"
+      ],
+      "missing": [],
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 21046.1,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Short answer: I cannot tell \u2014 there is no CVE or vulnerability data in the network view. The network tools show hosts behind the hub (so targets to scan), but they do not report CVEs.\n\nEvidence:\n- network_topology shows a VM NIC named \"vm1903\" with private IP 10.0.0.4 attached to VM resource \"/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/aiops-demo-rg/providers/microsoft.compu",
+      "narration": "Short answer: I cannot tell \u2014 there is no CVE or vulnerability data in the network view. The network tools show hosts behind the hub (so targets to scan), but they do not report CVEs.\n\nEvidence:\n- network_topology shows a VM NIC named \"vm1903\" with private IP 10.0.0.4 attached to VM resource \"/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/aiops-demo-rg/providers/microsoft.compu",
+      "error": ""
+    },
+    {
+      "case_id": "vuln-remediate",
+      "ok": true,
+      "specialists": [
+        "vulnerability",
+        "patch",
+        "remediation"
+      ],
+      "missing": [],
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 30810.4,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Short answer\n- Remediate by installing the Microsoft cumulative update KB5120418 (the vendor fix that addresses the listed CVEs) on the affected machine (vm1). Take a full VM backup / snapshot before you patch, stage the update on a test instance, and use that snapshot or the Windows KB uninstall to roll back if something breaks. (Evidence: cve_exposure and cve_detail show KB5120418 as the recomme",
+      "narration": "Short answer\n- Remediate by installing the Microsoft cumulative update KB5120418 (the vendor fix that addresses the listed CVEs) on the affected machine (vm1). Take a full VM backup / snapshot before you patch, stage the update on a test instance, and use that snapshot or the Windows KB uninstall to roll back if something breaks. (Evidence: cve_exposure and cve_detail show KB5120418 as the recomme",
+      "error": ""
+    },
+    {
+      "case_id": "unknown-subject",
+      "ok": true,
+      "specialists": [
+        "network"
+      ],
+      "missing": [],
+      "groundedness": 1.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 15253.7,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Nothing depends on totally-nonexistent-vnet-xyz.\n\nEvidence:\n- hub_dependents(vnet_id=\"totally-nonexistent-vnet-xyz\") returned status \"empty\" and data null (no dependents found). (Tool result: {\"status\":\"empty\",\"data\":null}.)\n- network_topology shows only two VNets (demo-vnet and aiops-dev-vnet; vnets count = 2) and does not list any VNet named \"totally-nonexistent-vnet-xyz\" (tool topology output).",
+      "narration": "Nothing depends on totally-nonexistent-vnet-xyz.\n\nEvidence:\n- hub_dependents(vnet_id=\"totally-nonexistent-vnet-xyz\") returned status \"empty\" and data null (no dependents found). (Tool result: {\"status\":\"empty\",\"data\":null}.)\n- network_topology shows only two VNets (demo-vnet and aiops-dev-vnet; vnets count = 2) and does not list any VNet named \"totally-nonexistent-vnet-xyz\" (tool topology output).",
+      "error": ""
+    }
+  ]
+}

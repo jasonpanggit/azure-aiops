@@ -19,11 +19,20 @@ What is scored, per question:
 * ``routing``      -- did the expected specialists run? This is objective:
                       the expected set is derived from the same catalog the
                       router uses.
-* ``groundedness`` -- fraction of findings backed by evidence, as reported by
-                      the investigation's own evaluation block.
+* ``groundedness`` -- fraction of *deterministic findings* backed by evidence.
+                      Read this as a data-availability signal, **not** as
+                      answer quality. Two observed cases show why: an agent
+                      that correctly answers "I cannot determine who owns this
+                      from the governed sources" scores 0.0, and so does one
+                      that names a specific KB and VM in its narration, because
+                      the narration is not what is scored. A low score means
+                      the deterministic layer had little to stand on, which is
+                      worth knowing, but it does not mean the answer was bad.
 * ``narration``    -- did Foundry narration succeed? A degraded run still
                       returns deterministic findings, so this is a quality
-                      signal, not a failure.
+                      signal, not a failure. This is the metric that caught
+                      the MCP argument bug: one speculative tool call with a
+                      missing argument was aborting entire runs.
 * ``latency_ms``   -- wall clock for the whole investigation.
 
 There is deliberately no LLM-as-judge scoring of answer text. That would make
@@ -339,13 +348,19 @@ def main() -> int:
         "results": [r.to_dict() for r in results],
     }
 
+    # Read the baseline before writing, so --out and --baseline can name the
+    # same file: otherwise the comparison reads back what this run just wrote
+    # and reports no movement.
+    baseline = None
+    if args.baseline and args.baseline.exists():
+        baseline = json.loads(args.baseline.read_text()).get("summary", {})
+
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(run, indent=2) + "\n")
         print(f"\nwrote {args.out}")
 
-    if args.baseline and args.baseline.exists():
-        baseline = json.loads(args.baseline.read_text()).get("summary", {})
+    if baseline is not None:
         print(f"\nagainst baseline {args.baseline}:")
         for line in _compare(summary, baseline):
             print(line)
