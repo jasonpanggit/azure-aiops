@@ -136,7 +136,7 @@ class ConnectionSyncCoordinator:
                 return
             try:
                 progress_callback(stage, message, pct)
-            except Exception:  # noqa: BLE001 - progress reporting must never break sync
+            except Exception:  # noqa: BLE001, S110 - progress reporting must never break sync
                 pass
 
         _report("discovering", f"Running {mode} discovery for {connection.connection_id}", 10)

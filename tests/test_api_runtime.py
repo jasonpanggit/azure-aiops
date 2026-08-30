@@ -17,8 +17,12 @@ from api.auth import (
     StaticTokenAuthenticator,
 )
 from api.providers import STALE, ProviderRuntime, ProviderSpec
-from api.runtime import aiops_home, build_authenticator, build_context
-from api.runtime import _load_fabric_iq_adapter
+from api.runtime import (
+    _load_fabric_iq_adapter,
+    aiops_home,
+    build_authenticator,
+    build_context,
+)
 from api.scope import Scope
 from intelligence.inventory.normalization import normalize_os_inventory
 from onboarding.credentials import KeyVaultSecretWriter
@@ -197,6 +201,7 @@ def test_configured_fabric_iq_loader_returns_governed_adapter(monkeypatch):
     class FakeRuntime:
         service = FakeService()
 
+    monkeypatch.setenv("AIOPS_ENABLE_FABRIC_IQ", "true")
     monkeypatch.setattr("api.runtime._fabric_runtime_from_environment", lambda: FakeRuntime())
     adapter = _load_fabric_iq_adapter()
     assert adapter is not None

@@ -6,7 +6,11 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - import-time typing only
+    from api.evidence import Evidence
+    from api.scope import Scope
 
 from intelligence.lifecycle import EOLCatalog
 from storage.datasets import DatasetStore

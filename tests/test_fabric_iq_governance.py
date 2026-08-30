@@ -7,7 +7,6 @@ from operations.tools import (
     STATUS_OK,
     STATUS_UNAVAILABLE,
     FabricIQToolAdapter,
-    ToolContext,
 )
 
 

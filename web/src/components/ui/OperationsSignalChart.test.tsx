@@ -29,6 +29,6 @@ describe("CoverageDonut", () => {
     render(<CoverageDonut healthy={4} needsAttention={1} />);
     expect(screen.getByRole("img", { name: "4 healthy connections and 1 connection needing attention" })).toBeInTheDocument();
     expect(screen.getByText("Healthy")).toBeInTheDocument();
-    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText("1 connection needing attention")).toBeInTheDocument();
   });
 });

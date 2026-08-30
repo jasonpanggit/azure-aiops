@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -103,7 +105,7 @@ class _Remediation:
 
 
 class _SemanticIndexes:
-    entities = {
+    entities: ClassVar[dict[str, dict]] = {
         "svc-payroll": {
             "resource_id": "svc-payroll",
             "entity_type": "BusinessService",
@@ -117,7 +119,7 @@ class _SemanticIndexes:
             "subscription_id": "sub-prod",
         },
     }
-    relationships = [
+    relationships: ClassVar[list[dict]] = [
         {
             "subject_id": "app-payroll",
             "object_id": "svc-payroll",

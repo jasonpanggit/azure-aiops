@@ -6,7 +6,7 @@ def test_situations_are_registered_as_ontology_entities_with_typed_links(tmp_pat
     from datetime import UTC, datetime
 
     from onboarding.graph_normalize import Normalizer
-    from situations.store import SituationStore
+    from onboarding.ingestion_storage import DatasetStore
 
     observed = datetime(2026, 8, 25, tzinfo=UTC)
     graph = Normalizer().normalize(
@@ -16,8 +16,13 @@ def test_situations_are_registered_as_ontology_entities_with_typed_links(tmp_pat
         },
         observed,
     )
-    source = SituationStore(tmp_path)
-    source.publish(graph, {}, {"runId": "run", "startedAt": observed.isoformat()})
+    from situations.materializer import materialize_graph
+
+    generated = materialize_graph(graph, "run", ingested_at=observed.isoformat())
+    for name, rows in generated.items():
+        setattr(graph, name, rows)
+    store = DatasetStore(tmp_path)
+    store.publish(graph, {}, {"runId": "run", "startedAt": observed.isoformat()})
     datasets = InventoryDatasetMapper().load(tmp_path / "current", "sync")
     report = OntologyValidator().validate(datasets["ontology_entities"], datasets["ontology_relationships"])
     assert report.passed

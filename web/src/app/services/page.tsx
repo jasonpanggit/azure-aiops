@@ -153,7 +153,8 @@ export default function ServicesPage() {
             onPageSizeChange={servicesPaging.setPageSize}
             label="services"
           />
-        </div>
+          </div>
+        </>
       )}
     </div>
   );

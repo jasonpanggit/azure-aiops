@@ -381,7 +381,7 @@ class OperationalTwinComposer:
     def _safe(source: str, call: Any, errors: list[dict[str, str]]) -> Any | None:
         try:
             return call() if call else None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - aggregated fallback source resolution
             errors.append({"source": source, "error": exc.__class__.__name__})
             return None
 

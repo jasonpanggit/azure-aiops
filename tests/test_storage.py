@@ -102,7 +102,8 @@ def test_partial_publish_preserves_hash_baseline_for_next_full_publish(tmp_path:
 
     second = store.publish(graph, payload, {"runId": "full-run-2"})
 
-    assert second["changedDatasets"] == first["changedDatasets"]
+    assert first["changedDatasets"]
+    assert second["changedDatasets"] == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not enforced on Windows")

@@ -28,6 +28,7 @@ from fabric.dataset_mapper import InventoryDatasetMapper
 from fabric.runtime import FabricRuntime, build_runtime
 from intelligence.governance import EnterpriseSettingsStore
 from intelligence.health.service import ResourceHealthService
+from intelligence.incident.incident_intelligence import IncidentIntelligence
 from intelligence.incidents.incident_engine import IncidentEngine
 from intelligence.vulnerability.connector import (
     EpssScoreConnector,
@@ -63,12 +64,12 @@ from onboarding.runtime import (
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
 from operations.foundry_agent import FoundryPromptAgent
-from operations.tools import FabricIQToolAdapter
 from operations.patching import (
     InMemoryPatchRunStore,
     PatchingService,
     UnconfiguredPatchExecutionAdapter,
 )
+from operations.tools import FabricIQToolAdapter
 from semantic.hybrid_query import HybridQueryService
 from semantic.live_operations import (
     LiveRemediationPlanner,

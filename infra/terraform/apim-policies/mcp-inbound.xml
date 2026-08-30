@@ -45,6 +45,9 @@
     </set-header>
     <rate-limit-by-key calls="300" renewal-period="60" counter-key="@((string)context.Variables[&quot;aiopsCallerId&quot;])" />
     <quota-by-key calls="10000" renewal-period="86400" counter-key="@((string)context.Variables[&quot;aiopsCallerId&quot;])" />
+    <check-header name="Content-Type" failed-check-httpcode="415" failed-check-error-message="MCP requires JSON" ignore-case="true">
+      <value>application/json</value>
+    </check-header>
   </inbound>
   <backend><base /></backend>
   <outbound><base /></outbound>

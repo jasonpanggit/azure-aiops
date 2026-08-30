@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/v1/twin", tags=["operational-twin"])
 def _resolve(context: Context, name: str, errors: list[dict[str, str]]) -> Any | None:
     try:
         return context.resolve_provider(name, optional=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - provider resolution must not crash the endpoint
         errors.append({"source": name, "error": exc.__class__.__name__})
         return None
 
@@ -134,7 +134,7 @@ def compare(context: Context, scope: ReadScope) -> dict[str, Any]:
 def scenario(
     context: Context,
     scope: ReadScope,
-    payload: dict[str, Any] = Body(default_factory=dict),
+    payload: dict[str, Any] = Body(default_factory=dict),  # noqa: B008 - FastAPI dependency pattern
 ) -> dict[str, Any]:
     scenario_type = str(payload.get("scenario") or payload.get("scenario_type") or "")
     target = str(payload.get("target") or "")

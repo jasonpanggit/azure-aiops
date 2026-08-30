@@ -102,7 +102,7 @@ GOVERNANCE_COMPARISON_SCENARIO = {
                 "client_id": "client-002",
                 "object_id": "principal-spn-002",
                 "secret_ref": "kv://secret-client-002",
-                "expires_at": "2026-08-15T23:59:59Z",  # Expiring soon (<30 days)
+                "expires_at": "2026-09-15T23:59:59Z",  # Expiring soon (<30 days)
                 "kind": "service_principal",
                 "active": True,
                 "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
@@ -165,6 +165,7 @@ class TestGovernancePipelineComparison:
         aiops_principals = aiops_engine.principals()
         aiops_stale = aiops_engine.stale_access()
         aiops_non_human = aiops_engine.non_human_identities()
+        assert aiops_non_human is not None
 
         # Run Fabric pipeline
         fabric_pipeline = GovernancePipeline(
@@ -184,7 +185,6 @@ class TestGovernancePipelineComparison:
         assert len(principal_findings) > 0, "Should generate identity risk findings"
 
         # Validate stale access is caught (contributor-002 is stale)
-        stale_ids = {s["assignment_id"] for s in aiops_stale}
         stale_findings = [f for f in fabric_findings if "Stale access" in f.title]
         assert len(stale_findings) > 0, "Should detect stale access (>90 days)"
 
@@ -232,6 +232,7 @@ class TestGovernancePipelineComparison:
         )
         aiops_opportunities = aiops_engine.savings_opportunities()
         aiops_waste = aiops_engine.waste()
+        assert aiops_waste is not None
 
         # Run Fabric pipeline
         fabric_pipeline = GovernancePipeline(

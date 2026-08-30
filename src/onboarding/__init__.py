@@ -39,37 +39,34 @@ _EXPORTS = {
 }
 
 if TYPE_CHECKING:  # pragma: no cover - import-time typing only
-    from .activation import activate_runtime, publish_combined_snapshot
-    from .credentials import (
-        ChainedSecretProvider,
-        CredentialResolver,
-        EnvironmentSecretProvider,
-        KeyVaultSecretProvider,
-        KeyVaultSecretWriter,
-        SecretNotFoundError,
-        SecretProvider,
-        SecretStorageError,
-        SecretWriter,
-        redact,
-        redact_mapping,
-    )
-    from .health import HealthEvaluator
-    from .metadata import BusinessMetadata
-    from .registry import (
-        ConnectionNotFoundError,
-        ConnectionRegistry,
-        DuplicateConnectionError,
-        RegistryConflictError,
-    )
-    from .service import OnboardingError, SubscriptionOnboardingService
-    from .sync import ConnectionSyncCoordinator, SyncResult
-    from .validation import (
-        CONNECTION_CHECKS,
-        CheckResult,
-        ConnectionProbe,
-        ConnectionValidator,
-        ValidationReport,
-    )
+    from .activation import activate_runtime as activate_runtime
+    from .activation import publish_combined_snapshot as publish_combined_snapshot
+    from .credentials import ChainedSecretProvider as ChainedSecretProvider
+    from .credentials import CredentialResolver as CredentialResolver
+    from .credentials import EnvironmentSecretProvider as EnvironmentSecretProvider
+    from .credentials import KeyVaultSecretProvider as KeyVaultSecretProvider
+    from .credentials import KeyVaultSecretWriter as KeyVaultSecretWriter
+    from .credentials import SecretNotFoundError as SecretNotFoundError
+    from .credentials import SecretProvider as SecretProvider
+    from .credentials import SecretStorageError as SecretStorageError
+    from .credentials import SecretWriter as SecretWriter
+    from .credentials import redact as redact
+    from .credentials import redact_mapping as redact_mapping
+    from .health import HealthEvaluator as HealthEvaluator
+    from .metadata import BusinessMetadata as BusinessMetadata
+    from .registry import ConnectionNotFoundError as ConnectionNotFoundError
+    from .registry import ConnectionRegistry as ConnectionRegistry
+    from .registry import DuplicateConnectionError as DuplicateConnectionError
+    from .registry import RegistryConflictError as RegistryConflictError
+    from .service import OnboardingError as OnboardingError
+    from .service import SubscriptionOnboardingService as SubscriptionOnboardingService
+    from .sync import ConnectionSyncCoordinator as ConnectionSyncCoordinator
+    from .sync import SyncResult as SyncResult
+    from .validation import CONNECTION_CHECKS as CONNECTION_CHECKS
+    from .validation import CheckResult as CheckResult
+    from .validation import ConnectionProbe as ConnectionProbe
+    from .validation import ConnectionValidator as ConnectionValidator
+    from .validation import ValidationReport as ValidationReport
 
 
 def __getattr__(name: str):
@@ -85,4 +82,4 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_EXPORTS))
 
 
-__all__ = sorted(_EXPORTS)
+__all__ = sorted(_EXPORTS)  # noqa: PLE0605 - dynamically built from _EXPORTS keys (all strings)

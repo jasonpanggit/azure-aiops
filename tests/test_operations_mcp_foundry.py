@@ -5,8 +5,8 @@ import json
 import pytest
 
 from operations.foundry_agent import (
-    FoundryAgentError,
     SPECIALIST_CONTRACT_VERSION,
+    FoundryAgentError,
     parse_specialist_findings,
 )
 

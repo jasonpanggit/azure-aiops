@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # Evidence reference fixtures
 EVIDENCE_REFS = {
     "network-topo-1",

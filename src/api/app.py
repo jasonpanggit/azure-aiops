@@ -36,10 +36,10 @@ from .routers import (
     twin,
     vulnerability,
 )
-from .routers import mcp as mcp_routes
 from .routers import context as context_routes
 from .routers import copilot as copilot_routes
 from .routers import governance as governance_routes
+from .routers import mcp as mcp_routes
 from .routers import resource_health as resource_health_routes
 from .telemetry import Timer
 

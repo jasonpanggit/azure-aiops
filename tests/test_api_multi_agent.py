@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -32,8 +34,8 @@ class _Topology:
 
 class _Analysis:
     topology = _Topology()
-    gaps = [_Item({"gap_id": "gap-1", "title": "Firewall bypass", "business_service": "Payroll", "subscription_id": "sub-prod"})]
-    rule_findings = [_Item({"finding_id": "rule-1", "title": "Any-any NSG", "business_service": "Payroll", "subscription_id": "sub-prod"})]
+    gaps: ClassVar[list[_Item]] = [_Item({"gap_id": "gap-1", "title": "Firewall bypass", "business_service": "Payroll", "subscription_id": "sub-prod"})]
+    rule_findings: ClassVar[list[_Item]] = [_Item({"finding_id": "rule-1", "title": "Any-any NSG", "business_service": "Payroll", "subscription_id": "sub-prod"})]
 
     def summary(self):
         return {"resource_count": 1}

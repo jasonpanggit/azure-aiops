@@ -111,7 +111,7 @@ def test_build_data_agent_definition_stages_lakehouse_datasource_and_instruction
 
 
 def test_parse_suggestions_extracts_json_lines_and_ignores_prose():
-    response_text = "\n".join(
+    response_text = "\n".join(  # noqa: FLY002 - multi-line list is clearer than a long f-string
         [
             "Here are some candidate relationships I noticed:",
             "```",

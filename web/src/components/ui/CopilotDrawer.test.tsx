@@ -60,7 +60,7 @@ describe("CopilotDrawer", () => {
       </ScopeProvider>,
     );
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "What is wrong?" } });
-    fireEvent.click(screen.getByRole("button", { name: "Ask", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Send", exact: true }));
     await waitFor(() => expect(investigateContext).toHaveBeenCalledWith({ ...snapshot, question: "What is wrong?" }));
     expect(await screen.findByText("Verified finding")).toBeInTheDocument();
     expect(screen.getByText(/Foundry narration was not produced/)).toBeInTheDocument();

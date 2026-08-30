@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-from test_api_copilot_investigation import _context, HEADERS, StubAgent
-from operations.autonomous_investigation import ledger_store
+from test_api_copilot_investigation import HEADERS, StubAgent, _context
+
 from api.app import create_app
+from operations.autonomous_investigation import ledger_store
 
 
 def _body():

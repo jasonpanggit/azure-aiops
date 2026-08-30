@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from api.scope import Scope
+from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
+from operations.page_context import PageSnapshot, deterministic_network_findings
 from operations.tools import (
     STATUS_DENIED,
     STATUS_EMPTY,
@@ -25,8 +27,6 @@ from operations.tools import (
     STATUS_UNAVAILABLE,
     call_tool,
 )
-from operations.page_context import PageSnapshot, deterministic_network_findings
-from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
 
 AGENT_TIMEOUT_SECONDS = 8.0
 MAX_RETRIES = 1

@@ -23,13 +23,13 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from operations.autonomous_investigation import ledger_store, run_context_investigation
 from operations.foundry_agent import FoundryAgentError
 from operations.investigation import (
     conversation_store,
     run_investigation,
     tool_catalog,
 )
-from operations.autonomous_investigation import ledger_store, run_context_investigation
 from operations.page_context import PageSnapshot
 
 from ..dependencies import Context, CurrentPrincipal, ReadScope
