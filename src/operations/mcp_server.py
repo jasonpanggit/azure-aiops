@@ -217,10 +217,43 @@ class MCPServer:
             validated = ToolArguments.model_validate(cleaned_arguments)
             args = validated.model_dump(exclude_none=True)
             missing = [field for field in _REQUIRED.get(name, ()) if field not in args]
-            if missing:
-                raise ValueError("required tool arguments are missing")
-        except (ValidationError, ValueError):
+        except ValidationError:
             return _tool_error("Invalid tool arguments")
+
+        if missing:
+            # A missing required argument is a normal outcome, not an error.
+            #
+            # Foundry aborts the entire run with HTTP 400 when a tool result
+            # carries isError=true, so returning an error here meant one
+            # speculative call destroyed the whole investigation: asked "what
+            # is the root cause of the latest incident?", the governance
+            # specialist calls business_service_context with no service name --
+            # there isn't one in the question -- and the operator got a bare
+            # "Foundry narration unavailable" instead of an answer.
+            #
+            # Reporting "no subject" as a successful empty result lets the
+            # model see that the call yielded nothing and carry on with the
+            # tools that did return evidence. The tool still never executes
+            # without its arguments, so nothing is under-scoped.
+            return {
+                "jsonrpc": "2.0", "id": request.id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps({
+                            "status": "empty",
+                            "tool": name,
+                            "missing_arguments": missing,
+                            "detail": (
+                                f"{name} needs {', '.join(missing)} and none was "
+                                "supplied, so no lookup was performed. Use a tool "
+                                "that does not need a subject, or name one."
+                            ),
+                        }),
+                    }],
+                    "isError": False,
+                },
+            }
 
         self.calls += 1
         started = time.monotonic()

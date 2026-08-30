@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -45,14 +47,49 @@ def test_initialize_and_exact_read_only_catalog(tmp_path):
     ]
 
 
-def test_unknown_and_malformed_calls_are_protocol_errors(tmp_path):
+def test_unknown_tool_is_an_error(tmp_path):
+    """An unknown tool is a genuine caller mistake and stays isError."""
     c = client(tmp_path)
     unknown = c.post("/api/v1/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "delete_everything", "arguments": {}}}, headers=auth())
     assert unknown.json()["result"]["isError"] is True
-    malformed = c.post("/api/v1/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+
+
+def test_a_missing_required_argument_is_empty_not_an_error(tmp_path):
+    """A missing argument must not abort the run.
+
+    This assertion was inverted deliberately. Foundry aborts the entire
+    response with HTTP 400 when any tool result carries isError=true, so
+    reporting a missing argument as an error meant one speculative call
+    destroyed the whole investigation: asked "what is the root cause of the
+    latest incident?", the governance specialist calls
+    business_service_context with no service name -- there is none in the
+    question -- and the operator saw "Foundry narration unavailable" instead
+    of an answer. Reproduced directly against the Responses API.
+
+    The tool still never executes without its arguments; it reports that it
+    had nothing to look up, so the model can move on to the tools that did
+    return evidence.
+    """
+    c = client(tmp_path)
+    response = c.post("/api/v1/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {"name": "traffic_flow", "arguments": {"source": "a"}}}, headers=auth())
-    assert malformed.json()["result"]["isError"] is True
+    result = response.json()["result"]
+
+    assert result["isError"] is False, "an isError result aborts the whole Foundry run"
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["status"] == "empty"
+    assert payload["missing_arguments"] == ["destination"]
+    assert "destination" in payload["detail"]
+
+
+def test_malformed_argument_types_are_still_an_error(tmp_path):
+    """Only *absent* arguments are tolerated; bad ones remain errors."""
+    c = client(tmp_path)
+    response = c.post("/api/v1/mcp", json={"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "traffic_flow", "arguments": {"source": {"not": "a string"},
+                                                          "destination": "b"}}}, headers=auth())
+    assert response.json()["result"]["isError"] is True
 
 
 def test_unauthenticated_request_is_rejected(tmp_path):
