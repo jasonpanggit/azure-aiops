@@ -28,6 +28,7 @@ from fabric.dataset_mapper import InventoryDatasetMapper
 from fabric.runtime import FabricRuntime, build_runtime
 from intelligence.governance import EnterpriseSettingsStore
 from intelligence.health.service import ResourceHealthService
+from intelligence.incident.incident_intelligence import IncidentIntelligence
 from intelligence.incidents.incident_engine import IncidentEngine
 from intelligence.vulnerability.connector import (
     EpssScoreConnector,

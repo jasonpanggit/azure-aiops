@@ -30,7 +30,7 @@ from fabric_pipelines.comparison_report import (
 from fabric_pipelines.topology_pipeline import derive_edges
 from onboarding.graph_normalize import Normalizer
 
-_OBSERVED_DT = datetime.fromisoformat(OBSERVED_AT.replace("Z", "+00:00"))
+_OBSERVED_DT = datetime.fromisoformat(OBSERVED_AT)
 
 
 def _aiops_arm(root_id: str):
@@ -64,7 +64,7 @@ def _fabric_arm(root_id: str):
     (entities, edges), elapsed = timed(derive_edges, scenario, observed=OBSERVED_AT)
     entity_ids = {str(entity["entity_id"]) for entity in entities}
     raw_edges = [edge_view_from_camel_case(edge) for edge in edges]
-    filtered, dropped_any = filter_dangling_edges(raw_edges, entity_ids)
+    filtered, _dropped_any = filter_dangling_edges(raw_edges, entity_ids)
     return build_arm_result(
         arm_name="fabric",
         root_id=root_id,
@@ -106,8 +106,8 @@ def test_non_accepted_edge_state_stays_explicit_in_both_arms():
     into both arms' output as explicit -- not dropped, not silently
     upgraded to "accepted" (D-05)."""
     root_id = NSG_ID.lower()
-    semantic_result, semantic_graph = _aiops_arm(root_id)
-    fabric_result, (fabric_entities, fabric_edges) = _fabric_arm(root_id)
+    semantic_result, _semantic_graph = _aiops_arm(root_id)
+    fabric_result, (_fabric_entities, _fabric_edges) = _fabric_arm(root_id)
 
     # Inject one deliberately-stale/unauthorized-looking edge directly into
     # each arm's own edge collection (post-derivation), mirroring how a
@@ -174,7 +174,6 @@ def test_dangling_edge_dropped_consistently_by_both_arms():
     so both arms drop dangling edges before the harness's own filter even
     runs, and the harness filter finds nothing further to drop in either
     case."""
-    root_id = NSG_ID.lower()
     scenario = topology_comparison_scenario()
 
     graph = Normalizer().normalize(scenario, _OBSERVED_DT, run_id="comparison-harness")

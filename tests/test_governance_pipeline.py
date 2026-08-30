@@ -165,6 +165,7 @@ class TestGovernancePipelineComparison:
         aiops_principals = aiops_engine.principals()
         aiops_stale = aiops_engine.stale_access()
         aiops_non_human = aiops_engine.non_human_identities()
+        assert aiops_non_human is not None
 
         # Run Fabric pipeline
         fabric_pipeline = GovernancePipeline(
@@ -184,7 +185,6 @@ class TestGovernancePipelineComparison:
         assert len(principal_findings) > 0, "Should generate identity risk findings"
 
         # Validate stale access is caught (contributor-002 is stale)
-        stale_ids = {s["assignment_id"] for s in aiops_stale}
         stale_findings = [f for f in fabric_findings if "Stale access" in f.title]
         assert len(stale_findings) > 0, "Should detect stale access (>90 days)"
 
@@ -232,6 +232,7 @@ class TestGovernancePipelineComparison:
         )
         aiops_opportunities = aiops_engine.savings_opportunities()
         aiops_waste = aiops_engine.waste()
+        assert aiops_waste is not None
 
         # Run Fabric pipeline
         fabric_pipeline = GovernancePipeline(

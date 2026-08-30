@@ -54,7 +54,7 @@ jobs:
       # pilot's "Deployment and CI/CD" hardening requirement. Findings are
       # uploaded as SARIF so they surface in the repo's Security tab rather
       # than only in this job's log.
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .

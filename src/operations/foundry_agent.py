@@ -536,9 +536,11 @@ class FoundryPromptAgent:
     ) -> AgentAnswer:
         """Request and strictly validate a specialist finding response."""
         answer = self.answer(question=question, context=context)
-        findings = parse_specialist_findings(
-            answer.text, 
-            evidence_refs=evidence_refs, 
+        # Parsing enforces strict validation as a side effect; the parsed
+        # findings themselves are not needed by this contract check.
+        parse_specialist_findings(
+            answer.text,
+            evidence_refs=evidence_refs,
             resource_ids=resource_ids,
             agent_id=self.specialist_id,
         )
