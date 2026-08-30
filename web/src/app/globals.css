@@ -1269,14 +1269,17 @@ textarea:focus-visible {
 .structured-data {
   display: grid;
   gap: 0;
+  min-width: 0;
+  container-type: inline-size;
 }
 
 .structured-row {
   display: grid;
-  grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
   padding: 10px 0;
   border-bottom: 1px solid var(--color-border);
+  min-width: 0;
 }
 
 .structured-row:last-child {
@@ -1284,24 +1287,37 @@ textarea:focus-visible {
 }
 
 .structured-row dt {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
 }
 
 .structured-row dd {
   min-width: 0;
   overflow-wrap: anywhere;
+  color: var(--color-text-secondary);
+}
+
+.structured-data-nested {
+  margin-top: 2px;
 }
 
 .structured-data-nested .structured-row {
-  grid-template-columns: minmax(110px, 0.3fr) minmax(0, 1fr);
-  padding: 7px 0;
+  padding: 6px 0;
 }
 
-.structured-data-nested .structured-data-nested .structured-row {
-  grid-template-columns: 1fr;
-  gap: 4px;
+@container (min-width: 420px) {
+  .structured-data > .structured-row {
+    grid-template-columns: minmax(120px, 0.32fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+
+  .structured-data > .structured-row dt {
+    padding-top: 2px;
+  }
 }
 
 .evidence-pack-card {
@@ -3720,11 +3736,6 @@ body.topology-fullscreen-open {
 .compliance-detail details .structured-list,
 .compliance-detail details .structured-list-item {
   min-width: 0;
-}
-
-.compliance-detail details .structured-row {
-  grid-template-columns: minmax(110px, 0.42fr) minmax(0, 1fr);
-  gap: 10px;
 }
 
 .compliance-detail details .structured-row dt {
