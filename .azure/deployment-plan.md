@@ -29,6 +29,16 @@ then update the existing Azure Container Apps deployment.
 
 - 2026-08-22: `terraform -chdir=infra/terraform fmt -check` passed.
 - 2026-08-22: `terraform -chdir=infra/terraform validate` passed.
+- 2026-08-30: Fixed subscription-sync "Network request failed" bug — replaced
+  `@app.middleware("http")` (Starlette `BaseHTTPMiddleware`) with pure ASGI
+  `_ObserveMiddleware` in `src/api/app.py` to stop already-handled exceptions
+  from re-raising and dropping the connection after a valid response was sent
+  (commit `a35c1ca6`). `pytest tests/ -q -k "api or connection"` passed.
+  Built/pushed `main-syncfix-20260830-1509` (api+web), deployed via
+  `deploy.sh apply -auto-approve`; both apps serving the new tag. Post-deploy
+  curl smoke test: `/health` 200, `/api/v1/subscription-connections/<id>/health`
+  and `.../sync` for an unregistered id return clean `401` (auth-required),
+  not a dropped connection.
 - 2026-08-22: Azure CLI account context resolved to subscription
   `a87a8e64-a52a-4aa8-a760-5e8919d23cd1`.
 - 2026-08-22: Terraform state resolved registry
@@ -65,6 +75,23 @@ then update the existing Azure Container Apps deployment.
   `aiops-dev-web--0000061` is healthy with 100% traffic.
 - 2026-08-28: Deployed API `/health` and `/ready` returned HTTP 200; deployed
   web `/api/config` returned the API base URL successfully.
+- 2026-08-30: Merged PR #5 (CI hardening: ruff import/lint fixes, backend test
+  fixes, `/investigate` Suspense boundary fix) to `main`; validating the merged
+  `main` build (commit `e76c23e4`) end to end.
+- 2026-08-30: `set -a; source web/.env.local; set +a; IMAGE_TAG=main-validation-20260830-1430
+  ./infra/scripts/build-and-push.sh` built and pushed both images. API digest
+  `sha256:60115010f1bad754670bd3326511efbaa50c31bb3006304d31ac044647be57e7`; web
+  digest `sha256:2a0c7d91fb114cef4800ee861c50fcb8ec1f0fae5bd81c751d20695e40d711e4`.
+- 2026-08-30: `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+  -refresh=false -lock=false` produced an image-only plan: 0 additions, 4
+  changes, 0 destructions.
+- 2026-08-30: `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh apply
+  -auto-approve -var deploy_images=true -var image_tag=main-validation-20260830-1430`
+  completed with 0 additions, 5 changed, 0 destroyed. Both `aiops-dev-api` and
+  `aiops-dev-web` revisions reached `Succeeded` and served
+  `main-validation-20260830-1430` at 100% traffic.
+- 2026-08-30: Deployed API `/health` and `/ready` returned HTTP 200; deployed
+  web `/` and `/api/config` returned HTTP 200.
 
 ## All validation checks pass
 
