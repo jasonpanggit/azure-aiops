@@ -31,7 +31,7 @@ AKS_ID = "/subscriptions/sub-2/resourceGroups/rg/providers/Microsoft.ContainerSe
 
 class FakeSecretWriter:
     def store(self, *, connection_id: str, secret_value: str) -> str:
-        return f"keyvault://kv-test/secrets/aiops-conn-{connection_id}/v1"
+        return f"keyvault://kv-aiops-example-test/secrets/aiops-conn-{connection_id}/v1"
 
 
 def _vulnerability_service() -> VulnerabilityIntelligenceService:

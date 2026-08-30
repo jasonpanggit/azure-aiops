@@ -77,7 +77,7 @@ uv run aiops-inventory subscriptions add hub-prod \
   --tenant-id "$HUB_TENANT_ID" \
   --subscription-id "$HUB_SUBSCRIPTION_ID" \
   --client-id "$HUB_CLIENT_ID" \
-  --secret-ref "keyvault://ops-kv/secrets/hub-discovery-spn" \
+  --secret-ref "keyvault://<your-vault-name>/secrets/hub-discovery-spn" \
   --business-service "Shared Platform" \
   --application "Hub Network" \
   --environment prod \
@@ -88,7 +88,7 @@ uv run aiops-inventory subscriptions add spoke-prod \
   --tenant-id "$SPOKE_TENANT_ID" \
   --subscription-id "$SPOKE_SUBSCRIPTION_ID" \
   --client-id "$SPOKE_CLIENT_ID" \
-  --secret-ref "keyvault://ops-kv/secrets/spoke-discovery-spn" \
+  --secret-ref "keyvault://<your-vault-name>/secrets/spoke-discovery-spn" \
   --business-service Payments \
   --application "Payments API" \
   --environment prod \

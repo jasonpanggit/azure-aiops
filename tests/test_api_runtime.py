@@ -148,12 +148,12 @@ def test_token_context_has_no_semantic_snapshot(monkeypatch):
 def test_context_wires_key_vault_secret_writer(monkeypatch):
     monkeypatch.setenv("AIOPS_API_AUTH", "token")
     monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
-    monkeypatch.setenv("AIOPS_CONNECTION_KEY_VAULT", "kv-aiops-prod")
+    monkeypatch.setenv("AIOPS_CONNECTION_KEY_VAULT", "kv-aiops-example")
 
     context = build_context()
 
     assert isinstance(context.onboarding.secret_writer, KeyVaultSecretWriter)
-    assert context.onboarding.secret_writer.vault_name == "kv-aiops-prod"
+    assert context.onboarding.secret_writer.vault_name == "kv-aiops-example"
 
 
 def test_factory_with_no_context_serves_requests(monkeypatch):

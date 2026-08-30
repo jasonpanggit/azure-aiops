@@ -38,7 +38,7 @@ class FakeSecretWriter:
 
     def store(self, *, connection_id: str, secret_value: str) -> str:
         self.stored.append((connection_id, secret_value))
-        return f"keyvault://kv-test/secrets/aiops-conn-{connection_id}/v1"
+        return f"keyvault://kv-aiops-example-test/secrets/aiops-conn-{connection_id}/v1"
 
 
 def _principals() -> dict[str, Principal]:
@@ -415,7 +415,7 @@ class TestConnectionsCrud:
         credential = response.json()["data"]["credential"]
         assert (
             credential["secret_ref"]
-            == "keyvault://kv-test/secrets/aiops-conn-conn-secret/v1"
+            == "keyvault://kv-aiops-example-test/secrets/aiops-conn-conn-secret/v1"
         )
         assert "from-user" not in response.text
 

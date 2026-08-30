@@ -61,7 +61,7 @@ keyvault://<vault-name>/secrets/<secret-name>/<version>
 
 ```bash
 az keyvault secret set \
-  --vault-name kv-aiops-prod \
+  --vault-name <your-vault-name> \
   --name aiops-conn-prod-core \
   --value "<spn-secret>"
 ```
@@ -92,7 +92,7 @@ aiops-inventory subscriptions add prod-core \
   --tenant-id <tenant-id> \
   --subscription-id <subscription-id> \
   --client-id <spn-app-id> \
-  --secret-ref keyvault://kv-aiops-prod/secrets/aiops-conn-prod-core \
+  --secret-ref keyvault://<your-vault-name>/secrets/aiops-conn-prod-core \
   --business-service Payments \
   --application checkout-api \
   --environment production \
@@ -189,7 +189,7 @@ creates an environment mapping on the connection. `criticality` must be one of
 
 ```bash
 aiops-inventory subscriptions update prod-core \
-  --secret-ref keyvault://kv-aiops-prod/secrets/aiops-conn-prod-core/<new-version>
+  --secret-ref keyvault://<your-vault-name>/secrets/aiops-conn-prod-core/<new-version>
 aiops-inventory subscriptions validate prod-core
 ```
 

@@ -98,7 +98,7 @@ class FakeSecretWriter:
 
     def store(self, *, connection_id: str, secret_value: str) -> str:
         self.stored.append((connection_id, secret_value))
-        return f"keyvault://kv-test/secrets/aiops-conn-{connection_id}/v1"
+        return f"keyvault://kv-aiops-example-test/secrets/aiops-conn-{connection_id}/v1"
 
 
 def build_service(
@@ -166,11 +166,11 @@ def test_add_stores_submitted_client_secret_in_key_vault(tmp_path: Path) -> None
     assert writer.stored == [("prod-core", "client-secret-value")]
     assert (
         detail["credential"]["secret_ref"]
-        == "keyvault://kv-test/secrets/aiops-conn-prod-core/v1"
+        == "keyvault://kv-aiops-example-test/secrets/aiops-conn-prod-core/v1"
     )
     stored = (tmp_path / "state" / "subscription_connections.json").read_text()
     assert "client-secret-value" not in stored
-    assert "keyvault://kv-test/secrets/aiops-conn-prod-core/v1" in stored
+    assert "keyvault://kv-aiops-example-test/secrets/aiops-conn-prod-core/v1" in stored
 
 
 def test_add_rejects_secret_ref_and_client_secret_together(tmp_path: Path) -> None:
@@ -528,9 +528,9 @@ def test_update_rotates_credential_reference(tmp_path: Path) -> None:
     service = build_service(tmp_path)
     onboard(service)
 
-    detail = service.update("prod-core", secret_ref="keyvault://kv-prod/secrets/spn")
+    detail = service.update("prod-core", secret_ref="keyvault://kv-aiops-example-prod/secrets/spn")
 
-    assert detail["credential"]["secret_ref"] == "keyvault://kv-prod/secrets/spn"
+    assert detail["credential"]["secret_ref"] == "keyvault://kv-aiops-example-prod/secrets/spn"
     assert detail["credential"]["secret_provider"] == "key_vault"
 
 
@@ -544,7 +544,7 @@ def test_update_stores_rotated_client_secret(tmp_path: Path) -> None:
     assert writer.stored == [("prod-core", "rotated-secret")]
     assert (
         detail["credential"]["secret_ref"]
-        == "keyvault://kv-test/secrets/aiops-conn-prod-core/v1"
+        == "keyvault://kv-aiops-example-test/secrets/aiops-conn-prod-core/v1"
     )
 
 
@@ -557,13 +557,13 @@ def test_key_vault_provider_resolves_reference() -> None:
             self.vault = vault
 
         def get_secret(self, name: str, version: str | None = None):
-            assert (self.vault, name) == ("kv-prod", "spn")
+            assert (self.vault, name) == ("kv-aiops-example-prod", "spn")
             return Secret()
 
     provider = KeyVaultSecretProvider(client_factory=Client)
 
-    assert provider.supports("keyvault://kv-prod/secrets/spn")
-    assert provider.resolve("keyvault://kv-prod/secrets/spn") == "from-vault"
+    assert provider.supports("keyvault://kv-aiops-example-prod/secrets/spn")
+    assert provider.resolve("keyvault://kv-aiops-example-prod/secrets/spn") == "from-vault"
 
 
 def test_default_provider_resolves_key_vault_reference() -> None:
@@ -575,12 +575,12 @@ def test_default_provider_resolves_key_vault_reference() -> None:
             self.vault = vault
 
         def get_secret(self, name: str, version: str | None = None):
-            assert (self.vault, name, version) == ("kv-prod", "spn", "v1")
+            assert (self.vault, name, version) == ("kv-aiops-example-prod", "spn", "v1")
             return Secret()
 
     provider = default_secret_provider(key_vault_client_factory=Client)
 
-    assert provider.resolve("keyvault://kv-prod/secrets/spn/v1") == "from-default-vault"
+    assert provider.resolve("keyvault://kv-aiops-example-prod/secrets/spn/v1") == "from-default-vault"
 
 
 def test_key_vault_writer_returns_versioned_reference() -> None:
@@ -595,16 +595,16 @@ def test_key_vault_writer_returns_versioned_reference() -> None:
             self.vault = vault
 
         def set_secret(self, name: str, value: str):
-            assert self.vault == "kv-prod"
+            assert self.vault == "kv-aiops-example-prod"
             assert name == "aiops-conn-prod-core"
             assert value == "from-user"
             return Secret()
 
-    writer = KeyVaultSecretWriter("kv-prod", client_factory=Client)
+    writer = KeyVaultSecretWriter("kv-aiops-example-prod", client_factory=Client)
 
     assert (
         writer.store(connection_id="prod-core", secret_value="from-user")
-        == "keyvault://kv-prod/secrets/aiops-conn-prod-core/version-1"
+        == "keyvault://kv-aiops-example-prod/secrets/aiops-conn-prod-core/version-1"
     )
 
 
