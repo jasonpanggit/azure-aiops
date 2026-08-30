@@ -718,21 +718,6 @@ export const resourceHealthApi = {
   },
 };
 
-export interface AdminAkvConfig {
-  entra_web_client_id: string;
-  entra_tenant_id: string;
-  entra_api_audience: string;
-  entra_api_scope: string;
-  entra_grants_json: string;
-}
-
-export const adminApi = {
-  saveAkvConfig: (payload: AdminAkvConfig) =>
-    apiRequest<{ saved: string[]; secret_names: string[] }>("/admin/akv-config", {
-      method: "POST",
-      body: payload,
-    }),
-};
 
 export type { Envelope };
 

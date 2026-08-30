@@ -29,7 +29,6 @@ const WORKBENCH_NAV = [
   { href: "/copilot", label: "Copilot", short: "AI" },
   { href: "/governance", label: "Governance", short: "G" },
   { href: "/connections", label: "Data & integrations", short: "D" },
-  { href: "/admin", label: "Identity", short: "A" },
 ] as const;
 
 function isActive(pathname: string, href: string): boolean {

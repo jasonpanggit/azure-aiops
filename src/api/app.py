@@ -23,7 +23,6 @@ from fastapi.responses import JSONResponse
 from .dependencies import ApiContext, OperatePrincipal
 from .errors import ApiError, ErrorCode, translate
 from .models import EnvelopeModel, ErrorModel
-from .routers import admin as admin_routes
 from .routers import (
     connections,
     graph,
@@ -229,7 +228,6 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     telemetry = context.telemetry
 
     app.include_router(connections.router)
-    app.include_router(admin_routes.router)
     app.include_router(context_routes.router)
     app.include_router(copilot_routes.router)
     app.include_router(graph.router)
