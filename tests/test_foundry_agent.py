@@ -41,6 +41,32 @@ def test_specialist_prompt_never_advertises_acquisition_or_mutation_tools(monkey
     assert "acquire" not in prompt.casefold()
 
 
+def test_specialist_prompt_permits_tool_use_beyond_the_page_context(monkeypatch) -> None:
+    """The page context must seed the answer without capping it.
+
+    A restrictive "using only the operational context below" instruction
+    stopped the agent calling its own governed MCP tools, so any question
+    naming a resource absent from the pre-computed context (for example
+    "what depends on demo-vnet?" while the page describes a different VNet)
+    degraded into an unrelated findings dump.
+    """
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "network-agent")
+
+    agent = FoundryPromptAgent.from_env("network")
+
+    assert agent is not None
+    prompt = agent.build_prompt(
+        "What depends on demo-vnet?", {"findings": ["unrelated-vnet"]}
+    )
+    lowered = prompt.casefold()
+    assert "using only the operational context" not in lowered
+    assert "call your governed tools" in lowered
+    # The question must survive verbatim, and grounding must still be required.
+    assert "What depends on demo-vnet?" in prompt
+    assert "never speculate" in lowered
+
+
 # Phase 6: Test coverage for 7 new specialist agents
 
 

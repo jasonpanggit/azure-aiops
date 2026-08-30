@@ -228,6 +228,44 @@ def test_page_context_resolves_the_requested_specialist_before_generic_narrator(
     assert _resolve_foundry_agent(Context(), "vulnerability") is specialist
 
 
+def test_network_page_loads_its_own_agent_not_the_legacy_narrator(monkeypatch):
+    """The network page must answer as its own specialist.
+
+    ``FOUNDRY_NETWORK_AGENT_NAME`` has to win over the legacy shared
+    ``FOUNDRY_AGENT_NAME`` narrator whenever both are configured, which is
+    exactly the deployed state.
+    """
+    from api import runtime
+
+    monkeypatch.setattr(runtime, "_foundry_specialist_agents", {})
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_AGENT_NAME", "operations-copilot")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "aiops-network-agent")
+    # Resolution must not require a live Foundry data plane.
+    monkeypatch.setattr(
+        runtime.FoundryPromptAgent, "validate_access", lambda self: None
+    )
+
+    agent = runtime._load_foundry_specialist_agent("network")
+
+    assert agent is not None
+    assert agent.agent_name == "aiops-network-agent"
+    assert agent.specialist_id == "network"
+
+
+def test_specialist_without_its_own_agent_falls_back_to_the_narrator(monkeypatch):
+    """The narrator remains a fallback, but only when nothing better exists."""
+    from api import runtime
+
+    narrator = object()
+    monkeypatch.setattr(runtime, "_foundry_specialist_agents", {})
+    monkeypatch.delenv("FOUNDRY_PATCH_AGENT_NAME", raising=False)
+    monkeypatch.delenv("FOUNDRY_AGENT_NAME", raising=False)
+    monkeypatch.setattr(runtime, "_load_foundry_agent", lambda: narrator)
+
+    assert runtime._load_foundry_specialist_agent("patch") is narrator
+
+
 def test_api_context_resolves_network_specialist_without_generic_fallback(tmp_path):
     specialist = object()
     context = ApiContext(

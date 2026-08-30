@@ -267,3 +267,43 @@ Specialized LLM agents can provide page-specific analysis without fragmenting th
   5. The `/agents` page and `/api/v1/agents/*` routes have an explicit Phase 9 implementation decision: retain deterministic in-process specialists with optional Foundry narration, integrate Foundry prompt agents as specialist synthesizers, or migrate to Foundry-managed agent orchestration. The selected path is tested against evidence grounding, scope isolation, audit ledger behavior, human controls, latency/timeouts, and Foundry-unavailable fallback.
   6. Specialized agents, starting with Network Agent, can produce cited page-specific analysis against design policy and Azure best practices without inventing unsupported topology, ownership, or remediation claims.
   7. No consumer anywhere reads raw `inventory/*` or identity `entities/*` datasets directly.
+
+### Decision record — orchestration mechanism (closes Success Criterion 5)
+
+**Selected path: local orchestration with Foundry prompt agents as tool-using specialists.**
+
+Verified against the live deployment on 2026-08-30:
+
+- `operations-copilot` is `kind: prompt` with an empty `tools` array. It is a
+  narrator, not an orchestrator, and cannot delegate to anything.
+- Each of the eight specialists (`aiops-network-agent` and peers) carries its
+  own governed MCP toolset via APIM and orchestrates those tools itself.
+- Routing is `page_kind -> specialist_id` in `run_context_investigation`. One
+  entry point, no agent-to-agent hop.
+
+"Operations Copilot is the single orchestrator entry point" is therefore
+satisfied by the API surface (`/api/v1/copilot/investigate-context`), not by
+the `operations-copilot` agent delegating to sub-agents.
+
+**Why not agent-level delegation:** Foundry removed classic connected agents
+from the new Agent Service in March 2026; the classic service retires in March
+2027. Building `operations-copilot` as a delegating parent would target a
+deprecated API. The current replacements are A2A (agent-as-tool) or Microsoft
+Agent Framework for code-driven orchestration. Local orchestration already
+gives us scope enforcement, budgets, the audit ledger, human controls, and
+deterministic fallback when Foundry is unavailable -- the properties this
+criterion requires.
+
+**Correction applied:** the local layer had over-reached. It pre-computed
+findings *and* instructed the specialist to answer "using only the operational
+context below", which forbade the agent from calling its own MCP tools. Any
+question naming a resource absent from the pre-computed context degraded into
+an unrelated findings dump. The page context is now a starting point rather
+than a ceiling; the specialist retrieves what it needs. Verified end-to-end:
+"What depends on demo-vnet?" now calls `hub_dependents` and answers directly
+with citations, where it previously returned unrelated `aiops-dev-vnet`
+findings.
+
+**Revisit when:** Microsoft Agent Framework orchestration is warranted if
+cross-page questions need several specialists composed in one answer. That is
+a deliberate future change, not a gap in this phase.

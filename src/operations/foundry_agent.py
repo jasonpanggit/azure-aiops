@@ -570,18 +570,34 @@ _MAX_CONTEXT_CHARS = 24_000
 def _build_prompt(
     *, question: str, context: Any, specialist_id: str = "network"
 ) -> str:
-    """Frame the retrieved context as the only admissible evidence."""
+    """Frame the page context as a starting point, not a ceiling.
+
+    The context is what the operator is currently looking at. It seeds the
+    answer but must not bound it: an earlier revision said "using only the
+    operational context below", which forbade the agent from calling its own
+    governed MCP tools. Entity questions ("what depends on demo-vnet?") are
+    then unanswerable whenever the pre-computed context happens to describe a
+    different resource, and the run collapses into a findings dump. The tools
+    are already scope-bound and allowlisted by APIM, so letting the agent
+    reach for them is governed, not unbounded.
+    """
     serialized = json.dumps(context, default=str, ensure_ascii=False)
     if len(serialized) > _MAX_CONTEXT_CHARS:
         serialized = serialized[:_MAX_CONTEXT_CHARS] + "\u2026(truncated)"
     return (
-        f"You are the {specialist_id} specialist. "
-        "Answer the operator's question using only the operational context "
-        "below. It was retrieved from the governed knowledge graph. If the "
-        "context does not contain the answer, say so explicitly and do not "
+        f"You are the {specialist_id} specialist. Answer the operator's "
+        "question directly and specifically.\n\n"
+        "The operational context below is what the operator currently has on "
+        "screen. Treat it as a starting point. When it does not contain the "
+        "answer, call your governed tools to retrieve what does - especially "
+        "when the question names a resource that is absent from the context. "
+        "Ground every claim in the context or in a tool result, and say so "
+        "plainly when the answer cannot be established either way. Never "
         "speculate.\n\n"
+        "Answer the question that was asked. Do not reply with an inventory "
+        "of unrelated findings.\n\n"
         f"QUESTION:\n{question}\n\n"
-        f"OPERATIONAL CONTEXT (JSON):\n{serialized}"
+        f"PAGE CONTEXT (JSON):\n{serialized}"
     )
 
 

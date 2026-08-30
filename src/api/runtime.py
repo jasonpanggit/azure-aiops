@@ -935,12 +935,24 @@ def _load_foundry_agent() -> FoundryPromptAgent | None:
 
 
 def _load_foundry_specialist_agent(specialist_id: str) -> FoundryPromptAgent | None:
-    """Resolve and cache one page specialist independently of the narrator."""
-    if specialist_id == "network":
-        return _load_foundry_agent()
+    """Resolve and cache one page specialist independently of the narrator.
+
+    Every specialist resolves through the same path, network included. The
+    previous ``if specialist_id == "network": return _load_foundry_agent()``
+    special case was harmless -- ``_load_foundry_agent`` itself calls
+    ``from_env("network")``, and ``from_env`` already prefers
+    ``FOUNDRY_NETWORK_AGENT_NAME`` over the legacy ``FOUNDRY_AGENT_NAME`` --
+    but it read as though the network page deliberately answered as the
+    shared narrator. Routing every page identically, with the narrator kept
+    only as an explicit last resort, removes that ambiguity.
+    """
     if specialist_id not in _foundry_specialist_agents:
         candidate = FoundryPromptAgent.from_env(specialist_id)
-        if candidate is not None:
+        if candidate is None:
+            # Only fall back to the shared narrator when this specialist has no
+            # agent of its own; never in preference to one.
+            candidate = _load_foundry_agent()
+        else:
             candidate.validate_access()
         _foundry_specialist_agents[specialist_id] = candidate
     return _foundry_specialist_agents[specialist_id]
