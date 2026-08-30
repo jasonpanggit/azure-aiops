@@ -1208,6 +1208,20 @@ textarea:focus-visible {
   border-top: 1px solid var(--color-border);
 }
 
+.evidence-trust-grid {
+  display: grid;
+  flex-basis: 100%;
+  gap: 6px;
+  padding-top: 7px;
+  border-top: 1px solid var(--color-border);
+}
+
+.evidence-trust-grid span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .state-panel {
   display: grid;
   min-height: 230px;
@@ -1477,6 +1491,8 @@ textarea:focus-visible {
   max-width: 300px;
   padding: 13px;
   vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   border-bottom: 1px solid var(--color-border);
 }
 
@@ -1504,8 +1520,11 @@ textarea:focus-visible {
   align-items: center;
   gap: 6px;
   margin-top: 5px;
+  min-width: 0;
   font-size: 11px;
   color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .table-wrap {
@@ -2208,6 +2227,29 @@ textarea:focus-visible {
   background: var(--color-critical-subtle);
   border-color: #edc0bc;
   border-left-color: var(--color-critical);
+}
+
+.stale-connections-callout {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.stale-connections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  width: 100%;
+}
+
+.stale-connections-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .workspace-tabs {

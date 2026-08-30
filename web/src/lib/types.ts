@@ -719,6 +719,7 @@ export interface SyncState {
   stage?: string | null;
   stage_message?: string | null;
   progress_pct?: number | null;
+  record_count?: number;
 }
 
 export interface SubscriptionConnection {
