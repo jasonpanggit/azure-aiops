@@ -270,3 +270,47 @@ replaced.
 - Deploy: `deploy.sh apply -auto-approve` — confirmed both container apps serving `main-admin-removed-20260830-1435`.
 - Pre-deploy checks: `npx eslint` clean; `npm run build` succeeded (`/admin` route no longer in build output); `npx vitest run` — 158/158 passed; backend `pytest tests/` — full suite green (test_api_admin.py removed cleanly, no other test depended on it).
 - Post-deploy smoke check: `GET /admin` → Next.js not-found content confirmed (route removed); `GET /governance` → 200 (Administration tab settings editor still functional).
+
+## Validation Proof (Governance gates: durable ledger + patch approval — 2026-08-30)
+
+- Commits: `f52a919d` (persist investigation ledgers to OneLake), `74ba4eea`
+  (enforce human approval before patch execution), `3f877fda` (lint cleanup
+  the ledger commit left behind).
+- Pre-deploy: `ruff check src tests` clean (fixed 3 findings `f52a919d` had
+  left — that commit linted only its changed files, not the repository);
+  backend `pytest tests/` full suite green; `npm run lint` clean; 158/158
+  Vitest tests passed; `npm run build` succeeded; `terraform fmt -check` and
+  `validate` passed.
+- Mutation testing: all 8 approval-gate tests verified against 4 mutations
+  (remove self-approval check, drop case/whitespace normalisation, remove
+  missing-approver check, default the policy open). Each mutation is caught,
+  at both the service and HTTP layer.
+- Fabric capacity `aiopsdevcapg6ludc` (F4) was **Paused**, which fails
+  `fabric_workspace.ops` preconditions and blocks apply. Resumed to Active for
+  this deployment, then paused again afterwards.
+- Build/push: `governance-gates` (both images), ACR runs `cr7h`/`cr7m`.
+- Deploy: `deploy.sh apply -auto-approve` — 0 added / 3 changed / 0 destroyed,
+  all in-place. `terraform_data.foundry_agent[0]` was NOT recreated, so the
+  specialist instructions from the previous round are intact.
+- Post-deploy, live, authenticated with a real Entra token:
+  - Approval gate A — no approver → HTTP 400 `invalid_request`, citing
+    `agent_policy.require_human_approval`.
+  - Approval gate B — approver == requester → HTTP 400, "The approver must be
+    someone other than the requester".
+  - Approval gate C — distinct approver → gate passes and reaches the adapter
+    (HTTP 503, no execution adapter configured in dev). This is the important
+    case: it proves the gate is not blanket-refusing and that the live
+    enterprise setting is genuinely being read.
+  - Dry run → HTTP 202, approver falls back to requester (exempt branch).
+- Durable ledger, verified end-to-end against real OneLake (not a filesystem
+  stand-in as in the original commit):
+  - Ran a contextual investigation → ledger `ctx-7680489d3831`.
+  - Restarted revision `aiops-dev-api--0000135`; the ledger was still readable
+    afterwards. Before this change it lived in an in-memory OrderedDict and
+    would have been lost.
+  - Confirmed the blob exists in the lakehouse:
+    `Files/aiops/ledgers/ctx-7680489d3831.json` (353,409 bytes).
+- Known gap, not addressed here: `GET /agents/investigations` (list) still
+  reads only in-memory ledgers, so it reported 0 while the ledger was readable
+  by id. Fetch-by-id and restart survival both work; the list projection does
+  not yet enumerate OneLake.
