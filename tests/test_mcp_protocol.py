@@ -40,6 +40,8 @@ def test_initialize_and_exact_read_only_catalog(tmp_path):
         "network_topology", "hub_dependents", "traffic_flow", "firewall_nsg_gaps",
         "business_service_context", "application_context", "impact_context",
         "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context",
+        "cve_exposure", "cve_detail", "cve_attack_path",
+        "incidents", "remediation_plans", "remediation_opportunities",
     ]
 
 
@@ -47,10 +49,10 @@ def test_unknown_and_malformed_calls_are_protocol_errors(tmp_path):
     c = client(tmp_path)
     unknown = c.post("/api/v1/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "delete_everything", "arguments": {}}}, headers=auth())
-    assert unknown.json()["error"]["code"] == -32602
+    assert unknown.json()["result"]["isError"] is True
     malformed = c.post("/api/v1/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {"name": "traffic_flow", "arguments": {"source": "a"}}}, headers=auth())
-    assert malformed.json()["error"]["code"] == -32602
+    assert malformed.json()["result"]["isError"] is True
 
 
 def test_unauthenticated_request_is_rejected(tmp_path):

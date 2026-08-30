@@ -201,6 +201,7 @@ def test_configured_fabric_iq_loader_returns_governed_adapter(monkeypatch):
     class FakeRuntime:
         service = FakeService()
 
+    monkeypatch.setenv("AIOPS_ENABLE_FABRIC_IQ", "true")
     monkeypatch.setattr("api.runtime._fabric_runtime_from_environment", lambda: FakeRuntime())
     adapter = _load_fabric_iq_adapter()
     assert adapter is not None

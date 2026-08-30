@@ -102,7 +102,7 @@ GOVERNANCE_COMPARISON_SCENARIO = {
                 "client_id": "client-002",
                 "object_id": "principal-spn-002",
                 "secret_ref": "kv://secret-client-002",
-                "expires_at": "2026-08-15T23:59:59Z",  # Expiring soon (<30 days)
+                "expires_at": "2026-09-15T23:59:59Z",  # Expiring soon (<30 days)
                 "kind": "service_principal",
                 "active": True,
                 "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
