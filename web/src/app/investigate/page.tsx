@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { TopologyWorkspace } from "@/components/network/TopologyWorkspace";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
@@ -159,7 +159,16 @@ function modeDescription(mode: Mode): string {
     : "Resource IDs, paths, rules, CVEs, timestamps, raw evidence references, and diagnostic detail.";
 }
 
+/** Prerender-safe query-context boundary around the investigation workspace. */
 export default function InvestigationWorkspacePage() {
+  return (
+    <Suspense fallback={<div className="page-container"><div className="state-panel state-loading">Preparing investigation workspace…</div></div>}>
+      <InvestigationWorkspaceContent />
+    </Suspense>
+  );
+}
+
+function InvestigationWorkspaceContent() {
   const params = useSearchParams();
   const { scope } = useScope();
   const [entryType, setEntryType] = useState<EntryType>((params.get("type") as EntryType) || "BusinessService");
