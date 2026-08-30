@@ -5,12 +5,12 @@ from dataclasses import dataclass
 import httpx
 import pytest
 
+from api.scope import Scope
 from fabric.auth import FabricAuthConfig, build_credential, build_delta_storage_options
 from fabric.config import FabricRuntimeConfig
 from fabric.fabric_client import FabricClient
 from fabric.lakehouse_manager import LakehouseManager
 from fabric.workspace_manager import WorkspaceManager
-from api.scope import Scope
 from operations.tools import FabricIQToolAdapter
 
 

@@ -63,12 +63,12 @@ from onboarding.runtime import (
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
 from operations.foundry_agent import FoundryPromptAgent
-from operations.tools import FabricIQToolAdapter
 from operations.patching import (
     InMemoryPatchRunStore,
     PatchingService,
     UnconfiguredPatchExecutionAdapter,
 )
+from operations.tools import FabricIQToolAdapter
 from semantic.hybrid_query import HybridQueryService
 from semantic.live_operations import (
     LiveRemediationPlanner,

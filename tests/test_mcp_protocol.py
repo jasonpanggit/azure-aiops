@@ -1,12 +1,12 @@
+from fastapi.testclient import TestClient
+
+from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
-from api.app import create_app
 from onboarding.service import SubscriptionOnboardingService
-from fastapi.testclient import TestClient
-
 
 TOKEN = "mcp-test-token-0123456789"
 SUB = "11111111-1111-1111-1111-111111111111"

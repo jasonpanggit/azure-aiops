@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[1]
 IDENTITY_CONSUMERS = (
     ROOT / "src/api",

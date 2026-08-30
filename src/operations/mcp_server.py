@@ -10,12 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import time
-import uuid
 from collections.abc import Mapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-
 
 LOGGER = logging.getLogger("aiops.mcp")
 MCP_VERSION = "2025-06-18"
@@ -258,4 +256,4 @@ class MCPServer:
         }
 
 
-__all__ = ["MCPServer", "MCP_VERSION", "REVIEWED_TOOLS", "tool_definitions"]
+__all__ = ["MCP_VERSION", "REVIEWED_TOOLS", "MCPServer", "tool_definitions"]

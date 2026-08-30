@@ -11,8 +11,9 @@ import hashlib
 import json
 from typing import Any, Literal
 
-from api.scope import Scope
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from api.scope import Scope
 
 MAX_SNAPSHOT_BYTES = 128 * 1024
 MAX_SELECTED_RESOURCES = 50

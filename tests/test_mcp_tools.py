@@ -1,5 +1,5 @@
-from operations.mcp_server import MCPServer, REVIEWED_TOOLS, tool_definitions
-from operations.tools import STATUS_EMPTY, STATUS_OK, ToolResult
+from operations.mcp_server import REVIEWED_TOOLS, MCPServer, tool_definitions
+from operations.tools import STATUS_EMPTY, STATUS_OK
 
 
 def test_catalog_has_bounded_json_schemas():

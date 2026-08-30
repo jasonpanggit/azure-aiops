@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from operations.autonomous_investigation import ledger_store, run_context_investigation
-from operations.mcp_server import MCPServer, MAX_MESSAGE_BYTES
+from operations.mcp_server import MAX_MESSAGE_BYTES, MCPServer
 from operations.page_context import PageSnapshot
 
 from ..dependencies import Context, CurrentPrincipal, ReadScope

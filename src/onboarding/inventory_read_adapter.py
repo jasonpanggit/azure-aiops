@@ -35,7 +35,7 @@ class InventoryReadAdapter:
         }
 
     @staticmethod
-    def from_output_dir(output_dir: str) -> "InventoryReadAdapter":
+    def from_output_dir(output_dir: str) -> InventoryReadAdapter:
         """Compatibility factory for the legacy local query seam.
 
         The adapter owns the old graph-shaped storage translation. Consumers
@@ -101,8 +101,8 @@ class InventoryReadAdapter:
 
     def _legacy_rows(self, entity: str) -> list[dict[str, Any]]:
         """Read only the compatibility graph projection with path checks."""
-        from pathlib import Path
         import json
+        from pathlib import Path
 
         root = Path(self.output_dir).expanduser().resolve()
         current = root / "current"

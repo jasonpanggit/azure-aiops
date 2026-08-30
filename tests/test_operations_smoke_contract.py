@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 SCRIPT = Path("scripts/phase9-operations-smoke.sh").read_text()
 
 
