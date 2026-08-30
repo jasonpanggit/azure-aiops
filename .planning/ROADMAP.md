@@ -423,3 +423,49 @@ Deprecation is **not** a forcing function: we are on the current Responses API w
 zero exposure to the Aug 2026 Assistants retirement or the Mar 2026 connected-agent
 removal (verified by grep — no `assistants`/`/threads`/`/runs` usage). Migrate for
 capability when we need it, not for survival.
+
+## Decision: the orchestrator is the deterministic loop, not `operations-copilot` (2026-08-30)
+
+The stated design was "operations-copilot orchestrates and delegates to
+specialists." That is not what runs, and after tracing it end to end the
+current shape is the better one. Recording why, because the gap between the
+stated design and the running system was itself a source of confusion.
+
+**What actually runs.** `run_context_investigation` in
+`src/operations/autonomous_investigation.py` is the orchestrator. It selects
+specialists, executes their tools through the scope-filtered registry, records
+every call in the ledger, and produces a deterministic synthesis. A Foundry
+prompt agent is then handed the already-collected, already-scoped evidence and
+asked to narrate it. Narration never invents facts and never fails the
+investigation (`autonomous_investigation.py:425-428`).
+
+**What `operations-copilot` is.** Evidence, not inference:
+- `GET /agents/operations-copilot?api-version=v1` → `tools: NONE`. It is
+  physically incapable of delegating.
+- `grep -rn "operations-copilot" src/**/*.py` → **zero** references. Its only
+  appearances are the Terraform default for `FOUNDRY_AGENT_NAME`
+  (`variables.tf:369`) and test fixtures.
+It is the default narrator identity, not an orchestrator.
+
+**Why not promote it.** Delegation would move specialist and tool selection
+into model output. Three current guarantees depend on that not happening:
+scope filtering is applied to a fixed tool registry before execution; the
+ledger is a complete record of what ran, because what ran was decided
+deterministically; and a specialist that fails degrades to fewer findings
+rather than to an unpredictable plan. An LLM router would trade all three for
+flexibility we have not yet shown we need.
+
+**What was actually broken** was narrower and is now fixed: routing consulted
+`page_kind` alone and never the question, so a change question asked on the
+Network page ran only the network specialist. Selection is now page-anchored
+*and* question-aware (`2d4731a1`), verified live: "what changed recently?" on
+the Network page routes `[network, change]`; "who owns this and is there an
+approval?" routes `[network, governance]`; a topic-free question stays
+`[network]`.
+
+**Consequence for the MAF evaluation.** MAF's headline capability is exactly
+the thing we are choosing not to adopt: model-driven multi-agent
+orchestration. So the MAF question is not "does it work" but "do we want
+model-chosen delegation at all, given governance depends on deterministic
+selection?" That is now the real question, and it should be answered against
+measured agent quality rather than framework features.
