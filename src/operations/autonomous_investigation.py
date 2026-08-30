@@ -109,6 +109,47 @@ def _select_agents(objective: str) -> list[AgentDefinition]:
     return selected + [executive]
 
 
+def _select_context_specialists(
+    *,
+    page_kind: str,
+    question: str,
+    page_specialists: Mapping[str, tuple[str, ...]],
+) -> list[str]:
+    """Choose specialists for one page question: page anchor first, then topic.
+
+    The page's own specialists always lead, so the drawer keeps answering as
+    the specialist for the page the operator is looking at. Specialists whose
+    keywords match the question are appended after them, because operators
+    routinely ask cross-cutting questions without changing page -- "what
+    changed recently?" asked on the Network page is a change question, and
+    previously only the network specialist ever ran.
+
+    Selection stays deterministic keyword matching over the fixed catalog: no
+    model output chooses a specialist, the result is capped at
+    MAX_CONTEXT_SPECIALISTS, and each specialist's tools remain scope-filtered,
+    so this widens topical relevance without widening data access.
+
+    ``executive_summary`` is excluded: it is a synthesis agent with no tools of
+    its own and depends on every other specialist, so admitting it here would
+    spend the budget without gathering evidence.
+    """
+    ordered: list[str] = []
+    for specialist_id in page_specialists.get(page_kind, ()):
+        if specialist_id not in ordered:
+            ordered.append(specialist_id)
+
+    lowered = question.casefold()
+    for agent in AGENTS:
+        if len(ordered) >= MAX_CONTEXT_SPECIALISTS:
+            break
+        if agent.id in ordered or agent.id == "executive_summary":
+            continue
+        if any(marker in lowered for marker in agent.keywords):
+            ordered.append(agent.id)
+
+    return ordered[:MAX_CONTEXT_SPECIALISTS]
+
+
 def _tool_args(tool: str, objective: str, subject: str) -> dict[str, Any]:
     if tool in {"business_service_context", "application_context"}:
         return {"name": subject} if subject else {}
@@ -605,10 +646,14 @@ def run_context_investigation(
         for record in snapshot.freshness
         if record.status != "fresh"
     ]
-    # Contextual selection is deliberately narrower than the full autonomous
-    # catalog: page kind, not model output, chooses the specialist.
-    # Each page_kind maps to one or more specialists; specialists are invoked
-    # in order and bounded by MAX_CONTEXT_SPECIALISTS.
+    # Contextual selection is anchored to the page: the page's own specialist
+    # always runs first, so a Network page never stops answering as the
+    # network specialist. The operator's question may then pull in additional
+    # specialists, because a question asked on one page routinely spans
+    # another ("what changed?" on the Network page is a change question).
+    # Model output still never chooses; matching is deterministic keyword
+    # matching over the same catalog, and every specialist remains bounded by
+    # MAX_CONTEXT_SPECIALISTS and scope-filtered tool access.
     page_specialists = {
         # Direct page_kind → specialist mappings (preferred for Phase 09-09 expansion)
         "network_page": ("network",),
@@ -629,8 +674,13 @@ def run_context_investigation(
         "governance": ("governance",),
         "resource": ("governance",),
     }
-    selected_ids = page_specialists.get(snapshot.page_kind, ())[:MAX_CONTEXT_SPECIALISTS]
+    selected_ids = _select_context_specialists(
+        page_kind=snapshot.page_kind,
+        question=snapshot.question,
+        page_specialists=page_specialists,
+    )
     selected = [agent for agent in AGENTS if agent.id in selected_ids]
+    selected.sort(key=lambda agent: selected_ids.index(agent.id))
     stages.append("delegate")
     remaining_tools = MAX_CONTEXT_TOOL_CALLS
     for agent in selected:
