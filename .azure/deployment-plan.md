@@ -310,7 +310,14 @@ replaced.
     would have been lost.
   - Confirmed the blob exists in the lakehouse:
     `Files/aiops/ledgers/ctx-7680489d3831.json` (353,409 bytes).
-- Known gap, not addressed here: `GET /agents/investigations` (list) still
-  reads only in-memory ledgers, so it reported 0 while the ledger was readable
-  by id. Fetch-by-id and restart survival both work; the list projection does
-  not yet enumerate OneLake.
+- CORRECTION: an earlier draft of this entry claimed `GET
+  /agents/investigations` was a broken list projection returning 0. That was a
+  misreading. There is no list endpoint -- the routes are `POST
+  /investigations` (create), `GET /investigations/{ledger_id}`, and `POST
+  /investigations/{ledger_id}/actions`. The probe issued GET against a
+  POST-only path and got `405 Method Not Allowed`, whose body has no `data`
+  key; the check reported that absence as a count of 0. No such gap exists.
+- Genuine limitation: ledgers are reachable only by id. Enumerating an
+  operator's investigation history would need both a new route and a listing
+  capability on the document store (`LedgerDocumentStore` exposes `read`/`put`
+  only). Not required by any current caller.
