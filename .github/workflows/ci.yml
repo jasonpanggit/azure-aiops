@@ -65,5 +65,6 @@ jobs:
           exit-code: "0"
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
+        continue-on-error: true
         with:
           sarif_file: trivy-results.sarif
