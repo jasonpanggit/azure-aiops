@@ -254,48 +254,82 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
 
     app.include_router(situation_routes.router)
 
-    @app.middleware("http")
-    async def _observe(request: Request, call_next):
-        timer = Timer()
-        correlation_id = _correlation_id(request)
-        request.state.correlation_id = correlation_id
-        try:
-            response = await call_next(request)
-        except Exception:
-            # The exception handlers below own the response body; record the
-            # failure here so a crash is never invisible to telemetry.
+    class _ObserveMiddleware:
+        """Pure ASGI request/response observer.
+
+        This deliberately avoids ``@app.middleware("http")``, which Starlette
+        implements via ``BaseHTTPMiddleware``. That base class runs the
+        downstream app in a separate task and re-raises any exception through
+        ``call_next`` *even after* our own ``@app.exception_handler`` already
+        produced and sent a valid JSON error response -- uvicorn then logs
+        "Exception in ASGI application" and tears down the connection after
+        the body was written, which manifests to browser `fetch()` callers as
+        a raw network failure instead of the intended 404/500 JSON. A plain
+        ASGI middleware observes the same `send` callable the handlers use,
+        so it never re-raises an already-handled exception.
+        """
+
+        def __init__(self, inner_app: FastAPI) -> None:
+            self.app = inner_app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+
+            request = Request(scope, receive=receive)
+            timer = Timer()
+            correlation_id = _correlation_id(request)
+            request.state.correlation_id = correlation_id
+            status_holder: dict[str, int] = {}
+
+            async def send_wrapper(message):
+                if message["type"] == "http.response.start":
+                    status_holder["status_code"] = message["status"]
+                    headers = message.setdefault("headers", [])
+                    headers.append((b"x-correlation-id", correlation_id.encode("latin-1")))
+                await send(message)
+
+            try:
+                await self.app(scope, receive, send_wrapper)
+            except Exception:
+                # The exception handlers below already own the response body
+                # for domain exceptions; this only fires for a genuine
+                # unhandled crash, so record it and re-raise unchanged.
+                telemetry.record_request(
+                    route=_route_label(request),
+                    method=request.method,
+                    status_code=500,
+                    duration_ms=timer.elapsed_ms(),
+                )
+                logger.error(
+                    "api_request_failed correlation_id=%s route=%s method=%s",
+                    correlation_id,
+                    _route_label(request),
+                    request.method,
+                )
+                raise
+
+            route = _route_label(request)
+            status_code = status_holder.get("status_code", 500)
             telemetry.record_request(
-                route=_route_label(request),
+                route=route,
                 method=request.method,
-                status_code=500,
+                status_code=status_code,
                 duration_ms=timer.elapsed_ms(),
             )
-            logger.error(
-                "api_request_failed correlation_id=%s route=%s method=%s",
+            if status_code in (401, 403):
+                telemetry.record_denied(route=route, reason=str(status_code))
+            logger.info(
+                "api_request correlation_id=%s route=%s method=%s status=%s duration_ms=%.2f",
                 correlation_id,
-                _route_label(request),
+                route,
                 request.method,
+                status_code,
+                timer.elapsed_ms(),
             )
-            raise
-        route = _route_label(request)
-        telemetry.record_request(
-            route=route,
-            method=request.method,
-            status_code=response.status_code,
-            duration_ms=timer.elapsed_ms(),
-        )
-        if response.status_code in (401, 403):
-            telemetry.record_denied(route=route, reason=str(response.status_code))
-        response.headers["X-Correlation-ID"] = correlation_id
-        logger.info(
-            "api_request correlation_id=%s route=%s method=%s status=%s duration_ms=%.2f",
-            correlation_id,
-            route,
-            request.method,
-            response.status_code,
-            timer.elapsed_ms(),
-        )
-        return response
+
+    app.add_middleware(_ObserveMiddleware)
 
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError) -> JSONResponse:
