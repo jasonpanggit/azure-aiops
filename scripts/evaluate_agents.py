@@ -51,6 +51,14 @@ DEFAULT_API = (
 )
 DEFAULT_RESOURCE = "api://306c1437-0e7d-43bd-940b-79b878166331"
 REQUEST_TIMEOUT_SECONDS = 300
+# Each investigation occupies a worker for 15-100s and the dev API runs a
+# single replica, so firing cases back to back saturates it and the gateway
+# answers 503 "no healthy upstream". That is a harness artefact, not an agent
+# result, so pace the run and retry transient gateway errors.
+PAUSE_BETWEEN_CASES_SECONDS = 12
+TRANSIENT_STATUSES = frozenset({429, 502, 503, 504})
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 20
 
 
 @dataclass(frozen=True)
@@ -166,13 +174,36 @@ def _investigate(api: str, token: str, case: Case) -> tuple[dict[str, Any], floa
     return body.get("data", {}), (time.monotonic() - started) * 1000
 
 
-def _run_case(api: str, token: str, case: Case) -> Result:
-    try:
-        data, latency = _investigate(api, token, case)
-    except urllib.error.HTTPError as exc:
-        return Result(case.case_id, ok=False, error=f"HTTP {exc.code}: {exc.read()[:200]!r}")
-    except Exception as exc:  # noqa: BLE001 - one bad case must not end the run
-        return Result(case.case_id, ok=False, error=str(exc))
+def _run_case(api: str, resource: str, case: Case) -> Result:
+    """Run one case, retrying transient gateway failures.
+
+    The token is acquired per attempt: a full run takes long enough that a
+    token acquired at the start can expire before the last case, which
+    previously surfaced as a spurious 401.
+    """
+    last_error = ""
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            data, latency = _investigate(api, _token(resource), case)
+            break
+        except urllib.error.HTTPError as exc:
+            body = exc.read()[:200]
+            last_error = f"HTTP {exc.code}: {body!r}"
+            if exc.code in TRANSIENT_STATUSES and attempt < MAX_ATTEMPTS:
+                print(f"    transient {exc.code}, retrying in {RETRY_BACKOFF_SECONDS}s "
+                      f"(attempt {attempt}/{MAX_ATTEMPTS})")
+                time.sleep(RETRY_BACKOFF_SECONDS)
+                continue
+            return Result(case.case_id, ok=False, error=last_error)
+        except Exception as exc:  # noqa: BLE001 - one bad case must not end the run
+            last_error = str(exc)
+            if attempt < MAX_ATTEMPTS:
+                print(f"    {last_error[:80]}, retrying in {RETRY_BACKOFF_SECONDS}s")
+                time.sleep(RETRY_BACKOFF_SECONDS)
+                continue
+            return Result(case.case_id, ok=False, error=last_error)
+    else:
+        return Result(case.case_id, ok=False, error=last_error)
 
     seen: list[str] = []
     for call in data.get("tool_calls", []):
@@ -270,13 +301,17 @@ def main() -> int:
         if not cases:
             raise SystemExit(f"no cases matched {sorted(wanted)}")
 
-    token = _token(args.resource)
+    # Verify credentials once up front so a misconfigured run fails fast
+    # rather than after ten slow cases.
+    _token(args.resource)
     print(f"Evaluating {len(cases)} cases against {args.api}\n")
 
     results: list[Result] = []
     for index, case in enumerate(cases, start=1):
+        if index > 1:
+            time.sleep(PAUSE_BETWEEN_CASES_SECONDS)
         print(f"[{index}/{len(cases)}] {case.case_id:18} {case.question[:58]}")
-        result = _run_case(args.api, token, case)
+        result = _run_case(args.api, args.resource, case)
         results.append(result)
         if result.error:
             print(f"    ERROR {result.error}")

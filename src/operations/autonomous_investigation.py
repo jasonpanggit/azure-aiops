@@ -490,6 +490,33 @@ def _synthesis(
     return synthesis
 
 
+def _quality_metrics(
+    agent_runs: list[dict[str, Any]], tool_calls: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Score answer quality over the specialists' own findings.
+
+    ``groundedness`` is the fraction of specialist findings backed by at least
+    one piece of evidence; ``tool_correctness`` is the fraction of tool calls
+    that were not denied by scope.
+
+    Both report ``None`` rather than 0.0 when there is nothing to score. A run
+    that produced no findings has not been shown to be ungrounded -- it has
+    not been measured at all -- and collapsing those two cases to the same
+    number would make an unmeasured run look like a failing one, which is
+    exactly the kind of misreading these metrics exist to prevent.
+    """
+    findings = [finding for run in agent_runs for finding in run.get("findings", [])]
+    grounded = [f for f in findings if f.get("evidence_count", 0) > 0]
+    undenied = [c for c in tool_calls if c.get("status") != STATUS_DENIED]
+    return {
+        "groundedness": round(len(grounded) / len(findings), 3) if findings else None,
+        "tool_correctness": (
+            round(len(undenied) / len(tool_calls), 3) if tool_calls else None
+        ),
+        "findings_scored": len(findings),
+    }
+
+
 def _evaluate(started: float, agent_runs: list[dict[str, Any]], reconciliation: dict[str, Any], scope: Scope, llm_calls: int = 0) -> dict[str, Any]:
     tool_calls = [call for run in agent_runs for call in run.get("tool_calls", [])]
     grounded = [finding for run in agent_runs for finding in run.get("findings", []) if finding.get("evidence_count", 0) > 0]
@@ -856,16 +883,13 @@ def run_context_investigation(
             # actually serves the page drawer could not be scored -- quality
             # there could only be asserted, never measured. Same definitions
             # as `_evaluate` so the two paths stay comparable.
-            "groundedness": round(
-                len([f for f in findings if f.get("evidence_count", 0) > 0])
-                / max(1, len(findings)),
-                3,
-            ),
-            "tool_correctness": round(
-                sum(call.get("status") != STATUS_DENIED for call in tool_calls)
-                / max(1, len(tool_calls)),
-                3,
-            ),
+            #
+            # Scored over the specialists' findings, not the top-level
+            # `findings`: those are derived from the submitted page snapshot,
+            # so a caller that posts no evidence rows would score 0.0 while
+            # the specialists were in fact returning fully evidence-backed
+            # answers. That measures the caller, not the agent.
+            **_quality_metrics(agent_runs, tool_calls),
         },
     }
     return ledger

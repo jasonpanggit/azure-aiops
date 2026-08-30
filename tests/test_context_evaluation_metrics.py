@@ -57,39 +57,61 @@ def test_contextual_evaluation_reports_groundedness(tmp_path) -> None:
     """Without this the drawer's answer quality cannot be scored at all."""
     evaluation = _run(tmp_path)["evaluation"]
     assert "groundedness" in evaluation
-    assert isinstance(evaluation["groundedness"], float)
-    assert 0.0 <= evaluation["groundedness"] <= 1.0
+    if evaluation["groundedness"] is not None:
+        assert 0.0 <= evaluation["groundedness"] <= 1.0
 
 
 def test_contextual_evaluation_reports_tool_correctness(tmp_path) -> None:
     evaluation = _run(tmp_path)["evaluation"]
     assert "tool_correctness" in evaluation
-    assert isinstance(evaluation["tool_correctness"], float)
-    assert 0.0 <= evaluation["tool_correctness"] <= 1.0
+    if evaluation["tool_correctness"] is not None:
+        assert 0.0 <= evaluation["tool_correctness"] <= 1.0
 
 
-def test_groundedness_matches_the_evidence_backed_fraction(tmp_path) -> None:
-    """The number must be derived from the findings, not defaulted.
+def test_groundedness_is_scored_over_specialist_findings(tmp_path) -> None:
+    """The score must reflect what the specialists found, not what was posted.
 
-    A metric that always reports 1.0 -- or always 0.0 -- would satisfy a range
-    assertion while telling an operator nothing, so recompute it here from the
-    ledger's own findings and require agreement.
+    Top-level `findings` are derived from the submitted page snapshot, so a
+    caller that posts no evidence rows leaves it empty. Scoring that would
+    report 0.0 for an investigation whose specialists returned fully
+    evidence-backed answers -- measuring the caller, not the agent.
     """
     ledger = _run(tmp_path)
-    findings = ledger["findings"]
-    expected = round(
-        len([f for f in findings if f.get("evidence_count", 0) > 0]) / max(1, len(findings)),
-        3,
+    specialist_findings = [
+        f for run in ledger["agent_runs"] for f in run.get("findings", [])
+    ]
+    expected = (
+        round(
+            len([f for f in specialist_findings if f.get("evidence_count", 0) > 0])
+            / len(specialist_findings),
+            3,
+        )
+        if specialist_findings
+        else None
     )
     assert ledger["evaluation"]["groundedness"] == expected
+
+
+def test_an_unmeasured_run_reports_none_not_zero(tmp_path) -> None:
+    """No findings means unmeasured, which is not the same as ungrounded.
+
+    Collapsing both to 0.0 makes a run that produced nothing look like a
+    failing one, which is the misreading these metrics exist to prevent.
+    """
+    from operations.autonomous_investigation import _quality_metrics
+
+    assert _quality_metrics([], [])["groundedness"] is None
+    assert _quality_metrics([], [])["tool_correctness"] is None
+    assert _quality_metrics([{"findings": []}], [])["groundedness"] is None
 
 
 def test_tool_correctness_matches_the_undenied_fraction(tmp_path) -> None:
     ledger = _run(tmp_path)
     calls = ledger["tool_calls"]
-    expected = round(
-        sum(call.get("status") != "denied" for call in calls) / max(1, len(calls)),
-        3,
+    expected = (
+        round(sum(c.get("status") != "denied" for c in calls) / len(calls), 3)
+        if calls
+        else None
     )
     assert ledger["evaluation"]["tool_correctness"] == expected
 
@@ -141,5 +163,6 @@ def test_metrics_are_present_even_when_no_tools_resolve(tmp_path) -> None:
     the drawer rather than degrade it.
     """
     evaluation = _run(tmp_path, "Who owns this and is there an approval?")["evaluation"]
-    assert evaluation["groundedness"] is not None
-    assert evaluation["tool_correctness"] is not None
+    assert "groundedness" in evaluation
+    assert "tool_correctness" in evaluation
+    assert "findings_scored" in evaluation
