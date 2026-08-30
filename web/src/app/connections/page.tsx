@@ -78,6 +78,10 @@ export default function ConnectionsPage() {
   const stale = rows.filter((connection) => connection.health_status === "stale").length;
   const failed = rows.filter((connection) => ["failed", "unhealthy"].includes(connection.health_status)).length;
   const unmapped = rows.filter((connection) => !connection.business_service || !connection.environment).length;
+  const staleConnections = useMemo(
+    () => rows.filter((connection) => connection.health_status === "stale"),
+    [rows],
+  );
 
   useEffect(() => {
     if (!connections.loading && !connections.error && rows.length === 0) {
@@ -196,6 +200,62 @@ export default function ConnectionsPage() {
     }
   }
 
+  /** Kicks off a manual sync for one connection and polls until it reaches a terminal stage. */
+  async function syncConnection(connection: SubscriptionConnection) {
+    setActionError("");
+    setActionMessage("");
+    setRunningAction(`sync:${connection.connection_id}`);
+    try {
+      const result = await connectionsApi.sync(connection.connection_id, "manual");
+      setSyncProgress({ connectionId: connection.connection_id, state: result.data.sync_state });
+      const finalState = await pollSyncState(connection.connection_id);
+      setSyncProgress(null);
+      if (finalState.status.toLowerCase() === "failed") {
+        setActionError(finalState.message ?? finalState.stage_message ?? `Sync failed for ${connection.name}.`);
+      } else {
+        setActionMessage(`${connection.name} is up to date (${finalState.record_count ?? 0} records synced).`);
+      }
+      setRefreshKey((value) => value + 1);
+    } catch (reason) {
+      setSyncProgress(null);
+      setActionError(reason instanceof Error ? reason.message : `Unable to sync ${connection.name}.`);
+    } finally {
+      setRunningAction("");
+    }
+  }
+
+  /** Syncs every stale connection sequentially, reporting a single combined result. */
+  async function syncAllStale() {
+    if (staleConnections.length === 0) return;
+    setActionError("");
+    setActionMessage("");
+    setRunningAction("sync-all-stale");
+    const failures: string[] = [];
+    try {
+      for (const connection of staleConnections) {
+        try {
+          const result = await connectionsApi.sync(connection.connection_id, "manual");
+          setSyncProgress({ connectionId: connection.connection_id, state: result.data.sync_state });
+          const finalState = await pollSyncState(connection.connection_id);
+          if (finalState.status.toLowerCase() === "failed") {
+            failures.push(connection.name);
+          }
+        } catch {
+          failures.push(connection.name);
+        }
+      }
+      setSyncProgress(null);
+      if (failures.length > 0) {
+        setActionError(`Sync failed for: ${failures.join(", ")}.`);
+      } else {
+        setActionMessage(`Synced ${staleConnections.length} stale subscription connection${staleConnections.length === 1 ? "" : "s"}.`);
+      }
+      setRefreshKey((value) => value + 1);
+    } finally {
+      setRunningAction("");
+    }
+  }
+
   async function startEdit(connection: SubscriptionConnection) {
     setShowOnboarding(false);
     setActionError("");
@@ -295,6 +355,40 @@ export default function ConnectionsPage() {
         <MetricCard label="Failed" value={failed} detail="Validation, access, or sync failures" tone={failed ? "critical" : "success"} />
         <MetricCard label="Context gaps" value={unmapped} detail="Missing business service or environment metadata" tone={unmapped ? "warning" : "success"} />
       </div>
+
+      {staleConnections.length > 0 && (
+        <div className="callout callout-warning stale-connections-callout">
+          <strong>
+            {staleConnections.length} subscription connection{staleConnections.length === 1 ? "" : "s"} need{staleConnections.length === 1 ? "s" : ""} a knowledge sync
+          </strong>
+          <ul className="stale-connections-list">
+            {staleConnections.map((connection) => (
+              <li key={connection.connection_id}>
+                <span>
+                  {connection.name} <span className="table-secondary">({connection.subscription_id})</span> — last synced{" "}
+                  {relativeTime(connection.last_successful_sync_at)}
+                </span>
+                <button
+                  type="button"
+                  className="button button-quiet"
+                  disabled={Boolean(runningAction)}
+                  onClick={() => syncConnection(connection)}
+                >
+                  {runningAction === `sync:${connection.connection_id}` ? "Syncing…" : "Sync now"}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={Boolean(runningAction)}
+            onClick={() => syncAllStale()}
+          >
+            {runningAction === "sync-all-stale" ? "Syncing all…" : "Sync all stale"}
+          </button>
+        </div>
+      )}
 
       {showOnboarding && (
         <form className="card onboarding-form" onSubmit={onboard}>
@@ -468,6 +562,14 @@ export default function ConnectionsPage() {
                     <td><strong>{relativeTime(connection.last_successful_sync_at)}</strong><div className="table-secondary">{formatDateTime(connection.last_successful_sync_at)}</div></td>
                     <td>
                       <div className="row-actions">
+                        <button
+                          type="button"
+                          className="button button-quiet"
+                          disabled={Boolean(runningAction)}
+                          onClick={() => syncConnection(connection)}
+                        >
+                          {runningAction === `sync:${connection.connection_id}` ? "Syncing…" : "Sync now"}
+                        </button>
                         <button type="button" className="button button-quiet" onClick={() => startEdit(connection)}>Edit</button>
                         <button
                           type="button"
