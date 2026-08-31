@@ -75,6 +75,7 @@ locals {
       "compute_vm_get",
       "appservice_webapp_get",
       "functionapp_get",
+      "arm_execute_query",
     ]
     incident = [
       "monitor_activitylog_list",
@@ -83,10 +84,13 @@ locals {
     ]
     change = [
       "arm_get_deployment_status",
+      "monitor_activitylog_list",
+      "arm_execute_query",
     ]
     governance = [
       "policy_assignment_list",
       "role_assignment_list",
+      "arm_execute_query",
     ]
     remediation = [
       "advisor_recommendation_list",

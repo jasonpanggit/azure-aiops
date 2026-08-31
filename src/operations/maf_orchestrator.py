@@ -19,40 +19,6 @@ ENV_AGENT_ORCHESTRATION_MODE = "AIOPS_AGENT_ORCHESTRATION_MODE"
 MODE_DETERMINISTIC = "deterministic"
 MODE_MAF = "maf"
 
-_QUESTION_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "network": (
-        "network",
-        "traffic",
-        "firewall",
-        "nsg",
-        "route",
-        "blast",
-        "hub",
-        "vnet",
-        "subnet",
-        "peering",
-        "topology",
-        "depend",
-        "dependency",
-        "dependencies",
-    ),
-    "vulnerability": ("cve", "vulnerab", "exploit", "exposure", "risk"),
-    "patch": ("patch", "kb", "update", "sla"),
-    "incident": ("incident", "outage", "alert", "root cause", "timeline"),
-    "change": ("change", "changed", "deployment", "configuration"),
-    "governance": (
-        "owner",
-        "owned",
-        "approval",
-        "approver",
-        "governance",
-        "policy",
-        "scope",
-        "exception",
-    ),
-    "remediation": ("remediat", "fix", "mitigat", "rollback", "plan"),
-}
-
 
 @dataclass(frozen=True)
 class OrchestrationDecision:
@@ -106,15 +72,21 @@ def select_specialists_for_turn(
     MAF mode inverts that: Operations Copilot owns intent selection, then
     delegates to the matching specialists. The current page is used only as a
     fallback when the question has no specialist signal.
+
+    Keyword matching is sourced from each catalog entry's own ``keywords``
+    field (the single source of truth already used by the deterministic
+    investigation path) rather than a second, independently-maintained table,
+    so the two orchestration paths cannot silently drift apart.
     """
 
     lowered = question.casefold()
-    known_ids = [getattr(agent, "id", "") for agent in catalog]
     selected: list[str] = []
-    for agent_id in known_ids:
+    for agent in catalog:
+        agent_id = getattr(agent, "id", "")
         if agent_id == "executive_summary":
             continue
-        if any(marker in lowered for marker in _QUESTION_KEYWORDS.get(agent_id, ())):
+        keywords = getattr(agent, "keywords", None) or ()
+        if any(marker in lowered for marker in keywords):
             _append_unique(selected, agent_id, limit=limit)
 
     if selected:

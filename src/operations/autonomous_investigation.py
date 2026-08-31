@@ -67,12 +67,12 @@ class AgentDefinition:
 
 
 AGENTS: tuple[AgentDefinition, ...] = (
-    AgentDefinition("network", "Network Agent", "Investigates topology, traffic paths, firewall/NSG gaps, and blast radius.", ("network_topology", "firewall_nsg_gaps"), ("network", "traffic", "firewall", "nsg", "route", "blast", "hub")),
+    AgentDefinition("network", "Network Agent", "Investigates topology, traffic paths, firewall/NSG gaps, and blast radius.", ("network_topology", "firewall_nsg_gaps"), ("network", "traffic", "firewall", "nsg", "route", "blast", "hub", "vnet", "subnet", "peering", "topology", "depend", "dependency", "dependencies")),
     AgentDefinition("vulnerability", "Vulnerability Agent", "Investigates CVE exposure, reachability, exploitability, and affected services.", ("cve_exposure", "risk_context"), ("cve", "vulnerab", "exploit", "exposure", "risk")),
     AgentDefinition("patch", "Patch Agent", "Investigates patch priorities, KB remediation, and validation expectations.", ("cve_exposure", "remediation_plans"), ("patch", "kb", "update", "sla")),
     AgentDefinition("incident", "Incident Agent", "Investigates incident timeline, root-cause candidates, unknowns, and validation steps.", ("incidents",), ("incident", "outage", "alert", "root cause", "timeline")),
     AgentDefinition("change", "Change Agent", "Investigates recent changes and correlates them to operational symptoms.", ("incidents", "search"), ("change", "changed", "deployment", "configuration")),
-    AgentDefinition("governance", "Governance Agent", "Investigates owners, scope, approvals, exceptions, and policy/accountability context.", ("business_service_context", "application_context", "risk_context"), ("owner", "approval", "governance", "policy", "scope", "exception")),
+    AgentDefinition("governance", "Governance Agent", "Investigates owners, scope, approvals, exceptions, and policy/accountability context.", ("business_service_context", "application_context", "risk_context"), ("owner", "owned", "approval", "approver", "governance", "policy", "scope", "exception")),
     AgentDefinition("remediation", "Remediation Agent", "Investigates safe remediation options, rollback, validation, and governed handoff.", ("remediation_opportunities", "remediation_plans"), ("remediat", "fix", "mitigat", "rollback", "plan")),
     AgentDefinition("executive_summary", "Executive Summary Agent", "Synthesizes grounded findings into business impact, decisions, and recommended plan.", (), ("executive", "summary", "decision"), ("network", "vulnerability", "patch", "incident", "change", "governance", "remediation")),
 )
