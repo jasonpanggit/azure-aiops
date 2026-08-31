@@ -620,7 +620,9 @@ def run_autonomous_investigation(
             try:
                 agent_runs.append(future.result(timeout=0))
             except Exception as exc:  # noqa: BLE001 - record agent failure in the ledger.
-                agent_runs.append(_failed_run(futures[future], f"failed: {exc.__class__.__name__}"))
+                agent = futures[future]
+                _LOGGER.exception("agent %s failed during investigation", agent.id)
+                agent_runs.append(_failed_run(agent, f"failed: {exc.__class__.__name__}: {exc}"))
         unfinished = [agent for future, agent in futures.items() if not future.done()]
         if unfinished:
             stop_reason = f"timeout after {timeout_seconds}s; unfinished agents: {', '.join(agent.id for agent in unfinished)}"
