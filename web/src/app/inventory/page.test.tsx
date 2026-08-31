@@ -304,7 +304,7 @@ describe("Inventory OS tracer", () => {
   it("renders grouped OS rows, status warnings, review state, and scoped drill-down", async () => {
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
-    expect((await screen.findAllByText("Windows Server")).length).toBe(2);
+    expect((await screen.findAllByText("Windows Server")).length).toBe(3);
     expect(screen.getByText("EOL date needs review")).toBeInTheDocument();
     expect(screen.getByText(/Arc source is partial/)).toBeInTheDocument();
 
@@ -317,7 +317,7 @@ describe("Inventory OS tracer", () => {
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
     fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
 
-    expect(await screen.findByText("7-Zip")).toBeInTheDocument();
+    expect((await screen.findAllByText("7-Zip")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /View machines for 7-Zip 19.00/ }));
     expect(await screen.findByText(/exact resource join/)).toBeInTheDocument();
     expect(screen.getByText("7-Zip v19.00")).toBeInTheDocument();

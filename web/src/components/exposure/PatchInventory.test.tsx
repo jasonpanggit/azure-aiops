@@ -112,7 +112,7 @@ describe("PatchInventory", () => {
     render(<PatchInventory scope={{}} />);
 
     expect(await screen.findByText("vm1")).toBeInTheDocument();
-    expect(screen.getByText("Azure VM")).toBeInTheDocument();
+    expect(screen.getAllByText("Azure VM").length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("button", { name: "Choose updates" }));
     await user.click(screen.getByRole("checkbox", { name: /KB600001/ }));

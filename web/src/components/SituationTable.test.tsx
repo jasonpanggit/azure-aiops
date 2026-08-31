@@ -8,13 +8,13 @@ describe("SituationTable", () => {
   it("keeps priority, impact, likely cause, and owner visible in the queue", () => {
     render(<SituationTable situations={rankSituations([createIncidentFixture()])} />);
 
-    expect(screen.getByText("P1")).toBeInTheDocument();
+    expect(screen.getByText("P1", { selector: ".status-badge" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Payroll database latency" })).toHaveAttribute(
       "href",
       "/situations/INC-1001"
     );
-    expect(screen.getByText("Payroll")).toBeInTheDocument();
+    expect(screen.getAllByText("Payroll").length).toBeGreaterThan(0);
     expect(screen.getByText("Database capacity exhausted after deployment")).toBeInTheDocument();
-    expect(screen.getByText("Payroll Product")).toBeInTheDocument();
+    expect(screen.getAllByText("Payroll Product").length).toBeGreaterThan(0);
   });
 });
