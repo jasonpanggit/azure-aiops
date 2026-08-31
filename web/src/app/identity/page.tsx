@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
@@ -188,9 +189,12 @@ export default function IdentityPage() {
                       {principalsPaging.pageRows.map((row) => (
                         <tr key={row.principal_id}>
                           <td>
-                            <span className="table-primary-link">
+                            <Link
+                              className="table-primary-link"
+                              href={`/search?q=${encodeURIComponent(row.principal_id)}`}
+                            >
                               <span className="table-wrap">{row.principal_id}</span>
-                            </span>
+                            </Link>
                             <div className="table-secondary">
                               {row.assignment_count} assignment
                               {row.assignment_count === 1 ? "" : "s"}
@@ -414,9 +418,12 @@ export default function IdentityPage() {
                       {nonHumanPaging.pageRows.map((row, index) => (
                         <tr key={`${row.principal_id}-${index}`}>
                           <td>
-                            <span className="table-primary-link">
+                            <Link
+                              className="table-primary-link"
+                              href={`/search?q=${encodeURIComponent(row.resource_id || row.name || row.principal_id)}`}
+                            >
                               {row.name || row.principal_id}
-                            </span>
+                            </Link>
                             {row.resource_id && (
                               <div className="table-secondary">
                                 <span className="table-wrap">{row.resource_id}</span>
@@ -514,9 +521,9 @@ export default function IdentityPage() {
                       {spnPaging.pageRows.map((row, index) => (
                         <tr key={row.credential_id || index}>
                           <td>
-                            <span className="table-primary-link">
+                            <Link className="table-primary-link" href="/connections">
                               {row.connection_name || row.connection_id}
-                            </span>
+                            </Link>
                             <div className="table-secondary">
                               <span className="table-wrap">{row.subscription_id}</span>
                             </div>

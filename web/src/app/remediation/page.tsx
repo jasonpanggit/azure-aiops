@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useMemo, useState } from "react";
+import { ApiError } from "@/lib/types";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -15,13 +16,15 @@ import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { buildCopilotSnapshot, copilotEvidenceRows, networkApi, operationsApi, vulnerabilityApi } from "@/lib/services";
-import type { NetworkGap, RemediationOpportunity, RemediationPlan, RuleFinding, VulnerabilityExposure } from "@/lib/types";
+import type { NetworkGap, RemediationDecision, RemediationOpportunity, RemediationPlan, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 
 type BacklogKind = "plan" | "opportunity" | "network" | "vulnerability" | "patch" | "lifecycle" | "configuration" | "incident" | "identity";
 
 interface BacklogItem {
+  uiId: string;
   id: string;
   kind: BacklogKind;
+  sourceIds: Record<string, string>;
   title: string;
   status: string;
   priority: string;
@@ -34,18 +37,48 @@ interface BacklogItem {
   debtReduction: number;
   evidence: unknown;
   source: unknown;
+  plan?: RemediationPlan;
+}
+
+function listValues(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => renderValue(item)).filter((item) => item !== "Not specified");
+}
+
+function searchableText(item: BacklogItem): string {
+  return [
+    item.title,
+    item.status,
+    item.priority,
+    item.businessService,
+    item.resource,
+    item.impact,
+    item.kind,
+    ...Object.values(item.sourceIds),
+  ].join(" ").toLowerCase();
+}
+
+function priorityRank(value: string): number {
+  const normalized = value.toLowerCase();
+  if (normalized.includes("critical") || normalized.includes("priority 1")) return 4;
+  if (normalized.includes("high") || normalized.includes("priority 2")) return 3;
+  if (normalized.includes("medium") || normalized.includes("priority 3")) return 2;
+  if (normalized.includes("low") || normalized.includes("priority 4")) return 1;
+  return 0;
 }
 
 function planToBacklog(plan: RemediationPlan): BacklogItem {
   const action = plan.recommended_action ?? {};
   return {
+    uiId: `plan:${plan.plan_id}`,
     id: plan.plan_id,
     kind: "plan",
+    sourceIds: { plan_id: plan.plan_id },
     title: plan.title || plan.plan_id,
     status: plan.status || "draft",
     priority: String(action.priority ?? plan.status ?? "review"),
     businessService: plan.business_service || "",
-    resource: plan.resource || plan.application || "",
+    resource: renderValue(plan.resource, plan.application || ""),
     impact: String(action.impact ?? action.summary ?? "Approval-ready remediation plan"),
     riskReduction: plan.simulation_result?.risk_reduction_percent ?? 0,
     downtimeRisk: String(plan.simulation_result?.downtime_risk ?? "requires maintenance window"),
@@ -53,13 +86,17 @@ function planToBacklog(plan: RemediationPlan): BacklogItem {
     debtReduction: plan.simulation_result?.operational_debt_reduction_percent ?? 0,
     evidence: plan,
     source: plan,
+    plan,
   };
 }
 
 function opportunityToBacklog(opportunity: RemediationOpportunity): BacklogItem {
+  const id = opportunity.opportunity_id || `${opportunity.category}-${opportunity.resource}`;
   return {
-    id: opportunity.opportunity_id || `${opportunity.category}-${opportunity.resource}`,
+    uiId: `opportunity:${id}`,
+    id,
     kind: String(opportunity.category || "opportunity").includes("identity") ? "identity" : "opportunity",
+    sourceIds: { opportunity_id: id },
     title: titleize(opportunity.category || "Remediation opportunity"),
     status: "candidate",
     priority: opportunity.priority || "review",
@@ -75,10 +112,33 @@ function opportunityToBacklog(opportunity: RemediationOpportunity): BacklogItem 
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function renderValue(value: unknown, fallback = "Not specified"): string {
+  if (Array.isArray(value)) return value.map((item) => renderValue(item)).join(", ");
+  if (isRecord(value)) {
+    return String(value.name ?? value.title ?? value.role ?? value.description ?? fallback);
+  }
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function sourceWarning(label: string, error: Error | ApiError | null): string[] {
+  if (!error) return [];
+  const message = error instanceof ApiError && error.isNotImplemented
+    ? `${label} is not implemented in this build.`
+    : `${label} unavailable: ${error.message}`;
+  return [message];
+}
+
 function networkGapToBacklog(gap: NetworkGap): BacklogItem {
   return {
+    uiId: `network:${gap.gap_id}`,
     id: gap.gap_id,
     kind: "network",
+    sourceIds: { gap_id: gap.gap_id },
     title: gap.title,
     status: "candidate",
     priority: gap.severity,
@@ -96,8 +156,10 @@ function networkGapToBacklog(gap: NetworkGap): BacklogItem {
 
 function ruleToBacklog(rule: RuleFinding): BacklogItem {
   return {
+    uiId: `configuration:${rule.finding_id}`,
     id: rule.finding_id,
     kind: "configuration",
+    sourceIds: { finding_id: rule.finding_id },
     title: rule.title,
     status: "candidate",
     priority: rule.severity,
@@ -115,8 +177,10 @@ function ruleToBacklog(rule: RuleFinding): BacklogItem {
 
 function exposureToBacklog(exposure: VulnerabilityExposure): BacklogItem {
   return {
+    uiId: `vulnerability:${exposure.cve_id}`,
     id: exposure.cve_id,
     kind: "vulnerability",
+    sourceIds: { cve_id: exposure.cve_id },
     title: `${exposure.cve_id}: ${exposure.recommended_patch}`,
     status: "candidate",
     priority: exposure.severity,
@@ -155,6 +219,16 @@ function RemediationContent() {
   const exposures = useApi(() => vulnerabilityApi.exposures(scope), [scope]);
   const [selectedId, setSelectedId] = useState("");
   const [category, setCategory] = useState<BacklogKind | "all">("all");
+  const [query, setQuery] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sortBy, setSortBy] = useState<"risk" | "priority" | "confidence" | "source">("risk");
+  const [decisionChoice, setDecisionChoice] = useState<RemediationDecision["decision"]>("approved");
+  const [decisionReason, setDecisionReason] = useState("");
+  const [decisionExpiresAt, setDecisionExpiresAt] = useState("");
+  const [decisionSubmitting, setDecisionSubmitting] = useState(false);
+  const [decisionResult, setDecisionResult] = useState<RemediationDecision | null>(null);
+  const [decisionError, setDecisionError] = useState("");
   const [copilotOpen, setCopilotOpen] = useState(false);
   const allPlanRows = plans.data?.data.plans ?? [];
   const allOpportunityRows = opportunities.data?.data.opportunities ?? [];
@@ -179,8 +253,10 @@ function RemediationContent() {
     ];
     const seeded: BacklogItem[] = [
       {
+        uiId: "incident:readiness",
         id: fromIncident ? `incident-${fromIncident}` : "incident-readiness",
         kind: "incident",
+        sourceIds: { incident_id: fromIncident || "incident-readiness" },
         title: fromIncident ? `Resolve incident ${fromIncident}` : "Incident remediation readiness",
         status: "candidate",
         priority: fromIncident ? "high" : "medium",
@@ -195,8 +271,10 @@ function RemediationContent() {
         source: { incident: fromIncident },
       },
       {
+        uiId: "lifecycle:debt",
         id: "lifecycle-debt",
         kind: "lifecycle",
+        sourceIds: { seed_id: "lifecycle-debt" },
         title: "Address lifecycle and supportability debt",
         status: "candidate",
         priority: "medium",
@@ -211,8 +289,10 @@ function RemediationContent() {
         source: { category: "lifecycle" },
       },
       {
+        uiId: "identity:governance",
         id: "identity-governance",
         kind: "identity",
+        sourceIds: { seed_id: "identity-governance" },
         title: "Review identity and access remediation",
         status: "candidate",
         priority: "medium",
@@ -227,11 +307,21 @@ function RemediationContent() {
         source: { category: "identity" },
       },
     ];
+    const normalizedQuery = query.trim().toLowerCase();
     return [...rows, ...seeded]
       .filter((item) => category === "all" || item.kind === category)
-      .sort((left, right) => right.riskReduction - left.riskReduction);
-  }, [planRows, opportunityRows, networkGaps.data, ruleFindings.data, exposures.data, category, fromBusinessService, fromIncident]);
-  const selected = backlog.find((item) => item.id === selectedId) ?? backlog[0] ?? null;
+      .filter((item) => priorityFilter === "all" || item.priority.toLowerCase().includes(priorityFilter))
+      .filter((item) => statusFilter === "all" || item.status.toLowerCase().includes(statusFilter))
+      .filter((item) => !normalizedQuery || searchableText(item).includes(normalizedQuery))
+      .sort((left, right) => {
+        if (sortBy === "priority") return priorityRank(right.priority) - priorityRank(left.priority) || right.riskReduction - left.riskReduction;
+        if (sortBy === "confidence") return (right.plan?.confidence ?? 0) - (left.plan?.confidence ?? 0) || right.riskReduction - left.riskReduction;
+        if (sortBy === "source") return left.kind.localeCompare(right.kind) || right.riskReduction - left.riskReduction;
+        return right.riskReduction - left.riskReduction;
+      });
+  }, [planRows, opportunityRows, networkGaps.data, ruleFindings.data, exposures.data, category, fromBusinessService, fromIncident, priorityFilter, query, sortBy, statusFilter]);
+  const selected = backlog.find((item) => item.uiId === selectedId) ?? backlog.find((item) => item.kind === "plan") ?? backlog[0] ?? null;
+  const selectedPlan = selected?.plan ?? null;
   const pending = backlog.length;
   const evidencePack = selected ? {
     plan: selected.source,
@@ -243,30 +333,58 @@ function RemediationContent() {
       ...(ruleFindings.data?.evidence ?? []),
       ...(exposures.data?.evidence ?? []),
     ],
-    review_boundary: "Approval, execution, and outcome capture are unavailable in Phase 1.",
+    review_boundary: "Phase 2 records approval decisions only; Azure execution, rollback, and realized-outcome capture remain unavailable.",
   } : {};
   const loading = plans.loading || opportunities.loading || networkGaps.loading || ruleFindings.loading || exposures.loading;
-  const error = plans.error ?? opportunities.error ?? networkGaps.error ?? ruleFindings.error ?? exposures.error;
+  const sourceWarnings = [
+    ...sourceWarning("Remediation plans", plans.error),
+    ...sourceWarning("Remediation opportunities", opportunities.error),
+    ...sourceWarning("Network gaps", networkGaps.error),
+    ...sourceWarning("Configuration findings", ruleFindings.error),
+    ...sourceWarning("Vulnerability exposures", exposures.error),
+  ];
+  const pageError = !loading && backlog.length === 0 ? plans.error ?? opportunities.error ?? networkGaps.error ?? ruleFindings.error ?? exposures.error : null;
+
+  const recordDecision = async () => {
+    if (!selectedPlan?.action_version) return;
+    setDecisionSubmitting(true);
+    setDecisionError("");
+    setDecisionResult(null);
+    try {
+      const result = await operationsApi.decideRemediationPlan(selectedPlan.plan_id, {
+        decision: decisionChoice,
+        reason: decisionReason.trim(),
+        action_version: selectedPlan.action_version,
+        expires_at: decisionExpiresAt.trim(),
+      }, scope);
+      setDecisionResult(result.data);
+      setDecisionReason("");
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDecisionSubmitting(false);
+    }
+  };
 
   return (
     <div className="page-container remediation-center">
       <PageHeader
         eyebrow="Governed remediation center"
         title="What can be reviewed next?"
-        description="Review evidence-backed remediation candidates in the current scope. Phase 1 does not approve, execute, or record outcomes for changes."
+        description="Review evidence-backed recommendations and record bounded approval decisions. Azure execution, rollback, and realized outcomes remain out of scope."
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about remediation" />}
         metadata={
           <>
-            <span>Future-phase candidates only</span>
-            <span>No approval or execution in Phase 1</span>
-            <span>Evidence remains reviewable</span>
+            <span>Phase 2 approval decisions</span>
+            <span>No Azure execution</span>
+            <span>Evidence-backed recommendations</span>
           </>
         }
       />
       <EvidenceBar
         evidence={[...(plans.data?.evidence ?? []), ...(opportunities.data?.evidence ?? []), ...(networkGaps.data?.evidence ?? []), ...(ruleFindings.data?.evidence ?? []), ...(exposures.data?.evidence ?? [])]}
         knowledgeVersion={plans.data?.knowledge_version}
-        warnings={[...(plans.data?.warnings ?? []), ...(opportunities.data?.warnings ?? []), ...(networkGaps.data?.warnings ?? []), ...(ruleFindings.data?.warnings ?? []), ...(exposures.data?.warnings ?? [])]}
+        warnings={[...sourceWarnings, ...(plans.data?.warnings ?? []), ...(opportunities.data?.warnings ?? []), ...(networkGaps.data?.warnings ?? []), ...(ruleFindings.data?.warnings ?? []), ...(exposures.data?.warnings ?? [])]}
       />
 
       <CopilotDrawer
@@ -274,15 +392,18 @@ function RemediationContent() {
         onClose={() => setCopilotOpen(false)}
         contextLabel={fromBusinessService || "Remediation"}
         snapshot={buildCopilotSnapshot({
-          pageKind: "patch",
+          pageKind: "remediation",
           pageId: "remediation",
           scope,
           filters: {
             category: category === "all" ? [] : [category],
+            priority: priorityFilter === "all" ? [] : [priorityFilter],
+            status: statusFilter === "all" ? [] : [statusFilter],
+            query: query ? [query] : [],
             business_service: fromBusinessService ? [fromBusinessService] : [],
             cve: fromCve ? [fromCve] : [],
           },
-          selectedResources: selected ? [{ resource_id: selected.id, resource_type: selected.kind, name: selected.title }] : [],
+          selectedResources: selected ? [{ resource_id: selected.resource, resource_type: selected.kind, name: selected.title }] : [],
           evidence: copilotEvidenceRows("remediation", [
             ...(plans.data?.evidence ?? []),
             ...(opportunities.data?.evidence ?? []),
@@ -331,8 +452,45 @@ function RemediationContent() {
         </div>
       )}
 
+      <div className="remediation-form-grid" aria-label="Remediation filters">
+        <label>
+          Search
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Title, resource, service, source ID" />
+        </label>
+        <label>
+          Priority
+          <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}>
+            <option value="all">All priorities</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="priority 1">Priority 1</option>
+            <option value="priority 2">Priority 2</option>
+          </select>
+        </label>
+        <label>
+          Status
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            <option value="all">All statuses</option>
+            <option value="draft">Draft</option>
+            <option value="candidate">Candidate</option>
+            <option value="approval">Approval required</option>
+          </select>
+        </label>
+        <label>
+          Sort
+          <select value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)}>
+            <option value="risk">Risk reduction</option>
+            <option value="priority">Priority</option>
+            <option value="confidence">Confidence</option>
+            <option value="source">Source/category</option>
+          </select>
+        </label>
+      </div>
+
       <div className="metric-grid remediation-metrics">
-        <MetricCard label="Unified backlog" value={backlog.length} detail={`${pending} future-phase candidates in this scope`} />
+        <MetricCard label="Unified backlog" value={backlog.length} detail={`${pending} scoped candidates`} />
         <MetricCard label="Network candidates" value={(networkGaps.data?.data.gaps.length ?? 0) + (ruleFindings.data?.data.findings.length ?? 0)} detail="Firewall, NSG, UDR, peering, private endpoint, and inspection-path fixes" />
         <MetricCard
           label="Highest simulated reduction"
@@ -342,8 +500,8 @@ function RemediationContent() {
         />
         <MetricCard
           label="Execution boundary"
-          value="Read-only"
-          detail="Approval and execution are deferred to a future phase"
+          value="No execution"
+          detail="Decisions are recorded; provider changes remain disabled"
           tone="warning"
         />
       </div>
@@ -356,14 +514,14 @@ function RemediationContent() {
         ))}
       </div>
 
-      {error ? (
+      {pageError ? (
         <StatePanel
           title="Remediation intelligence is unavailable"
-          message={error.message ?? "No remediation response was returned."}
+          message={pageError.message ?? "No remediation response was returned."}
           tone="error"
         />
       ) : loading ? (
-        <StatePanel title="Reading remediation candidates" message="Joining source evidence with projected impact; approval and execution remain unavailable." tone="loading" />
+        <StatePanel title="Reading remediation candidates" message="Joining source evidence with projected impact; execution remains unavailable." tone="loading" />
       ) : (
         <div className="remediation-layout">
           <section className="card">
@@ -377,7 +535,7 @@ function RemediationContent() {
               {backlog.map((item) => {
                 const decision = item.status;
                 return (
-                <article className={`plan-row ${selected?.id === item.id ? "plan-row-selected" : ""}`} key={item.id}>
+                <article className={`plan-row ${selected?.uiId === item.uiId ? "plan-row-selected" : ""}`} key={item.uiId}>
                   <div className="plan-row-heading">
                     <div className="plan-row-summary">
                       <div className="plan-row-badges">
@@ -394,7 +552,7 @@ function RemediationContent() {
                     </div>
                   </div>
                   <div className="plan-actions">
-                    <button type="button" className="button button-secondary" onClick={() => setSelectedId(item.id)}>Review</button>
+                    <button type="button" className="button button-secondary" onClick={() => setSelectedId(item.uiId)}>Review</button>
                   </div>
                 </article>
               )})}
@@ -420,21 +578,53 @@ function RemediationContent() {
                     <MetricCard label="Debt reduction" value={`${Math.round(selected.debtReduction)}%`} detail="Operational-debt reduction estimate" />
                   </div>
                   <section className="remediation-section">
+                    <h4>Objective and scope</h4>
+                    <p>{selectedPlan?.objective || selected.impact}</p>
+                    <p>Resource: {selected.resource || "Scope not mapped"} · Service: {selected.businessService || "Unmapped"} · Source IDs: {Object.entries(selected.sourceIds).map(([key, value]) => `${key}=${value}`).join(", ")}</p>
+                  </section>
+                  <section className="remediation-section">
                     <h4>Plan steps</h4>
                     <ol>
-                      <li>Confirm affected entities and owner accountability.</li>
-                      <li>Review the source evidence and affected entities.</li>
-                      <li>Carry this candidate into a future approval workflow.</li>
-                      <li>Validate live state only after an approved change exists.</li>
+                      {(selectedPlan?.execution_steps?.length ? selectedPlan.execution_steps : [
+                        { description: "Confirm affected entities and owner accountability." },
+                        { description: "Review the source evidence and affected entities." },
+                        { description: "Record an approval, rejection, or expiry decision." },
+                        { description: "Validate live state only in a later execution phase." },
+                      ]).map((step, index) => (
+                        <li key={index}>
+                          {renderValue(step, "Review remediation step")}
+                          {isRecord(step) && step.stage ? <span> ({renderValue(step.stage)})</span> : null}
+                        </li>
+                      ))}
                     </ol>
                   </section>
                   <section className="remediation-section">
-                    <h4>Dependencies and maintenance window</h4>
-                    <p>Dependencies: owner sign-off, CAB approval, affected-path validation, rollback owner. Window: schedule by service criticality and downtime risk.</p>
+                    <h4>Prerequisites and risk</h4>
+                    <p>Preconditions: {listValues(selectedPlan?.recommended_action?.preconditions ?? selectedPlan?.preconditions).join(", ") || "Review owner accountability, current evidence, and rollback readiness before recording approval."}</p>
+                    <p>Risk assessment: {renderValue(selectedPlan?.risk_assessment?.overall_risk ?? selectedPlan?.risk_assessment)}</p>
                   </section>
                   <section className="remediation-section">
-                    <h4>Future-phase validation boundary</h4>
-                    <p>Live execution, approval, validation, and rollback recording are unavailable in this Phase 1 read-only surface.</p>
+                    <h4>Required approvals</h4>
+                    {selectedPlan?.approval_requirements?.length ? (
+                      <ul>
+                        {selectedPlan.approval_requirements.map((approval, index) => (
+                          <li key={index}>{renderValue(approval.role)} - {renderValue(approval.stage)} - {renderValue(approval.status)}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>Owner sign-off, CAB approval, affected-path validation, and rollback owner review are required before execution.</p>
+                    )}
+                  </section>
+                  <section className="remediation-section">
+                    <h4>Rollback, simulation, and confidence</h4>
+                    <p>Rollback: {renderValue(selectedPlan?.rollback_plan?.summary ?? selectedPlan?.rollback_plan)}</p>
+                    <p>Dependencies: {renderValue(selectedPlan?.dependencies)}</p>
+                    <p>Simulation: {Math.round(selected.riskReduction)}% risk reduction, {Math.round(selected.complianceImprovement)}% compliance improvement, {Math.round(selected.debtReduction)}% debt reduction.</p>
+                    <p>Confidence: {selectedPlan?.confidence ? `${Math.round(selectedPlan.confidence * 100)}%` : "Not scored"} {selectedPlan?.confidence_kind ? `(${selectedPlan.confidence_kind})` : ""}</p>
+                  </section>
+                  <section className="remediation-section">
+                    <h4>Execution boundary</h4>
+                    <p>Phase 2 can record decisions for this recommendation. Azure execution, rollback actions, and realized-outcome validation remain unavailable here.</p>
                   </section>
                 </>
               ) : <StatePanel title="No plan selected" message="Select a backlog item to generate a governed plan." />}
@@ -459,29 +649,56 @@ function RemediationContent() {
           <section className="card">
             <div className="card-header">
               <div>
-                <h2>Future-phase decision boundary</h2>
-                <p>Approval and decision history are not available from this Phase 1 read-only surface.</p>
+                <h2>Approval decision record</h2>
+                <p>Record a bounded human decision for the selected remediation plan. This does not authorize or execute Azure changes.</p>
               </div>
-              <StatusBadge label="Review only" tone="info" />
+              <StatusBadge label={selectedPlan ? "Decision-ready" : "Plan required"} tone="info" />
             </div>
             <div className="card-body remediation-form-grid">
-              <p className="callout callout-warning">Approval workflow unavailable in Phase 1. Use the evidence pack above as a read-only handoff to the future approval surface.</p>
-              <details>
-                <summary>View candidate evidence pack</summary>
-                <StructuredData value={evidencePack} />
-              </details>
+              {selectedPlan ? (
+                <>
+                  <p className="callout callout-warning">Decision records are audit evidence only. They do not trigger jobs, unlock MCP actions, or perform rollback.</p>
+                  <label>
+                    Decision
+                    <select value={decisionChoice} onChange={(event) => setDecisionChoice(event.target.value as RemediationDecision["decision"])}>
+                      <option value="approved">Approve recommendation</option>
+                      <option value="rejected">Reject recommendation</option>
+                      <option value="expired">Expire recommendation</option>
+                    </select>
+                  </label>
+                  <label>
+                    Reason
+                    <textarea value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} placeholder="Why is this decision appropriate?" />
+                  </label>
+                  <label>
+                    Expires at
+                    <input type="date" value={decisionExpiresAt} onChange={(event) => setDecisionExpiresAt(event.target.value)} />
+                  </label>
+                  <button type="button" className="button" disabled={decisionSubmitting || !decisionReason.trim() || (decisionChoice === "approved" && !decisionExpiresAt)} onClick={recordDecision}>
+                    {decisionSubmitting ? "Recording decision..." : "Record decision"}
+                  </button>
+                  {decisionError && <p className="callout callout-warning">{decisionError}</p>}
+                  {decisionResult && <p className="callout">Recorded {decisionResult.decision} decision {decisionResult.decision_id}; execution_performed=false.</p>}
+                </>
+              ) : (
+                <p className="callout callout-warning">Only generated remediation plans can receive approval decisions. Select a plan row to continue.</p>
+              )}
             </div>
           </section>
 
           <section className="card">
             <div className="card-header">
               <div>
-                <h2>Future-phase execution handoff</h2>
-                <p>Execution channels and outcome capture are intentionally not active in Phase 1.</p>
+                <h2>Execution handoff boundary</h2>
+                <p>Execution channels and outcome capture are intentionally not active in Phase 2.</p>
               </div>
             </div>
             <div className="card-body remediation-form-grid">
-              <p className="callout callout-warning">No execution, approval, rollback, or realized-outcome controls are available from this read-only candidate view.</p>
+              <p className="callout callout-warning">No Azure execution, rollback, or realized-outcome controls are available from this decision workspace.</p>
+              <details>
+                <summary>View candidate evidence pack</summary>
+                <StructuredData value={evidencePack} />
+              </details>
             </div>
           </section>
         </div>

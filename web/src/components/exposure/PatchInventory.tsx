@@ -48,6 +48,9 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<PatchRun | null>(null);
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ succeeded: number; failed: number } | null>(null);
 
   const filteredTargets = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -61,6 +64,47 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
   }, [targets.data, query]);
 
   const recentRuns = useMemo(() => runs.data?.data ?? [], [runs.data]);
+
+  const bulkEligibleTargets = useMemo(
+    () =>
+      filteredTargets.filter(
+        (target) =>
+          target.reachable &&
+          target.patchable &&
+          target.critical_count > 0 &&
+          target.available_patches.length > 0 &&
+          target.operation !== "node_image_upgrade" &&
+          !target.requires_node_pool
+      ),
+    [filteredTargets]
+  );
+
+  const runBulkTrigger = useCallback(async () => {
+    setBulkSubmitting(true);
+    setBulkResult(null);
+    setSubmitError(null);
+    let succeeded = 0;
+    let failed = 0;
+    for (const target of bulkEligibleTargets) {
+      const patchIds = target.available_patches.map((patch) => patch.patch_id);
+      try {
+        await patchingApi.trigger({
+          target_id: target.target_id,
+          patch_ids: patchIds,
+          reason: reason.trim() || "Bulk remediation: reachable + critical targets",
+          reboot_setting: rebootSetting,
+          dry_run: dryRun,
+        });
+        succeeded += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    setBulkSubmitting(false);
+    setBulkConfirmOpen(false);
+    setBulkResult({ succeeded, failed });
+    setRunsToken((token) => token + 1);
+  }, [bulkEligibleTargets, dryRun, reason, rebootSetting]);
 
   const { filteredRows: columnFilteredTargets, filters: targetFilters, resetFilters: resetTargetFilters } = useColumnFilters(filteredTargets, [
     { id: "inventory", label: "Inventory", getValues: (target) => target.inventory_kind },
@@ -192,7 +236,53 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
           <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} />
           <span>Dry run (validate without contacting Azure)</span>
         </label>
+        {bulkEligibleTargets.length > 0 && (
+          <button
+            type="button"
+            className="button button-quiet"
+            onClick={() => setBulkConfirmOpen(true)}
+          >
+            Bulk-install all available updates ({bulkEligibleTargets.length} reachable + critical targets)
+          </button>
+        )}
       </div>
+
+      {bulkConfirmOpen && (
+        <div className="card-body" role="alertdialog" aria-label="Confirm bulk remediation">
+          <p role="alert">
+            This will trigger a run on <strong>{bulkEligibleTargets.length}</strong> reachable target
+            {bulkEligibleTargets.length === 1 ? "" : "s"} with critical findings, installing every available
+            update on each{dryRun ? " as a dry run" : ""}. This cannot be undone once submitted.
+          </p>
+          <div className="patch-selection">
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={bulkSubmitting}
+              onClick={() => void runBulkTrigger()}
+            >
+              {bulkSubmitting ? "Submitting…" : `Confirm bulk install (${bulkEligibleTargets.length} targets)`}
+            </button>
+            <button
+              type="button"
+              className="button button-quiet"
+              disabled={bulkSubmitting}
+              onClick={() => setBulkConfirmOpen(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {bulkResult && (
+        <div className="card-body">
+          <p role="status">
+            Bulk remediation submitted: <strong>{bulkResult.succeeded}</strong> succeeded
+            {bulkResult.failed > 0 ? `, ${bulkResult.failed} failed` : ""}.
+          </p>
+        </div>
+      )}
 
       {submitError && (
         <div className="card-body">

@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
@@ -67,11 +68,30 @@ function scopeLabel(scope: Record<string, string[]>): string {
 
 /** Intent-driven search that presents semantic entities instead of raw payloads. */
 export default function SearchPage() {
+  return (
+    <Suspense fallback={null}>
+      <SearchPageContent />
+    </Suspense>
+  );
+}
+
+function SearchPageContent() {
+  const params = useSearchParams();
   const { scope } = useScope();
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(params.get("q") || "");
   const [envelope, setEnvelope] = useState<Envelope<SearchResult> | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Other pages (e.g. Identity) deep-link here with a principal or
+  // credential identifier via ?q=; run that search once on arrival.
+  useEffect(() => {
+    const initial = params.get("q");
+    if (initial?.trim()) {
+      runSearch(initial);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function runSearch(value = query) {
     if (!value.trim()) return;

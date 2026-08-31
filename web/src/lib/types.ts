@@ -17,6 +17,22 @@ export interface EvidenceItem {
   freshness: Freshness;
 }
 
+export interface RemediationDecision {
+  decision_id: string;
+  plan_id: string;
+  decision: "approved" | "rejected" | "expired";
+  approver: string;
+  decided_at: string;
+  reason: string;
+  scope: Record<string, string[]>;
+  action_version: string;
+  expires_at: string;
+  revalidation: { status: string; checks: string[] };
+  execution_authorized: boolean;
+  execution_performed: boolean;
+  read_only: boolean;
+}
+
 export interface Pagination {
   offset: number;
   limit: number;
@@ -1020,6 +1036,7 @@ export interface IncidentDetail {
 
 export interface RemediationPlan {
   plan_id: string;
+  action_version?: string;
   title: string;
   status: string;
   resource?: string;
@@ -1027,10 +1044,18 @@ export interface RemediationPlan {
   business_service?: string;
   simulation_result?: {
     risk_reduction_percent?: number;
+    compliance_improvement_percent?: number;
     operational_debt_reduction_percent?: number;
+    downtime_risk?: string;
     [key: string]: unknown;
   };
   approval_requirements?: Array<Record<string, unknown>>;
+  execution_steps?: Array<Record<string, unknown>>;
+  risk_assessment?: Record<string, unknown>;
+  dependencies?: Record<string, unknown>;
+  confidence?: number;
+  confidence_kind?: string;
+  objective?: string;
   rollback_plan?: Record<string, unknown>;
   recommended_action?: Record<string, unknown>;
   [key: string]: unknown;
@@ -1999,7 +2024,7 @@ export interface ResourceHealthSnapshot {
   cache_ttl_seconds: number;
 }
 
-export type CopilotPageKind = "network" | "vulnerability" | "patch" | "incident" | "governance" | "resource";
+export type CopilotPageKind = "network" | "vulnerability" | "patch" | "incident" | "governance" | "remediation" | "resource";
 export type CopilotSnapshotStatus = "ok" | "empty" | "unavailable" | "denied";
 export interface CopilotSelectedResource { resource_id: string; resource_type: string; name?: string; attributes?: Record<string, string>; }
 export interface CopilotFreshnessRecord { source: string; observed_at: string; status: "fresh" | "stale" | "partial" | "unavailable"; }

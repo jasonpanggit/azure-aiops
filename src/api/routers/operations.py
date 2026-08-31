@@ -11,11 +11,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, status
 
-from ..dependencies import Context, Page, ReadScope
+from ..dependencies import Context, OperatePrincipal, Page, ReadScope
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
+from ..models import RemediationDecisionRequest
 from ..scope import Scope, scope_attributes
 
 router = APIRouter(prefix="/api/v1", tags=["operations"])
@@ -182,4 +183,74 @@ def remediation_opportunities(
         ),
         scope=scope.to_dict(),
         pagination=page.to_dict(len(opportunities)),
+    )
+
+
+@router.post(
+    "/remediation-plans/{plan_id}/decisions",
+    summary="Record a remediation recommendation decision",
+    status_code=status.HTTP_201_CREATED,
+)
+def record_remediation_decision(
+    plan_id: str,
+    request: RemediationDecisionRequest,
+    context: Context,
+    scope: ReadScope,
+    principal: OperatePrincipal,
+) -> dict[str, Any]:
+    operate_scope = context.authorizer.effective_scope(principal, "operate", scope)
+    planner = _require(context, "remediation_provider", "remediation", operate_scope)
+    plans = planner.generate_plans()
+    plan = planner.repository.get(plan_id)
+    if plan is None:
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "Remediation plan not found",
+            details={"plan_id": plan_id},
+        )
+    scoped_plan = _filter_scoped(plan, operate_scope)
+    if scoped_plan is _HIDDEN:
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "Remediation plan not found",
+            details={"plan_id": plan_id},
+        )
+    current_version = str(plan.get("action_version") or "")
+    if request.action_version != current_version:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Remediation plan action version is stale",
+            details={"plan_id": plan_id},
+        )
+    if not plan.get("read_only", True) or plan.get("execution_performed"):
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Remediation decisions cannot authorize or follow execution in this phase",
+            details={"plan_id": plan_id},
+        )
+    if request.decision == "approved" and not request.expires_at.strip():
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "Approved remediation decisions require expires_at",
+            details={"plan_id": plan_id},
+        )
+    decision = planner.repository.decisions.append(
+        plan=plan,
+        decision=request.decision,
+        approver=principal.subject,
+        reason=request.reason,
+        scope=operate_scope.to_dict(),
+        action_version=current_version,
+        expires_at=request.expires_at,
+    )
+    return envelope(
+        decision,
+        evidence=Evidence(
+            source_engine="intelligence.RemediationPlanner",
+            source_table="remediation_approval_decisions",
+            timestamp=str(plans.get("generated_at") or ""),
+            resource_id=plan_id,
+            confidence=CONFIDENCE_MEDIUM,
+        ),
+        scope=operate_scope.to_dict(),
     )

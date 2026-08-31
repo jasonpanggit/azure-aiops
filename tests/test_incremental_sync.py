@@ -200,8 +200,11 @@ def test_same_second_syncs_preserve_one_lifecycle_observation_per_resource(
     service.sync()
 
     history = _delta_rows(lakehouse / "Tables/silver_lifecycle_history")
-    assert len(history) == 6
-    assert len({row["resource_id"] for row in history}) == 6
+    # The fixture has 3 resources, but only the VM and the Arc server carry an OS
+    # lifecycle. The storage account has no OS and is correctly excluded, so each
+    # sync contributes 2 observations, not 3.
+    assert len(history) == 4
+    assert len({row["resource_id"] for row in history}) == 4
 
 
 def test_uuid_subscription_resources_receive_lifecycle_history(tmp_path: Path) -> None:
@@ -242,7 +245,8 @@ def test_uuid_subscription_resources_receive_lifecycle_history(tmp_path: Path) -
     history = _delta_rows(lakehouse / "Tables/silver_lifecycle_history")
 
     assert result.status == "completed"
-    assert len(history) == 3
+    # Only the VM and Arc server have an OS lifecycle; the storage account does not.
+    assert len(history) == 2
     assert all(row["subscription_id"] == subscription_id for row in history)
 
 
@@ -288,8 +292,11 @@ def test_duplicate_display_names_correlate_history_by_canonical_resource_id(
     history = _delta_rows(lakehouse / "Tables/silver_lifecycle_history")
 
     assert result.status == "completed"
-    assert len(history) == 4
-    assert len({row["resource_key"] for row in history}) == 4
+    # Base fixture yields 2 lifecycle-bearing resources (VM + Arc server; the
+    # storage account has no OS), plus the duplicated VM under rg-secondary.
+    # Distinct resource_keys prove correlation is by canonical id, not name.
+    assert len(history) == 3
+    assert len({row["resource_key"] for row in history}) == 3
 
 
 def test_semantic_layer_builds_only_from_governed_fabric_snapshot(tmp_path: Path) -> None:

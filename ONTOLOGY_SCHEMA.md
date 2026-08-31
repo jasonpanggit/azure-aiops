@@ -149,6 +149,44 @@ Additional properties:
 
 Content remains in Azure Automation, Azure DevOps, ServiceNow knowledge, or the approved repository.
 
+### 3.9 RoleAssignment
+
+An observed RBAC grant: one security principal holding one role at one scope. This is the primary access-governance signal — who can do what, and how far that reach extends.
+
+Additional properties:
+
+- `principalId` — the security principal's object id (not display name; names never establish identity).
+- `principalType` — `User`, `Group`, `ServicePrincipal`, or `ManagedIdentity`.
+- `roleDefinitionId` — reference to the granted `RoleDefinition`.
+- `assignmentScope` — the ARM scope the grant applies to (management group, subscription, resource group, or resource).
+- `createdOn`, `updatedOn` — used to assess staleness against the access-review threshold.
+
+Primary source: ARG `authorizationresources`. Never enumerated or copied beyond the observed subscriptions a connection is onboarded for — a principal's blast radius is always relative to observed scope, not implied to be tenant-absolute.
+
+### 3.10 RoleDefinition
+
+A built-in or custom Azure role's name and permission set, used to classify a `RoleAssignment` as privileged.
+
+Additional properties:
+
+- `roleName`, `roleType` (`BuiltInRole` or `CustomRole`).
+- `actions` — the permission strings that determine privilege (e.g. wildcard or `Microsoft.Authorization/*`).
+- `description`.
+
+Primary source: ARG `authorizationresources`.
+
+### 3.11 ManagedIdentity
+
+A system- or user-assigned managed identity, tracked so an identity holding no observed role assignment is still visible — an unused identity is itself a governance finding, not silence.
+
+Additional properties:
+
+- `principalId`, `clientId`.
+- `location`, `resourceGroup`.
+- Attaching resource, when resolvable from the identity's own resource metadata.
+
+Primary source: ARG `Resources`.
+
 ## 4. Relationship assertion contract
 
 A relationship is an assertion, not an unqualified fact.
@@ -251,6 +289,30 @@ Allowed:
 - Finding → Runbook or Patch
 
 A proposed mitigation remains `proposed` until execution/resolution evidence or approval exists.
+
+### `grantedTo`
+
+Meaning: the subject RoleAssignment grants access to the object security principal (a `ManagedIdentity`, or an equivalent User/Group/ServicePrincipal reference retained as a source pointer, not a published Team/individual entity).
+
+Allowed:
+
+- RoleAssignment → ManagedIdentity
+
+### `definedBy`
+
+Meaning: the subject RoleAssignment's permissions are defined by the object RoleDefinition.
+
+Allowed:
+
+- RoleAssignment → RoleDefinition
+
+### `scopedTo`
+
+Meaning: the subject RoleAssignment applies at the object Resource's scope (or a management group/subscription/resource group scope recorded on the assignment itself when no single Resource entity represents that scope).
+
+Allowed:
+
+- RoleAssignment → Resource
 
 ## 6. Source precedence and starting confidence
 

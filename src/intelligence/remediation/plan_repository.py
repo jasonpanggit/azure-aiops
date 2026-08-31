@@ -5,6 +5,8 @@ import hashlib
 import re
 from typing import Any
 
+from .approval_decisions import RemediationDecisionStore
+
 
 class PlanRepository:
     """Read-only projection repository for generated draft plans and ontology rows."""
@@ -16,6 +18,7 @@ class PlanRepository:
             raise ValueError("max_plans must be positive")
         self.max_plans = max_plans
         self._plans: tuple[dict[str, Any], ...] = ()
+        self.decisions = RemediationDecisionStore()
 
     def replace_generation(self, plans: list[dict[str, Any]]) -> None:
         if len(plans) > self.max_plans:
@@ -85,6 +88,21 @@ class PlanRepository:
                     self._relationship(plan_id, "hasSimulation", simulation_id),
                 ]
             )
+            for decision in self.decisions.list(plan_id):
+                decision_id = decision["decision_id"]
+                entities.append(
+                    {
+                        **self._entity(
+                            decision_id,
+                            "ApprovalDecision",
+                            f"{decision['decision']} decision for {plan_id}",
+                        ),
+                        "lifecycle_status": str(decision["decision"]),
+                    }
+                )
+                relationships.append(
+                    self._relationship(plan_id, "hasApprovalDecision", decision_id)
+                )
         return {
             "entities": list(
                 {row["entity_id"]: row for row in entities}.values()

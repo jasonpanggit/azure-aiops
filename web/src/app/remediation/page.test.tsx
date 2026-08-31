@@ -1,8 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { exposures, gaps, remediationOpportunities, remediationPlans, ruleFindings } = vi.hoisted(() => ({
+const { decideRemediationPlan, exposures, gaps, remediationOpportunities, remediationPlans, ruleFindings } = vi.hoisted(() => ({
+  decideRemediationPlan: vi.fn(),
   exposures: vi.fn(),
   gaps: vi.fn(),
   remediationOpportunities: vi.fn(),
@@ -18,7 +19,7 @@ vi.mock("@/lib/services", () => ({
   buildCopilotSnapshot: (input: Record<string, unknown>) => input,
   copilotEvidenceRows: () => [],
   networkApi: { gaps, ruleFindings },
-  operationsApi: { remediationPlans, remediationOpportunities },
+  operationsApi: { decideRemediationPlan, remediationPlans, remediationOpportunities },
   vulnerabilityApi: { exposures },
 }));
 
@@ -45,6 +46,7 @@ describe("Governed Remediation Center", () => {
     remediationPlans.mockResolvedValue(envelope({
       plans: [{
         plan_id: "plan-1",
+        action_version: "version-1",
         title: "Patch payroll database",
         status: "draft",
         business_service: "Payroll",
@@ -56,6 +58,11 @@ describe("Governed Remediation Center", () => {
           downtime_risk: "medium",
         },
         rollback_plan: { summary: "Restore previous VM image" },
+        approval_requirements: [{ role: "Change Manager", stage: "Production", status: "Required - Not Approved" }],
+        execution_steps: [{ step_number: 1, description: "Validate the update baseline", stage: "Development" }],
+        dependencies: { owners: ["Payroll Owner"], affected_services: ["Payroll"] },
+        confidence: 0.82,
+        confidence_kind: "Evidence completeness",
         recommended_action: { impact: "Close reachable CVE exposure", priority: "high" },
       }],
       generated_at: "2026-01-01T10:00:00Z",
@@ -90,18 +97,61 @@ describe("Governed Remediation Center", () => {
       is_known_exploited: true,
       finding_ids: ["vf-1"],
     }]));
+
+    decideRemediationPlan.mockResolvedValue(envelope({
+      decision_id: "RMD-1",
+      plan_id: "plan-1",
+      decision: "approved",
+      approver: "operator@example.com",
+      decided_at: "2026-01-01T10:00:00Z",
+      reason: "CAB approved",
+      scope: {},
+      action_version: "version-1",
+      expires_at: "2026-12-31",
+      revalidation: { status: "passed", checks: ["action_version_current"] },
+      execution_authorized: false,
+      execution_performed: false,
+      read_only: true,
+    }));
   });
 
-  it("keeps remediation candidates read-only for Phase 1", async () => {
+  it("records approval decisions without enabling execution", async () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "Unified remediation backlog" })).toBeInTheDocument();
-    expect(screen.getByText("Patch payroll database")).toBeInTheDocument();
+    expect(screen.getAllByText("Patch payroll database").length).toBeGreaterThan(0);
     expect(screen.getByText("Restore hub inspection path")).toBeInTheDocument();
-    expect(screen.getByText("CVE-2026-0001: Install KB500")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Future-phase decision boundary" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Future-phase execution handoff" })).toBeInTheDocument();
-    expect(screen.getByText(/No execution, approval, rollback, or realized-outcome controls/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("CVE-2026-0001: Install KB500").length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Approval decision record" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Execution handoff boundary" })).toBeInTheDocument();
+    expect(screen.getByText(/No Azure execution, rollback, or realized-outcome controls/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Validate the update baseline/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Change Manager - Production - Required - Not Approved/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Search")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Search"), { target: { value: "CVE-2026-0001" } });
+    expect(screen.getAllByText("CVE-2026-0001: Install KB500").length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByLabelText("Search"), { target: { value: "" } });
+
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "CAB approved" } });
+    fireEvent.change(screen.getByLabelText("Expires at"), { target: { value: "2026-12-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "Record decision" }));
+
+    await waitFor(() => expect(decideRemediationPlan).toHaveBeenCalledWith("plan-1", {
+      decision: "approved",
+      reason: "CAB approved",
+      action_version: "version-1",
+      expires_at: "2026-12-31",
+    }, {}));
+    expect(await screen.findByText(/execution_performed=false/)).toBeInTheDocument();
+  });
+
+  it("renders available sources when one provider fails", async () => {
+    gaps.mockRejectedValue(new Error("Network provider offline"));
+
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Unified remediation backlog" })).toBeInTheDocument();
+    expect(screen.getAllByText("Patch payroll database").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Remediation intelligence is unavailable")).not.toBeInTheDocument();
   });
 });

@@ -5564,6 +5564,16 @@ body.topology-fullscreen-open {
   font-size: 12px;
 }
 
+/* Visually distinguished from the narration above it so a reader can tell at a
+   glance which sentence was computed and which was generated. */
+.inventory-page .narrative-fact-summary {
+  font-size: 13px;
+  line-height: 1.6;
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-subtle, rgba(148, 163, 184, 0.4));
+}
+
 .inventory-page .narrative-fact-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

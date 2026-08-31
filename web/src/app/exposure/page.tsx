@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { PatchInventory } from "@/components/exposure/PatchInventory";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -23,41 +23,109 @@ import { buildCopilotSnapshot, copilotEvidenceRows, vulnerabilityApi } from "@/l
 export default function ExposurePage() {
   const { scope } = useScope();
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [reachableOnly, setReachableOnly] = useState(false);
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [exceptionsToken, setExceptionsToken] = useState(0);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
+  const [selectedExceptions, setSelectedExceptions] = useState<Set<string>>(new Set());
+  const [bulkRevoking, setBulkRevoking] = useState(false);
+
+  // Server-side search filtering operates over the full dataset rather than
+  // just the fetched page, so debounce the free-text query before it drives
+  // API calls to avoid firing a request on every keystroke.
+  useEffect(() => {
+    const handle = setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [query]);
+
+  const listFilters = useMemo(
+    () => ({ q: debouncedQuery || undefined, reachableOnly }),
+    [debouncedQuery, reachableOnly]
+  );
+
   const summary = useApi(() => vulnerabilityApi.summary(scope), [scope]);
-  const exposures = useApi(() => vulnerabilityApi.exposures(scope), [scope]);
-  const patches = useApi(() => vulnerabilityApi.patchPriorities(scope), [scope]);
-  const servers = useApi(() => vulnerabilityApi.serverExposures(scope), [scope]);
+  const exposures = useApi(() => vulnerabilityApi.exposures(scope, listFilters), [scope, listFilters]);
+  const patches = useApi(() => vulnerabilityApi.patchPriorities(scope, listFilters), [scope, listFilters]);
+  const servers = useApi(() => vulnerabilityApi.serverExposures(scope, listFilters), [scope, listFilters]);
   const sla = useApi(() => vulnerabilityApi.slaCompliance(scope), [scope]);
+  const riskExceptions = useApi(() => vulnerabilityApi.riskExceptions(), [scope, exceptionsToken]);
+
+  const revokeException = useCallback(async (exceptionId: string) => {
+    setRevokingId(exceptionId);
+    setRevokeError(null);
+    try {
+      await vulnerabilityApi.revokeRiskException(exceptionId);
+      setExceptionsToken((token) => token + 1);
+      setSelectedExceptions((prev) => {
+        const next = new Set(prev);
+        next.delete(exceptionId);
+        return next;
+      });
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : "Failed to revoke risk exception.");
+    } finally {
+      setRevokingId(null);
+    }
+  }, []);
+
+  const revokeExceptions = useCallback(async (exceptionIds: string[]) => {
+    setBulkRevoking(true);
+    setRevokeError(null);
+    const failures: string[] = [];
+    for (const id of exceptionIds) {
+      try {
+        await vulnerabilityApi.revokeRiskException(id);
+      } catch {
+        failures.push(id);
+      }
+    }
+    setExceptionsToken((token) => token + 1);
+    setSelectedExceptions(new Set());
+    setBulkRevoking(false);
+    if (failures.length > 0) {
+      setRevokeError(`Failed to revoke ${failures.length} of ${exceptionIds.length} selected exceptions.`);
+    }
+  }, []);
+
+  const expiringExceptionIds = useMemo(() => {
+    const cutoff = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    const ids = new Set<string>();
+    for (const exception of riskExceptions.data?.data ?? []) {
+      if (!exception.expires_at) continue;
+      const expiresAt = Date.parse(exception.expires_at);
+      if (!Number.isNaN(expiresAt) && expiresAt <= cutoff) {
+        ids.add(exception.exception_id);
+      }
+    }
+    return ids;
+  }, [riskExceptions.data]);
 
   const filteredPatches = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return (patches.data?.data ?? []).filter((patch) => {
-      if (reachableOnly && patch.reachable_server_count === 0) return false;
       if (!normalized) return true;
       return [patch.kb_id, patch.recommended_action, ...patch.cve_ids].some((value) =>
         String(value ?? "").toLowerCase().includes(normalized)
       );
     });
-  }, [patches.data, query, reachableOnly]);
+  }, [patches.data, query]);
 
   const filteredCves = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return (exposures.data?.data ?? []).filter((exposure) => {
       if (!exposure.cve_id.toUpperCase().startsWith("CVE-")) return false;
-      if (reachableOnly && exposure.reachable_server_count === 0) return false;
       if (!normalized) return true;
       return [exposure.cve_id, exposure.missing_kb, exposure.recommended_patch, exposure.severity].some((value) =>
         String(value ?? "").toLowerCase().includes(normalized)
       );
     });
-  }, [exposures.data, query, reachableOnly]);
+  }, [exposures.data, query]);
 
   const filteredServers = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return (servers.data?.data ?? []).filter((server) => {
-      if (reachableOnly && !server.reachable) return false;
       if (!normalized) return true;
       return [
         server.name,
@@ -74,7 +142,7 @@ export default function ExposurePage() {
         ...server.missing_kbs,
       ].some((value) => String(value ?? "").toLowerCase().includes(normalized));
     });
-  }, [servers.data, query, reachableOnly]);
+  }, [servers.data, query]);
 
   const { filteredRows: columnFilteredServers, filters: serverFilters, resetFilters: resetServerFilters } = useColumnFilters(filteredServers, [
     { id: "inventory", label: "Inventory", getValues: (server) => server.inventory_kind },
@@ -106,7 +174,15 @@ export default function ExposurePage() {
   const serverInventorySummary = Object.entries(serverInventoryCounts)
     .map(([kind, count]) => `${kind}: ${count}`)
     .join(" · ");
-  const error = summary.error ?? exposures.error ?? patches.error ?? servers.error;
+  // Named per-source so a single failing call (e.g. patches) doesn't block
+  // rendering of sections whose own data loaded successfully.
+  const sourceErrors = [
+    { label: "Summary", error: summary.error },
+    { label: "CVE exposures", error: exposures.error },
+    { label: "Patch priorities", error: patches.error },
+    { label: "Server exposures", error: servers.error },
+  ].filter((entry): entry is { label: string; error: Error } => entry.error != null);
+  const fatalError = summary.error ?? servers.error;
   const loading = summary.loading || exposures.loading || patches.loading || servers.loading;
 
   return (
@@ -280,9 +356,129 @@ export default function ExposurePage() {
                 </tbody>
               </table>
             </div>
-            <div className="table-secondary" style={{ marginTop: "0.75rem" }}>
-              Aging: {Object.entries(sla.data.data.aging_buckets).map(([bucket, count]) => `${bucket}: ${count}`).join(" · ")}
+            <div style={{ marginTop: "0.75rem" }}>
+              <p className="table-secondary" style={{ marginBottom: "0.5rem" }}>Aging (days open)</p>
+              <OperationsSignalChart
+                signals={Object.entries(sla.data.data.aging_buckets).map(([bucket, count], index, all) => ({
+                  label: bucket,
+                  value: count,
+                  // Later buckets represent longer-open findings; escalate tone toward the tail.
+                  tone: index >= all.length - 1 ? "critical" : index >= all.length - 2 ? "warning" : "info",
+                }))}
+              />
             </div>
+          </div>
+        </section>
+      )}
+
+      {(riskExceptions.data?.data.length ?? 0) > 0 && (
+        <section className="card">
+          <div className="card-header">
+            <div>
+              <h2>Active risk exceptions</h2>
+              <p>
+                CVEs where risk has been formally accepted. These findings stay visible elsewhere on this page but
+                are excluded from SLA compliance tracking while the exception is active.
+                {expiringExceptionIds.size > 0 && (
+                  <> <strong>{expiringExceptionIds.size}</strong> {expiringExceptionIds.size === 1 ? "exception expires" : "exceptions expire"} within 7 days.</>
+                )}
+              </p>
+            </div>
+            {selectedExceptions.size > 0 && (
+              <button
+                type="button"
+                className="button button-quiet"
+                disabled={bulkRevoking}
+                onClick={() => void revokeExceptions(Array.from(selectedExceptions))}
+              >
+                {bulkRevoking ? "Revoking…" : `Revoke selected (${selectedExceptions.size})`}
+              </button>
+            )}
+          </div>
+          {revokeError && (
+            <div className="card-body">
+              <p className="muted" role="alert">{revokeError}</p>
+            </div>
+          )}
+          <div className="table-scroll">
+            <table className="operations-table">
+              <thead>
+                <tr>
+                  <th aria-label="Select">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all risk exceptions"
+                      checked={
+                        (riskExceptions.data?.data.length ?? 0) > 0 &&
+                        selectedExceptions.size === (riskExceptions.data?.data.length ?? 0)
+                      }
+                      onChange={(event) => {
+                        if (event.target.checked) {
+                          setSelectedExceptions(new Set((riskExceptions.data?.data ?? []).map((exception) => exception.exception_id)));
+                        } else {
+                          setSelectedExceptions(new Set());
+                        }
+                      }}
+                    />
+                  </th>
+                  <th>CVE</th>
+                  <th>Scope</th>
+                  <th>Reason</th>
+                  <th>Approved by</th>
+                  <th>Expires</th>
+                  <th aria-label="Revoke" />
+                </tr>
+              </thead>
+              <tbody>
+                {(riskExceptions.data?.data ?? []).map((exception) => {
+                  const isExpiring = expiringExceptionIds.has(exception.exception_id);
+                  return (
+                    <tr key={exception.exception_id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${exception.cve_id}`}
+                          checked={selectedExceptions.has(exception.exception_id)}
+                          onChange={(event) => {
+                            setSelectedExceptions((prev) => {
+                              const next = new Set(prev);
+                              if (event.target.checked) {
+                                next.add(exception.exception_id);
+                              } else {
+                                next.delete(exception.exception_id);
+                              }
+                              return next;
+                            });
+                          }}
+                        />
+                      </td>
+                      <td>
+                        <Link className="table-primary-link" href={`/exposure/cves/${encodeURIComponent(exception.cve_id)}`}>
+                          {exception.cve_id}
+                        </Link>
+                      </td>
+                      <td>{exception.server_id || "All affected servers"}</td>
+                      <td>{exception.reason}</td>
+                      <td>{exception.approved_by || "Unrecorded"}</td>
+                      <td>
+                        {exception.expires_at || "No expiry"}
+                        {isExpiring && <StatusBadge tone="warning" label="Expiring soon" />}
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="button button-quiet"
+                          disabled={revokingId === exception.exception_id}
+                          onClick={() => void revokeException(exception.exception_id)}
+                        >
+                          {revokingId === exception.exception_id ? "Revoking…" : "Revoke"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </section>
       )}
@@ -307,10 +503,10 @@ export default function ExposurePage() {
         </label>
       </div>
 
-      {error ? (
+      {fatalError ? (
         <StatePanel
           title="Exposure intelligence is unavailable"
-          message={`${error.message}. The workbench will not treat missing vulnerability data as an all-clear state.`}
+          message={`${fatalError.message}. The workbench will not treat missing vulnerability data as an all-clear state.`}
           tone="error"
         />
       ) : loading ? (
@@ -319,7 +515,16 @@ export default function ExposurePage() {
           message="Combining KB patch state, CVE intelligence, network reachability, and business service criticality."
           tone="loading"
         />
-      ) : filteredServers.length === 0 && filteredPatches.length === 0 && filteredCves.length === 0 ? (
+      ) : (
+        <>
+        {sourceErrors.length > 0 && (
+          <StatePanel
+            title="Some exposure sources are degraded"
+            message={`${sourceErrors.map((entry) => `${entry.label}: ${entry.error.message}`).join(" · ")}. Sections below reflect only the sources that loaded.`}
+            tone="error"
+          />
+        )}
+        {filteredServers.length === 0 && filteredPatches.length === 0 && filteredCves.length === 0 ? (
         <StatePanel
           title="No exposure matches these filters"
           message="Adjust the search or reachability filter. Results reflect the current operating context."
@@ -479,6 +684,13 @@ export default function ExposurePage() {
                           </div>
                         </td>
                         <td>
+                          <Link
+                            className="table-secondary"
+                            href={`/remediation?kb=${encodeURIComponent(patch.kb_id)}`}
+                            style={{ marginRight: "0.75rem" }}
+                          >
+                            Remediate
+                          </Link>
                           <Link className="table-open-link" href={`/exposure/kbs/${encodeURIComponent(patch.kb_id)}`} aria-label={`Open ${patch.kb_id}`}>
                             →
                           </Link>
@@ -574,6 +786,13 @@ export default function ExposurePage() {
                           <div className="table-secondary">{exposure.recommended_patch || "Recommended patch"}</div>
                         </td>
                         <td>
+                          <Link
+                            className="table-secondary"
+                            href={`/remediation?cve=${encodeURIComponent(exposure.cve_id)}`}
+                            style={{ marginRight: "0.75rem" }}
+                          >
+                            Remediate
+                          </Link>
                           <Link className="table-open-link" href={`/exposure/cves/${encodeURIComponent(exposure.cve_id)}`} aria-label={`Open ${exposure.cve_id}`}>
                             →
                           </Link>
@@ -596,6 +815,8 @@ export default function ExposurePage() {
             />
           </section>
         </div>
+        )}
+        </>
       )}
 
       <CopilotDrawer

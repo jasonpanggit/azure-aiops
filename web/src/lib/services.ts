@@ -17,6 +17,7 @@ import type {
   IncidentDetail,
   IncidentReport,
   RemediationOpportunityReport,
+  RemediationDecision,
   RemediationPlanReport,
   FlowResult,
   HubDependents,
@@ -485,6 +486,16 @@ export const operationsApi = {
     query.set("limit", String(limit));
     return apiRequest<RemediationOpportunityReport>("/remediation-opportunities", { query });
   },
+  decideRemediationPlan: (
+    planId: string,
+    payload: { decision: RemediationDecision["decision"]; reason: string; action_version: string; expires_at?: string },
+    scope: ScopeSelection = {},
+  ) =>
+    apiRequest<RemediationDecision>(`/remediation-plans/${encodeURIComponent(planId)}/decisions`, {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+      body: { ...payload, expires_at: payload.expires_at ?? "" },
+    }),
 };
 
 // ---------------------------------------------------------------------------
@@ -567,12 +578,24 @@ export const networkApi = {
 export const vulnerabilityApi = {
   summary: (scope: ScopeSelection = {}) =>
     apiRequest<VulnerabilitySummary>("/vulnerabilities/summary", { query: scopeToSearchParams(scope) }),
-  exposures: (scope: ScopeSelection = {}) =>
-    apiRequest<VulnerabilityExposure[]>("/vulnerabilities/exposures", { query: scopeToSearchParams(scope) }),
-  patchPriorities: (scope: ScopeSelection = {}) =>
-    apiRequest<PatchPriority[]>("/vulnerabilities/patch-priorities", { query: scopeToSearchParams(scope) }),
-  serverExposures: (scope: ScopeSelection = {}) =>
-    apiRequest<ServerExposure[]>("/vulnerabilities/server-exposures", { query: scopeToSearchParams(scope) }),
+  exposures: (scope: ScopeSelection = {}, filters?: { q?: string; reachableOnly?: boolean }) => {
+    const query = scopeToSearchParams(scope);
+    if (filters?.q) query.set("q", filters.q);
+    if (filters?.reachableOnly) query.set("reachable_only", "true");
+    return apiRequest<VulnerabilityExposure[]>("/vulnerabilities/exposures", { query });
+  },
+  patchPriorities: (scope: ScopeSelection = {}, filters?: { q?: string; reachableOnly?: boolean }) => {
+    const query = scopeToSearchParams(scope);
+    if (filters?.q) query.set("q", filters.q);
+    if (filters?.reachableOnly) query.set("reachable_only", "true");
+    return apiRequest<PatchPriority[]>("/vulnerabilities/patch-priorities", { query });
+  },
+  serverExposures: (scope: ScopeSelection = {}, filters?: { q?: string; reachableOnly?: boolean }) => {
+    const query = scopeToSearchParams(scope);
+    if (filters?.q) query.set("q", filters.q);
+    if (filters?.reachableOnly) query.set("reachable_only", "true");
+    return apiRequest<ServerExposure[]>("/vulnerabilities/server-exposures", { query });
+  },
   cves: (scope: ScopeSelection = {}, q?: string) => {
     const query = scopeToSearchParams(scope);
     if (q) query.set("q", q);

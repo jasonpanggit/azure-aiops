@@ -67,6 +67,9 @@ class RemediationGenerator:
         plan_id = "RMP-" + hashlib.sha256(
             f"{opportunity['_resource_key']}|{action['action_id']}".encode()
         ).hexdigest()[:16].upper()
+        action_version = hashlib.sha256(
+            f"{action['action_id']}|{action.get('title')}|{action.get('execution_steps')}|{action.get('rollback_actions')}".encode()
+        ).hexdigest()[:16]
         steps = [
             {
                 "step_number": index,
@@ -91,6 +94,7 @@ class RemediationGenerator:
         )
         return {
             "plan_id": plan_id,
+            "action_version": action_version,
             "title": str(action.get("title") or "Remediation plan")[:512],
             "status": "Draft - Approval Required",
             "resource": opportunity["resource"],

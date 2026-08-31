@@ -260,6 +260,9 @@ class IdentityRiskEngine:
                 if changed and (latest is None or changed > latest):
                     latest = changed
 
+            # A principal is stale if ANY of its grants is stale, not only
+            # when every grant is: one recent assignment must never mask a
+            # forgotten privileged grant sitting untouched alongside it.
             records.append(
                 PrincipalRisk(
                     principal_id=principal_id,
@@ -269,7 +272,7 @@ class IdentityRiskEngine:
                     widest_scope=widest_scope,
                     widest_scope_breadth=widest_breadth,
                     roles=tuple(sorted(roles)),
-                    stale=all(self._is_stale(item) for item in assignments),
+                    stale=any(self._is_stale(item) for item in assignments),
                     last_changed=latest.isoformat() if latest else "",
                     blast_radius=blast_radius,
                 )

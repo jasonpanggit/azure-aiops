@@ -164,6 +164,62 @@ Properties: `runbookKey`, `runbookType`, `version`, `approvalState`, `repository
 
 Authority: Azure Automation, ServiceNow Knowledge, or Azure DevOps repository. Content stays in source.
 
+### RemediationPlan
+
+Draft, evidence-backed remediation plan. It is a planning artifact, not an execution record or approval.
+
+Properties: `planId`, `title`, `status`, `priority`, `objective`, `opportunityType`, `confidence`, `confidenceKind`, `executionAuthorized`, `executionPerformed`, `readOnly`, `environment`.
+
+Authority: AIOps remediation planner from governed action catalog, semantic graph context, and peer intelligence outputs. Plans are proposals until human approval and execution systems accept them.
+
+### ApprovalRequirement
+
+Required human or process approval for a remediation plan or stage gate.
+
+Properties: `approvalRequirementId`, `role`, `stage`, `status`, `requiredByPolicyId`, `decisionId`, `expiresTimestamp`.
+
+Authority: Governed remediation approval policy and external approval workflow once integrated.
+
+### ApprovalDecision
+
+Immutable human decision recorded against a remediation recommendation. It records approval, rejection, or expiry of a recommendation; it is not an execution authorization token.
+
+Properties: `decisionId`, `planId`, `decision`, `approver`, `decidedTimestamp`, `reason`, `scope`, `actionVersion`, `expiresTimestamp`, `revalidationStatus`, `executionAuthorized=false`, `executionPerformed=false`.
+
+Authority: AIOps remediation decision API after server-side scope and action-version revalidation.
+
+### ExecutionStep
+
+Ordered proposed remediation step. It is not proof that execution occurred.
+
+Properties: `stepId`, `stepNumber`, `description`, `stage`, `requiresApproval`, `executionStatus`, `preconditionRefs`, `successCriteriaRefs`, `failureCriteriaRefs`.
+
+Authority: Governed remediation action catalog and remediation planner.
+
+### RollbackPlan
+
+Rollback or compensation strategy attached to a remediation plan.
+
+Properties: `rollbackPlanId`, `summary`, `reversible`, `automaticRollback`, `executionStatus`, `rollbackActionRefs`, `validationRefs`.
+
+Authority: Governed remediation action catalog and remediation planner.
+
+### RiskAssessment
+
+Compact risk assessment for an incident, finding, prediction, or remediation plan.
+
+Properties: `riskAssessmentId`, `overallLevel`, `overallScore`, `drivers`, `evidenceStatus`, `assessmentTimestamp`.
+
+Authority: AIOps risk analysis over governed evidence. It is advisory unless accepted by a downstream governance workflow.
+
+### SimulationResult
+
+Projected effect of a proposed action. It is scenario output, not actual post-change state.
+
+Properties: `simulationResultId`, `riskReductionPercent`, `complianceImprovementPercent`, `lifecycleExposureReductionPercent`, `operationalDebtReductionPercent`, `downtimeRisk`, `simulationOnly`, `changesExecuted`.
+
+Authority: AIOps remediation execution simulator from governed action-catalog effectiveness metadata.
+
 ### CostCentre
 
 Business cost-accountability unit.
@@ -230,6 +286,14 @@ Per-source assertions are preserved. A deterministic effective-edge view selects
 | `impacts` | Incident/Finding/Patch/FailurePattern → asset/Application/BusinessService/Team | Subject affects object. |
 | `affectedBy` | asset/Application/BusinessService → Incident/Finding/Patch/FailurePattern | Explicit inverse projection for consumer convenience. Canonical storage may derive it from `impacts`. |
 | `mitigatedBy` | Incident/Finding/FailurePattern → Runbook/Patch | Risk/incident is reduced by artifact. |
+| `requiresPlan` | Application → RemediationPlan | Application has an evidence-backed draft plan available for review. |
+| `mitigatesRisk` | RemediationPlan → RiskAssessment | Plan is intended to reduce the assessed risk. |
+| `protectsService` | RemediationPlan → BusinessService | Plan is intended to protect or improve the business service. |
+| `requiresApproval` | RemediationPlan → ApprovalRequirement | Plan cannot progress without the listed approval or stage gate. |
+| `hasApprovalDecision` | RemediationPlan → ApprovalDecision | Plan has an immutable human approve, reject, or expire decision record. |
+| `hasStep` | RemediationPlan → ExecutionStep | Plan includes an ordered proposed execution step. |
+| `hasRollbackPlan` | RemediationPlan → RollbackPlan | Plan has a rollback or compensation strategy. |
+| `hasSimulation` | RemediationPlan → SimulationResult | Plan has a bounded scenario simulation result. |
 
 ### Incident-learning extension relationships
 

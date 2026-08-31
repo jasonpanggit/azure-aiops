@@ -226,6 +226,15 @@ class RiskExceptionCreateRequest(ApiModel):
     )
 
 
+class RemediationDecisionRequest(ApiModel):
+    """Record a human decision for a recommendation without executing it."""
+
+    decision: Literal["approved", "rejected", "expired"]
+    reason: str = Field(min_length=1, max_length=2048)
+    action_version: str = Field(min_length=1, max_length=128)
+    expires_at: str = Field("", max_length=128)
+
+
 # --------------------------------------------------------------------------
 # Pre-deployment change assessment
 # --------------------------------------------------------------------------

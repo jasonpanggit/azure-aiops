@@ -4,9 +4,8 @@ from remediation_scenario import remediation_planner
 def test_repository_projects_required_ontology_entities_and_relationships():
     planner = remediation_planner()
     result = planner.generate_plans()
-    projection = planner.repository.ontology_projection()
-    entity_types = {row["entity_type"] for row in projection["entities"]}
-    relationship_types = {row["relationship_type"] for row in projection["relationships"]}
+    initial_projection = planner.repository.ontology_projection()
+    entity_types = {row["entity_type"] for row in initial_projection["entities"]}
 
     assert {
         "RemediationPlan",
@@ -16,7 +15,19 @@ def test_repository_projects_required_ontology_entities_and_relationships():
         "RiskAssessment",
         "SimulationResult",
     } <= entity_types
-    assert {"requiresPlan", "mitigatesRisk", "protectsService"} <= relationship_types
+    planner.repository.decisions.append(
+        plan=result["plans"][0],
+        decision="approved",
+        approver="operator@example.com",
+        reason="Approved for planning handoff",
+        scope={},
+        action_version=result["plans"][0]["action_version"],
+    )
+    projection = planner.repository.ontology_projection()
+    entity_types = {row["entity_type"] for row in projection["entities"]}
+    relationship_types = {row["relationship_type"] for row in projection["relationships"]}
+    assert "ApprovalDecision" in entity_types
+    assert {"requiresPlan", "mitigatesRisk", "protectsService", "hasApprovalDecision"} <= relationship_types
     assert len(planner.repository.list()) == len(result["plans"])
     assert projection["read_only"] is True
 

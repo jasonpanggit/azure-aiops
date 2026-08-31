@@ -227,6 +227,15 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
             ) : (
               <p className="muted">Model narration is unavailable; deterministic facts remain authoritative.</p>
             )}
+            {/* The deterministic summary is computed from the aggregates, not
+                generated, so it is shown alongside the narration rather than
+                only as a fallback. It is what the narration is accountable to:
+                a reader can compare the two and see if they agree. Claiming
+                "deterministic facts remain authoritative" while never showing
+                them would leave that claim unverifiable. */}
+            {narrative.data.data.fact_summary && (
+              <p className="narrative-fact-summary">{narrative.data.data.fact_summary}</p>
+            )}
             {narrative.data.data.narrated_by && (
               <p className="muted narrative-attribution">Narrated by {narrative.data.data.narrated_by}</p>
             )}

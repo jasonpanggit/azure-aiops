@@ -501,6 +501,7 @@ def _link_specs(row: Mapping[str, Any]) -> list[dict[str, str]]:
         ("change_id", "Change"),
         ("service_id", "Service"),
         ("operational_twin_id", "OperationalTwin"),
+        ("exception_id", "RiskException"),
     ):
         entity_id = str(row.get(key) or "").strip()
         if entity_id:

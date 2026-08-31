@@ -10,6 +10,7 @@ network problems" -- a dangerous default for a security-facing view.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Query
@@ -17,6 +18,7 @@ from fastapi import APIRouter, Body, Query
 from network.design import NetworkDesignPolicy, NetworkDesignPolicyValidationError
 from network.flow import FlowQuery
 from network.gaps import NetworkGapAnalyzer
+from network.rule_engine import RuleValidationError, validate_rule_parameters
 from network.service import NetworkIntelligenceService, NetworkScope
 
 from ..dependencies import Context, Page, ReadScope, WritePrincipal
@@ -247,19 +249,45 @@ def _policy_payload(policy: NetworkDesignPolicy) -> tuple[dict[str, Any], list[s
     Evaluability is a property of the analyzer, not of the stored policy, so
     it is annotated at the edge. Without it the UI cannot distinguish a rule
     that is enforced from one that is merely stored.
+
+    A rule is evaluated if it is either a built-in with a registered check or
+    a declarative rule the engine can run. Declarative rules that fail
+    validation are reported as ``invalid`` with the parse error, rather than
+    as ``evaluated: false`` -- a broken rule and an unimplemented one need
+    different fixes, and collapsing them hides which one you have.
     """
     evaluable = set(NetworkGapAnalyzer.evaluable_rule_ids())
     payload = policy.to_dict()
-    payload["rules"] = [
-        {**rule, "evaluated": rule.get("rule_id") in evaluable}
-        for rule in payload.get("rules", [])
-    ]
+
+    annotated: list[dict[str, Any]] = []
+    for rule in payload.get("rules", []):
+        entry = dict(rule)
+        parameters = entry.get("parameters")
+        declarative = isinstance(parameters, dict) and bool(parameters.get("assert"))
+        error = ""
+        if declarative:
+            try:
+                validate_rule_parameters(parameters)
+            except RuleValidationError as exc:
+                error = str(exc)
+        entry["declarative"] = declarative
+        entry["evaluated"] = entry.get("rule_id") in evaluable or (
+            declarative and not error
+        )
+        if error:
+            entry["invalid_reason"] = error
+        annotated.append(entry)
+
+    payload["rules"] = annotated
     unevaluated = [
         rule["rule_id"]
-        for rule in payload["rules"]
+        for rule in annotated
         if rule.get("enabled") and not rule["evaluated"]
     ]
     payload["unevaluated_rule_ids"] = unevaluated
+    payload["invalid_rule_ids"] = [
+        rule["rule_id"] for rule in annotated if rule.get("invalid_reason")
+    ]
     return payload, unevaluated
 
 
@@ -277,6 +305,7 @@ def read_policy(context: Context, scope: ReadScope) -> dict[str, Any]:
     # of the stored policy. Surfacing it here stops the UI from claiming a
     # custom rule is enforced when nothing evaluates it.
     payload, unevaluated = _policy_payload(policy)
+    invalid = payload.get("invalid_rule_ids") or []
     return envelope(
         payload,
         evidence=Evidence(
@@ -297,8 +326,41 @@ def read_policy(context: Context, scope: ReadScope) -> dict[str, Any]:
             ]
             if unevaluated
             else []
+        )
+        + (
+            [
+                f"{len(invalid)} rule(s) could not be parsed and did not run: "
+                + ", ".join(invalid)
+            ]
+            if invalid
+            else []
         ),
     )
+
+
+def _declarative_rule_errors(
+    changes: Mapping[str, Any],
+) -> list[tuple[Mapping[str, Any], str]]:
+    """Validation errors for declarative rule bodies in a proposed change.
+
+    Operates on the raw request rather than a stored policy so a bad rule can
+    be rejected before it is written.
+    """
+    rules = changes.get("rules")
+    if not isinstance(rules, (list, tuple)):
+        return []
+    errors: list[tuple[Mapping[str, Any], str]] = []
+    for rule in rules:
+        if not isinstance(rule, Mapping):
+            continue
+        parameters = rule.get("parameters")
+        if not isinstance(parameters, Mapping) or not parameters.get("assert"):
+            continue
+        try:
+            validate_rule_parameters(parameters)
+        except RuleValidationError as exc:
+            errors.append((rule, str(exc)))
+    return errors
 
 
 @router.patch("/policy", summary="Update the rule-based network design policy")
@@ -314,6 +376,20 @@ def update_policy(
             ErrorCode.PROVIDER_UNAVAILABLE,
             "Policy cannot be updated because no policy store is configured",
             {"capability": "network_policy", "provider_state": "unavailable"},
+        )
+    # Validate declarative rule bodies BEFORE persisting. Storing a rule and
+    # then returning an error would leave the estate policy holding something
+    # the caller was told was rejected.
+    broken = [
+        (str(rule.get("rule_id") or rule.get("id") or "?"), reason)
+        for rule, reason in _declarative_rule_errors(changes)
+    ]
+    if broken:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "One or more rules are not valid: "
+            + "; ".join(f"{rule_id}: {reason}" for rule_id, reason in broken),
+            {"invalid_rule_ids": [rule_id for rule_id, _ in broken]},
         )
     try:
         policy = store.update(changes)
@@ -354,12 +430,24 @@ def preview_policy(
     service = _service(context, scope)
     preview_service = NetworkIntelligenceService(service.snapshot, policy=policy)
     analysis = preview_service.analyze()
+    payload = _policy_payload(policy)[0]
+    invalid = payload.get("invalid_rule_ids") or []
     return envelope(
         {
-            "policy": _policy_payload(policy)[0],
+            "policy": payload,
             "gaps": [gap.to_dict() for gap in analysis.gaps],
             "summary": analysis.summary(),
         },
         evidence=_evidence(service, confidence=CONFIDENCE_MEDIUM),
         scope=scope.to_dict(),
+        # Preview is the dry-run seam: a rule author should see that a rule
+        # is malformed here, before saving, rather than after.
+        warnings=(
+            [
+                f"{len(invalid)} rule(s) could not be parsed and produced no gaps: "
+                + ", ".join(invalid)
+            ]
+            if invalid
+            else []
+        ),
     )
