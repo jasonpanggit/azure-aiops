@@ -1,0 +1,47 @@
+<policies>
+  <inbound>
+    <base />
+    <validate-azure-ad-token tenant-id="${tenant_id}">
+      <audiences>
+        <audience>${audience}</audience>
+        <audience>${audience_id}</audience>
+      </audiences>
+    </validate-azure-ad-token>
+    <set-variable name="aiopsCallerId" value="@{
+      var authHeader = context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;);
+      var parts = authHeader.Split(' ');
+      var token = parts.Length > 1 ? parts[1] : authHeader;
+      var jwt = default(Jwt);
+      if (string.IsNullOrEmpty(token) || !token.TryParseJwt(out jwt)) {
+        return context.RequestId.ToString();
+      }
+      var oid = jwt.Claims.GetValueOrDefault(&quot;oid&quot;, new string[0]);
+      var appid = jwt.Claims.GetValueOrDefault(&quot;azp&quot;, jwt.Claims.GetValueOrDefault(&quot;appid&quot;, new string[0]));
+      if (oid.Length > 0) { return oid[0]; }
+      if (appid.Length > 0) { return appid[0]; }
+      return context.RequestId.ToString();
+    }" />
+    <set-backend-service base-url="${backend_url}" />
+    <set-header name="X-Correlation-ID" exists-action="override">
+      <value>@(context.RequestId.ToString())</value>
+    </set-header>
+    <!-- This server is authorized solely via its own managed identity roles
+         (Reader / Monitoring Reader), not a downstream governed executor, so
+         no gateway-assertion shared secret or principal impersonation header
+         is forwarded here; only Azure AD JWT validation above gates access. -->
+    <set-header name="Authorization" exists-action="delete" />
+    <rate-limit-by-key calls="300" renewal-period="60" counter-key="@((string)context.Variables[&quot;aiopsCallerId&quot;])" />
+    <quota-by-key calls="10000" renewal-period="86400" counter-key="@((string)context.Variables[&quot;aiopsCallerId&quot;])" />
+    <choose>
+      <when condition="@(!context.Request.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).StartsWith(&quot;application/json&quot;, StringComparison.OrdinalIgnoreCase))">
+        <return-response>
+          <set-status code="415" reason="Unsupported Media Type" />
+          <set-body>{ "statusCode": 415, "message": "MCP requires JSON" }</set-body>
+        </return-response>
+      </when>
+    </choose>
+  </inbound>
+  <backend><base /></backend>
+  <outbound><base /></outbound>
+  <on-error><base /></on-error>
+</policies>

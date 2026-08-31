@@ -1,0 +1,69 @@
+# Runs Microsoft's official Azure MCP Server (@azure/mcp) behind a small
+# stdio<->HTTP bridge script (scripts/mcp-stdio-http-bridge.js). Unlike
+# Dockerfile.mcp (the Python relay in front of the governed Operations
+# executor), this exposes the full generic Azure MCP tool catalog (compute,
+# storage, network, monitor, cost, etc.) so specialist agents can query
+# Azure resources directly, read-only, via the container's managed
+# identity.
+#
+# Why a bridge instead of azmcp's native --transport http: azmcp's HTTP
+# transport enforces its own Azure AD JWT incoming-auth that cannot
+# currently be configured (no documented env var works), and its only
+# documented escape hatch, --dangerously-disable-http-incoming-auth,
+# crashes the process on startup in every 3.0.0-beta version tested here
+# (confirmed across beta.30/35/39). See
+# https://github.com/microsoft/mcp/issues/2459. The default stdio
+# transport has no incoming-auth layer and works reliably, so the bridge
+# spawns azmcp once in stdio mode and forwards HTTP requests to it.
+# APIM (not azmcp) is what validates the caller's Azure AD JWT before
+# proxying to this backend.
+# Debian slim, not alpine: @azure/mcp ships a native optional-dependency
+# binary (@azure/mcp-linux-x64) built against glibc, which fails to exec
+# under musl libc (Alpine) with ENOENT even though npm install succeeds.
+FROM node:22-slim
+
+# azmcp is a .NET-based binary bundled inside the npm package. Rather than
+# chasing ICU/locale data files, run in invariant globalization mode: this
+# tool only ever calls Azure Resource Manager / Monitor APIs with
+# machine-readable identifiers, so locale-aware string comparison/formatting
+# is not needed.
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends libssl3 ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Pin a version once validated in this environment; bump deliberately rather
+# than tracking @latest so a registry-side release can't silently change the
+# tool surface agents depend on.
+ARG AZURE_MCP_VERSION=latest
+ENV AZURE_MCP_VERSION=${AZURE_MCP_VERSION}
+
+# Install as a real local dependency (package.json + node_modules/.bin), not
+# `npx` at container start -- npx re-resolves/downloads the package on every
+# launch, ignoring anything installed here, which is both slow and makes
+# runtime behavior depend on npm registry availability.
+RUN npm init -y >/dev/null 2>&1 && \
+    npm install --save-exact "@azure/mcp@${AZURE_MCP_VERSION}"
+
+ENV PORT=8000
+EXPOSE 8000
+
+# Copy the stdio<->HTTP bridge (see its header comment for why this exists
+# instead of azmcp's native --transport http mode).
+COPY scripts/mcp-stdio-http-bridge.js /app/bridge.js
+
+# The @azure/mcp binary does not expose a documented /health route, so probe
+# the listening port itself rather than assuming an HTTP health path exists.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD node -e "require('net').connect(process.env.PORT,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+
+# Run azmcp in its default stdio transport (well-tested, no incoming-auth
+# layer to misconfigure) behind our own bridge, which is what Azure
+# Container Apps ingress and APIM actually talk to over HTTP. The managed
+# identity attached to the Container App is what authorizes the underlying
+# Azure Resource Manager calls, not this bridge process.
+ENV AZMCP_BIN=./node_modules/.bin/azmcp
+ENV AZMCP_ARGS="--read-only --mode all --dangerously-disable-elicitation --outgoing-auth-strategy UseHostingEnvironmentIdentity"
+CMD ["node", "/app/bridge.js"]

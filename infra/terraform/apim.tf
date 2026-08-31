@@ -18,6 +18,17 @@ locals {
     backend_url       = local.mcp_backend_url
     gateway_assertion = local.gateway_assertion
   }
+
+  # Distinct native MCP surface for the standalone Azure MCP server
+  # (Microsoft's @azure/mcp), separate from the Operations executor relay
+  # above -- see azure_mcp_server.tf.
+  azure_mcp_backend_url = "https://${azurerm_container_app.azure_mcp.ingress[0].fqdn}"
+  azure_mcp_policy_vars = {
+    tenant_id   = var.tenant_id
+    audience    = local.apim_audience
+    audience_id = local.apim_audience_id
+    backend_url = local.azure_mcp_backend_url
+  }
 }
 
 resource "azurerm_api_management" "main" {
@@ -82,15 +93,15 @@ resource "azapi_resource" "mcp_backend" {
 resource "azapi_resource" "mcp_server" {
   count                     = var.enable_apim ? 1 : 0
   type                      = "Microsoft.ApiManagement/service/apis@2024-06-01-preview"
-  name                      = "${local.base}-mcp-server"
+  name                      = "${local.base}-operations-mcp"
   parent_id                 = azurerm_api_management.main[0].id
   schema_validation_enabled = false
   body = {
     properties = {
       type                 = "mcp"
-      displayName          = "Azure MCP Server (Operations)"
-      description          = "Governed read-only Azure MCP server, relayed via the ACA MCP relay to the Operations executor"
-      path                 = "mcp-server"
+      displayName          = "Operations MCP Server"
+      description          = "Governed read-only MCP server for the Operations executor (CVE/vulnerability, workbench, and remediation queries), relayed via the private ACA MCP relay"
+      path                 = "operations-mcp"
       protocols            = ["https"]
       subscriptionRequired = false
       backendId            = azapi_resource.mcp_backend[0].name
@@ -148,4 +159,76 @@ resource "azurerm_api_management_product_api" "mcp" {
   product_id          = azurerm_api_management_product.mcp[0].product_id
   api_management_name = azurerm_api_management.main[0].name
   resource_group_name = azurerm_resource_group.main.name
+}
+
+# ---------------------------------------------------------------------------
+# Azure MCP gateway (Microsoft's @azure/mcp).  A second, independent native
+# MCP surface, distinct from the Operations relay above: this fronts the
+# standalone azure_mcp container app (azure_mcp_server.tf), whose generic
+# Azure resource tool catalog is authorized purely by that container's own
+# managed identity roles rather than the Operations executor.
+# ---------------------------------------------------------------------------
+
+resource "azapi_resource" "azure_mcp_backend" {
+  count     = var.enable_apim ? 1 : 0
+  type      = "Microsoft.ApiManagement/service/backends@2024-06-01-preview"
+  name      = "${local.base}-azure-mcp-backend"
+  parent_id = azurerm_api_management.main[0].id
+  body = {
+    properties = {
+      protocol = "http"
+      url      = local.azure_mcp_backend_url
+    }
+  }
+}
+
+resource "azapi_resource" "azure_mcp_server" {
+  count                     = var.enable_apim ? 1 : 0
+  type                      = "Microsoft.ApiManagement/service/apis@2024-06-01-preview"
+  name                      = "${local.base}-azure-mcp"
+  parent_id                 = azurerm_api_management.main[0].id
+  schema_validation_enabled = false
+  body = {
+    properties = {
+      type                 = "mcp"
+      displayName          = "Azure MCP Server"
+      description          = "Microsoft's official Azure MCP Server (@azure/mcp) -- generic, read-only tools for compute, storage, network, monitor, and cost across onboarded subscriptions"
+      path                 = "azure-mcp"
+      protocols            = ["https"]
+      subscriptionRequired = false
+      backendId            = azapi_resource.azure_mcp_backend[0].name
+      mcpProperties = {
+        endpoints = {
+          mcp = {
+            uriTemplate = "/"
+          }
+        }
+      }
+    }
+  }
+}
+
+resource "azapi_resource" "azure_mcp_server_policy" {
+  count     = var.enable_apim ? 1 : 0
+  type      = "Microsoft.ApiManagement/service/apis/policies@2024-06-01-preview"
+  name      = "policy"
+  parent_id = azapi_resource.azure_mcp_server[0].id
+  body = {
+    properties = {
+      format = "xml"
+      value  = templatefile("${path.module}/apim-policies/azure-mcp-inbound.xml", local.azure_mcp_policy_vars)
+    }
+  }
+}
+
+resource "azurerm_api_management_product" "azure_mcp" {
+  count                 = var.enable_apim ? 1 : 0
+  product_id            = "azure-mcp"
+  api_management_name   = azurerm_api_management.main[0].name
+  resource_group_name   = azurerm_resource_group.main.name
+  display_name          = "Azure MCP (approved clients)"
+  published             = true
+  approval_required     = true
+  subscription_required = true
+  subscriptions_limit   = var.apim_subscription_limit
 }
