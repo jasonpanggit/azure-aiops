@@ -209,16 +209,15 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
       )}
       {narrative.data && (
         <>
-          <p><strong>Facts from inventory</strong></p>
-          <p>{narrative.data.data.fact_summary}</p>
           {narrative.data.data.narrated_summary ? (
-            <>
-              <p><strong>Model narration{narrative.data.data.narrated_by ? ` · ${narrative.data.data.narrated_by}` : ""}</strong></p>
-              <p>{narrative.data.data.narrated_summary}</p>
-            </>
+            <p>{narrative.data.data.narrated_summary}</p>
           ) : (
             <p className="muted">Model narration is unavailable; deterministic facts remain authoritative.</p>
           )}
+          <details>
+            <summary>Deterministic facts{narrative.data.data.narrated_by ? ` (narrated by ${narrative.data.data.narrated_by})` : ""}</summary>
+            <p>{narrative.data.data.fact_summary}</p>
+          </details>
           {narrative.data.data.citations.length > 0 && (
             <p className="muted">
               Evidence: {narrative.data.data.citations.map((citation) => `${citation.source_engine} / ${citation.source_table}`).join(" · ")}

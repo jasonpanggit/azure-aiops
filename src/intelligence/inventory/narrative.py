@@ -25,8 +25,14 @@ SUPPORTED_CITATION_TABLES = frozenset(
     {"inventory/os_observations", "inventory/software_observations", "Resources", "ConfigurationData"}
 )
 _NARRATIVE_QUESTION = (
-    "Summarize the operational risk concentrations in these scoped inventory "
-    "aggregates. Use only the supplied facts, mention source degradation when "
+    "Write a short operator-facing narrative (2-4 plain sentences, no bullet "
+    "list, no field-name citations, no 'OBSERVED FACT/DERIVED INFERENCE/UNKNOWN' "
+    "labels) that synthesizes where the operational risk is concentrated in "
+    "these scoped inventory aggregates and what to look at first. The facts "
+    "panel above already lists the raw numbers verbatim, so do not restate "
+    "them one-by-one -- weave the most material ones into your sentences and "
+    "focus on what they mean together (e.g. concentration, blast radius, "
+    "urgency). Use only the supplied facts, mention source degradation when "
     "present, and do not recommend or claim an action that is not supported."
 )
 
