@@ -65,6 +65,7 @@ locals {
     network = [
       "resourcehealth_availability-status_get",
       "monitor_activitylog_list",
+      "arm_execute_query",
     ]
     vulnerability = [
       "advisor_recommendation_list",
@@ -101,7 +102,7 @@ locals {
   # matching the question to a tool name, so this rule is injected verbatim
   # into every specialist prompt to make the choice deterministic rather than
   # left to name-matching alone.
-  foundry_mcp_routing_rule = "Routing rule for your two tool sources: use your operations-mcp tools (governed/curated business context, CVE, incident, remediation, network, etc.) as your PRIMARY source whenever the question is about business impact, policy alignment, or curated findings -- these tools already join Azure state with business/application/fabric-IQ context. Use your azure-mcp tools (Microsoft's official Azure MCP Server) when you need live, raw Azure resource state that operations-mcp does not model (e.g. current Advisor recommendations, Resource Health status, Monitor activity logs, ARM deployment status, cost data, policy/role assignments), or to corroborate/refresh a operations-mcp finding with current Azure state. If both could answer the question, call operations-mcp first for the governed answer, then use azure-mcp only to fill an evidence gap -- do not call azure-mcp speculatively when operations-mcp already fully answers the question."
+  foundry_mcp_routing_rule = "Routing rule for your two tool sources -- they answer different questions, not the same question twice: use your operations-mcp tools for governed, business-context-joined analysis (business impact, policy/design alignment, curated CVE/incident/remediation records, and Fabric-modeled topology) -- this is a curated model that is necessarily incomplete and can lag behind or omit resource configuration it was never ingested to capture. Use your azure-mcp tools (Microsoft's official Azure MCP Server) whenever the question needs the exact, current configuration of a specific Azure resource -- e.g. a firewall's actual rule collections, an NSG's actual rules, a VNet's actual subnets, current Advisor recommendations, Resource Health status, Monitor activity logs, ARM deployment status, cost data, or policy/role assignments -- because operations-mcp's curated topology does not and will never model every resource property. Do not conclude a resource has no configuration, no rules, or no data just because operations-mcp returned none or was silent on it -- that means the curated model does not have it, not that Azure does not have it; call azure-mcp (arm_execute_query, or another specific azure-mcp tool if one exists for that resource type) to get the live, authoritative answer before telling the operator something does not exist. If both sources are relevant, call operations-mcp first for governed/business context, then azure-mcp for the precise resource-level facts, and clearly attribute each claim to the source it came from."
 
   # ---------------------------------------------------------------------------
   # Tool registry: single source of truth for "what does this tool do and when
@@ -149,6 +150,7 @@ locals {
     policy_assignment_list                 = { server = "azure-mcp", purpose = "List live Azure Policy assignments for a scope." }
     role_assignment_list                   = { server = "azure-mcp", purpose = "List live Azure RBAC role assignments for a scope." }
     arm_query_costs                        = { server = "azure-mcp", purpose = "Query live Azure cost/usage data for a scope." }
+    arm_execute_query                      = { server = "azure-mcp", purpose = "Run a live Azure Resource Graph (KQL) query for exact, current resource properties (e.g. a firewall's applicationRuleCollections/networkRuleCollections, a VNet's subnets, an NSG's rules) that Fabric/operations-mcp topology has not modeled or may not have re-ingested yet." }
   }
 
   # Renders one specialist's full assigned tool set (operations-mcp +
