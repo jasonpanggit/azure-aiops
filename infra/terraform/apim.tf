@@ -88,8 +88,8 @@ resource "azapi_resource" "mcp_server" {
   body = {
     properties = {
       type                 = "mcp"
-      displayName          = "Operations MCP Server"
-      description          = "Governed read-only Operations MCP server"
+      displayName          = "Azure MCP Server (Operations)"
+      description          = "Governed read-only Azure MCP server, relayed via the ACA MCP relay to the Operations executor"
       path                 = "mcp-server"
       protocols            = ["https"]
       subscriptionRequired = false
