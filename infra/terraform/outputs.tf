@@ -58,6 +58,11 @@ output "apim_gateway_url" {
   value       = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/mcp" : null
 }
 
+output "apim_azure_mcp_gateway_url" {
+  description = "Non-secret APIM gateway URL for the standalone Azure MCP server (azure-mcp path), or null when APIM is disabled."
+  value       = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/azure-mcp" : null
+}
+
 output "apim_resource_id" {
   description = "APIM resource identifier; no credentials or policy values are exposed."
   value       = var.enable_apim ? azurerm_api_management.main[0].id : null

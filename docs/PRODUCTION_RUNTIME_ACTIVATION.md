@@ -24,10 +24,27 @@ Resource Graph discovery. Production mode never loads fixture or mock data.
 | `AZURE_CLIENT_ID` | User-assigned managed identity selected by Azure Identity. |
 | `FOUNDRY_PROJECT_ENDPOINT` | Operations Copilot Foundry project endpoint. |
 | `FOUNDRY_AGENT_NAME` | Existing governed prompt-agent name. |
+| `AIOPS_AGENT_ORCHESTRATION_MODE=maf` | Default Operations Copilot orchestration mode. Selects specialists by user intent first and invokes Foundry agents through Microsoft Agent Framework. Set to `deterministic` only for the legacy page-anchored rollback path. |
+| `FOUNDRY_<SPECIALIST>_AGENT_NAME` | Optional per-specialist Foundry agent names, e.g. `FOUNDRY_NETWORK_AGENT_NAME`, `FOUNDRY_GOVERNANCE_AGENT_NAME`, and `FOUNDRY_REMEDIATION_AGENT_NAME`. |
 | `AIOPS_PROVIDER_REFRESH_SECONDS` | Safe provider refresh interval; default `30`. |
 | `AIOPS_PROVIDER_STALE_HOURS` | Freshness threshold; default `24`. |
 | `AIOPS_AKV_BOOTSTRAP_ENABLED` | Enables the startup sync of explicitly mapped container secrets into Key Vault. |
 | `AIOPS_AKV_BOOTSTRAP_SECRETS` | JSON map of Key Vault names to secret-backed environment variables. |
+
+For future rollback validation, compare MAF against the deterministic baseline:
+
+```bash
+AIOPS_AGENT_ORCHESTRATION_MODE=deterministic ./infra/scripts/deploy.sh apply
+python3 scripts/evaluate_agents.py --out .planning/eval/deterministic.json
+AIOPS_AGENT_ORCHESTRATION_MODE=maf ./infra/scripts/deploy.sh apply
+python3 scripts/evaluate_agents.py \
+  --out .planning/eval/maf.json \
+  --baseline .planning/eval/deterministic.json
+```
+
+Keep MAF enabled while routing, narration, groundedness, and tool correctness
+remain at or above the deterministic baseline. To roll back, set
+`AIOPS_AGENT_ORCHESTRATION_MODE=deterministic` and re-apply.
 
 The Container App identity requires:
 

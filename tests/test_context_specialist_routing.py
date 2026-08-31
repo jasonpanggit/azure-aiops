@@ -18,6 +18,7 @@ from operations.autonomous_investigation import (
     MAX_CONTEXT_SPECIALISTS,
     _select_context_specialists,
 )
+from operations.maf_orchestrator import select_specialists_for_turn
 
 PAGE_SPECIALISTS = {
     "network": ("network",),
@@ -126,3 +127,44 @@ def test_every_selected_id_is_a_real_agent() -> None:
     known = {agent.id for agent in AGENTS}
     selected = _select("network", "cve patch change owner remediate")
     assert set(selected) <= known
+
+
+def test_maf_orchestrator_routes_question_intent_before_page_anchor() -> None:
+    """MAF mode makes Operations Copilot own intent selection across pages."""
+    decision = select_specialists_for_turn(
+        page_kind="network",
+        question="Who owns demo-vnet and what approval policy applies?",
+        page_specialists=PAGE_SPECIALISTS,
+        catalog=AGENTS,
+        limit=MAX_CONTEXT_SPECIALISTS,
+    )
+
+    assert decision.strategy == "question_first"
+    assert decision.selected_ids == ("network", "governance")
+    assert decision.runtime in {"microsoft-agent-framework", "maf-compatible"}
+
+
+def test_maf_orchestrator_uses_page_only_when_question_has_no_specialist_intent() -> None:
+    decision = select_specialists_for_turn(
+        page_kind="network",
+        question="Summarize what I am looking at",
+        page_specialists=PAGE_SPECIALISTS,
+        catalog=AGENTS,
+        limit=MAX_CONTEXT_SPECIALISTS,
+    )
+
+    assert decision.strategy == "page_fallback"
+    assert decision.selected_ids == ("network",)
+
+
+def test_maf_mode_is_default_unless_deterministic_rollback_requested(monkeypatch) -> None:
+    from operations.maf_orchestrator import maf_mode_enabled
+
+    monkeypatch.delenv("AIOPS_AGENT_ORCHESTRATION_MODE", raising=False)
+    assert maf_mode_enabled() is True
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "maf")
+    assert maf_mode_enabled() is True
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "deterministic")
+    assert maf_mode_enabled() is False

@@ -12,7 +12,9 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { RiskGauge } from "@/components/ui/RiskGauge";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
@@ -51,7 +53,13 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const findings = useMemo(() => detail.data?.data.findings ?? [], [detail.data]);
-  const findingsPaging = useTablePagination(findings);
+  const { filteredRows: filteredFindings, filters: findingFilters, resetFilters: resetFindingFilters } = useColumnFilters(findings, [
+    { id: "environment", label: "Environment", getValues: (finding) => finding.environment || "Unknown" },
+    { id: "reachability", label: "Reachability", getValues: (finding) => finding.reachable ? finding.network_exposure || "Reachable" : "No path observed" },
+    { id: "service", label: "Service", getValues: (finding) => finding.business_service || "Unmapped service" },
+    { id: "status", label: "Risk status", getValues: (finding) => finding.risk_accepted ? "Risk accepted" : "Open" },
+  ]);
+  const findingsPaging = useTablePagination(filteredFindings);
 
   if (detail.loading) {
     return (
@@ -234,7 +242,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
         <article className="card">
           <div className="card-header"><h2>Recommended patch</h2></div>
           <div className="card-body">
-            <strong className="large-value">{data.recommended_patch || "Not identified"}</strong>
+            <strong className="large-value-title">{data.recommended_patch || "Not identified"}</strong>
             <p className="muted">
               {data.cve.associated_kbs.length ? (
                 data.cve.associated_kbs.map((kb, index) => (
@@ -258,7 +266,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
             <p className="muted">
               <StatusBadge label={data.cve.cvss?.severity || data.cve.severity} tone={statusTone(data.cve.cvss?.severity || data.cve.severity)} compact />
             </p>
-            <p className="muted">{data.cve.cvss?.vector || "No CVSS vector available"}</p>
+            <p className="muted cvss-vector-string">{data.cve.cvss?.vector || "No CVSS vector available"}</p>
           </div>
         </article>
         <article className="card">
@@ -336,7 +344,14 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
             </div>
           </div>
           <div className="card-body">
-            <AttackPathGraphView graph={attackPath.data.data} />
+            {attackPath.data.data.edges.length > 0 ? (
+              <AttackPathGraphView graph={attackPath.data.data} />
+            ) : (
+              <p className="attack-path-empty">
+                No reachable path from the internet was observed for the affected server(s) — the
+                network engine found no firewall/NSG route connecting them to the internet origin.
+              </p>
+            )}
           </div>
         </section>
       )}
@@ -348,6 +363,12 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
             <p>Every finding keeps ownership, environment, and firewall/NSG path together.</p>
           </div>
         </div>
+        <TableColumnFilters
+          filters={findingFilters}
+          onReset={resetFindingFilters}
+          resultCount={filteredFindings.length}
+          totalCount={findings.length}
+        />
         <div className="table-scroll">
           <table className="operations-table">
             <thead>

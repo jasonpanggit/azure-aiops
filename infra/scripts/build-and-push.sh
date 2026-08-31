@@ -111,10 +111,10 @@ build_image() {
 }
 
 # Pointing Container Apps at a half-pushed tag produces a revision stuck in
-# ActivationFailed with MANIFEST_UNKNOWN, so confirm both landed.
+# ActivationFailed with MANIFEST_UNKNOWN, so confirm all images landed.
 verify_pushed() {
   local image missing=()
-  for image in aiops-api aiops-web; do
+  for image in aiops-api aiops-web mcp-server azure-mcp; do
     if ! az acr repository show \
       --name "${registry_name}" \
       --image "${image}:${tag}" >/dev/null 2>&1; then
@@ -154,6 +154,8 @@ fi
 
 build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
 build_image aiops-web "${repo_root}/web/Dockerfile" "${repo_root}/web"
+build_image mcp-server "${repo_root}/Dockerfile.mcp" "${repo_root}"
+build_image azure-mcp "${repo_root}/Dockerfile.azure-mcp" "${repo_root}"
 
 verify_pushed
 record_tag

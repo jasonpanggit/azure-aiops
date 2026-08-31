@@ -6,12 +6,14 @@ import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import type { AccessReviewPack, AuditExportPack } from "@/lib/types";
 
 type Tab = "reviews" | "exports" | "settings";
@@ -84,7 +86,10 @@ export default function GovernancePage() {
 
   const currentSettings = settings.data?.data;
   const roles = useMemo(() => currentSettings?.roles ?? [], [currentSettings]);
-  const rolesPaging = useTablePagination(roles);
+  const { filteredRows: filteredRoles, filters: roleFilters, resetFilters: resetRoleFilters } = useColumnFilters(roles, [
+    { id: "permission", label: "Permission", getValues: (role) => role.permissions },
+  ]);
+  const rolesPaging = useTablePagination(filteredRoles);
 
   // Seed the editable draft once per fresh settings read; edits then live only
   // in local state until explicitly saved, so a background refetch never
@@ -308,6 +313,12 @@ export default function GovernancePage() {
               />
             ) : (
               <>
+                <TableColumnFilters
+                  filters={roleFilters}
+                  onReset={resetRoleFilters}
+                  resultCount={filteredRoles.length}
+                  totalCount={roles.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>

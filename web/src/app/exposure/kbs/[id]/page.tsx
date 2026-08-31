@@ -7,7 +7,9 @@ import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
@@ -19,9 +21,18 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
   const detail = useApi(() => kbApi.detail(decodeURIComponent(params.id), scope), [params.id, scope]);
 
   const cves = useMemo(() => detail.data?.data.cves ?? [], [detail.data]);
-  const cvesPaging = useTablePagination(cves);
+  const { filteredRows: filteredCves, filters: cveFilters, resetFilters: resetCveFilters } = useColumnFilters(cves, [
+    { id: "severity", label: "Severity", getValues: (cve) => cve.cvss?.severity || cve.severity },
+  ]);
+  const cvesPaging = useTablePagination(filteredCves);
   const findings = useMemo(() => detail.data?.data.findings ?? [], [detail.data]);
-  const findingsPaging = useTablePagination(findings);
+  const { filteredRows: filteredFindings, filters: findingFilters, resetFilters: resetFindingFilters } = useColumnFilters(findings, [
+    { id: "cve", label: "CVE", getValues: (finding) => finding.cve_id },
+    { id: "environment", label: "Environment", getValues: (finding) => finding.environment || "Unknown" },
+    { id: "reachability", label: "Reachability", getValues: (finding) => finding.reachable ? finding.network_exposure || "Reachable" : "No path observed" },
+    { id: "service", label: "Service", getValues: (finding) => finding.business_service || "Unmapped service" },
+  ]);
+  const findingsPaging = useTablePagination(filteredFindings);
 
   if (detail.loading) {
     return (
@@ -120,6 +131,12 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
           </div>
         ) : (
           <>
+          <TableColumnFilters
+            filters={cveFilters}
+            onReset={resetCveFilters}
+            resultCount={filteredCves.length}
+            totalCount={cves.length}
+          />
           <div className="table-scroll">
             <table className="operations-table">
               <thead>
@@ -173,6 +190,12 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
             <p>Every finding keeps ownership, environment, and firewall/NSG path together.</p>
           </div>
         </div>
+        <TableColumnFilters
+          filters={findingFilters}
+          onReset={resetFindingFilters}
+          resultCount={filteredFindings.length}
+          totalCount={findings.length}
+        />
         <div className="table-scroll">
           <table className="operations-table">
             <thead>

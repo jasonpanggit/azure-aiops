@@ -7,7 +7,9 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { OperationsSignalChart } from "@/components/ui/OperationsSignalChart";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
@@ -66,7 +68,19 @@ export default function ServicesPage() {
     );
   }, [connections.data, incidents.data]);
 
-  const servicesPaging = useTablePagination(services);
+  const { filteredRows: filteredServices, filters: serviceFilters, resetFilters: resetServiceFilters } = useColumnFilters(services, [
+    {
+      id: "state",
+      label: "State",
+      getValues: (service) => service.criticalCount ? "Critical attention" : service.situationCount ? "At risk" : "No active situation",
+    },
+    {
+      id: "environment",
+      label: "Environment",
+      getValues: (service) => Array.from(service.environments),
+    },
+  ]);
+  const servicesPaging = useTablePagination(filteredServices);
 
   const error = connections.error ?? incidents.error;
 
@@ -109,6 +123,12 @@ export default function ServicesPage() {
             </div>
           </section>
           <div className="card service-catalog">
+            <TableColumnFilters
+              filters={serviceFilters}
+              onReset={resetServiceFilters}
+              resultCount={filteredServices.length}
+              totalCount={services.length}
+            />
             <div className="table-scroll">
             <table className="operations-table">
               <thead>

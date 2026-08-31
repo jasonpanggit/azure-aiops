@@ -1,0 +1,37 @@
+<!--
+APIM Inbound Policy for MCP Proxy Endpoint
+Routes requests from Foundry agents to centralized ACA MCP server with per-subscription SPN management.
+
+Used by specialist agents calling APIM /mcp-proxy/{tool_name} endpoint.
+-->
+
+<policies>
+  <inbound>
+    <base />
+    <set-backend-service base-url="https://${mcp_server_fqdn}" />
+    <set-header name="X-Forwarded-Host" exists-action="override">
+      <value>@(context.Request.OriginalUrl.Host)</value>
+    </set-header>
+  </inbound>
+
+  <backend>
+    <base />
+  </backend>
+
+  <outbound>
+    <base />
+    <set-header name="Access-Control-Allow-Origin" exists-action="override">
+      <value>*</value>
+    </set-header>
+    <set-header name="Access-Control-Allow-Methods" exists-action="override">
+      <value>GET, POST, PUT, DELETE, OPTIONS</value>
+    </set-header>
+    <set-header name="Cache-Control" exists-action="override">
+      <value>no-cache, no-store, must-revalidate</value>
+    </set-header>
+  </outbound>
+
+  <on-error>
+    <base />
+  </on-error>
+</policies>

@@ -13,12 +13,14 @@ deployed environment, so it must never run in CI by accident.
     az login
     python3 scripts/evaluate_agents.py
     python3 scripts/evaluate_agents.py --baseline .planning/eval/baseline.json
+    python3 scripts/evaluate_agents.py --baseline .planning/eval/deterministic.json --maf .planning/eval/maf.json
 
 What is scored, per question:
 
-* ``routing``      -- did the expected specialists run? This is objective:
-                      the expected set is derived from the same catalog the
-                      router uses.
+* ``routing``      -- did the expected specialists run for the active
+                      orchestration contract? Deterministic mode expects
+                      page-anchored delegation; MAF mode expects question-first
+                      delegation with page fallback only when intent is absent.
 * ``groundedness`` -- fraction of *deterministic findings* backed by evidence.
                       Read this as a data-availability signal, **not** as
                       answer quality. Two observed cases show why: an agent
@@ -74,9 +76,9 @@ RETRY_BACKOFF_SECONDS = 20
 class Case:
     """One scored question.
 
-    ``expect_specialists`` is the set that must appear. It is a subset check,
-    not equality: the router may legitimately add a specialist as the catalog
-    grows, and that should not fail an unrelated case.
+    ``expect_specialists`` is the deterministic set that must appear. It is a
+    subset check, not equality: the router may legitimately add a specialist as
+    the catalog grows, and that should not fail an unrelated case.
     """
 
     case_id: str
@@ -84,34 +86,100 @@ class Case:
     question: str
     expect_specialists: frozenset[str]
     note: str = ""
+    expect_maf_specialists: frozenset[str] | None = None
+
+    def expected_for(self, runtime: str, strategy: str) -> frozenset[str]:
+        if (
+            self.expect_maf_specialists is not None
+            and runtime != "deterministic"
+            and strategy in {"question_first", "page_fallback"}
+        ):
+            return self.expect_maf_specialists
+        return self.expect_specialists
 
 
 CASES: tuple[Case, ...] = (
     # Page-anchored: the page specialist must lead and answer.
-    Case("net-topology", "network", "What depends on demo-vnet?", frozenset({"network"}),
-         "Topic-free network question must stay on the network specialist"),
-    Case("vuln-exposure", "vulnerability", "Which CVEs are exploitable on internet-facing hosts?",
-         frozenset({"vulnerability"}), "Core vulnerability question"),
-    Case("patch-priority", "patch", "Which patches should we prioritise this week?",
-         frozenset({"patch"}), "Core patch question"),
-    Case("incident-cause", "incident", "What is the root cause candidate for the latest incident?",
-         frozenset({"incident"}), "Core incident question"),
-    Case("gov-owner", "governance", "Who owns the payments business service?",
-         frozenset({"governance"}), "Core governance question"),
+    Case(
+        "net-topology",
+        "network",
+        "What depends on demo-vnet?",
+        frozenset({"network"}),
+        "Network entity question must stay on the network specialist",
+        frozenset({"network"}),
+    ),
+    Case(
+        "vuln-exposure",
+        "vulnerability",
+        "Which CVEs are exploitable on internet-facing hosts?",
+        frozenset({"vulnerability"}),
+        "Core vulnerability question",
+    ),
+    Case(
+        "patch-priority",
+        "patch",
+        "Which patches should we prioritise this week?",
+        frozenset({"patch"}),
+        "Core patch question",
+    ),
+    Case(
+        "incident-cause",
+        "incident",
+        "What is the root cause candidate for the latest incident?",
+        frozenset({"incident"}),
+        "Core incident question",
+    ),
+    Case(
+        "gov-owner",
+        "governance",
+        "Who owns the payments business service?",
+        frozenset({"governance"}),
+        "Core governance question",
+    ),
     # Cross-cutting: the question must pull in a specialist the page alone
     # would never have selected. These are the cases that were broken.
-    Case("net-change", "network", "What changed recently that could explain this?",
-         frozenset({"network", "change"}), "Change question asked on the network page"),
-    Case("net-governance", "network", "Who owns this and is there an approval?",
-         frozenset({"network", "governance"}), "Governance question on the network page"),
-    Case("net-cve", "network", "Are there CVEs on the hosts behind this hub?",
-         frozenset({"network", "vulnerability"}), "Vulnerability question on the network page"),
-    Case("vuln-remediate", "vulnerability", "How do I remediate this safely with a rollback?",
-         frozenset({"vulnerability", "remediation"}), "Remediation question on the vulnerability page"),
+    Case(
+        "net-change",
+        "network",
+        "What changed recently that could explain this?",
+        frozenset({"network", "change"}),
+        "Change question asked on the network page",
+        frozenset({"change"}),
+    ),
+    Case(
+        "net-governance",
+        "network",
+        "Who owns this and is there an approval?",
+        frozenset({"network", "governance"}),
+        "Governance question on the network page",
+        frozenset({"governance"}),
+    ),
+    Case(
+        "net-cve",
+        "network",
+        "Are there CVEs on the hosts behind this hub?",
+        frozenset({"network", "vulnerability"}),
+        "Vulnerability question on the network page",
+        frozenset({"network", "vulnerability"}),
+    ),
+    Case(
+        "vuln-remediate",
+        "vulnerability",
+        "How do I remediate this safely with a rollback?",
+        frozenset({"vulnerability", "remediation"}),
+        "Remediation question on the vulnerability page",
+        frozenset({"remediation"}),
+    ),
     # Honesty: the estate has no such thing. The agent must say so rather
     # than invent one. Scored by reading the answer, not asserting on it.
-    Case("unknown-subject", "network", "What depends on totally-nonexistent-vnet-xyz?",
-         frozenset({"network"}), "Must not invent a resource that does not exist"),
+    Case(
+        "unknown-subject",
+        "network",
+        "What depends on totally-nonexistent-vnet-xyz?",
+        frozenset({"network"}),
+        "Must not invent a resource that does not exist",
+        frozenset({"network"}),
+    ),
 )
 
 
@@ -120,7 +188,10 @@ class Result:
     case_id: str
     ok: bool
     specialists: list[str] = field(default_factory=list)
+    expected_specialists: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    orchestration_runtime: str = ""
+    orchestration_strategy: str = ""
     groundedness: float | None = None
     tool_correctness: float | None = None
     narrated: bool = False
@@ -137,7 +208,10 @@ class Result:
             "case_id": self.case_id,
             "ok": self.ok,
             "specialists": self.specialists,
+            "expected_specialists": self.expected_specialists,
             "missing": self.missing,
+            "orchestration_runtime": self.orchestration_runtime,
+            "orchestration_strategy": self.orchestration_strategy,
             "groundedness": self.groundedness,
             "tool_correctness": self.tool_correctness,
             "narrated": self.narrated,
@@ -220,8 +294,16 @@ def _run_case(api: str, resource: str, case: Case) -> Result:
         if specialist and specialist not in seen:
             seen.append(specialist)
 
-    missing = sorted(case.expect_specialists - set(seen))
     evaluation = data.get("evaluation") or {}
+    orchestration = data.get("orchestration") or {}
+    runtime = str(
+        orchestration.get("runtime") or evaluation.get("orchestration_runtime") or ""
+    )
+    strategy = str(
+        orchestration.get("strategy") or evaluation.get("orchestration_strategy") or ""
+    )
+    expected = case.expected_for(runtime, strategy)
+    missing = sorted(expected - set(seen))
     synthesis = data.get("synthesis") or {}
     narration = str(synthesis.get("narration") or "")
     stop_reason = str(data.get("stop_reason") or "")
@@ -234,7 +316,10 @@ def _run_case(api: str, resource: str, case: Case) -> Result:
         case_id=case.case_id,
         ok=not missing,
         specialists=seen,
+        expected_specialists=sorted(expected),
         missing=missing,
+        orchestration_runtime=runtime,
+        orchestration_strategy=strategy,
         groundedness=evaluation.get("groundedness"),
         tool_correctness=evaluation.get("tool_correctness"),
         narrated=bool(narration),
@@ -255,6 +340,10 @@ def _aggregate(results: list[Result]) -> dict[str, Any]:
     routable = [r for r in scored if not r.timed_out]
     grounded = [r.groundedness for r in scored if r.groundedness is not None]
     correct = [r.tool_correctness for r in scored if r.tool_correctness is not None]
+    orchestration_counts: dict[str, int] = {}
+    for result in scored:
+        key = result.orchestration_runtime or "unknown"
+        orchestration_counts[key] = orchestration_counts.get(key, 0) + 1
     return {
         "cases": len(results),
         "errors": sum(1 for r in results if r.error),
@@ -267,6 +356,7 @@ def _aggregate(results: list[Result]) -> dict[str, Any]:
         "groundedness_mean": round(statistics.fmean(grounded), 3) if grounded else None,
         "tool_correctness_mean": round(statistics.fmean(correct), 3) if correct else None,
         "latency_ms_median": round(statistics.median([r.latency_ms for r in scored]), 1) if scored else None,
+        "orchestration_runtimes": orchestration_counts,
     }
 
 
@@ -294,12 +384,28 @@ def _compare(current: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _load_summary(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text())
+    return payload.get("summary", {})
+
+
+def _print_comparison(title: str, current: dict[str, Any], baseline: dict[str, Any]) -> None:
+    print(f"\n{title}:")
+    for line in _compare(current, baseline):
+        print(line)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api", default=DEFAULT_API)
     parser.add_argument("--resource", default=DEFAULT_RESOURCE)
     parser.add_argument("--out", type=Path, help="write the full run to this JSON file")
     parser.add_argument("--baseline", type=Path, help="compare against a previous run")
+    parser.add_argument(
+        "--maf",
+        type=Path,
+        help="compare this deterministic/baseline run against a saved MAF run",
+    )
     parser.add_argument("--case", action="append", help="run only these case ids")
     args = parser.parse_args()
 
@@ -361,9 +467,11 @@ def main() -> int:
         print(f"\nwrote {args.out}")
 
     if baseline is not None:
-        print(f"\nagainst baseline {args.baseline}:")
-        for line in _compare(summary, baseline):
-            print(line)
+        _print_comparison(f"against baseline {args.baseline}", summary, baseline)
+
+    if args.maf:
+        maf_summary = _load_summary(args.maf)
+        _print_comparison(f"against MAF run {args.maf}", maf_summary, summary)
 
     # A routing miss on a completed run is a real regression. A timeout is a
     # budget problem and a narration outage still leaves deterministic

@@ -18,7 +18,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-api = ["fastapi>=0.115,<1", "uvicorn>=0.32,<1"]
+api = [
+    "agent-framework>=1.0,<2",
+    "azure-ai-projects>=2.0,<3",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.32,<1",
+]
 test = ["pytest>=9.0.3,<10", "ruff>=0.16,<0.17", "fastapi>=0.115,<1", "httpx>=0.27,<1"]
 
 [project.scripts]

@@ -20,6 +20,7 @@ from typing import Any, Protocol
 
 from api.scope import Scope
 from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
+from operations.maf_orchestrator import maf_mode_enabled, select_specialists_for_turn
 from operations.page_context import PageSnapshot, deterministic_network_findings
 from operations.tools import (
     STATUS_DENIED,
@@ -566,6 +567,31 @@ def _resolve_foundry_agent(context: Any, specialist_id: str | None = None) -> An
         return None
 
 
+def _resolve_context_narrator(
+    context: Any, selected_ids: list[str], *, prefer_copilot: bool
+) -> tuple[Any | None, str]:
+    """Resolve the narrator for a contextual turn.
+
+    In MAF mode, Operations Copilot is the coordinator and the current page is
+    only a context source, so prefer the generic orchestrator when present and
+    otherwise use the first available selected specialist. In the legacy mode,
+    preserve the page-anchored behavior exactly.
+    """
+
+    if prefer_copilot:
+        agent = _resolve_foundry_agent(context)
+        if agent is not None:
+            return agent, "operations-copilot"
+        for specialist_id in selected_ids:
+            agent = _resolve_foundry_agent(context, specialist_id)
+            if agent is not None:
+                return agent, specialist_id
+        return None, ""
+
+    specialist_id = selected_ids[0] if selected_ids else None
+    return _resolve_foundry_agent(context, specialist_id), specialist_id or ""
+
+
 def run_autonomous_investigation(
     objective: str,
     *,
@@ -712,10 +738,27 @@ def run_context_investigation(
         question=snapshot.question,
         page_specialists=page_specialists,
     )
+    orchestration = {
+        "selected_ids": selected_ids,
+        "strategy": "page_anchor_then_question",
+        "runtime": "deterministic",
+        "reason": "legacy page-anchored specialist selection",
+    }
+    if maf_mode_enabled():
+        decision = select_specialists_for_turn(
+            page_kind=snapshot.page_kind,
+            question=snapshot.question,
+            page_specialists=page_specialists,
+            catalog=AGENTS,
+            limit=MAX_CONTEXT_SPECIALISTS,
+        )
+        selected_ids = list(decision.selected_ids)
+        orchestration = decision.to_dict()
     selected = [agent for agent in AGENTS if agent.id in selected_ids]
     selected.sort(key=lambda agent: selected_ids.index(agent.id))
     stages.append("delegate")
     remaining_tools = MAX_CONTEXT_TOOL_CALLS
+    delegated_agent_ids: list[str] = []
     for agent in selected:
         if time.monotonic() - started >= timeout_seconds:
             stop_reason = "wall_clock_timeout"
@@ -737,32 +780,40 @@ def run_context_investigation(
         agent_runs.append(run)
         tool_calls.extend({**call, "specialist": agent.id, "operation": "delegate"} for call in run["tool_calls"])
         remaining_tools -= len(run["tool_calls"])
-        if agent.id == "network" and remaining_tools:
-            # Fabric IQ is enrichment only: the subject must already be visible
-            # in the submitted page snapshot, never inferred from a rehydrated
-            # provider query.
-            subject = next(
-                (resource.resource_id for resource in snapshot.selected_resources), ""
+        delegated_agent_ids.append(agent.id)
+
+    if (
+        "network" in delegated_agent_ids
+        and remaining_tools
+        and time.monotonic() - started < timeout_seconds
+    ):
+        # Fabric IQ is enrichment only, so it runs after every selected
+        # specialist has had its first pass. It must never consume the bounded
+        # context budget before a question-selected specialist can answer.
+        subject = next(
+            (resource.resource_id for resource in snapshot.selected_resources), ""
+        )
+        for iq_tool in (
+            "fabric_iq_relationships",
+            "fabric_iq_topology",
+            "fabric_iq_policy_context",
+        )[:remaining_tools]:
+            if time.monotonic() - started >= timeout_seconds:
+                break
+            result = call_tool(
+                iq_tool, {"subject": subject}, context=context, scope=scope
             )
-            for iq_tool in (
-                "fabric_iq_relationships",
-                "fabric_iq_topology",
-                "fabric_iq_policy_context",
-            )[:remaining_tools]:
-                result = call_tool(
-                    iq_tool, {"subject": subject}, context=context, scope=scope
-                )
-                tool_calls.append({
-                    "tool": iq_tool,
-                    "arguments": {"subject": subject},
-                    "status": result.status,
-                    "warning": result.warning,
-                    "attempts": 1,
-                    "result": result.to_dict(),
-                    "specialist": agent.id,
-                    "operation": "enrichment",
-                })
-                remaining_tools -= 1
+            tool_calls.append({
+                "tool": iq_tool,
+                "arguments": {"subject": subject},
+                "status": result.status,
+                "warning": result.warning,
+                "attempts": 1,
+                "result": result.to_dict(),
+                "specialist": "network",
+                "operation": "enrichment",
+            })
+            remaining_tools -= 1
 
     if snapshot.rechecks and time.monotonic() - started < timeout_seconds and remaining_tools:
         stages.append("request-evidence")
@@ -806,7 +857,7 @@ def run_context_investigation(
         warnings.append("context investigation budget exhausted before evidence requests")
 
     stages.append("reassess")
-    if time.monotonic() - started >= timeout_seconds:
+    if len(delegated_agent_ids) < len(selected) and time.monotonic() - started >= timeout_seconds:
         stop_reason = "wall_clock_timeout"
         warnings.append("context investigation wall-clock budget exhausted")
     # Reassessment is a fresh deterministic evaluation of the submitted state;
@@ -817,8 +868,8 @@ def run_context_investigation(
         if snapshot.page_kind in ("network", "network_page")
         else _snapshot_observations(snapshot)
     )
-    agent = _resolve_foundry_agent(
-        context, selected_ids[0] if selected_ids else None
+    agent, narrator_id = _resolve_context_narrator(
+        context, selected_ids, prefer_copilot=orchestration["runtime"] != "deterministic"
     )
     synthesis_mode = "deterministic"
     narration = ""
@@ -826,6 +877,8 @@ def run_context_investigation(
         try:
             grounding = {
                 "page_kind": snapshot.page_kind,
+                "orchestration": orchestration,
+                "delegated_specialists": selected_ids,
                 "findings": findings,
                 "tool_results": [
                     call.get("result") for call in tool_calls if call.get("result")
@@ -842,7 +895,7 @@ def run_context_investigation(
         except Exception as exc:
             _LOGGER.warning(
                 "foundry_context_narration_failed specialist=%s error=%s",
-                selected_ids[0] if selected_ids else "",
+                narrator_id,
                 exc,
                 exc_info=True,
             )
@@ -863,7 +916,9 @@ def run_context_investigation(
         "snapshot_hash": snapshot.snapshot_hash(),
         "snapshot_version": snapshot.version,
         "page_kind": snapshot.page_kind,
+        "selected_agents": [agent.to_dict() for agent in selected],
         "stages": stages[:MAX_CONTEXT_STEPS],
+        "orchestration": orchestration,
         "tool_calls": tool_calls,
         "agent_runs": agent_runs,
         "findings": findings,
@@ -884,6 +939,8 @@ def run_context_investigation(
             "specialists": len(agent_runs),
             "wall_clock_ms": round((time.monotonic() - started) * 1000, 2),
             "hidden_reasoning_exposed": False,
+            "orchestration_runtime": orchestration["runtime"],
+            "orchestration_strategy": orchestration["strategy"],
             # Groundedness and tool correctness were computed for autonomous
             # investigations but not for contextual ones, so the path that
             # actually serves the page drawer could not be scored -- quality

@@ -3363,6 +3363,18 @@ body.topology-fullscreen-open {
   word-break: break-word;
 }
 
+/* Titles (e.g. a full KB/patch name) read as oversized and inconsistent with
+   neighboring numeric metrics (CVSS score, EPSS %) at the same 20px size, so
+   give text titles a smaller, non-numeric scale. */
+.large-value-title {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 .exploit-signals {
   display: grid;
   gap: 8px;
@@ -3439,6 +3451,23 @@ body.topology-fullscreen-open {
   font-size: 13px;
   line-height: 1.5;
   color: var(--color-text-secondary);
+}
+
+/* The raw CVSS vector string (e.g. "CVSS:3.1/AV:L/AC:H/...") has no natural
+   break points, so without this it overflows the CVSS card's fixed width
+   instead of wrapping. */
+.cvss-vector-string {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.attack-path-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
 }
 
 .epss-percentile-track {
@@ -5627,6 +5656,65 @@ body.topology-fullscreen-open {
   border-color: var(--inventory-accent);
   outline: none;
   box-shadow: 0 0 0 3px rgb(15 108 189 / 15%);
+}
+
+.table-column-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 12px 14px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.table-column-filter-controls {
+  display: flex;
+  flex: 1 1 520px;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.table-column-filters label {
+  display: grid;
+  min-width: 170px;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.table-column-filters select {
+  min-height: 36px;
+  padding: 7px 9px;
+  color: var(--color-text);
+  font-size: 13px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.table-column-filters select:focus {
+  border-color: var(--inventory-accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(15 108 189 / 15%);
+}
+
+.table-column-filter-summary {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
+  align-items: center;
+  color: var(--color-text-muted);
+  font-size: 12px;
 }
 
 /* --- Tables: sticky headers, zebra rows, accent hover ------------------- */

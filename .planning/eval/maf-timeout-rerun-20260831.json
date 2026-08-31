@@ -1,0 +1,70 @@
+{
+  "at": "2026-08-31T00:18:01.960194+00:00",
+  "api": "https://aiops-dev-api.greenpond-732382e3.australiaeast.azurecontainerapps.io",
+  "summary": {
+    "cases": 2,
+    "errors": 0,
+    "timeouts": 0,
+    "routing_pass": 2,
+    "routing_scored": 2,
+    "routing_rate": 1.0,
+    "narrated": 2,
+    "narration_rate": 1.0,
+    "groundedness_mean": 0.25,
+    "tool_correctness_mean": 1.0,
+    "latency_ms_median": 10687.0,
+    "orchestration_runtimes": {
+      "microsoft-agent-framework": 2
+    }
+  },
+  "results": [
+    {
+      "case_id": "incident-cause",
+      "ok": true,
+      "specialists": [
+        "incident"
+      ],
+      "expected_specialists": [
+        "incident"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 9988.0,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer \u2014 root cause candidate: UNKNOWN. The provided page context contains no incident details to establish a root cause candidate.\n\nReasoning (grounded in records/facts)\n- OBSERVED FACT: The page_context JSON shows page_kind \"incident\", but \"findings\" is an empty list and \"tool_results\" contains a single entry with \"status\": \"empty\" and \"data\": null. (Source: the supplied PAGE CONTEXT.)\n- ",
+      "narration": "Direct answer \u2014 root cause candidate: UNKNOWN. The provided page context contains no incident details to establish a root cause candidate.\n\nReasoning (grounded in records/facts)\n- OBSERVED FACT: The page_context JSON shows page_kind \"incident\", but \"findings\" is an empty list and \"tool_results\" contains a single entry with \"status\": \"empty\" and \"data\": null. (Source: the supplied PAGE CONTEXT.)\n- ",
+      "error": ""
+    },
+    {
+      "case_id": "net-cve",
+      "ok": true,
+      "specialists": [
+        "network",
+        "vulnerability"
+      ],
+      "expected_specialists": [
+        "network",
+        "vulnerability"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 11386.1,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer: Unknown \u2014 the current page context contains no vulnerability/CVE results for the hosts behind this hub, so I cannot say whether CVEs exist.\n\nReasoning (grounded to shown records)\n- OBSERVED FACT: The topology shows a hub VNet named demo-vnet (vnet_id /.../virtualnetworks/demo-vnet) and a network interface named vm1903 with private IP 10.0.0.4 whose attached_resource_id is /.../virtu",
+      "narration": "Direct answer: Unknown \u2014 the current page context contains no vulnerability/CVE results for the hosts behind this hub, so I cannot say whether CVEs exist.\n\nReasoning (grounded to shown records)\n- OBSERVED FACT: The topology shows a hub VNet named demo-vnet (vnet_id /.../virtualnetworks/demo-vnet) and a network interface named vm1903 with private IP 10.0.0.4 whose attached_resource_id is /.../virtu",
+      "error": ""
+    }
+  ]
+}
