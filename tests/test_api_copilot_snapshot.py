@@ -147,3 +147,87 @@ def test_context_route_sends_non_network_page_evidence_to_foundry(tmp_path):
     assert finding["evidence_refs"] == ["cve-1"]
     assert finding["resource_ids"] == []
     assert agent.calls[0]["context"]["findings"][0]["details"]["cve_id"] == "CVE-2026-0001"
+
+
+def test_context_route_maf_mode_delegates_by_question_not_page(tmp_path, monkeypatch):
+    """A Network drawer ownership question must reach Governance in MAF mode."""
+    body = _body()
+    body["snapshot"]["question"] = "Who owns demo-vnet and what approval policy applies?"
+
+    class GovernanceAgent(StubAgent):
+        def answer(self, *, question: str, context):
+            assert "Who owns demo-vnet" in question
+            self.calls.append({"question": question, "context": context})
+            return type(
+                "Answer",
+                (),
+                {
+                    "text": "Governance owns this answer.",
+                    "agent_name": "aiops-governance-agent",
+                    "model": "test",
+                },
+            )()
+
+    agent = GovernanceAgent()
+    context = _context(tmp_path, None)
+    context.governance_agent_provider = lambda: agent
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "maf")
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post("/api/v1/copilot/investigate-context", json=body, headers=HEADERS)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["orchestration"]["runtime"] in {"microsoft-agent-framework", "maf-compatible"}
+    assert data["orchestration"]["strategy"] == "question_first"
+    assert [agent["id"] for agent in data["selected_agents"]] == ["network", "governance"]
+    assert data["synthesis"]["mode"] == "foundry"
+    assert data["synthesis"]["narration"] == "Governance owns this answer."
+    assert agent.calls
+
+
+def test_context_route_runs_question_specialist_before_optional_network_enrichment(
+    tmp_path,
+    monkeypatch,
+):
+    """Network-only enrichment must not consume budget before selected specialists."""
+    body = _body()
+    body["snapshot"]["question"] = "Are there CVEs on the hosts behind this hub?"
+    body["snapshot"]["selected_resources"] = [{
+        "resource_id": (
+            "/subscriptions/sub-1/resourceGroups/rg/providers/"
+            "Microsoft.Network/virtualNetworks/demo-vnet"
+        ),
+        "resource_type": "Microsoft.Network/virtualNetworks",
+        "attributes": {"subscription": "sub-1"},
+    }]
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "maf")
+    client = TestClient(create_app(_context(tmp_path, StubAgent())), raise_server_exceptions=False)
+
+    response = client.post("/api/v1/copilot/investigate-context", json=body, headers=HEADERS)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["orchestration"]["strategy"] == "question_first"
+    assert [agent["id"] for agent in data["selected_agents"]] == ["network", "vulnerability"]
+    delegated = [
+        call["specialist"]
+        for call in data["tool_calls"]
+        if call["operation"] == "delegate"
+    ]
+    enrichment = [
+        call["specialist"]
+        for call in data["tool_calls"]
+        if call["operation"] == "enrichment"
+    ]
+    assert "vulnerability" in delegated
+    assert enrichment == ["network", "network", "network"]
+    vulnerability_index = data["tool_calls"].index(
+        next(call for call in data["tool_calls"] if call["specialist"] == "vulnerability")
+    )
+    enrichment_index = data["tool_calls"].index(
+        next(call for call in data["tool_calls"] if call["operation"] == "enrichment")
+    )
+    assert vulnerability_index < enrichment_index
+    assert data["stop_reason"] == "reassessed"

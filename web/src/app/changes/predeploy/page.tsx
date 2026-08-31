@@ -10,11 +10,13 @@ import { RiskGauge } from "@/components/ui/RiskGauge";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import type { StatusTone } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
 import { formatDateTime, titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { predeployApi } from "@/lib/services";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import type { ChangeAssessment, Envelope } from "@/lib/types";
 
@@ -60,16 +62,37 @@ export default function PreDeploymentPage() {
   const [error, setError] = useState<string | null>(null);
 
   const evidence = useMemo(() => result?.data.risk?.evidence ?? [], [result]);
-  const evidencePaging = useTablePagination(evidence);
+  const { filteredRows: filteredEvidence, filters: evidenceFilters, resetFilters: resetEvidenceFilters } = useColumnFilters(evidence, [
+    { id: "factor", label: "Factor", getValues: (item) => item.factor, formatOption: titleize },
+    { id: "source", label: "Source", getValues: (item) => item.source },
+  ]);
+  const evidencePaging = useTablePagination(filteredEvidence);
   const effects = useMemo(() => result?.data.simulation?.effects ?? [], [result]);
-  const effectsPaging = useTablePagination(effects);
+  const { filteredRows: filteredEffects, filters: effectFilters, resetFilters: resetEffectFilters } = useColumnFilters(effects, [
+    { id: "domain", label: "Domain", getValues: (effect) => effect.domain, formatOption: titleize },
+    { id: "effect", label: "Effect", getValues: (effect) => effect.effect, formatOption: titleize },
+    { id: "severity", label: "Severity", getValues: (effect) => effect.severity, formatOption: titleize },
+    { id: "validation", label: "Validation", getValues: (effect) => effect.requires_validation ? "Required" : "Not required" },
+  ]);
+  const effectsPaging = useTablePagination(filteredEffects);
   const impactedResources = useMemo(
     () => result?.data.blast_radius?.impacted_resources ?? [],
     [result],
   );
-  const impactedPaging = useTablePagination(impactedResources);
+  const { filteredRows: filteredImpactedResources, filters: impactedFilters, resetFilters: resetImpactedFilters } = useColumnFilters(impactedResources, [
+    { id: "service", label: "Service", getValues: (resource) => resource.business_service || "Not mapped" },
+    { id: "environment", label: "Environment", getValues: (resource) => resource.environment || "Unknown" },
+    { id: "owner", label: "Owner", getValues: (resource) => resource.owner || "Unassigned" },
+    { id: "relationship", label: "Relationship", getValues: (resource) => resource.depth === 0 ? "Directly changed" : "Dependent" },
+  ]);
+  const impactedPaging = useTablePagination(filteredImpactedResources);
   const historyRows = useMemo(() => history.data?.data.assessments ?? [], [history.data]);
-  const historyPaging = useTablePagination(historyRows);
+  const { filteredRows: filteredHistoryRows, filters: historyFilters, resetFilters: resetHistoryFilters } = useColumnFilters(historyRows, [
+    { id: "source", label: "Source", getValues: (row) => SOURCE_LABELS[row.source] ?? titleize(row.source) },
+    { id: "risk", label: "Risk", getValues: (row) => row.risk_level, formatOption: titleize },
+    { id: "verdict", label: "Verdict", getValues: (row) => row.verdict, formatOption: titleize },
+  ]);
+  const historyPaging = useTablePagination(filteredHistoryRows);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -246,6 +269,12 @@ export default function PreDeploymentPage() {
                 <p className="muted">No risk factors were identified from the submitted change.</p>
               ) : (
                 <>
+                <TableColumnFilters
+                  filters={evidenceFilters}
+                  onReset={resetEvidenceFilters}
+                  resultCount={filteredEvidence.length}
+                  totalCount={evidence.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>
@@ -320,6 +349,12 @@ export default function PreDeploymentPage() {
                 </p>
               ) : (
                 <>
+                <TableColumnFilters
+                  filters={effectFilters}
+                  onReset={resetEffectFilters}
+                  resultCount={filteredEffects.length}
+                  totalCount={effects.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>
@@ -378,6 +413,12 @@ export default function PreDeploymentPage() {
                 <>
                   <BlastRadiusGraph resources={blast.impacted_resources} />
                   <h3 className="blast-radius-table-heading">Impacted resource detail</h3>
+                  <TableColumnFilters
+                    filters={impactedFilters}
+                    onReset={resetImpactedFilters}
+                    resultCount={filteredImpactedResources.length}
+                    totalCount={impactedResources.length}
+                  />
                   <div className="table-scroll">
                     <table className="operations-table">
                       <thead>
@@ -452,6 +493,12 @@ export default function PreDeploymentPage() {
             />
           ) : (
             <>
+            <TableColumnFilters
+              filters={historyFilters}
+              onReset={resetHistoryFilters}
+              resultCount={filteredHistoryRows.length}
+              totalCount={historyRows.length}
+            />
             <div className="table-scroll">
               <table className="operations-table">
                 <thead>

@@ -1,0 +1,254 @@
+{
+  "at": "2026-08-31T00:37:45.774134+00:00",
+  "api": "https://aiops-dev-api.greenpond-732382e3.australiaeast.azurecontainerapps.io",
+  "summary": {
+    "cases": 10,
+    "errors": 0,
+    "timeouts": 0,
+    "routing_pass": 10,
+    "routing_scored": 10,
+    "routing_rate": 1.0,
+    "narrated": 10,
+    "narration_rate": 1.0,
+    "groundedness_mean": 0.35,
+    "tool_correctness_mean": 1.0,
+    "latency_ms_median": 11933.1,
+    "orchestration_runtimes": {
+      "microsoft-agent-framework": 10
+    }
+  },
+  "results": [
+    {
+      "case_id": "net-topology",
+      "ok": true,
+      "specialists": [
+        "network"
+      ],
+      "expected_specialists": [
+        "network"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 1.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 22184.0,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer \u2014 resources that depend on demo-vnet (observed in the page context):\n\n- OBSERVED FACT: Azure Firewall \"firewall\"\n  - resource id: /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/aiops-demo-rg/providers/microsoft.network/azurefirewalls/firewall\n  - evidence: details.vnet_id = /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/aiops-demo-rg/providers/",
+      "narration": "Direct answer \u2014 resources that depend on demo-vnet (observed in the page context):\n\n- OBSERVED FACT: Azure Firewall \"firewall\"\n  - resource id: /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/aiops-demo-rg/providers/microsoft.network/azurefirewalls/firewall\n  - evidence: details.vnet_id = /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/aiops-demo-rg/providers/",
+      "error": ""
+    },
+    {
+      "case_id": "vuln-exposure",
+      "ok": true,
+      "specialists": [
+        "vulnerability"
+      ],
+      "expected_specialists": [
+        "vulnerability"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 11232.6,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer\n- None \u2014 based on the vulnerability records currently shown, no CVEs are exploitable on internet-facing hosts.\n\nReasoning\n\nOBSERVED FACT\n- The vulnerability tool results included in the page context (source: intelligence.VulnerabilityIntelligenceService, vulnerability_projection) list multiple CVE entries (for example CVE-2026-68820, CVE-2026-62893, CVE-2026-65775, etc.) and each ent",
+      "narration": "Direct answer\n- None \u2014 based on the vulnerability records currently shown, no CVEs are exploitable on internet-facing hosts.\n\nReasoning\n\nOBSERVED FACT\n- The vulnerability tool results included in the page context (source: intelligence.VulnerabilityIntelligenceService, vulnerability_projection) list multiple CVE entries (for example CVE-2026-68820, CVE-2026-62893, CVE-2026-65775, etc.) and each ent",
+      "error": ""
+    },
+    {
+      "case_id": "patch-priority",
+      "ok": true,
+      "specialists": [
+        "patch"
+      ],
+      "expected_specialists": [
+        "patch"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 15995.1,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer \u2014 prioritize installing \"2026-08 Cumulative Update for Windows Server 2016 for x64-based Systems (KB5120418)\" on the impacted host (vm1). Within the listed vulnerabilities, remediate in this order: 1) CVE-2026-68820, 2) CVE-2026-62893, 3) CVE-2026-62878, then the remaining HIGH/MEDIUM items \u2014 all are fixed by KB5120418.\n\nReasoning\n\nOBSERVED FACT (from the page/tool results)\n- Every l",
+      "narration": "Direct answer \u2014 prioritize installing \"2026-08 Cumulative Update for Windows Server 2016 for x64-based Systems (KB5120418)\" on the impacted host (vm1). Within the listed vulnerabilities, remediate in this order: 1) CVE-2026-68820, 2) CVE-2026-62893, 3) CVE-2026-62878, then the remaining HIGH/MEDIUM items \u2014 all are fixed by KB5120418.\n\nReasoning\n\nOBSERVED FACT (from the page/tool results)\n- Every l",
+      "error": ""
+    },
+    {
+      "case_id": "incident-cause",
+      "ok": true,
+      "specialists": [
+        "incident"
+      ],
+      "expected_specialists": [
+        "incident"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 10168.0,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer\n- I cannot identify a root-cause candidate for the latest incident because the incident record and related evidence are not present in the page context and the incident-tool result is empty.\n\nReasoning (concise)\n- OBSERVED FACT: The incident page context contains no findings (findings: []), and the delegated tool result for incident data is empty (tool_results: [{\"status\":\"empty\",\"da",
+      "narration": "Direct answer\n- I cannot identify a root-cause candidate for the latest incident because the incident record and related evidence are not present in the page context and the incident-tool result is empty.\n\nReasoning (concise)\n- OBSERVED FACT: The incident page context contains no findings (findings: []), and the delegated tool result for incident data is empty (tool_results: [{\"status\":\"empty\",\"da",
+      "error": ""
+    },
+    {
+      "case_id": "gov-owner",
+      "ok": true,
+      "specialists": [
+        "governance"
+      ],
+      "expected_specialists": [
+        "governance"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "page_fallback",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 8271.4,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer: UNKNOWN \u2014 the provided page/context does not show who owns the \"payments\" business service.\n\nReasoning\n- OBSERVED FACT: The page context contains no findings about the payments business service. Tool results in the context are empty and include warnings: \"A business service name is required\", \"An application name is required\", and \"A subject is required.\" (These are from the supplie",
+      "narration": "Direct answer: UNKNOWN \u2014 the provided page/context does not show who owns the \"payments\" business service.\n\nReasoning\n- OBSERVED FACT: The page context contains no findings about the payments business service. Tool results in the context are empty and include warnings: \"A business service name is required\", \"An application name is required\", and \"A subject is required.\" (These are from the supplie",
+      "error": ""
+    },
+    {
+      "case_id": "net-change",
+      "ok": true,
+      "specialists": [
+        "change"
+      ],
+      "expected_specialists": [
+        "change"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 11885.4,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer\n- UNKNOWN \u2014 the current page context contains no change records, so I cannot identify what changed that could explain this. I need to query the change log for recent network/configuration changes tied to the affected resources.\n\nOBSERVED FACT\n- The provided PAGE CONTEXT contains no findings and the delegated \"change\" specialist/tool results are empty (tool_results show status \"empty\"",
+      "narration": "Direct answer\n- UNKNOWN \u2014 the current page context contains no change records, so I cannot identify what changed that could explain this. I need to query the change log for recent network/configuration changes tied to the affected resources.\n\nOBSERVED FACT\n- The provided PAGE CONTEXT contains no findings and the delegated \"change\" specialist/tool results are empty (tool_results show status \"empty\"",
+      "error": ""
+    },
+    {
+      "case_id": "net-governance",
+      "ok": true,
+      "specialists": [
+        "governance"
+      ],
+      "expected_specialists": [
+        "governance"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 9405.0,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer: I cannot determine who owns this or whether there is an approval from the current page \u2014 UNKNOWN.\n\nReasoning\n\nOBSERVED FACT\n- The page has no findings and fabric_iq is empty (page_context).  \n- Tool results returned three warnings: \"A business service name is required\", \"An application name is required\", and \"A subject is required\" (page_context.tool_results). These are the only gov",
+      "narration": "Direct answer: I cannot determine who owns this or whether there is an approval from the current page \u2014 UNKNOWN.\n\nReasoning\n\nOBSERVED FACT\n- The page has no findings and fabric_iq is empty (page_context).  \n- Tool results returned three warnings: \"A business service name is required\", \"An application name is required\", and \"A subject is required\" (page_context.tool_results). These are the only gov",
+      "error": ""
+    },
+    {
+      "case_id": "net-cve",
+      "ok": true,
+      "specialists": [
+        "network",
+        "vulnerability"
+      ],
+      "expected_specialists": [
+        "network",
+        "vulnerability"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 19280.6,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer \u2014 UNKNOWN: I cannot tell from the current page whether there are CVEs on the hosts behind this hub.\n\nReasoning\n\nOBSERVED FACT\n- The topology shows a hub virtual network named \"demo-vnet\" (vnet_id \"/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/.../demo-vnet\"). (source: page tool_results)\n- A network interface \"vm1903\" is present with private IP 10.0.0.4 and attached_resource_id ",
+      "narration": "Direct answer \u2014 UNKNOWN: I cannot tell from the current page whether there are CVEs on the hosts behind this hub.\n\nReasoning\n\nOBSERVED FACT\n- The topology shows a hub virtual network named \"demo-vnet\" (vnet_id \"/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/.../demo-vnet\"). (source: page tool_results)\n- A network interface \"vm1903\" is present with private IP 10.0.0.4 and attached_resource_id ",
+      "error": ""
+    },
+    {
+      "case_id": "vuln-remediate",
+      "ok": true,
+      "specialists": [
+        "remediation"
+      ],
+      "expected_specialists": [
+        "remediation"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 14077.9,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer\n- OBSERVED FACT: The current page context contains no vulnerability record or affected-hosts data (findings array empty). I cannot determine the specific remediation steps for \u201cthis\u201d without that record.\n- UNKNOWN: Whether the asset is a VM, container, application, database, network device, or patch-only change \u2014 that determines the safe rollback approach.\n- Action required: Tell me ",
+      "narration": "Direct answer\n- OBSERVED FACT: The current page context contains no vulnerability record or affected-hosts data (findings array empty). I cannot determine the specific remediation steps for \u201cthis\u201d without that record.\n- UNKNOWN: Whether the asset is a VM, container, application, database, network device, or patch-only change \u2014 that determines the safe rollback approach.\n- Action required: Tell me ",
+      "error": ""
+    },
+    {
+      "case_id": "unknown-subject",
+      "ok": true,
+      "specialists": [
+        "network"
+      ],
+      "expected_specialists": [
+        "network"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 1.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 11980.7,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Answer (direct):\n- Nothing in the current network inventory depends on \"totally-nonexistent-vnet-xyz\".\n\nReasoning and evidence\n- OBSERVED FACT: The loaded topology and resource list (tool_results) show virtual networks named \"demo-vnet\" and \"aiops-dev-vnet\" and many resources referencing those vnets; there is no entry with the name or id \"totally-nonexistent-vnet-xyz\" in the page context. (Source:",
+      "narration": "Answer (direct):\n- Nothing in the current network inventory depends on \"totally-nonexistent-vnet-xyz\".\n\nReasoning and evidence\n- OBSERVED FACT: The loaded topology and resource list (tool_results) show virtual networks named \"demo-vnet\" and \"aiops-dev-vnet\" and many resources referencing those vnets; there is no entry with the name or id \"totally-nonexistent-vnet-xyz\" in the page context. (Source:",
+      "error": ""
+    }
+  ]
+}

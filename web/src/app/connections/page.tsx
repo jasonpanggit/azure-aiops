@@ -6,7 +6,9 @@ import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { formatDateTime, relativeTime } from "@/lib/format";
@@ -73,7 +75,14 @@ export default function ConnectionsPage() {
   const [syncProgress, setSyncProgress] = useState<{ connectionId: string; state: SyncState } | null>(null);
   const connections = useApi(() => connectionsApi.list(scope), [scope, refreshKey]);
   const rows = useMemo(() => connections.data?.data ?? [], [connections.data]);
-  const rowsPaging = useTablePagination(rows);
+  const { filteredRows, filters, resetFilters } = useColumnFilters(rows, [
+    { id: "health", label: "Health", getValues: (connection) => connection.health_status },
+    { id: "sync", label: "Sync", getValues: (connection) => connection.sync_status || "unknown" },
+    { id: "service", label: "Service", getValues: (connection) => connection.business_service || "Service not mapped" },
+    { id: "environment", label: "Environment", getValues: (connection) => connection.environment || "Environment not mapped" },
+    { id: "criticality", label: "Criticality", getValues: (connection) => connection.criticality || "Criticality not set" },
+  ]);
+  const rowsPaging = useTablePagination(filteredRows);
   const healthy = rows.filter((connection) => connection.health_status === "healthy").length;
   const stale = rows.filter((connection) => connection.health_status === "stale").length;
   const failed = rows.filter((connection) => ["failed", "unhealthy"].includes(connection.health_status)).length;
@@ -546,6 +555,12 @@ export default function ConnectionsPage() {
         <StatePanel title="No subscriptions onboarded" message="Complete the onboarding form above to establish operational coverage." />
       ) : (
         <div className="card connection-table">
+          <TableColumnFilters
+            filters={filters}
+            onReset={resetFilters}
+            resultCount={filteredRows.length}
+            totalCount={rows.length}
+          />
           <div className="table-scroll">
             <table className="operations-table">
               <thead><tr><th>Connection</th><th>Business context</th><th>Health</th><th>Sync</th><th>Last successful sync</th><th>Actions</th></tr></thead>

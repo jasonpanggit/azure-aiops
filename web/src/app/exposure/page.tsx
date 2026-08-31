@@ -11,7 +11,9 @@ import { OperationsSignalChart } from "@/components/ui/OperationsSignalChart";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
@@ -74,9 +76,25 @@ export default function ExposurePage() {
     });
   }, [servers.data, query, reachableOnly]);
 
-  const serverPaging = useTablePagination(filteredServers);
-  const patchPaging = useTablePagination(filteredPatches);
-  const cvePaging = useTablePagination(filteredCves);
+  const { filteredRows: columnFilteredServers, filters: serverFilters, resetFilters: resetServerFilters } = useColumnFilters(filteredServers, [
+    { id: "inventory", label: "Inventory", getValues: (server) => server.inventory_kind },
+    { id: "reachability", label: "Reachability", getValues: (server) => server.internet_exposed ? "Internet exposed" : server.reachable ? "Reachable" : "No path observed" },
+    { id: "service", label: "Service", getValues: (server) => server.business_service || "Unassigned service" },
+    { id: "environment", label: "Environment", getValues: (server) => server.environment || "Unknown" },
+  ]);
+  const { filteredRows: columnFilteredPatches, filters: patchFilters, resetFilters: resetPatchFilters } = useColumnFilters(filteredPatches, [
+    { id: "reachability", label: "Reachability", getValues: (patch) => patch.reachable_server_count ? "Reachable" : "No path observed" },
+    { id: "action", label: "Action", getValues: (patch) => patch.recommended_action || "Recommended patch" },
+  ]);
+  const { filteredRows: columnFilteredCves, filters: cveFilters, resetFilters: resetCveFilters } = useColumnFilters(filteredCves, [
+    { id: "severity", label: "Severity", getValues: (exposure) => exposure.severity },
+    { id: "reachability", label: "Reachability", getValues: (exposure) => exposure.internet_exposed ? "Internet exposed" : exposure.reachable_server_count ? "Reachable" : "No path observed" },
+    { id: "kb", label: "Patch KB", getValues: (exposure) => exposure.missing_kb || "No KB" },
+  ]);
+
+  const serverPaging = useTablePagination(columnFilteredServers);
+  const patchPaging = useTablePagination(columnFilteredPatches);
+  const cvePaging = useTablePagination(columnFilteredCves);
 
   const bestPatch = patches.data?.data[0];
   const serverInventoryCounts = useMemo(() => {
@@ -320,6 +338,13 @@ export default function ExposurePage() {
                 <p className="muted">No server exposures match the current filters.</p>
               </div>
             ) : (
+              <>
+              <TableColumnFilters
+                filters={serverFilters}
+                onReset={resetServerFilters}
+                resultCount={columnFilteredServers.length}
+                totalCount={filteredServers.length}
+              />
               <div className="table-scroll">
                 <table className="operations-table exposure-table">
                   <thead>
@@ -371,6 +396,7 @@ export default function ExposurePage() {
                   </tbody>
                 </table>
               </div>
+              </>
             )}
             <TablePagination
               total={serverPaging.total}
@@ -397,6 +423,13 @@ export default function ExposurePage() {
                 <p className="muted">No KB patch priorities match the current filters.</p>
               </div>
             ) : (
+              <>
+              <TableColumnFilters
+                filters={patchFilters}
+                onReset={resetPatchFilters}
+                resultCount={columnFilteredPatches.length}
+                totalCount={filteredPatches.length}
+              />
               <div className="table-scroll">
                 <table className="operations-table exposure-table">
                   <thead>
@@ -455,6 +488,7 @@ export default function ExposurePage() {
                   </tbody>
                 </table>
               </div>
+              </>
             )}
             <TablePagination
               total={patchPaging.total}
@@ -479,6 +513,13 @@ export default function ExposurePage() {
                 <p className="muted">No CVEs match the current filters.</p>
               </div>
             ) : (
+              <>
+              <TableColumnFilters
+                filters={cveFilters}
+                onReset={resetCveFilters}
+                resultCount={columnFilteredCves.length}
+                totalCount={filteredCves.length}
+              />
               <div className="table-scroll">
                 <table className="operations-table exposure-table">
                   <thead>
@@ -542,6 +583,7 @@ export default function ExposurePage() {
                   </tbody>
                 </table>
               </div>
+              </>
             )}
             <TablePagination
               total={cvePaging.total}

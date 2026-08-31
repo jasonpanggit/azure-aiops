@@ -3,7 +3,9 @@
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import type { ScopeSelection } from "@/lib/scope";
@@ -60,8 +62,20 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
 
   const recentRuns = useMemo(() => runs.data?.data ?? [], [runs.data]);
 
-  const targetPaging = useTablePagination(filteredTargets);
-  const runPaging = useTablePagination(recentRuns);
+  const { filteredRows: columnFilteredTargets, filters: targetFilters, resetFilters: resetTargetFilters } = useColumnFilters(filteredTargets, [
+    { id: "inventory", label: "Inventory", getValues: (target) => target.inventory_kind },
+    { id: "service", label: "Service", getValues: (target) => target.business_service || "Unassigned service" },
+    { id: "environment", label: "Environment", getValues: (target) => target.environment || "Unknown" },
+    { id: "operation", label: "Operation", getValues: (target) => target.operation === "node_image_upgrade" ? "Node image upgrade" : "Install patches" },
+  ]);
+  const { filteredRows: filteredRuns, filters: runFilters, resetFilters: resetRunFilters } = useColumnFilters(recentRuns, [
+    { id: "operation", label: "Operation", getValues: (run) => run.operation },
+    { id: "state", label: "State", getValues: (run) => run.state },
+    { id: "provider", label: "Provider", getValues: (run) => run.provider || "Unknown" },
+  ]);
+
+  const targetPaging = useTablePagination(columnFilteredTargets);
+  const runPaging = useTablePagination(filteredRuns);
 
   const selectedFor = useCallback((targetId: string) => selection[targetId] ?? [], [selection]);
 
@@ -202,6 +216,13 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
           <p className="muted">No patchable servers match the current filters.</p>
         </div>
       ) : (
+        <>
+        <TableColumnFilters
+          filters={targetFilters}
+          onReset={resetTargetFilters}
+          resultCount={columnFilteredTargets.length}
+          totalCount={filteredTargets.length}
+        />
         <div className="table-scroll">
           <table className="operations-table exposure-table">
             <thead>
@@ -356,6 +377,7 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
             </tbody>
           </table>
         </div>
+        </>
       )}
       <TablePagination
         total={targetPaging.total}
@@ -370,6 +392,12 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
       {recentRuns.length > 0 && (
         <div className="card-body">
           <h3>Recent runs</h3>
+          <TableColumnFilters
+            filters={runFilters}
+            onReset={resetRunFilters}
+            resultCount={filteredRuns.length}
+            totalCount={recentRuns.length}
+          />
           <div className="table-scroll">
             <table className="operations-table">
               <thead>

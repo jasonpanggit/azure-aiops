@@ -20,6 +20,7 @@ request.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -559,6 +560,147 @@ class FoundryPromptAgent:
             context=context,
             specialist_id=self.specialist_id,
         )
+
+
+class MicrosoftAgentFrameworkFoundryAgent:
+    """Invokes a Foundry hosted/prompt agent through Microsoft Agent Framework."""
+
+    def __init__(
+        self,
+        *,
+        project_endpoint: str,
+        agent_name: str,
+        agent_version: str = "",
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        specialist_id: str = "network",
+        agent_factory: Callable[..., Any] | None = None,
+    ) -> None:
+        endpoint = str(project_endpoint or "").strip().rstrip("/")
+        name = str(agent_name or "").strip()
+        if not endpoint or not name:
+            raise FoundryAgentNotConfigured(
+                "A Foundry project endpoint and agent name are both required"
+            )
+        self.project_endpoint = endpoint
+        self.agent_name = name
+        self.agent_version = agent_version
+        self.timeout_seconds = timeout_seconds
+        self.specialist_id = specialist_id
+        self._agent_factory = agent_factory
+        self._agent: Any | None = None
+
+    @classmethod
+    def from_env(
+        cls,
+        specialist_id: str | None = None,
+        *,
+        agent_factory: Callable[..., Any] | None = None,
+    ) -> MicrosoftAgentFrameworkFoundryAgent | None:
+        endpoint = os.environ.get(ENV_PROJECT_ENDPOINT, "").strip()
+        specialist = (specialist_id or "").strip().casefold()
+        specialist_name = (
+            os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_NAME", "").strip()
+            if specialist
+            else ""
+        )
+        agent_name = specialist_name or os.environ.get(ENV_AGENT_NAME, "").strip()
+        if not endpoint or not agent_name:
+            return None
+        try:
+            timeout = float(os.environ.get(ENV_TIMEOUT, "") or DEFAULT_TIMEOUT_SECONDS)
+        except ValueError:
+            timeout = DEFAULT_TIMEOUT_SECONDS
+        return cls(
+            project_endpoint=endpoint,
+            agent_name=agent_name,
+            agent_version=(
+                os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
+                if specialist
+                else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
+            ),
+            timeout_seconds=timeout,
+            specialist_id=specialist or "operations_copilot",
+            agent_factory=agent_factory,
+        )
+
+    def _build_sdk_agent(self) -> Any:
+        if self._agent is not None:
+            return self._agent
+        if self._agent_factory is not None:
+            self._agent = self._agent_factory(
+                project_endpoint=self.project_endpoint,
+                agent_name=self.agent_name,
+                agent_version=self.agent_version or None,
+                allow_preview=True,
+                timeout=self.timeout_seconds,
+            )
+            return self._agent
+        try:
+            from agent_framework.foundry import FoundryAgent as SdkFoundryAgent
+            from azure.identity import DefaultAzureCredential
+        except ImportError as exc:
+            raise FoundryAgentError(
+                "Microsoft Agent Framework Foundry runtime is not installed"
+            ) from exc
+        self._agent = SdkFoundryAgent(
+            project_endpoint=self.project_endpoint,
+            agent_name=self.agent_name,
+            agent_version=self.agent_version or None,
+            credential=DefaultAzureCredential(),
+            allow_preview=True,
+            timeout=self.timeout_seconds,
+        )
+        return self._agent
+
+    def validate_access(self) -> None:
+        self._build_sdk_agent()
+
+    def answer(self, *, question: str, context: Any) -> AgentAnswer:
+        prompt = self.build_prompt(question, context)
+        try:
+            response = _run_awaitable(self._build_sdk_agent().run(prompt))
+        except Exception as exc:
+            raise FoundryAgentError(
+                "Microsoft Agent Framework Foundry agent request failed"
+            ) from exc
+        text = str(getattr(response, "text", "") or "").strip()
+        if not text:
+            raise FoundryAgentError("Microsoft Agent Framework agent returned an empty answer")
+        return AgentAnswer(
+            text=text,
+            agent_name=self.agent_name,
+            model="microsoft-agent-framework",
+            grounded=True,
+            agent_version=self.agent_version,
+        )
+
+    def answer_findings(
+        self,
+        *,
+        question: str,
+        context: Any,
+        evidence_refs: set[str],
+        resource_ids: set[str] | None = None,
+    ) -> AgentAnswer:
+        answer = self.answer(question=question, context=context)
+        parse_specialist_findings(
+            answer.text,
+            evidence_refs=evidence_refs,
+            resource_ids=resource_ids,
+            agent_id=self.specialist_id,
+        )
+        return answer
+
+    def build_prompt(self, question: str, context: Any) -> str:
+        return _build_prompt(
+            question=question,
+            context=context,
+            specialist_id=self.specialist_id,
+        )
+
+
+def _run_awaitable(awaitable: Any) -> Any:
+    return asyncio.run(awaitable)
 
 
 # Cap the grounding payload. A very large context both costs tokens and pushes

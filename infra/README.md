@@ -74,6 +74,11 @@ The agent is wired in through two environment variables set on the API app:
 - `FOUNDRY_PROJECT_ENDPOINT`
 - `FOUNDRY_AGENT_NAME`
 
+`AIOPS_AGENT_ORCHESTRATION_MODE=maf` is the default. Operations Copilot invokes
+Foundry agents through Microsoft Agent Framework and selects specialists from the
+user's question before falling back to the current page. To roll back, set
+`AIOPS_AGENT_ORCHESTRATION_MODE=deterministic` and re-apply the deployment.
+
 Narration is optional by construction. If the agent is unreachable or
 unconfigured, the endpoint still returns the retrieved records with a warning
 rather than failing — a narration outage must not take down a surface that

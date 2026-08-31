@@ -4,7 +4,9 @@ import Link from "next/link";
 import type { SituationSummary } from "@/lib/situations";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { StatusBadge, statusTone } from "./ui/StatusBadge";
+import { TableColumnFilters } from "./ui/TableColumnFilters";
 import { TablePagination } from "./ui/TablePagination";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 
 export interface SituationTableProps {
@@ -14,10 +16,26 @@ export interface SituationTableProps {
 
 /** Ranked Situation queue optimized for fast operational scanning. */
 export function SituationTable({ situations, compact = false }: SituationTableProps) {
-  const situationPaging = useTablePagination(situations);
+  const { filteredRows, filters, resetFilters } = useColumnFilters(situations, [
+    { id: "priority", label: "Priority", getValues: (situation) => situation.priority },
+    { id: "status", label: "Status", getValues: (situation) => situation.status },
+    {
+      id: "service",
+      label: "Service",
+      getValues: (situation) => situation.businessServices.length ? situation.businessServices : "Service not mapped",
+    },
+    { id: "owner", label: "Owner", getValues: (situation) => situation.owner },
+  ]);
+  const situationPaging = useTablePagination(filteredRows);
 
   return (
     <>
+      <TableColumnFilters
+        filters={filters}
+        onReset={resetFilters}
+        resultCount={filteredRows.length}
+        totalCount={situations.length}
+      />
       <div className="table-scroll">
       <table className="operations-table">
         <thead>

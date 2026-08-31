@@ -7,11 +7,13 @@ import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
 import { formatDateTime, titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 
 function rotationTone(status: string): "critical" | "warning" | "success" | "neutral" {
@@ -44,11 +46,32 @@ export default function IdentityPage() {
   const nonHumanRows = useMemo(() => nonHuman.data?.data.identities ?? [], [nonHuman.data]);
   const spnRows = useMemo(() => spn.data?.data.credentials ?? [], [spn.data]);
 
-  const principalsPaging = useTablePagination(principalRows);
-  const ownersPaging = useTablePagination(ownerRows);
-  const stalePaging = useTablePagination(staleRows);
-  const nonHumanPaging = useTablePagination(nonHumanRows);
-  const spnPaging = useTablePagination(spnRows);
+  const { filteredRows: filteredPrincipals, filters: principalFilters, resetFilters: resetPrincipalFilters } = useColumnFilters(principalRows, [
+    { id: "type", label: "Type", getValues: (row) => row.principal_type || "unknown", formatOption: titleize },
+    { id: "scope", label: "Widest scope", getValues: (row) => row.widest_scope_breadth || "unknown", formatOption: titleize },
+    { id: "status", label: "Status", getValues: (row) => [row.privileged ? "privileged" : "", row.stale ? "stale" : "", !row.privileged && !row.stale ? "standard" : ""] },
+  ]);
+  const { filteredRows: filteredOwners, filters: ownerFilters, resetFilters: resetOwnerFilters } = useColumnFilters(ownerRows, [
+    { id: "type", label: "Type", getValues: (row) => row.principal_type || "unknown", formatOption: titleize },
+    { id: "status", label: "Status", getValues: (row) => row.stale ? "stale" : "current" },
+  ]);
+  const { filteredRows: filteredStale, filters: staleFilters, resetFilters: resetStaleFilters } = useColumnFilters(staleRows, [
+    { id: "role", label: "Role", getValues: (row) => row.role || "Unresolved" },
+    { id: "status", label: "Status", getValues: (row) => row.privileged ? "privileged" : "standard" },
+  ]);
+  const { filteredRows: filteredNonHuman, filters: nonHumanFilters, resetFilters: resetNonHumanFilters } = useColumnFilters(nonHumanRows, [
+    { id: "type", label: "Type", getValues: (row) => row.principal_type || "unknown", formatOption: titleize },
+  ]);
+  const { filteredRows: filteredSpn, filters: spnFilters, resetFilters: resetSpnFilters } = useColumnFilters(spnRows, [
+    { id: "rotation", label: "Rotation", getValues: (row) => row.rotation_status, formatOption: titleize },
+    { id: "issues", label: "Issues", getValues: (row) => row.issues?.length ? "Has issues" : "No issues" },
+  ]);
+
+  const principalsPaging = useTablePagination(filteredPrincipals);
+  const ownersPaging = useTablePagination(filteredOwners);
+  const stalePaging = useTablePagination(filteredStale);
+  const nonHumanPaging = useTablePagination(filteredNonHuman);
+  const spnPaging = useTablePagination(filteredSpn);
 
   const loading = summary.loading || principals.loading || spn.loading;
   const error = summary.error ?? principals.error ?? spn.error;
@@ -142,6 +165,13 @@ export default function IdentityPage() {
                   message="No role assignment has been synced for the subscriptions in scope. This is not evidence that no access exists."
                 />
               ) : (
+                <>
+                <TableColumnFilters
+                  filters={principalFilters}
+                  onReset={resetPrincipalFilters}
+                  resultCount={filteredPrincipals.length}
+                  totalCount={principalRows.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>
@@ -195,6 +225,7 @@ export default function IdentityPage() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
               <TablePagination
                 total={principalsPaging.total}
@@ -222,6 +253,13 @@ export default function IdentityPage() {
                   message="No owner-scoped assignment was found in the synced data for this scope."
                 />
               ) : (
+                <>
+                <TableColumnFilters
+                  filters={ownerFilters}
+                  onReset={resetOwnerFilters}
+                  resultCount={filteredOwners.length}
+                  totalCount={ownerRows.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>
@@ -256,6 +294,7 @@ export default function IdentityPage() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
               <TablePagination
                 total={ownersPaging.total}
@@ -286,6 +325,13 @@ export default function IdentityPage() {
                   message="Every observed assignment has changed within the review window."
                 />
               ) : (
+                <>
+                <TableColumnFilters
+                  filters={staleFilters}
+                  onReset={resetStaleFilters}
+                  resultCount={filteredStale.length}
+                  totalCount={staleRows.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>
@@ -320,6 +366,7 @@ export default function IdentityPage() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
               <TablePagination
                 total={stalePaging.total}
@@ -347,6 +394,13 @@ export default function IdentityPage() {
                   message="No service principal or managed identity was found in the synced data for this scope."
                 />
               ) : (
+                <>
+                <TableColumnFilters
+                  filters={nonHumanFilters}
+                  onReset={resetNonHumanFilters}
+                  resultCount={filteredNonHuman.length}
+                  totalCount={nonHumanRows.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>
@@ -376,6 +430,7 @@ export default function IdentityPage() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
               <TablePagination
                 total={nonHumanPaging.total}
@@ -436,6 +491,13 @@ export default function IdentityPage() {
                   message="No onboarding connection is visible under the current scope selection."
                 />
               ) : (
+                <>
+                <TableColumnFilters
+                  filters={spnFilters}
+                  onReset={resetSpnFilters}
+                  resultCount={filteredSpn.length}
+                  totalCount={spnRows.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>
@@ -498,6 +560,7 @@ export default function IdentityPage() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
               <TablePagination
                 total={spnPaging.total}

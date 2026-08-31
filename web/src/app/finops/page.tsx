@@ -6,11 +6,13 @@ import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
+import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 
 const DIMENSIONS = [
@@ -67,9 +69,34 @@ export default function FinOpsPage() {
     [attribution.data],
   );
 
-  const attributionPaging = useTablePagination(attributionGroups);
-  const opportunityPaging = useTablePagination(rows);
-  const wastePaging = useTablePagination(wasteRows);
+  const {
+    filteredRows: filteredAttributionGroups,
+    filters: attributionFilters,
+    resetFilters: resetAttributionFilters,
+  } = useColumnFilters(attributionGroups, [
+    { id: "group", label: titleize(dimension), getValues: (group) => group[dimension] ?? "Unattributed" },
+  ]);
+  const {
+    filteredRows: filteredOpportunities,
+    filters: opportunityFilters,
+    resetFilters: resetOpportunityFilters,
+  } = useColumnFilters(rows, [
+    { id: "impact", label: "Impact", getValues: (row) => row.impact || "unknown" },
+    { id: "owner", label: "Owner", getValues: (row) => row.owner || row.business_service || row.subscription || "Unattributed" },
+  ]);
+  const {
+    filteredRows: filteredWasteRows,
+    filters: wasteFilters,
+    resetFilters: resetWasteFilters,
+  } = useColumnFilters(wasteRows, [
+    { id: "type", label: "Type", getValues: (row) => row.resource_type || "Resource" },
+    { id: "reason", label: "Reason", getValues: (row) => row.reason || "unknown", formatOption: titleize },
+    { id: "owner", label: "Owner", getValues: (row) => row.owner || row.business_service || row.subscription || "Unattributed" },
+  ]);
+
+  const attributionPaging = useTablePagination(filteredAttributionGroups);
+  const opportunityPaging = useTablePagination(filteredOpportunities);
+  const wastePaging = useTablePagination(filteredWasteRows);
 
   return (
     <div className="page-container">
@@ -215,6 +242,13 @@ export default function FinOpsPage() {
                   message="No Advisor cost recommendation carries this dimension in the current scope."
                 />
               ) : (
+                <>
+                <TableColumnFilters
+                  filters={attributionFilters}
+                  onReset={resetAttributionFilters}
+                  resultCount={filteredAttributionGroups.length}
+                  totalCount={attributionGroups.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>
@@ -243,6 +277,7 @@ export default function FinOpsPage() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
               <TablePagination
                 total={attributionPaging.total}
@@ -273,6 +308,13 @@ export default function FinOpsPage() {
                   message="Azure Advisor has issued no cost recommendation for the subscriptions in scope."
                 />
               ) : (
+                <>
+                <TableColumnFilters
+                  filters={opportunityFilters}
+                  onReset={resetOpportunityFilters}
+                  resultCount={filteredOpportunities.length}
+                  totalCount={rows.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>
@@ -318,6 +360,7 @@ export default function FinOpsPage() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
               <TablePagination
                 total={opportunityPaging.total}
@@ -348,6 +391,13 @@ export default function FinOpsPage() {
                   message="No idle, deallocated, or unattached resource was observed in the current scope."
                 />
               ) : (
+                <>
+                <TableColumnFilters
+                  filters={wasteFilters}
+                  onReset={resetWasteFilters}
+                  resultCount={filteredWasteRows.length}
+                  totalCount={wasteRows.length}
+                />
                 <div className="table-scroll">
                   <table className="operations-table">
                     <thead>
@@ -387,6 +437,7 @@ export default function FinOpsPage() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
               <TablePagination
                 total={wastePaging.total}

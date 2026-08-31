@@ -6,6 +6,7 @@ import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { DEFAULT_PAGE_SIZE } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
@@ -154,6 +155,16 @@ function lifecycleTone(group: OsInventoryGroup) {
   return "success" as const;
 }
 
+function uniqueOptions(values: string[]): Array<{ value: string; label: string }> {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b))
+    .map((value) => ({ value, label: value }));
+}
+
+function optionLabel(value: string, label: string): { value: string; label: string } {
+  return { value, label };
+}
+
 function safeFilenamePart(value: string): string {
   return value.trim().replace(/[^a-z0-9._-]+/gi, "_").replace(/^[._-]+|[._-]+$/g, "") || "software";
 }
@@ -239,8 +250,12 @@ export default function InventoryPage() {
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState<"all" | "azure_vm" | "arc">("all");
   const [lifecycleFilter, setLifecycleFilter] = useState<"all" | "expired" | "expiring" | "supported" | "review">("all");
+  const [osNameFilter, setOsNameFilter] = useState("all");
+  const [osVersionFilter, setOsVersionFilter] = useState("all");
   const [softwareSearch, setSoftwareSearch] = useState("");
   const [softwareSourceFilter, setSoftwareSourceFilter] = useState<"all" | "azure_vm" | "arc" | "unlinked">("all");
+  const [softwareNameFilter, setSoftwareNameFilter] = useState("all");
+  const [softwarePublisherFilter, setSoftwarePublisherFilter] = useState("all");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [detail, setDetail] = useState<OsInventoryMachine[]>([]);
   const [, setDetailGroup] = useState<OsInventoryGroup | null>(null);
@@ -258,6 +273,8 @@ export default function InventoryPage() {
   const [mappingSubmitting, setMappingSubmitting] = useState<string | null>(null);
   const [azureSearch, setAzureSearch] = useState("");
   const [azureProviderFilter, setAzureProviderFilter] = useState("all");
+  const [azureTypeFilter, setAzureTypeFilter] = useState("all");
+  const [azureSkuFilter, setAzureSkuFilter] = useState("all");
   const [azureSelectedKey, setAzureSelectedKey] = useState<string | null>(null);
   const [azureDetail, setAzureDetail] = useState<PaasInventoryResource[]>([]);
   const [azureDetailGroup, setAzureDetailGroup] = useState<PaasInventoryGroup | null>(null);
@@ -297,15 +314,26 @@ export default function InventoryPage() {
     () => Array.from(new Set(azureGroups.map((group) => providerLabel(group.resource_type)))).sort(),
     [azureGroups],
   );
+  const azureTypeOptions = useMemo(
+    () => uniqueOptions(azureGroups.map((group) => resourceTypeLabel(group.resource_type))),
+    [azureGroups],
+  );
+  const azureSkuOptions = useMemo(
+    () => uniqueOptions(azureGroups.map((group) => group.sku || group.tier ? `${group.sku || "—"} / ${group.tier || "—"}` : "No SKU")),
+    [azureGroups],
+  );
   const filteredAzureGroups = useMemo(
     () => azureGroups.filter((group) => {
       const haystack = `${group.resource_type} ${group.sku} ${group.tier}`.toLowerCase();
+      const skuTier = group.sku || group.tier ? `${group.sku || "—"} / ${group.tier || "—"}` : "No SKU";
       return (
         haystack.includes(azureSearch.toLowerCase()) &&
-        (azureProviderFilter === "all" || providerLabel(group.resource_type) === azureProviderFilter)
+        (azureProviderFilter === "all" || providerLabel(group.resource_type) === azureProviderFilter) &&
+        (azureTypeFilter === "all" || resourceTypeLabel(group.resource_type) === azureTypeFilter) &&
+        (azureSkuFilter === "all" || skuTier === azureSkuFilter)
       );
     }),
-    [azureGroups, azureProviderFilter, azureSearch],
+    [azureGroups, azureProviderFilter, azureSearch, azureSkuFilter, azureTypeFilter],
   );
   const azureResourceTotal = filteredAzureGroups.reduce((total, group) => total + group.resource_count, 0);
   const azureTopGroups = useMemo(
@@ -314,16 +342,26 @@ export default function InventoryPage() {
   );
 
   const groups = useMemo(() => inventory.data?.data.groups ?? [], [inventory.data]);
+  const osNameOptions = useMemo(
+    () => uniqueOptions(groups.map((group) => group.os_name)),
+    [groups],
+  );
+  const osVersionOptions = useMemo(
+    () => uniqueOptions(groups.map((group) => group.os_version)),
+    [groups],
+  );
   const filteredGroups = useMemo(
     () => groups.filter((group) => {
       const haystack = `${group.os_name} ${group.os_version}`.toLowerCase();
       return (
         haystack.includes(search.toLowerCase()) &&
+        (osNameFilter === "all" || group.os_name === osNameFilter) &&
+        (osVersionFilter === "all" || group.os_version === osVersionFilter) &&
         (sourceFilter === "all" || group.source_types.includes(sourceFilter)) &&
         (lifecycleFilter === "all" || riskBucket(group) === lifecycleFilter)
       );
     }),
-    [groups, lifecycleFilter, search, sourceFilter],
+    [groups, lifecycleFilter, osNameFilter, osVersionFilter, search, sourceFilter],
   );
   const totalMachines = filteredGroups.reduce((total, group) => total + group.machine_count, 0);
   const reviewCount = filteredGroups.filter((group) => group.review_required).length;
@@ -336,15 +374,25 @@ export default function InventoryPage() {
   const sourceStates: Record<string, InventorySourceStatus> = inventory.data?.data.source_status ?? {};
   const partialSource = Object.values(sourceStates).find((source) => source.state !== "ready");
   const softwareGroups = useMemo(() => softwareInventory.data?.data.groups ?? [], [softwareInventory.data]);
+  const softwareNameOptions = useMemo(
+    () => uniqueOptions(softwareGroups.map((group) => group.software_name)),
+    [softwareGroups],
+  );
+  const softwarePublisherOptions = useMemo(
+    () => uniqueOptions(softwareGroups.flatMap((group) => group.publishers)),
+    [softwareGroups],
+  );
   const filteredSoftwareGroups = useMemo(
     () => softwareGroups.filter((group) => {
       const haystack = `${group.software_name} ${group.software_version}`.toLowerCase();
       return (
         haystack.includes(softwareSearch.toLowerCase()) &&
+        (softwareNameFilter === "all" || group.software_name === softwareNameFilter) &&
+        (softwarePublisherFilter === "all" || group.publishers.includes(softwarePublisherFilter)) &&
         (softwareSourceFilter === "all" || group.source_types.includes(softwareSourceFilter))
       );
     }),
-    [softwareGroups, softwareSearch, softwareSourceFilter],
+    [softwareGroups, softwareNameFilter, softwarePublisherFilter, softwareSearch, softwareSourceFilter],
   );
   const softwareTotal = filteredSoftwareGroups.reduce((total, group) => total + group.install_count, 0);
   const unlinkedSoftware = filteredSoftwareGroups.reduce((total, group) => total + group.unlinked_count, 0);
@@ -435,6 +483,21 @@ export default function InventoryPage() {
     setDetailPage(0);
     setAzureDetailPage(0);
   }, [scopeKey, refreshKey]);
+
+  useEffect(() => {
+    setOsPage(0);
+    closeGroup();
+  }, [lifecycleFilter, osNameFilter, osVersionFilter, search, sourceFilter]);
+
+  useEffect(() => {
+    setSoftwarePage(0);
+    closeSoftwareGroup();
+  }, [softwareNameFilter, softwarePublisherFilter, softwareSearch, softwareSourceFilter]);
+
+  useEffect(() => {
+    setAzurePage(0);
+    closeAzureGroup();
+  }, [azureProviderFilter, azureSearch, azureSkuFilter, azureTypeFilter]);
 
   // Reload the open OS/software drill-down on page change. Page 0 is already
   // loaded by the open handlers, so skip it to avoid a duplicate request.
@@ -768,6 +831,45 @@ export default function InventoryPage() {
               ))}
             </div>
           </div>
+          <TableColumnFilters
+            totalCount={softwareGroups.length}
+            resultCount={filteredSoftwareGroups.length}
+            onReset={() => {
+              setSoftwareNameFilter("all");
+              setSoftwarePublisherFilter("all");
+              setSoftwareSourceFilter("all");
+            }}
+            filters={[
+              {
+                id: "software-name",
+                label: "Software column",
+                value: softwareNameFilter,
+                allLabel: "All software",
+                options: softwareNameOptions,
+                onChange: setSoftwareNameFilter,
+              },
+              {
+                id: "software-publisher",
+                label: "Publisher column",
+                value: softwarePublisherFilter,
+                allLabel: "All publishers",
+                options: softwarePublisherOptions,
+                onChange: setSoftwarePublisherFilter,
+              },
+              {
+                id: "software-source",
+                label: "Sources column",
+                value: softwareSourceFilter,
+                allLabel: "All sources",
+                options: [
+                  optionLabel("azure_vm", "Azure VM"),
+                  optionLabel("arc", "Arc"),
+                  optionLabel("unlinked", "Unlinked"),
+                ],
+                onChange: (value) => setSoftwareSourceFilter(value as typeof softwareSourceFilter),
+              },
+            ]}
+          />
           {softwareInventory.loading && (
             <StatePanel title="Loading installed software" message="Reading ConfigurationData observations." tone="loading" />
           )}
@@ -1017,6 +1119,41 @@ export default function InventoryPage() {
               </select>
             </label>
           </div>
+          <TableColumnFilters
+            totalCount={azureGroups.length}
+            resultCount={filteredAzureGroups.length}
+            onReset={() => {
+              setAzureProviderFilter("all");
+              setAzureTypeFilter("all");
+              setAzureSkuFilter("all");
+            }}
+            filters={[
+              {
+                id: "azure-provider",
+                label: "Provider column",
+                value: azureProviderFilter,
+                allLabel: "All providers",
+                options: azureProviders.map((provider) => optionLabel(provider, provider)),
+                onChange: setAzureProviderFilter,
+              },
+              {
+                id: "azure-type",
+                label: "Resource type column",
+                value: azureTypeFilter,
+                allLabel: "All resource types",
+                options: azureTypeOptions,
+                onChange: setAzureTypeFilter,
+              },
+              {
+                id: "azure-sku",
+                label: "SKU / tier column",
+                value: azureSkuFilter,
+                allLabel: "All SKU / tiers",
+                options: azureSkuOptions,
+                onChange: setAzureSkuFilter,
+              },
+            ]}
+          />
 
           {azureInventory.loading && (
             <StatePanel title="Loading Azure inventory" message="Reading the active immutable generation." tone="loading" />
@@ -1228,6 +1365,58 @@ export default function InventoryPage() {
               ))}
             </div>
           </div>
+          <TableColumnFilters
+            totalCount={groups.length}
+            resultCount={filteredGroups.length}
+            onReset={() => {
+              setOsNameFilter("all");
+              setOsVersionFilter("all");
+              setSourceFilter("all");
+              setLifecycleFilter("all");
+            }}
+            filters={[
+              {
+                id: "os-name",
+                label: "OS column",
+                value: osNameFilter,
+                allLabel: "All operating systems",
+                options: osNameOptions,
+                onChange: setOsNameFilter,
+              },
+              {
+                id: "os-version",
+                label: "Version column",
+                value: osVersionFilter,
+                allLabel: "All versions",
+                options: osVersionOptions,
+                onChange: setOsVersionFilter,
+              },
+              {
+                id: "os-source",
+                label: "Sources column",
+                value: sourceFilter,
+                allLabel: "All sources",
+                options: [
+                  optionLabel("azure_vm", "Azure VM"),
+                  optionLabel("arc", "Arc"),
+                ],
+                onChange: (value) => setSourceFilter(value as typeof sourceFilter),
+              },
+              {
+                id: "os-lifecycle",
+                label: "Lifecycle column",
+                value: lifecycleFilter,
+                allLabel: "All lifecycle states",
+                options: [
+                  optionLabel("expired", "Expired"),
+                  optionLabel("expiring", "Expiring within 90 days"),
+                  optionLabel("supported", "Supported"),
+                  optionLabel("review", "Needs review"),
+                ],
+                onChange: (value) => setLifecycleFilter(value as typeof lifecycleFilter),
+              },
+            ]}
+          />
 
           {inventory.loading && <StatePanel title="Loading OS inventory" message="Reading the active immutable generation." tone="loading" />}
           {inventory.error && (

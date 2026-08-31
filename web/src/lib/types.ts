@@ -369,6 +369,13 @@ export interface AgentRun {
   hidden_reasoning_exposed: boolean;
 }
 
+export interface AgentOrchestrationDecision {
+  selected_ids: string[];
+  strategy: "question_first" | "page_fallback" | "page_anchor_then_question" | string;
+  runtime: "deterministic" | "microsoft-agent-framework" | "maf-compatible" | string;
+  reason: string;
+}
+
 export interface EvidenceReconciliation {
   conflicts: string[];
   stale_evidence: EvidenceItem[];
@@ -2012,8 +2019,9 @@ export interface CopilotContextFinding {
 }
 export interface CopilotContextResult {
   page_kind: CopilotPageKind; page_id: string; snapshot_hash: string; stages: string[];
+  selected_agents?: AutonomousAgent[]; orchestration?: AgentOrchestrationDecision;
   findings: CopilotContextFinding[]; tool_calls: Array<{ tool: string; arguments: Record<string, unknown>; status: CopilotSnapshotStatus; data: unknown; evidence: EvidenceItem[]; warning: string; }>;
   synthesis_mode: "foundry" | "deterministic"; synthesis_agent: string;
-  synthesis: { text: string; agent_name: string; model: string; grounded: boolean } | null;
+  synthesis: { mode?: "foundry" | "deterministic"; narration?: string; warning?: string; text?: string; agent_name?: string; model?: string; grounded?: boolean } | null;
   warnings: string[]; ledger_id?: string;
 }

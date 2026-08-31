@@ -1,0 +1,114 @@
+{
+  "at": "2026-08-31T00:09:46.242701+00:00",
+  "api": "https://aiops-dev-api.greenpond-732382e3.australiaeast.azurecontainerapps.io",
+  "summary": {
+    "cases": 4,
+    "errors": 0,
+    "timeouts": 0,
+    "routing_pass": 4,
+    "routing_scored": 4,
+    "routing_rate": 1.0,
+    "narrated": 4,
+    "narration_rate": 1.0,
+    "groundedness_mean": 0.5,
+    "tool_correctness_mean": 1.0,
+    "latency_ms_median": 13718.5,
+    "orchestration_runtimes": {
+      "microsoft-agent-framework": 4
+    }
+  },
+  "results": [
+    {
+      "case_id": "net-topology",
+      "ok": true,
+      "specialists": [
+        "network"
+      ],
+      "expected_specialists": [
+        "network"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 1.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 42284.2,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer\n- Observed resources that depend on demo-vnet:\n  - Azure Firewall \"firewall\" \u2014 details.vnet_id = /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/.../virtualnetworks/demo-vnet (OBSERVED FACT).\n  - Bastion \"bastion\" \u2014 details.vnet_id = /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/.../virtualnetworks/demo-vnet (OBSERVED FACT).\n  - Private DNS zone \"privatelink.documents.azure",
+      "narration": "Direct answer\n- Observed resources that depend on demo-vnet:\n  - Azure Firewall \"firewall\" \u2014 details.vnet_id = /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/.../virtualnetworks/demo-vnet (OBSERVED FACT).\n  - Bastion \"bastion\" \u2014 details.vnet_id = /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/.../virtualnetworks/demo-vnet (OBSERVED FACT).\n  - Private DNS zone \"privatelink.documents.azure",
+      "error": ""
+    },
+    {
+      "case_id": "vuln-exposure",
+      "ok": true,
+      "specialists": [
+        "vulnerability"
+      ],
+      "expected_specialists": [
+        "vulnerability"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 10505.7,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer\n- None of the CVEs returned in the current vulnerability results are exploitable on internet-facing hosts (no CVE in the page context is marked internet_exposed = true).\n\nReasoning\n\nOBSERVED FACT\n- The tool_results list (source: intelligence.VulnerabilityIntelligenceService, table: vulnerability_projection, timestamp 2026-08-30T14:12:47.627595Z) shows each returned CVE record with \"i",
+      "narration": "Direct answer\n- None of the CVEs returned in the current vulnerability results are exploitable on internet-facing hosts (no CVE in the page context is marked internet_exposed = true).\n\nReasoning\n\nOBSERVED FACT\n- The tool_results list (source: intelligence.VulnerabilityIntelligenceService, table: vulnerability_projection, timestamp 2026-08-30T14:12:47.627595Z) shows each returned CVE record with \"i",
+      "error": ""
+    },
+    {
+      "case_id": "patch-priority",
+      "ok": true,
+      "specialists": [
+        "patch"
+      ],
+      "expected_specialists": [
+        "patch"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 16931.4,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer \u2014 priority this week\n- Apply the 2026-08 Cumulative Update for Windows Server 2016 (KB5120418) to the affected host(s) immediately. \n- Within that work, prioritize remediation for CVE-2026-68820 first, then CVE-2026-62893, then the next-highest priority HIGH CVEs (e.g., CVE-2026-65775, CVE-2026-61930, CVE-2026-62741) in descending priority_score.\n\nReasoning (grounded statements)\nOBSE",
+      "narration": "Direct answer \u2014 priority this week\n- Apply the 2026-08 Cumulative Update for Windows Server 2016 (KB5120418) to the affected host(s) immediately. \n- Within that work, prioritize remediation for CVE-2026-68820 first, then CVE-2026-62893, then the next-highest priority HIGH CVEs (e.g., CVE-2026-65775, CVE-2026-61930, CVE-2026-62741) in descending priority_score.\n\nReasoning (grounded statements)\nOBSE",
+      "error": ""
+    },
+    {
+      "case_id": "incident-cause",
+      "ok": true,
+      "specialists": [
+        "incident"
+      ],
+      "expected_specialists": [
+        "incident"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 9599.4,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer\n- UNKNOWN \u2014 the root cause candidate for the latest incident cannot be determined from the current page context.\n\nReasoning (concise, grounded)\n- OBSERVED FACT: The provided page context contains selected_ids [\"incident\"], but the findings array is empty and tool_results are empty (page context JSON).\n- DERIVED INFERENCE: Because there are no incident details, alerts, correlated even",
+      "narration": "Direct answer\n- UNKNOWN \u2014 the root cause candidate for the latest incident cannot be determined from the current page context.\n\nReasoning (concise, grounded)\n- OBSERVED FACT: The provided page context contains selected_ids [\"incident\"], but the findings array is empty and tool_results are empty (page context JSON).\n- DERIVED INFERENCE: Because there are no incident details, alerts, correlated even",
+      "error": ""
+    }
+  ]
+}

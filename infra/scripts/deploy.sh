@@ -60,6 +60,7 @@ NVD_API_KEY="$(read_env NVD_API_KEY)"
 APIM_PUBLISHER_EMAIL="${AIOPS_APIM_PUBLISHER_EMAIL:-$(read_env AIOPS_APIM_PUBLISHER_EMAIL)}"
 APIM_NAME="${AIOPS_APIM_NAME:-$(read_env AIOPS_APIM_NAME)}"
 FOUNDRY_MODEL_CAPACITY="${AIOPS_FOUNDRY_MODEL_CAPACITY:-$(read_env AIOPS_FOUNDRY_MODEL_CAPACITY)}"
+AGENT_ORCHESTRATION_MODE="${AIOPS_AGENT_ORCHESTRATION_MODE:-$(read_env AIOPS_AGENT_ORCHESTRATION_MODE)}"
 
 for var in ARM_SUBSCRIPTION_ID ARM_TENANT_ID ARM_CLIENT_ID ARM_CLIENT_SECRET ENTRA_WEB_CLIENT_ID ENTRA_API_AUDIENCE ENTRA_GRANTS_JSON; do
   if [[ -z "${!var}" ]]; then
@@ -95,6 +96,7 @@ fi
 if [[ -n "${FOUNDRY_MODEL_CAPACITY}" ]]; then
   tf_vars+=(-var "foundry_model_capacity=${FOUNDRY_MODEL_CAPACITY}")
 fi
+tf_vars+=(-var "agent_orchestration_mode=${AGENT_ORCHESTRATION_MODE:-maf}")
 if [[ -n "${deployer_object_id}" ]]; then
   tf_vars+=(-var "deployer_object_id=${deployer_object_id}")
 fi
@@ -142,7 +144,7 @@ verify_images_exist() {
   [[ -n "${registry}" ]] || return 0
 
   local repo missing=()
-  for repo in aiops-api aiops-web; do
+  for repo in aiops-api aiops-web mcp-server azure-mcp; do
     if ! az acr repository show \
       --name "${registry%%.*}" \
       --image "${repo}:${image_tag}" >/dev/null 2>&1; then

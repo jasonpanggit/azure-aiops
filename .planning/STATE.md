@@ -1,8 +1,18 @@
-# Phase 09-09 Expansion: All 8 Specialist Agents
+# Phase 09-11: Centralized Azure MCP Server in ACA
 
 ## Current Phase Status
-**Active Plan:** 09-09-EXPANSION-PLAN (all 8 specialist agents)
-**Scope:** Network, Vulnerability, Patch, Incident, Change, Governance, Remediation, Executive Summary agents
+**Active Plan:** 09-11-AZURE-MCP-ACA-PLAN  
+**Scope:** Deploy Azure MCP server as standalone container in ACA. All 8 specialist agents delegate tool calls through APIM proxy with per-subscription SPN credential management from AKV.  
+**Status:** 🚀 IN PROGRESS — Planning complete, decisions locked, execution starting.
+
+## Previous Phase Status (09-10)
+**Completed Plan:** 09-10-MAF-PIVOT-PLAN  
+**Scope:** Operations Copilot as the orchestrator, with MAF-style question-first specialist delegation across Network, Vulnerability, Patch, Incident, Change, Governance, Remediation, and Executive Summary agents.  
+**Status:** ✅ COMPLETE — MAF is the default Operations Copilot orchestration mode; deterministic routing remains available as an explicit rollback.
+
+## Previous Phase Status
+**Completed Plan:** 09-09-EXPANSION-PLAN (all 8 specialist agents)  
+**Scope:** Network, Vulnerability, Patch, Incident, Change, Governance, Remediation, Executive Summary agents  
 **Status:** ✅ COMPLETE — all 8 agents verified working end-to-end via APIM → MCP → Fabric/backend.
 
 ## Completed Work
@@ -52,6 +62,30 @@ Phase 09-09 objectives are met. Suggested follow-ups (not blocking):
 1. Commit the accumulated code fixes (mcp_server.py, apim-policies/mcp-inbound.xml, deploy.sh, web/.env.local) — currently uncommitted working-tree changes.
 2. Consider whether Foundry's "single tool error hard-fails the whole turn" behavior (seen when a model calls a tool with genuinely invalid/missing required args) warrants further prompt tuning per specialist, since it can't be fixed server-side.
 3. Clean up now-unused container app revisions (multiple test-tag revisions accumulated this session: mcp-toolerror-fix, mcp-maxcalls-fix, mcp-emptystr-fix).
+
+## Active Pivot: Microsoft Agent Framework Orchestrator
+**Status:** Complete — MAF default cutover implemented and validated.  
+**Decision:** Adopt MAF as the forward orchestration model because users ask arbitrary cross-domain questions from any page, so page-scoped specialist routing is the wrong UX contract.  
+**Guardrail:** MAF is now the default. Use `AIOPS_AGENT_ORCHESTRATION_MODE=deterministic` only for rollback to the legacy page-anchored flow.
+
+### Current Slice
+- Added a MAF orchestration boundary that records `microsoft-agent-framework` when the SDK is present and `maf-compatible` otherwise.
+- In MAF mode, Operations Copilot selects specialists from the operator's question first, then falls back to page context only if no specialist intent matches.
+- Contextual investigation ledgers now expose `selected_agents` and an `orchestration` decision for evaluation.
+- Regression tests cover the Network drawer delegating an ownership/policy question to Governance without changing pages.
+- Added `agent-framework` and compatible `azure-ai-projects>=2.0,<3` dependencies to the API optional dependency group and refreshed `uv.lock`.
+- Added a Microsoft Agent Framework Foundry adapter that invokes hosted/prompt agents through `agent_framework.foundry.FoundryAgent` when the MAF pivot flag is enabled.
+- Extended `scripts/evaluate_agents.py` so deterministic and MAF-mode runs are compared against their respective routing contracts.
+- Deployed API/web image tag `maf-pivot-20260830-234852` with `AIOPS_AGENT_ORCHESTRATION_MODE=maf`; Terraform updated only Container Apps in place (`0 added, 2 changed, 0 destroyed`).
+- Live revisions `aiops-dev-api--0000140` and `aiops-dev-web--0000107` are healthy and serve `maf-pivot-20260830-234852`.
+- Live MAF evaluation artifact `.planning/eval/maf-full-20260831.json` passed 10/10 narration, 10/10 tool correctness, and 100% scored routing with `microsoft-agent-framework` recorded for all 10 cases. The two full-pass wall-clock timeouts passed on focused rerun in `.planning/eval/maf-timeout-rerun-20260831.json`.
+- Browser validation passed on the deployed Network drawer for `What depends on demo-vnet?`: Operations Copilot returned a direct Foundry-narrated dependency answer, no duplicated findings dump, no browser console warnings, and response metadata recorded `microsoft-agent-framework` + `question_first` + `selected_ids=["network"]`.
+- Parity review: MAF matches deterministic baseline on routing, narration, and tool correctness, and improves median latency, but the full pass had 2 wall-clock timeouts versus 1 baseline timeout. Decision: keep MAF enabled for guarded validation; do not make it the default until a clean full pass or timeout-budget mitigation lands.
+- Timeout mitigation landed: optional Fabric IQ enrichment now runs only after required specialist delegation, and completed contextual runs are no longer mislabeled as wall-clock timeouts after successful specialist/narration work. Deployed image tag `maf-timeoutfix-20260831-002339`; live full evaluation `.planning/eval/maf-timeoutfix-full-20260831.json` passed 10/10 cases with 0 errors, 0 timeouts, 100% routing, 100% narration, 100% tool correctness, and `microsoft-agent-framework` recorded for all cases.
+- Default cutover approved and implemented: code defaults to MAF, Terraform defaults `agent_orchestration_mode` to `maf`, and `deploy.sh` preserves MAF unless explicitly overridden with `AIOPS_AGENT_ORCHESTRATION_MODE=deterministic`.
+
+### Blockers / Open Items
+- Deterministic rollback remains available with `AIOPS_AGENT_ORCHESTRATION_MODE=deterministic`.
 
 ## Files Modified (this session)
 - `infra/scripts/create-foundry-agent.sh` (Python f-string syntax fix)

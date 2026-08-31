@@ -1,6 +1,8 @@
 from operations.foundry_agent import (
     SPECIALIST_IDS,
+    AgentAnswer,
     FoundryPromptAgent,
+    MicrosoftAgentFrameworkFoundryAgent,
     specialist_catalog,
 )
 
@@ -15,6 +17,37 @@ def test_specialist_catalog_has_independent_names_and_versions(monkeypatch) -> N
     assert {entry["id"] for entry in catalog} == set(SPECIALIST_IDS)
     assert all(entry["name"] and entry["version"] for entry in catalog)
     assert len({entry["name"] for entry in catalog}) == len(SPECIALIST_IDS)
+
+
+def test_maf_foundry_agent_invokes_sdk_agent_with_existing_contract(monkeypatch) -> None:
+    class Response:
+        text = "demo-vnet is depended on by app-subnet."
+
+    calls = []
+
+    class SdkAgent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def run(self, prompt):
+            calls.append(prompt)
+            return Response()
+
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_AGENT_NAME", "operations-copilot")
+
+    agent = MicrosoftAgentFrameworkFoundryAgent.from_env(agent_factory=SdkAgent)
+
+    assert agent is not None
+    answer = agent.answer(
+        question="What depends on demo-vnet?",
+        context={"findings": [{"summary": "demo-vnet observed"}]},
+    )
+    assert isinstance(answer, AgentAnswer)
+    assert answer.text == "demo-vnet is depended on by app-subnet."
+    assert answer.agent_name == "operations-copilot"
+    assert answer.model == "microsoft-agent-framework"
+    assert "What depends on demo-vnet?" in calls[0]
 
 
 def test_legacy_foundry_configuration_is_a_compatible_network_fallback(monkeypatch) -> None:

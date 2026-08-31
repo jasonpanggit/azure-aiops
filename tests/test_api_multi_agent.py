@@ -245,12 +245,105 @@ def test_network_page_loads_its_own_agent_not_the_legacy_narrator(monkeypatch):
     monkeypatch.setattr(
         runtime.FoundryPromptAgent, "validate_access", lambda self: None
     )
+    monkeypatch.setattr(
+        runtime.MicrosoftAgentFrameworkFoundryAgent, "validate_access", lambda self: None
+    )
 
     agent = runtime._load_foundry_specialist_agent("network")
 
     assert agent is not None
     assert agent.agent_name == "aiops-network-agent"
     assert agent.specialist_id == "network"
+
+
+def test_operations_copilot_loader_uses_generic_agent_not_network(monkeypatch):
+    """The MAF orchestrator must be Operations Copilot, not a page specialist."""
+    from api import runtime
+
+    monkeypatch.setattr(runtime, "_foundry_agent", runtime._UNSET)
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_AGENT_NAME", "operations-copilot")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "aiops-network-agent")
+    monkeypatch.setattr(
+        runtime.FoundryPromptAgent, "validate_access", lambda self: None
+    )
+    monkeypatch.setattr(
+        runtime.MicrosoftAgentFrameworkFoundryAgent, "validate_access", lambda self: None
+    )
+
+    agent = runtime._load_foundry_agent()
+
+    assert agent is not None
+    assert agent.agent_name == "operations-copilot"
+    assert agent.specialist_id == "operations_copilot"
+
+
+def test_maf_mode_loads_operations_copilot_through_maf_adapter(monkeypatch):
+    """The default provider construction uses Microsoft Agent Framework."""
+    from api import runtime
+
+    created = []
+
+    class MafAgent:
+        def __init__(self, **kwargs):
+            self.agent_name = kwargs["agent_name"]
+            self.specialist_id = kwargs["specialist_id"]
+
+        @classmethod
+        def from_env(cls, specialist_id=None):
+            created.append(specialist_id)
+            return cls(
+                agent_name="operations-copilot",
+                specialist_id=specialist_id or "operations_copilot",
+            )
+
+        def validate_access(self):
+            return None
+
+    monkeypatch.setattr(runtime, "_foundry_agent", runtime._UNSET)
+    monkeypatch.setattr(runtime, "MicrosoftAgentFrameworkFoundryAgent", MafAgent)
+    monkeypatch.delenv("AIOPS_AGENT_ORCHESTRATION_MODE", raising=False)
+
+    agent = runtime._load_foundry_agent()
+
+    assert agent is not None
+    assert created == [None]
+    assert agent.agent_name == "operations-copilot"
+    assert agent.specialist_id == "operations_copilot"
+
+
+def test_deterministic_rollback_uses_rest_foundry_adapter(monkeypatch):
+    """The legacy REST adapter remains available as an explicit rollback path."""
+    from api import runtime
+
+    created = []
+
+    class RestAgent:
+        def __init__(self, **kwargs):
+            self.agent_name = kwargs["agent_name"]
+            self.specialist_id = kwargs["specialist_id"]
+
+        @classmethod
+        def from_env(cls, specialist_id=None):
+            created.append(specialist_id)
+            return cls(
+                agent_name="operations-copilot",
+                specialist_id=specialist_id or "operations_copilot",
+            )
+
+        def validate_access(self):
+            return None
+
+    monkeypatch.setattr(runtime, "_foundry_agent", runtime._UNSET)
+    monkeypatch.setattr(runtime, "FoundryPromptAgent", RestAgent)
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "deterministic")
+
+    agent = runtime._load_foundry_agent()
+
+    assert agent is not None
+    assert created == [None]
+    assert agent.agent_name == "operations-copilot"
+    assert agent.specialist_id == "operations_copilot"
 
 
 def test_specialist_without_its_own_agent_falls_back_to_the_narrator(monkeypatch):

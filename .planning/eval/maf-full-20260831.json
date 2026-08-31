@@ -1,0 +1,255 @@
+{
+  "at": "2026-08-31T00:17:18.755815+00:00",
+  "api": "https://aiops-dev-api.greenpond-732382e3.australiaeast.azurecontainerapps.io",
+  "summary": {
+    "cases": 10,
+    "errors": 0,
+    "timeouts": 2,
+    "routing_pass": 8,
+    "routing_scored": 8,
+    "routing_rate": 1.0,
+    "narrated": 10,
+    "narration_rate": 1.0,
+    "groundedness_mean": 0.4,
+    "tool_correctness_mean": 1.0,
+    "latency_ms_median": 16594.5,
+    "orchestration_runtimes": {
+      "microsoft-agent-framework": 10
+    }
+  },
+  "results": [
+    {
+      "case_id": "net-topology",
+      "ok": true,
+      "specialists": [
+        "network"
+      ],
+      "expected_specialists": [
+        "network"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 1.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 19553.1,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer \u2014 what depends on demo-vnet:\n- Azure Firewall (firewall)\n- Bastion host (bastion)\n- Private DNS zones: privatelink.documents.azure.com and privatelink.postgres.database.azure.com\n- Network interfaces and attached endpoints in demo-vnet: cosmos-pe.nic.08e79dcc-... and vm1903 (and thereby the private endpoint cosmos-pe and VM vm1)\n\nReasoning (grounded in supplied records)\n\nOBSERVED FAC",
+      "narration": "Direct answer \u2014 what depends on demo-vnet:\n- Azure Firewall (firewall)\n- Bastion host (bastion)\n- Private DNS zones: privatelink.documents.azure.com and privatelink.postgres.database.azure.com\n- Network interfaces and attached endpoints in demo-vnet: cosmos-pe.nic.08e79dcc-... and vm1903 (and thereby the private endpoint cosmos-pe and VM vm1)\n\nReasoning (grounded in supplied records)\n\nOBSERVED FAC",
+      "error": ""
+    },
+    {
+      "case_id": "vuln-exposure",
+      "ok": true,
+      "specialists": [
+        "vulnerability"
+      ],
+      "expected_specialists": [
+        "vulnerability"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 8468.7,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer\n- None of the CVEs in the current vulnerability results are exploitable on internet-facing hosts.\n\nReasoning (grounded in page context)\n- OBSERVED FACT: Every CVE record returned in the tool_results has \"internet_exposed\": false (see the vulnerability_projection tool results in the page context timestamped 2026-08-30T14:12:47.627595Z).  \n- OBSERVED FACT: One CVE (CVE-2026-68820) is m",
+      "narration": "Direct answer\n- None of the CVEs in the current vulnerability results are exploitable on internet-facing hosts.\n\nReasoning (grounded in page context)\n- OBSERVED FACT: Every CVE record returned in the tool_results has \"internet_exposed\": false (see the vulnerability_projection tool results in the page context timestamped 2026-08-30T14:12:47.627595Z).  \n- OBSERVED FACT: One CVE (CVE-2026-68820) is m",
+      "error": ""
+    },
+    {
+      "case_id": "patch-priority",
+      "ok": true,
+      "specialists": [
+        "patch"
+      ],
+      "expected_specialists": [
+        "patch"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.5,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 14642.9,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer \u2014 Prioritise deploying the 2026-08 Cumulative Update for Windows Server 2016 (KB5120418) to vm1 this week.\n\nOBSERVED FACTS (from the page context/tool results)\n- Every listed vulnerability in the page context recommends the same patch: \"2026-08 Cumulative Update for Windows Server 2016 for x64-based Systems (KB5120418).\" (tool_results entries)\n- CVE-2026-68820: severity HIGH, is_know",
+      "narration": "Direct answer \u2014 Prioritise deploying the 2026-08 Cumulative Update for Windows Server 2016 (KB5120418) to vm1 this week.\n\nOBSERVED FACTS (from the page context/tool results)\n- Every listed vulnerability in the page context recommends the same patch: \"2026-08 Cumulative Update for Windows Server 2016 for x64-based Systems (KB5120418).\" (tool_results entries)\n- CVE-2026-68820: severity HIGH, is_know",
+      "error": ""
+    },
+    {
+      "case_id": "incident-cause",
+      "ok": true,
+      "specialists": [
+        "incident"
+      ],
+      "expected_specialists": [
+        "incident"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 102251.4,
+      "stop_reason": "wall_clock_timeout",
+      "timed_out": true,
+      "summary": "Direct answer \u2014 ROOT CAUSE CANDIDATE: UNKNOWN.\n\nOBSERVED FACT:\n- The provided page context contains no incident details: \"findings\" is empty and \"tool_results\" is empty (page_kind: \"incident\", selected_ids: [\"incident\"]). I have no incident record, timeline, alerts, or correlated data in the current context.\n\nDERIVED INFERENCE:\n- Because the incident record and telemetry are not present, I cannot ",
+      "narration": "Direct answer \u2014 ROOT CAUSE CANDIDATE: UNKNOWN.\n\nOBSERVED FACT:\n- The provided page context contains no incident details: \"findings\" is empty and \"tool_results\" is empty (page_kind: \"incident\", selected_ids: [\"incident\"]). I have no incident record, timeline, alerts, or correlated data in the current context.\n\nDERIVED INFERENCE:\n- Because the incident record and telemetry are not present, I cannot ",
+      "error": ""
+    },
+    {
+      "case_id": "gov-owner",
+      "ok": true,
+      "specialists": [
+        "governance"
+      ],
+      "expected_specialists": [
+        "governance"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "page_fallback",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 8084.5,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer: UNKNOWN \u2014 the owner of the \"payments\" business service is not available in the provided context.\n\nReasoning\n\nOBSERVED FACT:\n- The page context contains no findings about business service owners (findings: []).\n- Tool results returned warnings stating a business service name is required (\"A business service name is required\"); other tool results are empty. These facts are drawn from ",
+      "narration": "Direct answer: UNKNOWN \u2014 the owner of the \"payments\" business service is not available in the provided context.\n\nReasoning\n\nOBSERVED FACT:\n- The page context contains no findings about business service owners (findings: []).\n- Tool results returned warnings stating a business service name is required (\"A business service name is required\"); other tool results are empty. These facts are drawn from ",
+      "error": ""
+    },
+    {
+      "case_id": "net-change",
+      "ok": true,
+      "specialists": [
+        "change"
+      ],
+      "expected_specialists": [
+        "change"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 14258.0,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer\n- UNKNOWN \u2014 I cannot determine what changed recently that could explain this because the current page context contains no change records and my delegated change lookup returned empty.\n\nReasoning (facts, inference, next steps)\n\nOBSERVED FACT\n- The page context shows no findings and two tool_results entries with status \"empty\" and data null (page context supplied).  \n- Orchestration se",
+      "narration": "Direct answer\n- UNKNOWN \u2014 I cannot determine what changed recently that could explain this because the current page context contains no change records and my delegated change lookup returned empty.\n\nReasoning (facts, inference, next steps)\n\nOBSERVED FACT\n- The page context shows no findings and two tool_results entries with status \"empty\" and data null (page context supplied).  \n- Orchestration se",
+      "error": ""
+    },
+    {
+      "case_id": "net-governance",
+      "ok": true,
+      "specialists": [
+        "governance"
+      ],
+      "expected_specialists": [
+        "governance"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 7113.1,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer: I cannot tell who owns this or whether there is an approval\u2014no resource identifier was provided and the governance lookup was not executed.\n\nOBSERVED FACT\n- The page shows no findings (findings: []).\n- Tool results are empty and include these warnings: \"A business service name is required\", \"An application name is required\", \"A subject is required\" (from the page_context tool_result",
+      "narration": "Direct answer: I cannot tell who owns this or whether there is an approval\u2014no resource identifier was provided and the governance lookup was not executed.\n\nOBSERVED FACT\n- The page shows no findings (findings: []).\n- Tool results are empty and include these warnings: \"A business service name is required\", \"An application name is required\", \"A subject is required\" (from the page_context tool_result",
+      "error": ""
+    },
+    {
+      "case_id": "net-cve",
+      "ok": false,
+      "specialists": [
+        "network"
+      ],
+      "expected_specialists": [
+        "network",
+        "vulnerability"
+      ],
+      "missing": [
+        "vulnerability"
+      ],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 1.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 113234.6,
+      "stop_reason": "wall_clock_timeout",
+      "timed_out": true,
+      "summary": "Direct answer: Unknown \u2014 the current page/context does not show any CVE or vulnerability findings for the hosts behind this hub.\n\nReasoning (concise):\n\n- OBSERVED FACT: The topology in the page context shows a hub virtual network named demo-vnet and associated resources including a VM (attached_resource_id: /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/aiops-demo-rg/providers/",
+      "narration": "Direct answer: Unknown \u2014 the current page/context does not show any CVE or vulnerability findings for the hosts behind this hub.\n\nReasoning (concise):\n\n- OBSERVED FACT: The topology in the page context shows a hub virtual network named demo-vnet and associated resources including a VM (attached_resource_id: /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/aiops-demo-rg/providers/",
+      "error": ""
+    },
+    {
+      "case_id": "vuln-remediate",
+      "ok": true,
+      "specialists": [
+        "remediation"
+      ],
+      "expected_specialists": [
+        "remediation"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 0.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 18546.1,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer (short): I cannot produce a safe, resource-specific remediation + rollback playbook from the current page because the page context contains no vulnerability or affected\u2011resource details. Below is a general, proven safe remediation + rollback procedure you can follow now, and a precise list of the missing facts I need to create an automated / executable rollback plan for your environm",
+      "narration": "Direct answer (short): I cannot produce a safe, resource-specific remediation + rollback playbook from the current page because the page context contains no vulnerability or affected\u2011resource details. Below is a general, proven safe remediation + rollback procedure you can follow now, and a precise list of the missing facts I need to create an automated / executable rollback plan for your environm",
+      "error": ""
+    },
+    {
+      "case_id": "unknown-subject",
+      "ok": true,
+      "specialists": [
+        "network"
+      ],
+      "expected_specialists": [
+        "network"
+      ],
+      "missing": [],
+      "orchestration_runtime": "microsoft-agent-framework",
+      "orchestration_strategy": "question_first",
+      "groundedness": 1.0,
+      "tool_correctness": 1.0,
+      "narrated": true,
+      "narration_warning": "",
+      "latency_ms": 22165.5,
+      "stop_reason": "reassessed",
+      "timed_out": false,
+      "summary": "Direct answer\n- I cannot find any resources that depend on totally-nonexistent-vnet-xyz in the current network data. The named VNet does not appear in the supplied topology, so dependencies cannot be established from the available records.\n\nReasoning (grounded)\n\nOBSERVED FACT\n- The supplied topology lists these VNets only:\n  - demo-vnet \u2014 /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourc",
+      "narration": "Direct answer\n- I cannot find any resources that depend on totally-nonexistent-vnet-xyz in the current network data. The named VNet does not appear in the supplied topology, so dependencies cannot be established from the available records.\n\nReasoning (grounded)\n\nOBSERVED FACT\n- The supplied topology lists these VNets only:\n  - demo-vnet \u2014 /subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourc",
+      "error": ""
+    }
+  ]
+}

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TablePagination } from "./TablePagination";
+import { TableColumnFilters } from "./TableColumnFilters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 
 const rows = Array.from({ length: 250 }, (_, index) => index);
@@ -122,5 +123,59 @@ describe("TablePagination", () => {
     );
     expect(screen.getByText(/Showing 41–60 of 250 installations/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next page" })).toBeEnabled();
+  });
+});
+
+describe("TableColumnFilters", () => {
+  it("renders column filters and result counts", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+
+    render(
+      <TableColumnFilters
+        totalCount={12}
+        resultCount={3}
+        filters={[
+          {
+            id: "provider",
+            label: "Provider column",
+            value: "Compute",
+            allLabel: "All providers",
+            options: [
+              { value: "Compute", label: "Compute" },
+              { value: "Network", label: "Network" },
+            ],
+            onChange,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("3 of 12 shown")).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: /filter by provider column/i }), "Network");
+    expect(onChange).toHaveBeenCalledWith("Network");
+  });
+
+  it("only shows reset when a column filter is active", async () => {
+    const user = userEvent.setup();
+    const onReset = vi.fn();
+    const { rerender } = render(
+      <TableColumnFilters
+        onReset={onReset}
+        filters={[{ id: "source", label: "Source column", value: "all", options: [] }]}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /clear filters/i })).not.toBeInTheDocument();
+
+    rerender(
+      <TableColumnFilters
+        onReset={onReset}
+        filters={[{ id: "source", label: "Source column", value: "arc", options: [{ value: "arc", label: "Arc" }] }]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /clear filters/i }));
+    expect(onReset).toHaveBeenCalledTimes(1);
   });
 });

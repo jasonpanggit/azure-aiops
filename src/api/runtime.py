@@ -64,7 +64,12 @@ from onboarding.runtime import (
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
 from operations.autonomous_investigation import configure_ledger_store
-from operations.foundry_agent import SPECIALIST_IDS, FoundryPromptAgent
+from operations.foundry_agent import (
+    SPECIALIST_IDS,
+    FoundryPromptAgent,
+    MicrosoftAgentFrameworkFoundryAgent,
+)
+from operations.maf_orchestrator import maf_mode_enabled
 from operations.patching import (
     InMemoryPatchRunStore,
     PatchingService,
@@ -928,9 +933,16 @@ def _load_foundry_agent() -> FoundryPromptAgent | None:
     """
     global _foundry_agent
     if _foundry_agent is _UNSET:
-        # Phase 09 binds only the Network specialist. The shared client still
-        # supports legacy narration configuration as a compatibility fallback.
-        candidate = FoundryPromptAgent.from_env("network")
+        # Operations Copilot is the shared narrator/orchestrator. Specialist
+        # agents are resolved separately through `_load_foundry_specialist_agent`;
+        # using the Network specialist here would make MAF mode page-biased
+        # before it ever delegates.
+        agent_class = (
+            MicrosoftAgentFrameworkFoundryAgent
+            if maf_mode_enabled()
+            else FoundryPromptAgent
+        )
+        candidate = agent_class.from_env()
         if candidate is not None:
             candidate.validate_access()
         _foundry_agent = candidate
@@ -957,7 +969,12 @@ def _load_foundry_specialist_agent(specialist_id: str) -> FoundryPromptAgent | N
     only as an explicit last resort, removes that ambiguity.
     """
     if specialist_id not in _foundry_specialist_agents:
-        candidate = FoundryPromptAgent.from_env(specialist_id)
+        agent_class = (
+            MicrosoftAgentFrameworkFoundryAgent
+            if maf_mode_enabled()
+            else FoundryPromptAgent
+        )
+        candidate = agent_class.from_env(specialist_id)
         if candidate is None:
             # Only fall back to the shared narrator when this specialist has no
             # agent of its own; never in preference to one.
