@@ -2,23 +2,53 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
+import os
+import tempfile
+import threading
 from datetime import UTC, datetime
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, Protocol
+
+from storage.onelake_documents import DocumentConflictError
 
 
 DecisionKind = Literal["approved", "rejected", "expired"]
 
 
-class RemediationDecisionStore:
-    """Append-only in-process store for recommendation approval decisions."""
+class RevisionedDocumentStore(Protocol):
+    def read(self, name: str) -> dict[str, Any]: ...
 
-    def __init__(self, *, max_decisions: int = 5000) -> None:
+    def write(
+        self, name: str, payload: dict[str, Any], *, expected_revision: int
+    ) -> None: ...
+
+
+class RemediationDecisionStore:
+    """Append-only durable store for recommendation approval decisions."""
+
+    _SCHEMA_VERSION = "1.0.0"
+
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        document_store: RevisionedDocumentStore | None = None,
+        document_name: str = "state/remediation_decisions.json",
+        max_decisions: int = 5000,
+    ) -> None:
+        if path is not None and document_store is not None:
+            raise ValueError("Use either path or document_store, not both")
         if isinstance(max_decisions, bool) or not isinstance(max_decisions, int):
             raise TypeError("max_decisions must be an integer")
         if max_decisions < 1:
             raise ValueError("max_decisions must be positive")
+        self.path = Path(path) if path is not None else None
+        self.document_store = document_store
+        self.document_name = document_name
         self.max_decisions = max_decisions
-        self._decisions: tuple[dict[str, Any], ...] = ()
+        self._memory: dict[str, Any] | None = None
+        self._lock = threading.RLock()
 
     def append(
         self,
@@ -30,44 +60,127 @@ class RemediationDecisionStore:
         scope: dict[str, list[str]],
         action_version: str,
         expires_at: str = "",
+        revalidation_checks: list[str] | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         timestamp = (now or datetime.now(UTC)).isoformat()
-        sequence = len(self._decisions) + 1
-        decision_id = "RMD-" + hashlib.sha256(
-            f"{plan['plan_id']}|{decision}|{approver}|{timestamp}|{sequence}".encode()
-        ).hexdigest()[:16].upper()
-        record = {
-            "decision_id": decision_id,
-            "plan_id": str(plan["plan_id"]),
-            "decision": decision,
-            "approver": approver,
-            "decided_at": timestamp,
-            "reason": reason,
-            "scope": copy.deepcopy(scope),
-            "action_version": action_version,
-            "expires_at": expires_at,
-            "revalidation": {
-                "status": "passed",
-                "checks": [
-                    "plan_exists",
-                    "scope_authorized",
-                    "action_version_current",
-                    "execution_boundary_read_only",
-                ],
-            },
-            "execution_authorized": False,
-            "execution_performed": False,
-            "read_only": True,
-        }
-        if len(self._decisions) >= self.max_decisions:
-            raise ValueError("Remediation decision store is full")
-        self._decisions = (*self._decisions, copy.deepcopy(record))
-        return copy.deepcopy(record)
+        checks = revalidation_checks or [
+            "plan_exists",
+            "scope_authorized",
+            "action_version_current",
+            "execution_boundary_read_only",
+        ]
+        with self._lock:
+            for _ in range(3):
+                state = self._read_state()
+                decisions = state["decisions"]
+                if len(decisions) >= self.max_decisions:
+                    raise ValueError("Remediation decision store is full")
+                sequence = len(decisions) + 1
+                decision_id = "RMD-" + hashlib.sha256(
+                    f"{plan['plan_id']}|{decision}|{approver}|{timestamp}|{sequence}".encode()
+                ).hexdigest()[:16].upper()
+                record = {
+                    "decision_id": decision_id,
+                    "plan_id": str(plan["plan_id"]),
+                    "decision": decision,
+                    "approver": approver,
+                    "decided_at": timestamp,
+                    "reason": reason,
+                    "scope": copy.deepcopy(scope),
+                    "action_version": action_version,
+                    "expires_at": expires_at,
+                    "revalidation": {
+                        "status": "passed",
+                        "checks": checks,
+                    },
+                    "execution_authorized": False,
+                    "execution_performed": False,
+                    "read_only": True,
+                }
+                decisions.append(copy.deepcopy(record))
+                state["revision"] += 1
+                state["updated_at"] = timestamp
+                try:
+                    self._write_state(state, expected_revision=state["revision"] - 1)
+                except DocumentConflictError:
+                    continue
+                return copy.deepcopy(record)
+        raise DocumentConflictError("Remediation decision store changed during update")
 
     def list(self, plan_id: str | None = None) -> list[dict[str, Any]]:
-        rows = list(self._decisions)
+        with self._lock:
+            rows = list(self._read_state()["decisions"])
         if plan_id is not None:
             rows = [row for row in rows if row["plan_id"] == plan_id]
         return copy.deepcopy(rows)
 
+    def _read_state(self) -> dict[str, Any]:
+        if self._memory is not None:
+            payload = self._memory
+        elif self.document_store is not None:
+            payload = self.document_store.read(self.document_name)
+            if not payload:
+                return _initial_state()
+        elif self.path is not None:
+            if not self.path.exists():
+                return _initial_state()
+            try:
+                payload = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("Remediation decision state is not valid JSON") from exc
+        else:
+            return _initial_state()
+        if not isinstance(payload, dict):
+            raise TypeError("Remediation decision state must be an object")
+        decisions = payload.get("decisions", [])
+        if not isinstance(decisions, list) or any(
+            not isinstance(item, dict) for item in decisions
+        ):
+            raise TypeError("Remediation decision decisions must be a list of objects")
+        return {
+            "revision": _nonnegative_int(payload.get("revision", 0)),
+            "decisions": [dict(item) for item in decisions],
+            "updated_at": str(payload.get("updated_at") or ""),
+        }
+
+    def _write_state(self, state: dict[str, Any], *, expected_revision: int) -> None:
+        payload = {
+            "schema_version": self._SCHEMA_VERSION,
+            "revision": state["revision"],
+            "decisions": state["decisions"],
+            "updated_at": state["updated_at"],
+        }
+        if self.document_store is not None:
+            self.document_store.write(
+                self.document_name, payload, expected_revision=expected_revision
+            )
+            return
+        if self.path is None:
+            self._memory = payload
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(
+            dir=self.path.parent, prefix=f".{self.path.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self.path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+
+def _initial_state() -> dict[str, Any]:
+    return {"revision": 0, "decisions": [], "updated_at": ""}
+
+
+def _nonnegative_int(value: Any) -> int:
+    number = int(value or 0)
+    if number < 0:
+        raise ValueError("Remediation decision revision must be non-negative")
+    return number

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any
+
+from intelligence.remediation.plan_repository import PlanRepository
 
 from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 from onboarding.query_contract import QuerySpec
@@ -11,6 +15,12 @@ from .live_provider import LiveResourceProvider
 
 def _now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _hash(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _text(value: Any) -> str:
@@ -272,9 +282,15 @@ def live_incident_engine(
 class LiveRemediationPlanner:
     """Read-only remediation proposals derived from live vulnerability exposure."""
 
-    def __init__(self, vulnerability_service: VulnerabilityIntelligenceService | None) -> None:
+    def __init__(
+        self,
+        vulnerability_service: VulnerabilityIntelligenceService | None,
+        *,
+        repository: PlanRepository | None = None,
+    ) -> None:
         self.vulnerability_service = vulnerability_service
         self.freshness = getattr(vulnerability_service, "freshness", "") or _now()
+        self.repository = repository or PlanRepository()
 
     def identify_opportunities(self) -> dict[str, Any]:
         opportunities = [self._opportunity(row) for row in self._exposures()]
@@ -295,6 +311,7 @@ class LiveRemediationPlanner:
 
     def generate_plans(self) -> dict[str, Any]:
         plans = [self._plan(row) for row in self._exposures()]
+        self.repository.replace_generation(plans)
         return {
             "plans": plans,
             "collection_metadata": {
@@ -342,10 +359,19 @@ class LiveRemediationPlanner:
 
     def _plan(self, row: dict[str, Any]) -> dict[str, Any]:
         opportunity = self._opportunity(row)
+        action_version = _hash(
+            {
+                "action": opportunity["recommended_action"],
+                "rollback": ["Uninstall patch if rollback is required"],
+            }
+        )[:16]
         return {
             "plan_id": opportunity["opportunity_id"],
+            "action_version": action_version,
             "opportunity_type": opportunity["opportunity_type"],
             "resource": opportunity["resource"],
+            "application": opportunity["resource"].get("application", ""),
+            "business_service": opportunity["resource"].get("business_service", ""),
             "priority": opportunity["priority"],
             "priority_score": row.get("risk_score", 0),
             "recommended_action": opportunity["recommended_action"],
@@ -353,7 +379,29 @@ class LiveRemediationPlanner:
                 "risk_reduction_percent": min(int(row.get("risk_score") or 0), 100),
                 "operational_debt_reduction_percent": 25,
             },
-            "approval_requirements": ["Change approval required before execution"],
+            "approval_requirements": [
+                {
+                    "role": "Change approver",
+                    "reason": "Change approval required before execution",
+                }
+            ],
             "rollback_plan": {"reversible": True, "steps": ["Uninstall patch if rollback is required"]},
+            "risk_assessment": {
+                "overall_risk": {
+                    "level": str(row.get("priority", "Priority 2")),
+                    "drivers": [],
+                }
+            },
+            "execution_steps": [
+                {
+                    "step_number": 1,
+                    "description": opportunity["recommended_action"],
+                    "stage": "Planning",
+                    "requires_approval": True,
+                    "execution_status": "Not Executed",
+                }
+            ],
             "read_only": True,
+            "execution_authorized": False,
+            "execution_performed": False,
         }

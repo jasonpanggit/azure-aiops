@@ -20,11 +20,11 @@ files_reviewed_list:
   - docs/ontology-model.md
   - ontology-schema.md
 findings:
-  critical: 1
-  warning: 2
+critical: 0
+warning: 0
   info: 0
-  total: 3
-status: issues_found
+total: 0
+status: fixed
 ---
 
 # Phase 02-01: Code Review Report
@@ -32,13 +32,13 @@ status: issues_found
 **Reviewed:** 2026-08-31T23:55:47Z  
 **Depth:** standard  
 **Files Reviewed:** 15  
-**Status:** issues_found
+**Status:** fixed
 
 ## Summary
 
 Reviewed the remediation decision workspace implementation across the API contract, server-side decision recording, remediation planning repository/projection, Fabric ontology mapping declarations, React remediation page, and scoped tests. The UI and API preserve the Phase 2 execution boundary: reviewed code does not execute Azure actions, create jobs, invoke rollback, or record realized outcomes.
 
-The main defect is that approval decisions are still stored only in an in-process tuple owned by a planner/repository instance. That fails the phase objective for durable approval audit records and creates data-loss risk across process restarts, provider rebuilds, and concurrent requests. Ontology documentation is aligned at the model/schema level, but decision records need durable storage/publication wiring before the graph can reliably contain ApprovalDecision facts.
+Initial review found one Critical and two Warning issues. They have been remediated: approval decisions now persist through a durable JSON document store/local state file, approved decisions require a valid future ISO-8601 expiry, and durable decision records are projected into the existing `ApprovalDecision` / `hasApprovalDecision` ontology model during Fabric sync.
 
 ## Critical Issues
 
@@ -49,6 +49,8 @@ The main defect is that approval decisions are still stored only in an in-proces
 **Evidence:** `RemediationDecisionStore` stores decisions in `self._decisions: tuple[...] = ()` and appends via an in-memory tuple replacement. The API route records decisions through `planner.repository.decisions.append(...)`; there is no injected durable store, persistence call, transaction, or lock. The only tests assert the immediate POST response, not that a later read/recreated provider retains the record.  
 **Recommended fix:** Replace the in-process store with an injected durable append-only decision repository backed by the project's persistence layer/Fabric/OneLake or another approved audit store. Make `append()` transactional/locked, enforce uniqueness at the store boundary, and add tests that record a decision, rebuild the remediation provider, and verify the decision is still listed/projected.
 
+**Resolution:** Fixed. `RemediationDecisionStore` now supports durable path or revisioned document-store persistence, runtime remediation planners share the store, and regression coverage verifies decisions survive provider rebuild.
+
 ## Warnings
 
 ### WR-01: Approved decision expiry is not parsed or checked for future validity
@@ -58,12 +60,16 @@ The main defect is that approval decisions are still stored only in an in-proces
 **Evidence:** The request model bounds `expires_at` only by string length. The route only checks `request.expires_at.strip()` for approved decisions and does not parse ISO-8601, compare to server time, or include an expiry validation check in the revalidation result.  
 **Recommended fix:** Parse `expires_at` server-side for approved decisions, reject invalid or non-future timestamps, normalize to ISO-8601 UTC/date format, and add a revalidation check such as `approval_not_expired`.
 
+**Resolution:** Fixed. The API parses and normalizes approved-decision expiry timestamps, rejects invalid/past values, and records `approval_not_expired` in revalidation checks.
+
 ### WR-02: ApprovalDecision ontology projection is not wired into the Fabric graph publication path
 
 **File:** `src/intelligence/remediation/plan_repository.py:91-105`, `src/fabric/dataset_mapper.py:416-433`  
 **Impact:** The docs and repository can describe `ApprovalDecision` entities and `hasApprovalDecision` relationships, but production Fabric datasets are built from `graph.entities`/`graph.relationships` in `InventoryDatasetMapper`. The remediation repository projection is not fed into that path, so approval decisions recorded by the API will not reliably appear in published ontology tables even after the entity/relationship types are registered.  
 **Evidence:** `PlanRepository.ontology_projection()` creates decision entities and relationships, but code search shows it is only exercised by tests. `dataset_mapper.py` creates typed ontology tables from `graph.entities` and `graph.relationships`; it adds empty relationship tables for known types but does not ingest or merge remediation repository decision projections.  
 **Recommended fix:** Once CR-01 introduces a durable decision repository, add a publication/export path that maps durable `ApprovalDecision` records into canonical ontology entity/relationship rows and includes them in the Fabric dataset mapper or ontology sync pipeline. Add an integration test that records a decision and verifies `ontology_approvaldecision_entities` and the `RemediationPlan_hasApprovalDecision_ApprovalDecision` relationship table contain that decision.
+
+**Resolution:** Fixed. Fabric sync accepts a durable decision reader and projects records into canonical ontology rows before synchronization, using the already-registered `ApprovalDecision` and `hasApprovalDecision` types.
 
 ## Enhancement Recommendations
 

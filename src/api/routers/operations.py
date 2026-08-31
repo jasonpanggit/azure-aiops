@@ -9,6 +9,7 @@ than returning an empty result that the UI would render as "all clear".
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, status
@@ -62,6 +63,32 @@ def _filter_scoped(value: Any, scope: Scope) -> Any:
 def _filter_rows(rows: Any, scope: Scope) -> Any:
     filtered = _filter_scoped(rows, scope)
     return [] if filtered is _HIDDEN else filtered
+
+
+def _future_expiry(value: str, *, now: datetime | None = None) -> str:
+    text = value.strip()
+    if not text:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "Approved remediation decisions require expires_at",
+        )
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "Approved remediation decision expires_at must be a valid ISO-8601 timestamp",
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    parsed = parsed.astimezone(UTC)
+    if parsed <= (now or datetime.now(UTC)):
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "Approved remediation decision expires_at must be in the future",
+        )
+    return parsed.isoformat().replace("+00:00", "Z")
 
 
 @router.get("/incidents", summary="Correlated incidents")
@@ -228,12 +255,16 @@ def record_remediation_decision(
             "Remediation decisions cannot authorize or follow execution in this phase",
             details={"plan_id": plan_id},
         )
-    if request.decision == "approved" and not request.expires_at.strip():
-        raise ApiError(
-            ErrorCode.INVALID_REQUEST,
-            "Approved remediation decisions require expires_at",
-            details={"plan_id": plan_id},
-        )
+    expires_at = request.expires_at.strip()
+    revalidation_checks = [
+        "plan_exists",
+        "scope_authorized",
+        "action_version_current",
+        "execution_boundary_read_only",
+    ]
+    if request.decision == "approved":
+        expires_at = _future_expiry(request.expires_at)
+        revalidation_checks.append("approval_not_expired")
     decision = planner.repository.decisions.append(
         plan=plan,
         decision=request.decision,
@@ -241,7 +272,8 @@ def record_remediation_decision(
         reason=request.reason,
         scope=operate_scope.to_dict(),
         action_version=current_version,
-        expires_at=request.expires_at,
+        expires_at=expires_at,
+        revalidation_checks=revalidation_checks,
     )
     return envelope(
         decision,

@@ -450,6 +450,55 @@ class InventoryDatasetMapper:
         return datasets
 
 
+def remediation_decision_ontology_rows(
+    decisions: list[dict[str, Any]],
+    ingestion_run_id: str,
+    timestamp: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Project durable remediation decisions into ontology-shaped rows."""
+    entities: list[dict[str, Any]] = []
+    relationships: list[dict[str, Any]] = []
+    seen_plans: set[str] = set()
+    for decision in decisions:
+        plan_id = str(decision.get("plan_id") or "").strip()
+        decision_id = str(decision.get("decision_id") or "").strip()
+        if not plan_id or not decision_id:
+            continue
+        if plan_id not in seen_plans:
+            entities.append(
+                _remediation_ontology_entity(
+                    plan_id,
+                    "RemediationPlan",
+                    f"Remediation plan {plan_id}",
+                    {"plan_id": plan_id},
+                    ingestion_run_id,
+                    timestamp,
+                )
+            )
+            seen_plans.add(plan_id)
+        entities.append(
+            _remediation_ontology_entity(
+                decision_id,
+                "ApprovalDecision",
+                f"{decision.get('decision', 'unknown')} decision for {plan_id}",
+                decision,
+                ingestion_run_id,
+                str(decision.get("decided_at") or timestamp),
+            )
+        )
+        relationships.append(
+            _remediation_ontology_relationship(
+                plan_id,
+                "hasApprovalDecision",
+                decision_id,
+                ingestion_run_id,
+                str(decision.get("decided_at") or timestamp),
+                payload={"decision": decision.get("decision", "")},
+            )
+        )
+    return entities, relationships
+
+
 def _dedupe_entity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapses rows that describe the same resource, keeping the typed one.
 
@@ -894,6 +943,74 @@ def _situation_ontology_relationship(
         "retired_at": "",
         "ontology_version": "1",
     }
+
+
+def _remediation_ontology_entity(
+    resource_id: str,
+    entity_type: str,
+    name: str,
+    payload: dict[str, Any],
+    run_id: str,
+    timestamp: str,
+) -> dict[str, Any]:
+    return {
+        "tenant_id": "system",
+        "subscription_id": "system",
+        "resource_id": resource_id,
+        "timestamp": timestamp,
+        "change_version": _version(payload),
+        "ingestion_run_id": run_id,
+        "entity_type": entity_type,
+        "name": name,
+        "resource_type": "aiops/remediation",
+        "location": "",
+        "payload_json": _canonical(payload),
+        "lineage_json": _canonical({"source_resource_ids": [resource_id]}),
+        "semantic_metadata_json": _canonical(
+            {"projection": "remediation", "source": "decision-store"}
+        ),
+        "lifecycle_status": "active",
+        "valid_from": timestamp,
+        "retired_at": "",
+        "ontology_version": "1",
+    }
+
+
+def _remediation_ontology_relationship(
+    subject_id: str,
+    predicate: str,
+    object_id: str,
+    run_id: str,
+    timestamp: str,
+    *,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    relationship_id = "remediation-rel://" + _version(
+        {"subject_id": subject_id, "predicate": predicate, "object_id": object_id}
+    )[:32]
+    return {
+        "tenant_id": "system",
+        "subscription_id": "system",
+        "resource_id": relationship_id,
+        "timestamp": timestamp,
+        "change_version": _version(payload),
+        "ingestion_run_id": run_id,
+        "subject_id": subject_id,
+        "subject_type": "RemediationPlan",
+        "predicate": predicate,
+        "object_id": object_id,
+        "object_type": "ApprovalDecision",
+        "confidence": 1.0,
+        "source": "remediation-decision-store",
+        "payload_json": _canonical(payload),
+        "lineage_json": _canonical({"source_entity_ids": [subject_id, object_id]}),
+        "lifecycle_status": "active",
+        "valid_from": timestamp,
+        "retired_at": "",
+        "ontology_version": "1",
+    }
+
+
 def _version(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode()).hexdigest()
 

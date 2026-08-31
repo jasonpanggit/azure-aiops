@@ -76,6 +76,8 @@ from operations.patching import (
     UnconfiguredPatchExecutionAdapter,
 )
 from operations.tools import FabricIQToolAdapter
+from intelligence.remediation.approval_decisions import RemediationDecisionStore
+from intelligence.remediation.plan_repository import PlanRepository
 from semantic.hybrid_query import HybridQueryService
 from semantic.live_operations import (
     LiveRemediationPlanner,
@@ -1120,8 +1122,16 @@ def _fabric_incident_engine(runtime: FabricRuntime) -> IncidentEngine | None:
     )
 
 
+def _attach_remediation_decisions(planner: Any) -> Any:
+    if planner is not None and hasattr(planner, "repository"):
+        planner.repository.decisions = _remediation_decision_store()
+    return planner
+
+
 def _fabric_remediation_planner(runtime: FabricRuntime) -> Any:
-    return getattr(runtime.operations_agent(), "remediation_planner", None)
+    return _attach_remediation_decisions(
+        getattr(runtime.operations_agent(), "remediation_planner", None)
+    )
 
 
 def _latest_discovery(onboarding: SubscriptionOnboardingService) -> str:
@@ -1454,6 +1464,22 @@ def _network_policy_store() -> NetworkDesignPolicyStore:
     return _NETWORK_POLICY_STORE
 
 
+_REMEDIATION_DECISION_STORE: RemediationDecisionStore | None = None
+
+
+def _remediation_decision_store() -> RemediationDecisionStore:
+    global _REMEDIATION_DECISION_STORE
+    if _REMEDIATION_DECISION_STORE is None:
+        root = aiops_home()
+        documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
+        path = None if documents is not None else root / "state" / "remediation_decisions.json"
+        _REMEDIATION_DECISION_STORE = RemediationDecisionStore(
+            path=path,
+            document_store=documents,
+        )
+    return _REMEDIATION_DECISION_STORE
+
+
 def _load_situation_provider() -> Any:
     """Read the durable Phase 1 projection from the active generation."""
     from situations.store import SituationReadProvider
@@ -1726,7 +1752,10 @@ def build_context() -> ApiContext:
         return live_incident_engine(live_resources, subscription_ids=subscription_ids)
 
     def hybrid_remediation(subscription_ids: list[str]) -> LiveRemediationPlanner:
-        return LiveRemediationPlanner(hybrid_vulnerability(subscription_ids))
+        return LiveRemediationPlanner(
+            hybrid_vulnerability(subscription_ids),
+            repository=PlanRepository(decision_store=_remediation_decision_store()),
+        )
 
     def hybrid_patching(subscription_ids: list[str]) -> PatchingService | None:
         service = hybrid_vulnerability(subscription_ids)
@@ -1861,7 +1890,9 @@ def build_context() -> ApiContext:
         hybrid_patching_provider=hybrid_patching,
         hybrid_resource_health_provider=hybrid_resource_health,
         incident_provider=lambda: providers.get("incidents", optional=True),
-        remediation_provider=lambda: providers.get("remediation", optional=True),
+        remediation_provider=lambda: _attach_remediation_decisions(
+            providers.get("remediation", optional=True)
+        ),
         network_provider=lambda: providers.get("network", optional=True),
         vulnerability_provider=lambda: providers.get("vulnerability", optional=True),
         patching_provider=lambda: providers.get("patching", optional=True),

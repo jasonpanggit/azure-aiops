@@ -8,6 +8,8 @@ from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
+from intelligence.remediation.approval_decisions import RemediationDecisionStore
+from intelligence.remediation.plan_repository import PlanRepository
 from onboarding.service import SubscriptionOnboardingService
 from tests.test_api_http import FakeSecretWriter
 
@@ -78,6 +80,55 @@ def test_operator_records_approval_decision_without_execution(tmp_path) -> None:
     assert decision["execution_performed"] is False
     assert decision["read_only"] is True
     assert "action_version_current" in decision["revalidation"]["checks"]
+    assert "approval_not_expired" in decision["revalidation"]["checks"]
+
+
+def test_remediation_decision_survives_provider_rebuild(tmp_path) -> None:
+    decision_path = tmp_path / "aiops" / "state" / "remediation_decisions.json"
+
+    def planner_factory():
+        return remediation_planner(
+            repository=PlanRepository(
+                decision_store=RemediationDecisionStore(path=decision_path)
+            )
+        )
+
+    client = _client(tmp_path, planner=planner_factory())
+    plan = _first_plan(client)
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "approved",
+            "reason": "CAB approved after evidence review",
+            "action_version": plan["action_version"],
+            "expires_at": "2026-09-01T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    rebuilt = planner_factory()
+    assert rebuilt.repository.decisions.list(plan["plan_id"])[0]["decision"] == "approved"
+
+
+def test_approved_decision_rejects_invalid_expiry(tmp_path) -> None:
+    client = _client(tmp_path)
+    plan = _first_plan(client)
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "approved",
+            "reason": "Invalid expiry should fail",
+            "action_version": plan["action_version"],
+            "expires_at": "not-a-date",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
 
 
 def test_reader_cannot_record_remediation_decision(tmp_path) -> None:
@@ -135,4 +186,3 @@ def test_scoped_operator_cannot_decide_out_of_scope_plan(tmp_path) -> None:
     )
 
     assert response.status_code == 404
-

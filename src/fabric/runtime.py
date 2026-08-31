@@ -9,6 +9,8 @@ from typing import Any
 from ontology.ontology_manager import OntologyManager
 from ontology.ontology_publisher import OntologyPublisher
 from storage.delta_writer import DeltaWriter
+from storage.fs import ONELAKE_HOST
+from storage.onelake_documents import OneLakeDocumentStore
 from storage.onelake_writer import OneLakeWriter
 
 from .auth import build_credential, build_delta_storage_options
@@ -424,6 +426,9 @@ def build_runtime(config: FabricRuntimeConfig) -> FabricRuntime:
             ontology_name=config.ontology.ontology_name,
             patch_policies=config.patch_policies,
             lifecycle_catalog=lifecycle_catalog,
+            remediation_decision_reader=lambda: _remediation_decisions(
+                config.local_onelake_root
+            ),
         )
         return FabricRuntime(config, workspace, lakehouse, service)
 
@@ -476,9 +481,25 @@ def build_runtime(config: FabricRuntimeConfig) -> FabricRuntime:
         ontology_name=config.ontology.ontology_name,
         patch_policies=config.patch_policies,
         lifecycle_catalog=lifecycle_catalog,
+        remediation_decision_reader=lambda: _remediation_decisions(
+            f"abfss://{workspace['id']}@{ONELAKE_HOST}/{lakehouse['id']}/Files"
+        ),
         sql_reader=_build_lakehouse_sql_reader(lakehouse, credential, config),
     )
     return FabricRuntime(config, workspace, lakehouse, service)
+
+
+def _remediation_decisions(root: Any) -> list[dict[str, Any]]:
+    if not root:
+        return []
+    from intelligence.remediation.approval_decisions import RemediationDecisionStore
+
+    root_path = Path(root)
+    if not str(root).startswith("abfss://"):
+        root = root_path / "Files" if (root_path / "Files").is_dir() else root_path
+    return RemediationDecisionStore(
+        document_store=OneLakeDocumentStore(str(root))
+    ).list()
 
 
 def _build_lakehouse_sql_reader(

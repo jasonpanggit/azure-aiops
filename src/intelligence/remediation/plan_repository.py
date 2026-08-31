@@ -5,20 +5,30 @@ import hashlib
 import re
 from typing import Any
 
-from .approval_decisions import RemediationDecisionStore
+from .approval_decisions import RemediationDecisionStore, RevisionedDocumentStore
 
 
 class PlanRepository:
     """Read-only projection repository for generated draft plans and ontology rows."""
 
-    def __init__(self, *, max_plans: int = 1000) -> None:
+    def __init__(
+        self,
+        *,
+        max_plans: int = 1000,
+        decision_store: RemediationDecisionStore | None = None,
+        decision_document_store: RevisionedDocumentStore | None = None,
+    ) -> None:
         if isinstance(max_plans, bool) or not isinstance(max_plans, int):
             raise TypeError("max_plans must be an integer")
         if max_plans < 1:
             raise ValueError("max_plans must be positive")
+        if decision_store is not None and decision_document_store is not None:
+            raise ValueError("Use either decision_store or decision_document_store, not both")
         self.max_plans = max_plans
         self._plans: tuple[dict[str, Any], ...] = ()
-        self.decisions = RemediationDecisionStore()
+        self.decisions = decision_store or RemediationDecisionStore(
+            document_store=decision_document_store
+        )
 
     def replace_generation(self, plans: list[dict[str, Any]]) -> None:
         if len(plans) > self.max_plans:

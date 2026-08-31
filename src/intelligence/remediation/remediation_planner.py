@@ -79,6 +79,7 @@ class RemediationPlanner:
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         clock: Callable[[], float] = time.monotonic,
         telemetry: RemediationTelemetry | None = None,
+        repository: PlanRepository | None = None,
     ) -> None:
         for name, value in (
             ("max_resources", max_resources),
@@ -105,7 +106,7 @@ class RemediationPlanner:
             raise ValueError("Remediation freshness cannot be in the future")
         self.resources = self._resources(resources)
         self.opportunities = RemediationOpportunityEngine(action_catalog)
-        self.repository = PlanRepository(max_plans=max_plans)
+        self.repository = repository or PlanRepository(max_plans=max_plans)
         approval_engine = ApprovalEngine(approval_policies)
         self.generator = RemediationGenerator(
             dependency_analyzer=DependencyAnalyzer(
