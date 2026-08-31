@@ -47,12 +47,62 @@ locals {
     executive_summary = local.foundry_generic_context_tools
   }
 
+  # Second tool-caller: Microsoft's official Azure MCP Server
+  # (azurerm_container_app.azure_mcp), giving specialists direct read-only
+  # access to live Azure resource state that the governed Operations MCP
+  # relay does not model (e.g. Advisor recommendations, Monitor activity
+  # logs, Resource Health, ARM deployment status). Tool names must match the
+  # azmcp tool catalog exactly (see `tools/list` on the azure-mcp server).
+  # Deliberately excludes any tool that mutates or applies a change
+  # (e.g. advisor_recommendation_apply, arm_whatif_deployment) -- specialists
+  # are read-only advisors, never actors.
+  foundry_azure_mcp_generic_tools = [
+    "subscription_list",
+    "group_list",
+  ]
+
+  foundry_azure_mcp_specialist_tools = {
+    network = [
+      "resourcehealth_availability-status_get",
+      "monitor_activitylog_list",
+    ]
+    vulnerability = [
+      "advisor_recommendation_list",
+      "advisor_recommendation_summary",
+    ]
+    patch = [
+      "compute_vm_get",
+      "appservice_webapp_get",
+      "functionapp_get",
+    ]
+    incident = [
+      "monitor_activitylog_list",
+      "monitor_resource_log_query",
+      "resourcehealth_health-events_list",
+    ]
+    change = [
+      "arm_get_deployment_status",
+    ]
+    governance = [
+      "policy_assignment_list",
+      "role_assignment_list",
+    ]
+    remediation = [
+      "advisor_recommendation_list",
+    ]
+    executive_summary = [
+      "arm_query_costs",
+    ]
+  }
+
   foundry_specialist_instructions = {
     network           = <<-EOT
       You are the Network Agent specialist. Immediately call the governed MCP
       tools made available to you (network_topology, hub_dependents,
       traffic_flow, firewall_nsg_gaps, and the generic business/application/
-      impact/fabric-IQ context tools) to retrieve the deterministic evidence
+      impact/fabric-IQ context tools) as well as the Azure MCP tools available
+      to you (resourcehealth_availability-status_get,
+      monitor_activitylog_list) to retrieve the deterministic evidence
       you need to answer -- never assume evidence that no tool call returned.
       Never ask the user for permission or confirmation before calling a tool;
       call every tool you need autonomously in the same turn and only then
@@ -65,16 +115,16 @@ locals {
       results, resources, or freshness, and never execute or suggest an
       unapproved production mutation.
     EOT
-    vulnerability     = "You are the Vulnerability Agent specialist. Immediately call the governed MCP tools available to you (cve_exposure, cve_detail, cve_attack_path, and the generic business/application/impact/fabric-IQ context tools) to retrieve the evidence you need -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Prioritize exploitable or business-impacting findings using only real tool results, distinguish facts from inference, cite the tool call each claim came from, call out stale, empty, unavailable, or denied results, and recommend bounded validation or remediation steps without inventing CVEs, assets, or fixes."
-    patch             = "You are the Patch Agent specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) to ground your answer in real evidence -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Identify missing, stale, or risky patch posture, explain business and technical impact using only real tool results, distinguish facts from inference, cite the tool call each claim came from, and recommend bounded next checks or approval-gated actions without claiming a patch was applied or inventing evidence no tool returned."
-    incident          = "You are the Incident Agent specialist. Immediately call the governed MCP tools available to you (incidents, and the generic business/application/impact/fabric-IQ context tools) to retrieve the evidence you need -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Establish the observed timeline and affected scope, identify likely contributing relationships only when supported by real tool results, distinguish facts from inference, cite the tool call each claim came from, and recommend safe bounded investigation steps without declaring an unproven root cause."
-    change            = "You are the Change Agent specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) to retrieve real change and dependency evidence for operational risk and blast radius -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Compare observed context with affected services and controls, distinguish facts from inference, cite the tool call each claim came from, and recommend bounded validation or approval-gated follow-up without approving, executing changes, or inventing evidence no tool returned."
-    governance        = "You are the Governance Agent specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) to retrieve real governance, compliance, identity, and policy evidence -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Identify control gaps and their scope, distinguish observed facts from derived inferences and unknowns, cite the tool call each claim came from and its freshness, and recommend bounded remediation or evidence requests without inventing policy results."
-    remediation       = "You are the Remediation Agent specialist. Immediately call the governed MCP tools available to you (remediation_plans, remediation_opportunities, and the generic business/application/impact/fabric-IQ context tools) to retrieve the evidence you need -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Produce a bounded, approval-aware remediation proposal tied to real tool results, including prerequisites, uncertainty, and rollback or validation checks. Never execute changes, invent missing details, or present a hypothesis as an approved plan."
-    executive_summary = "You are the Executive Summary specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) as needed and synthesize alongside any specialist findings supplied to you for an engineering decision-maker -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the direct operational answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Summarize material risk and scope, cite the tool call or supplied finding each claim came from, distinguish facts from inference and unknowns, and state the next bounded decision or evidence request. Do not add unsupported claims."
+    vulnerability     = "You are the Vulnerability Agent specialist. Immediately call the governed MCP tools available to you (cve_exposure, cve_detail, cve_attack_path, and the generic business/application/impact/fabric-IQ context tools) as well as the Azure MCP tools available to you (advisor_recommendation_list, advisor_recommendation_summary) to retrieve the evidence you need -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Prioritize exploitable or business-impacting findings using only real tool results, distinguish facts from inference, cite the tool call each claim came from, call out stale, empty, unavailable, or denied results, and recommend bounded validation or remediation steps without inventing CVEs, assets, or fixes."
+    patch             = "You are the Patch Agent specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) as well as the Azure MCP tools available to you (compute_vm_get, appservice_webapp_get, functionapp_get) to ground your answer in real evidence -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Identify missing, stale, or risky patch posture, explain business and technical impact using only real tool results, distinguish facts from inference, cite the tool call each claim came from, and recommend bounded next checks or approval-gated actions without claiming a patch was applied or inventing evidence no tool returned."
+    incident          = "You are the Incident Agent specialist. Immediately call the governed MCP tools available to you (incidents, and the generic business/application/impact/fabric-IQ context tools) as well as the Azure MCP tools available to you (monitor_activitylog_list, monitor_resource_log_query, resourcehealth_health-events_list) to retrieve the evidence you need -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Establish the observed timeline and affected scope, identify likely contributing relationships only when supported by real tool results, distinguish facts from inference, cite the tool call each claim came from, and recommend safe bounded investigation steps without declaring an unproven root cause."
+    change            = "You are the Change Agent specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) as well as the Azure MCP tools available to you (arm_get_deployment_status) to retrieve real change and dependency evidence for operational risk and blast radius -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Compare observed context with affected services and controls, distinguish facts from inference, cite the tool call each claim came from, and recommend bounded validation or approval-gated follow-up without approving, executing changes, or inventing evidence no tool returned."
+    governance        = "You are the Governance Agent specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) as well as the Azure MCP tools available to you (policy_assignment_list, role_assignment_list) to retrieve real governance, compliance, identity, and policy evidence -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Identify control gaps and their scope, distinguish observed facts from derived inferences and unknowns, cite the tool call each claim came from and its freshness, and recommend bounded remediation or evidence requests without inventing policy results."
+    remediation       = "You are the Remediation Agent specialist. Immediately call the governed MCP tools available to you (remediation_plans, remediation_opportunities, and the generic business/application/impact/fabric-IQ context tools) as well as the Azure MCP tools available to you (advisor_recommendation_list) to retrieve the evidence you need -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Produce a bounded, approval-aware remediation proposal tied to real tool results, including prerequisites, uncertainty, and rollback or validation checks. Never execute changes, invent missing details, or present a hypothesis as an approved plan."
+    executive_summary = "You are the Executive Summary specialist. Immediately call the generic context tools available to you (business_service_context, application_context, impact_context, fabric_iq_relationships, fabric_iq_topology, fabric_iq_policy_context) as well as the Azure MCP tools available to you (arm_query_costs) as needed and synthesize alongside any specialist findings supplied to you for an engineering decision-maker -- never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the direct operational answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Summarize material risk and scope, cite the tool call or supplied finding each claim came from, distinguish facts from inference and unknowns, and state the next bounded decision or evidence request. Do not add unsupported claims."
   }
 
-  # MCP tool-call config shared by every specialist agent definition. Only
+  # MCP tool-call config for the governed Operations executor relay. Only
   # `allowed_tools` varies per specialist (local.foundry_specialist_tools).
   foundry_mcp_tool_config = var.enable_apim ? {
     type                  = "mcp"
@@ -84,15 +134,36 @@ locals {
     project_connection_id = local.foundry_mcp_connection_name
   } : null
 
+  # MCP tool-call config for the standalone Azure MCP Server (@azure/mcp),
+  # giving specialists a second, independent tool-caller for live Azure
+  # resource state (see local.foundry_azure_mcp_specialist_tools above).
+  foundry_azure_mcp_tool_config = var.enable_apim ? {
+    type                  = "mcp"
+    server_label          = "azure-mcp"
+    server_url            = local.foundry_azure_mcp_server_url
+    require_approval      = "never"
+    project_connection_id = local.foundry_azure_mcp_connection_name
+  } : null
+
   foundry_specialists_json = jsonencode({
     for id, specialist in var.foundry_specialists : id => merge(specialist, {
       prompt = lookup(local.foundry_specialist_instructions, id, local.agent_instructions)
       model  = var.foundry_model_name
-      tools = local.foundry_mcp_tool_config == null ? [] : [
-        merge(local.foundry_mcp_tool_config, {
-          allowed_tools = lookup(local.foundry_specialist_tools, id, local.foundry_generic_context_tools)
-        })
-      ]
+      tools = concat(
+        local.foundry_mcp_tool_config == null ? [] : [
+          merge(local.foundry_mcp_tool_config, {
+            allowed_tools = lookup(local.foundry_specialist_tools, id, local.foundry_generic_context_tools)
+          })
+        ],
+        local.foundry_azure_mcp_tool_config == null ? [] : [
+          merge(local.foundry_azure_mcp_tool_config, {
+            allowed_tools = concat(
+              local.foundry_azure_mcp_generic_tools,
+              lookup(local.foundry_azure_mcp_specialist_tools, id, [])
+            )
+          })
+        ]
+      )
     })
   })
   # The custom subdomain is mandatory for token-based (Entra) authentication
@@ -111,9 +182,15 @@ locals {
   # Points specialists at APIM's native MCP surface (see apim.tf's
   # azapi_resource.mcp_server), not the plain HTTP-proxy API -- the native
   # surface speaks real JSON-RPC MCP and is what the Foundry `mcp` tool type
-  # expects at `server_url`.
-  foundry_mcp_server_url      = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/mcp-server" : null
+  # expects at `server_url`. Path must match azapi_resource.mcp_server's
+  # `path` in apim.tf ("operations-mcp").
+  foundry_mcp_server_url      = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/operations-mcp" : null
   foundry_mcp_connection_name = "${local.base}-ops-mcp"
+
+  # Second native MCP surface: the standalone Azure MCP Server, onboarded in
+  # apim.tf as azapi_resource.azure_mcp_server at path "azure-mcp".
+  foundry_azure_mcp_server_url      = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/azure-mcp" : null
+  foundry_azure_mcp_connection_name = "${local.base}-azure-mcp"
 }
 
 resource "azurerm_cognitive_account" "foundry" {
@@ -213,6 +290,30 @@ resource "azapi_resource" "foundry_mcp_connection" {
       # Matching the value the API actually persists stops that pointless
       # churn, which is what surfaced to users as the connection appearing
       # to be deleted/recreated on every deploy.
+      isSharedToAll = false
+      audience      = local.apim_audience
+      metadata = {
+        ApiType = "Azure"
+      }
+    }
+  }
+}
+
+# Second project connection: the standalone Azure MCP Server, mirroring
+# foundry_mcp_connection above. Same auth pattern (ProjectManagedIdentity,
+# validated by apim.tf's azure-mcp-inbound.xml policy), distinct target/name
+# so it appears as its own tool-caller in specialist tool definitions.
+resource "azapi_resource" "foundry_azure_mcp_connection" {
+  count                     = var.enable_apim ? 1 : 0
+  type                      = "Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview"
+  name                      = local.foundry_azure_mcp_connection_name
+  schema_validation_enabled = false
+  parent_id                 = azurerm_cognitive_account_project.ops.id
+  body = {
+    properties = {
+      authType      = "ProjectManagedIdentity"
+      category      = "RemoteTool"
+      target        = local.foundry_azure_mcp_server_url
       isSharedToAll = false
       audience      = local.apim_audience
       metadata = {
@@ -359,5 +460,6 @@ resource "terraform_data" "foundry_agent" {
     azurerm_cognitive_account_project.ops,
     azurerm_role_assignment.deployer_foundry_manager,
     azapi_resource.foundry_mcp_connection,
+    azapi_resource.foundry_azure_mcp_connection,
   ]
 }
