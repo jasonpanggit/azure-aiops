@@ -159,14 +159,13 @@ export default function MultiAgentInvestigationPage() {
               <div className="card-body recommended-action-list">
                 {ledger.data.synthesis.narration ? (
                   <span>
-                    <strong>Narrated summary</strong>
-                    {ledger.data.synthesis.narrated_by ? <em className="muted"> (via {ledger.data.synthesis.narrated_by}, grounded in the findings below)</em> : null}
-                    <br />
                     {ledger.data.synthesis.narration}
+                    {ledger.data.synthesis.narrated_by ? <em className="muted"> (via {ledger.data.synthesis.narrated_by})</em> : null}
                   </span>
-                ) : null}
+                ) : (
+                  <span>{ledger.data.synthesis.summary}</span>
+                )}
                 {ledger.data.synthesis.narration_warning ? <span className="muted">{ledger.data.synthesis.narration_warning}</span> : null}
-                <span>{ledger.data.synthesis.summary}</span>
                 <span>{ledger.data.synthesis.recommended_plan}</span>
                 <span>{ledger.data.synthesis.required_decision}</span>
                 {ledger.data.synthesis.unresolved_questions.map((question) => <span key={question}>Unresolved: {question}</span>)}

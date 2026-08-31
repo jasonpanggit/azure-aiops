@@ -469,9 +469,15 @@ def _synthesis(
     try:
         answer = foundry_agent.answer(
             question=(
-                "Summarize this operational investigation for a service owner. "
-                "Use only the supplied findings. State business impact and the most "
-                "important next action. Do not invent resources, CVEs, or owners."
+                "Write a short operator-facing narrative (2-4 plain sentences, no "
+                "bullet list, no field-name citations, no 'OBSERVED FACT/DERIVED "
+                "INFERENCE/UNKNOWN' labels) that tells a service owner what this "
+                "investigation found and why it matters. The findings, plan, and "
+                "unresolved questions are already listed separately below your "
+                "narrative, so do not restate them one-by-one -- synthesize the "
+                "business impact and the single most important next action. Use "
+                "only the supplied findings. Do not invent resources, CVEs, or "
+                "owners."
             ),
             context=grounding,
         )
