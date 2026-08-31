@@ -312,7 +312,18 @@ def normalize_nic(base: dict, row: dict, observed: str) -> dict:
     }
 
 
-def normalize_firewall(base: dict, row: dict, observed: str) -> dict:
+def normalize_firewall(base: dict, row: dict, observed: str) -> tuple[dict, list[dict], list[dict]]:
+    """Returns ``(firewall, collections, rules)``.
+
+    A classic (non-policy) Azure Firewall carries its rule collections
+    inline on the firewall resource itself -- ``applicationRuleCollections``,
+    ``networkRuleCollections``, ``natRuleCollections`` -- rather than in a
+    separate ``FirewallPolicy``/``ruleCollectionGroups`` child resource (see
+    ``normalize_firewall_policy`` below for the policy-based shape). Both
+    shapes are flattened into the same ``FirewallRuleCollection``/
+    ``FirewallRule`` entities so topology/gaps analysis doesn't need to care
+    which style a given firewall uses.
+    """
     props = row.get("properties") or {}
     configs = _list(props.get("ipConfigurations"))
     subnet_id = ""
@@ -328,7 +339,7 @@ def normalize_firewall(base: dict, row: dict, observed: str) -> dict:
         if public:
             public_ips.append(public)
     vnet_id = subnet_id.split("/subnets/", 1)[0] if "/subnets/" in subnet_id else ""
-    return {
+    firewall = {
         **base,
         "entityType": "AzureFirewall",
         "vnetId": vnet_id,
@@ -339,6 +350,77 @@ def normalize_firewall(base: dict, row: dict, observed: str) -> dict:
         "skuTier": _text((props.get("sku") or {}).get("tier")),
         "properties": props,
     }
+    collections, rules = _classic_firewall_rule_collections(base, firewall["id"], props)
+    return firewall, collections, rules
+
+
+#: Maps each classic inline rule-collection property name onto the rule type
+#: its rules should be tagged with, so application/network/NAT rules stay
+#: distinguishable once flattened into the shared ``FirewallRule`` entity.
+_CLASSIC_RULE_COLLECTION_KINDS: tuple[tuple[str, str], ...] = (
+    ("applicationRuleCollections", "ApplicationRule"),
+    ("networkRuleCollections", "NetworkRule"),
+    ("natRuleCollections", "NatRule"),
+)
+
+
+def _classic_firewall_rule_collections(
+    base: dict, firewall_id: str, props: dict
+) -> tuple[list[dict], list[dict]]:
+    """Flattens a classic firewall's inline rule collections/rules.
+
+    Mirrors ``normalize_firewall_policy``'s collection/rule shape but reads
+    from the firewall's own ``properties`` (``applicationRuleCollections``,
+    ``networkRuleCollections``, ``natRuleCollections``) instead of a
+    ``FirewallPolicy``'s ``ruleCollections``, and sets ``firewall_id`` rather
+    than ``policy_id`` so the collection links back to the firewall directly.
+    """
+    collections: list[dict] = []
+    rules: list[dict] = []
+    for prop_name, rule_type in _CLASSIC_RULE_COLLECTION_KINDS:
+        for collection in _list(props.get(prop_name)):
+            collection_props = collection.get("properties") or collection
+            collection_name = _text(collection.get("name"))
+            collection_id = _sub_id(firewall_id, "rulecollections", collection_name)
+            collection_action = _text((collection_props.get("action") or {}).get("type")) or "Allow"
+            collections.append(
+                {
+                    **_child_base(base, "FirewallRuleCollection", collection_id, collection_name),
+                    "policyId": "",
+                    "firewallId": firewall_id,
+                    "priority": int(collection_props.get("priority") or 0),
+                    "action": collection_action,
+                    "collectionType": rule_type + "Collection",
+                    "properties": collection_props,
+                }
+            )
+            for rule in _list(collection_props.get("rules")):
+                rule_name = _text(rule.get("name"))
+                # Application rules express their target as FQDNs (or FQDN
+                # tags like "WindowsUpdate"); network/NAT rules use IP-style
+                # destination addresses. Both land in destination_fqdns /
+                # destination_addresses respectively so downstream gap
+                # analysis can read either without knowing the rule type.
+                destination_fqdns = _strings(rule.get("targetFqdns")) or _strings(rule.get("fqdnTags"))
+                destination_fqdns = destination_fqdns or _strings(rule.get("destinationFqdns"))
+                rules.append(
+                    {
+                        **_child_base(
+                            base, "FirewallRule", _sub_id(collection_id, "rules", rule_name), rule_name
+                        ),
+                        "collectionId": collection_id,
+                        "ruleType": rule_type,
+                        "action": collection_action,
+                        "protocols": _rule_protocols(rule),
+                        "sourceAddresses": _strings(rule.get("sourceAddresses")),
+                        "destinationAddresses": _strings(rule.get("destinationAddresses")),
+                        "destinationPorts": _strings(rule.get("destinationPorts")),
+                        "destinationFqdns": destination_fqdns,
+                        "sourceIpGroups": _strings(rule.get("sourceIpGroups")),
+                        "properties": rule,
+                    }
+                )
+    return collections, rules
 
 
 def normalize_firewall_policy(

@@ -130,13 +130,19 @@ def derive_edges(
 
     for row in entity_rows.get("network_firewalls", []):
         base = _base(row, observed)
-        firewall = normalize_firewall(base, row, observed)
+        firewall, classic_collections, classic_rules = normalize_firewall(base, row, observed)
         record("AzureFirewall", firewall)
         containment(row, firewall)
         if firewall.get("subnetId"):
             link(firewall["id"], "attachedTo", firewall["subnetId"], 0.99)
         if firewall.get("policyId"):
             link(firewall["id"], "enforcesPolicy", firewall["policyId"], 0.99)
+        for collection in classic_collections:
+            record("FirewallRuleCollection", collection)
+            link(firewall["id"], "hasRuleCollection", collection["id"], 0.99)
+        for rule in classic_rules:
+            record("FirewallRule", rule)
+            link(rule["collectionId"], "hasRule", rule["id"])
 
     for row in entity_rows.get("network_firewall_policies", []):
         base = _base(row, observed)
