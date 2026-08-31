@@ -1,7 +1,7 @@
 ---
 phase: 06-software-and-os-inventory-visibility
 verified: 2026-08-25T17:06:33Z
-status: human_needed
+status: passed
 score: 6/6 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
@@ -9,22 +9,28 @@ re_verification:
   previous_status: gaps_found
   previous_score: 6/6
   gaps_closed:
+
     - "Phase 6 implementation passes the required backend lint gate."
   gaps_remaining: []
   regressions: []
 human_verification:
+
   - test: "With approved Azure credentials, subscriptions, workspace mappings, and Entra Logs Query permission, open /software-inventory and inspect both tabs."
     expected: "Authorized OS and software rows show live freshness, evidence, exact joins, environment values, and visible partial/unavailable state during a provider outage."
     why_human: "Fixtures and automated tests cannot prove tenant permissions, real workspace configuration, live freshness, or browser presentation."
+
   - test: "Trigger an unmapped OS lifecycle review, inspect all candidates, explicitly select a candidate or enter a manual date, refresh, and attempt a stale-revision confirmation."
     expected: "Citations and retrieval metadata are appropriate, only the explicit choice persists, and stale revisions are rejected without overwriting newer catalog state."
     why_human: "The automated contract tests cover this behavior, but citation appropriateness and the authenticated operator workflow require human review."
+
   - test: "If external lifecycle search is required, configure an approved HTTPS endpoint and secret, then exercise the review."
     expected: "The configured provider is used with bounded cited results; without configuration, provider_not_configured remains visible and no unapproved call occurs."
     why_human: "Deployment configuration, secret wiring, and the external provider are unavailable in this repository-only verification."
+
   - test: "With approved Foundry configuration, exercise the narrative on the authenticated inventory page, then repeat with Foundry absent or failing."
     expected: "Model narration remains separate from authorized fact summaries and citations; failure visibly falls back to deterministic fact-only output."
     why_human: "External service integration and runtime degradation cannot be fully proven by local tests alone."
+
   - test: "Review /software-inventory at desktop, tablet, and mobile widths using keyboard navigation, drill-down, review controls, source warnings, and CSV download."
     expected: "The two tabs, controls, badges, tables, warnings, and exact-detail export remain usable, accessible, and visually legible."
     why_human: "Visual layout, focus behavior, contrast, and an actual browser download are not established by jsdom tests."

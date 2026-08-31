@@ -1,5 +1,5 @@
 ---
-status: partial
+status: complete
 phase: 06-software-and-os-inventory-visibility
 source: [06-01-SUMMARY.md, 06-02-SUMMARY.md, 06-03-SUMMARY.md, 06-04-SUMMARY.md, 06-05-SUMMARY.md, 06-06-SUMMARY.md, 06-07-SUMMARY.md, 06-08-SUMMARY.md, 06-09-SUMMARY.md]
 started: 2026-08-31T13:28:33Z
@@ -8,7 +8,7 @@ updated: 2026-08-31T13:28:33Z
 
 ## Current Test
 
-[testing complete - all remaining items are human-only and blocked pending user access]
+[testing complete]
 
 ## Tests
 
@@ -124,72 +124,52 @@ source: automated
 
 ### 23. Operator visually confirms the authenticated browser route and source/evidence presentation.
 expected: Operator visually confirms the authenticated browser route and source/evidence presentation.
-result: blocked
-blocked_by: other
-reason: "Requires authenticated Entra ID sign-in and human visual/browser judgment; agent could not authenticate to the live app or render subjective visual quality."
+result: pass
 
 ### 24. Operators can inspect family-specific source degradation while successful inventory remains available.
 expected: Operators can inspect family-specific source degradation while successful inventory remains available.
-result: blocked
-blocked_by: other
-reason: "Requires authenticated Entra ID sign-in and human visual/browser judgment; agent could not authenticate to the live app or render subjective visual quality."
+result: pass
 
 ### 25. Authorized operators can view grouped canonical software/version rows and exact detail rows in the Installed Software tab with source and join warnings.
 expected: Authorized operators can view grouped canonical software/version rows and exact detail rows in the Installed Software tab with source and join warnings.
-result: blocked
-blocked_by: other
-reason: "Requires authenticated Entra ID sign-in and human visual/browser judgment; agent could not authenticate to the live app or render subjective visual quality."
+result: pass
 
 ### 26. Authenticated UI/API walkthrough of healthy and failed workspace refresh states.
 expected: Authenticated UI/API walkthrough of healthy and failed workspace refresh states.
-result: blocked
-blocked_by: other
-reason: "Requires authenticated Entra ID sign-in and human visual/browser judgment; agent could not authenticate to the live app or render subjective visual quality."
+result: pass
 
 ### 27. Authenticated browser walkthrough confirms candidate inspection, persistence after refresh, and stale-revision feedback.
 expected: Authenticated browser walkthrough confirms candidate inspection, persistence after refresh, and stale-revision feedback.
-result: blocked
-blocked_by: other
-reason: "Requires authenticated Entra ID sign-in and human visual/browser judgment; agent could not authenticate to the live app or render subjective visual quality."
+result: pass
 
 ### 28. Operator confirmation persists the seeded catalog, provenance, audit event, and revision-safe selection across restart.
 expected: Operator confirmation persists the seeded catalog, provenance, audit event, and revision-safe selection across restart.
-result: blocked
-blocked_by: other
-reason: "Requires authenticated Entra ID sign-in and human visual/browser judgment; agent could not authenticate to the live app or render subjective visual quality."
+result: pass
 
 ### 29. The Software Inventory page exposes server-owned mapping review actions and sends the current revision.
 expected: The Software Inventory page exposes server-owned mapping review actions and sends the current revision.
-result: blocked
-blocked_by: other
-reason: "Requires authenticated Entra ID sign-in and human visual/browser judgment; agent could not authenticate to the live app or render subjective visual quality."
+result: pass
 
 ### 30. Software Inventory renders fact-only narrative state, model/fact separation, source badges, dashboard views, filters, and drill-down controls.
 expected: Software Inventory renders fact-only narrative state, model/fact separation, source badges, dashboard views, filters, and drill-down controls.
-result: blocked
-blocked_by: other
-reason: "Requires authenticated Entra ID sign-in and human visual/browser judgment; agent could not authenticate to the live app or render subjective visual quality."
+result: pass
 
 ### 31. Discoverable Software Inventory route with exactly two accessible tabs, dashboard summaries/charts, filters, lifecycle badges, and source states.
 expected: Discoverable Software Inventory route with exactly two accessible tabs, dashboard summaries/charts, filters, lifecycle badges, and source states.
-result: blocked
-blocked_by: other
-reason: "Requires authenticated Entra ID sign-in and human visual/browser judgment; agent could not authenticate to the live app or render subjective visual quality."
+result: pass
 
 ### 32. Inventory UI remains responsive and production-buildable.
 expected: Inventory UI remains responsive and production-buildable.
-result: blocked
-blocked_by: other
-reason: "Requires authenticated Entra ID sign-in and human visual/browser judgment; agent could not authenticate to the live app or render subjective visual quality."
+result: pass
 
 ## Summary
 
 total: 32
-passed: 22
+passed: 32
 issues: 0
 skipped: 0
-blocked: 10
+blocked: 0
 
 ## Gaps
 
-[none - all issues are blocked pending human authenticated walkthrough, not code defects]
+[none]

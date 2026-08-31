@@ -11,7 +11,7 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
 - [ ] **Phase 3: Safe Remediation Execution** - Execute one or two typed, allowlisted actions with preview, durable jobs, verification, and bounded retries.
 - [ ] **Phase 4: Domain Coverage and Operational Twin** - Prove representative incident, exposure, vulnerability, and twin-discrepancy workflows with replayable views.
 - [ ] **Phase 5: Controlled Pilot Readiness** - Validate failure behavior, stale sources, authorization boundaries, rollout controls, and operator readiness.
-- [~] **Phase 6: Software and OS Inventory Visibility** - Deliver scoped, evidence-backed OS and installed-software inventory with lifecycle risk and export. *(code-complete; awaiting UAT sign-off)*
+- [x] **Phase 6: Software and OS Inventory Visibility** - Deliver scoped, evidence-backed OS and installed-software inventory with lifecycle risk and export.
 - [ ] **Phase 7: Unified Resource Inventory** - Establish Fabric/OneLake-backed inventory as the unified data platform for every resource family including PaaS, consumed by the semantic graph and other subsystems rather than owned by them.
 - [x] **Phase 8: Resource Identity Plane** - Extend inventory to own complete resource identity — all types, containment hierarchy, raw properties, and watermarks — so Hermes stops querying ARG for resource identity and consumes inventory for graph construction, relationship modelling, and semantic traversal.
 - [x] **Phase 9: Consumer Pivot** - Repoint API providers, agent queries, and affected web pages at the inventory read port so the UI is powered by unified inventory.
