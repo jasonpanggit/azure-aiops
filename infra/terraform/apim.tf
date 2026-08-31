@@ -4,9 +4,11 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  apim_name        = coalesce(var.apim_name, "${local.base}-apim")
-  apim_api_name    = "${local.base}-mcp"
-  mcp_backend_url  = "${local.api_base_url}/api/v1/mcp"
+  apim_name     = coalesce(var.apim_name, "${local.base}-apim")
+  apim_api_name = "${local.base}-mcp"
+  # Foundry agents reach APIM's native MCP API, which now terminates on the
+  # private ACA MCP relay before reaching the governed Operations executor.
+  mcp_backend_url  = "https://${azurerm_container_app.mcp_server.ingress[0].fqdn}"
   apim_audience    = coalesce(var.apim_audience, var.entra_api_audience)
   apim_audience_id = replace(local.apim_audience, "api://", "")
   mcp_policy_vars = {
@@ -14,7 +16,7 @@ locals {
     audience          = local.apim_audience
     audience_id       = local.apim_audience_id
     backend_url       = local.mcp_backend_url
-    gateway_assertion = var.apim_gateway_assertion
+    gateway_assertion = local.gateway_assertion
   }
 }
 

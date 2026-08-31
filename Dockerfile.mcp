@@ -1,0 +1,53 @@
+# Multi-stage build for Azure MCP Server container
+
+FROM python:3.12-slim as builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy uv.lock and pyproject.toml to install dependencies
+COPY uv.lock pyproject.toml ./
+
+# Install uv and dependencies (use bash for process substitution)
+RUN pip install --no-cache-dir uv && \
+    bash -c "uv pip install --system -r <(uv pip compile pyproject.toml --all-extras 2>/dev/null || uv pip compile pyproject.toml)"
+
+# Final stage
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY src /app/src
+COPY src/mcp_server /app/mcp_server
+
+# Set Python path
+ENV PYTHONPATH=/app/src:/app:$PYTHONPATH
+
+# Set default environment variables (can be overridden by container app)
+ENV AIOPS_HOME=/app/data
+ENV AIOPS_AKV_NAME=aiopsdevcpkh
+ENV PORT=8000
+
+# Create data directory for registry
+RUN mkdir -p /app/data
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# Run MCP server
+CMD ["python", "-m", "uvicorn", "mcp_server.app:app", "--host", "0.0.0.0", "--port", "8000"]

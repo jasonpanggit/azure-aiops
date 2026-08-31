@@ -326,12 +326,13 @@ variable "apim_subscription_limit" {
 }
 
 variable "apim_gateway_assertion" {
-  description = "Non-secret deployment marker overwritten by APIM and required by gateway-only API mode."
+  description = "Shared secret asserted by APIM (and the ACA MCP relay) to prove a request was validated by the gateway. Leave empty to auto-generate a strong secret."
   type        = string
-  default     = "aiops-apim-v1"
+  default     = ""
+  sensitive   = true
   validation {
-    condition     = can(regex("^[a-z0-9-]{8,64}$", var.apim_gateway_assertion))
-    error_message = "apim_gateway_assertion must be a bounded lowercase deployment marker."
+    condition     = var.apim_gateway_assertion == "" || can(regex("^[A-Za-z0-9]{32,128}$", var.apim_gateway_assertion))
+    error_message = "apim_gateway_assertion must be empty (to auto-generate) or a 32-128 character alphanumeric secret."
   }
 }
 
@@ -384,6 +385,17 @@ variable "foundry_specialists" {
     governance        = { name = "aiops-governance-agent", version = "2026.08.1" }
     remediation       = { name = "aiops-remediation-agent", version = "2026.08.1" }
     executive_summary = { name = "aiops-executive-summary-agent", version = "2026.08.1" }
+  }
+}
+
+variable "agent_orchestration_mode" {
+  description = "Operations Copilot orchestration mode. Defaults to 'maf' for Microsoft Agent Framework question-first delegation; set to 'deterministic' for the legacy page-anchored rollback path."
+  type        = string
+  default     = "maf"
+
+  validation {
+    condition     = contains(["maf", "deterministic"], lower(var.agent_orchestration_mode))
+    error_message = "agent_orchestration_mode must be 'maf' or 'deterministic'."
   }
 }
 
@@ -474,4 +486,10 @@ variable "alert_provider_stale_threshold_hours" {
   description = "Hours a required provider may stay stale before the freshness alert fires."
   type        = number
   default     = 6
+}
+
+variable "onboarded_subscriptions" {
+  description = "List of Azure subscription IDs that have onboarded SPN credentials in AKV"
+  type        = list(string)
+  default     = []
 }
