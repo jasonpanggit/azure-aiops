@@ -5,13 +5,18 @@ and rules nobody owns. Each finding names the rule, explains why it was
 flagged, and states what evidence supports it — a finding you cannot defend
 in a change review is noise.
 
-Deliberate limitation: "unused" is inferred structurally (a rule that is
-shadowed, or one whose target subnet has no attached workload), never from
-flow logs, which this platform does not ingest. Findings say so.
+Deliberate limitation: "unused" is inferred **structurally** (a rule that is
+shadowed, or one whose target subnet has no attached workload) -- never from
+observed traffic. Findings say so. Flow-log ingestion now exists
+(``fabric_pipelines.flowlog_ingest``) and produces ``trafficObserved`` edges,
+but this analyzer does not yet consume them, so a rule flagged here as
+unused is "structurally unreachable", not "never exercised in practice".
+Wiring those edges in would let this module distinguish the two.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -638,10 +643,250 @@ class CrossEnvironmentAnalyzer:
         return False
 
 
-def analyze_rules(snapshot: NetworkSnapshot) -> tuple[RuleFinding, ...]:
-    """Runs every rule analyzer and returns the merged, severity-sorted findings."""
+#: Provenance marker written by ``flowlog_ingest`` on edges derived from a
+#: real Traffic Analytics query. Fixture-derived edges carry ``"fixture"`` and
+#: are deliberately ignored here: a curated fixture is not evidence about a
+#: customer's estate, and a "this rule is never used" finding built on one
+#: would be indefensible in a change review.
+LIVE_FLOW_DATA_SOURCE = "traffic_analytics"
+
+#: ``allowedVsObserved`` verdicts (set by ``flowlog_ingest._classify``).
+#: A deny rule that blocked traffic is a *signal* (someone keeps trying); a
+#: deny rule whose traffic was nonetheless observed as allowed is a
+#: *contradiction* (another rule won, or the data conflicts) and is more
+#: serious. They are counted separately rather than merged.
+_VERDICT_DENIED_AND_BLOCKED = "denied_and_blocked"
+_VERDICT_DENIED_BUT_ALLOWED = "denied_but_traffic_observed"
+
+
+class ObservedTrafficAnalyzer:
+    """Compares allow rules against traffic actually seen on the wire.
+
+    Structural analysis can only say a rule is *unreachable*; it cannot say a
+    reachable rule is *unused*. Flow logs close that gap, enabling two
+    findings the other analyzers cannot make:
+
+    * an allow rule that matched no observed flow -- a removal candidate;
+    * a deny rule that traffic repeatedly hit -- either a misconfiguration
+      breaking a legitimate caller, or something probing the estate.
+
+    Safety property: with no live observations this analyzer returns nothing.
+    "We saw no traffic" and "there was no traffic" are different claims, and
+    only the second justifies a finding. Absent evidence, we stay silent
+    rather than recommending someone delete a rule (D-05).
+    """
+
+    def __init__(
+        self,
+        snapshot: NetworkSnapshot,
+        flow_observations: Sequence[Mapping[str, Any]],
+        *,
+        observation_window_days: int | None = None,
+    ) -> None:
+        self.snapshot = snapshot
+        self.observation_window_days = observation_window_days
+        self._matched_rule_ids: set[str] = set()
+        self._denied_attempts: dict[str, int] = {}
+        self._deny_conflicts: dict[str, int] = {}
+        self._has_live_data = False
+
+        for edge in flow_observations:
+            attributes = edge.get("attributes")
+            attributes = attributes if isinstance(attributes, Mapping) else {}
+            if attributes.get("dataSource") != LIVE_FLOW_DATA_SOURCE:
+                continue
+            self._has_live_data = True
+            # Edges use "objectId" (see flowlog_ingest._add_edge); "object"
+            # is accepted so a caller passing a simplified mapping still works.
+            rule_id = str(edge.get("objectId") or edge.get("object") or "").strip().casefold()
+            if not rule_id:
+                continue
+            self._matched_rule_ids.add(rule_id)
+            verdict = attributes.get("allowedVsObserved")
+            if verdict == _VERDICT_DENIED_AND_BLOCKED:
+                self._denied_attempts[rule_id] = self._denied_attempts.get(rule_id, 0) + 1
+            elif verdict == _VERDICT_DENIED_BUT_ALLOWED:
+                self._deny_conflicts[rule_id] = self._deny_conflicts.get(rule_id, 0) + 1
+
+    def analyze(self) -> tuple[RuleFinding, ...]:
+        if not self._has_live_data:
+            return ()
+
+        findings: list[RuleFinding] = []
+        for nsg in self.snapshot.nsgs:
+            for rule in nsg.rules:
+                if rule.is_default:
+                    continue
+                rule_key = rule.resource_id.strip().casefold()
+                if rule.is_allow and rule_key not in self._matched_rule_ids:
+                    findings.append(self._unobserved_allow(nsg, rule))
+                attempts = self._denied_attempts.get(rule_key, 0)
+                if attempts:
+                    findings.append(self._denied_but_attempted(nsg, rule, attempts))
+                conflicts = self._deny_conflicts.get(rule_key, 0)
+                if conflicts:
+                    findings.append(self._deny_conflict(nsg, rule, conflicts))
+        return tuple(findings)
+
+    def _window_text(self) -> str:
+        if self.observation_window_days is None:
+            return "the observed flow-log window"
+        return f"the last {self.observation_window_days} day(s)"
+
+    def _basis(self) -> str:
+        return (
+            "VNet flow logs via Traffic Analytics, joined to NSG rules; covers "
+            f"{self._window_text()} only"
+        )
+
+    def _unobserved_allow(
+        self, nsg: NetworkSecurityGroup, rule: NetworkSecurityRule
+    ) -> RuleFinding:
+        return RuleFinding(
+            finding_id=_finding_id("unobserved_allow_rule", rule.resource_id),
+            # Deliberately NOT "unused": that category means *structurally
+            # unreachable*, proven from configuration alone. This one means
+            # "reachable, but no traffic was seen in a bounded window" -- a
+            # weaker, time-limited claim. Merging them would let a reviewer
+            # mistake observational absence for structural proof.
+            category="observed_traffic",
+            severity="low",
+            rule_id=rule.resource_id,
+            rule_name=rule.name,
+            control="nsg",
+            control_id=nsg.resource_id,
+            title="Allow rule permits traffic that was never observed",
+            detail=(
+                f"Rule '{rule.name}' on '{nsg.name}' permits "
+                f"{rule.protocol} {rule.source_address} -> {rule.destination_address}:"
+                f"{rule.destination_port}, but no flow matching it was seen during "
+                f"{self._window_text()}. It is a removal candidate."
+            ),
+            evidence={
+                "direction": rule.direction,
+                "protocol": rule.protocol,
+                "source_address": rule.source_address,
+                "destination_address": rule.destination_address,
+                "destination_port": rule.destination_port,
+                "observed_flow_count": 0,
+                "observation_window_days": self.observation_window_days,
+                "basis": self._basis(),
+            },
+            recommendation=(
+                "Confirm the rule is not needed for a periodic or seasonal workload that "
+                "falls outside the observation window, then remove it."
+            ),
+            connection_id=nsg.connection_id,
+            subscription_id=nsg.subscription_id,
+            environment=nsg.environment,
+        )
+
+    def _denied_but_attempted(
+        self, nsg: NetworkSecurityGroup, rule: NetworkSecurityRule, attempts: int
+    ) -> RuleFinding:
+        return RuleFinding(
+            finding_id=_finding_id("denied_traffic_attempted", rule.resource_id),
+            category="observed_traffic",
+            severity="medium",
+            rule_id=rule.resource_id,
+            rule_name=rule.name,
+            control="nsg",
+            control_id=nsg.resource_id,
+            title="Deny rule is being hit by repeated traffic",
+            detail=(
+                f"Rule '{rule.name}' on '{nsg.name}' denied {attempts} distinct observed "
+                f"flow(s) during {self._window_text()}. Either a legitimate caller is "
+                "misconfigured, or something is probing this path."
+            ),
+            evidence={
+                "direction": rule.direction,
+                "protocol": rule.protocol,
+                "source_address": rule.source_address,
+                "destination_address": rule.destination_address,
+                "destination_port": rule.destination_port,
+                "denied_flow_count": attempts,
+                "observation_window_days": self.observation_window_days,
+                "basis": self._basis(),
+            },
+            recommendation=(
+                "Identify the source. If it is a legitimate dependency, allow it explicitly "
+                "and narrowly; otherwise treat the attempts as a security signal."
+            ),
+            connection_id=nsg.connection_id,
+            subscription_id=nsg.subscription_id,
+            environment=nsg.environment,
+        )
+
+    def _deny_conflict(
+        self, nsg: NetworkSecurityGroup, rule: NetworkSecurityRule, conflicts: int
+    ) -> RuleFinding:
+        """A deny rule matched a flow that was nonetheless permitted.
+
+        This is a contradiction, not merely a signal: either a
+        higher-priority allow rule is winning (so this deny is not doing what
+        its author believed), or the flow data disagrees with the
+        configuration. Both warrant investigation, and neither is safely
+        resolved by assuming one side is right (D-05).
+        """
+        return RuleFinding(
+            finding_id=_finding_id("deny_rule_conflict", rule.resource_id),
+            category="observed_traffic",
+            severity="high",
+            rule_id=rule.resource_id,
+            rule_name=rule.name,
+            control="nsg",
+            control_id=nsg.resource_id,
+            title="Traffic matching a deny rule was observed as allowed",
+            detail=(
+                f"Rule '{rule.name}' on '{nsg.name}' denies "
+                f"{rule.protocol} {rule.source_address} -> {rule.destination_address}:"
+                f"{rule.destination_port}, yet {conflicts} observed flow(s) matching it "
+                f"were permitted during {self._window_text()}. A higher-priority allow "
+                "rule is most likely overriding it."
+            ),
+            evidence={
+                "direction": rule.direction,
+                "priority": rule.priority,
+                "protocol": rule.protocol,
+                "source_address": rule.source_address,
+                "destination_address": rule.destination_address,
+                "destination_port": rule.destination_port,
+                "conflicting_flow_count": conflicts,
+                "observation_window_days": self.observation_window_days,
+                "basis": self._basis(),
+            },
+            recommendation=(
+                "Compare against higher-priority allow rules on the same NSG. Either raise "
+                "this rule's priority or narrow the allow rule that overrides it."
+            ),
+            connection_id=nsg.connection_id,
+            subscription_id=nsg.subscription_id,
+            environment=nsg.environment,
+        )
+
+
+def analyze_rules(
+    snapshot: NetworkSnapshot,
+    flow_observations: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    observation_window_days: int | None = None,
+) -> tuple[RuleFinding, ...]:
+    """Runs every rule analyzer and returns the merged, severity-sorted findings.
+
+    ``flow_observations`` are the ``trafficObserved`` edges produced by
+    ``fabric_pipelines.flowlog_ingest.join_flow_logs_with_nsg_rules``. When
+    omitted (or when they carry no live traffic), the observed-traffic
+    analyzer contributes nothing -- silence, not a false "never used" claim.
+    """
     findings = list(RuleTighteningAnalyzer(snapshot).analyze())
     findings.extend(CrossEnvironmentAnalyzer(snapshot).analyze())
+    findings.extend(
+        ObservedTrafficAnalyzer(
+            snapshot,
+            flow_observations or (),
+            observation_window_days=observation_window_days,
+        ).analyze()
+    )
     return tuple(
         sorted(
             findings,

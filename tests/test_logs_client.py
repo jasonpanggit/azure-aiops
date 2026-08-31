@@ -7,6 +7,7 @@ from onboarding.monitor_logs import (
     CONFIGURATION_DATA_QUERY,
     GUEST_PERFORMANCE_QUERY,
     LOGS_QUERY_SCOPE,
+    NSG_FLOW_LOG_QUERY,
     AzureMonitorLogsClient,
     LogsQueryLimits,
     parse_logs_tables,
@@ -131,6 +132,35 @@ def test_logs_client_preserves_timeout_and_malformed_json_failures() -> None:
         AzureMonitorLogsClient(Credential(), requester=malformed_requester).query(
             "workspace-1"
         )
+
+
+def test_query_nsg_flow_logs_uses_logs_query_api_and_fixed_kql() -> None:
+    requests: list[dict] = []
+
+    def requester(method: str, url: str, **kwargs):
+        requests.append({"method": method, "url": url, **kwargs})
+        return httpx.Response(
+            200,
+            json={
+                "tables": [
+                    {
+                        "columns": [
+                            {"name": "SrcIp", "type": "string"},
+                            {"name": "DestIp", "type": "string"},
+                        ],
+                        "rows": [["10.10.0.5", "10.10.1.4"]],
+                    }
+                ]
+            },
+        )
+
+    credential = Credential()
+    rows = AzureMonitorLogsClient(credential, requester=requester).query_nsg_flow_logs(
+        "workspace-1"
+    )
+
+    assert rows == [{"SrcIp": "10.10.0.5", "DestIp": "10.10.1.4"}]
+    assert requests[0]["json"] == {"query": NSG_FLOW_LOG_QUERY}
 
 
 def test_guest_performance_query_normalizes_windows_and_linux_counters() -> None:

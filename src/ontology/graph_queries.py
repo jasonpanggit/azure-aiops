@@ -30,6 +30,70 @@ ASSET_TYPES = {
     "CognitiveServicesAccount",
 }
 
+# Predicates that carry network reachability, grouped by the direction traffic
+# flows relative to the edge. Reachability is NOT the same as the structural
+# containment used by _impact: an application depending on another says nothing
+# about whether a packet can traverse between them.
+#
+# Forward edges are walked subject -> object (a subnet's egress gateway is
+# reachable *from* the subnet). Reverse edges are walked object -> subject
+# (a NIC attached to a subnet means the subnet reaches the NIC).
+_REACHABILITY_FORWARD = {
+    "egressesVia",
+    "hasPeering",
+    "peersWith",
+    "attachedTo",
+    "hasNetworkInterface",
+    # A private endpoint is a network presence *for* a backing resource, so
+    # reaching the endpoint means reaching what it fronts.
+    "exposesPrivately",
+    "loadBalances",
+}
+_REACHABILITY_REVERSE = {
+    "attachedTo",
+    "hasNetworkInterface",
+    "contains",
+    "exposesPrivately",
+    "loadBalances",
+}
+
+# Entities that represent a boundary between the virtual network and something
+# outside it. The ontology collapses six distinct Azure gateway types into one
+# ``NetworkGateway`` entity, but they do not all mean the same thing for
+# exposure, so the direction is recovered from the ARM resource type:
+#
+#   inbound  - traffic can originate outside and land on the workload
+#   outbound - the workload can initiate traffic to the internet
+#   internal - a boundary-shaped resource that is neither (e.g. a DNS resolver)
+#
+# Reporting the direction rather than collapsing everything to "exposed" keeps
+# the finding actionable: a NAT gateway is an egress path, not an open door.
+_BOUNDARY_DIRECTION_BY_RESOURCE_TYPE = {
+    "microsoft.network/virtualnetworkgateways": "inbound",
+    "microsoft.network/vpngateways": "inbound",
+    "microsoft.network/expressroutegateways": "inbound",
+    "microsoft.network/expressroutecircuits": "inbound",
+    "microsoft.network/bastionhosts": "inbound",
+    "microsoft.network/azurefirewalls": "inbound",
+    "microsoft.network/loadbalancers": "inbound",
+    "microsoft.network/applicationgateways": "inbound",
+    "microsoft.network/publicipaddresses": "inbound",
+    "microsoft.network/natgateways": "outbound",
+    "microsoft.network/dnsresolvers": "internal",
+}
+
+# Fallback when an entity carries no resource_type (sub-resources, or rows
+# projected without it). Direction is unknown, so these are reported as
+# "unknown" rather than silently dropped - an unclassifiable boundary is a
+# finding a reviewer should see, not one the engine should decide is safe.
+_BOUNDARY_TYPES = {
+    "NetworkGateway",
+    "AzureFirewall",
+    "LoadBalancer",
+    "PublicIp",
+    "PublicIPAddress",
+}
+
 
 class OntologyQueryService:
     """Read-only deterministic traversals over Fabric-backed ontology projections."""
@@ -149,6 +213,10 @@ class OntologyQueryService:
             items = self._resources_for_context(roots)
         elif "dependencies" in normalized or "topology" in normalized:
             items = self._application_topology(roots)
+        elif "network exposure" in normalized or "internet reachable" in normalized:
+            items = self._network_exposure(roots)
+        elif "network reachable" in normalized or "network blast radius" in normalized:
+            items = self._network_reachable(roots)
         elif "impacted business service" in normalized:
             items = self._impact(roots, types={"BusinessService"})
         elif "impacted" in normalized or "server fails" in normalized:
@@ -157,7 +225,8 @@ class OntologyQueryService:
             raise ValueError(
                 "Supported ontology queries: application dependencies; VM ownership; application topology; "
                 "impacted business services; resources without owners; orphan infrastructure; "
-                "compliance by application; patch failures by service"
+                "compliance by application; patch failures by service; network reachable; "
+                "network exposure"
             )
         returned = items[: self.max_results]
         return {
@@ -318,6 +387,86 @@ class OntologyQueryService:
         )
         return self._rows(ids - roots, types=types)
 
+    def _reachable(self, roots: set[str]) -> tuple[set[str], dict[str, list[str]]]:
+        """BFS over network-carrying edges, recording the path to each node.
+
+        Returns the reachable set (excluding the roots themselves) and, for each
+        node, the shortest edge-predicate path that reached it. The path is what
+        makes a finding actionable: "exposed" is an assertion, "exposed via
+        subnet -> gateway" is evidence someone can verify or refute.
+        """
+        seen = set(roots)
+        paths: dict[str, list[str]] = {root: [] for root in roots}
+        queue = deque(roots)
+        while queue:
+            current = queue.popleft()
+            neighbours: list[tuple[str, str]] = [
+                (edge["object_id"], edge["predicate"])
+                for edge in self.outgoing[current]
+                if edge["predicate"] in _REACHABILITY_FORWARD
+            ]
+            neighbours.extend(
+                (edge["subject_id"], edge["predicate"])
+                for edge in self.incoming[current]
+                if edge["predicate"] in _REACHABILITY_REVERSE
+            )
+            for neighbour, predicate in neighbours:
+                if neighbour in seen:
+                    continue
+                if len(seen) >= self.max_traversal_nodes:
+                    # Stop expanding, but keep draining the queue so the
+                    # truncation flag is set deterministically rather than
+                    # depending on which node happened to hit the bound first.
+                    self._traversal_truncated = True
+                    continue
+                seen.add(neighbour)
+                paths[neighbour] = [*paths[current], predicate]
+                queue.append(neighbour)
+        return seen - roots, paths
+
+    def _network_reachable(self, roots: set[str]) -> list[dict[str, Any]]:
+        if not roots:
+            return []
+        reachable, paths = self._reachable(roots)
+        rows = []
+        for entity_id in reachable:
+            if entity_id not in self.entities:
+                continue
+            row = _public_entity(self.entities[entity_id])
+            row["path"] = paths.get(entity_id, [])
+            row["hops"] = len(row["path"])
+            rows.append(row)
+        return sorted(rows, key=lambda row: (row["hops"], row["entity_type"], row["name"]))
+
+    def _network_exposure(self, roots: set[str]) -> list[dict[str, Any]]:
+        """Workloads that can reach a network boundary, and in which direction.
+
+        Reports the boundary reached, the direction it carries traffic, and the
+        path taken. A workload with no path is simply absent - this is
+        deliberately not an assertion that it is safe, only that no boundary was
+        found in the modelled graph. A boundary whose direction cannot be
+        determined is reported as ``unknown`` rather than dropped.
+        """
+        if not roots:
+            return []
+        reachable, paths = self._reachable(roots)
+        rows = []
+        for entity_id in reachable:
+            entity = self.entities.get(entity_id)
+            if entity is None or entity["entity_type"] not in _BOUNDARY_TYPES:
+                continue
+            resource_type = str(entity.get("resource_type") or "").casefold()
+            direction = _BOUNDARY_DIRECTION_BY_RESOURCE_TYPE.get(resource_type, "unknown")
+            if direction == "internal":
+                continue
+            row = _public_entity(entity)
+            row["path"] = paths.get(entity_id, [])
+            row["hops"] = len(row["path"])
+            row["direction"] = direction
+            row["exposure"] = "reaches_boundary"
+            rows.append(row)
+        return sorted(rows, key=lambda row: (row["hops"], row["entity_type"], row["name"]))
+
     def _application_ids(self, roots: set[str]) -> set[str]:
         applications = {
             root for root in roots if self.entities[root]["entity_type"] == "Application"
@@ -440,6 +589,10 @@ def _extract_subject(question: str) -> str:
 
 
 def _public_entity(row: dict[str, Any]) -> dict[str, Any]:
+    # resource_id / tenant_id / subscription_id are deliberately excluded: an
+    # Azure resource id embeds the subscription GUID, so projecting it would
+    # leak tenant topology into query answers. See
+    # test_query_projection_excludes_raw_inventory_and_lineage.
     return {
         key: row[key]
         for key in (

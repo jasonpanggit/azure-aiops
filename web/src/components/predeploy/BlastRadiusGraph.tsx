@@ -107,8 +107,12 @@ export default function BlastRadiusGraph({ resources }: { resources: ImpactedRes
       ] as unknown as cytoscape.StylesheetJson,
       layout: {
         name: "fcose",
-        quality: "proof",
-        animate: true,
+        // `quality: "proof"` converges the full force simulation, which locks
+        // the main thread for seconds once the blast radius grows past a
+        // hundred resources. Animating that is worse still, so both degrade
+        // together: large graphs get the incremental layout and appear at once.
+        quality: elements.length > 100 ? "default" : "proof",
+        animate: elements.length <= 100,
         animationDuration: 500,
         randomize: true,
         nodeSeparation: 90,

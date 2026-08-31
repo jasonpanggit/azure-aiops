@@ -125,7 +125,7 @@ locals {
     fabric_iq_policy_context  = { server = "operations-mcp", purpose = "Retrieve policy/governance context Fabric IQ has already joined to a resource." }
     network_topology          = { server = "operations-mcp", purpose = "Map hub/spoke/peering network topology for the target scope." }
     hub_dependents            = { server = "operations-mcp", purpose = "List resources/services that depend on a given hub." }
-    traffic_flow              = { server = "operations-mcp", purpose = "Trace observed network traffic flows between resources." }
+    traffic_flow              = { server = "operations-mcp", purpose = "Given a specific source and destination, decide whether the configured NSG/firewall rules permit that flow, and name the deciding rules. This evaluates rule CONFIGURATION, not flow logs -- it answers what is permitted, never what was observed. A verdict of 'indeterminate' means an endpoint or higher-priority rule could not be resolved; it must not be read as 'allowed'." }
     firewall_nsg_gaps         = { server = "operations-mcp", purpose = "Flag firewall/NSG rules that deviate from design policy or Azure best practice." }
     cve_exposure              = { server = "operations-mcp", purpose = "List CVE exposure for a resource, asset, or scope." }
     cve_detail                = { server = "operations-mcp", purpose = "Get full detail (severity, exploitability) for a specific CVE." }

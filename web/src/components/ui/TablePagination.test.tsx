@@ -162,7 +162,9 @@ describe("TableColumnFilters", () => {
     const { rerender } = render(
       <TableColumnFilters
         onReset={onReset}
-        filters={[{ id: "source", label: "Source column", value: "all", options: [] }]}
+        filters={[
+          { id: "source", label: "Source column", value: "all", options: [], onChange: vi.fn() },
+        ]}
       />,
     );
 
@@ -171,7 +173,15 @@ describe("TableColumnFilters", () => {
     rerender(
       <TableColumnFilters
         onReset={onReset}
-        filters={[{ id: "source", label: "Source column", value: "arc", options: [{ value: "arc", label: "Arc" }] }]}
+        filters={[
+          {
+            id: "source",
+            label: "Source column",
+            value: "arc",
+            options: [{ value: "arc", label: "Arc" }],
+            onChange: vi.fn(),
+          },
+        ]}
       />,
     );
 

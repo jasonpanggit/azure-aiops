@@ -488,3 +488,205 @@ class TestRuleRegistry:
             "bring-your-own-rule"
         ]
         assert "bring-your-own-rule" not in NetworkGapAnalyzer.evaluable_rule_ids()
+
+
+class TestObservedTraffic:
+    """Findings that only exist because live flow logs were ingested.
+
+    Every case here pins the same principle: absence of observation is not
+    evidence of absence. Only edges tagged with the live data source may
+    produce a finding, so a curated fixture can never masquerade as
+    measured traffic.
+    """
+
+    @staticmethod
+    def _snapshot() -> NetworkSnapshot:
+        nsg = NetworkSecurityGroup(
+            resource_id="/nsg/obs",
+            name="obs",
+            subnet_ids=("/vnet/a/subnets/s",),
+            rules=(
+                NetworkSecurityRule(
+                    resource_id="/nsg/obs/securityrules/allow-unused",
+                    name="allow-unused",
+                    nsg_id="/nsg/obs",
+                    priority=100,
+                    direction="Inbound",
+                    access="Allow",
+                    protocol="Tcp",
+                    source_address="10.0.0.0/24",
+                    destination_address="10.0.1.0/24",
+                    destination_port="8080",
+                ),
+                NetworkSecurityRule(
+                    resource_id="/nsg/obs/securityrules/deny-probe",
+                    name="deny-probe",
+                    nsg_id="/nsg/obs",
+                    priority=200,
+                    direction="Inbound",
+                    access="Deny",
+                    protocol="Tcp",
+                    source_address="Internet",
+                    destination_address="10.0.1.0/24",
+                    destination_port="22",
+                ),
+            ),
+            tags={"owner": "team@example.com"},
+        )
+        return NetworkSnapshot(nsgs=(nsg,))
+
+    @staticmethod
+    def _edge(rule_id: str, verdict: str, *, live: bool = True) -> dict:
+        from network.tightening import LIVE_FLOW_DATA_SOURCE
+
+        return {
+            "predicate": "trafficObserved",
+            "object": rule_id,
+            "attributes": {
+                "allowedVsObserved": verdict,
+                "dataSource": LIVE_FLOW_DATA_SOURCE if live else "fixture",
+            },
+        }
+
+    def _categories(self, findings) -> set[str]:
+        return {finding.category for finding in findings}
+
+    def test_no_flow_data_produces_no_observed_findings(self) -> None:
+        findings = analyze_rules(self._snapshot())
+        assert "observed_traffic" not in self._categories(findings)
+
+    def test_fixture_sourced_edges_do_not_count_as_observation(self) -> None:
+        """Curated data must never be mistaken for measured traffic."""
+        edges = [
+            self._edge("/nsg/obs/securityrules/deny-probe", "denied_and_blocked", live=False)
+        ]
+        findings = analyze_rules(self._snapshot(), edges)
+        assert "observed_traffic" not in self._categories(findings)
+
+    def test_allow_rule_with_no_observed_traffic_is_flagged(self) -> None:
+        edges = [self._edge("/nsg/obs/securityrules/deny-probe", "denied_and_blocked")]
+        findings = analyze_rules(self._snapshot(), edges)
+        unused = [
+            finding
+            for finding in findings
+            if finding.category == "observed_traffic"
+            and finding.rule_name == "allow-unused"
+        ]
+        assert len(unused) == 1
+        assert unused[0].evidence["observed_flow_count"] == 0
+
+    def test_an_exercised_allow_rule_is_not_flagged(self) -> None:
+        edges = [self._edge("/nsg/obs/securityrules/allow-unused", "allowed_and_observed")]
+        findings = analyze_rules(self._snapshot(), edges)
+        assert not [
+            finding
+            for finding in findings
+            if finding.category == "observed_traffic"
+            and finding.rule_name == "allow-unused"
+        ]
+
+    def test_deny_rule_hit_by_traffic_is_reported(self) -> None:
+        edges = [
+            self._edge("/nsg/obs/securityrules/deny-probe", "denied_and_blocked"),
+            self._edge("/nsg/obs/securityrules/deny-probe", "denied_and_blocked"),
+        ]
+        findings = analyze_rules(self._snapshot(), edges)
+        attempts = [
+            finding
+            for finding in findings
+            if finding.category == "observed_traffic"
+            and finding.rule_name == "deny-probe"
+            and "hit by" in finding.title.casefold()
+        ]
+        assert len(attempts) == 1
+        assert attempts[0].evidence["denied_flow_count"] == 2
+
+    def test_traffic_contradicting_a_deny_rule_is_high_severity(self) -> None:
+        """An overridden deny rule is a contradiction, not just a signal."""
+        edges = [
+            self._edge(
+                "/nsg/obs/securityrules/deny-probe", "denied_but_traffic_observed"
+            )
+        ]
+        findings = analyze_rules(self._snapshot(), edges)
+        conflicts = [
+            finding
+            for finding in findings
+            if finding.category == "observed_traffic"
+            and finding.rule_name == "deny-probe"
+            and "observed as allowed" in finding.title.casefold()
+        ]
+        assert len(conflicts) == 1
+        assert conflicts[0].severity == "high"
+
+
+def test_real_ingest_edges_drive_observed_findings() -> None:
+    """End-to-end: edges as flowlog_ingest actually emits them, not hand-rolled.
+
+    The analyzer and the ingest module must agree on edge field names and
+    verdict strings. Hand-written fixtures can silently drift from the real
+    shape, so this test consumes genuine ``join_flow_logs_with_nsg_rules``
+    output as the contract between the two.
+    """
+    from fabric_pipelines.flowlog_ingest import (
+        FlowLogRecord,
+        join_flow_logs_with_nsg_rules,
+    )
+
+    snapshot = NetworkSnapshot(
+        nsgs=(
+            NetworkSecurityGroup(
+                resource_id="/nsg/e2e",
+                name="e2e",
+                subnet_ids=("/vnet/a/subnets/s",),
+                rules=(
+                    NetworkSecurityRule(
+                        resource_id="rule-deny-ssh",
+                        name="deny-ssh",
+                        nsg_id="/nsg/e2e",
+                        priority=100,
+                        direction="Inbound",
+                        access="Deny",
+                        protocol="Tcp",
+                        source_address="0.0.0.0/0",
+                        destination_address="10.0.1.0/24",
+                        destination_port="22",
+                    ),
+                ),
+                tags={"owner": "team@example.com"},
+            ),
+        )
+    )
+    rules = [
+        {
+            "id": "rule-deny-ssh",
+            "name": "deny-ssh",
+            "protocol": "Tcp",
+            "sourceAddress": "0.0.0.0/0",
+            "destinationAddress": "10.0.1.0/24",
+            "destinationPort": "22",
+            "access": "Deny",
+            "isDefault": False,
+        }
+    ]
+    flows = [
+        FlowLogRecord(
+            source_address="203.0.113.9",
+            destination_address="10.0.1.5",
+            destination_port="22",
+            protocol="Tcp",
+            decision="Deny",
+            observed_at="2024-01-01T00:00:00Z",
+        )
+    ]
+    edges = join_flow_logs_with_nsg_rules(
+        rules, flows, observed="2024-01-01T00:00:00Z", live=True
+    )
+    assert edges, "precondition: ingest must produce an edge"
+
+    findings = analyze_rules(snapshot, edges, observation_window_days=7)
+    observed = [f for f in findings if f.category == "observed_traffic"]
+    assert len(observed) == 1
+    assert observed[0].rule_name == "deny-ssh"
+    assert observed[0].evidence["denied_flow_count"] == 1
+    assert observed[0].evidence["observation_window_days"] == 7

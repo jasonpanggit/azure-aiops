@@ -70,6 +70,7 @@ ONTOLOGY_ENTITY_TYPES = (
     "SupportTeam",
     "RemediationPlan",
     "ApprovalRequirement",
+    "ApprovalDecision",
     "RollbackPlan",
     "ExecutionStep",
     "RiskAssessment",
@@ -177,6 +178,7 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     ("RemediationPlan", "mitigatesRisk", "RiskAssessment"),
     ("RemediationPlan", "protectsService", "BusinessService"),
     ("RemediationPlan", "requiresApproval", "ApprovalRequirement"),
+    ("RemediationPlan", "hasApprovalDecision", "ApprovalDecision"),
     ("RemediationPlan", "hasStep", "ExecutionStep"),
     ("RemediationPlan", "hasRollbackPlan", "RollbackPlan"),
     ("RemediationPlan", "hasSimulation", "SimulationResult"),
@@ -237,6 +239,13 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
         ("LoadBalancer", "loadBalances", asset)
         for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")
     ),
+    # Observed traffic (VNet flow logs / Traffic Analytics). Unlike every
+    # relationship above, this one is *behavioral* rather than structural: it
+    # records that traffic matching a rule was actually seen on the wire, so
+    # "this rule permits traffic nothing has ever exercised" becomes an
+    # answerable question. The subject is a synthetic content-addressed
+    # observation id (flow logs carry no ARM resource id), not a real resource.
+    ("FlowObservation", "trafficObserved", "NetworkSecurityRule"),
 )
 
 

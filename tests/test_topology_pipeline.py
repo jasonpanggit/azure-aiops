@@ -140,6 +140,159 @@ def test_flowlog_ingest_join_is_fixture_only_and_classifies_allowed_vs_observed(
         assert edge["assertionState"] == "fixture_only"
 
 
+def test_live_flow_logs_from_rows_maps_traffic_analytics_shape():
+    """NTANetAnalytics (VNet flow logs) uses unsuffixed column names and
+    single-letter protocol/status codes -- both must be normalized to the
+    ARM NSG rule vocabulary before the join can match anything."""
+    from fabric_pipelines.flowlog_ingest import FlowLogRecord, live_flow_logs_from_rows
+
+    rows = [
+        {
+            "TimeGenerated": OBSERVED_AT,
+            "SrcIp": "10.10.0.5",
+            "DestIp": "10.10.1.4",
+            "L4Protocol": "T",
+            "DestPort": 443.0,
+            "FlowStatus": "A",
+        },
+        {
+            "TimeGenerated": OBSERVED_AT,
+            "SrcIp": "203.0.113.9",
+            "DestIp": "10.10.1.4",
+            "L4Protocol": "U",
+            "DestPort": 53,
+            "FlowStatus": "D",
+        },
+        # dropped: missing destination port -- incomplete observation, not evidence
+        {
+            "TimeGenerated": OBSERVED_AT,
+            "SrcIp": "10.0.0.1",
+            "DestIp": "10.0.0.2",
+            "L4Protocol": "T",
+            "DestPort": None,
+            "FlowStatus": "A",
+        },
+        # dropped: unrecognised protocol code -- never guessed at (D-05)
+        {
+            "TimeGenerated": OBSERVED_AT,
+            "SrcIp": "10.0.0.3",
+            "DestIp": "10.0.0.4",
+            "L4Protocol": "X",
+            "DestPort": 443,
+            "FlowStatus": "A",
+        },
+    ]
+
+    records = live_flow_logs_from_rows(rows)
+
+    assert records == [
+        FlowLogRecord(
+            source_address="10.10.0.5",
+            destination_address="10.10.1.4",
+            destination_port="443",
+            protocol="Tcp",
+            decision="Allow",
+            observed_at=OBSERVED_AT,
+        ),
+        FlowLogRecord(
+            source_address="203.0.113.9",
+            destination_address="10.10.1.4",
+            destination_port="53",
+            protocol="Udp",
+            decision="Deny",
+            observed_at=OBSERVED_AT,
+        ),
+    ]
+
+
+def test_live_flow_log_query_targets_vnet_schema_not_retired_nsg_schema():
+    """Guard against regressing to the retired AzureNetworkAnalytics_CL
+    column names, which do not resolve against NTANetAnalytics and would
+    fail the query with a KQL semantic error at runtime."""
+    from onboarding.monitor_logs import NSG_FLOW_LOG_QUERY
+
+    assert "NTANetAnalytics" in NSG_FLOW_LOG_QUERY
+    assert 'SubType == "FlowLog"' in NSG_FLOW_LOG_QUERY
+    for retired_column in ("SrcIP_s", "DestIP_s", "L4Protocol_s", "DestPort_d", "FlowStatus_s"):
+        assert retired_column not in NSG_FLOW_LOG_QUERY
+
+
+def test_live_flow_log_join_uses_cidr_containment_and_live_provenance():
+    """A live flow log whose source falls *inside* a rule's declared CIDR
+    (but isn't an exact string match) must still match -- and the resulting
+    edge must carry live-mode provenance, not the fixture markers."""
+    from fabric_pipelines.flowlog_ingest import (
+        FlowLogRecord,
+        join_flow_logs_with_nsg_rules,
+    )
+
+    rules = [
+        {
+            "id": "rule-allow-https",
+            "protocol": "Tcp",
+            "sourceAddress": "10.10.0.0/16",
+            "destinationAddress": "10.10.1.0/24",
+            "destinationPort": "443",
+            "access": "Allow",
+            "isDefault": False,
+        }
+    ]
+    flows = [
+        FlowLogRecord(
+            source_address="10.10.5.7",  # contained by 10.10.0.0/16, not an exact match
+            destination_address="10.10.1.20",
+            destination_port="443",
+            protocol="Tcp",
+            decision="Allow",
+            observed_at=OBSERVED_AT,
+        )
+    ]
+
+    edges = join_flow_logs_with_nsg_rules(rules, flows, observed=OBSERVED_AT, live=True)
+
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge["source"] == "fabric_pipeline:flowlog_live"
+    assert edge["confidence"] == 0.95
+    assert edge["assertionState"] == "accepted"
+    assert edge["attributes"]["dataSource"] == "traffic_analytics"
+    assert edge["attributes"]["allowedVsObserved"] == "allowed_and_observed"
+
+
+def test_live_flow_log_join_matches_port_ranges():
+    from fabric_pipelines.flowlog_ingest import (
+        FlowLogRecord,
+        join_flow_logs_with_nsg_rules,
+    )
+
+    rules = [
+        {
+            "id": "rule-allow-web-range",
+            "protocol": "Tcp",
+            "sourceAddress": "*",
+            "destinationAddress": "10.10.1.0/24",
+            "destinationPort": "8000-8100",
+            "access": "Allow",
+            "isDefault": False,
+        }
+    ]
+    flows = [
+        FlowLogRecord(
+            source_address="203.0.113.1",
+            destination_address="10.10.1.5",
+            destination_port="8050",
+            protocol="Tcp",
+            decision="Allow",
+            observed_at=OBSERVED_AT,
+        )
+    ]
+
+    edges = join_flow_logs_with_nsg_rules(rules, flows, observed=OBSERVED_AT, live=True)
+
+    assert len(edges) == 1
+    assert edges[0]["objectId"] == "rule-allow-web-range"
+
+
 def test_ontology_binding_registers_topology_tables_without_inferring_relationships():
     """Pitfall 2 / D-10 guard: ontology_binding must only register
     already-derived tables, never claim to detect/infer relationships."""
@@ -185,3 +338,136 @@ def test_ontology_binding_registers_topology_tables_without_inferring_relationsh
     # never configure Fabric IQ to "detect"/"infer" anything (Pitfall 2).
     assert "detect" not in json.dumps(definition).lower()
     assert "infer" not in json.dumps(definition).lower()
+
+
+def _acl_rules():
+    """Two NSGs deliberately reusing one rule name, plus a distinct name.
+
+    Rule names are only unique within an NSG, so this shape is what makes
+    ``AclGroup`` disambiguation necessary rather than decorative.
+    """
+    return [
+        {
+            "id": "rule-a-allow-web",
+            "name": "allow-web",
+            "nsgId": "/subscriptions/s/resourceGroups/rg/providers/"
+            "Microsoft.Network/networkSecurityGroups/nsg-a",
+            "protocol": "Tcp",
+            "sourceAddress": "10.0.0.0/8",
+            "destinationAddress": "10.0.1.0/24",
+            "destinationPort": "443",
+            "access": "Allow",
+            "isDefault": False,
+        },
+        {
+            "id": "rule-b-allow-web",
+            "name": "allow-web",
+            "nsgId": "/subscriptions/s/resourceGroups/rg/providers/"
+            "Microsoft.Network/networkSecurityGroups/nsg-b",
+            "protocol": "Tcp",
+            "sourceAddress": "10.0.0.0/8",
+            "destinationAddress": "10.0.1.0/24",
+            "destinationPort": "443",
+            "access": "Deny",
+            "isDefault": False,
+        },
+    ]
+
+
+def _acl_flow(**overrides):
+    from fabric_pipelines.flowlog_ingest import FlowLogRecord
+
+    defaults = {
+        "source_address": "10.0.0.5",
+        "destination_address": "10.0.1.9",
+        "destination_port": "443",
+        "protocol": "Tcp",
+        "decision": "Allow",
+        "observed_at": OBSERVED_AT,
+    }
+    defaults.update(overrides)
+    return FlowLogRecord(**defaults)
+
+
+def test_acl_rule_attribution_beats_cidr_inference():
+    """Azure naming the rule that fired outranks us re-deriving it.
+
+    Both fixture rules match this flow by CIDR, so inference alone would
+    silently pick the first. AclRule + AclGroup identify the real one.
+    """
+    from fabric_pipelines.flowlog_ingest import join_flow_logs_with_nsg_rules
+
+    flows = [_acl_flow(acl_rule="allow-web", acl_group="nsg-b")]
+    edges = join_flow_logs_with_nsg_rules(
+        _acl_rules(), flows, observed=OBSERVED_AT, live=True
+    )
+
+    assert len(edges) == 1
+    assert edges[0]["objectId"] == "rule-b-allow-web"
+    assert edges[0]["attributes"]["attribution"] == "acl_rule"
+    # nsg-b denies, but the flow was allowed -- a contradiction only visible
+    # because attribution picked the right rule.
+    assert edges[0]["attributes"]["allowedVsObserved"] == "denied_but_traffic_observed"
+
+
+def test_cidr_inference_is_used_when_azure_did_not_attribute():
+    """Flows without AclRule still match, but are marked as inferred."""
+    from fabric_pipelines.flowlog_ingest import join_flow_logs_with_nsg_rules
+
+    edges = join_flow_logs_with_nsg_rules(
+        _acl_rules(), [_acl_flow()], observed=OBSERVED_AT, live=True
+    )
+
+    assert len(edges) == 1
+    assert edges[0]["attributes"]["attribution"] == "cidr_match"
+
+
+def test_an_unknown_acl_rule_is_not_attributed_by_cidr_fallback():
+    """Naming a rule we do not hold must not fall back to guessing.
+
+    If Azure says rule X fired and X is outside the ingested scope, matching
+    on CIDR would confidently attribute the flow to the *wrong* rule. Better
+    to emit nothing than a plausible falsehood.
+    """
+    from fabric_pipelines.flowlog_ingest import join_flow_logs_with_nsg_rules
+
+    flows = [_acl_flow(acl_rule="rule-from-another-subscription")]
+    edges = join_flow_logs_with_nsg_rules(
+        _acl_rules(), flows, observed=OBSERVED_AT, live=True
+    )
+
+    assert edges == []
+
+
+def test_ambiguous_acl_rule_name_without_group_is_not_attributed():
+    """A name matching two NSGs, with no group to disambiguate, is unresolvable."""
+    from fabric_pipelines.flowlog_ingest import join_flow_logs_with_nsg_rules
+
+    flows = [_acl_flow(acl_rule="allow-web")]  # no acl_group
+    edges = join_flow_logs_with_nsg_rules(
+        _acl_rules(), flows, observed=OBSERVED_AT, live=True
+    )
+
+    assert edges == []
+
+
+def test_live_rows_carry_acl_attribution_fields():
+    from fabric_pipelines.flowlog_ingest import live_flow_logs_from_rows
+
+    rows = [
+        {
+            "SrcIp": "10.0.0.5",
+            "DestIp": "10.0.1.9",
+            "DestPort": 443,
+            "L4Protocol": "T",
+            "FlowStatus": "A",
+            "AclRule": "allow-web",
+            "AclGroup": "nsg-b",
+            "TimeGenerated": OBSERVED_AT,
+        }
+    ]
+    records = live_flow_logs_from_rows(rows)
+
+    assert len(records) == 1
+    assert records[0].acl_rule == "allow-web"
+    assert records[0].acl_group == "nsg-b"

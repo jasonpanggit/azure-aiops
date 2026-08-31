@@ -18,6 +18,36 @@ ConfigurationData
 | order by _ResourceId asc, SoftwareName asc, CurrentVersion asc
 """.strip()
 
+# Virtual network flow logs processed through Traffic Analytics land in
+# ``NTANetAnalytics``: one row per observed flow bucket, already
+# deduplicated/aggregated by Traffic Analytics's own pipeline (unlike raw
+# flow log JSON, which this platform does not parse directly).
+#
+# Schema note: ``NTANetAnalytics`` (VNet flow logs, FASchemaVersion 3) uses
+# unsuffixed column names -- ``SrcIp``/``DestIp``/``DestPort``/``L4Protocol``.
+# The ``_s``/``_d`` suffixed names belong to the *retired* NSG flow log table
+# ``AzureNetworkAnalytics_CL`` and do not resolve here. NSG flow logs were
+# blocked for new creation in June 2025 and retire entirely September 2027,
+# so only the VNet schema is supported.
+#
+# ``SubType == "FlowLog"`` is mandatory: other SubType values in this table
+# are internal to Traffic Analytics and are not flow observations.
+#
+# Only the last day is queried and the result is bounded by
+# ``LogsQueryLimits.max_rows`` -- flow tables are the highest-volume Log
+# Analytics data this platform reads, so an unbounded query is an
+# availability risk, not just a cost one.
+NSG_FLOW_LOG_QUERY = """
+NTANetAnalytics
+| where TimeGenerated > ago(1d)
+| where SubType == "FlowLog"
+| where isnotempty(SrcIp) and isnotempty(DestIp)
+| summarize arg_max(TimeGenerated, *) by SrcIp, DestIp, L4Protocol, DestPort, FlowStatus
+| project TimeGenerated, SrcIp, DestIp, L4Protocol, DestPort, FlowStatus,
+          FlowDirection, FlowType, AclGroup, AclRule
+| order by TimeGenerated desc
+""".strip()
+
 # Guest performance counters written by the "classic" (logs-based) Azure
 # Monitor Agent perf collection path. These cover the two signals the
 # platform Metrics API cannot provide for an ordinary VM: memory utilization
@@ -76,6 +106,13 @@ class AzureMonitorLogsClient:
         return self._execute(workspace_id, CONFIGURATION_DATA_QUERY, "ConfigurationData")
 
     query = query_configuration_data
+
+    def query_nsg_flow_logs(self, workspace_id: str) -> list[dict[str, Any]]:
+        """Latest observed NSG flow records from Traffic Analytics, one per
+        distinct (source, destination, protocol, port, decision) bucket over
+        the last day. Returns raw ``NTANetAnalytics`` rows -- callers are
+        responsible for mapping them onto :class:`FlowLogRecord`."""
+        return self._execute(workspace_id, NSG_FLOW_LOG_QUERY, "NSG flow log")
 
     def query_guest_performance(self, workspace_id: str) -> dict[str, dict[str, float]]:
         """Latest memory/disk-free guest performance counters, keyed by resource ID.

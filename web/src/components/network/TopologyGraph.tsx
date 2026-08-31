@@ -215,18 +215,37 @@ export function clearHoverFocus(cy: cytoscape.Core): void {
   cy.elements().removeClass("cy-hover-fade cy-hover-focus");
 }
 
-const LAYOUT = {
-  name: "fcose",
-  quality: "proof",
-  animate: false,
-  randomize: true,
-  nodeSeparation: 110,
-  idealEdgeLength: 130,
-  nodeRepulsion: 9000,
-  gravityRangeCompound: 1.4,
-  packComponents: true,
-  padding: 40,
-} as unknown as cytoscape.LayoutOptions;
+/**
+ * fCoSE options, scaled to the graph size.
+ *
+ * `quality: "proof"` runs the full multi-level force simulation to convergence.
+ * On a small estate that is a better-looking layout for a few hundred
+ * milliseconds of work; past roughly a hundred nodes it is quadratic enough to
+ * lock the main thread for seconds, and the canvas appears frozen. `randomize`
+ * compounds this: it discards the previous positions, so every re-layout pays
+ * full cost *and* the user loses spatial memory of where things were.
+ *
+ * So both degrade with size: large graphs get the incremental "default"
+ * quality and keep their existing positions, which is faster and less
+ * disorienting precisely when there is most to keep track of.
+ */
+const LAYOUT_NODE_BUDGET = 100;
+
+export function layoutFor(nodeCount: number): cytoscape.LayoutOptions {
+  const large = nodeCount > LAYOUT_NODE_BUDGET;
+  return {
+    name: "fcose",
+    quality: large ? "default" : "proof",
+    animate: false,
+    randomize: !large,
+    nodeSeparation: 110,
+    idealEdgeLength: 130,
+    nodeRepulsion: 9000,
+    gravityRangeCompound: 1.4,
+    packComponents: true,
+    padding: 40,
+  } as unknown as cytoscape.LayoutOptions;
+}
 
 /** Triggers a browser download for a data: URI without a server round trip. */
 function downloadDataUri(uri: string, filename: string): void {
@@ -316,7 +335,7 @@ export default function TopologyGraph({
     });
     cyRef.current = cy;
 
-    cy.layout(LAYOUT).run();
+    cy.layout(layoutFor(cy.nodes().length)).run();
     cy.fit(undefined, 40);
 
     cy.on("tap", "node", (event) => {
@@ -435,7 +454,9 @@ export default function TopologyGraph({
   const relayout = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return;
-    cy.layout(LAYOUT).run();
+    // An explicit re-layout is the one case where discarding positions is what
+    // the user asked for, so force the randomized pass regardless of size.
+    cy.layout({ ...layoutFor(cy.nodes().length), randomize: true } as cytoscape.LayoutOptions).run();
     cy.fit(undefined, 40);
   }, []);
 

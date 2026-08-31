@@ -32,6 +32,7 @@ from .design import (
     PolicyRule,
 )
 from .models import PRIVATE_LINK_RESOURCE_TYPES, NetworkSnapshot
+from .rule_engine import CustomRuleEvaluator, InvalidRule, is_declarative_rule
 from .topology import NetworkTopology
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
@@ -107,6 +108,7 @@ class NetworkGapAnalyzer:
             for firewall in snapshot.firewalls
             if firewall.private_ip.strip()
         }
+        self._custom_evaluator = CustomRuleEvaluator(snapshot, self.policy)
 
     def analyze(self) -> tuple[NetworkGap, ...]:
         """Runs every enabled policy rule through its registered check.
@@ -118,6 +120,7 @@ class NetworkGapAnalyzer:
         gaps: list[NetworkGap] = []
         for rule in self._evaluable_rules():
             gaps.extend(self._CHECKS[rule.rule_id](self))
+        gaps.extend(self._custom_evaluator.evaluate())
         return tuple(
             sorted(
                 gaps,
@@ -151,16 +154,32 @@ class NetworkGapAnalyzer:
         return tuple(cls._CHECKS)
 
     def unevaluated_rules(self) -> tuple[PolicyRule, ...]:
-        """Enabled rules the analyzer has no check for.
+        """Enabled rules that nothing will inspect.
 
         Surfaced so the UI can say "not evaluated" rather than implying a
         custom rule is enforced when nothing inspects it.
+
+        A rule carrying a declarative body is excluded -- the rule engine
+        runs it, so calling it unevaluated would be wrong. A declarative rule
+        that is *malformed* is likewise excluded here and reported through
+        :meth:`invalid_rules` instead, because "you wrote it wrong" and "we
+        have no check for this" are different problems with different fixes.
         """
         return tuple(
             rule
             for rule in self.policy.rules
-            if rule.enabled and rule.rule_id not in self._CHECKS
+            if rule.enabled
+            and rule.rule_id not in self._CHECKS
+            and not is_declarative_rule(rule)
         )
+
+    def invalid_rules(self) -> tuple[InvalidRule, ...]:
+        """Declarative rules that could not be parsed, with the reason.
+
+        Requires :meth:`analyze` to have run, since validation happens during
+        evaluation.
+        """
+        return self._custom_evaluator.invalid_rules()
 
     def _spoke_vnet_ids(self) -> set[str]:
         declared = {

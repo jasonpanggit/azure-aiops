@@ -1,4 +1,21 @@
-"""Ontology metadata generation for API-owned discovery snapshots."""
+"""Ontology metadata generation for API-owned discovery snapshots.
+
+Scope warning: :data:`RELATIONSHIP_TYPES` below is **not** the full ontology
+relationship vocabulary. It describes only the three predicates the
+API-owned *discovery snapshot* publishes. The authoritative, typed
+``(subject_type, predicate, object_type)`` vocabulary the graph actually
+writes -- ~70 entries including the whole network topology
+(``peersWith``, ``protectedBy``, ``routedBy``, ``hasRule``, ``attachedTo``,
+``trafficObserved``, ...) -- lives in
+``fabric.dataset_mapper.ONTOLOGY_RELATIONSHIP_TYPES`` and drives the Fabric
+relationship tables.
+
+These two lists are intentionally not merged here: ``onboarding`` does not
+depend on ``fabric``, and ``test_ontology_pipeline`` pins this snapshot's
+vocabulary to exactly these three entries as a Fabric-parity contract.
+Treat this as a *snapshot-scoped subset*, not as the ontology schema; do not
+infer from it that the graph only models three relationship types.
+"""
 
 from __future__ import annotations
 
