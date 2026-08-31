@@ -38,6 +38,14 @@ resource "random_string" "suffix" {
   special = false
 }
 
+# APIM validates the Foundry-issued token, then supplies this high-entropy
+# assertion to downstream services. Keeping it Terraform-sensitive prevents
+# public API callers from forging the gateway-authenticated identity headers.
+resource "random_password" "apim_gateway_assertion" {
+  length  = 48
+  special = false
+}
+
 data "azurerm_client_config" "current" {}
 
 resource "azurerm_resource_group" "main" {

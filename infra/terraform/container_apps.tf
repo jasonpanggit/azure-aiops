@@ -4,6 +4,10 @@
 
 locals {
   registry_server = azurerm_container_registry.main.login_server
+  gateway_assertion = coalesce(
+    nonsensitive(var.apim_gateway_assertion),
+    random_password.apim_gateway_assertion.result,
+  )
 
   api_image = "${local.registry_server}/${var.api_image_repository}:${var.image_tag}"
   web_image = "${local.registry_server}/${var.web_image_repository}:${var.image_tag}"
@@ -158,7 +162,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "AIOPS_GATEWAY_ASSERTION"
-        value = var.apim_gateway_assertion
+        value = local.gateway_assertion
       }
 
       env {
@@ -320,6 +324,11 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "FOUNDRY_SPECIALISTS_JSON"
         value = jsonencode(var.foundry_specialists)
+      }
+
+      env {
+        name  = "AIOPS_AGENT_ORCHESTRATION_MODE"
+        value = lower(var.agent_orchestration_mode)
       }
 
       # Selects the user-assigned identity for DefaultAzureCredential, which
