@@ -1,9 +1,9 @@
 # Phase 09-11: Centralized Azure MCP Server in ACA
 
 ## Current Phase Status
-**Active Plan:** 09-11-AZURE-MCP-ACA-PLAN  
-**Scope:** Deploy Azure MCP server as standalone container in ACA. All 8 specialist agents delegate tool calls through APIM proxy with per-subscription SPN credential management from AKV.  
-**Status:** 🚀 IN PROGRESS — Planning complete, decisions locked, execution starting.
+**Completed Plan:** 09-11-AZURE-MCP-ACA-PLAN  
+**Scope:** Deploy Azure MCP server as standalone container in ACA. All 8 specialist agents delegate tool calls through APIM proxy with governed multi-subscription credential management.  
+**Status:** ✅ COMPLETE — Microsoft's official Azure MCP Server deployed standalone in ACA behind APIM, authenticating via a dedicated user-assigned managed identity (`azurerm_user_assigned_identity.azure_mcp`) with per-subscription role assignments (`local.azure_mcp_subscriptions` for-each), rather than the originally-scoped SPN+AKV credential model — achieves the same governed multi-subscription access with less credential-rotation surface. Per-specialist tool registry (`foundry_tool_registry`, 32 entries) and explicit dual-MCP routing rule (operations-mcp = curated/Fabric, azure-mcp = live/authoritative) are wired into all 8 specialist instructions. This session additionally: gave the network specialist `arm_execute_query` (Resource Graph) as a live fallback tool, and fixed classic Azure Firewall inline rule-collection ingestion so the network agent can see application/network rules without needing the fallback in the common case. Built, deployed, and verified live on ACA (`main-20260831-110941`).
 
 ## Previous Phase Status (09-10)
 **Completed Plan:** 09-10-MAF-PIVOT-PLAN  

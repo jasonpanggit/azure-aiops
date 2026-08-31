@@ -14,7 +14,7 @@ This milestone turns the existing Azure and Fabric foundations into a controlled
 - [~] **Phase 6: Software and OS Inventory Visibility** - Deliver scoped, evidence-backed OS and installed-software inventory with lifecycle risk and export. *(code-complete; awaiting UAT sign-off)*
 - [ ] **Phase 7: Unified Resource Inventory** - Establish Fabric/OneLake-backed inventory as the unified data platform for every resource family including PaaS, consumed by the semantic graph and other subsystems rather than owned by them.
 - [x] **Phase 8: Resource Identity Plane** - Extend inventory to own complete resource identity — all types, containment hierarchy, raw properties, and watermarks — so Hermes stops querying ARG for resource identity and consumes inventory for graph construction, relationship modelling, and semantic traversal.
-- [ ] **Phase 9: Consumer Pivot** - Repoint API providers, agent queries, and affected web pages at the inventory read port so the UI is powered by unified inventory.
+- [x] **Phase 9: Consumer Pivot** - Repoint API providers, agent queries, and affected web pages at the inventory read port so the UI is powered by unified inventory.
 
 ## Phase Details
 
@@ -232,7 +232,7 @@ Plans:
 **Goal:** As a platform operator, I want the API and UI powered by unified inventory, so that every surface reflects one source of truth about what resources exist.
 **Requirements**: INV-09, INV-10
 **Depends on:** Phase 8
-**Plans:** 8/9 plans executed
+**Plans:** 11/11 plans executed
 
 Plans:
 
@@ -244,7 +244,9 @@ Plans:
 - [x] 09-06-PLAN.md — Isolate, fix, or precisely assign the three full backend suite failures
 - [x] 09-07-PLAN.md — Deliver the governed read-only Operations MCP server contract and adapter
 - [x] 09-08-PLAN.md — Put the Operations MCP server behind Azure API Management with Terraform, policy, and rollback
-- [ ] 09-09-PLAN.md — Integrate named Foundry specialists and optional Fabric IQ grounding with live smoke validation
+- [x] 09-09-PLAN.md — Integrate named Foundry specialists and optional Fabric IQ grounding with live smoke validation (expanded to all 8 specialists; see 09-09-EXPANSION-PLAN.md)
+- [x] 09-10-MAF-PIVOT-PLAN.md — Adopt Microsoft Agent Framework as the default question-first orchestrator across specialists
+- [x] 09-11-AZURE-MCP-ACA-PLAN.md — Deploy Microsoft's official Azure MCP Server standalone in ACA behind APIM as a second, independent tool-caller for live Azure resource state; wire per-specialist tool registry, explicit dual-MCP routing rule, and (this session) network-specialist `arm_execute_query` access plus a classic-firewall inline rule-collection ingestion fix
 
 **UI hint:** yes
 
