@@ -53,7 +53,47 @@ RESOURCE_ENTITY_TYPES = {
     "microsoft.network/dnsresolvers": "NetworkGateway",
     "microsoft.network/loadbalancers": "LoadBalancer",
     "microsoft.network/applicationgateways": "LoadBalancer",
+    # PaaS resource identity (inventory Azure/PaaS tab). Kept distinct from the
+    # generic "Resource" fallback so the graph and relationship builder can
+    # target them by type instead of lumping every managed service together.
+    "microsoft.storage/storageaccounts": "StorageAccount",
+    "microsoft.sql/servers": "SqlServer",
+    "microsoft.sql/servers/databases": "SqlDatabase",
+    "microsoft.dbforpostgresql/flexibleservers": "PostgresServer",
+    "microsoft.dbformysql/flexibleservers": "MySqlServer",
+    "microsoft.documentdb/databaseaccounts": "CosmosAccount",
+    "microsoft.web/sites": "AppService",
+    "microsoft.web/serverfarms": "AppServicePlan",
+    "microsoft.keyvault/vaults": "KeyVault",
+    "microsoft.containerregistry/registries": "ContainerRegistry",
+    "microsoft.servicebus/namespaces": "ServiceBusNamespace",
+    "microsoft.eventhub/namespaces": "EventHubNamespace",
+    "microsoft.cache/redis": "RedisCache",
+    "microsoft.insights/components": "AppInsights",
+    "microsoft.operationalinsights/workspaces": "LogAnalyticsWorkspace",
+    "microsoft.cognitiveservices/accounts": "CognitiveServicesAccount",
 }
+
+PAAS_ENTITY_TYPES = frozenset(
+    {
+        "StorageAccount",
+        "SqlServer",
+        "SqlDatabase",
+        "PostgresServer",
+        "MySqlServer",
+        "CosmosAccount",
+        "AppService",
+        "AppServicePlan",
+        "KeyVault",
+        "ContainerRegistry",
+        "ServiceBusNamespace",
+        "EventHubNamespace",
+        "RedisCache",
+        "AppInsights",
+        "LogAnalyticsWorkspace",
+        "CognitiveServicesAccount",
+    }
+)
 
 
 def semantic_id(entity_type: str, tenant_id: str, value: str) -> str:

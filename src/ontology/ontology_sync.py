@@ -5,10 +5,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from .entity_builder import stable_version
+from .entity_builder import PAAS_ENTITY_TYPES, stable_version
 from .ontology_validator import OntologyValidator
 
-ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster"}
+ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *PAAS_ENTITY_TYPES}
 
 
 @dataclass(frozen=True)

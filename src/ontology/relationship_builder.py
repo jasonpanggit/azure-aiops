@@ -5,9 +5,9 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from .entity_builder import scoped_semantic_id, stable_version
+from .entity_builder import PAAS_ENTITY_TYPES, scoped_semantic_id, stable_version
 
-ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster"}
+ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *PAAS_ENTITY_TYPES}
 
 
 class RelationshipBuilder:

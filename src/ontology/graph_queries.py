@@ -7,7 +7,28 @@ from typing import Any
 
 from .ontology_validator import OntologyValidator
 
-ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster"}
+ASSET_TYPES = {
+    "Resource",
+    "VirtualMachine",
+    "ArcServer",
+    "KubernetesCluster",
+    "StorageAccount",
+    "SqlServer",
+    "SqlDatabase",
+    "PostgresServer",
+    "MySqlServer",
+    "CosmosAccount",
+    "AppService",
+    "AppServicePlan",
+    "KeyVault",
+    "ContainerRegistry",
+    "ServiceBusNamespace",
+    "EventHubNamespace",
+    "RedisCache",
+    "AppInsights",
+    "LogAnalyticsWorkspace",
+    "CognitiveServicesAccount",
+}
 
 
 class OntologyQueryService:

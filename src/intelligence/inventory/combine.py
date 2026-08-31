@@ -70,6 +70,15 @@ def publish_combined_inventory_snapshot(
                 f"'{identifier}' is present in both '{existing_connection}' and "
                 f"'{incoming_connection}'"
             )
+        if existing is not None and str(existing.get("observed_at") or "") > str(
+            row.get("observed_at") or ""
+        ):
+            # Same identity, same connection: keep the freshest observation
+            # instead of whichever connection happened to be processed last.
+            # This closes the race where a stale/partial refresh from one
+            # connection could silently overwrite a newer row already merged
+            # from another pass over the same connection's history.
+            return
         bucket[identifier] = row
 
     for connection_id in selected:

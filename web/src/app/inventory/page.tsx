@@ -219,25 +219,54 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
         <StatePanel title="Risk narrative unavailable" message={inventoryUnavailableMessage(narrative.error)} tone="error" />
       )}
       {narrative.data && (
-        <>
-          {narrative.data.data.narrated_summary ? (
-            <p>{narrative.data.data.narrated_summary}</p>
-          ) : (
-            <p className="muted">Model narration is unavailable; deterministic facts remain authoritative.</p>
+        <div className="narrative-body">
+          <div className="narrative-section narrative-summary">
+            <h3>Summary</h3>
+            {narrative.data.data.narrated_summary ? (
+              <p>{narrative.data.data.narrated_summary}</p>
+            ) : (
+              <p className="muted">Model narration is unavailable; deterministic facts remain authoritative.</p>
+            )}
+            {narrative.data.data.narrated_by && (
+              <p className="muted narrative-attribution">Narrated by {narrative.data.data.narrated_by}</p>
+            )}
+          </div>
+          {narrative.data.data.fact_items.length > 0 && (
+            <div className="narrative-section">
+              <h3>Deterministic facts</h3>
+              <dl className="narrative-fact-grid">
+                {narrative.data.data.fact_items.map((fact) => (
+                  <div className="narrative-fact" key={fact.label}>
+                    <dt>{fact.label}</dt>
+                    <dd>{fact.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
           )}
-          <details>
-            <summary>Deterministic facts{narrative.data.data.narrated_by ? ` (narrated by ${narrative.data.data.narrated_by})` : ""}</summary>
-            <p>{narrative.data.data.fact_summary}</p>
-          </details>
           {narrative.data.data.citations.length > 0 && (
-            <p className="muted">
-              Evidence: {narrative.data.data.citations.map((citation) => `${citation.source_engine} / ${citation.source_table}`).join(" · ")}
-            </p>
+            <div className="narrative-section">
+              <h3>Sources</h3>
+              <ul className="narrative-citation-list">
+                {narrative.data.data.citations.map((citation) => (
+                  <li key={`${citation.source_engine}-${citation.source_table}-${citation.timestamp}`}>
+                    {citation.source_engine} / {citation.source_table}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
-          {narrative.data.warnings?.map((warning) => (
-            <p className="muted" key={warning}>{warning}</p>
-          ))}
-        </>
+          {narrative.data.warnings && narrative.data.warnings.length > 0 && (
+            <div className="narrative-section narrative-warnings">
+              <h3>Warnings</h3>
+              <ul>
+                {narrative.data.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
       )}
     </section>
   );
