@@ -23,13 +23,15 @@ from operations.patching.azure_adapter import ARM_SCOPE, TokenCredential
 
 _OUTCOME_SUCCEEDED = "succeeded"
 _OUTCOME_FAILED = "failed"
+_OUTCOME_CANCELLED = "cancelled"
 _OUTCOME_RUNNING = "running"
 
 # ARM long-running-operation status vocabulary. "Running" is an alias some
 # providers use in place of "InProgress" -- both map to the same
 # not-yet-terminal outcome.
 _TERMINAL_SUCCEEDED_STATUSES = frozenset({"succeeded"})
-_TERMINAL_FAILED_STATUSES = frozenset({"failed", "canceled", "cancelled"})
+_TERMINAL_FAILED_STATUSES = frozenset({"failed"})
+_TERMINAL_CANCELLED_STATUSES = frozenset({"canceled", "cancelled"})
 _RUNNING_STATUSES = frozenset({"inprogress", "running", "notstarted", "accepted"})
 
 
@@ -104,6 +106,13 @@ class ExecutionVerifier:
                 "verified_state": raw_status,
                 "failure_details": _error_message(payload, response),
             }
+        if normalized in _TERMINAL_CANCELLED_STATUSES:
+            return {
+                "verifiable": True,
+                "outcome": _OUTCOME_CANCELLED,
+                "verified_state": raw_status,
+                "failure_details": _error_message(payload, response),
+            }
         # InProgress/Running/anything else not recognized as terminal is
         # treated as still-running rather than guessed at as a failure.
         return {
@@ -131,10 +140,12 @@ class ExecutionVerifier:
         return str(value)
 
     def _poll(self, operation_url: str) -> httpx.Response:
-        headers = {"Authorization": f"******"}
+        headers = {"Authorization": f"Bearer {self._token()}"}
         client = self._client or httpx.Client(timeout=self._timeout)
         try:
-            return client.get(operation_url, headers=headers)
+            response = client.get(operation_url, headers=headers)
+            response.raise_for_status()
+            return response
         except httpx.HTTPError as exc:
             raise ExecutionVerificationUnavailable(
                 f"Azure Resource Manager was unreachable while polling for verification: {exc}",

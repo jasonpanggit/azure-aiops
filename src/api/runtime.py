@@ -53,6 +53,7 @@ from intelligence.remediation.defender_correlation import DefenderRemediationCor
 from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
 from intelligence.remediation.execution_service import RemediationExecutionService
 from intelligence.remediation.execution_store import RemediationExecutionStore
+from intelligence.remediation.execution_verifier import ExecutionVerifier
 from intelligence.remediation.plan_repository import PlanRepository
 from network.design import NetworkDesignPolicyStore
 from network.flow import FlowQuery
@@ -2027,6 +2028,23 @@ def _build_provider_runtime(
 # they use a process-level store handle like risk exceptions. The store is
 # shared across provider rebuilds so a rebuild never loses run history.
 _patch_run_store = InMemoryPatchRunStore()
+_PATCH_EXECUTION_CREDENTIAL: Any = _UNSET
+
+
+def _azure_patch_credential() -> Any | None:
+    """Return one process credential shared by patch submit and verification."""
+    global _PATCH_EXECUTION_CREDENTIAL
+    mode = (os.environ.get(ENV_PATCH_EXECUTION) or "").strip().casefold()
+    if mode not in {"azure", "arm", "azure-arm"}:
+        return None
+    if _PATCH_EXECUTION_CREDENTIAL is _UNSET:
+        try:
+            from azure.identity import DefaultAzureCredential
+
+            _PATCH_EXECUTION_CREDENTIAL = DefaultAzureCredential()
+        except Exception:  # noqa: BLE001 - callers safely refuse without identity
+            _PATCH_EXECUTION_CREDENTIAL = None
+    return _PATCH_EXECUTION_CREDENTIAL
 
 
 def _patch_execution_adapter() -> Any:
@@ -2038,15 +2056,13 @@ def _patch_execution_adapter() -> Any:
     and even then a missing or unusable credential falls back to refusing
     rather than failing at import time.
     """
-    mode = (os.environ.get(ENV_PATCH_EXECUTION) or "").strip().casefold()
-    if mode not in {"azure", "arm", "azure-arm"}:
+    credential = _azure_patch_credential()
+    if credential is None:
         return UnconfiguredPatchExecutionAdapter()
     try:
-        from azure.identity import DefaultAzureCredential
-
         from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
 
-        return AzureArmPatchExecutionAdapter(DefaultAzureCredential())
+        return AzureArmPatchExecutionAdapter(credential)
     except Exception:  # noqa: BLE001 - refusing is the safe outcome here
         _LOGGER.warning(
             "%s requested Azure patch execution but no usable credential was "
@@ -2054,6 +2070,12 @@ def _patch_execution_adapter() -> Any:
             ENV_PATCH_EXECUTION,
         )
         return UnconfiguredPatchExecutionAdapter()
+
+
+def _execution_verifier() -> ExecutionVerifier | None:
+    """Build the read-only verifier at the same ARM credential boundary."""
+    credential = _azure_patch_credential()
+    return ExecutionVerifier(credential=credential) if credential is not None else None
 
 
 def _load_patching_service(vulnerability_loader: Callable[[], Any]) -> Any | None:
@@ -2595,6 +2617,7 @@ def build_context() -> ApiContext:
             ),
             patching_service=providers.get("patching", optional=True),
             execution_store=_remediation_execution_store(),
+            execution_verifier=_execution_verifier(),
         ),
         network_provider=lambda: providers.get("network", optional=True),
         vulnerability_provider=lambda: providers.get("vulnerability", optional=True),

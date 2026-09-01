@@ -252,13 +252,17 @@ class RemediationExecutionService:
                 "message": message,
             }
 
-        # Submission acceptance and a verified outcome are distinct states.
-        # If a verifier is configured, the record stays "running" until a
-        # poll confirms a terminal ARM outcome; without a verifier
-        # configured, the pre-existing (03-02) behavior of recording
-        # "succeeded" immediately is preserved for callers that have not
-        # wired verification.
-        terminal_status = "running" if self._verifier is not None else "succeeded"
+        # Azure exposes no idempotency token for these operations.  The
+        # durable pre-submit claim is therefore the safety boundary, and an
+        # accepted response can only ever mean "running".  Only verifier
+        # polling may persist a terminal provider outcome.
+        terminal_status = "running"
+        message = run.message
+        if self._verifier is None:
+            message = _append_note(
+                message,
+                "Verification unavailable: no execution verifier is configured",
+            )
         if execution_id is not None:
             current = self._store.get(execution_id)
             self._store.transition(
@@ -268,8 +272,7 @@ class RemediationExecutionService:
                 status=terminal_status,
                 actor=requested_by,
                 provider_job_id=run.provider_job_id,
-                message=run.message,
-                outcome=terminal_status if terminal_status == "succeeded" else "",
+                message=message,
                 now=self._now(),
             )
         return {
@@ -277,7 +280,7 @@ class RemediationExecutionService:
             "plan_id": plan_id,
             "status": terminal_status,
             "provider_job_id": run.provider_job_id,
-            "message": run.message,
+            "message": message,
             "run_id": run.run_id,
         }
 
@@ -403,38 +406,96 @@ class RemediationExecutionService:
                 reason="execution_not_found",
                 details={"execution_id": execution_id},
             )
-        if self._verifier is None:
+        if record.get("status") != "running":
             return record
+        if self._verifier is None:
+            note = "Verification unavailable: no execution verifier is configured"
+            message = _append_note(record.get("message"), note)
+            if message == record.get("message"):
+                return record
+            return self._store.transition(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="running",
+                status="running",
+                actor="execution-verifier",
+                message=message,
+                now=self._now(),
+            )
 
         try:
             outcome = self._verifier.verify(record)
         except ExecutionVerificationUnavailable as exc:
             note = f"Verification unavailable: {exc}"
             message = _append_note(record.get("message"), note)
-            return self._store.update(execution_id, message=message)
+            return self._store.transition(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="running",
+                status="running",
+                actor="execution-verifier",
+                message=message,
+                now=self._now(),
+            )
 
         if not outcome.get("verifiable", False):
             note = f"Verification not available: {outcome.get('reason', 'unknown')}"
             message = _append_note(record.get("message"), note)
-            return self._store.update(execution_id, message=message)
+            return self._store.transition(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="running",
+                status="running",
+                actor="execution-verifier",
+                message=message,
+                now=self._now(),
+            )
 
         result_outcome = outcome.get("outcome")
         if result_outcome == "succeeded":
-            return self._store.update(
+            return self._store.transition(
                 execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="running",
                 status="succeeded",
+                actor="execution-verifier",
                 verified_state=outcome.get("verified_state", ""),
+                outcome="succeeded",
+                now=self._now(),
             )
         if result_outcome == "failed":
-            return self._store.update(
+            return self._store.transition(
                 execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="running",
                 status="failed",
+                actor="execution-verifier",
                 verified_state=outcome.get("verified_state", ""),
                 failure_details=outcome.get("failure_details", ""),
+                outcome="failed",
+                now=self._now(),
+            )
+        if result_outcome == "cancelled":
+            return self._store.transition(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="running",
+                status="cancelled",
+                actor="execution-verifier",
+                verified_state=outcome.get("verified_state", ""),
+                failure_details=outcome.get("failure_details", ""),
+                outcome="cancelled",
+                now=self._now(),
             )
         # Still running -- no-op, but record the latest verified_state seen.
-        return self._store.update(
-            execution_id, verified_state=outcome.get("verified_state", "")
+        return self._store.transition(
+            execution_id,
+            expected_revision=int(record.get("revision") or 0),
+            expected_status="running",
+            status="running",
+            actor="execution-verifier",
+            verified_state=outcome.get("verified_state", ""),
+            now=self._now(),
         )
 
     def _latest_decision(self, plan_id: str) -> dict[str, Any] | None:
