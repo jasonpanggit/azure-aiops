@@ -86,6 +86,52 @@ fabric:
     # Logs / Traffic Analytics is provisioned and approved for this project.
     flow_log_source: "fixture"
 
+  # Fabric-backed operational-context-graph pipeline: full Hermes ontology
+  # scope (entity/relationship inference across Application,
+  # BusinessService, VirtualMachine, PatchAssessment, AdvisorRecommendation,
+  # ... via belongsTo/assessedBy/impacts/dependsOn, ...), not just network
+  # topology.
+  ontology_pipeline:
+    enabled: false
+
+  # Gold pipeline flag inventory (MED-02 staged restoration + rollback map):
+  # - topology_pipeline.enabled -> src/fabric_pipelines/topology_pipeline.py
+  #   -> topology_entities, topology_edges
+  # - ontology_pipeline.enabled -> src/fabric_pipelines/ontology_pipeline.py
+  #   -> ontology_entities, ontology_relationships (+ publication metadata)
+  # - impact_context_pipeline.enabled -> src/fabric_pipelines/impact_context_builder.py
+  #   -> operational_context_graph
+  # - vulnerability_pipeline.enabled -> src/fabric_pipelines/vulnerability_pipeline.py
+  #   -> assessment_vulnerability_findings
+  # - governance_pipeline.enabled -> src/fabric_pipelines/governance_pipeline.py
+  #   -> assessment_governance_findings
+  # - lifecycle_pipeline.enabled -> src/fabric_pipelines/lifecycle_pipeline.py
+  #   -> assessment_lifecycle_findings
+  # - patch_pipeline.enabled -> src/fabric_pipelines/patch_pipeline.py
+  #   -> assessment_patch_compliance
+  # - change_pipeline.enabled -> src/fabric_pipelines/change_pipeline.py
+  #   -> assessment_change_findings
+  # - predeploy_pipeline.enabled -> src/fabric_pipelines/predeploy_pipeline.py
+  #   -> assessment_predeploy_evaluations
+  #
+  # Note: several of these modules are currently not invoked by the runtime's
+  # sync orchestrator yet. They still get dedicated flags now so each module
+  # has an explicit rollback switch before staged activation wiring proceeds.
+  impact_context_pipeline:
+    enabled: false
+  vulnerability_pipeline:
+    enabled: true
+  governance_pipeline:
+    enabled: true
+  lifecycle_pipeline:
+    enabled: true
+  patch_pipeline:
+    enabled: true
+  change_pipeline:
+    enabled: true
+  predeploy_pipeline:
+    enabled: true
+
   source_data_root: "./live-data"
   # Bounded concurrency keeps independent Delta table writes fast without
   # overwhelming OneLake or creating unbounded client-side pressure.
