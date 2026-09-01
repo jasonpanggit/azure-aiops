@@ -1249,6 +1249,32 @@ export interface RemediationPlan {
   objective?: string;
   rollback_plan?: Record<string, unknown>;
   recommended_action?: Record<string, unknown>;
+  business_decision?: {
+    disposition: "act_now" | "schedule" | "defer" | "not_applicable" | "escalate";
+    urgency_rationale?: {
+      reason_code: string;
+      message: string;
+    };
+    cost_of_action?: Record<string, unknown>;
+    cost_of_inaction?: Record<string, unknown>;
+    confidence?: Confidence;
+    review_requirements?: Record<string, unknown>;
+    pros?: string[];
+    cons?: string[];
+    options?: Array<Record<string, unknown>>;
+    observed_facts?: string[];
+    unknowns?: string[];
+    [key: string]: unknown;
+  };
+  priority_factors?: Record<string, number>;
+  evidence_citations?: Array<{
+    source_type: string;
+    source_id: string;
+    observed_at?: string;
+    qualification?: "fresh" | "aging" | "stale" | "degraded" | "contradictory";
+    link?: string;
+    [key: string]: unknown;
+  }>;
   [key: string]: unknown;
 }
 
