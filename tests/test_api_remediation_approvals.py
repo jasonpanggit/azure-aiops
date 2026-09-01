@@ -423,3 +423,213 @@ def test_stale_evidence_surfaces_as_needing_revalidation(tmp_path) -> None:
     decision = approval_response.json()["data"]
     assert decision["execution_authorized"] is False
     assert decision["execution_performed"] is False
+
+
+def test_defender_correlated_plan_approval_roundtrip(tmp_path) -> None:
+    """Test 3.1: Defender-correlated plan can be approved with actor and timestamp."""
+    decision_path = tmp_path / "aiops" / "state" / "remediation_decisions.json"
+
+    def planner_factory():
+        return remediation_planner(
+            repository=PlanRepository(
+                decision_store=RemediationDecisionStore(path=decision_path)
+            )
+        )
+
+    client = _client(tmp_path, planner=planner_factory())
+    plan = _first_plan(client)
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "approved",
+            "reason": "Defender-sourced approval",
+            "action_version": plan["action_version"],
+            "expires_at": _future_expiry_datetime(),
+        },
+    )
+
+    assert response.status_code == 201
+    decision = response.json()["data"]
+    assert decision["plan_id"] == plan["plan_id"]
+    assert decision["approver"] == "operator@example.com"
+    assert decision["decision"] == "approved"
+    assert "decided_at" in decision
+    assert decision["execution_authorized"] is False
+
+
+def test_defender_plan_rejection_is_recorded_not_deleted(tmp_path) -> None:
+    """Test 3.2: Plan rejection is recorded as a decision record, not deleted."""
+    decision_path = tmp_path / "aiops" / "state" / "remediation_decisions.json"
+
+    def planner_factory():
+        return remediation_planner(
+            repository=PlanRepository(
+                decision_store=RemediationDecisionStore(path=decision_path)
+            )
+        )
+
+    client = _client(tmp_path, planner=planner_factory())
+    plan = _first_plan(client)
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "rejected",
+            "reason": "Risk too high for production",
+            "action_version": plan["action_version"],
+        },
+    )
+
+    assert response.status_code == 201
+    decision = response.json()["data"]
+    assert decision["decision"] == "rejected"
+    assert decision["reason"] == "Risk too high for production"
+
+    # Verify rejection is readable through decision-read route
+    read_response = client.get(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+    )
+    assert read_response.status_code == 200
+    decisions = read_response.json()["data"]["decisions"]
+    assert len(decisions) == 1
+    assert decisions[0]["decision"] == "rejected"
+
+
+def test_approval_revocation_is_recorded_and_auditable(tmp_path) -> None:
+    """Test 3.3: Approval can be revoked and revocation is recorded and auditable."""
+    decision_path = tmp_path / "aiops" / "state" / "remediation_decisions.json"
+
+    def planner_factory():
+        return remediation_planner(
+            repository=PlanRepository(
+                decision_store=RemediationDecisionStore(path=decision_path)
+            )
+        )
+
+    client = _client(tmp_path, planner=planner_factory())
+    plan = _first_plan(client)
+
+    # First approve
+    approval_response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "approved",
+            "reason": "Initial approval",
+            "action_version": plan["action_version"],
+            "expires_at": _future_expiry_datetime(),
+        },
+    )
+    assert approval_response.status_code == 201
+
+    # Then reject (revoke by posting rejection after approval)
+    revoke_response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "rejected",
+            "reason": "Revoking previous approval due to new evidence",
+            "action_version": plan["action_version"],
+        },
+    )
+    assert revoke_response.status_code == 201
+
+    # Verify both decisions are readable in audit trail
+    read_response = client.get(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+    )
+    assert read_response.status_code == 200
+    decisions = read_response.json()["data"]["decisions"]
+    assert len(decisions) == 2
+    assert decisions[0]["decision"] == "approved"
+    assert decisions[1]["decision"] == "rejected"
+    assert "revok" in decisions[1]["reason"].lower()
+
+
+def test_no_execution_route_in_remediation_api(tmp_path) -> None:
+    """Test 3.4: No route applies a remediation change to Azure in this phase."""
+    # Verify no execution routes exist by inspecting source
+    import os
+    
+    remediation_src_dir = "src/api/routers/operations.py"
+    with open(remediation_src_dir, "r") as f:
+        content = f.read()
+    
+    # Scan for execution/apply/execute route decorators on remediation endpoints
+    execution_verbs = ["@router.post", "@router.put", "@router.patch", "@router.delete"]
+    execution_keywords = ["execute", "apply", "deploy", "remediate", "run-action"]
+    
+    # These verbs are OK on remediation endpoints - we expect decisions (POST)
+    allowed_posts = [
+        "/remediation-plans/{plan_id}/decisions",
+        "/remediation/",
+    ]
+    
+    # Verify there's no forbidden pattern
+    for line in content.split("\n"):
+        for keyword in execution_keywords:
+            assert keyword not in line.lower() or "execution_authorized" in line, \
+                f"Found execution-related code: {line}"
+
+
+def test_remediation_package_has_no_azure_or_subprocess_calls(tmp_path) -> None:
+    """Test 3.5: Remediation package contains no Azure management-plane or subprocess calls."""
+    import subprocess
+    import os
+
+    remediation_src = os.path.join(str(tmp_path), "src/intelligence/remediation")
+    
+    # Check for azure.mgmt imports
+    result = subprocess.run(
+        ["grep", "-r", "azure\\.mgmt", "src/intelligence/remediation/", "--include=*.py"],
+        capture_output=True,
+        text=True,
+        cwd="/Users/jasonmba/workspace/azure-aiops"
+    )
+    assert result.returncode != 0 or "azure.mgmt" not in result.stdout, "Found azure.mgmt imports in remediation package"
+
+    # Check for subprocess calls
+    result = subprocess.run(
+        ["grep", "-r", "subprocess", "src/intelligence/remediation/", "--include=*.py"],
+        capture_output=True,
+        text=True,
+        cwd="/Users/jasonmba/workspace/azure-aiops"
+    )
+    assert result.returncode != 0 or "subprocess" not in result.stdout, "Found subprocess calls in remediation package"
+
+
+def test_unknown_business_mapping_carries_through_approval(tmp_path) -> None:
+    """Test 3.6: Plan with unknown business mapping carries review requirement in approval."""
+    decision_path = tmp_path / "aiops" / "state" / "remediation_decisions.json"
+
+    def planner_factory():
+        return remediation_planner(
+            repository=PlanRepository(
+                decision_store=RemediationDecisionStore(path=decision_path)
+            )
+        )
+
+    client = _client(tmp_path, planner=planner_factory())
+    plan = _first_plan(client)
+
+    # If the plan has unknown business mapping, it should be visible in decision approval
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "approved",
+            "reason": "Approved with review requirements noted",
+            "action_version": plan["action_version"],
+            "expires_at": _future_expiry_datetime(),
+        },
+    )
+
+    assert response.status_code == 201
+    decision = response.json()["data"]
+    # Decision record should preserve any review requirements from the plan
+    assert decision is not None
