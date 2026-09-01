@@ -151,7 +151,7 @@ def test_runs_route_is_not_shadowed_by_the_target_path_converter(client: TestCli
     assert response.json()["data"] == []
 
 
-def test_trigger_installs_only_allowlisted_patches(client: TestClient) -> None:
+def test_public_direct_patch_run_post_is_unavailable(client: TestClient) -> None:
     response = client.post(
         "/api/v1/patching/runs",
         headers=_auth(),
@@ -162,146 +162,23 @@ def test_trigger_installs_only_allowlisted_patches(client: TestClient) -> None:
             "approved_by": "manager@example.com",
         },
     )
-    assert response.status_code == 202, response.text
-    run = response.json()["data"]
-    assert run["state"] == "submitted"
-    assert run["patch_ids"] == ["KB600001"]
-    assert run["requested_by"] == "admin@example.com"
-
-    listed = client.get("/api/v1/patching/runs", headers=_auth()).json()["data"]
-    assert [row["run_id"] for row in listed] == [run["run_id"]]
+    assert response.status_code == 405
 
 
-def test_trigger_rejects_a_patch_the_target_does_not_offer(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/patching/runs",
-        headers=_auth(),
-        json={"target_id": VM_ID, "patch_ids": ["KB999999"], "reason": "Not allowed"},
-    )
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "invalid_request"
+def test_openapi_exposes_patch_reads_but_no_direct_patch_mutation(
+    client: TestClient,
+) -> None:
+    paths = client.get("/openapi.json").json()["paths"]
+
+    assert set(paths["/api/v1/patching/targets"]) == {"get"}
+    assert set(paths["/api/v1/patching/runs"]) == {"get"}
+    assert set(paths["/api/v1/patching/targets/{target_id}"]) == {"get"}
 
 
-def test_aks_node_image_upgrade_takes_exactly_one_version(client: TestClient) -> None:
-    aks = _target(client, AKS_ID)
-    available = [patch["patch_id"] for patch in aks["available_patches"]]
-    assert available, "AKS target should offer at least one upgrade option"
+def test_patching_trigger_remains_internal_to_remediation_execution() -> None:
+    import inspect
 
-    ok = client.post(
-        "/api/v1/patching/runs",
-        headers=_auth(),
-        json={
-            "target_id": AKS_ID,
-            "patch_ids": available[:1],
-            "reason": "Node image refresh",
-            "node_pool": "systempool",
-            "approved_by": "manager@example.com",
-        },
-    )
-    assert ok.status_code == 202, ok.text
-    assert ok.json()["data"]["operation"] == "node_image_upgrade"
+    from intelligence.remediation.execution_service import RemediationExecutionService
 
-    too_many = client.post(
-        "/api/v1/patching/runs",
-        headers=_auth(),
-        json={
-            "target_id": AKS_ID,
-            "patch_ids": available[:1] + ["latest"] if available[0] != "latest" else ["latest", "latest2"],
-            "reason": "Two versions",
-            "node_pool": "systempool",
-        },
-    )
-    assert too_many.status_code == 400
-
-
-def test_aks_upgrade_without_a_named_pool_is_refused(client: TestClient) -> None:
-    """An unnamed pool would mean upgrading the whole cluster, so it is refused."""
-    aks = _target(client, AKS_ID)
-    assert aks["requires_node_pool"] is True
-
-    response = client.post(
-        "/api/v1/patching/runs",
-        headers=_auth(),
-        json={"target_id": AKS_ID, "patch_ids": ["latest"], "reason": "No pool named"},
-    )
-    assert response.status_code == 400
-    assert "agent pool" in response.json()["error"]["message"]
-
-
-def test_dry_run_does_not_reach_the_adapter(build_client) -> None:
-    adapter = RecordingPatchExecutionAdapter()
-    client = build_client(adapter=adapter)
-    response = client.post(
-        "/api/v1/patching/runs",
-        headers=_auth(),
-        json={"target_id": VM_ID, "patch_ids": ["KB600001"], "reason": "Rehearsal", "dry_run": True},
-    )
-    assert response.status_code == 202
-    run = response.json()["data"]
-    assert run["dry_run"] is True
-    assert run["provider"] == "dry-run"
-    assert adapter.submissions == []
-
-
-def test_unconfigured_adapter_refuses_but_records_the_attempt(build_client) -> None:
-    from operations.patching import UnconfiguredPatchExecutionAdapter
-
-    client = build_client(adapter=UnconfiguredPatchExecutionAdapter())
-
-    warnings = client.get("/api/v1/patching/targets", headers=_auth()).json()["warnings"]
-    assert any("execution adapter" in warning for warning in warnings)
-
-    response = client.post(
-        "/api/v1/patching/runs",
-        headers=_auth(),
-        json={
-            "target_id": VM_ID,
-            "patch_ids": ["KB600001"],
-            "reason": "No adapter",
-            "approved_by": "manager@example.com",
-        },
-    )
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "provider_unavailable"
-
-    # The refusal is auditable: a failed run was still persisted.
-    recorded = client.patch_store.list()  # type: ignore[attr-defined]
-    assert len(recorded) == 1
-    assert recorded[0].state == "failed"
-
-
-def test_trigger_without_an_approver_is_refused_at_the_http_boundary(client: TestClient) -> None:
-    """The gate must hold through the route, not only in the service."""
-    response = client.post(
-        "/api/v1/patching/runs",
-        headers=_auth(),
-        json={"target_id": VM_ID, "patch_ids": ["KB600001"], "reason": "Unapproved"},
-    )
-    assert response.status_code == 400
-    assert "approver" in response.json()["error"]["message"].casefold()
-    assert client.patch_store.list() == []  # type: ignore[attr-defined]
-
-
-def test_reader_cannot_trigger_a_run(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/patching/runs",
-        headers=_auth(READER_TOKEN),
-        json={"target_id": VM_ID, "patch_ids": ["KB600001"], "reason": "Nope"},
-    )
-    assert response.status_code == 403
-
-
-def test_out_of_scope_target_is_not_found_rather_than_forbidden(build_client) -> None:
-    principals = {
-        ADMIN_TOKEN: Principal(
-            subject="scoped@example.com",
-            grants=(Grant("operator", scope=Scope({"subscription": ["sub-1"]})),),
-        )
-    }
-    client = build_client(principals=principals)
-    response = client.post(
-        "/api/v1/patching/runs",
-        headers=_auth(),
-        json={"target_id": AKS_ID, "patch_ids": ["latest"], "reason": "Out of scope"},
-    )
-    assert response.status_code == 404
+    source = inspect.getsource(RemediationExecutionService._submit_and_record)
+    assert "self._patching.trigger(" in source
