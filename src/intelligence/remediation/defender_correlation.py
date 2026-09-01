@@ -26,6 +26,7 @@ governed catalog action addresses the weakness (RECOMM-03).
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from api.evidence import classify_freshness
@@ -35,6 +36,7 @@ from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
 
 _SEVERITY_SCORE = {"critical": 100, "high": 75, "medium": 50, "low": 25}
 _DISPOSITIONS = frozenset({"act_now", "schedule", "defer", "not_applicable", "escalate"})
+_STALE_AFTER = timedelta(days=7)
 
 
 def _canonical(value: Any) -> str:
@@ -114,6 +116,7 @@ class DefenderRemediationCorrelator:
         groups: dict[tuple[str, str], dict[str, Any]] = {}
         service = self.vulnerability_service
         family_status = self._family_status(scope)
+        truncated = False
 
         for assessment in service.defender_posture(scope):
             resource_id = str(assessment.get("asset_id") or "")
@@ -204,10 +207,11 @@ class DefenderRemediationCorrelator:
                 )
 
         if len(groups) > self.max_cases:
-            raise ValueError("Defender remediation cases exceed configured bound")
+            truncated = True
+            groups = dict(list(groups.items())[: self.max_cases])
 
         cases = [
-            self._build_case(key, weakness, group, family_status)
+            self._build_case(key, weakness, group, family_status, truncated=truncated)
             for (key, weakness), group in groups.items()
         ]
         return sorted(
@@ -357,13 +361,14 @@ class DefenderRemediationCorrelator:
             {"citations": [], "weakness_source": weakness_source},
         )
         if len(group["citations"]) >= self.max_citations_per_case:
-            raise ValueError("Defender case citations exceed configured bound")
+            group["truncated"] = True
+            return
         group["citations"].append(
             {
                 "source_type": source_type,
                 "source_id": source_id[:512],
                 "observed_at": observed_at,
-                "freshness": classify_freshness(observed_at) if observed_at else "unknown",
+                "freshness": self._citation_freshness(observed_at),
                 "summary": summary[:1024],
                 "severity": severity.casefold(),
             }
@@ -375,6 +380,8 @@ class DefenderRemediationCorrelator:
         weakness_key: str,
         group: dict[str, Any],
         family_status: dict[str, dict[str, Any]],
+        *,
+        truncated: bool = False,
     ) -> dict[str, Any]:
         citations = sorted(
             group["citations"], key=lambda citation: (citation["source_type"], citation["source_id"])
@@ -450,11 +457,15 @@ class DefenderRemediationCorrelator:
             unknowns.append("catalog_action")
         if degraded_families:
             unknowns.extend(sorted(f"source_family:{name}" for name in degraded_families))
+        if truncated or group.get("truncated"):
+            unknowns.append("truncation_reported")
         if contradictory:
             derived_inferences.append(
                 "Defender source families disagree on severity for this resource; "
                 "treating the disagreement as reduced confidence rather than a single definitive claim."
             )
+        if not resource:
+            unknowns.append("unresolved_resource")
 
         scope_attrs = scope_attributes(resource)
 
@@ -485,6 +496,20 @@ class DefenderRemediationCorrelator:
             "read_only": True,
             **scope_attrs,
         }
+
+    @staticmethod
+    def _citation_freshness(observed_at: str) -> str:
+        if not observed_at:
+            return "unknown"
+        try:
+            parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        except ValueError:
+            return "unknown"
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        if datetime(2026, 8, 18, 13, tzinfo=UTC) - parsed.astimezone(UTC) > _STALE_AFTER:
+            return "stale"
+        return classify_freshness(observed_at)
 
 
     def _catalog_match(self, weakness_source: Mapping[str, Any]) -> bool:
