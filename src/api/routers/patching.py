@@ -1,10 +1,8 @@
-"""Patch inventory and operator-triggered patch runs.
+"""Read-only patch inventory and patch-run history.
 
-Reads answer "what can be patched, and with what?"; the single write path
-answers "install exactly this, on exactly this host, approved by this person".
-Both enforcement points from :mod:`api.rbac` apply: the action gate plus scope
-narrowing, so an operator can never trigger a run against a host outside their
-grants.
+State-changing patch operations are intentionally absent from this public
+router. They are submitted internally only after a remediation plan's exact
+execution snapshot has been approved.
 """
 
 from __future__ import annotations
@@ -13,10 +11,9 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from ..dependencies import Context, OperatePrincipal, Page, ReadScope
+from ..dependencies import Context, Page, ReadScope
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
-from ..models import PatchRunCreateRequest
 from ..scope import Scope
 
 router = APIRouter(prefix="/api/v1", tags=["patching"])
@@ -77,59 +74,6 @@ def patch_runs(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]
         evidence=_run_evidence(service),
         scope=scope.to_dict(),
         pagination=page.to_dict(len(rows)),
-    )
-
-
-@router.post(
-    "/patching/runs",
-    status_code=202,
-    summary="Trigger patch installation or an AKS node image upgrade",
-)
-def create_patch_run(
-    payload: PatchRunCreateRequest,
-    context: Context,
-    principal: OperatePrincipal,
-) -> dict[str, Any]:
-    from operations.patching.adapters import PatchExecutionUnavailable
-    from operations.patching.service import PatchValidationError
-
-    # Narrow to what this principal may actually operate on before resolving
-    # the target, so an out-of-scope target is indistinguishable from a
-    # non-existent one.
-    write_scope = context.authorizer.effective_scope(principal, "operate")
-    service = _service(context, write_scope)
-    target = service.target(payload.target_id, write_scope)
-    if target is None:
-        raise ApiError(
-            ErrorCode.NOT_FOUND,
-            "No patch target matches this id in the caller's scope",
-            {"target_id": payload.target_id},
-        )
-
-    try:
-        run = service.trigger(
-            target=target,
-            patch_ids=payload.patch_ids,
-            requested_by=getattr(principal, "subject", ""),
-            approved_by=payload.approved_by,
-            reason=payload.reason,
-            reboot_setting=payload.reboot_setting,
-            node_pool=payload.node_pool,
-            dry_run=payload.dry_run,
-        )
-    except PatchValidationError as exc:
-        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc), dict(exc.details)) from exc
-    except PatchExecutionUnavailable as exc:
-        raise ApiError(
-            ErrorCode.PROVIDER_UNAVAILABLE,
-            str(exc),
-            {"capability": getattr(exc, "capability", "patch_execution")},
-        ) from exc
-
-    return envelope(
-        run.to_dict(),
-        evidence=_run_evidence(service),
-        scope=write_scope.to_dict(),
     )
 
 
