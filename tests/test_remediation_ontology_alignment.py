@@ -61,3 +61,18 @@ def test_durable_approval_decisions_publish_to_ontology_rows():
         and row["object_id"] == decision["decision_id"]
         for row in relationships
     )
+
+
+def test_plan_defender_evidence_relationships_are_registered_and_projected():
+    planner = remediation_planner()
+    plan = planner.generate_plans()["plans"][0]
+
+    projection = planner.repository.ontology_projection()
+    relationship_types = {row["relationship_type"] for row in projection["relationships"]}
+
+    assert {
+        "addressesFinding",
+        "addressesAlert",
+        "breaksAttackPath",
+        "improvesControl",
+    } <= relationship_types
