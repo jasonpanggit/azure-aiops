@@ -1,105 +1,123 @@
 # External Integrations
 
-**Analysis Date:** 2026-08-24
+**Analysis Date:** 2026-09-01
 
 ## APIs & External Services
 
-**Azure control plane and discovery:**
-- Azure MCP CLI (`azmcp`) for subscription discovery.
-  - SDK/Client: `AzureMcpClient` command adapter (`src/hermes_arg_connector/azure.py`).
-  - Auth: authenticated Azure identity on host/container; command configured via `azure.mcp_command` (`config.example.yaml`, `src/hermes_arg_connector/config.py`).
-- Azure Resource Graph for inventory/change/assessment reads.
-  - SDK/Client: Azure CLI `az graph query` (`AzureCliArgClient`) and direct REST (`AzureResourceGraphClient`) (`src/hermes_arg_connector/azure.py`).
-  - Auth: token scope `https://management.azure.com/.default` (`src/hermes_arg_connector/azure.py`).
-- Azure Cost Management for actual-cost feed.
-  - SDK/Client: `AzureCostManagementClient` (`src/hermes_arg_connector/azure.py`, `src/hermes_arg_connector/source.py`).
-  - Auth: token scope `https://management.azure.com/.default` (`src/hermes_arg_connector/azure.py`).
+**Azure Resource Discovery:**
+- Azure Resource Graph (via `az graph query`) - resource/container/change/assessment/installation/Advisor recommendation queries
+  - Client: shells out to Azure CLI (`az`), noted in `Dockerfile` and config comments
+  - Config: `config.yaml` `azure.max_query_workers`, `page_size`, `max_pages`
+- Azure MCP (`azmcp` executable) - subscription discovery
+  - Invoked via `config.yaml` `azure.mcp_command: ["azmcp"]`
+  - Declared as a pinned external dependency in `plugin.yaml`
+- Azure Cost Management (`Microsoft.CostManagement` ActualCost API) - billed spend during discovery
+  - Config: `config.yaml` `azure.cost_management` (enabled, `lookback_days`)
 
-**Fabric and OneLake:**
-- Microsoft Fabric REST API for workspace/lakehouse/ontology operations.
-  - SDK/Client: `FabricClient` over `httpx` (`src/fabric/fabric_client.py`).
-  - Auth: token scope `https://api.fabric.microsoft.com/.default` (`src/fabric/fabric_client.py`).
-- OneLake/ABFSS storage for durable datasets/state.
-  - SDK/Client: `azure-storage-file-datalake`, `adlfs`, `deltalake`, `fsspec`, `pyarrow` (`pyproject.toml`, `src/storage/`, `src/hermes_arg_connector/fs.py`).
-  - Auth: token scope `https://storage.azure.com/.default` (`src/fabric/auth.py`).
+**Microsoft Fabric:**
+- Fabric REST API (`https://api.fabric.microsoft.com/v1`) - workspace, lakehouse, data agent management
+  - Client: `src/fabric/fabric_client.py` (base URL + scope `https://api.fabric.microsoft.com/.default`)
+  - Related: `src/fabric/workspace_manager.py`, `src/fabric/lakehouse_manager.py`, `src/fabric/data_agent_manager.py`, `src/fabric/sql_endpoint.py`
+  - Auth: `src/fabric/auth.py` (`FabricAuthConfig`)
+  - Config profiles: `fabric.config.yaml`, `fabric.config.deploy.yaml`, `fabric.local.yaml`, `fabric.service-principal.example.yaml`
 
-**Identity and AI services:**
-- Microsoft Entra ID for API and frontend identity flows.
-  - SDK/Client: `PyJWT` JWKS validation (`src/api/auth.py`) and MSAL browser (`web/src/lib/auth.ts`, `web/package.json`).
-  - Auth config: `HERMES_ENTRA_TENANT_ID`, `HERMES_ENTRA_AUDIENCE`, `NEXT_PUBLIC_ENTRA_CLIENT_ID`, `NEXT_PUBLIC_ENTRA_TENANT_ID`, `NEXT_PUBLIC_ENTRA_API_SCOPE` (`src/api/runtime.py`, `web/src/lib/auth.ts`).
-- Azure AI Foundry prompt agent for Copilot narration.
-  - SDK/Client: Foundry data-plane REST wrapper (`src/operations/foundry_agent.py`).
-  - Auth: token scope `https://ai.azure.com/.default`; runtime config via `FOUNDRY_PROJECT_ENDPOINT` and `FOUNDRY_AGENT_NAME` (`src/operations/foundry_agent.py`, `infra/terraform/container_apps.tf`).
+**Vulnerability Intelligence (public feeds):**
+- NVD (National Vulnerability Database) CVE enrichment - `NvdCveEnrichmentConnector`, `src/intelligence/vulnerability/connector.py`
+  - Auth: optional `NVD_API_KEY` env var
+- EPSS scores - `EpssScoreConnector`, same file
+- CISA KEV catalog - `KevCatalogConnector`, same file
+- MSRC KB lookup - `MsrcKbLookupConnector`, same file
+- Client: `httpx.get` (injectable for testing)
+- Caching: `src/intelligence/vulnerability/enrichment_cache.py` (`EnrichmentCache`)
 
-**Security intelligence feeds:**
-- Microsoft Security Update Guide OData (`https://api.msrc.microsoft.com/sug/v2.0/en-US/affectedProduct`) (`src/intelligence/vulnerability/connector.py`).
-- NVD CVE API (`https://services.nvd.nist.gov/rest/json/cves/2.0`) (`src/intelligence/vulnerability/connector.py`).
-- FIRST.org EPSS API (`https://api.first.org/data/v1/epss`) (`src/intelligence/vulnerability/connector.py`).
-- CISA KEV JSON feed (`https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json`) (`src/intelligence/vulnerability/connector.py`).
+**Azure AI Foundry (Agent Orchestration):**
+- Azure AI Foundry project agents - `src/operations/foundry_agent.py`
+  - SDK: `azure-ai-projects`, `agent-framework`
+  - Endpoint: `ENV_PROJECT_ENDPOINT` env var
+  - Per-specialist agent names/versions: `FOUNDRY_<SPECIALIST>_AGENT_NAME`, `FOUNDRY_AGENT_VERSION`
+  - Resilience: configurable timeout, max retries, and circuit breaker threshold/reset via env vars
+  - Orchestration mode toggle: `ENV_AGENT_ORCHESTRATION_MODE` (`src/operations/maf_orchestrator.py`)
+  - Infra: `infra/terraform/foundry.tf`
 
 ## Data Storage
 
 **Databases:**
-- Not detected as a dedicated relational/NoSQL service. Durable operational data is persisted as OneLake-backed files/tables via Delta/Parquet (`src/storage/delta_writer.py`, `src/storage/parquet_writer.py`, `src/storage/onelake_writer.py`).
+- No traditional relational/NoSQL database detected. Data persistence is file/table based via Delta Lake.
 
-**File Storage:**
-- OneLake ABFSS path is the production durable root (`infra/terraform/container_apps.tf`, `src/hermes_arg_connector/fs.py`).
-- Local filesystem fallback for development or non-Fabric mode (`src/api/runtime.py`, `config.example.yaml`).
-- Azure Key Vault for submitted onboarding secrets and bootstrap secret write-through (`src/onboarding/credentials.py`, `src/api/akv_bootstrap.py`).
+**File Storage / Lakehouse:**
+- Microsoft OneLake (ADLS Gen2-compatible) - Delta Lake tables for ontology/semantic datasets
+  - Client stack: `azure-storage-file-datalake`, `adlfs`, `fsspec`, `deltalake`, `pyarrow`
+  - Local dev fallback: `local_onelake_root` in `src/fabric/config.py` (filesystem-backed OneLake substitute)
+  - Document store: `src/storage/onelake_documents.py` (`OneLakeDocumentStore`)
+  - Local output dir fallback: `storage.output_dir` in `config.yaml` (`./data`)
 
 **Caching:**
-- In-process TTL caches for semantic snapshot tables and external enrichment connectors (`src/api/runtime.py`, `src/intelligence/vulnerability/enrichment_cache.py`).
+- Local enrichment cache for vulnerability data - `src/intelligence/vulnerability/enrichment_cache.py`
+- Graph output cache directories present in workspace: `graphify-out/cache`, `src/graphify-out/cache`
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- Microsoft Entra ID with JWT validation (`EntraJwtAuthenticator`) (`src/api/auth.py`).
-  - Implementation: issuer and JWKS from tenant; explicit grants mapping via `HERMES_API_GATEWAY_GRANTS` (`src/api/auth.py`, `src/api/runtime.py`).
-- Gateway-asserted identity mode (`HeaderPrincipalAuthenticator`) (`src/api/auth.py`).
-- Static token mode for local/testing (`StaticTokenAuthenticator`) (`src/api/auth.py`, `src/api/runtime.py`).
-- Azure managed identity or service principal for Fabric/KeyVault/OneLake/Foundry clients (`src/fabric/auth.py`, `src/onboarding/credentials.py`, `src/operations/foundry_agent.py`).
+- Microsoft Entra ID (Azure AD)
+  - Azure resource/Fabric auth: `azure-identity` (DefaultAzureCredential / managed identity), `src/fabric/auth.py`
+  - Web frontend login: MSAL (`@azure/msal-browser`, `@azure/msal-react`) in `web/`
+  - API auth modes (`src/api/runtime.py`):
+    - Token mode (`AUTH_TOKEN`, default) - static bearer tokens via `ENV_TOKENS`
+    - Gateway mode (`AUTH_GATEWAY`) - JWT assertion validated against `ENV_ENTRA_TENANT_ID` + `ENV_ENTRA_AUDIENCE` using `PyJWT`
+    - Gateway grants configured via `ENV_GATEWAY_GRANTS`
+  - Key Vault-backed client ID resolution: `src/api/akv_bootstrap.py` (`AZURE_CLIENT_ID`)
 
 ## Monitoring & Observability
 
 **Error Tracking:**
-- None dedicated (no Sentry/Rollbar detected). API emits structured errors and logs (`src/api/app.py`).
+- No dedicated error-tracking SaaS (e.g., Sentry) detected.
+
+**Telemetry/Tracing:**
+- OpenTelemetry API (`opentelemetry-api`) - `src/fabric/telemetry.py`
+- Azure alerting configured via Terraform - `infra/terraform/alerting.tf`
 
 **Logs:**
-- OpenTelemetry metric instrumentation in API (`src/api/telemetry.py`).
-- Azure Container Apps probes + Application Insights/Log Analytics wiring in Terraform (`infra/terraform/container_apps.tf`).
+- Standard Python `logging` module usage observed (e.g., `src/api/runtime.py` imports `logging`)
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Azure Container Apps hosts backend and frontend containers (`infra/terraform/container_apps.tf`).
-- Azure Container Registry stores images referenced by Terraform (`infra/terraform/container_apps.tf`).
+- Azure Container Apps - `infra/terraform/container_apps.tf`
+- Azure API Management (APIM) front door for API/MCP proxy - `infra/terraform/apim.tf`, `apim-mcp-proxy.tf`, `apim-policies/`
+- Container images built via `Dockerfile` (Operations API), `Dockerfile.azure-mcp`, `Dockerfile.mcp`
 
 **CI Pipeline:**
-- GitHub Actions workflow exists at `.github/workflows/ci.yml` with backend (ruff/pytest), frontend (lint/test/build), and Trivy SARIF security scan jobs.
+- Not confirmed from files inspected (no `.github/workflows` reviewed in this pass) — check root for GitHub Actions config if present.
+
+**Infrastructure as Code:**
+- Terraform - `infra/terraform/*.tf` (main, providers, variables, outputs, mcp_server, azure_mcp_server, fabric, foundry, persistence, alerting, apim)
+- Deployment scripts: `infra/scripts/configure-entra-app-roles.sh`, `infra/scripts/rollback-apim-mcp.sh`, `scripts/`
 
 ## Environment Configuration
 
-**Required env vars:**
-- API auth/runtime: `HERMES_API_AUTH`, `HERMES_API_TOKENS`, `HERMES_API_GATEWAY_GRANTS`, `HERMES_ENTRA_TENANT_ID`, `HERMES_ENTRA_AUDIENCE`, `HERMES_API_CORS_ORIGINS` (`src/api/runtime.py`, `src/api/app.py`).
-- State/Fabric: `HERMES_HOME`, `HERMES_FABRIC_CONFIG`, `FABRIC_WORKSPACE_ID`, `FABRIC_LAKEHOUSE_ID`, `FABRIC_ONTOLOGY_NAME`, `AZURE_CLIENT_ID` (`src/api/runtime.py`, `infra/terraform/container_apps.tf`).
-- Key Vault onboarding/bootstrap: `HERMES_CONNECTION_KEY_VAULT`, `HERMES_AKV_BOOTSTRAP_ENABLED`, `HERMES_AKV_BOOTSTRAP_SECRETS` (`src/api/akv_bootstrap.py`, `src/onboarding/credentials.py`).
-- Foundry Copilot: `FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_AGENT_NAME`, `FOUNDRY_API_VERSION` (`src/operations/foundry_agent.py`).
-- Optional vuln feed auth: `NVD_API_KEY` (`src/intelligence/vulnerability/connector.py`).
-- Frontend runtime/public config: `NEXT_PUBLIC_HERMES_API_BASE_URL`, `NEXT_PUBLIC_ENTRA_CLIENT_ID`, `NEXT_PUBLIC_ENTRA_TENANT_ID`, `NEXT_PUBLIC_ENTRA_API_SCOPE` (`web/src/lib/api-client.ts`, `web/src/lib/auth.ts`).
+**Required env vars (non-secret names only):**
+- `AIOPS_ARG_CONFIG`, `AIOPS_FABRIC_CONFIG` - config file paths
+- `AIOPS_REFRESH_TRIGGER_SECRET` - refresh endpoint trigger secret (value not read)
+- `AIOPS_HOME` - local state root override
+- `AIOPS_ENTRA_TENANT_ID`, `AIOPS_ENTRA_AUDIENCE` (gateway auth mode)
+- `AZURE_CLIENT_ID` - managed identity / Key Vault client
+- `NVD_API_KEY` - optional vulnerability feed API key
+- `APPROVED_SEARCH_API_KEY` - approved search API key gate
+- Foundry: `ENV_PROJECT_ENDPOINT`, `ENV_AGENT_NAME`, `FOUNDRY_AGENT_VERSION`, `FOUNDRY_<SPECIALIST>_AGENT_NAME/VERSION`, timeout/retry/circuit-breaker vars
 
 **Secrets location:**
-- Production secrets are expected in Azure Key Vault and/or secret-backed environment values (`src/onboarding/credentials.py`, `src/api/akv_bootstrap.py`, `infra/terraform/container_apps.tf`).
-- Local secret material is environment-driven (for example `env://AZURE_CLIENT_SECRET`) and intentionally not persisted in plaintext (`src/hermes_arg_connector/local.py`, `src/onboarding/credentials.py`).
+- Azure Key Vault (`azure-keyvault-secrets` SDK, `src/api/akv_bootstrap.py`) for production secret retrieval
+- Local `.aiops-local/` directory present in workspace (connections, state) — not inspected for contents (forbidden/sensitive)
+- No `.env` file detected in repo root listing
 
 ## Webhooks & Callbacks
 
 **Incoming:**
-- None detected. API surface is standard request/response FastAPI routes under `src/api/routers/` (inventory via `src/api/routers/*.py`).
+- Refresh trigger endpoint gated by `AIOPS_REFRESH_TRIGGER_SECRET` - `src/api/routers/inventory.py` (acts as a manually-triggered webhook-style endpoint)
 
 **Outgoing:**
-- None detected for webhook-style push delivery.
-- Outbound integrations are pull/request-based HTTP or CLI invocations (Azure APIs, Fabric APIs, Foundry APIs, public vulnerability feeds) (`src/hermes_arg_connector/azure.py`, `src/fabric/fabric_client.py`, `src/operations/foundry_agent.py`, `src/intelligence/vulnerability/connector.py`).
+- None detected (no outbound webhook dispatch code found in this pass)
 
 ---
 
-*Integration audit: 2026-08-24*
+*Integration audit: 2026-09-01*

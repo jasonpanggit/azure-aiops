@@ -1,155 +1,155 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-08-24
+**Analysis Date:** 2026-09-01
 
 ## Tech Debt
 
-**Large multi-responsibility modules:**
-- Issue: Core behavior is concentrated in very large modules (semantic query/runtime assembly, synchronization orchestration, and intelligence processing).
-- Files: `src/semantic/semantic_engine.py`, `src/fabric/sync_service.py`, `src/api/runtime.py`, `src/intelligence/patch/patch_intelligence.py`, `src/agents/operations/operations_agent.py`
-- Impact: Changes cut across multiple concerns, increasing regression risk and review complexity.
-- Fix approach: Extract narrow services behind stable interfaces (query execution, provider composition, synchronization phases) while preserving route and data contracts.
+**MCP dispatcher — unimplemented tool dispatch:**
+- Issue: `TODO: Dispatch tool call to azure-mcp-server library with resolved credential` — the standalone MCP server app has a code path that is explicitly not wired up.
+- Files: `src/mcp_server/app.py:213`
+- Impact: Depending on which code path is live vs. superseded by the ACA-deployed Microsoft Azure MCP Server (per `.planning/STATE.md` Phase 09-11), this may be dead/legacy code, or an unfinished fallback. Needs disambiguation before further work builds on it.
+- Fix approach: Confirm whether `src/mcp_server/app.py` is still on the serving path post-09-11 pivot to the official Azure MCP Server in ACA; if legacy, remove or clearly mark deprecated; if live, complete the dispatch implementation.
 
-**Storage behavior is split across multiple backends and code paths:**
-- Issue: Local filesystem and OneLake paths diverge across `Path`, fsspec, and Data Lake SDK logic, including lock semantics and atomic publish behavior.
-- Files: `src/hermes_arg_connector/storage.py`, `src/hermes_arg_connector/onelake_fs.py`, `src/hermes_arg_connector/locking.py`, `src/storage/onelake_writer.py`, `src/storage/onelake_documents.py`
-- Impact: Correctness guarantees differ by environment, making production-only failures more likely.
-- Fix approach: Define one storage/locking contract with conformance tests that run against both local and OneLake implementations.
+**Coarse per-process circuit breaker as a stand-in for real throttling:**
+- Issue: `MAX_CALLS = 100_000` in the MCP dispatcher is a blunt, per-process lifetime cap (previously a much lower `25` that caused whole-container failure after 25 calls across *all* users — fixed this session per STATE.md).
+- Files: `src/operations/mcp_server.py:23`
+- Impact: Real throttling now depends entirely on APIM's `rate-limit-by-key`/`quota-by-key` policies; if those policies are ever removed or misconfigured, there is no meaningful in-process protection against runaway tool-calling loops from a single caller.
+- Fix approach: Document the split responsibility clearly in code comments (already partially done) and add an integration test asserting APIM rate-limit policies exist and are attached to the MCP surface.
 
-**Exception handling policy is inconsistent and often broad:**
-- Issue: Broad `except Exception` handlers are used in runtime composition, refresh loops, and sync paths, which can hide root causes behind degraded states.
-- Files: `src/api/app.py`, `src/api/runtime.py`, `src/api/providers.py`, `src/fabric/sync_service.py`, `src/hermes_arg_connector/service.py`, `src/operations/autonomous_investigation.py`
-- Impact: Operators get less precise failure diagnostics and engineers face longer incident triage time.
-- Fix approach: Narrow exception boundaries to expected failure classes and emit structured failure reasons with actionable remediation context.
+**Widespread repetition of magic serialization/row limits:**
+- Issue: `max_serialized_bytes=1_000_000` (and similar `max_resources`, `max_history_rows`, `max_output_items` defaults) is duplicated as a literal default across at least 8 intelligence-engine constructors instead of a shared constant/config object.
+- Files: `src/intelligence/predictive/predictive_intelligence.py:57`, `src/intelligence/change/change_intelligence.py:56`, `src/intelligence/lifecycle/lifecycle_intelligence.py:71`, `src/intelligence/patch/patch_intelligence.py:231`, `src/intelligence/incident/incident_intelligence.py:70`, `src/intelligence/remediation/remediation_planner.py:78`, `src/agents/operations/operations_agent.py:96`, `src/semantic/semantic_engine.py:66`
+- Impact: Tuning these limits (e.g., raising payload caps for a larger tenant) requires touching 8+ files; easy to miss one and get inconsistent truncation behavior across specialist agents.
+- Fix approach: Extract a shared `IntelligenceEngineLimits` dataclass/constants module and have each engine's constructor default to it.
+
+**Large "god files" concentrating too much responsibility:**
+- Issue: Several files exceed 1,000–1,900 lines, suggesting they've absorbed multiple responsibilities over time.
+- Files: `src/api/runtime.py` (1,929 lines, 10 broad `except Exception` blocks), `src/semantic/semantic_engine.py` (1,885), `src/fabric/sync_service.py` (1,415, 4 broad excepts), `src/operations/autonomous_investigation.py` (1,128, 7 broad excepts), `src/intelligence/patch/patch_intelligence.py` (1,107), `src/fabric/dataset_mapper.py` (1,094), `src/agents/operations/operations_agent.py` (1,033), `src/intelligence/inventory/service.py` (1,015)
+- Impact: High cognitive load for onboarding/modification; higher risk of regressions when touching shared state inside these modules; harder to unit test in isolation.
+- Fix approach: When next touching these files for feature work, extract cohesive sub-responsibilities (e.g., runtime.py's request-handling vs. lifecycle-management vs. error-formatting) into dedicated modules rather than adding more code inline.
+
+**Confidence-score magic numbers being actively remediated:**
+- Issue: A comment in the ontology layer notes "Confidence values used to be hardcoded magic numbers scattered across [call sites]" — implying a partial migration to a central module.
+- Files: `src/ontology/confidence.py:3,21`
+- Impact: If any call sites were missed during the migration, confidence scoring could be inconsistent between entity types.
+- Fix approach: Grep for any remaining bare float confidence literals outside `confidence.py` and migrate them.
 
 ## Known Bugs
 
-**OneLake connector lock lease can expire during long ingestion runs:**
-- Symptoms: `RunLock` uses a finite `LEASE_DURATION_SECONDS = 60`, and `IngestionService.run()` acquires the lock once without periodic renewal.
-- Files: `src/hermes_arg_connector/locking.py`, `src/hermes_arg_connector/service.py`
-- Trigger: Long-running ingestion exceeds 60 seconds while writing/normalizing large estates.
-- Workaround: Operate with a single replica and shorter runs; this is operationally fragile and not deterministic.
+**Previously fixed but worth regression-testing (per STATE.md history):**
+- Symptoms (historical): MCP dispatcher permanently broke every container after 25 total tool calls across all users (lifetime, not per-request cap); APIM `/mcp-server` HTTP 500 from null JWT-claim dereference; MCP tool-error results crashing the Foundry .NET MCP client; empty-string (`""`) optional tool arguments rejected by Pydantic `min_length=1`; `apim_publisher_email` empty string tripping the wrong Terraform validator; `foundry_model_capacity` silently reverted by every `terraform apply`.
+- Files: `src/operations/mcp_server.py`, `src/operations/page_context.py` (field validators — `min_length=1` pattern is still present elsewhere and should be checked for the same optional-empty-string trap), APIM policy XML (not in this repo tree directly reviewed), `scripts/deploy.sh` / `.env.local`
+- Trigger: All were discovered during live end-to-end testing in the 09-11 phase, not caught by the existing test suite.
+- Workaround/status: Fixed as of the last STATE.md update, but the fact these shipped past 1583 passing tests signals a coverage gap around live multi-tool-call agent turns and Terraform env-var plumbing — see Test Coverage Gaps below.
 
-**Timed-out autonomous investigation threads can continue running:**
-- Symptoms: Futures are cancelled when possible, but the executor is shut down with `wait=False`, so in-flight work can outlive request timeout.
-- Files: `src/operations/autonomous_investigation.py`, `src/api/routers/multi_agent.py`
-- Trigger: Investigation timeout with agents blocked on external calls or long computation.
-- Workaround: Lower timeout and reduce agent fan-out; behavior remains best-effort due to non-cooperative thread cancellation.
+**4 pre-existing test failures (unspecified):**
+- Symptoms: STATE.md reports "Full suite: 1583/1587 ✅ (4 pre-existing failures in unrelated areas, last checked pre-session)".
+- Files: Unknown — not identified in STATE.md; requires running `pytest -q` (blocked in this sandbox: `python` binary not on PATH) to identify.
+- Trigger: Unknown until re-run with correct interpreter (likely `uv run pytest` given `pyproject.toml`/`uv.lock` present).
+- Workaround: None documented; treated as accepted/known debt.
 
 ## Security Considerations
 
-**Header-based principal assertion depends on strict perimeter trust:**
-- Risk: `HeaderPrincipalAuthenticator` trusts asserted headers and does not verify bearer tokens itself.
-- Files: `src/api/auth.py`, `src/api/runtime.py`
-- Current mitigation: Entra JWT auth path exists and header mode requires configured grants resolver.
-- Recommendations: Default production auth to `EntraJwtAuthenticator`, and enforce ingress policy preventing direct access paths that can spoof assertion headers.
+**Bare/broad exception handling around API and sync boundaries:**
+- Risk: 10 broad `except Exception` blocks in `src/api/runtime.py`, 7 in `src/operations/autonomous_investigation.py`, 4 in `src/fabric/sync_service.py` risk silently swallowing security-relevant failures (auth errors, credential resolution failures) and returning generic success/empty responses instead of surfacing them.
+- Files: `src/api/runtime.py`, `src/operations/autonomous_investigation.py`, `src/fabric/sync_service.py`
+- Current mitigation: Not verified in this pass — would need per-block review to confirm whether errors are re-raised, logged with detail, or truly swallowed.
+- Recommendations: Audit each broad except for whether it (a) logs the original exception with stack trace, (b) narrows to expected exception types where feasible, and (c) never converts an auth/credential failure into a "no results" response that could mask an access problem as an empty dataset.
 
-**CORS and ingress defaults are permissive for credential-bearing requests:**
-- Risk: API enables `allow_credentials=True`, `allow_methods=["*"]`, `allow_headers=["*"]`, and Terraform defaults `api_external_ingress` to true.
-- Files: `src/api/app.py`, `infra/terraform/variables.tf`, `infra/terraform/container_apps.tf`
-- Current mitigation: Localhost origins are defaulted for development, and deployments can override origins.
-- Recommendations: Make external ingress opt-in by default, constrain CORS methods/headers, and enforce HTTPS-only origin validation in production.
+**CORS origins configurable via env var, defaults to localhost:**
+- Risk: `AIOPS_API_CORS_ORIGINS` defaults to `http://localhost:3000,http://127.0.0.1:3000` and is otherwise a comma-split list with no allowlist validation against known-good production domains.
+- Files: `src/api/app.py:219-224`
+- Current mitigation: Requires explicit env var override for non-local origins — safe by default, but if misconfigured with a wildcard or overly broad value in production, `CORSMiddleware` would honor it verbatim.
+- Recommendations: Add a startup assertion that rejects `*` in `allow_origins` when running in a non-dev environment, and document required production values alongside `deploy.sh`.
 
-**Key Vault and deployment secrets posture is broad:**
-- Risk: App identity gets `Key Vault Secrets Officer`, and Terraform providers still consume `client_secret` as input.
-- Files: `infra/terraform/main.tf`, `infra/terraform/providers.tf`, `infra/terraform/variables.tf`, `src/api/routers/admin.py`
-- Current mitigation: Sensitive Terraform variables are flagged as sensitive and Key Vault is used instead of plaintext persistence.
-- Recommendations: Move deployment auth to workload identity/OIDC, reduce runtime role privileges where feasible, and add policy checks against local/unsafe state handling.
+**Multi-subscription managed identity credential model (recent architecture change):**
+- Risk: Per `.planning/STATE.md`, the Azure MCP Server now authenticates via a dedicated user-assigned managed identity with per-subscription role assignments (`local.azure_mcp_subscriptions` for-each) rather than the originally-scoped SPN+AKV model. This reduces credential-rotation surface but concentrates a single identity's blast radius across all onboarded subscriptions.
+- Files: Terraform config referenced in STATE.md (not directly reviewed in this pass — see `infra/`)
+- Current mitigation: Per-subscription role assignments scope what the identity can do in each subscription.
+- Recommendations: Verify (via `infra/`) that role assignments are least-privilege per subscription (e.g., `Reader` not `Contributor`) and that the discovery profile is read-only as intended per `BACKLOG.md` HOG-010 ("Azure MCP discovery profile is read-only and namespace-filtered").
+
+**Internet-exposed CIDR detection logic (0.0.0.0/0) — verify completeness:**
+- Risk: Network-security gap detection (route tables, NSGs) relies on string-literal matching against `{"internet", "*", "0.0.0.0/0", "any"}` and `"::/0"` for IPv6; any additional equivalent notations (e.g., `0.0.0.0/1` + `128.0.0.0/1` split-default-route tricks, or non-normalized CIDR strings with leading zeros) could bypass detection.
+- Files: `src/intelligence/predeploy/simulation.py:211`, `src/network/models.py:449`, `src/network/design.py:122`, `src/network/gaps.py:225,255`, `src/network/addressing.py:52,81`
+- Current mitigation: Explicit set-based matching covers the common cases.
+- Recommendations: Add test cases for CIDR-splitting evasion patterns and confirm addresses are normalized (case, prefix padding) before comparison.
 
 ## Performance Bottlenecks
 
-**Freshness fallback performs full-table Delta scans:**
-- Problem: If SQL endpoint aggregation fails, freshness logic iterates full rows across governed tables to find a max timestamp.
-- Files: `src/fabric/sync_service.py`
-- Cause: `_global_freshness_watermark()` falls back from SQL max aggregation to repeated `delta.read()` scans.
-- Improvement path: Persist incremental table watermarks on write and query metadata/aggregates instead of full reads.
+**Large in-memory serialization caps suggest potential payload-size pressure:**
+- Problem: Every intelligence engine independently caps output at ~1MB serialized bytes and bounds `max_resources`/`max_history_rows` in the low thousands — implying these engines have previously hit or approached payload/timeout limits (likely APIM or Foundry response-size limits).
+- Files: See "magic serialization/row limits" list above under Tech Debt.
+- Cause: Aggregating full tenant history/resource sets in-process before truncation, rather than pushing filtering down to the data source (Fabric/OneLake queries) with server-side limits.
+- Improvement path: Where possible, push `max_resources`/`max_history_rows` filtering into the OneLake/Fabric query layer (`src/fabric/`) rather than fetching-then-truncating in Python.
 
-**Dataset publishing materializes full JSONL and Parquet payloads in memory:**
-- Problem: `_write_dataset()` builds complete JSONL strings and full `pyarrow.Table.from_pylist(...)` before writing.
-- Files: `src/hermes_arg_connector/storage.py`
-- Cause: Serialization pipeline is batch-in-memory, not streaming/chunked.
-- Improvement path: Introduce chunked writers for JSONL/Parquet and enforce upper bounds per dataset generation.
-
-**Process-local refresh loops duplicate expensive work across replicas:**
-- Problem: Each API process runs its own background provider refresh thread.
-- Files: `src/api/app.py`, `src/api/providers.py`
-- Cause: Refresh scheduling and state are instance-local rather than coordinated.
-- Improvement path: Add distributed refresh coordination and shared freshness markers.
+**Large god-files with high cyclomatic complexity risk slow iteration, not necessarily slow runtime:**
+- Problem: `src/api/runtime.py` at 1,929 lines is a likely hotspot for request-handling latency debugging given it's both large and exception-heavy.
+- Files: `src/api/runtime.py`
+- Cause: Concentration of many code paths in one module.
+- Improvement path: Once split (see Tech Debt), profile each extracted module independently.
 
 ## Fragile Areas
 
-**Multi-stage sync transaction boundaries:**
-- Files: `src/fabric/sync_service.py`, `src/storage/delta_writer.py`, `src/ontology/ontology_publisher.py`
-- Why fragile: Sync spans dataset mapping, parallel writes, ontology publication, and state transition/rollback handling across separate subsystems.
-- Safe modification: Preserve idempotent run IDs and explicit failure-stage semantics; add failure-injection tests for each stage boundary.
-- Test coverage: `tests/test_incremental_sync.py`, `tests/test_ontology_sync.py`, and `tests/test_delta_tables.py` cover primary flows but not full stage-failure permutations in live environments.
+**`src/api/runtime.py` (1,929 lines, 10 broad excepts):**
+- Files: `src/api/runtime.py`
+- Why fragile: Largest file in the codebase, heaviest use of broad exception handling; any change risks silently altering error-handling behavior for unrelated request paths.
+- Safe modification: Add narrow unit tests around the specific handler being changed before modifying; avoid adding new logic inline — extract to a new module and call from `runtime.py`.
+- Test coverage: Not verified directly (pytest run blocked by missing `python` binary in sandbox — verify with `uv run pytest tests/ -q`).
 
-**Authorization + scope filtering on nested payloads:**
-- Files: `src/api/rbac.py`, `src/api/scope.py`, `src/api/routers/context.py`, `src/api/routers/copilot.py`, `src/api/routers/operations.py`
-- Why fragile: Correctness depends on both action authorization and post-query scope filtering across diverse payload structures.
-- Safe modification: Apply scope projection immediately after data retrieval and require explicit scope tests for every new response field.
-- Test coverage: `tests/test_api_primitives.py` validates core grant behavior, but route-level regression coverage is uneven for newly added nested response shapes.
+**`src/operations/autonomous_investigation.py` (1,128 lines, 7 broad excepts) and `src/operations/foundry_agent.py` (802 lines):**
+- Files: `src/operations/autonomous_investigation.py`, `src/operations/foundry_agent.py`
+- Why fragile: This is the live MAF-orchestration path (per STATE.md, MAF is now the default Operations Copilot mode) driving all 8 specialist agents through APIM → MCP → Fabric/backend. Bugs here (as evidenced by the string of live-testing fixes in Phase 09-11: JWT null-ref, MAX_CALLS lifetime cap, empty-string validation, tool-error response format) were not caught by the existing 1583-test suite — they only surfaced in live end-to-end smoke testing.
+- Safe modification: Any change to tool-calling response parsing (`_extract_text`, `_post_once`/`_post` in `foundry_agent.py`) should be paired with a live smoke test against a real Foundry agent, not just unit tests against mocked response shapes.
+- Test coverage: `test_foundry_agent.py` reported 15/15 passing, but this only covers what's mocked; the actual bugs fixed this session were response-shape edge cases the mocks didn't represent.
 
-**Remote locking semantics differ between connector and sync writer:**
-- Files: `src/hermes_arg_connector/locking.py`, `src/storage/onelake_writer.py`, `src/fabric/sync_service.py`, `src/hermes_arg_connector/service.py`
-- Why fragile: Connector uses finite renewable leases while sync writer uses explicit Data Lake lock files with indefinite lease/break behavior.
-- Safe modification: Unify lock lifecycle policy and provide common lease telemetry (acquire, renew/break, release).
-- Test coverage: `tests/test_run_lock.py` exercises lock semantics in isolation, but end-to-end multi-replica contention is not covered.
+**Terraform env-var plumbing for deploy-time configuration (`deploy.sh` / `.env.local`):**
+- Files: `scripts/deploy.sh`, `web/.env.local` (not committed — config only)
+- Why fragile: Two silent-failure incidents this session: an unset `apim_publisher_email` producing a misleading Terraform validator error, and an unwired `AIOPS_FOUNDRY_MODEL_CAPACITY` causing a manual TPM quota bump to be silently reverted by every subsequent `terraform apply`. Both are examples of Terraform variables that have defaults tripping the wrong validation path, or variables not wired from the deploy script at all.
+- Safe modification: Before adding any new Terraform variable that has manual/out-of-band operational significance (like quota bumps), audit `deploy.sh` to confirm it's threaded through end-to-end, and add a `terraform plan` diff check to CI/pre-apply flow to catch silent reverts.
+- Test coverage: None — these are operational/infra issues not covered by the Python test suite.
 
 ## Scaling Limits
 
-**Azure Resource Graph extraction has hard pagination ceilings:**
-- Current capacity: Default `page_size=1000` and `max_pages=1000` permit up to one million rows per query.
-- Limit: Larger estates truncate/fail once maximum pages are exhausted.
-- Scaling path: Add resumable checkpoints and partitioned query execution by subscription/management group.
-- Files: `src/hermes_arg_connector/config.py`, `src/hermes_arg_connector/azure.py`, `src/hermes_arg_connector/source.py`
+**Per-process MCP call cap:**
+- Current capacity: 100,000 lifetime tool calls per container process (raised from a bug-level 25).
+- Limit: Once a container process reaches 100,000 total calls across all users, it will hard-stop; container recycling (restarts/redeploys) resets the counter.
+- Scaling path: Convert to a proper time-windowed or per-caller counter, or remove the process-level counter entirely and rely solely on APIM policies, to avoid an unplanned outage under sustained high traffic.
 
-**Large in-memory snapshots and projections:**
-- Current capacity: Providers and services repeatedly materialize full table payloads in Python objects.
-- Limit: Memory and tail latency scale with ontology + intelligence table growth.
-- Scaling path: Push pagination/aggregation into Delta SQL paths and use bounded caching.
-- Files: `src/fabric/sync_service.py`, `src/api/providers.py`, `src/semantic/semantic_engine.py`
+**APIM rate-limit policy tuned by trial (60→300 calls/60s):**
+- Current capacity: 300 calls per 60 seconds (raised this session because 60 was tripped by legitimate multi-tool-call agent turns).
+- Limit: Not derived from a capacity model — an empirically-adjusted number that may need re-tuning as more specialist agents or higher-complexity investigation flows are added (8 specialists × N tool calls per turn).
+- Scaling path: Model expected tool-calls-per-turn across all 8 specialists and set the policy from that, rather than continuing to bump it reactively when it trips.
 
 ## Dependencies at Risk
 
-**Azure CLI install path relies on remote bootstrap script:**
-- Risk: Runtime image installs Azure CLI via `curl -sL https://aka.ms/InstallAzureCLIDeb | bash` and then adds `resource-graph` extension.
-- Files: `Dockerfile`
-- Impact: Build reproducibility and supply-chain integrity depend on mutable remote artifacts.
-- Migration plan: Pin packaged CLI versions and extension versions with integrity verification.
+**Not assessed in this pass** — no `requirements.txt`/`pyproject.toml` dependency audit performed. Recommend a follow-up `pip list --outdated` / `uv pip list --outdated` pass, particularly for the Foundry/Azure SDK and MCP client libraries given how much of this milestone's work involved fixing MCP tool-calling response-format incompatibilities (suggesting version-sensitivity between Foundry's .NET MCP client and this repo's Python dispatcher).
 
 ## Missing Critical Features
 
-**No durable async job model for long-running operations:**
-- Problem: Sync and autonomous investigations are request-coupled or process-thread coupled.
-- Blocks: Reliable retries, resumability, progress tracking, and deterministic cancellation across replicas.
-- Files: `src/api/routers/connections.py`, `src/api/routers/multi_agent.py`, `src/fabric/sync_service.py`, `src/api/app.py`
-
-**No distributed provider-refresh ownership:**
-- Problem: Provider refresh is process-local, so replicas can drift in freshness and degradation state.
-- Blocks: Predictable multi-replica behavior and single-source runtime health truth.
-- Files: `src/api/app.py`, `src/api/providers.py`, `src/api/runtime.py`
+**Read-only/least-privilege verification for Azure MCP discovery profile:**
+- Problem: `BACKLOG.md` (HOG-010) specifies "Azure MCP discovery profile is read-only and namespace-filtered" as a requirement, but this pass did not verify the current Terraform role assignments (`local.azure_mcp_subscriptions`) actually enforce Reader-only access per subscription.
+- Blocks: Confidence that the new managed-identity model (replacing SPN+AKV) doesn't over-provision write access across subscriptions.
 
 ## Test Coverage Gaps
 
-**Ingress/CORS security posture is not explicitly integration-tested:**
-- What's not tested: Production-like combinations of ingress exposure + credentialed CORS behavior.
-- Files: `src/api/app.py`, `infra/terraform/container_apps.tf`, `infra/terraform/variables.tf`
-- Risk: Configuration drift can silently widen exposure.
-- Priority: High
+**Live multi-tool-call agent turns (Foundry ↔ MCP ↔ APIM):**
+- What's not tested: The full request/response shape of real Foundry Responses API tool-calling turns (`mcp_call`/`mcp_list_tools`/`message` output items), tool-error propagation format, and empty-string optional-argument handling.
+- Files: `src/operations/foundry_agent.py`, `src/operations/mcp_server.py`, `src/operations/page_context.py`
+- Risk: This exact class of bug (JWT null-ref, MAX_CALLS lifetime cap, empty-string validation rejection, tool-error crash) shipped past the full 1583-test suite and was only caught by manual live smoke testing in Phase 09-11. Recurrence risk is high for any future change to the tool-calling contract.
+- Priority: High — add integration/contract tests using realistic (not idealized) Foundry response fixtures, including tool-error and empty-optional-argument cases.
 
-**Lease-expiry and multi-replica lock contention are under-tested end-to-end:**
-- What's not tested: Long-running ingestion with lease renewal behavior under real OneLake timing and competing writers.
-- Files: `src/hermes_arg_connector/locking.py`, `src/hermes_arg_connector/service.py`, `src/storage/onelake_writer.py`
-- Risk: Duplicate or overlapping ingestion writes during peak workloads.
-- Priority: High
+**Terraform deploy-time env-var wiring:**
+- What's not tested: Whether `deploy.sh` correctly threads every Terraform variable with operational significance (e.g., `apim_publisher_email`, `foundry_model_capacity`) end-to-end from `.env.local` through to `terraform apply`.
+- Files: `scripts/deploy.sh`
+- Risk: Silent reverts of manually-applied Azure quota/config changes on every deploy, as happened with the TPM quota this session.
+- Priority: Medium — add a `terraform plan`-diff smoke check (e.g., a CI step that fails if a known-important variable is not explicitly passed).
 
-**Timeout/cancellation semantics for multi-agent runs lack stress coverage:**
-- What's not tested: Request timeout behavior with agents blocked on external dependencies while futures continue beyond timeout.
-- Files: `src/operations/autonomous_investigation.py`, `src/api/routers/multi_agent.py`, `src/operations/foundry_agent.py`
-- Risk: Background resource leakage and inconsistent operator expectations after timeout responses.
-- Priority: Medium
+**4 unidentified pre-existing failing tests:**
+- What's not tested/known: STATE.md references "4 pre-existing failures in unrelated areas" without naming them.
+- Files: Unknown — needs `uv run pytest -q` (or equivalent) to enumerate.
+- Risk: Could mask a real regression if not tracked explicitly (i.e., a 5th new failure could go unnoticed if compared only against the vague "4 known" baseline).
+- Priority: Medium — name and file-issue-track the 4 known failures so future runs can diff against an explicit list, not a count.
 
 ---
 
-*Concerns audit: 2026-08-24*
+*Concerns audit: 2026-09-01*

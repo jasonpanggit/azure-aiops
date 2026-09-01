@@ -1,200 +1,259 @@
-<!-- refreshed: 2026-08-24 -->
+<!-- refreshed: 2026-09-01 -->
 # Architecture
 
-**Analysis Date:** 2026-08-24
+**Analysis Date:** 2026-09-01
 
 ## System Overview
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│                         Entry Points                         │
-│ `src/api/app.py`  `src/hermes_arg_connector/cli.py`          │
-│ `__init__.py` / `hermes_plugin.py`  `scripts/`              │
-└──────────────┬───────────────────────┬───────────────────────┘
-               │                       │
-               ▼                       ▼
-┌─────────────────────────┐  ┌────────────────────────────────┐
-│ API / Agent Surface      │  │ Ingestion & Onboarding          │
-│ `src/api/routers/`       │  │ `src/hermes_arg_connector/`     │
-│ `src/agents/operations/` │  │ `src/onboarding/`               │
-└──────────────┬──────────┘  └───────────────┬────────────────┘
-               │                            │
-               ▼                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Semantic and Intelligence Services                            │
-│ `src/semantic/` `src/intelligence/` `src/network/`             │
-│ `src/operations/`                                              │
-└──────────────────────────────┬───────────────────────────────┘
-                               ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Persistence and Ontology Projection                            │
-│ `src/fabric/` `src/storage/` `src/ontology/`                    │
-│ OneLake/Delta tables and Fabric Ontology                        │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Web Frontend (Next.js)                          │
+│  `web/src/app/*` (page drawers) + `web/src/components/*`            │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                 │ REST (envelope: data/evidence/scope)
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Operations API (FastAPI)                         │
+│  `src/api/app.py` (factory) + `src/api/routers/*` (per-domain)      │
+│  auth/rbac/scope/errors/telemetry cross-cutting in `src/api/*`      │
+└───────┬───────────────┬───────────────┬───────────────┬─────────────┘
+        │               │               │               │
+        ▼               ▼               ▼               ▼
+┌───────────────┐ ┌────────────┐ ┌──────────────┐ ┌───────────────────┐
+│ Semantic Layer│ │ Operations │ │  Onboarding/  │ │  Domain services   │
+│ `src/semantic`│ │ Copilot    │ │  Ingestion    │ │ network/patching/  │
+│ (ontology     │ │ `src/      │ │ `src/         │ │ situations/        │
+│ snapshot read)│ │ operations`│ │ onboarding`   │ │ intelligence/*     │
+└───────┬───────┘ └─────┬──────┘ └──────┬────────┘ └──────────┬─────────┘
+        │               │               │                     │
+        │        ┌──────┴───────┐       │                     │
+        │        ▼              ▼       ▼                     ▼
+        │   Foundry Agents   Azure MCP   Azure APIs (ARG/ARM/  Fabric
+        │  (`foundry_agent.py`, (via APIM  Monitor/etc via     pipelines
+        │   maf_orchestrator)   proxy)     `onboarding/azure_   `src/
+        │                                  clients.py`)        fabric_pipelines`
+        ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│         Fabric / OneLake curated store (durable graph state)        │
+│  `src/storage/*` (writers) + `src/ontology/*` (publish/reconcile)   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Standalone sidecar (separately deployed, not imported by the API):
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│   Azure MCP Server (Azure Container Apps, behind APIM)          │
+│   `src/mcp_server/app.py` — per-subscription SPN/tool relay      │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Component Responsibilities
 
 | Component | Responsibility | File |
 |-----------|----------------|------|
-| API application | Builds FastAPI middleware, routers, envelopes, telemetry, and lifecycle hooks | `src/api/app.py` |
-| API runtime | Wires authentication, providers, Fabric runtime, live sources, and cached snapshots | `src/api/runtime.py` |
-| ARG connector | Discovers subscriptions, executes approved queries, normalizes records, and publishes immutable local/OneLake generations | `src/hermes_arg_connector/service.py` |
-| Fabric sync | Maps source generations to bronze/silver/ontology datasets, validates quality, writes Delta, and refreshes ontology state | `src/fabric/sync_service.py` |
-| Semantic layer | Provides bounded graph, hybrid, live, search, and evidence-backed query services | `src/semantic/semantic_engine.py`, `src/semantic/hybrid_query.py` |
-| Intelligence modules | Analyze change, incident, lifecycle, patch, predictive, remediation, and vulnerability domains | `src/intelligence/` |
-| Operations agent | Composes semantic and intelligence engines into read-oriented operational analysis | `src/agents/operations/operations_agent.py` |
-| Ontology layer | Builds, validates, synchronizes, retires, and publishes graph entities and relationships | `src/ontology/` |
+| API app factory | Auth, routing, error translation, no business logic | `src/api/app.py` |
+| Routers | One file per domain surface (inventory, network, patching, governance, copilot, twin, situations, etc.) | `src/api/routers/*.py` |
+| Semantic Knowledge Layer | Reads governed ontology snapshot; assembles envelope responses; caching/index/hybrid query | `src/semantic/*.py` |
+| Operations Copilot | Question-first specialist delegation, MAF vs deterministic orchestration, Foundry agent invocation | `src/operations/maf_orchestrator.py`, `src/operations/autonomous_investigation.py`, `src/operations/foundry_agent.py` |
+| Specialist analyzers | Domain-specific reasoning invoked by the Copilot (network, vulnerability, incident, ownership, health, compliance, impact, recommendation) | `src/operations/*_analyzer.py`, `src/agents/operations/*.py` |
+| Patching service | Patch/exposure domain logic and adapters | `src/operations/patching/*.py` |
+| Onboarding/Ingestion | Connection registry, credential storage, discovery source adapters, scheduled sync into curated store | `src/onboarding/*.py` |
+| Ontology engine | Entity/relationship building, confidence scoring, publish/reconcile/validate against Fabric | `src/ontology/*.py` |
+| Fabric integration | Fabric workspace/lakehouse/data-agent management, sync, schema registry | `src/fabric/*.py` |
+| Fabric pipelines | Per-domain batch pipelines (patch, vulnerability, governance, lifecycle, predeploy, topology, change) that build/publish curated tables | `src/fabric_pipelines/*.py` |
+| Storage | Delta/Parquet/OneLake writers, partitioning, locking | `src/storage/*.py` |
+| Situations | Durable "situation" (incident-like) materialization and store | `src/situations/*.py` |
+| Network domain | Topology, flow, addressing, rule-engine, gap analysis for network specialist | `src/network/*.py` |
+| Azure MCP Server (sidecar) | Centralized MCP tool execution with per-subscription SPN credential management, deployed standalone in ACA behind APIM | `src/mcp_server/app.py` |
+| Web frontend | Next.js App Router pages per domain drawer, shared UI components, API client/hooks | `web/src/app/*`, `web/src/components/*`, `web/src/lib/api-client.ts` |
+| Infra | Terraform (APIM, Container Apps, Foundry, Fabric, MCP server, alerting) + operational scripts | `infra/terraform/*.tf`, `infra/scripts/*.sh` |
 
 ## Pattern Overview
 
-**Overall:** Layered, service-oriented Python application with an ingestion/publishing plane and a read/query plane.
+**Overall:** Layered service architecture with a governed read-side ("Semantic Knowledge Layer") separated from write-side ingestion/ontology pipelines, fronted by a FastAPI backend and a Next.js frontend. AI reasoning is delegated to Microsoft Foundry agents that call tools only through a governed MCP proxy (APIM) — the app never lets an LLM write directly to the graph.
 
 **Key Characteristics:**
-- Application factories and runtime builders perform dependency composition; routers and CLI commands delegate to services.
-- Azure and enterprise sources remain authoritative. The system materializes normalized identity, relationships, provenance, quality, and curated projections rather than raw operational stores.
-- OneLake/Delta is the durable persistence boundary; Fabric Ontology is the semantic graph projection.
-- Domain intelligence is split into independently constructible engines, commonly created from a `SemanticEngine` snapshot.
-- Writes are guarded by locks, bounded by configuration, validated before commit, and exposed through immutable/versioned snapshots.
+- **Source-of-record separation:** Azure ARG/Monitor/Entra/ServiceNow/DevOps remain authoritative; the app materializes only identity/assertion/evidence/confidence projections (see root `ARCHITECTURE.md` for the full principle set — still authoritative for domain intent).
+- **Evidence-first envelope:** every API response following `EnvelopeModel` in `src/api/models.py` carries `data`, `evidence`, and `scope` — never raw model output as fact.
+- **Dual-MCP routing:** operations-mcp (curated/Fabric-backed) vs azure-mcp (live/authoritative ARM/ARG) are explicitly routed per specialist tool in `src/operations/tools.py` / Foundry tool registry (Terraform `foundry_tool_registry`).
+- **Deterministic-before-generative:** MAF orchestration mode is now default (`src/operations/maf_orchestrator.py`), with a documented rollback to deterministic page-anchored routing via `AIOPS_AGENT_ORCHESTRATION_MODE`.
+- **Read-only discovery, governed writes:** discovery/onboarding identities (`src/onboarding/credentials.py`, `registry.py`) are separate from any mutation path; agent-triggered actions require explicit policy.
 
 ## Layers
 
-**Entry and delivery layer:**
-- Purpose: Expose HTTP, CLI, Hermes plugin, scheduled, and local-development interfaces.
-- Location: `src/api/`, `src/hermes_arg_connector/cli.py`, `__init__.py`, `hermes_plugin.py`, `scripts/`
-- Contains: FastAPI routers, CLI subcommands, plugin registration, startup wrappers.
-- Depends on: Runtime builders and application services.
-- Used by: Web clients, Hermes, operators, and deployment scripts.
+**API/Presentation Layer:**
+- Purpose: HTTP surface, auth, RBAC/scope enforcement, error translation, OpenAPI
+- Location: `src/api/app.py`, `src/api/auth.py`, `src/api/rbac.py`, `src/api/scope.py`, `src/api/errors.py`, `src/api/dependencies.py`
+- Contains: FastAPI app factory, middleware, dependency-injected `ApiContext`/`OperatePrincipal`
+- Depends on: Semantic layer, Operations Copilot, Onboarding services (via routers)
+- Used by: Next.js web frontend (`web/src/lib/api-client.ts`), MCP tool relay
 
-**Source and onboarding layer:**
-- Purpose: Discover Azure subscriptions, connect credentials, scope ingestion, and retrieve live source data.
-- Location: `src/hermes_arg_connector/`, `src/onboarding/`, `src/semantic/live_provider.py`
-- Contains: Azure MCP/CLI adapters, query catalog, connection registry, onboarding services, live resource providers.
-- Depends on: Azure CLI/MCP, Key Vault abstractions, configured filesystem or OneLake roots.
-- Used by: Ingestion services, API providers, and CLI activation flows.
+**Router Layer:**
+- Purpose: Domain-scoped endpoint definitions (one router per feature area)
+- Location: `src/api/routers/*.py` (compliance, connections, context, copilot, governance, graph, inventory, mcp, multi_agent, network, operations, patching, planned, predeploy, resource_health, situations, twin, vulnerability)
+- Contains: Route handlers only; delegates business logic to semantic/operations/onboarding modules
+- Depends on: `src/semantic`, `src/operations`, `src/onboarding`, `src/network`, `src/situations`
 
-**Normalization and ontology layer:**
-- Purpose: Convert source-shaped records into canonical entity/relationship records and govern their lifecycle.
-- Location: `src/hermes_arg_connector/normalize.py`, `src/hermes_arg_connector/ontology.py`, `src/ontology/`
-- Contains: Entity/relationship builders, validators, graph synchronizer, ontology manager/publisher.
-- Depends on: Source payloads and schema/validation rules.
-- Used by: Dataset publication, Fabric mapping, and semantic query construction.
+**Semantic Knowledge Layer:**
+- Purpose: Serve governed ontology snapshot reads, blend with live operational data
+- Location: `src/semantic/*.py` (semantic_engine, hybrid_query, live_provider, live_operations, query_cache, semantic_indexes, semantic_validator)
+- Depends on: `src/ontology` (published graph), `src/storage` (curated tables)
+- Used by: routers, Operations Copilot (`foundry_agent.py` retrieval step)
 
-**Persistence and Fabric projection layer:**
-- Purpose: Publish source generations and project governed datasets into Fabric-compatible storage.
-- Location: `src/hermes_arg_connector/storage.py`, `src/fabric/`, `src/storage/`
-- Contains: Atomic generation store, Delta writer, OneLake writer, dataset mapper, schema registry, quality checks, sync service.
-- Depends on: Filesystem/OneLake, Fabric REST/authentication, Delta/Parquet tooling.
-- Used by: Semantic snapshots, API runtime, Fabric Ontology, and replay operations.
+**Operations/Agent Layer:**
+- Purpose: Copilot orchestration, specialist agent invocation, Foundry integration
+- Location: `src/operations/*.py`, `src/agents/operations/*.py`
+- Contains: `maf_orchestrator.py` (routing decision), `autonomous_investigation.py` (page_kind → specialist mapping), `foundry_agent.py` (Foundry Responses API client), per-domain analyzers
+- Depends on: Semantic layer (retrieval), Azure MCP/Fabric via tool calls (generation grounding only)
+- Used by: `src/api/routers/copilot.py`, `src/api/routers/multi_agent.py`, `src/api/routers/operations.py`
 
-**Semantic and domain intelligence layer:**
-- Purpose: Answer bounded graph/context questions and produce domain-specific operational analysis.
-- Location: `src/semantic/`, `src/intelligence/`, `src/network/`, `src/agents/operations/`
-- Contains: Graph indexes, query services, live composition, domain engines, context builders, summaries, and agent orchestration.
-- Depends on: Curated snapshots, live providers, and configured external enrichment connectors.
-- Used by: API routers, CLI operations, and the Hermes read-only tool.
+**Ingestion/Onboarding Layer:**
+- Purpose: Connection lifecycle, credential storage (Key Vault), scheduled discovery, curated-store writes
+- Location: `src/onboarding/*.py`
+- Depends on: `src/storage`, `src/ontology`, Azure SDK clients (`azure_clients.py`)
+- Used by: `src/api/routers/connections.py`, `src/api/routers/inventory.py`, scheduled jobs
+
+**Ontology Layer:**
+- Purpose: Entity/relationship construction, confidence scoring, publish/reconcile against Fabric IQ Ontology
+- Location: `src/ontology/*.py`
+- Depends on: `src/storage` (OneLake writers), `src/fabric` (Fabric client/data-agent manager)
+- Used by: `src/fabric_pipelines/*`, `src/semantic/*`
+
+**Fabric/Pipeline Layer:**
+- Purpose: Batch/scheduled pipelines building curated per-domain tables (patch, vulnerability, governance, lifecycle, predeploy, topology, change) and publishing to OneLake
+- Location: `src/fabric_pipelines/*.py`, `src/fabric/*.py`
+- Depends on: `src/storage`, `src/ontology`
+
+**Storage Layer:**
+- Purpose: Physical persistence (Delta/Parquet/OneLake), partitioning, locking
+- Location: `src/storage/*.py`
+- Used by: ontology, fabric_pipelines, onboarding
+
+**Frontend Layer:**
+- Purpose: Page drawers per operational domain, shared UI kit, API client
+- Location: `web/src/app/*` (Next.js App Router pages), `web/src/components/*`, `web/src/lib/*`
+- Depends on: Operations API via `web/src/lib/api-client.ts`
+
+**MCP Sidecar (independently deployed):**
+- Purpose: Centralized Azure tool execution with per-subscription managed-identity/SPN credential scoping, fronted by APIM
+- Location: `src/mcp_server/app.py`
+- Depends on: `src/onboarding/credentials.py`, `src/onboarding/registry.py`
+- Deployed via: `infra/terraform/azure_mcp_server.tf`, `Dockerfile.azure-mcp`
 
 ## Data Flow
 
-### Primary Ingestion and Publication Path
+### Primary Request Path (page drawer → answer)
 
-1. `src/hermes_arg_connector/cli.py:160` dispatches the `sync` action to ingestion.
-2. `src/hermes_arg_connector/service.py:48` acquires `RunLock`, then builds query specs with `QueryCatalog` (`src/hermes_arg_connector/service.py:70`).
-3. `src/hermes_arg_connector/service.py:82` normalizes merged source payloads via `Normalizer`, including historical change merge before watermark advancement.
-4. `src/hermes_arg_connector/service.py:86` publishes an immutable generation and `src/hermes_arg_connector/service.py:97` persists new state/watermarks.
-5. `src/fabric/sync_service.py` maps and writes curated datasets through `src/storage/delta_writer.py` into OneLake/Delta and updates ontology publication state.
-6. `src/semantic/semantic_engine.py` and domain engines consume the governed snapshot through runtime providers.
+1. User opens a page drawer in the web app; page fetches domain data via `web/src/lib/api-client.ts` → Operations API router (`src/api/routers/*.py`)
+2. Router resolves scope/RBAC via `src/api/scope.py` / `src/api/rbac.py`, then calls into `src/semantic/hybrid_query.py` or `live_provider.py` for envelope data
+3. Semantic layer reads the curated Fabric/OneLake snapshot (`src/storage/*`) and, where configured, blends live Azure calls (`src/semantic/live_operations.py`)
+4. Response returned as an `EnvelopeModel` (`data`/`evidence`/`scope`) — `src/api/models.py`
 
-### API Request Path
+### Copilot / Specialist Investigation Flow
 
-1. `src/api/app.py:192` creates the API and includes router modules at `src/api/app.py:227` through `src/api/app.py:238`.
-2. `src/api/runtime.py:1113` builds `ApiContext` providers, including semantic/live/hybrid paths, and is attached to app state in `src/api/app.py`.
-3. Router handlers in `src/api/routers/` resolve providers through dependencies (`src/api/dependencies.py`) and enforce auth/RBAC (`src/api/auth.py`, `src/api/rbac.py`).
-4. API responses are wrapped with evidence/scope envelopes (`src/api/evidence.py`, `src/api/models.py`), and failures are translated through `src/api/errors.py`.
-5. Health/readiness probes enter via `src/api/app.py:317` and `src/api/app.py:345`, which rely on runtime provider state.
+1. User asks a question in the Copilot drawer (`web/src/app/copilot/page.tsx`) → `src/api/routers/copilot.py` / `multi_agent.py`
+2. `src/operations/maf_orchestrator.py` decides orchestration strategy (MAF vs deterministic) and selects specialist(s) via `src/operations/autonomous_investigation.py` (`page_specialists` mapping)
+3. Selected specialist (`src/operations/*_analyzer.py`) retrieves grounding context from the Semantic layer, then invokes a Foundry agent (`src/operations/foundry_agent.py`) using the Responses API
+4. Foundry agent calls governed tools through APIM's MCP proxy — routed to either `operations-mcp` (curated/Fabric) or `azure-mcp` (live ARM/ARG via the standalone `src/mcp_server/app.py` sidecar)
+5. Narration is generated strictly from retrieved context; Copilot returns evidence-cited findings to the drawer
 
 **State Management:**
-- Connection, watermark, hash, and run state live under the configured Hermes root through `src/hermes_arg_connector/state.py`.
-- Source generations are immutable and selected via `current`; Fabric sync state and quality reports are written as Delta/OneLake metadata.
-- Runtime engines are cached/rebuilt by semantic version in `src/fabric/runtime.py`; API snapshot reads are TTL-cached in `src/api/runtime.py`.
-- Background provider refresh uses a daemon thread started by `src/api/app.py`.
+- No client-side global state store observed beyond React context (`web/src/lib/scope-context.tsx` for subscription/scope selection) and per-hook fetch state (`web/src/hooks/useApi.ts`)
+- Server-side state is the curated OneLake/Fabric snapshot plus onboarding connection registry (`src/onboarding/registry.py`); no in-process session state beyond request-scoped `ApiContext`
 
 ## Key Abstractions
 
-**Runtime composition:**
-- Purpose: Construct a coherent dependency graph for API, Fabric, and agent execution.
-- Examples: `src/api/runtime.py`, `src/fabric/runtime.py`, `src/onboarding/runtime.py`
-- Pattern: Explicit builder functions return configured service/runtime objects; optional providers are enabled from typed configuration.
+**Envelope Response:**
+- Purpose: Every API response wraps `data` with `evidence` (source/confidence/freshness) and `scope`
+- Examples: `src/api/models.py` (`EnvelopeModel`, `ErrorModel`)
+- Pattern: Enforced at router boundary; consumed uniformly by `web/src/lib/api-client.ts`
 
-**Canonical graph snapshot:**
-- Purpose: Provide stable entities, relationships, views, health, and quality data across persistence and query layers.
-- Examples: `src/ontology/ontology_sync.py`, `src/semantic/semantic_engine.py`
-- Pattern: Validate and canonicalize IDs, preserve `valid_from`/lifecycle history, then expose bounded graph indexes and query methods.
+**Orchestration Decision:**
+- Purpose: Immutable record of which specialists were selected and why, for a Copilot turn
+- Examples: `src/operations/maf_orchestrator.py` (`OrchestrationDecision` dataclass)
+- Pattern: `frozen=True` dataclass with `to_dict()` serialization
 
-**Source adapter:**
-- Purpose: Isolate external command/API behavior from ingestion logic.
-- Examples: `src/hermes_arg_connector/azure.py`, `src/hermes_arg_connector/source.py`, `src/semantic/live_provider.py`
-- Pattern: Inject clients/source objects into services so fixtures and alternate providers can be used without changing orchestration.
+**Connection Registry:**
+- Purpose: Tracks onboarded Azure subscriptions/connections and their credential references
+- Examples: `src/onboarding/registry.py`, `src/onboarding/credentials.py` (Key Vault-backed secret provider)
+- Pattern: Registry pattern with typed exceptions (`ConnectionNotFoundError`, `SecretNotFoundError`)
 
-**Dataset mapping and writer:**
-- Purpose: Translate source-shaped snapshots to typed Fabric table names and durable storage.
-- Examples: `src/fabric/dataset_mapper.py`, `src/storage/delta_writer.py`, `src/storage/onelake_writer.py`
-- Pattern: Schema and partition policies are centralized; merge is used for histories and overwrite for reconciled projections.
+**Assertion / Evidence:**
+- Purpose: Graph edges carry `confidence`, `source`, `createdTimestamp`, `lastObservedTimestamp` rather than being asserted as fact
+- Examples: `src/ontology/confidence.py`, `src/semantic/semantic_assertions.py`, `src/ontology/relationship_builder.py`
+
+**Foundry Prompt Agent:**
+- Purpose: Two-stage answer pattern — deterministic retrieval, then constrained narration
+- Examples: `src/operations/foundry_agent.py`, prompt templates in `src/operations/foundry_prompts/*.txt`
+- Pattern: Client only invokes a pre-provisioned agent (created via `infra/scripts/create-foundry-agent.sh`); missing agent degrades to retrieval-only, never fails hard
 
 ## Entry Points
 
-**FastAPI factory:**
-- Location: `src/api/app.py:create_app`
-- Triggers: `uvicorn --factory api.app:create_app` or embedding code.
-- Responsibilities: Build/accept `ApiContext`, register routers, middleware, OpenAPI, background refresh, and lifecycle handling.
+**Operations API:**
+- Location: `src/api/app.py` (factory function building the FastAPI app)
+- Triggers: HTTP requests from web frontend and any external API consumer
+- Responsibilities: Auth, routing, error translation, OpenAPI schema generation
 
-**Project CLI:**
-- Location: `src/hermes_arg_connector/cli.py:register_cli` and `cli_command`
-- Triggers: `hermes-arg` / `uv run hermes-arg`.
-- Responsibilities: Dispatch ingestion, queries, scheduling, local seeding, Fabric, semantic, operations, activation, and subscription commands.
+**Azure MCP Sidecar:**
+- Location: `src/mcp_server/app.py`
+- Triggers: MCP tool-call requests relayed from APIM's `/mcp-server` surface
+- Responsibilities: Per-subscription credential resolution and Azure tool execution
 
-**Hermes plugin:**
-- Location: `__init__.py`, `hermes_plugin.py`, `src/hermes_arg_connector/plugin.py`
-- Triggers: Hermes directory-plugin discovery.
-- Responsibilities: Add `src` to import resolution and register the read-only operational tool and CLI integration.
+**Web Frontend:**
+- Location: `web/src/app/layout.tsx` (root layout), `web/src/app/page.tsx` (home)
+- Triggers: Browser navigation via Next.js App Router
+- Responsibilities: Render page drawers, call Operations API, handle auth (`web/src/components/AuthGate.tsx`)
+
+**Onboarding CLI:**
+- Location: `src/onboarding/cli.py`
+- Triggers: Operator-invoked ingestion/onboarding commands
+- Responsibilities: Manual/scheduled connection setup and discovery sync
+
+**Terraform Deploy:**
+- Location: `infra/terraform/main.tf`, invoked via `infra/scripts/deploy.sh`
+- Triggers: Manual `terraform apply` / deploy script run
+- Responsibilities: Provision APIM, Container Apps (API, MCP sidecar, web), Foundry agents, Fabric resources
 
 ## Architectural Constraints
 
-- **Threading:** Request handling is asynchronous through FastAPI; blocking provider refresh runs on a dedicated daemon thread, and bounded thread pools parallelize selected ingestion/Fabric writes.
-- **Global state:** Runtime caches exist in `src/api/runtime.py` and `FabricRuntime` caches constructed engines; invalidate or key caches by semantic version/configured root.
-- **Circular imports:** No confirmed circular dependency chain detected; preserve lazy imports in `src/fabric/runtime.py` and `src/api/runtime.py` when optional/domain services are loaded.
-- **Consistency:** Never expose a partially written generation; publish complete owner-only generations before switching `current`.
-- **Security boundary:** API authentication/authorization, trusted roots, connection scoping, and read-only agent behavior are enforced at the delivery/runtime boundaries.
+- **Threading:** FastAPI async app; `src/operations/foundry_agent.py` uses both `asyncio` and a `threading` lock for agent-name resolution caching — mixed async/thread patterns exist in this module, be careful when modifying.
+- **Global state:** Module-level caches/singletons observed in `src/operations/foundry_agent.py` (agent-id resolution cache) and `src/semantic/query_cache.py` / `semantic_cache.py` (query result caching) — these are process-local, so multiple container replicas do not share cache state.
+- **Rate limits (known operational gotcha):** APIM enforces a rate-limit policy in front of the MCP proxy (currently 300 calls/60s per `.planning/STATE.md` history) and the MCP dispatcher previously had a lifetime-not-per-request call cap (`MAX_CALLS`) — any change to `src/mcp_server/app.py` or its Terraform policy must preserve per-request (not per-process) limiting.
+- **Dual MCP routing is explicit, not automatic:** specialists must be wired to the correct MCP (`operations-mcp` vs `azure-mcp`) per tool; there is no automatic fallback logic beyond the documented `arm_execute_query` fallback for network.
+- **Credential separation:** discovery identities (read-only, per-subscription via `azure_mcp` managed identity + role assignments) are distinct from any future write/publish identity — do not collapse these in code or Terraform.
 
 ## Anti-Patterns
 
-### Business logic in delivery adapters
+### Treating model output as authoritative
 
-**What happens:** API and CLI are entry/delivery surfaces that delegate to runtime services rather than implementing domain workflows.
-**Why it's wrong:** Duplicating workflows in `src/api/routers/` or `src/hermes_arg_connector/cli.py` would bypass shared locking, validation, evidence, and state behavior.
-**Do this instead:** Add orchestration to a service under `src/`, wire it through `src/api/runtime.py` or `src/fabric/runtime.py`, and keep the adapter thin.
+**What happens:** A common mistake in earlier iterations was to let a Foundry/LLM response stand in for graph fact.
+**Why it's wrong:** Violates the evidence-first principle; breaks the UI's "will not invent unsupported answers" guarantee.
+**Do this instead:** Retrieval must come from the Semantic Knowledge Layer (`src/semantic/*`) and be passed into the Foundry agent as constrained context (`src/operations/foundry_agent.py` docstring pattern); absence of context means the Copilot says "not found," not a guess.
 
-### Treating snapshots as mutable source systems
+### Per-process singleton limits masquerading as per-request limits
 
-**What happens:** Curated projections and semantic snapshots are derived from Azure and enterprise systems.
-**Why it's wrong:** They can become stale and cannot replace source detail or authoritative lifecycle state.
-**Do this instead:** Use source adapters in `src/hermes_arg_connector/` or `src/semantic/live_operations.py` for current detail, and attach evidence/freshness to derived answers.
+**What happens:** `MAX_CALLS` in the MCP dispatcher was a lifetime, per-process cap rather than a per-caller quota, silently breaking containers permanently after 25 total tool calls.
+**Why it's wrong:** Causes production outages that look unrelated to actual usage; masks real throttling needs behind an accidental global ceiling.
+**Do this instead:** Enforce per-caller throttling at the APIM layer (`rate-limit-by-key`/`quota-by-key` policies in `infra/terraform/apim-policies`), keep any in-process constant as a coarse safety net only, and document it as such wherever redefined.
 
 ## Error Handling
 
-**Strategy:** Typed/configuration errors are raised at boundaries, service failures are translated to stable API errors, and failed runs write explicit failed state without advancing success watermarks.
+**Strategy:** Centralized translation of internal exceptions into a stable `ErrorModel` envelope at the API boundary.
 
 **Patterns:**
-- API exceptions use `ApiError` and translation in `src/api/errors.py`; responses follow `EnvelopeModel`/`ErrorModel` from `src/api/models.py`.
-- Ingestion and Fabric services validate before publication and use lock/rollback/state mechanisms in `src/hermes_arg_connector/locking.py`, `src/hermes_arg_connector/state.py`, and `src/fabric/sync_service.py`.
-- External failures are isolated behind adapters and represented as unavailable/stale provider results where the API contract allows.
+- Domain-specific exceptions (`SecretNotFoundError`, `SecretStorageError`, `OnboardingError`, `ConnectionNotFoundError`) raised deep in `src/onboarding/*` and `src/api/routers/*`
+- `src/api/errors.py` (`ApiError`, `ErrorCode`, `translate()`) converts these into consistent HTTP responses
+- FastAPI-level handlers in `src/api/app.py` catch `RequestValidationError` and unhandled exceptions, returning `JSONResponse` with the `ErrorModel` shape
 
 ## Cross-Cutting Concerns
 
-**Logging:** Module loggers and structured event names are used in `src/api/app.py`, `src/api/runtime.py`, and Fabric services.
-**Validation:** Typed config, Pydantic API models, ontology validators, schema registry checks, and Fabric data-quality reports validate at boundaries.
-**Authentication:** API modes are implemented in `src/api/auth.py`; RBAC and scope checks are in `src/api/rbac.py` and `src/api/scope.py`; Azure/Fabric credentials are built in `src/fabric/auth.py` and onboarding credential abstractions.
+**Logging:** Standard `logging` module per-file loggers (`logger = logging.getLogger(__name__)` pattern seen in `src/mcp_server/app.py`, `src/operations/foundry_agent.py`); no centralized structured-logging wrapper observed beyond `src/api/telemetry.py` (`Timer`).
+
+**Validation:** Pydantic models throughout (`src/api/models.py`, `src/mcp_server/app.py` `MCPToolRequest`, `src/network/models.py`); blank-string optional-field stripping applied before validation per known fix in MCP tool argument handling.
+
+**Authentication:** `src/api/auth.py` + `src/api/dependencies.py` (`OperatePrincipal`) for the Operations API; managed identity + APIM policies (`infra/terraform/apim-policies`, `mcp-inbound.xml`) for service-to-service MCP calls; Key Vault-backed secret provider (`src/onboarding/credentials.py`) for per-subscription discovery credentials.
 
 ---
 
-*Architecture analysis: 2026-08-24*
+*Architecture analysis: 2026-09-01*
