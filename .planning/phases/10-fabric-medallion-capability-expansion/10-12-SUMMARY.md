@@ -116,7 +116,7 @@ Each task was committed atomically:
 5. **Task 4 (TDD RED):** `3dd775f6` (`test`) — failing inventory-authority precedence guardrail tests.
 6. **Task 4 (TDD GREEN):** `0f11ff7a` (`feat`) — per-citation inventory conflict cross-check + context conflict notice + telemetry increments.
 
-**Plan metadata:** pending final docs/state commit.
+**Plan metadata:** `ae7f2a9e` (`docs`) — summary/state/roadmap synchronization.
 
 ## Files Created/Modified
 
