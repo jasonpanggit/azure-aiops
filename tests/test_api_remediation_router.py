@@ -18,6 +18,10 @@ ADMIN_TOKEN = "admin-token-0123456789abcdef"
 OPERATOR_TOKEN = "operator-token-0123456789abcd"
 READER_TOKEN = "reader-token-0123456789abcdef"
 SCOPED_READER_TOKEN = "scoped-reader-token-012345678"
+VM_PAYMENTS_ID = (
+    "/subscriptions/sub-1/resourcegroups/rg-prod/providers/"
+    "microsoft.compute/virtualmachines/vm-payments"
+)
 
 
 class _PatchingService:
@@ -166,7 +170,7 @@ def test_patch_preview_returns_exact_server_derived_execution_snapshot(tmp_path)
 
     assert response.status_code == 200, response.text
     snapshot = response.json()["data"]["execution_snapshot"]
-    assert snapshot["target_id"] == plan["resource_key"]
+    assert snapshot["target_id"] == VM_PAYMENTS_ID
     assert snapshot["patch_ids"] == ["KB600001", "KB600002"]
     assert snapshot["target_kind"] == "Azure VM"
     assert snapshot["operation"] == "install_patches"

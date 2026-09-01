@@ -24,6 +24,10 @@ ADMIN_TOKEN = "admin-token-0123456789abcdef"
 OPERATOR_TOKEN = "operator-token-0123456789abcd"
 READER_TOKEN = "reader-token-0123456789abcdef"
 SCOPED_OPERATOR_TOKEN = "scoped-operator-token-012345"
+VM_PAYMENTS_ID = (
+    "/subscriptions/sub-1/resourcegroups/rg-prod/providers/"
+    "microsoft.compute/virtualmachines/vm-payments"
+)
 
 
 def _future_expiry(days: int = 30) -> str:
@@ -142,7 +146,7 @@ def test_patch_approval_persists_only_the_matching_server_snapshot(tmp_path) -> 
     assert response.status_code == 201, response.text
     snapshot = response.json()["data"]["execution_snapshot"]
     assert snapshot["snapshot_hash"] == preview_hash
-    assert snapshot["target_id"] == plan["resource_key"]
+    assert snapshot["target_id"] == VM_PAYMENTS_ID
     assert snapshot["patch_ids"] == ["KB600001", "KB600002"]
     assert snapshot["action_version"] == plan["action_version"]
 
@@ -235,7 +239,8 @@ def test_decision_request_rejects_caller_owned_execution_fields(
         json=payload,
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
 
 
 def test_operator_records_approval_decision_without_execution(tmp_path) -> None:

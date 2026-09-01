@@ -9,6 +9,7 @@ than returning an empty result that the UI would render as "all clear".
 
 from __future__ import annotations
 
+import hmac
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,6 +20,12 @@ from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
 from ..models import RemediationDecisionRequest
 from ..scope import Scope, scope_attributes
+from intelligence.remediation.approval_decisions import (
+    CONTROLLED_PATCH_RECOVERY,
+    ExecutionSnapshotError,
+    build_execution_snapshot,
+)
+from .patching import _service as _patching_service
 
 router = APIRouter(prefix="/api/v1", tags=["operations"])
 
@@ -354,7 +361,36 @@ def record_remediation_decision(
                 f"Decision '{request.decision}' must not include expires_at; use empty string",
             )
         expires_at = ""
-    
+
+    execution_snapshot = None
+    action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
+    if request.decision == "approved" and action_id == CONTROLLED_PATCH_RECOVERY:
+        try:
+            execution_snapshot = build_execution_snapshot(
+                plan,
+                _patching_service(context, operate_scope),
+                scope=operate_scope,
+            )
+        except ExecutionSnapshotError as exc:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                str(exc),
+                {"reason": exc.reason, **exc.details},
+            ) from exc
+        if not hmac.compare_digest(
+            request.preview_snapshot_hash,
+            execution_snapshot["snapshot_hash"],
+        ):
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "The executable patch target changed after preview",
+                {
+                    "reason": "stale_execution_preview",
+                    "plan_id": plan_id,
+                },
+            )
+        revalidation_checks.append("execution_snapshot_current")
+
     decision = planner.repository.decisions.append(
         plan=plan,
         decision=request.decision,
@@ -364,6 +400,7 @@ def record_remediation_decision(
         action_version=current_version,
         expires_at=expires_at,
         revalidation_checks=revalidation_checks,
+        execution_snapshot=execution_snapshot,
     )
     return envelope(
         decision,

@@ -14,6 +14,68 @@ from storage.onelake_documents import DocumentConflictError
 
 
 DecisionKind = Literal["approved", "rejected", "expired"]
+CONTROLLED_PATCH_RECOVERY = "controlled-patch-recovery"
+_SNAPSHOT_FIELDS = (
+    "target_id",
+    "patch_ids",
+    "target_kind",
+    "operation",
+    "action_version",
+)
+
+
+class ExecutionSnapshotError(RuntimeError):
+    """A server-owned execution snapshot could not be derived safely."""
+
+    def __init__(
+        self, message: str, *, reason: str, details: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.details = details or {}
+
+
+def execution_snapshot_hash(snapshot: dict[str, Any]) -> str:
+    """Hash the canonical, executable fields of an approval snapshot."""
+    canonical = {field: snapshot.get(field) for field in _SNAPSHOT_FIELDS}
+    serialized = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def build_execution_snapshot(
+    plan: dict[str, Any], patching_service: Any, *, scope: Any = None
+) -> dict[str, Any]:
+    """Derive the exact patch action represented by the plan's current target."""
+    resource = plan.get("resource") or {}
+    target_id = str(resource.get("id") or plan.get("resource_key") or "").strip()
+    target = patching_service.target(target_id, scope)
+    if target is None:
+        raise ExecutionSnapshotError(
+            "No patch target matches this remediation plan's resource",
+            reason="target_not_found",
+            details={"plan_id": plan.get("plan_id"), "target_id": target_id},
+        )
+    patch_ids = sorted(str(item) for item in target.available_patch_ids if str(item))
+    if not patch_ids:
+        raise ExecutionSnapshotError(
+            "No patches are currently available for this remediation target",
+            reason="no_patches_available",
+            details={"plan_id": plan.get("plan_id"), "target_id": target_id},
+        )
+    snapshot = {
+        "target_id": target.target_id,
+        "patch_ids": patch_ids,
+        "target_kind": target.inventory_kind,
+        "operation": target.operation,
+        "action_version": str(plan.get("action_version") or ""),
+    }
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
+    return snapshot
 
 
 class RevisionedDocumentStore(Protocol):
@@ -61,6 +123,7 @@ class RemediationDecisionStore:
         action_version: str,
         expires_at: str = "",
         revalidation_checks: list[str] | None = None,
+        execution_snapshot: dict[str, Any] | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         timestamp = (now or datetime.now(UTC)).isoformat()
@@ -97,6 +160,11 @@ class RemediationDecisionStore:
                     "execution_authorized": False,
                     "execution_performed": False,
                     "read_only": True,
+                    "execution_snapshot": (
+                        copy.deepcopy(execution_snapshot)
+                        if decision == "approved" and execution_snapshot is not None
+                        else None
+                    ),
                 }
                 decisions.append(copy.deepcopy(record))
                 state["revision"] += 1

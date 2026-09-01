@@ -15,9 +15,12 @@ from typing import Any
 from fastapi import APIRouter
 
 from operations.patching.adapters import PatchExecutionUnavailable
-from operations.patching.models import operation_for_kind
 from operations.patching.service import PatchValidationError
 
+from intelligence.remediation.approval_decisions import (
+    ExecutionSnapshotError,
+    build_execution_snapshot,
+)
 from intelligence.remediation.execution_service import RemediationExecutionError
 
 from ..dependencies import Context, OperatePrincipal, Page, ReadScope
@@ -25,6 +28,7 @@ from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope
 from .operations import _HIDDEN, _filter_rows, _filter_scoped, _require
+from .patching import _service as _patching_service
 
 router = APIRouter(prefix="/api/v1/remediation", tags=["remediation"])
 
@@ -104,11 +108,21 @@ def get_plan(plan_id: str, context: Context, scope: ReadScope) -> dict[str, Any]
 @router.get("/plans/{plan_id}/preview", summary="Preview a remediation plan's execution")
 def preview_plan(plan_id: str, context: Context, scope: ReadScope) -> dict[str, Any]:
     plan = _get_scoped_plan(context, scope, plan_id)
-    opportunity_type = str(plan.get("opportunity_type") or "")
+    action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
     resource = plan.get("resource") or {}
-    if opportunity_type == _CONTROLLED_PATCH_RECOVERY:
-        inventory_kind = str(resource.get("entity_type") or "")
-        operation = operation_for_kind(inventory_kind)
+    execution_snapshot = None
+    if action_id == _CONTROLLED_PATCH_RECOVERY:
+        try:
+            execution_snapshot = build_execution_snapshot(
+                plan, _patching_service(context, scope), scope=scope
+            )
+        except ExecutionSnapshotError as exc:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                str(exc),
+                {"reason": exc.reason, **exc.details},
+            ) from exc
+        operation = execution_snapshot["operation"]
     else:
         operation = "not executable in this phase"
     rollback_plan = plan.get("rollback_plan") or {}
@@ -132,6 +146,7 @@ def preview_plan(plan_id: str, context: Context, scope: ReadScope) -> dict[str, 
             ),
             "dependencies": plan.get("dependencies"),
         },
+        "execution_snapshot": execution_snapshot,
     }
     return envelope(
         preview,
@@ -306,4 +321,3 @@ def retry_execution(
         evidence=_execution_evidence(execution_id),
         scope=write_scope.to_dict(),
     )
-

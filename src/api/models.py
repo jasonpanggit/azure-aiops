@@ -234,6 +234,7 @@ class RemediationDecisionRequest(ApiModel):
     reason: str = Field(min_length=1, max_length=2048)
     action_version: str = Field(min_length=1, max_length=128)
     expires_at: str = Field("", max_length=128)
+    preview_snapshot_hash: str = Field("", max_length=64)
 
 
 # --------------------------------------------------------------------------
