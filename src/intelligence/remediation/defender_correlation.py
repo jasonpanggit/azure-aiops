@@ -387,6 +387,9 @@ class DefenderRemediationCorrelator:
             default="",
         )
         catalog_match = self._catalog_match(group["weakness_source"])
+        not_applicable_evidence = str(
+            resource.get("confirmed_not_applicable_reason") or ""
+        ).strip()[:1024]
 
         source_families = {
             citation["source_type"]: family_status.get(
@@ -475,6 +478,7 @@ class DefenderRemediationCorrelator:
             "unknowns": unknowns,
             "source_family_status": source_families,
             "contradictory_evidence": contradictory,
+            "not_applicable_evidence": not_applicable_evidence,
             "read_only": True,
             **scope_attrs,
         }
