@@ -16,6 +16,7 @@ from onboarding.config import ConnectorConfig
 from onboarding.graph_normalize import Normalizer
 from onboarding.ingestion_storage import DatasetStore
 from semantic.semantic_engine import SemanticEngine
+from storage.delta_writer import DeltaWriteMode
 from storage.delta_writer import DeltaWriter
 from storage.onelake_writer import OneLakeWriter
 
@@ -868,3 +869,18 @@ def test_mapper_reads_remote_snapshot_via_provided_filesystem(tmp_path: Path) ->
     assert "table-1" in delta.attempts
     assert "table-3" in delta.attempts
     assert len(errors) == 1
+
+
+def test_sync_service_history_tables_use_merge_write_mode_contract(tmp_path: Path) -> None:
+    service = FabricSyncService(
+        source_root=tmp_path / "source",
+        onelake=OneLakeWriter("workspace", "lakehouse", local_root=tmp_path / "lakehouse"),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+
+    assert service._write_mode_for_table("silver_change_history") is DeltaWriteMode.MERGE
+    assert service._write_mode_for_table("silver_incident_history") is DeltaWriteMode.MERGE
+    assert service._write_mode_for_table("silver_predictive_history") is DeltaWriteMode.MERGE
+    assert service._write_mode_for_table("silver_cost_actuals") is DeltaWriteMode.MERGE
+    assert service._write_mode_for_table("silver_compliance") is DeltaWriteMode.OVERWRITE
