@@ -10,6 +10,7 @@ from fabric.gold_grounding_client import (
     MAX_RETRIES,
     query_gold_grounding,
 )
+from operations.gold_grounding_metrics import GoldGroundingMetrics
 
 
 def _response(payload: dict, status_code: int = 200) -> httpx.Response:
@@ -134,3 +135,58 @@ def test_query_gold_grounding_raises_immediately_on_mcp_is_error(
             token="delegated-token",
         )
     assert attempts["count"] == 1
+
+
+def test_metrics_record_query_uses_only_low_cardinality_attributes() -> None:
+    class _Counter:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, dict | None]] = []
+
+        def add(self, value: int, attributes: dict | None = None) -> None:
+            self.calls.append((value, attributes))
+
+    class _Histogram:
+        def __init__(self) -> None:
+            self.calls: list[tuple[float, dict | None]] = []
+
+        def record(self, value: float, attributes: dict | None = None) -> None:
+            self.calls.append((value, attributes))
+
+    class _Meter:
+        def __init__(self) -> None:
+            self.created_counters: dict[str, _Counter] = {}
+            self.created_histograms: dict[str, _Histogram] = {}
+
+        def create_counter(self, name: str, **_kwargs) -> _Counter:
+            counter = _Counter()
+            self.created_counters[name] = counter
+            return counter
+
+        def create_histogram(self, name: str, **_kwargs) -> _Histogram:
+            histogram = _Histogram()
+            self.created_histograms[name] = histogram
+            return histogram
+
+    meter = _Meter()
+    metrics = GoldGroundingMetrics(meter=meter)
+
+    metrics.record_query(
+        degraded=True,
+        degraded_reason="this-reason-string-is-deliberately-longer-than-forty-characters",
+        citation_count=3,
+        duration_ms=12.5,
+    )
+    expected_reason = "this-reason-string-is-deliberately-longer-than-forty-characters"[:40]
+
+    assert meter.created_counters["gold_grounding.queries"].calls == [
+        (1, {"degraded": "True"})
+    ]
+    assert meter.created_histograms["gold_grounding.query.duration"].calls == [
+        (12.5, {"degraded": "True"})
+    ]
+    assert meter.created_histograms["gold_grounding.citations.count"].calls == [
+        (3, None)
+    ]
+    assert meter.created_counters["gold_grounding.degraded"].calls == [
+        (1, {"reason": expected_reason})
+    ]
