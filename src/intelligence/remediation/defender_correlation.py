@@ -29,7 +29,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from api.evidence import classify_freshness
-from api.scope import Scope
+from api.scope import Scope, scope_attributes
 from intelligence.predictive.predictive_context_builder import PredictiveContextBuilder
 from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
 
@@ -110,6 +110,7 @@ class DefenderRemediationCorrelator:
     def cases(self, scope: Scope | None = None) -> list[dict[str, Any]]:
         groups: dict[tuple[str, str], dict[str, Any]] = {}
         service = self.vulnerability_service
+        family_status = self._family_status(scope)
 
         for assessment in service.defender_posture(scope):
             resource_id = str(assessment.get("asset_id") or "")
@@ -202,7 +203,10 @@ class DefenderRemediationCorrelator:
         if len(groups) > self.max_cases:
             raise ValueError("Defender remediation cases exceed configured bound")
 
-        cases = [self._build_case(key, weakness, group) for (key, weakness), group in groups.items()]
+        cases = [
+            self._build_case(key, weakness, group, family_status)
+            for (key, weakness), group in groups.items()
+        ]
         return sorted(
             cases,
             key=lambda case: (
@@ -308,6 +312,30 @@ class DefenderRemediationCorrelator:
 
         return posture
 
+    def _family_status(self, scope: Scope | None) -> dict[str, dict[str, Any]]:
+        """Per-source-family availability, never defaulting a missing family to healthy."""
+        service = self.vulnerability_service
+        overview = getattr(service, "defender_overview", None)
+        coverage: dict[str, Any] = {}
+        if callable(overview):
+            try:
+                coverage = dict(overview(scope).get("coverage") or {})
+            except TypeError:
+                coverage = dict(overview().get("coverage") or {})
+        mapping = {
+            "assessment": coverage.get("recommendations"),
+            "alert": coverage.get("alerts"),
+            "attack_path": coverage.get("attack_paths"),
+            "secure_score_control": coverage.get("secure_score"),
+        }
+        status: dict[str, dict[str, Any]] = {}
+        for source_type, family in mapping.items():
+            if isinstance(family, Mapping):
+                status[source_type] = dict(family)
+            else:
+                status[source_type] = {"availability": "unknown", "freshness": "unknown"}
+        return status
+
     def _append_citation(
         self,
         groups: dict[tuple[str, str], dict[str, Any]],
@@ -339,7 +367,11 @@ class DefenderRemediationCorrelator:
         )
 
     def _build_case(
-        self, resource_key: str, weakness_key: str, group: dict[str, Any]
+        self,
+        resource_key: str,
+        weakness_key: str,
+        group: dict[str, Any],
+        family_status: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
         citations = sorted(
             group["citations"], key=lambda citation: (citation["source_type"], citation["source_id"])
@@ -356,7 +388,30 @@ class DefenderRemediationCorrelator:
         )
         catalog_match = self._catalog_match(group["weakness_source"])
 
-        confidence = self._confidence(business_mapping_known, len(citations))
+        source_families = {
+            citation["source_type"]: family_status.get(
+                citation["source_type"], {"availability": "unknown", "freshness": "unknown"}
+            )
+            for citation in citations
+        }
+        degraded_families = {
+            source_type: status
+            for source_type, status in source_families.items()
+            if str(status.get("availability") or "unknown") != "available"
+        }
+        severities_present = {citation["severity"] for citation in citations if citation["severity"]}
+        contradictory = len(severities_present) > 1 and (
+            "critical" in severities_present or "high" in severities_present
+        ) and (
+            "low" in severities_present or "medium" in severities_present
+        )
+
+        confidence = self._confidence(
+            business_mapping_known,
+            len(citations),
+            degraded=bool(degraded_families),
+            contradictory=contradictory,
+        )
         disposition, outcome, outcome_reason = self._disposition(
             business_mapping_known=business_mapping_known,
             catalog_match=catalog_match,
@@ -387,6 +442,15 @@ class DefenderRemediationCorrelator:
             )
         if not catalog_match:
             unknowns.append("catalog_action")
+        if degraded_families:
+            unknowns.extend(sorted(f"source_family:{name}" for name in degraded_families))
+        if contradictory:
+            derived_inferences.append(
+                "Defender source families disagree on severity for this resource; "
+                "treating the disagreement as reduced confidence rather than a single definitive claim."
+            )
+
+        scope_attrs = scope_attributes(resource)
 
         return {
             "resource_key": resource_key,
@@ -409,8 +473,12 @@ class DefenderRemediationCorrelator:
             "observed_facts": observed_facts,
             "derived_inferences": derived_inferences,
             "unknowns": unknowns,
+            "source_family_status": source_families,
+            "contradictory_evidence": contradictory,
             "read_only": True,
+            **scope_attrs,
         }
+
 
     def _catalog_match(self, weakness_source: Mapping[str, Any]) -> bool:
         if not self.action_catalog:
@@ -432,12 +500,23 @@ class DefenderRemediationCorrelator:
         return False
 
     @staticmethod
-    def _confidence(business_mapping_known: bool, citation_count: int) -> float:
+    def _confidence(
+        business_mapping_known: bool,
+        citation_count: int,
+        *,
+        degraded: bool = False,
+        contradictory: bool = False,
+    ) -> float:
         base = 0.85 if business_mapping_known else 0.3
         # Additional corroborating evidence nudges confidence up slightly,
         # bounded so it never crosses into a different confidence tier.
         bonus = min(0.1, 0.02 * max(0, citation_count - 1))
-        return round(min(base + bonus, 0.95 if business_mapping_known else 0.45), 2)
+        confidence = min(base + bonus, 0.95 if business_mapping_known else 0.45)
+        if degraded:
+            confidence -= 0.15
+        if contradictory:
+            confidence -= 0.2
+        return round(max(0.05, confidence), 2)
 
     @staticmethod
     def _disposition(

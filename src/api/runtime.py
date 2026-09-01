@@ -77,6 +77,8 @@ from operations.patching import (
 )
 from operations.tools import FabricIQToolAdapter
 from intelligence.remediation.approval_decisions import RemediationDecisionStore
+from intelligence.remediation.defender_correlation import DefenderRemediationCorrelator
+from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
 from intelligence.remediation.plan_repository import PlanRepository
 from semantic.hybrid_query import HybridQueryService
 from semantic.live_operations import (
@@ -1128,10 +1130,37 @@ def _attach_remediation_decisions(planner: Any) -> Any:
     return planner
 
 
+def _attach_defender_correlator(planner: Any, runtime: FabricRuntime) -> Any:
+    """Attach a read-only Defender remediation correlator to ``planner``.
+
+    Reuses the already-resolved vulnerability service and the planner's own
+    canonicalized resources/action catalog rather than opening a new
+    inventory read path. No-ops defensively when required inputs are
+    missing (partial snapshot), leaving the planner unchanged.
+    """
+    if planner is None or not hasattr(planner, "resources"):
+        return planner
+    vulnerability_service = _fabric_vulnerability_service(runtime)
+    if vulnerability_service is None:
+        return planner
+    opportunities = getattr(planner, "opportunities", None)
+    catalog = getattr(opportunities, "catalog", None)
+    if catalog is None:
+        return planner
+    planner.defender_correlator = DefenderRemediationCorrelator(
+        vulnerability_service=vulnerability_service,
+        dependency_analyzer=DependencyAnalyzer(),
+        resource_lookup=planner.resources,
+        action_catalog=catalog,
+    )
+    return planner
+
+
 def _fabric_remediation_planner(runtime: FabricRuntime) -> Any:
-    return _attach_remediation_decisions(
+    planner = _attach_remediation_decisions(
         getattr(runtime.operations_agent(), "remediation_planner", None)
     )
+    return _attach_defender_correlator(planner, runtime)
 
 
 def _latest_discovery(onboarding: SubscriptionOnboardingService) -> str:

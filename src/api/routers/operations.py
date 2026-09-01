@@ -213,6 +213,47 @@ def remediation_opportunities(
     )
 
 
+@router.get("/remediation/defender-cases", summary="Defender-correlated remediation cases")
+def defender_remediation_cases(
+    context: Context, scope: ReadScope, page: Page
+) -> dict[str, Any]:
+    planner = _require(context, "remediation_provider", "remediation", scope)
+    correlator = getattr(planner, "defender_correlator", None)
+    if correlator is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Defender remediation correlation is unavailable",
+        )
+    cases = correlator.cases(scope)
+    visible = _filter_rows(cases, scope)
+    if not isinstance(visible, list):
+        visible = []
+    warnings = sorted(
+        {
+            f"Defender source family '{source_type}' is {status.get('availability') or 'unknown'}"
+            for case in visible
+            for source_type, status in (case.get("source_family_status") or {}).items()
+            if str(status.get("availability") or "unknown") != "available"
+        }
+    )
+    public = {
+        "cases": visible[page.offset : page.offset + page.limit],
+        "read_only": True,
+    }
+    return envelope(
+        public,
+        evidence=Evidence(
+            source_engine="intelligence.DefenderRemediationCorrelator",
+            source_table="defender_remediation_cases",
+            timestamp=str(getattr(correlator.vulnerability_service, "freshness", "") or ""),
+            confidence=CONFIDENCE_MEDIUM,
+        ),
+        scope=scope.to_dict(),
+        pagination=page.to_dict(len(visible)),
+        warnings=warnings,
+    )
+
+
 @router.post(
     "/remediation-plans/{plan_id}/decisions",
     summary="Record a remediation recommendation decision",
