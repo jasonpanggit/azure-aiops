@@ -56,7 +56,18 @@ Plans:
   3. Operator receives ranked recommendations that state objective, scope, rationale, evidence, confidence, prerequisites, risks, and verification plan, or an explicit no-safe-action/escalation result.
   4. Authorized approver can approve, reject, or expire a recommendation, with identity, timestamp, reason, exact scope, action version, expiry, and server-side revalidation recorded.
 
-**Plans:** TBD
+**Plans:** 8 plans
+
+Plans:
+- [x] 02-01-PLAN.md — Investigation, recommendation, and approval foundation
+- [ ] 02-02-PLAN.md — Tracer: end-to-end Defender-correlated business-decision case
+- [ ] 02-03-PLAN.md — Governed action catalog and idempotent seeder
+- [ ] 02-04-PLAN.md — Business decision intelligence: dispositions, costs, alternatives
+- [ ] 02-05-PLAN.md — Read-only Defender MCP tools and remediation specialist contract
+- [ ] 02-06-PLAN.md — Ontology relationships for plan-to-Defender evidence
+- [ ] 02-07-PLAN.md — Business-impact-first ranking, risk signals, correlation hardening
+- [ ] 02-08-PLAN.md — Decision workspace, decision audit route, approval freshness
+
 **UI hint:** yes
 
 ### Phase 3: Safe Remediation Execution
@@ -278,8 +289,10 @@ Verified against the live deployment on 2026-08-30:
 
 - `operations-copilot` is `kind: prompt` with an empty `tools` array. It is a
   narrator, not an orchestrator, and cannot delegate to anything.
+
 - Each of the eight specialists (`aiops-network-agent` and peers) carries its
   own governed MCP toolset via APIM and orchestrates those tools itself.
+
 - Routing is `page_kind -> specialist_id` in `run_context_investigation`. One
   entry point, no agent-to-agent hop.
 
@@ -289,7 +302,9 @@ the `operations-copilot` agent delegating to sub-agents.
 
 **Why not agent-level delegation:** Foundry removed classic connected agents
 from the new Agent Service in March 2026; the classic service retires in March
+
 2027. Building `operations-copilot` as a delegating parent would target a
+
 deprecated API. The current replacements are A2A (agent-as-tool) or Microsoft
 Agent Framework for code-driven orchestration. Local orchestration already
 gives us scope enforcement, budgets, the audit ledger, human controls, and
@@ -341,6 +356,7 @@ operational context below" — forbade every specialist from calling its own gov
 MCP tools. One line presented as nine broken agents. Fixed in `d43f0891`.
 
 **Live verification after fix (3 of 9 specialists, distinct tool selection per domain):**
+
 - `network` — called `network_topology`, `hub_dependents`; correctly answered no dependents on demo-vnet
 - `vulnerability` — called `cve_exposure`, `cve_detail` x3; returned CVE list for vm1
 - `governance` — called `fabric_iq_policy_context` + 5 others; correctly answered
@@ -376,11 +392,14 @@ Core: `src/operations/*.py` = **3,363 lines**, covered by **209 test functions**
 across 21 files (~4,178 lines).
 
 **Portable to MAF as-is (~1,100 lines)** — pure functions, no loop coupling:
+
 - `page_context.py:160` `deterministic_network_findings` (~74 L, snapshot → findings)
 - `tools.py:693` `TOOL_REGISTRY` + `call_tool:829` (unknown tool → `STATUS_DENIED`,
   deliberately never revealing that a tool exists)
+
 - `tools.py:54` `_filter_scoped` / `:264` scope denial; `page_context.py:126`
   `validate_effective_scope`
+
 - all of `foundry_agent.py` — per-agent field contracts (`:181-270`), the
   `evidence_refs` citation validator (`:268`), `_CircuitBreaker` (`:102`), retry/backoff
 
@@ -399,11 +418,13 @@ wall-clock `stop_reason` propagation, `_deterministic_plan:351`, `_failed_run:80
    static field on generated plans (`remediation_generator.py:79`). Migrating to MAF
    would not fix this; it is a gap in our design, and MAF's ToolApprovalAgent is a
    genuine reason to reconsider later.
+
 2. **The audit ledger is not durable.** `InvestigationLedgerStore` is an in-memory
    `OrderedDict` in a module-level singleton (`_LEDGER_STORE:877`), FIFO-evicted at
    `MAX_LEDGER_ENTRIES = 1000`, lost on every container restart. For an audit trail
    backing operator decisions on production infrastructure, this is the highest-risk
    item found — and it is independent of any orchestration framework.
+
 3. **The model never selects the specialist.** Routing is the static `page_kind` dict
    at `:612`. Question-keyword routing (`_select_agents:103`) already exists but is
    wired only to the autonomous path, never the page drawer — which is precisely why
@@ -417,6 +438,7 @@ Do not migrate now. Sequence:
 2. **Enforcing approval gate** — close the real HITL gap before adding orchestration.
 3. **Question-aware routing** — wire `_select_agents` into the page path (~1 day,
    reuses tested code, fixes the complaint that motivated this).
+
 4. **Reassess MAF** once 1-3 land. By then the portable ~1,100 lines carry over
    cleanly, and the ~500-600 coupled lines are what MAF replaces rather than what we
    port. Prompt agents remain reusable as MAF-invoked agents, so nothing is a dead end.
@@ -442,8 +464,10 @@ asked to narrate it. Narration never invents facts and never fails the
 investigation (`autonomous_investigation.py:425-428`).
 
 **What `operations-copilot` is.** Evidence, not inference:
+
 - `GET /agents/operations-copilot?api-version=v1` → `tools: NONE`. It is
   physically incapable of delegating.
+
 - `grep -rn "operations-copilot" src/**/*.py` → **zero** references. Its only
   appearances are the Terraform default for `FOUNDRY_AGENT_NAME`
   (`variables.tf:369`) and test fixtures.
@@ -486,9 +510,11 @@ one-off probes:
 1. **A metric that measured the caller, not the agent.** Groundedness was
    scored over snapshot-derived findings, so investigations whose specialists
    returned real resource IDs scored 0.0. Fixed in `ab017125`.
+
 2. **A latency failure masquerading as a routing regression.** A 108s
    wall-clock timeout dropped a specialist; scoring routing on timed-out runs
    would have made the routing score a latency proxy. Now scored separately.
+
 3. **One malformed tool call aborting entire investigations.** Foundry returns
    HTTP 400 for the *whole response* when any tool result carries
    `isError=true`. The governance specialist, routed onto the incident page,
@@ -524,12 +550,14 @@ Three reasons, in order of weight:
 1. **The defects were ours.** Every failure the harness surfaced was in our
    routing, our metrics, or our MCP server. A framework migration would have
    carried all three across unchanged and cost weeks.
+
 2. **MAF's headline capability is the one we are deliberately not adopting.**
    Its value is model-driven multi-agent orchestration. Our governance
    properties -- scope filtering applied to a fixed registry before execution,
    a ledger complete because selection was deterministic, graceful degradation
    when a specialist fails -- all rest on *not* letting a model choose what
    runs. Adopting MAF to then suppress its main feature is a poor trade.
+
 3. **Zero deprecation exposure.** Prompt agents and the Responses API are the
    current supported surface. Nothing forces a move.
 
@@ -540,12 +568,52 @@ Concrete triggers, so this is falsifiable rather than a preference:
 - Latency: median 25.6s is tolerable for investigation, poor for chat. If
   interactive latency becomes a requirement, MAF's streaming and parallel tool
   execution are a real argument.
+
 - A question genuinely needing multi-turn planning -- where the second tool
   call depends on the first's *content*, not just its presence. Nothing in the
   current ten cases does.
+
 - `routing_rate` falling as the catalog grows. Keyword routing is deterministic
   and auditable, but it does not generalise. If it drops below ~0.8 with more
   specialists, an LLM router earns its governance cost.
 
 Re-run `python3 scripts/evaluate_agents.py --baseline .planning/eval/baseline.json`
 before re-opening this. Argue from the numbers.
+
+### Phase 10: Fabric Medallion Capability Expansion
+
+**Goal:** Deliver a reliable, governed Fabric medallion platform whose Bronze, Silver, and Gold products are observable, freshness-bounded, consumable through curated semantic contracts, and consistently surfaced through the API and web application.
+**Requirements**: MED-01, MED-02, MED-03, MED-04, MED-05, MED-06, MED-07, MED-08, MED-09, MED-10
+**Depends on:** Phase 9
+**Plans:** 15 plans
+
+Plans:
+
+- [ ] 10-01-PLAN.md — Stabilize, verify, and commit existing uncommitted Defender/ontology work end-to-end (tracer)
+- [ ] 10-02-PLAN.md — Referential integrity & ownership/tag governance quality gate (MED-06)
+- [ ] 10-03-PLAN.md — Durable ontology publication terminal state & telemetry (MED-01)
+- [ ] 10-04-PLAN.md — Dataset-agnostic freshness/status/quality health provider (MED-03)
+- [ ] 10-05-PLAN.md — Publication manifest & lifecycle disposition registry (MED-09)
+- [ ] 10-06-PLAN.md — Change-domain ontology forwarding fix + predictive/remediation disposition audit (MED-04)
+- [ ] 10-07-PLAN.md — OneLake data access, capacity health, Delta maintenance, lineage surfacing (MED-10)
+- [ ] 10-08-PLAN.md — Historical retention extension for cost/compliance/patch/change/incident (MED-07)
+- [ ] 10-09-PLAN.md — Gold/Silver restoration, staged rollout & disposition classification (MED-02)
+- [ ] 10-10-PLAN.md — Direct Lake semantic model manager (MED-05)
+- [ ] 10-11-PLAN.md — Gold-grounding Data Agent client, contract & guardrails (MED-08, TDD)
+- [ ] 10-12-PLAN.md — Gold-grounding specialist wiring & evaluation dataset (MED-08)
+- [ ] 10-13-PLAN.md — Fabric medallion health & capabilities API (MED-03/09/10)
+- [ ] 10-14-PLAN.md — Web "Fabric medallion" tab on /connections (MED-03/09/10)
+- [ ] 10-15-PLAN.md — Live rollout validation & evaluation baseline (MED-02/08/10)
+
+**Success Criteria** (what must be TRUE):
+
+1. Ontology publication rejects undefined endpoint types before committing, retries transient publication failures within a bounded policy, emits actionable telemetry, and records an operator-visible terminal state.
+2. Every expected Gold topology, assessment, and operational-context output is either live and verified or explicitly retired with a versioned compatibility disposition.
+3. Bronze, Silver, Gold, and metadata datasets expose configurable freshness SLOs, source status, row-count and quality evidence through a scope-enforced API and the web application.
+4. Code-declared Silver datasets have an evidence-backed disposition and all high-value operational gaps required by current API/web capabilities are populated and served.
+5. Gold provides curated, versioned consumption contracts and a Direct Lake-compatible semantic serving definition without replacing the inventory read port as the resource-identity authority.
+6. Graph publication enforces referential integrity and configurable ownership/tag quality thresholds while preserving uncertainty and avoiding unsupported relationship inference.
+7. Historical facts needed for cost, compliance, patch, change, incident, and lifecycle trend analysis are retained under explicit history and retention contracts.
+8. The Fabric Data Agent is grounded in curated Gold products and has reproducible offline and live evaluation coverage for groundedness, precision, freshness, and citation behavior.
+9. Generated ontology projections are governed by a publication manifest and lifecycle state so consumers do not need to discover or depend directly on hundreds of physical tables.
+10. Fabric-native and application-layer security, lineage, capacity health, and Delta maintenance controls are implemented, documented, observable, and verified in the deployed API and web experience.

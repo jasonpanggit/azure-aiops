@@ -100,3 +100,9 @@ Phase 09-09 objectives are met. Suggested follow-ups (not blocking):
 - src/operations/foundry_agent.py (agent_id parameter to parse_specialist_findings) — re-verified compatible this session, no changes needed
 - src/operations/foundry_prompts/*.txt (7 new prompt templates)
 - infra/terraform/foundry.tf (per-specialist tool allocation, MCP connection resource, prompts)
+
+## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 10 added: Fabric Medallion Capability Expansion
