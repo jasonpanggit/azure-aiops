@@ -633,3 +633,62 @@ def test_unknown_business_mapping_carries_through_approval(tmp_path) -> None:
     decision = response.json()["data"]
     # Decision record should preserve any review requirements from the plan
     assert decision is not None
+
+
+def test_rejected_decision_rejects_expires_at_field(tmp_path) -> None:
+    """A rejection decision must not accept expires_at."""
+    decision_path = tmp_path / "aiops" / "state" / "remediation_decisions.json"
+
+    def planner_factory():
+        return remediation_planner(
+            repository=PlanRepository(
+                decision_store=RemediationDecisionStore(path=decision_path)
+            )
+        )
+
+    client = _client(tmp_path, planner=planner_factory())
+    plan = _first_plan(client)
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "rejected",
+            "reason": "Risk too high",
+            "action_version": plan["action_version"],
+            "expires_at": _future_expiry_datetime(),  # <- Should be rejected
+        },
+    )
+
+    assert response.status_code == 400
+    assert "expires_at" in response.json()["error"]["message"].lower()
+
+
+def test_expired_decision_handling(tmp_path) -> None:
+    """An expired decision must be recorded and stored."""
+    decision_path = tmp_path / "aiops" / "state" / "remediation_decisions.json"
+
+    def planner_factory():
+        return remediation_planner(
+            repository=PlanRepository(
+                decision_store=RemediationDecisionStore(path=decision_path)
+            )
+        )
+
+    client = _client(tmp_path, planner=planner_factory())
+    plan = _first_plan(client)
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "expired",
+            "reason": "Approval period lapsed",
+            "action_version": plan["action_version"],
+        },
+    )
+
+    assert response.status_code == 201
+    decision = response.json()["data"]
+    assert decision["decision"] == "expired"
+    assert decision["expires_at"] == ""
