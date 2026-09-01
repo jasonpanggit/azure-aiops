@@ -90,13 +90,36 @@ const server = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => { body += c; });
   req.on('end', async () => {
+    let parsed;
     try {
       // Validate it's at least parseable JSON before forwarding, so a
       // malformed request doesn't desync the stdio framing.
-      JSON.parse(body);
+      parsed = JSON.parse(body);
     } catch (e) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid JSON body' }));
+      return;
+    }
+
+    // JSON-RPC *notifications* (e.g. "notifications/initialized", which
+    // every spec-compliant MCP client -- including Foundry -- sends right
+    // after `initialize` completes) omit the `id` field and by protocol
+    // definition never get a response line on stdout. Forwarding one of
+    // these through callAzmcp() would push a waiter onto `pending` that
+    // never resolves, hanging the HTTP response forever and, upstream,
+    // tripping Foundry's "Initialization timed out" tool-enumeration
+    // error. Fire-and-forget these to the child's stdin instead and
+    // respond immediately with 202 (no body expected for notifications).
+    if (parsed.id === undefined) {
+      child.stdin.write(body.trim() + '\n', (err) => {
+        if (err) {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `bridge error: ${err.message}` }));
+          return;
+        }
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end();
+      });
       return;
     }
 

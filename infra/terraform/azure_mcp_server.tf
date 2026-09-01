@@ -16,6 +16,7 @@ resource "azurerm_container_app" "azure_mcp" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
 
   identity {
     type         = "UserAssigned"
@@ -58,6 +59,22 @@ resource "azurerm_container_app" "azure_mcp" {
       env {
         name  = "AZURE_TOKEN_CREDENTIALS"
         value = "ManagedIdentityCredential"
+      }
+
+      # Overrides the Dockerfile's baked-in default at runtime. --mode all
+      # (the prior default) starts azmcp with 200+ individually-registered
+      # tools; Microsoft's own docs call this slower and "not recommended"
+      # for regular use, and empirically here azmcp never even completed the
+      # initial MCP `initialize` handshake under --mode all (hung >4
+      # minutes against a direct container request) -- exactly matching
+      # Foundry's "Initialization timed out while enumerating tools" error
+      # for this agent. --mode namespace (the documented default) groups
+      # each Azure service behind one routing tool instead, initializes
+      # promptly, and still dispatches to the same underlying operations the
+      # network-agent's allowed_tools list already names.
+      env {
+        name  = "AZMCP_ARGS"
+        value = "--read-only --mode namespace --dangerously-disable-elicitation --outgoing-auth-strategy UseHostingEnvironmentIdentity"
       }
     }
 

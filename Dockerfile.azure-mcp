@@ -64,6 +64,16 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
 # Container Apps ingress and APIM actually talk to over HTTP. The managed
 # identity attached to the Container App is what authorizes the underlying
 # Azure Resource Manager calls, not this bridge process.
+# --mode all starts azmcp with 200+ individually-registered tools, which
+# Microsoft's own docs call out as slower and "not recommended" for regular
+# use; confirmed empirically here too -- with --mode all, azmcp never
+# responds to the initial MCP `initialize` handshake at all (hung >4
+# minutes), which is exactly what Foundry's "Initialization timed out while
+# enumerating tools" error reports. --mode namespace (the documented
+# default) groups each Azure service behind one routing tool instead, which
+# initializes promptly and is what specialist agents' allowed_tools lists
+# already assume (they reference specific operations by name, which the
+# namespace router still exposes/dispatches to internally).
 ENV AZMCP_BIN=./node_modules/.bin/azmcp
-ENV AZMCP_ARGS="--read-only --mode all --dangerously-disable-elicitation --outgoing-auth-strategy UseHostingEnvironmentIdentity"
+ENV AZMCP_ARGS="--read-only --mode namespace --dangerously-disable-elicitation --outgoing-auth-strategy UseHostingEnvironmentIdentity"
 CMD ["node", "/app/bridge.js"]
