@@ -104,3 +104,14 @@ def test_new_defender_tools_are_advertised_and_assigned() -> None:
     for block in (remediation_block, vulnerability_block):
         for name in ("defender_alerts", "defender_attack_paths", "defender_secure_score"):
             assert f'"{name}"' in block
+
+
+
+def test_remediation_decision_tools_are_advertised_and_only_remediation_assigned() -> None:
+    rows = _registry_rows()
+    for name in ("defender_remediation_cases", "remediation_business_decision"):
+        assert rows.get(name) == "operations-mcp"
+    text = _FOUNDRY_TF.read_text(encoding="utf-8")
+    remediation_block = text[text.index("remediation = concat(["):text.index("executive_summary =", text.index("remediation = concat(["))]
+    assert '"defender_remediation_cases"' in remediation_block
+    assert '"remediation_business_decision"' in remediation_block

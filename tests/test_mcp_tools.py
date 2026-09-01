@@ -134,3 +134,84 @@ def test_defender_secure_score_tool_returns_overview_and_unhealthy_controls():
     assert set(body["data"]) == {"overview", "controls"}
     assert body["evidence"][0]["source_table"] == "defender_secure_scores"
     assert len(body["data"]["controls"]) == 25
+
+
+class _DecisionStore:
+    def __init__(self, plan):
+        self._plan = plan
+
+    def get(self, plan_id):
+        return self._plan if plan_id == self._plan["plan_id"] else None
+
+
+class _PlannerWithCorrelator:
+    def __init__(self):
+        self.defender_correlator = type("Corr", (), {"cases": lambda self, scope=None: [
+            {
+                "case_id": "CASE-001",
+                "resource_key": "/subscriptions/123/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1",
+                "business_service": "Checkout",
+                "evidence_citations": [{"source_id": "alert-1"}],
+                "business_context": {"affected_services": ["Checkout"]},
+                "disposition": "act_now",
+                "urgency_rationale": {"message": "customer path at risk"},
+                "confidence": 0.8,
+                "outcome": "catalog_action",
+                "business_mapping_review_required": False,
+            },
+            {
+                "case_id": "CASE-002",
+                "resource_key": "/subscriptions/123/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm2",
+                "business_service": "Billing",
+                "evidence_citations": [{"source_id": "alert-2"}],
+                "business_context": {"affected_services": ["Billing"]},
+                "disposition": "escalate",
+                "urgency_rationale": {"message": "mapping unknown"},
+                "confidence": 0.4,
+                "outcome": "no_safe_action",
+                "business_mapping_review_required": True,
+            },
+        ]})()
+        self.repository = _DecisionStore({
+            "plan_id": "RMP-123",
+            "case_id": "CASE-001",
+            "business_decision": {
+                "cost_of_action": {"service_risk": {"status": "known"}},
+                "cost_of_inaction": {"service_risk": {"status": "known"}},
+                "options": [{"option_id": "act_now", "recommended": True}],
+                "urgency_rationale": {"message": "customer impact now"},
+                "confidence": 0.85,
+                "review_requirements": ["owner review"],
+            },
+        })
+
+    def generate_plans(self):
+        return {"plans": [self.repository._plan], "generated_at": "2026-09-01T00:00:00Z"}
+
+
+def test_remediation_cases_tool_filters_by_business_service_and_keeps_no_safe_action_visible():
+    from api.scope import Scope
+    from operations.tools import call_tool
+    planner = _PlannerWithCorrelator()
+    context = type("Ctx", (), {"provider_runtime": None, "resolve_provider": lambda self, name: planner if name == "remediation" else None})()
+    result = call_tool("defender_remediation_cases", {"business_service": "Checkout"}, context=context, scope=Scope.unrestricted())
+    assert result.status == STATUS_OK
+    assert len(result.data) == 1
+    assert result.data[0]["business_service"] == "Checkout"
+    result = call_tool("defender_remediation_cases", {}, context=context, scope=Scope.unrestricted())
+    assert {row["outcome"] for row in result.data} == {"catalog_action", "no_safe_action"}
+    assert any(row["business_mapping_review_required"] for row in result.data)
+
+
+def test_remediation_business_decision_tool_returns_business_decision_by_plan_or_case():
+    from api.scope import Scope
+    from operations.tools import call_tool
+    planner = _PlannerWithCorrelator()
+    context = type("Ctx", (), {"provider_runtime": None, "resolve_provider": lambda self, name: planner if name == "remediation" else None})()
+    result = call_tool("remediation_business_decision", {"name": "RMP-123"}, context=context, scope=Scope.unrestricted())
+    assert result.status == STATUS_OK
+    assert result.data["plan_id"] == "RMP-123"
+    assert "cost_of_action" in result.data["business_decision"]
+    by_case = call_tool("remediation_business_decision", {"name": "CASE-001"}, context=context, scope=Scope.unrestricted())
+    assert by_case.status == STATUS_OK
+    assert by_case.data["case_id"] == "CASE-001"

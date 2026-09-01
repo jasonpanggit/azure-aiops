@@ -45,6 +45,8 @@ REVIEWED_TOOLS = (
     "defender_attack_paths",
     "defender_secure_score",
     "incidents",
+    "defender_remediation_cases",
+    "remediation_business_decision",
     "remediation_plans",
     "remediation_opportunities",
 )

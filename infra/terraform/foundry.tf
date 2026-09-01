@@ -49,6 +49,8 @@ locals {
       "defender_alerts",
       "defender_attack_paths",
       "defender_secure_score",
+      "defender_remediation_cases",
+      "remediation_business_decision",
     ], local.foundry_generic_context_tools)
     executive_summary = local.foundry_generic_context_tools
   }
@@ -148,6 +150,8 @@ locals {
     incidents                 = { server = "operations-mcp", purpose = "Look up governed incident records and their timeline/status." }
     remediation_plans         = { server = "operations-mcp", purpose = "Look up existing approved/proposed remediation plans." }
     remediation_opportunities = { server = "operations-mcp", purpose = "Identify candidate remediation opportunities not yet planned." }
+    defender_remediation_cases = { server = "operations-mcp", purpose = "Read governed Defender-correlated remediation cases with citations, business context, and dispositions; changes nothing." }
+    remediation_business_decision = { server = "operations-mcp", purpose = "Read governed business-decision detail for a remediation plan or correlated case, including costs, options, urgency, confidence, and review requirements; changes nothing." }
 
     # -- azure-mcp: Microsoft's official Azure MCP Server (live, raw Azure state) --
     subscription_list                         = { server = "azure-mcp", purpose = "Enumerate accessible Azure subscriptions (generic scoping tool)." }

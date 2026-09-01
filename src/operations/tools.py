@@ -701,6 +701,108 @@ def _tool_remediation_opportunities(tool_context: ToolContext, args: Mapping[str
     return _provider_result(tool_context, "remediation", run)
 
 
+
+def _tool_defender_remediation_cases(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    """Correlated Defender remediation cases with optional business-service filter."""
+    business_service = str(args.get("business_service") or "").strip().casefold()
+
+    def run(planner: Any) -> ToolResult:
+        correlator = getattr(planner, "defender_correlator", None)
+        if correlator is None:
+            return ToolResult(status=STATUS_UNAVAILABLE, warning="Defender remediation correlation is unavailable")
+        cases = correlator.cases(tool_context.scope)
+        if business_service:
+            cases = [
+                row for row in cases
+                if str(row.get("business_service") or "").strip().casefold() == business_service
+                or business_service in {
+                    str(value).strip().casefold()
+                    for value in (row.get("business_context") or {}).get("affected_services", [])
+                }
+            ]
+        if not cases:
+            return ToolResult(status=STATUS_EMPTY)
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(cases),
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.DefenderRemediationCorrelator",
+                    source_table="defender_remediation_cases",
+                    timestamp=str(getattr(getattr(correlator, "vulnerability_service", None), "freshness", "") or ""),
+                    confidence=CONFIDENCE_MEDIUM,
+                ),
+            ),
+        )
+
+    return _provider_result(tool_context, "remediation", run)
+
+
+
+def _tool_remediation_business_decision(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    """Business decision detail for a plan id or correlated case id."""
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return ToolResult(status=STATUS_EMPTY, warning="A plan or case identifier is required")
+    lookup = name.casefold()
+
+    def run(planner: Any) -> ToolResult:
+        repository = getattr(planner, "repository", None)
+        plan = repository.get(name) if repository is not None and hasattr(repository, "get") else None
+        if isinstance(plan, Mapping):
+            decision = dict(plan.get("business_decision") or {})
+            if not decision:
+                return ToolResult(status=STATUS_EMPTY)
+            return ToolResult(
+                status=STATUS_OK,
+                data=_bound({"plan_id": str(plan.get("plan_id") or name), "case_id": str(plan.get("case_id") or ""), "business_decision": decision}),
+                evidence=(
+                    Evidence(
+                        source_engine="intelligence.BusinessDecisionEngine",
+                        source_table="remediation_plans",
+                        resource_id=str(plan.get("plan_id") or name),
+                        confidence=CONFIDENCE_MEDIUM,
+                    ),
+                ),
+            )
+        correlator = getattr(planner, "defender_correlator", None)
+        if correlator is None:
+            return ToolResult(status=STATUS_EMPTY)
+        for case in correlator.cases(tool_context.scope):
+            case_id = str(case.get("case_id") or case.get("resource_key") or "")
+            if lookup not in {case_id.casefold(), str(case.get("resource_key") or "").casefold()}:
+                continue
+            decision = {
+                "disposition": case.get("disposition"),
+                "urgency_rationale": case.get("urgency_rationale"),
+                "confidence": case.get("confidence"),
+                "review_requirements": [
+                    "Business mapping review required"
+                    if case.get("business_mapping_review_required")
+                    else "Operator approval required before any governed action"
+                ],
+                "cost_of_action": case.get("cost_of_action"),
+                "cost_of_inaction": case.get("cost_of_inaction"),
+                "options": case.get("options") or [],
+            }
+            return ToolResult(
+                status=STATUS_OK,
+                data=_bound({"case_id": case_id, "resource_key": str(case.get("resource_key") or ""), "business_decision": decision}),
+                evidence=(
+                    Evidence(
+                        source_engine="intelligence.DefenderRemediationCorrelator",
+                        source_table="defender_remediation_cases",
+                        resource_id=str(case.get("resource_key") or ""),
+                        timestamp=str(getattr(getattr(correlator, "vulnerability_service", None), "freshness", "") or ""),
+                        confidence=CONFIDENCE_MEDIUM,
+                    ),
+                ),
+            )
+        return ToolResult(status=STATUS_EMPTY)
+
+    return _provider_result(tool_context, "remediation", run)
+
+
 def _tool_inventory_resources(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     resource_type = str(args.get("resource_type") or "").strip()
     family = str(args.get("family") or "").strip() or None
@@ -872,6 +974,18 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             description="Prioritized remediation opportunities.",
             parameters={},
             handler=_tool_remediation_opportunities,
+        ),
+        ToolSpec(
+            name="defender_remediation_cases",
+            description="Correlated Defender remediation cases with governed evidence and business context.",
+            parameters={"business_service": "Optional business service name to narrow correlated cases"},
+            handler=_tool_defender_remediation_cases,
+        ),
+        ToolSpec(
+            name="remediation_business_decision",
+            description="Business-decision detail for a remediation plan or correlated case identifier.",
+            parameters={"name": "Remediation plan id or correlated case id"},
+            handler=_tool_remediation_business_decision,
         ),
         ToolSpec(
             name="inventory_resources",
