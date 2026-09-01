@@ -67,7 +67,7 @@ Requirements for the controlled Azure pilot.
 
 ### Fabric Medallion Capability
 
-- [ ] **MED-01**: Fabric ontology publication validates entity and relationship vocabulary before commit, retries transient failures within bounded limits, and exposes terminal failures through durable state and telemetry.
+- [x] **MED-01**: Fabric ontology publication validates entity and relationship vocabulary before commit, retries transient failures within bounded limits, and exposes terminal failures through durable state and telemetry.
 - [ ] **MED-02**: Expected Gold topology, assessment, and operational-context outputs are live and verified or explicitly retired through a versioned compatibility disposition.
 - [ ] **MED-03**: Every governed Bronze, Silver, Gold, and metadata product exposes configurable freshness objectives, source status, quality, row-count, lineage, and last-success evidence.
 - [ ] **MED-04**: High-value Silver operational datasets declared by the platform are populated or explicitly dispositioned, including security, incident, change, configuration, policy, predictive, and remediation domains.
@@ -163,7 +163,7 @@ Traceability is populated during roadmap creation.
 | INV-10 | Phase 7, Phase 8, Phase 9 | In Progress |
 | INV-11 | Phase 8 | Complete |
 | INV-12 | Phase 8 | Complete |
-| MED-01 | Phase 10 | Pending |
+| MED-01 | Phase 10 | Complete |
 | MED-02 | Phase 10 | Pending |
 | MED-03 | Phase 10 | Pending |
 | MED-04 | Phase 10 | Pending |
