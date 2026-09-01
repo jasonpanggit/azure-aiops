@@ -136,8 +136,11 @@ def valid_remediation_finding() -> dict[str, Any]:
         "uncertainty": [],
         "freshness": "fresh",
         "actionable": True,
-        "next_check": "Verify fix installed and validate system stability",
-        "summary": "Safe fix available: install latest security baseline",
+        "next_check": "Review governed rollout in staging before production approval",
+        "summary": "Governed action best protects the customer path",
+        "pros": ["Reduces customer-facing exposure"],
+        "cons": ["Requires maintenance-window coordination"],
+        "urgency_reasoning": "Checkout is customer-facing and the evidence shows active exposure.",
     }
 
 
