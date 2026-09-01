@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from collections.abc import Mapping
@@ -151,23 +152,23 @@ def normalize_assessment(row: Mapping[str, Any], observed: str) -> dict[str, Any
         "targetResourceId": target,
         "status": status,
         "severity": _severity(properties),
-        "recommendation": _first_text(
+        "recommendation": _escape_html(_first_text(
             properties.get("displayName"),
             properties.get("metadata", {}).get("displayName")
             if isinstance(properties.get("metadata"), Mapping)
             else "",
             row.get("name"),
-        ),
-        "description": _first_text(
+        )),
+        "description": _escape_html(_first_text(
             properties.get("description"),
             properties.get("metadata", {}).get("description")
             if isinstance(properties.get("metadata"), Mapping)
             else "",
-        ),
-        "remediation": _first_text(
+        )),
+        "remediation": _escape_html(_first_text(
             properties.get("remediationDescription"),
             properties.get("remediation"),
-        ),
+        )),
         "lastAssessedAt": _first_text(
             properties.get("statusChangeDate"),
             properties.get("timeGenerated"),
@@ -197,11 +198,11 @@ def normalize_vulnerability_subassessments(
     additional = _mapping(properties.get("additionalData"))
     software = _mapping(additional.get("softwareDetails"))
     assessment_id = source_id.split("/subassessments/", 1)[0]
-    recommendation = _first_text(
+    recommendation = _escape_html(_first_text(
         properties.get("remediationDescription"),
         properties.get("remediation"),
         properties.get("displayName"),
-    )
+    ))
     assessed_at = _first_text(
         properties.get("timeGenerated"),
         properties.get("statusChangeDate"),
@@ -220,10 +221,10 @@ def normalize_vulnerability_subassessments(
             "status": status or "Unhealthy",
             "severity": _severity(properties),
             "recommendation": recommendation,
-            "description": _first_text(
+            "description": _escape_html(_first_text(
                 properties.get("description"),
                 additional.get("description"),
-            ),
+            )),
             "lastAssessedAt": assessed_at,
             "patchable": bool(additional.get("patchable", False)),
             "softwareVendor": _text(software.get("vendor")),
@@ -260,12 +261,12 @@ def normalize_security_alert(
         "id": alert_id,
         "status": _first_text(properties.get("status"), "Unknown"),
         "severity": _first_text(properties.get("severity"), "Unknown"),
-        "title": _first_text(
+        "title": _escape_html(_first_text(
             properties.get("alertDisplayName"),
             properties.get("displayName"),
             row.get("name"),
-        ),
-        "description": _text(properties.get("description")),
+        )),
+        "description": _escape_html(_text(properties.get("description"))),
         "alertType": _text(properties.get("alertType")),
         "intent": _text(properties.get("intent")),
         "productName": _text(properties.get("productName")),
@@ -280,7 +281,7 @@ def normalize_security_alert(
             properties.get("processingEndTimeUtc"),
             properties.get("processingEndTime"),
         ),
-        "remediationSteps": [_text(value) for value in remediation if _text(value)],
+        "remediationSteps": [_escape_html(_text(value)) for value in remediation if _text(value)],
         "resourceIds": list(resource_ids),
         "cveIds": sorted(
             {
@@ -628,6 +629,11 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _escape_html(value: Any) -> str:
+    """Escape HTML special characters to prevent injection."""
+    return html.escape(_text(value))
 
 
 def _first_text(*values: Any) -> str:

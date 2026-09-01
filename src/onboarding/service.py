@@ -525,7 +525,8 @@ class SubscriptionOnboardingService:
                 "support_team": business.support_team,
                 "criticality": business.criticality,
                 "region": business.region,
-                "sync_status": sync_state.status,
+                # NOTE: sync_status removed from list response to reduce caching confusion.
+                # Use GET /{connection_id}/health for real-time sync state polling instead.
                 "sync_record_count": sync_state.record_count,
                 "last_synced_at": sync_state.last_synced_at,
                 "last_successful_sync_at": sync_state.last_successful_sync_at,
