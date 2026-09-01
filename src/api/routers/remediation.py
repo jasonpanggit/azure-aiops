@@ -245,3 +245,65 @@ def get_execution(execution_id: str, context: Context, scope: ReadScope) -> dict
         scope=scope.to_dict(),
     )
 
+
+@router.get(
+    "/plans/{plan_id}/executions", summary="List execution attempts for a remediation plan"
+)
+def list_plan_executions(
+    plan_id: str, context: Context, scope: ReadScope
+) -> dict[str, Any]:
+    _get_scoped_plan(context, scope, plan_id)
+    service = _execution_service(context)
+    store = getattr(service, "_store", None)
+    records = store.list_for_plan(plan_id) if store is not None else []
+    return envelope(
+        {"plan_id": plan_id, "executions": records},
+        evidence=_execution_evidence(plan_id),
+        scope=scope.to_dict(),
+    )
+
+
+@router.post(
+    "/executions/{execution_id}/retry",
+    status_code=202,
+    summary="Retry a failed remediation execution (bounded, idempotent, revalidated)",
+)
+def retry_execution(
+    execution_id: str, context: Context, principal: OperatePrincipal
+) -> dict[str, Any]:
+    service = _execution_service(context)
+    store = getattr(service, "_store", None)
+    record = store.get(execution_id) if store is not None else None
+    if record is None:
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "Remediation execution not found",
+            details={"execution_id": execution_id},
+        )
+    # Narrow to what this principal may actually operate on before
+    # resolving/retrying, matching execute_plan's narrowing-before-
+    # resolving pattern.
+    write_scope = context.authorizer.effective_scope(principal, "operate")
+    _get_scoped_plan(context, write_scope, str(record.get("plan_id") or ""))
+
+    try:
+        result = service.retry(execution_id)
+    except RemediationExecutionError as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT, str(exc), {"reason": exc.reason, **exc.details}
+        ) from exc
+    except PatchValidationError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc), dict(exc.details)) from exc
+    except PatchExecutionUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            str(exc),
+            {"capability": getattr(exc, "capability", "patch_execution")},
+        ) from exc
+
+    return envelope(
+        result,
+        evidence=_execution_evidence(execution_id),
+        scope=write_scope.to_dict(),
+    )
+

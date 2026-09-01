@@ -112,6 +112,8 @@ class RemediationExecutionStore:
                     "message": "",
                     "attempt_count": 1,
                     "rollback_guidance": "",
+                    "verified_state": "",
+                    "failure_details": "",
                 }
                 executions.append(copy.deepcopy(record))
                 state["revision"] += 1

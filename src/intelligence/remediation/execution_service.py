@@ -23,6 +23,10 @@ from .execution_verifier import ExecutionVerificationUnavailable, ExecutionVerif
 # governed catalog action remains recommendation-only (EXEC-01).
 CONTROLLED_PATCH_RECOVERY = "controlled-patch-recovery"
 
+# Bounded retry ceiling (T-03-11): a failing target cannot be retried
+# indefinitely against Azure.
+MAX_EXECUTION_ATTEMPTS = 3
+
 
 class RemediationExecutionError(RuntimeError):
     """A plan is not eligible for execution right now.
@@ -76,6 +80,34 @@ class RemediationExecutionService:
                 details={"plan_id": plan_id},
             )
 
+        decision = self._check_approval_gate(plan)
+
+        execution_id = None
+        if self._store is not None:
+            record = self._store.create(plan_id, requested_by=requested_by)
+            execution_id = record["execution_id"]
+            rollback_guidance = list(
+                (plan.get("rollback_plan") or {}).get("rollback_actions") or []
+            )
+            self._store.update(
+                execution_id, status="running", rollback_guidance=rollback_guidance
+            )
+
+        return self._submit_and_record(
+            plan=plan,
+            decision=decision,
+            requested_by=requested_by,
+            execution_id=execution_id,
+        )
+
+    def _check_approval_gate(self, plan: dict[str, Any]) -> dict[str, Any]:
+        """Run the four approval-gate checks against ``plan``'s *current* state.
+
+        Shared verbatim by :meth:`execute` and :meth:`retry` so the two
+        code paths cannot drift apart (T-03-10): action_id allowlist,
+        approval status, action_version currency, and expiry.
+        """
+        plan_id = str(plan.get("plan_id") or "")
         action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
         if action_id != CONTROLLED_PATCH_RECOVERY:
             raise RemediationExecutionError(
@@ -108,18 +140,17 @@ class RemediationExecutionService:
                 reason="approval_expired",
                 details={"plan_id": plan_id, "expires_at": decision.get("expires_at")},
             )
+        return decision
 
-        execution_id = None
-        if self._store is not None:
-            record = self._store.create(plan_id, requested_by=requested_by)
-            execution_id = record["execution_id"]
-            rollback_guidance = list(
-                (plan.get("rollback_plan") or {}).get("rollback_actions") or []
-            )
-            self._store.update(
-                execution_id, status="running", rollback_guidance=rollback_guidance
-            )
-
+    def _submit_and_record(
+        self,
+        *,
+        plan: dict[str, Any],
+        decision: dict[str, Any],
+        requested_by: str,
+        execution_id: str | None,
+    ) -> dict[str, Any]:
+        plan_id = str(plan.get("plan_id") or "")
         target, patch_ids = self._resolve_target(plan)
         try:
             run = self._patching.trigger(
@@ -162,6 +193,72 @@ class RemediationExecutionService:
             "message": run.message,
             "run_id": run.run_id,
         }
+
+    def retry(self, execution_id: str) -> dict[str, Any]:
+        """Retry a failed/retrying execution: bounded, idempotent, revalidated.
+
+        Rejects (never resubmits) when the execution is already
+        ``"succeeded"`` (idempotency) or has reached
+        :data:`MAX_EXECUTION_ATTEMPTS` (bounded), and re-runs the identical
+        approval-gate checks from :meth:`execute` against the plan's
+        *current* state before resubmitting (revalidation, T-03-10).
+        """
+        if self._store is None:
+            raise RemediationExecutionError(
+                "No execution store is configured; nothing to retry",
+                reason="store_not_configured",
+                details={"execution_id": execution_id},
+            )
+        record = self._store.get(execution_id)
+        if record is None:
+            raise RemediationExecutionError(
+                f"Execution {execution_id!r} was not found",
+                reason="execution_not_found",
+                details={"execution_id": execution_id},
+            )
+        if record.get("status") == "succeeded":
+            raise RemediationExecutionError(
+                "This execution already succeeded; retrying would resubmit an "
+                "already-successful change",
+                reason="already_succeeded",
+                details={"execution_id": execution_id},
+            )
+        attempt_count = int(record.get("attempt_count") or 0)
+        if attempt_count >= MAX_EXECUTION_ATTEMPTS:
+            raise RemediationExecutionError(
+                f"This execution has reached the maximum of {MAX_EXECUTION_ATTEMPTS} attempts",
+                reason="max_attempts_exceeded",
+                details={"execution_id": execution_id, "attempt_count": attempt_count},
+            )
+
+        plan_id = str(record.get("plan_id") or "")
+        plan = self._plans.get(plan_id)
+        if plan is None:
+            raise RemediationExecutionError(
+                f"Remediation plan {plan_id!r} was not found",
+                reason="plan_not_found",
+                details={"plan_id": plan_id},
+            )
+
+        # Revalidate the plan's *current* approval/target state -- it may
+        # have changed since the original attempt even though this
+        # execution was itself once approved.
+        decision = self._check_approval_gate(plan)
+
+        self._store.update(
+            execution_id,
+            status="retrying",
+            attempt_count=attempt_count + 1,
+        )
+        self._store.update(execution_id, status="running")
+
+        return self._submit_and_record(
+            plan=plan,
+            decision=decision,
+            requested_by=str(record.get("requested_by") or ""),
+            execution_id=execution_id,
+        )
+
 
     def poll_verification(self, execution_id: str) -> dict[str, Any]:
         """Poll the real upstream source of truth for one running execution.
@@ -267,6 +364,7 @@ def _append_note(existing_message: Any, note: str) -> str:
 
 __all__ = [
     "CONTROLLED_PATCH_RECOVERY",
+    "MAX_EXECUTION_ATTEMPTS",
     "RemediationExecutionError",
     "RemediationExecutionService",
 ]
