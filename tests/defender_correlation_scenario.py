@@ -26,6 +26,10 @@ UNMATCHED_WEAKNESS_RESOURCE_ID = (
     "/subscriptions/sub-1/resourcegroups/rg-prod/providers/"
     "microsoft.compute/virtualmachines/vm-orphan"
 )
+NOT_APPLICABLE_RESOURCE_ID = (
+    "/subscriptions/sub-1/resourcegroups/rg-prod/providers/"
+    "microsoft.compute/virtualmachines/vm-waived"
+)
 
 
 def _resource(**overrides: Any) -> dict[str, Any]:
@@ -66,6 +70,17 @@ def defender_resources() -> list[dict[str, Any]]:
             application="Ledger",
             business_service="Ledger Services",
             owner="Ledger Owner",
+        ),
+        _resource(
+            resource_key=NOT_APPLICABLE_RESOURCE_ID,
+            name="vm-waived",
+            application="Reporting API",
+            business_service="Reporting",
+            owner="Reporting Product Owner",
+            confirmed_not_applicable_reason=(
+                "Disk encryption is enforced at the host level by platform policy; "
+                "this resource has no local disk to encrypt."
+            ),
         ),
     ]
 
@@ -116,6 +131,22 @@ def defender_assessments() -> list[dict[str, Any]]:
             "application": "Ledger",
             "owner": "Ledger Owner",
             "last_assessed_at": "2026-08-18T07:00:00Z",
+            "cve_id": "",
+        },
+        {
+            "assessment_id": "assess-004",
+            "target_resource_id": NOT_APPLICABLE_RESOURCE_ID,
+            "resource_name": "vm-waived",
+            "resource_type": "virtualMachines",
+            "severity": "high",
+            "status": "Unhealthy",
+            "recommendation": "Enable disk encryption",
+            "description": "Disk encryption is not enabled on this VM.",
+            "subscription_id": "sub-1",
+            "business_service": "Reporting",
+            "application": "Reporting API",
+            "owner": "Reporting Product Owner",
+            "last_assessed_at": "2026-08-18T07:30:00Z",
             "cve_id": "",
         },
     ]
