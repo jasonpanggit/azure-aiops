@@ -118,3 +118,184 @@ def test_verify_reports_not_verifiable_when_no_provider_job_id():
 
     assert result["verifiable"] is False
     assert result["reason"] == "no provider job id"
+
+
+# --- Task 2: wiring verification into the execution lifecycle ------------
+
+from datetime import UTC, datetime, timedelta
+
+from intelligence.remediation.approval_decisions import RemediationDecisionStore
+from intelligence.remediation.execution_service import RemediationExecutionService
+from intelligence.remediation.execution_store import RemediationExecutionStore
+from intelligence.remediation.plan_repository import PlanRepository
+from operations.patching.adapters import PatchExecutionResult, RecordingPatchExecutionAdapter
+from operations.patching.service import PatchingService
+
+TARGET_ID = "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments"
+NOW = datetime(2026, 8, 18, 13, tzinfo=UTC)
+
+
+class _FakeVulnerabilityService:
+    def __init__(self) -> None:
+        self.freshness = "2026-08-18T13:00:00Z"
+
+    def asset_exposures(self, scope=None) -> list[dict]:
+        return [
+            {
+                "asset_id": TARGET_ID,
+                "name": "vm-payments",
+                "inventory_kind": "Azure VM",
+                "resource_type": "Microsoft.Compute/virtualMachines",
+                "subscription_id": "sub-1",
+                "missing_kbs": ["KB600001"],
+                "severities": ["Critical"],
+                "cve_ids": ["CVE-2026-0001"],
+            }
+        ]
+
+
+class _OperationUrlAdapter:
+    """Records submissions like RecordingPatchExecutionAdapter, but hands
+    back a real-looking operation URL so verification has something to poll."""
+
+    name = "recording-with-operation-url"
+
+    def __init__(self) -> None:
+        self.submissions: list = []
+
+    def submit(self, run, target) -> PatchExecutionResult:
+        self.submissions.append((run, target))
+        return PatchExecutionResult(
+            provider=self.name,
+            provider_job_id=OPERATION_URL,
+            state="submitted",
+            message="Accepted by Azure; Update Manager is authoritative for the outcome.",
+        )
+
+
+def _full_plan_with_rollback(**overrides) -> dict:
+    plan = {
+        "plan_id": "RMP-0002",
+        "action_id": "controlled-patch-recovery",
+        "opportunity_type": "Patch and vulnerability debt",
+        "action_version": "v1",
+        "resource_key": TARGET_ID,
+        "resource": {"id": TARGET_ID, "name": "vm-payments", "entity_type": "VirtualMachine"},
+        "title": "Controlled patch and failed-update recovery",
+        "risk_assessment": {"overall_risk": {"level": "High", "drivers": []}},
+        "approval_requirements": [],
+        "execution_steps": [],
+        "application": "Payments API",
+        "business_service": "Checkout",
+        "rollback_plan": {
+            "rollback_actions": ["Restore from last known-good snapshot", "Notify on-call"],
+            "automatic_rollback": False,
+            "execution_status": "Not Executed",
+        },
+    }
+    plan.update(overrides)
+    return plan
+
+
+def _approved_repository(plan: dict) -> PlanRepository:
+    repository = PlanRepository()
+    repository.replace_generation([plan])
+    repository.decisions.append(
+        plan=plan,
+        decision="approved",
+        approver="approver@example.com",
+        reason="Approved for patch recovery",
+        scope={},
+        action_version=plan["action_version"],
+        expires_at=(NOW + timedelta(days=1)).isoformat(),
+        now=NOW,
+    )
+    return repository
+
+
+def _service_with_verifier(
+    *, plan: dict, adapter=None, verifier_client: httpx.Client | None = None
+) -> tuple[RemediationExecutionService, RemediationExecutionStore]:
+    store = RemediationExecutionStore()
+    repository = _approved_repository(plan)
+    patching_service = PatchingService(
+        _FakeVulnerabilityService(),
+        adapter=adapter or _OperationUrlAdapter(),
+        require_human_approval=False,
+    )
+    verifier = ExecutionVerifier(
+        credential=_FakeCredential(),
+        client=verifier_client or _client_returning(200, {"status": "InProgress"}),
+    )
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=patching_service,
+        execution_store=store,
+        execution_verifier=verifier,
+        now=lambda: NOW,
+    )
+    return service, store
+
+
+def test_execute_leaves_status_running_not_succeeded_until_verified():
+    plan = _full_plan_with_rollback()
+    service, store = _service_with_verifier(plan=plan)
+
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    execution = store.get(result["execution_id"])
+    assert execution["status"] == "running"
+
+
+def test_poll_verification_updates_status_to_succeeded_on_terminal_outcome():
+    plan = _full_plan_with_rollback()
+    service, store = _service_with_verifier(
+        plan=plan, verifier_client=_client_returning(200, {"status": "InProgress"})
+    )
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    execution_id = result["execution_id"]
+
+    service._verifier = ExecutionVerifier(
+        credential=_FakeCredential(), client=_client_returning(200, {"status": "Succeeded"})
+    )
+    polled = service.poll_verification(execution_id)
+
+    assert polled["status"] == "succeeded"
+    assert store.get(execution_id)["status"] == "succeeded"
+
+
+def test_poll_verification_is_noop_while_still_running():
+    plan = _full_plan_with_rollback()
+    service, store = _service_with_verifier(
+        plan=plan, verifier_client=_client_returning(200, {"status": "InProgress"})
+    )
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    execution_id = result["execution_id"]
+
+    polled = service.poll_verification(execution_id)
+
+    assert polled["status"] == "running"
+    assert store.get(execution_id)["status"] == "running"
+
+
+def test_execution_record_carries_rollback_guidance_from_creation():
+    plan = _full_plan_with_rollback()
+    service, store = _service_with_verifier(plan=plan)
+
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    execution = store.get(result["execution_id"])
+    assert execution["rollback_guidance"] == [
+        "Restore from last known-good snapshot",
+        "Notify on-call",
+    ]
+
+
+def test_execution_verifier_module_never_calls_a_mutating_method():
+    import inspect
+
+    import intelligence.remediation.execution_verifier as verifier_module
+
+    source = inspect.getsource(verifier_module)
+    assert ".submit(" not in source
+    assert ".trigger(" not in source
