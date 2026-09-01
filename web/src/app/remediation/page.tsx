@@ -376,6 +376,17 @@ function RemediationContent() {
 
   const recordDecision = async () => {
     if (!selectedPlan?.action_version) return;
+    
+    // Validate: expires_at is only for approved decisions
+    if (decisionChoice !== "approved" && decisionExpiresAt.trim()) {
+        setDecisionError(`${decisionChoice} decisions must not include an expiry date.`);
+        return;
+    }
+    if (decisionChoice === "approved" && !decisionExpiresAt.trim()) {
+        setDecisionError("Approved decisions must include a future expiry date.");
+        return;
+    }
+    
     setDecisionSubmitting(true);
     setDecisionError("");
     setDecisionResult(null);
