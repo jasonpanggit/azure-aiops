@@ -34,6 +34,31 @@ fabric:
         mode: block
         max_missing_ownership_pct: 10
         max_missing_tag_pct: 10
+  # Dataset-agnostic Fabric medallion health provider (MED-03):
+  # `src/fabric/medallion_health.py::dataset_status(table_name)` is the
+  # single function every later Phase 10 surface (health API, web tab,
+  # Data Agent grounding guardrail) calls for "what is this dataset's
+  # status." Freshness objectives are always a bounded multiple of a
+  # dataset's own producing-pipeline cadence -- never one global threshold.
+  # A table with no explicit entry under `tables:` still gets its own SLO:
+  # `default_cadence_minutes * default_slo_multiplier` seconds. Add a
+  # `tables.<table_name>` entry (keyed by table name, or a pipeline name
+  # your table lookup falls back to) to override `cadence_minutes` and/or
+  # `slo_multiplier` for a specific dataset.
+  medallion_health:
+    freshness_slo:
+      default_cadence_minutes: 60
+      default_slo_multiplier: 3
+      tables:
+        silver_incidents:
+          cadence_minutes: 15
+        silver_alerts:
+          cadence_minutes: 15
+        silver_cost_actuals:
+          cadence_minutes: 1440
+        bronze_resource_changes:
+          cadence_minutes: 60
+
   auth:
     mode: managed_identity
     # Set only for a user-assigned managed identity.
