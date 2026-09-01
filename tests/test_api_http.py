@@ -521,7 +521,6 @@ class TestFabricMedallionRouterTask1:
             telemetry=ApiTelemetry(),
         )
         app = create_app(context)
-        app.include_router(fabric_medallion_router.router)
 
         now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         source_rows = [
@@ -675,7 +674,6 @@ class TestFabricMedallionRouterTask2:
             telemetry=ApiTelemetry(),
         )
         app = create_app(context)
-        app.include_router(fabric_medallion_router.router)
 
         now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         source_rows = [
