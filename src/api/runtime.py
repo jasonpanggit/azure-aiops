@@ -39,7 +39,10 @@ from intelligence.vulnerability.connector import (
 )
 from intelligence.vulnerability.enrichment_cache import EnrichmentCache
 from intelligence.vulnerability.models import RiskException
-from intelligence.vulnerability.service import VulnerabilityIntelligenceService
+from intelligence.vulnerability.service import (
+    VulnerabilityIntelligenceService,
+    _defender_payload,
+)
 from onboarding.config import ConnectorConfig
 from onboarding.query_contract import QuerySpec
 
@@ -920,9 +923,38 @@ def _build_vulnerability_service(
 
     _attach_business_context(findings, semantic)
     _attach_business_context(defender_assessments, semantic)
-    _attach_defender_signal_context(defender_signals["alerts"], semantic)
-    _attach_defender_signal_context(defender_signals["attack_paths"], semantic)
-    _attach_defender_signal_context(defender_signals["attack_path_nodes"], semantic)
+    # CR-05: `alerts`/`attack_paths`/.../`secure_score_controls` are all
+    # mapped by `InventoryDatasetMapper.load()` through the generic
+    # `_entity_row()` helper (both the Fabric-backed silver tables and the
+    # onboarding/non-Fabric snapshot path funnel through the same mapper),
+    # whose output schema only exposes `entity_type`/`name`/`resource_type`/
+    # `location`/`payload_json` as top-level columns — every Defender-
+    # specific field (`resourceIds`, `resourceId`, `attackPathId`, etc.) is
+    # serialized *inside* the `payload_json` string. `_attach_defender_signal_
+    # context()` below needs those fields as flat keys to resolve per-
+    # resource scope attribution (`_resource_scope`) and the aggregate
+    # environment/business_service/etc. dimensions. Previously that
+    # unpacking only happened later, inside
+    # `VulnerabilityIntelligenceService.__init__`/`_defender_payload()` --
+    # *after* `_attach_defender_signal_context` had already run against the
+    # still-nested rows and found nothing, so restricted-scope callers saw
+    # empty Defender responses regardless of what had actually synced. Reuse
+    # the exact same `_defender_payload()` unpacking here, before
+    # attribution runs, for every signal family that carries a
+    # `payload_json` blob. (`source_status` is a distinct schema that is
+    # never unpacked via `_defender_payload` and is intentionally excluded.)
+    for _signal_name in (
+        "alerts",
+        "attack_paths",
+        "attack_path_nodes",
+        "attack_path_connections",
+        "secure_scores",
+        "secure_score_controls",
+    ):
+        defender_signals[_signal_name] = [
+            _defender_payload(row) for row in defender_signals[_signal_name]
+        ]
+        _attach_defender_signal_context(defender_signals[_signal_name], semantic)
 
     service = VulnerabilityIntelligenceService.from_rows(
         findings=findings,
