@@ -343,13 +343,13 @@ variable "apim_gateway_assertion" {
 variable "foundry_model_name" {
   description = "Model backing the Operations Copilot prompt agent."
   type        = string
-  default     = "gpt-5-mini"
+  default     = "gpt-5.4-mini"
 }
 
 variable "foundry_model_version" {
   description = "Model version. Verify availability with: az cognitiveservices model list -l <location>."
   type        = string
-  default     = "2025-08-07"
+  default     = "2026-03-17"
 }
 
 variable "foundry_model_sku" {

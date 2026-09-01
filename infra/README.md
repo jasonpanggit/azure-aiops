@@ -23,7 +23,7 @@ that group is read or modified.
 | Key Vault | Reserved for secret storage. RBAC authorization; secret writes are deferred when subscription policy blocks public access. |
 | AI Foundry account (`AIServices`) | Project-based Foundry with a custom subdomain, needed for Entra auth and the agent data plane. |
 | Foundry project | Hosts the prompt agent. |
-| Model deployment | `gpt-5-mini`, `GlobalStandard`, 50K TPM. |
+| Model deployment | `gpt-5.4-mini`, `GlobalStandard`, 50K TPM. |
 | Prompt agent | `operations-copilot`. Created post-apply via the data plane. |
 | Container Apps environment + 2 apps | The API (port 8080) and the web workbench (port 3000). |
 | Fabric capacity, workspace, lakehouse | **Only when `enable_fabric = true`.** |
