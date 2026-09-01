@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 10-01-PLAN.md
-last_updated: "2026-09-01T07:51:08.161Z"
+stopped_at: Completed 10-02-PLAN.md
+last_updated: "2026-09-01T08:14:27.161Z"
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 64
-  completed_plans: 39
+  completed_plans: 40
 ---
 
 # Phase 09-11: Centralized Azure MCP Server in ACA
@@ -140,13 +140,15 @@ Phase 09-09 objectives are met. Suggested follow-ups (not blocking):
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 10 P01 | 32min | 3 tasks | 63 files |
+| Phase 10 P02 | 45min | 2 tasks | 4 files |
 
 ## Decisions
 
 - [Phase ?]: Phase 10 Plan 1: stabilized and committed the fix-ontology-sync-publish working tree in 5 reviewable git slices; reconciled ontology-schema.md as sole canonical ontology schema doc
+- [Phase ?]: QualityReport.blocking_rules decouples advisory (warn) rule hits from publication-blocking failures, since sync_service.py gates on failed_records not passed
 
 ## Session
 
-**Last session:** 2026-09-01T07:51:08.146Z
-**Stopped at:** Completed 10-01-PLAN.md
+**Last session:** 2026-09-01T08:14:27.139Z
+**Stopped at:** Completed 10-02-PLAN.md
 **Resume file:** None
