@@ -16,7 +16,7 @@ from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
 from storage.onelake_writer import OneLakeWriter
 from storage.partitioning import PartitioningPolicy
 
-from fabric_pipelines import change_pipeline
+from fabric_pipelines import change_pipeline, predictive_pipeline
 
 from .data_quality import DataQualityValidator, QualityReport
 from .dataset_mapper import (
@@ -205,6 +205,12 @@ class FabricSyncService:
             datasets["assessment_change_findings"] = self._assessment_change_finding_rows(
                 change_pipeline_result.findings, run_id, started_at
             )
+            predictive_pipeline_result = predictive_pipeline.run(
+                freshness=started_at,
+                **self._predictive_pipeline_snapshot(),
+            )
+            datasets["ontology_entities"].extend(predictive_pipeline_result.entities)
+            datasets["ontology_relationships"].extend(predictive_pipeline_result.relationships)
             datasets = self._synchronize_ontology(datasets, source_run_id, started_at)
             if self.lifecycle_catalog:
                 datasets["silver_lifecycle_history"] = self._lifecycle_history_rows(
@@ -1160,6 +1166,24 @@ class FabricSyncService:
             for row in read("silver", "predictive_history")
         ]
         return {"inventory": read("bronze", "resources"), "history": history}
+
+    def _predictive_pipeline_snapshot(self) -> dict[str, Any]:
+        """Translate ``predictive_intelligence_snapshot()``'s governed shape
+        into ``PredictiveIntelligence.from_snapshot()``'s expected
+        ``resources`` shape (only ``resource_key`` is strictly required —
+        every other field defaults to "Unknown"/0 in
+        ``PredictiveContextBuilder``, so the governed inventory alone is
+        sufficient without needing live semantic-engine context)."""
+        snapshot = self.predictive_intelligence_snapshot()
+        resources = [
+            {
+                "resource_key": str(row.get("resource_id") or ""),
+                "name": str(row.get("name") or ""),
+                "entity_type": str(row.get("entity_type") or "Resource"),
+            }
+            for row in snapshot["inventory"]
+        ]
+        return {"resources": resources, "history": snapshot["history"]}
 
     def remediation_planning_snapshot(self) -> dict[str, Any]:
         """Governed inventory, declarative actions, and approval policies."""
