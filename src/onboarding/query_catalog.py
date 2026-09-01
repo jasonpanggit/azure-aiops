@@ -74,8 +74,14 @@ class QueryCatalog:
                 "SecurityResources",
                 "SecurityResources "
                 "| where type =~ 'microsoft.security/assessments' "
+                # NOTE: microsoft.security/assessments has no top-level
+                # `resourceId` column in Resource Graph -- projecting it makes
+                # the whole query fail with Operator_FailedToResolveEntity,
+                # which silently starved this dataset. The equivalent value
+                # lives at properties.resourceDetails.Id and is extracted by
+                # onboarding.defender_normalize._target_resource_id.
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, "
-                "location, resourceId, properties",
+                "location, properties",
                 False,
             ),
             QuerySpec(
@@ -83,8 +89,9 @@ class QueryCatalog:
                 "SecurityResources",
                 "SecurityResources "
                 "| where type =~ 'microsoft.security/assessments/subassessments' "
+                # Same missing-column issue as defender_assessments above.
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, "
-                "location, resourceId, properties",
+                "location, properties",
                 False,
             ),
             QuerySpec(
