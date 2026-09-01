@@ -8,6 +8,7 @@ are validated end to end rather than in isolation.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -522,6 +523,7 @@ class TestFabricMedallionRouterTask1:
         app = create_app(context)
         app.include_router(fabric_medallion_router.router)
 
+        now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         source_rows = [
             {
                 "source_family": "bronze_resources",
@@ -529,7 +531,7 @@ class TestFabricMedallionRouterTask1:
                 "availability": "healthy",
                 "quality": "complete",
                 "row_count": 12,
-                "ingested_at": "2026-09-01T00:00:00Z",
+                "ingested_at": now,
                 "lineage_ref": "bronze-entity",
                 "requested_scope_json": json.dumps({"subscription": [SUB_A]}),
             },
@@ -539,7 +541,7 @@ class TestFabricMedallionRouterTask1:
                 "availability": "healthy",
                 "quality": "complete",
                 "row_count": 3,
-                "ingested_at": "2026-09-01T00:00:00Z",
+                "ingested_at": now,
                 "lineage_ref": "silver-entity",
                 "requested_scope_json": json.dumps({"subscription": [SUB_A]}),
             },
@@ -549,7 +551,7 @@ class TestFabricMedallionRouterTask1:
                 "availability": "healthy",
                 "quality": "complete",
                 "row_count": 1,
-                "ingested_at": "2026-09-01T00:00:00Z",
+                "ingested_at": now,
                 "lineage_ref": "gold-entity",
                 "requested_scope_json": json.dumps({"subscription": [SUB_A]}),
             },
@@ -559,7 +561,7 @@ class TestFabricMedallionRouterTask1:
                 "availability": "healthy",
                 "quality": "complete",
                 "row_count": 1,
-                "ingested_at": "2026-09-01T00:00:00Z",
+                "ingested_at": now,
                 "lineage_ref": "gold-hidden-entity",
                 "requested_scope_json": json.dumps({"subscription": [SUB_B]}),
             },
