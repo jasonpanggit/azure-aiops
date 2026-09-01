@@ -137,6 +137,7 @@ class RemediationGenerator:
                 "subscription_connection", ""
             ),
             "opportunity_type": opportunity["opportunity_type"],
+            "action_id": str(opportunity.get("action_id") or action.get("action_id") or ""),
             "objective": f"Reduce {opportunity['opportunity_type'].casefold()} using the governed action catalog.",
             "execution_steps": steps,
             "dependencies": dependencies,
