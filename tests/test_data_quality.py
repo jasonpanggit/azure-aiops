@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 
 from fabric.data_quality import DataQualityValidator
@@ -15,7 +16,10 @@ BASE = {
     "name": "resource",
     "resource_type": "microsoft.test/resources",
     "location": "eastus",
-    "payload_json": "{}",
+    # Populated owner/tags so this fixture represents a fully governed
+    # resource by default -- ownership/tag-coverage tests below construct
+    # their own payload_json to exercise the missing-owner/missing-tag paths.
+    "payload_json": json.dumps({"owner": "team-platform", "tags": {"environment": "production"}}),
     "resource_group": "rg",
     "status": "",
     "os_name": "",
@@ -149,3 +153,132 @@ def test_data_quality_rejects_invalid_numeric_domains_and_canonical_duplicates()
     )
     assert not report.passed
     assert report.rule_counts["duplicates"] == 1
+
+
+def test_data_quality_ownership_tag_coverage_ignores_populated_rows() -> None:
+    report = DataQualityValidator().validate_table("bronze_resources", [BASE])
+
+    assert report.rule_counts["ownership_coverage"] == 0
+    assert report.rule_counts["tag_coverage"] == 0
+
+
+def test_data_quality_ownership_coverage_flags_missing_owner() -> None:
+    row = {**BASE, "payload_json": json.dumps({"tags": {"environment": "production"}})}
+
+    report = DataQualityValidator().validate_table("bronze_resources", [row])
+
+    assert report.rule_counts["ownership_coverage"] == 1
+    assert any(failure["rule"] == "ownership_coverage" for failure in report.failures)
+
+
+def test_data_quality_tag_coverage_flags_missing_tags() -> None:
+    for payload in ({"owner": "team-platform"}, {"owner": "team-platform", "tags": {}}):
+        row = {**BASE, "payload_json": json.dumps(payload)}
+
+        report = DataQualityValidator().validate_table("bronze_resources", [row])
+
+        assert report.rule_counts["tag_coverage"] == 1, payload
+        assert any(failure["rule"] == "tag_coverage" for failure in report.failures), payload
+
+
+def test_data_quality_ownership_tag_coverage_only_applies_to_asset_rows() -> None:
+    relationship = {
+        **OPERATIONAL,
+        "subject_id": BASE["resource_id"],
+        "predicate": "dependsOn",
+        "object_id": "/subscriptions/sub-1/resources/r2",
+        "confidence": 1.0,
+        "source": "test",
+        "payload_json": "{}",
+    }
+
+    report = DataQualityValidator().validate_table(
+        "silver_resource_relationships", [relationship]
+    )
+
+    # Relationship rows have no `entity_type`, so the asset-scoped
+    # ownership/tag rule never fires -- it is not a relevant governance
+    # signal for an edge, only for the assets it connects.
+    assert report.rule_counts["ownership_coverage"] == 0
+    assert report.rule_counts["tag_coverage"] == 0
+
+
+def test_data_quality_ownership_tag_warn_mode_never_blocks() -> None:
+    row = {**BASE, "payload_json": json.dumps({})}
+    validator = DataQualityValidator(
+        ownership_tag_thresholds={
+            "mode": "warn",
+            "max_missing_ownership_pct": 0,
+            "max_missing_tag_pct": 0,
+        }
+    )
+
+    report = validator.validate_table("bronze_resources", [row])
+
+    assert report.rule_counts["ownership_coverage"] == 1
+    assert report.rule_counts["tag_coverage"] == 1
+    assert report.passed
+
+
+def test_data_quality_ownership_tag_block_mode_flips_passed_over_threshold() -> None:
+    row = {**BASE, "payload_json": json.dumps({})}
+    validator = DataQualityValidator(
+        ownership_tag_thresholds={
+            "mode": "block",
+            "max_missing_ownership_pct": 0,
+            "max_missing_tag_pct": 0,
+        }
+    )
+
+    report = validator.validate_table("bronze_resources", [row])
+
+    assert not report.passed
+
+
+def test_data_quality_ownership_tag_block_mode_within_threshold_passes() -> None:
+    populated = BASE
+    missing_owner = {**BASE, "payload_json": json.dumps({"tags": {"environment": "production"}})}
+    validator = DataQualityValidator(
+        ownership_tag_thresholds={
+            "mode": "block",
+            "max_missing_ownership_pct": 60,
+            "max_missing_tag_pct": 60,
+        }
+    )
+
+    # 1 of 2 rows missing ownership = 50%, under the 60% block threshold.
+    report = validator.validate_table(
+        "bronze_resources", [populated, missing_owner]
+    )
+
+    assert report.rule_counts["ownership_coverage"] == 1
+    assert report.passed
+
+
+def test_data_quality_from_config_loads_environment_thresholds(tmp_path) -> None:
+    config_path = tmp_path / "fabric.config.yaml"
+    config_path.write_text(
+        """
+fabric:
+  data_quality:
+    ownership_tag_thresholds:
+      dev:
+        mode: warn
+        max_missing_ownership_pct: 100
+        max_missing_tag_pct: 100
+      prod:
+        mode: block
+        max_missing_ownership_pct: 5
+        max_missing_tag_pct: 5
+"""
+    )
+
+    dev_validator = DataQualityValidator.from_config("dev", config_path=config_path)
+    prod_validator = DataQualityValidator.from_config("prod", config_path=config_path)
+
+    row = {**BASE, "payload_json": json.dumps({})}
+    dev_report = dev_validator.validate_table("bronze_resources", [row])
+    prod_report = prod_validator.validate_table("bronze_resources", [row])
+
+    assert dev_report.passed
+    assert not prod_report.passed
