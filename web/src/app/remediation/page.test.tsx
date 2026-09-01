@@ -6,12 +6,17 @@ const {
   approvals,
   approve,
   businessDecision,
+  cancel,
   decideRemediationPlan,
   defenderCases,
+  execute,
+  execution,
+  executions,
   exposures,
   gaps,
   plan,
   preview,
+  retry,
   remediationOpportunities,
   remediationPlans,
   ruleFindings,
@@ -19,12 +24,17 @@ const {
   approvals: vi.fn(),
   approve: vi.fn(),
   businessDecision: vi.fn(),
+  cancel: vi.fn(),
   decideRemediationPlan: vi.fn(),
   defenderCases: vi.fn(),
+  execute: vi.fn(),
+  execution: vi.fn(),
+  executions: vi.fn(),
   exposures: vi.fn(),
   gaps: vi.fn(),
   plan: vi.fn(),
   preview: vi.fn(),
+  retry: vi.fn(),
   remediationOpportunities: vi.fn(),
   remediationPlans: vi.fn(),
   ruleFindings: vi.fn(),
@@ -39,7 +49,18 @@ vi.mock("@/lib/services", () => ({
   copilotEvidenceRows: () => [],
   networkApi: { gaps, ruleFindings },
   operationsApi: { decideRemediationPlan, remediationPlans, remediationOpportunities, defenderCases },
-  remediationApi: { approvals, approve, businessDecision, plan, preview },
+  remediationApi: {
+    approvals,
+    approve,
+    businessDecision,
+    cancel,
+    execute,
+    execution,
+    executions,
+    plan,
+    preview,
+    retry,
+  },
   vulnerabilityApi: { exposures },
 }));
 
@@ -58,6 +79,67 @@ function renderPage() {
       <RemediationPage />
     </ScopeProvider>
   );
+}
+
+function executionRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    execution_id: "RME-1",
+    plan_id: "plan-1",
+    status: "running",
+    requested_by: "operator@example.com",
+    approved_by: "approver@example.com",
+    created_at: "2026-01-01T10:00:00Z",
+    updated_at: "2026-01-01T10:01:00Z",
+    provider_job_id: "arm-job-1",
+    message: "Accepted by Azure; verification pending",
+    attempt_count: 1,
+    rollback_guidance: ["Restore the last known-good image if service health degrades"],
+    verified_state: "InProgress",
+    failure_details: "",
+    outcome: "",
+    execution_snapshot: {
+      target_id: "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll-db",
+      patch_ids: ["KB600001"],
+      target_kind: "Azure VM",
+      operation: "install_patches",
+      action_version: "version-1",
+      snapshot_hash: "snapshot-hash-1",
+    },
+    attempts: [{
+      number: 1,
+      status: "running",
+      actor: "operator@example.com",
+      transitions: [{
+        sequence: 1,
+        status: "queued",
+        actor: "operator@example.com",
+        timestamp: "2026-01-01T10:00:00Z",
+      }, {
+        sequence: 2,
+        status: "running",
+        actor: "operator@example.com",
+        timestamp: "2026-01-01T10:01:00Z",
+        provider_job_id: "arm-job-1",
+      }],
+    }],
+    history: [{
+      sequence: 1,
+      status: "queued",
+      actor: "operator@example.com",
+      timestamp: "2026-01-01T10:00:00Z",
+    }, {
+      sequence: 2,
+      status: "running",
+      actor: "operator@example.com",
+      timestamp: "2026-01-01T10:01:00Z",
+      provider_job_id: "arm-job-1",
+    }],
+    retryable: false,
+    cancellable: false,
+    remaining_attempts: 2,
+    ineligibility_reason: "provider_not_cancellable",
+    ...overrides,
+  };
 }
 
 describe("Governed Remediation Center", () => {
@@ -307,6 +389,19 @@ describe("Governed Remediation Center", () => {
       review_requirements: [],
       unknowns: [],
     }));
+    executions.mockResolvedValue(envelope({ plan_id: "plan-1", executions: [] }));
+    execute.mockResolvedValue(envelope(executionRecord()));
+    execution.mockResolvedValue(envelope(executionRecord()));
+    retry.mockResolvedValue(envelope(executionRecord({ status: "retrying" })));
+    cancel.mockResolvedValue(envelope(executionRecord({
+      status: "cancelled",
+      provider_job_id: "",
+      verified_state: "Cancelled before provider submission",
+      failure_details: "Cancelled before provider submission",
+      cancellable: false,
+      retryable: true,
+      ineligibility_reason: "",
+    })));
   });
 
   it("loads the governed preview and business evidence before exposing execution", async () => {
@@ -464,6 +559,92 @@ describe("Governed Remediation Center", () => {
     expect(screen.getByText("Patch Overdue Server")).toBeInTheDocument();
     expect(screen.getAllByText(/vm-payroll-db/).length).toBeGreaterThan(0);
     expect(screen.getByText("Missing KB500 for 45 days")).toBeInTheDocument();
+  });
+
+  it("submits once, remains running, and polls until Azure verification reports success", async () => {
+    execution.mockResolvedValueOnce(envelope(executionRecord({
+      status: "succeeded",
+      verified_state: "Succeeded",
+      outcome: "succeeded",
+      ineligibility_reason: "already_succeeded",
+    })));
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review and execute" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm execution" }));
+
+    await waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Running")).toBeInTheDocument();
+    expect(screen.queryByText("Succeeded")).not.toBeInTheDocument();
+
+    await waitFor(() => expect(execution).toHaveBeenCalledWith("RME-1", {}), { timeout: 4000 });
+    expect(await screen.findByText("Succeeded")).toBeInTheDocument();
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders verified failure details, rollback guidance, immutable history, and retries only when eligible", async () => {
+    const failed = executionRecord({
+      status: "failed",
+      verified_state: "ProvisioningState/Failed",
+      failure_details: "Azure Update Manager reported an installation failure",
+      outcome: "failed",
+      retryable: true,
+      cancellable: false,
+      remaining_attempts: 2,
+      ineligibility_reason: "",
+    });
+    executions.mockResolvedValue(envelope({ plan_id: "plan-1", executions: [failed] }));
+    retry.mockResolvedValue(envelope(executionRecord({
+      status: "retrying",
+      attempt_count: 2,
+      retryable: false,
+      remaining_attempts: 1,
+      ineligibility_reason: "execution_not_retryable",
+    })));
+    renderPage();
+
+    expect(await screen.findByText("ProvisioningState/Failed")).toBeInTheDocument();
+    expect(screen.getByText(/Azure Update Manager reported an installation failure/)).toBeInTheDocument();
+    expect(screen.getByText(/Restore the last known-good image/)).toBeInTheDocument();
+    expect(screen.getByText(/Attempt 1/)).toBeInTheDocument();
+    expect(screen.getByText(/operator@example.com/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry execution" }));
+    await waitFor(() => expect(retry).toHaveBeenCalledWith("RME-1", {}));
+    expect(await screen.findByText("Retrying")).toBeInTheDocument();
+  });
+
+  it("cancels only when server eligibility permits and explains provider cancellation limits", async () => {
+    const queued = executionRecord({
+      status: "queued",
+      provider_job_id: "",
+      verified_state: "",
+      cancellable: true,
+      ineligibility_reason: "",
+    });
+    executions.mockResolvedValue(envelope({ plan_id: "plan-1", executions: [queued] }));
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel queued execution" }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith("RME-1", {}));
+    expect(await screen.findByText("Cancelled")).toBeInTheDocument();
+
+    executions.mockResolvedValue(envelope({ plan_id: "plan-1", executions: [executionRecord()] }));
+    const second = renderPage();
+    expect(await screen.findByText(/Provider Not Cancellable/)).toBeInTheDocument();
+    second.unmount();
+  });
+
+  it("cleans up active execution polling when the page unmounts", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Review and execute" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm execution" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+
+    const callsAtUnmount = execution.mock.calls.length;
+    document.body.innerHTML = "";
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    expect(execution.mock.calls.length).toBe(callsAtUnmount);
   });
 });
 

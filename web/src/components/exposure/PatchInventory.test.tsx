@@ -2,14 +2,13 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { targets, runs, trigger } = vi.hoisted(() => ({
+const { targets, runs } = vi.hoisted(() => ({
   targets: vi.fn(),
   runs: vi.fn(),
-  trigger: vi.fn(),
 }));
 
 vi.mock("@/lib/services", () => ({
-  patchingApi: { targets, runs, trigger },
+  patchingApi: { targets, runs },
 }));
 
 import { PatchInventory } from "./PatchInventory";
@@ -79,64 +78,23 @@ describe("PatchInventory", () => {
     runs.mockResolvedValue(envelope([]));
   });
 
-  it("lists patchable servers and triggers a run with only the selected patches", async () => {
+  it("lists patch readiness and hands the governed target context to remediation", async () => {
     targets.mockResolvedValue(envelope([target()]));
-    trigger.mockResolvedValue(
-      envelope({
-        run_id: "run-1",
-        target_id: VM_ID,
-        inventory_kind: "Azure VM",
-        operation: "install_patches",
-        patch_ids: ["KB600001"],
-        state: "submitted",
-        requested_by: "admin@example.com",
-        approved_by: "admin@example.com",
-        reason: "Emergency patch",
-        reboot_setting: "IfRequired",
-        dry_run: true,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-01T00:00:00Z",
-        provider: "dry-run",
-        provider_job_id: "",
-        message: "",
-        subscription_id: "sub-1",
-        subscription_connection: "",
-        business_service: "Payments",
-        environment: "prod",
-        details: {},
-        terminal: false,
-      })
-    );
 
-    const user = userEvent.setup();
     render(<PatchInventory scope={{}} />);
 
     expect(await screen.findByText("vm1")).toBeInTheDocument();
     expect(screen.getAllByText("Azure VM").length).toBeGreaterThan(0);
-
-    await user.click(screen.getByRole("button", { name: "Choose updates" }));
-    await user.click(screen.getByRole("checkbox", { name: /KB600001/ }));
-
-    // A reason is mandatory before the trigger unlocks.
-    const install = screen.getByRole("button", { name: /Install 1 update/ });
-    expect(install).toBeDisabled();
-
-    await user.type(screen.getByRole("textbox"), "Emergency patch");
-    await waitFor(() => expect(install).toBeEnabled());
-    await user.click(install);
-
-    await waitFor(() => expect(trigger).toHaveBeenCalledTimes(1));
-    expect(trigger).toHaveBeenCalledWith({
-      target_id: VM_ID,
-      patch_ids: ["KB600001"],
-      reason: "Emergency patch",
-      reboot_setting: "IfRequired",
-      dry_run: true,
-    });
-    expect(await screen.findByText("submitted")).toBeInTheDocument();
+    const handoff = screen.getByRole("link", { name: "Open governed remediation" });
+    expect(handoff).toHaveAttribute(
+      "href",
+      `/remediation?resource=${encodeURIComponent(VM_ID)}&kb=KB600001&business_service=Payments`
+    );
+    expect(screen.queryByRole("button", { name: /Install|Trigger|Bulk/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Reason/)).not.toBeInTheDocument();
   });
 
-  it("requires an agent pool before an AKS upgrade can be triggered", async () => {
+  it("keeps AKS inventory read-only and routes the selected version into governance", async () => {
     targets.mockResolvedValue(
       envelope([
         target({
@@ -149,25 +107,14 @@ describe("PatchInventory", () => {
         }),
       ])
     );
-    trigger.mockResolvedValue(envelope({ run_id: "run-2", state: "submitted", patch_ids: ["latest"] }));
-
     const user = userEvent.setup();
     render(<PatchInventory scope={{}} />);
 
     await user.click(await screen.findByRole("button", { name: "Choose updates" }));
     await user.click(screen.getByRole("radio", { name: /latest/ }));
-    await user.type(screen.getByRole("textbox", { name: /reason/i }), "Node image refresh");
-
-    // Without a named pool the upgrade would roll the whole cluster.
-    const upgrade = screen.getByRole("button", { name: /Trigger node image upgrade/ });
-    expect(upgrade).toBeDisabled();
-
-    await user.type(screen.getByRole("textbox", { name: /agent pool/i }), "systempool");
-    await waitFor(() => expect(upgrade).toBeEnabled());
-    await user.click(upgrade);
-
-    await waitFor(() => expect(trigger).toHaveBeenCalledTimes(1));
-    expect(trigger.mock.calls[0][0]).toMatchObject({ node_pool: "systempool" });
+    const handoff = screen.getByRole("link", { name: "Open governed remediation" });
+    expect(handoff).toHaveAttribute("href", expect.stringContaining("kb=latest"));
+    expect(screen.queryByRole("textbox", { name: /agent pool/i })).not.toBeInTheDocument();
   });
 
   it("restricts AKS node image upgrades to a single version", async () => {
@@ -196,7 +143,7 @@ describe("PatchInventory", () => {
 
     // Selecting a second version replaces the first rather than adding to it.
     expect(screen.getByText("1 selected")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Trigger node image upgrade" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open governed remediation" })).toBeInTheDocument();
   });
 
   it("surfaces the unconfigured-adapter warning", async () => {
