@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from intelligence.remediation.approval_decisions import RemediationDecisionStore
+from intelligence.remediation.approval_decisions import execution_snapshot_hash
 from intelligence.remediation.execution_service import (
     RemediationExecutionError,
     RemediationExecutionService,
@@ -48,8 +49,10 @@ class _FakeVulnerabilityService:
     def __init__(self, target_id: str) -> None:
         self._target_id = target_id
         self.freshness = "2026-08-18T13:00:00Z"
+        self.asset_exposure_calls = 0
 
     def asset_exposures(self, scope=None) -> list[dict]:
+        self.asset_exposure_calls += 1
         return [
             {
                 "asset_id": self._target_id,
@@ -101,7 +104,26 @@ def _decisions_store() -> RemediationDecisionStore:
     return RemediationDecisionStore()
 
 
-def _approve(store: RemediationDecisionStore, plan: dict, *, expires_at: str = "") -> None:
+def _execution_snapshot(plan: dict, **overrides) -> dict:
+    snapshot = {
+        "target_id": TARGET_ID,
+        "patch_ids": ["KB600001"],
+        "target_kind": "Azure VM",
+        "operation": "install_patches",
+        "action_version": plan["action_version"],
+    }
+    snapshot.update(overrides)
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
+    return snapshot
+
+
+def _approve(
+    store: RemediationDecisionStore,
+    plan: dict,
+    *,
+    expires_at: str = "",
+    execution_snapshot: dict | None = None,
+) -> None:
     store.append(
         plan=plan,
         decision="approved",
@@ -110,8 +132,162 @@ def _approve(store: RemediationDecisionStore, plan: dict, *, expires_at: str = "
         scope={},
         action_version=plan["action_version"],
         expires_at=expires_at or (NOW + timedelta(days=1)).isoformat(),
+        execution_snapshot=execution_snapshot or _execution_snapshot(plan),
         now=NOW,
     )
+
+
+def _eligible_business_decision(**overrides) -> dict:
+    decision = {
+        "disposition": "act_now",
+        "business_impact": {"status": "known"},
+        "review_requirements": [],
+        "unknowns": [],
+        "urgency_rationale": {"evidence_citations": ["assessment:assess-001"]},
+    }
+    decision.update(overrides)
+    return decision
+
+
+@pytest.mark.parametrize(
+    ("plan_overrides", "reason"),
+    [
+        (
+            {"business_decision": _eligible_business_decision(disposition="defer")},
+            "disposition_not_executable",
+        ),
+        (
+            {
+                "business_decision": _eligible_business_decision(
+                    business_impact={"status": "unknown"}
+                )
+            },
+            "business_impact_unknown",
+        ),
+        (
+            {
+                "business_decision": _eligible_business_decision(
+                    review_requirements=["CAB review"]
+                )
+            },
+            "review_required",
+        ),
+        (
+            {
+                "business_decision": _eligible_business_decision(
+                    unknowns=["downtime"]
+                )
+            },
+            "decision_unknowns_present",
+        ),
+        (
+            {
+                "business_decision": _eligible_business_decision(
+                    urgency_rationale={"evidence_citations": []}
+                )
+            },
+            "decision_evidence_missing",
+        ),
+        ({"evidence_citations": []}, "plan_evidence_missing"),
+    ],
+)
+def test_business_eligibility_rejects_before_target_lookup(
+    plan_overrides: dict, reason: str
+) -> None:
+    plan = _full_plan(_plan(**plan_overrides))
+    repository = PlanRepository()
+    repository.replace_generation([plan])
+    _approve(repository.decisions, plan)
+    vulnerability = _FakeVulnerabilityService(TARGET_ID)
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=PatchingService(
+            vulnerability,
+            adapter=RecordingPatchExecutionAdapter(),
+            require_human_approval=False,
+        ),
+        now=lambda: NOW,
+    )
+
+    with pytest.raises(RemediationExecutionError) as excinfo:
+        service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    assert excinfo.value.reason == reason
+    assert vulnerability.asset_exposure_calls == 0
+
+
+def test_execute_rejects_tampered_execution_snapshot_hash() -> None:
+    plan = _full_plan(_plan())
+    repository = PlanRepository()
+    repository.replace_generation([plan])
+    snapshot = _execution_snapshot(plan)
+    snapshot["snapshot_hash"] = "0" * 64
+    _approve(repository.decisions, plan, execution_snapshot=snapshot)
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=PatchingService(
+            _FakeVulnerabilityService(TARGET_ID),
+            adapter=RecordingPatchExecutionAdapter(),
+            require_human_approval=False,
+        ),
+        now=lambda: NOW,
+    )
+
+    with pytest.raises(RemediationExecutionError) as excinfo:
+        service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    assert excinfo.value.reason == "execution_snapshot_invalid"
+
+
+def test_execute_rejects_snapshot_action_version_tampering() -> None:
+    plan = _full_plan(_plan())
+    repository = PlanRepository()
+    repository.replace_generation([plan])
+    snapshot = _execution_snapshot(plan, action_version="different-version")
+    _approve(repository.decisions, plan, execution_snapshot=snapshot)
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=PatchingService(
+            _FakeVulnerabilityService(TARGET_ID),
+            adapter=RecordingPatchExecutionAdapter(),
+            require_human_approval=False,
+        ),
+        now=lambda: NOW,
+    )
+
+    with pytest.raises(RemediationExecutionError) as excinfo:
+        service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    assert excinfo.value.reason == "execution_snapshot_invalid"
+
+
+def test_execute_never_widens_beyond_approved_patch_ids() -> None:
+    plan = _full_plan(_plan())
+    repository = PlanRepository()
+    repository.replace_generation([plan])
+    _approve(repository.decisions, plan)
+    adapter = RecordingPatchExecutionAdapter()
+
+    class _MorePatchesAvailable(_FakeVulnerabilityService):
+        def asset_exposures(self, scope=None) -> list[dict]:
+            rows = super().asset_exposures(scope)
+            rows[0]["missing_kbs"] = ["KB600001", "KB600002"]
+            return rows
+
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=PatchingService(
+            _MorePatchesAvailable(TARGET_ID),
+            adapter=adapter,
+            require_human_approval=False,
+        ),
+        now=lambda: NOW,
+    )
+
+    service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    submitted_run, _ = adapter.submissions[0]
+    assert submitted_run.patch_ids == ("KB600001",)
 
 
 def test_execute_rejects_plan_with_non_patch_recovery_action_id():
@@ -382,5 +558,7 @@ def _full_plan(plan: dict) -> dict:
         "execution_steps": [],
         "application": "Payments API",
         "business_service": "Checkout",
+        "business_decision": _eligible_business_decision(),
+        "evidence_citations": [{"source_type": "assessment", "source_id": "assess-001"}],
         **plan,
     }
