@@ -599,7 +599,7 @@ before re-opening this. Argue from the numbers.
 **Goal:** Deliver a reliable, governed Fabric medallion platform whose Bronze, Silver, and Gold products are observable, freshness-bounded, consumable through curated semantic contracts, and consistently surfaced through the API and web application.
 **Requirements**: MED-01, MED-02, MED-03, MED-04, MED-05, MED-06, MED-07, MED-08, MED-09, MED-10
 **Depends on:** Phase 9
-**Plans:** 9/15 plans executed
+**Plans:** 10/15 plans executed
 
 Plans:
 
@@ -612,7 +612,7 @@ Plans:
 - [x] 10-07-PLAN.md — OneLake data access, capacity health, Delta maintenance, lineage surfacing (MED-10)
 - [x] 10-08-PLAN.md — Historical retention extension for cost/compliance/patch/change/incident (MED-07)
 - [x] 10-09-PLAN.md — Gold/Silver restoration, staged rollout & disposition classification (MED-02)
-- [ ] 10-10-PLAN.md — Direct Lake semantic model manager (MED-05)
+- [x] 10-10-PLAN.md — Direct Lake semantic model manager (MED-05)
 - [ ] 10-11-PLAN.md — Gold-grounding Data Agent client, contract & guardrails (MED-08, TDD)
 - [ ] 10-12-PLAN.md — Gold-grounding specialist wiring & evaluation dataset (MED-08)
 - [ ] 10-13-PLAN.md — Fabric medallion health & capabilities API (MED-03/09/10)

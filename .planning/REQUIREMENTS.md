@@ -71,7 +71,7 @@ Requirements for the controlled Azure pilot.
 - [x] **MED-02**: Expected Gold topology, assessment, and operational-context outputs are live and verified or explicitly retired through a versioned compatibility disposition.
 - [x] **MED-03**: Every governed Bronze, Silver, Gold, and metadata product exposes configurable freshness objectives, source status, quality, row-count, lineage, and last-success evidence.
 - [x] **MED-04**: High-value Silver operational datasets declared by the platform are populated or explicitly dispositioned, including security, incident, change, configuration, policy, predictive, and remediation domains.
-- [ ] **MED-05**: Gold exposes curated, versioned consumption contracts and a Direct Lake-compatible semantic serving definition while unified inventory remains the sole resource-identity authority.
+- [x] **MED-05**: Gold exposes curated, versioned consumption contracts and a Direct Lake-compatible semantic serving definition while unified inventory remains the sole resource-identity authority.
 - [x] **MED-06**: Graph publication enforces referential integrity and configurable ownership and tagging quality thresholds without inventing unsupported relationships.
 - [x] **MED-07**: Cost, compliance, patch, change, incident, and lifecycle analytics retain governed historical facts under explicit retention contracts.
 - [ ] **MED-08**: The Fabric Data Agent is grounded only in curated Gold products and is evaluated reproducibly for groundedness, precision, freshness, citations, and safe degradation.
@@ -167,7 +167,7 @@ Traceability is populated during roadmap creation.
 | MED-02 | Phase 10 | Complete |
 | MED-03 | Phase 10 | Complete |
 | MED-04 | Phase 10 | Complete |
-| MED-05 | Phase 10 | Pending |
+| MED-05 | Phase 10 | Complete |
 | MED-06 | Phase 10 | Complete |
 | MED-07 | Phase 10 | Complete |
 | MED-08 | Phase 10 | Pending |

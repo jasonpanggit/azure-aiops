@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03-06-PLAN.md
 status: in_progress
-stopped_at: Completed 10-09-PLAN.md
-last_updated: "2026-09-01T16:22:36.278Z"
+stopped_at: Completed 10-10-PLAN.md
+last_updated: "2026-09-01T16:35:27.580Z"
 progress:
   total_phases: 8
   completed_phases: 3
   total_plans: 70
-  completed_plans: 58
+  completed_plans: 59
 ---
 
 # Phase 03: Safe Remediation Execution
@@ -68,6 +68,7 @@ progress:
 | Phase 03 P05 | 8 min | 4 tasks | 13 files |
 | Phase 03 P06 | 12 min | 3 tasks | 5 files |
 | Phase 10 P09 | 30min | 3 tasks | 4 files |
+| Phase 10 P10 | 4min | 3 tasks | 2 files |
 
 ## Decisions
 
@@ -82,9 +83,10 @@ progress:
 - [Phase 03]: Patch inventory is read-only and hands context into governed remediation.
 - [Phase 10]: Treat LeaseAlreadyPresent as stale ingestion lock and auto-break/reacquire once in OneLake sync lock to unblock staged MED-02 rollouts safely.
 - [Phase 10]: Backfill MED-02 expected-missing table dispositions in publication manifest as dormant so validator distinguishes explicit lifecycle gaps from unknown omissions.
+- [Phase 10]: MED-05 semantic model deployment now uses deterministic code-authored definitions and explicit deployment-blocked reason mapping for documented Fabric semantic-model errors.
 
 ## Session
 
-**Last session:** 2026-09-01T16:20:41.296Z
-**Stopped at:** Completed 10-09-PLAN.md
+**Last session:** 2026-09-01T16:35:27.568Z
+**Stopped at:** Completed 10-10-PLAN.md
 **Resume file:** None
