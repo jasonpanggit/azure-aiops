@@ -135,5 +135,53 @@
         "shortDescription": {"problem": "Ubuntu 20.04 is approaching end of support", "solution": "Upgrade to a supported operating system"}
       }
     }
+  ],
+  "defender_assessments": [
+    {
+      "id": "/subscriptions/sub-1/providers/Microsoft.Security/assessments/va-machines",
+      "name": "va-machines",
+      "type": "microsoft.security/assessments",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "properties": {
+        "displayName": "Machines should have vulnerability findings resolved",
+        "status": {"code": "Unhealthy", "severity": "High"},
+        "resourceDetails": {
+          "id": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-prod-01"
+        },
+        "remediationDescription": "Install the recommended security update."
+      }
+    }
+  ],
+  "defender_subassessments": [
+    {
+      "id": "/subscriptions/sub-1/providers/Microsoft.Security/assessments/va-machines/subassessments/finding-1",
+      "name": "finding-1",
+      "type": "microsoft.security/assessments/subassessments",
+      "tenantId": "tenant-1",
+      "subscriptionId": "sub-1",
+      "properties": {
+        "displayName": "CVE-2026-0001 affects OpenSSL",
+        "status": {"code": "Unhealthy"},
+        "resourceDetails": {
+          "id": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-prod-01",
+          "resourceType": "Microsoft.Compute/virtualMachines"
+        },
+        "remediation": "Upgrade OpenSSL to 3.0.15.",
+        "timeGenerated": "2026-08-16T22:00:00Z",
+        "additionalData": {
+          "type": "Microsoft_CVE",
+          "severity": "Critical",
+          "cve": [{"title": "CVE-2026-0001"}],
+          "patchable": true,
+          "softwareDetails": {
+            "vendor": "OpenSSL",
+            "productName": "OpenSSL",
+            "version": "3.0.14",
+            "fixedVersion": "3.0.15"
+          }
+        }
+      }
+    }
   ]
 }

@@ -252,6 +252,7 @@ class FabricSyncService:
                         "bronze_resource_changes",
                         "silver_patch_history",
                         "silver_lifecycle_history",
+                        "silver_defender_secure_scores",
                     }
                     else DeltaWriteMode.OVERWRITE
                 )
@@ -770,9 +771,41 @@ class FabricSyncService:
             "inventory": read("bronze", "resources"),
             "assessments": read("silver", "compliance"),
             "findings": read("silver", "patch_findings"),
+            "defender_findings": read("silver", "defender_findings"),
+            "defender_assessments": read("silver", "defender_assessments"),
             "installations": read("silver", "patch_installations"),
             "history": read("silver", "patch_history"),
             "policies": policies,
+        }
+
+    def defender_intelligence_snapshot(self) -> dict[str, Any]:
+        """Governed Defender threat, attack-path, and posture facts."""
+
+        def read(name: str) -> list[dict[str, Any]]:
+            uri = self.onelake.table_uri("silver", name)
+            return self.delta.read(uri) if self.delta.version(uri) is not None else []
+
+        return {
+            "alerts": read("defender_alerts"),
+            "attack_paths": read("defender_attack_paths"),
+            "attack_path_nodes": read("defender_attack_path_nodes"),
+            "attack_path_connections": read("defender_attack_path_connections"),
+            "secure_scores": read("defender_secure_scores"),
+            "secure_score_controls": read("defender_secure_score_controls"),
+            "source_status": [
+                row
+                for row in (
+                    self.delta.read(
+                        self.onelake.table_uri("metadata", "source_status")
+                    )
+                    if self.delta.version(
+                        self.onelake.table_uri("metadata", "source_status")
+                    )
+                    is not None
+                    else []
+                )
+                if str(row.get("source_family") or "").startswith("defender_")
+            ],
         }
 
     def lifecycle_intelligence_snapshot(self) -> dict[str, Any]:

@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from ontology.confidence import compute_confidence
+
+from .defender_normalize import (
+    normalize_assessment,
+    normalize_attack_path,
+    normalize_secure_score,
+    normalize_secure_score_control,
+    normalize_security_alert,
+    normalize_vulnerability_subassessments,
+)
 from .network_normalize import NETWORK_ENTITY_TYPES as _NETWORK_ENTITY_TYPES
 from .network_normalize import (
     normalize_firewall,
@@ -39,6 +50,14 @@ ENTITY_TYPES = (
     "RoleAssignment",
     "RoleDefinition",
     "ManagedIdentity",
+    "DefenderAssessment",
+    "DefenderVulnerabilityFinding",
+    "SecurityAlert",
+    "AttackPath",
+    "AttackPathNode",
+    "AttackPathConnection",
+    "SecureScoreSnapshot",
+    "SecureScoreControl",
     *_NETWORK_ENTITY_TYPES,
 )
 
@@ -55,6 +74,13 @@ class NormalizedGraph:
     links: list[dict] = field(default_factory=list)
     audit_events: list[dict] = field(default_factory=list)
     source_status: list[dict] = field(default_factory=list)
+    # Incremental-discovery support (opt-in): a stable content hash per input
+    # resource id, keyed the same way as ``entities``/``changes`` above. A
+    # caller (e.g. ConnectionSyncCoordinator/an ingestion pipeline) MAY
+    # persist this dict and pass it back in as ``previous_row_hashes`` on the
+    # next ``Normalizer.normalize()`` call to compute which resources
+    # actually changed since the last sync via ``changed_resource_ids``.
+    row_hashes: dict[str, str] = field(default_factory=dict)
 
 
 class Normalizer:
@@ -79,12 +105,24 @@ class Normalizer:
         *,
         run_id: str = "normalization",
         requested_scope: dict[str, list[str]] | None = None,
+        previous_row_hashes: dict[str, str] | None = None,
     ) -> NormalizedGraph:
         observed = _iso(observed_at)
         context = self.connection_context
         graph = NormalizedGraph()
         entity_index: dict[str, dict[str, dict]] = {name: {} for name in ENTITY_TYPES}
         edge_index: dict[str, dict] = {}
+        # Incremental discovery (opt-in): hash every top-level resource row
+        # by its own id so callers can diff this run's hashes against
+        # ``previous_row_hashes`` (via ``changed_resource_ids``) without
+        # forcing a change to how the rest of normalize() runs -- every row
+        # is still fully normalized and included in the graph below, exactly
+        # as before, regardless of whether its hash matched.
+        previous_row_hashes = previous_row_hashes or {}
+        for row in payload.get("resources", []):
+            resource_id = _lower(row.get("id"))
+            if resource_id:
+                graph.row_hashes[resource_id] = _row_hash(row)
 
         for row in [
             *payload.get("resource_containers", []),
@@ -101,7 +139,7 @@ class Normalizer:
                 entity = _resource_group(row, observed)
                 entity_index["ResourceGroup"][entity["id"]] = entity
                 subscription_id = _subscription_key(row)
-                _add_edge(edge_index, entity["id"], "belongsTo", subscription_id, "arg:ResourceContainers", observed, 1.0)
+                _add_edge(edge_index, entity["id"], "belongsTo", subscription_id, "arg:ResourceContainers", observed, compute_confidence("arg:ResourceContainers"))
 
         for row in payload.get("resources", []):
             entity_type = _entity_type_for_resource(row)
@@ -109,16 +147,16 @@ class Normalizer:
             entity_index[entity_type][entity["id"]] = entity
             rg_id = _resource_group_key(row)
             if rg_id:
-                _add_edge(edge_index, entity["id"], "belongsTo", rg_id, "arg:Resources", observed, 1.0)
+                _add_edge(edge_index, entity["id"], "belongsTo", rg_id, "arg:Resources", observed, compute_confidence("arg:Resources"))
             else:
-                _add_edge(edge_index, entity["id"], "belongsTo", _subscription_key(row), "arg:Resources", observed, 1.0)
+                _add_edge(edge_index, entity["id"], "belongsTo", _subscription_key(row), "arg:Resources", observed, compute_confidence("arg:Resources"))
 
         for row in payload.get("patch_assessments", []):
             entity = _patch_assessment(row, observed)
             entity_index["PatchAssessment"][entity["id"]] = entity
             target = entity.get("targetResourceId", "")
             if target:
-                _add_edge(edge_index, target, "assessedBy", entity["id"], "arg:PatchAssessmentResources", observed, 0.98)
+                _add_edge(edge_index, target, "assessedBy", entity["id"], "arg:PatchAssessmentResources", observed, compute_confidence("arg:PatchAssessmentResources"))
 
         for row in payload.get("patch_assessment_details", []):
             entity = _patch_assessment_detail(row, observed)
@@ -132,7 +170,7 @@ class Normalizer:
                     entity["id"],
                     "arg:PatchAssessmentResources",
                     observed,
-                    0.98,
+                    compute_confidence("arg:PatchAssessmentResources"),
                 )
 
         for row in payload.get("patch_installations", []):
@@ -147,7 +185,7 @@ class Normalizer:
                     entity["id"],
                     "arg:PatchInstallationResources",
                     observed,
-                    0.98,
+                    compute_confidence("arg:PatchInstallationResources"),
                 )
 
         for row in payload.get("advisor_recommendations", []):
@@ -155,7 +193,196 @@ class Normalizer:
             entity_index["AdvisorRecommendation"][entity["id"]] = entity
             target = entity.get("targetResourceId", "")
             if target:
-                _add_edge(edge_index, entity["id"], "impacts", target, "arg:AdvisorResources", observed, 0.98)
+                _add_edge(edge_index, entity["id"], "impacts", target, "arg:AdvisorResources", observed, compute_confidence("arg:AdvisorResources"))
+
+        for row in payload.get("defender_assessments", []):
+            entity = normalize_assessment(row, observed)
+            if entity is None:
+                continue
+            entity_index["DefenderAssessment"][entity["id"]] = entity
+            target = entity.get("targetResourceId", "")
+            if target:
+                _add_edge(
+                    edge_index,
+                    entity["id"],
+                    "impacts",
+                    target,
+                    "arg:SecurityResources",
+                    observed,
+                    compute_confidence("arg:SecurityResources"),
+                )
+
+        for row in payload.get("defender_subassessments", []):
+            for entity in normalize_vulnerability_subassessments(row, observed):
+                entity_index["DefenderVulnerabilityFinding"][entity["id"]] = entity
+                target = entity.get("targetResourceId", "")
+                if target:
+                    _add_edge(
+                        edge_index,
+                        target,
+                        "hasVulnerability",
+                        entity["id"],
+                        "arg:SecurityResources",
+                        observed,
+                        compute_confidence("arg:SecurityResources"),
+                    )
+                assessment_id = entity.get("assessmentId", "")
+                if assessment_id:
+                    _add_edge(
+                        edge_index,
+                        entity["id"],
+                        "derivedFrom",
+                        assessment_id,
+                        "arg:SecurityResources",
+                        observed,
+                        compute_confidence("arg:SecurityResources"),
+                    )
+
+        for row in payload.get("defender_alerts", []):
+            entity = normalize_security_alert(row, observed)
+            if entity is None:
+                continue
+            entity_index["SecurityAlert"][entity["id"]] = entity
+            for resource_id in entity.get("resourceIds", []):
+                _add_edge(
+                    edge_index,
+                    entity["id"],
+                    "affects",
+                    resource_id,
+                    "arg:SecurityResources",
+                    observed,
+                    compute_confidence("arg:SecurityResources"),
+                )
+
+        for row in payload.get("defender_attack_paths", []):
+            path, nodes, connections = normalize_attack_path(row, observed)
+            if path is None:
+                continue
+            entity_index["AttackPath"][path["id"]] = path
+            for node in nodes:
+                entity_index["AttackPathNode"][node["id"]] = node
+                _add_edge(
+                    edge_index,
+                    path["id"],
+                    "traverses",
+                    node["id"],
+                    "arg:SecurityResources",
+                    observed,
+                    compute_confidence("arg:SecurityResources"),
+                )
+                if node.get("resourceId"):
+                    _add_edge(
+                        edge_index,
+                        node["id"],
+                        "resolvesTo",
+                        node["resourceId"],
+                        "arg:SecurityResources",
+                        observed,
+                        compute_confidence("arg:SecurityResources"),
+                    )
+            if path.get("entryPointNodeId"):
+                _add_edge(
+                    edge_index,
+                    path["id"],
+                    "startsAt",
+                    path["entryPointNodeId"],
+                    "arg:SecurityResources",
+                    observed,
+                    compute_confidence("arg:SecurityResources"),
+                )
+            if path.get("targetNodeId"):
+                _add_edge(
+                    edge_index,
+                    path["id"],
+                    "targets",
+                    path["targetNodeId"],
+                    "arg:SecurityResources",
+                    observed,
+                    compute_confidence("arg:SecurityResources"),
+                )
+            for assessment_id in path.get("assessmentIds", []):
+                _add_edge(
+                    edge_index,
+                    path["id"],
+                    "supportedBy",
+                    assessment_id,
+                    "arg:SecurityResources",
+                    observed,
+                    compute_confidence("arg:SecurityResources"),
+                )
+            for connection in connections:
+                entity_index["AttackPathConnection"][connection["id"]] = connection
+                _add_edge(
+                    edge_index,
+                    path["id"],
+                    "contains",
+                    connection["id"],
+                    "arg:SecurityResources",
+                    observed,
+                    compute_confidence("arg:SecurityResources"),
+                )
+                for predicate, endpoint in (
+                    ("connectsFrom", connection.get("sourceNodeId")),
+                    ("connectsTo", connection.get("targetNodeId")),
+                ):
+                    if endpoint:
+                        _add_edge(
+                            edge_index,
+                            connection["id"],
+                            predicate,
+                            endpoint,
+                            "arg:SecurityResources",
+                            observed,
+                            compute_confidence("arg:SecurityResources"),
+                        )
+
+        secure_score_snapshots: dict[str, str] = {}
+        for row in payload.get("defender_secure_scores", []):
+            entity = normalize_secure_score(row, observed)
+            if entity is None:
+                continue
+            entity_index["SecureScoreSnapshot"][entity["id"]] = entity
+            secure_score_snapshots[entity["sourceId"]] = entity["id"]
+            _add_edge(
+                edge_index,
+                entity["subscriptionResourceId"],
+                "hasSecureScore",
+                entity["id"],
+                "arg:SecurityResources",
+                observed,
+                compute_confidence("arg:SecurityResources"),
+            )
+
+        for row in payload.get("defender_secure_score_controls", []):
+            entity = normalize_secure_score_control(row, observed)
+            if entity is None:
+                continue
+            entity_index["SecureScoreControl"][entity["id"]] = entity
+            snapshot_id = secure_score_snapshots.get(
+                entity.get("secureScoreSourceId", "")
+            )
+            if snapshot_id:
+                _add_edge(
+                    edge_index,
+                    snapshot_id,
+                    "composedOf",
+                    entity["id"],
+                    "arg:SecurityResources",
+                    observed,
+                    compute_confidence("arg:SecurityResources"),
+                )
+            for assessment_id in entity.get("assessmentDefinitions", []):
+                assessment_key = assessment_id.casefold()
+                if assessment_key.startswith("/subscriptions/"):
+                    _add_edge(
+                        edge_index,
+                        entity["id"],
+                        "improvedBy",
+                        assessment_key,
+                        "arg:SecurityResources",
+                        observed,
+                        compute_confidence("arg:SecurityResources"),
+                    )
 
         for row in payload.get("cost_actuals", []):
             entity = _cost_actual(row, observed)
@@ -169,7 +396,7 @@ class Normalizer:
                     entity["id"],
                     "azure:CostManagement",
                     observed,
-                    1.0,
+                    compute_confidence("azure:CostManagement"),
                 )
 
         for row in payload.get("role_assignments", []):
@@ -186,7 +413,7 @@ class Normalizer:
                     target,
                     "arg:AuthorizationResources",
                     observed,
-                    0.98,
+                    compute_confidence("arg:AuthorizationResources"),
                 )
 
         for row in payload.get("role_definitions", []):
@@ -258,6 +485,57 @@ class Normalizer:
             ingested_at=observed,
             requested_scope=requested_scope,
         )
+        from situations.models import SourceStatus
+
+        for family in (
+            "defender_assessments",
+            "defender_subassessments",
+            "defender_alerts",
+            "defender_attack_paths",
+            "defender_secure_scores",
+            "defender_secure_score_controls",
+        ):
+            rows = payload.get(family, [])
+            failed = next(
+                (row for row in rows if _failed_provider_row(row)),
+                None,
+            )
+            queried = family in payload
+            source_statuses.append(
+                SourceStatus(
+                    source_family=family,
+                    run_id=run_id,
+                    status="failed" if failed else "succeeded",
+                    observed_at=observed,
+                    ingested_at=observed,
+                    watermark="" if failed else observed if queried else "",
+                    query_version=str(
+                        (rows[0] if rows else {}).get("query_version") or "1.0.0"
+                    ),
+                    requested_scope=requested_scope or {},
+                    provider_status=str(
+                        (failed or {}).get("provider_status")
+                        or (failed or {}).get("status")
+                        or "ok"
+                    ),
+                    freshness="unknown" if failed or not queried else "fresh",
+                    availability=(
+                        "unavailable"
+                        if failed
+                        else "available"
+                        if queried
+                        else "unknown"
+                    ),
+                    quality=(
+                        "degraded"
+                        if failed
+                        else "complete"
+                        if queried
+                        else "unknown"
+                    ),
+                    error=str((failed or {}).get("error") or ""),
+                )
+            )
         if payload.get("resource_changes") and "arg_activity_log" not in payload and "arg" not in payload:
             signal_evidence = [
                 item for item in signal_evidence if item.source_family != "arg_activity_log"
@@ -296,7 +574,7 @@ class Normalizer:
             entity_index[entity_type][entity["id"]] = entity
 
         def link(subject: str, predicate: str, obj: str, confidence: float = 1.0) -> None:
-            _add_edge(edge_index, subject, predicate, obj, source, observed, confidence)
+            _add_edge(edge_index, subject, predicate, obj, source, observed, compute_confidence(source, base=confidence))
 
         def containment(row: dict, entity: dict) -> None:
             """Anchors an entity to its resource group / subscription."""
@@ -791,6 +1069,38 @@ def _add_edge(index: dict[str, dict], subject: str, predicate: str, obj: str, so
 
 def _lower(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def _row_hash(row: Mapping[str, Any]) -> str:
+    """Stable sha256 hash of a raw input row, for incremental-discovery diffing.
+
+    ``json.dumps(..., sort_keys=True)`` gives a canonical serialization
+    regardless of the source dict's key ordering, so the same logical row
+    always hashes the same way across syncs -- this is the "did this
+    resource actually change" signal ``Normalizer.normalize()``'s optional
+    ``previous_row_hashes``/``NormalizedGraph.row_hashes`` and the
+    ``changed_resource_ids`` helper below are built on."""
+    canonical = json.dumps(row, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def changed_resource_ids(
+    previous_row_hashes: Mapping[str, str], row_hashes: Mapping[str, str]
+) -> set[str]:
+    """Diffs two ``NormalizedGraph.row_hashes``-shaped dicts.
+
+    Returns the resource ids that are new or whose hash changed between
+    ``previous_row_hashes`` and ``row_hashes`` -- i.e. exactly the resources
+    a caller needs to re-derive/re-process, not the full set. Ids present in
+    ``previous_row_hashes`` but missing from ``row_hashes`` (no longer
+    observed this run) are intentionally NOT included -- that is a removal,
+    a different concern from "changed", and is already handled by the
+    existing retire/lifecycle logic elsewhere in the pipeline."""
+    return {
+        resource_id
+        for resource_id, current_hash in row_hashes.items()
+        if previous_row_hashes.get(resource_id) != current_hash
+    }
 
 
 def _float(value: Any) -> float:

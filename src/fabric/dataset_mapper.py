@@ -36,6 +36,14 @@ ENTITY_FILES = (
     "RoleAssignment",
     "RoleDefinition",
     "ManagedIdentity",
+    "DefenderAssessment",
+    "DefenderVulnerabilityFinding",
+    "SecurityAlert",
+    "AttackPath",
+    "AttackPathNode",
+    "AttackPathConnection",
+    "SecureScoreSnapshot",
+    "SecureScoreControl",
     "Situation",
     # Network topology entities, including the sub-resources (subnets, NSG
     # rules, routes, peerings) that only ever exist in their own typed file.
@@ -124,6 +132,14 @@ ONTOLOGY_ENTITY_TYPES = (
     "SubscriptionConnection",
     "ConnectionHealth",
     "MissingUpdate",
+    "DefenderAssessment",
+    "DefenderVulnerabilityFinding",
+    "SecurityAlert",
+    "AttackPath",
+    "AttackPathNode",
+    "AttackPathConnection",
+    "SecureScoreSnapshot",
+    "SecureScoreControl",
     # PaaS resource types used as relationship subject/object types by
     # RelationshipBuilder (src/ontology/relationship_builder.py). Without
     # these, any inferred relationship touching a PaaS resource fails
@@ -220,7 +236,25 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     *(("AdvisorRecommendation", "affects", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *(("Resource", "incurs_cost", "CostActual"), ("VirtualMachine", "incurs_cost", "CostActual"), ("ArcServer", "incurs_cost", "CostActual"), ("KubernetesCluster", "incurs_cost", "CostActual")),
     *(("PatchAssessment", "evaluates", asset) for asset in ("VirtualMachine", "ArcServer")),
+    *((asset, "assessedBy", "PatchAssessment") for asset in ("VirtualMachine", "ArcServer")),
     *(("PatchInstallation", "records_installation_for", asset) for asset in ("VirtualMachine", "ArcServer")),
+    *(("AdvisorRecommendation", "impacts", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
+    *(("DefenderAssessment", "impacts", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
+    *(("DefenderVulnerabilityFinding", "impacts", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
+    *((asset, "hasVulnerability", "DefenderVulnerabilityFinding") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
+    ("DefenderVulnerabilityFinding", "derivedFrom", "DefenderAssessment"),
+    *(("SecurityAlert", "affects", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *sorted(PAAS_ENTITY_TYPES))),
+    ("AttackPath", "traverses", "AttackPathNode"),
+    ("AttackPath", "startsAt", "AttackPathNode"),
+    ("AttackPath", "targets", "AttackPathNode"),
+    ("AttackPath", "supportedBy", "DefenderAssessment"),
+    ("AttackPath", "contains", "AttackPathConnection"),
+    ("AttackPathConnection", "connectsFrom", "AttackPathNode"),
+    ("AttackPathConnection", "connectsTo", "AttackPathNode"),
+    *(("AttackPathNode", "resolvesTo", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *sorted(PAAS_ENTITY_TYPES))),
+    ("Subscription", "hasSecureScore", "SecureScoreSnapshot"),
+    ("SecureScoreSnapshot", "composedOf", "SecureScoreControl"),
+    ("SecureScoreControl", "improvedBy", "DefenderAssessment"),
     # Network topology (Prompt 16)
     ("VNet", "contains", "Subnet"),
     ("VNet", "hasPeering", "VNetPeering"),
@@ -360,6 +394,28 @@ class InventoryDatasetMapper:
                 _entity_row(row, "PatchInstallation", ingestion_run_id)
                 for row in entities["PatchInstallation"]
             ],
+            "bronze_defender_assessments": [
+                _entity_row(row, "DefenderAssessment", ingestion_run_id)
+                for row in entities["DefenderAssessment"]
+            ],
+            "bronze_defender_findings": [
+                _entity_row(row, "DefenderVulnerabilityFinding", ingestion_run_id)
+                for row in entities["DefenderVulnerabilityFinding"]
+            ],
+            **{
+                f"bronze_defender_{dataset}": [
+                    _entity_row(row, entity_type, ingestion_run_id)
+                    for row in entities[entity_type]
+                ]
+                for dataset, entity_type in (
+                    ("alerts", "SecurityAlert"),
+                    ("attack_paths", "AttackPath"),
+                    ("attack_path_nodes", "AttackPathNode"),
+                    ("attack_path_connections", "AttackPathConnection"),
+                    ("secure_scores", "SecureScoreSnapshot"),
+                    ("secure_score_controls", "SecureScoreControl"),
+                )
+            },
             "bronze_resource_changes": [
                 _change_row(row, resource_index, subscription_tenants, ingestion_run_id)
                 for row in changes
@@ -393,6 +449,28 @@ class InventoryDatasetMapper:
                     for row in entities["PatchInstallation"]
                 ),
             ],
+            "silver_defender_findings": [
+                _defender_finding_row(row, ingestion_run_id)
+                for row in entities["DefenderVulnerabilityFinding"]
+            ],
+            "silver_defender_assessments": [
+                _defender_assessment_row(row, ingestion_run_id)
+                for row in entities["DefenderAssessment"]
+            ],
+            **{
+                f"silver_defender_{dataset}": [
+                    _entity_row(row, entity_type, ingestion_run_id)
+                    for row in entities[entity_type]
+                ]
+                for dataset, entity_type in (
+                    ("alerts", "SecurityAlert"),
+                    ("attack_paths", "AttackPath"),
+                    ("attack_path_nodes", "AttackPathNode"),
+                    ("attack_path_connections", "AttackPathConnection"),
+                    ("secure_scores", "SecureScoreSnapshot"),
+                    ("secure_score_controls", "SecureScoreControl"),
+                )
+            },
             "silver_resource_relationships": relationship_rows,
             "silver_situations": [_situation_row(row, ingestion_run_id) for row in situations],
             "silver_situation_evidence": [
@@ -662,6 +740,51 @@ def _patch_finding_row(row: dict[str, Any], run_id: str, *, status: str) -> dict
             "status": status,
             "published_at": str(row.get("publishedDateTime") or ""),
             "last_modified": str(row.get("lastModifiedDateTime") or ""),
+        }
+    )
+    return result
+
+
+def _defender_finding_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """Flatten a Defender subassessment into the exposure-service contract."""
+    result = _entity_row(row, "DefenderVulnerabilityFinding", run_id)
+    result.update(
+        {
+            "target_resource_id": str(row.get("targetResourceId") or "").casefold(),
+            "assessment_id": str(row.get("assessmentId") or "").casefold(),
+            "cve_id": str(row.get("cveId") or "").upper(),
+            "severity": str(row.get("severity") or "Unknown"),
+            "status": str(row.get("status") or "Unhealthy"),
+            "recommendation": str(row.get("recommendation") or ""),
+            "description": str(row.get("description") or ""),
+            "last_assessed_at": str(
+                row.get("lastAssessedAt") or row.get("lastObservedTimestamp") or ""
+            ),
+            "patchable": bool(row.get("patchable", False)),
+            "software_vendor": str(row.get("softwareVendor") or ""),
+            "software_name": str(row.get("softwareName") or ""),
+            "software_version": str(row.get("softwareVersion") or ""),
+            "fixed_version": str(row.get("fixedVersion") or ""),
+        }
+    )
+    return result
+
+
+def _defender_assessment_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """Flatten a Defender recommendation across any protected resource type."""
+    result = _entity_row(row, "DefenderAssessment", run_id)
+    result.update(
+        {
+            "target_resource_id": str(row.get("targetResourceId") or "").casefold(),
+            "target_resource_type": str(row.get("resourceType") or ""),
+            "status": str(row.get("status") or "Unhealthy"),
+            "severity": str(row.get("severity") or "Unknown"),
+            "recommendation": str(row.get("recommendation") or ""),
+            "description": str(row.get("description") or ""),
+            "remediation": str(row.get("remediation") or ""),
+            "last_assessed_at": str(
+                row.get("lastAssessedAt") or row.get("lastObservedTimestamp") or ""
+            ),
         }
     )
     return result

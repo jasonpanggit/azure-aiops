@@ -70,10 +70,53 @@ class QueryCatalog:
                 False,
             ),
             QuerySpec(
-                "vulnerability",
+                "defender_assessments",
                 "SecurityResources",
-                "SecurityResources | where type contains 'vulnerability' "
-                "| project id, name, type, subscriptionId, resourceId, properties",
+                "SecurityResources "
+                "| where type =~ 'microsoft.security/assessments' "
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, "
+                "location, resourceId, properties",
+                False,
+            ),
+            QuerySpec(
+                "defender_subassessments",
+                "SecurityResources",
+                "SecurityResources "
+                "| where type =~ 'microsoft.security/assessments/subassessments' "
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, "
+                "location, resourceId, properties",
+                False,
+            ),
+            QuerySpec(
+                "defender_alerts",
+                "SecurityResources",
+                "SecurityResources "
+                "| where type =~ 'microsoft.security/locations/alerts' "
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
+                False,
+            ),
+            QuerySpec(
+                "defender_attack_paths",
+                "SecurityResources",
+                "SecurityResources "
+                "| where type =~ 'microsoft.security/attackpaths' "
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
+                False,
+            ),
+            QuerySpec(
+                "defender_secure_scores",
+                "SecurityResources",
+                "SecurityResources "
+                "| where type =~ 'microsoft.security/securescores' "
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
+                False,
+            ),
+            QuerySpec(
+                "defender_secure_score_controls",
+                "SecurityResources",
+                "SecurityResources "
+                "| where type =~ 'microsoft.security/securescores/securescorecontrols' "
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
                 False,
             ),
             QuerySpec(

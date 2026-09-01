@@ -89,6 +89,14 @@ SCHEMAS: dict[str, pa.Schema] = {
     "bronze_patchassessment": pa.schema(_ENTITY),
     "bronze_patchassessmentdetail": pa.schema(_ENTITY),
     "bronze_patchinstallation": pa.schema(_ENTITY),
+    "bronze_defender_assessments": pa.schema(_ENTITY),
+    "bronze_defender_findings": pa.schema(_ENTITY),
+    "bronze_defender_alerts": pa.schema(_ENTITY),
+    "bronze_defender_attack_paths": pa.schema(_ENTITY),
+    "bronze_defender_attack_path_nodes": pa.schema(_ENTITY),
+    "bronze_defender_attack_path_connections": pa.schema(_ENTITY),
+    "bronze_defender_secure_scores": pa.schema(_ENTITY),
+    "bronze_defender_secure_score_controls": pa.schema(_ENTITY),
     "bronze_resource_changes": pa.schema(
         [
             *_BASE,
@@ -161,6 +169,43 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("last_modified", pa.string(), nullable=False),
         ]
     ),
+    "silver_defender_findings": pa.schema(
+        [
+            *_ENTITY,
+            pa.field("target_resource_id", pa.string(), nullable=False),
+            pa.field("assessment_id", pa.string(), nullable=False),
+            pa.field("cve_id", pa.string(), nullable=False),
+            pa.field("severity", pa.string(), nullable=False),
+            pa.field("status", pa.string(), nullable=False),
+            pa.field("recommendation", pa.string(), nullable=False),
+            pa.field("description", pa.string(), nullable=False),
+            pa.field("last_assessed_at", pa.string(), nullable=False),
+            pa.field("patchable", pa.bool_(), nullable=False),
+            pa.field("software_vendor", pa.string(), nullable=False),
+            pa.field("software_name", pa.string(), nullable=False),
+            pa.field("software_version", pa.string(), nullable=False),
+            pa.field("fixed_version", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_defender_assessments": pa.schema(
+        [
+            *_ENTITY,
+            pa.field("target_resource_id", pa.string(), nullable=False),
+            pa.field("target_resource_type", pa.string(), nullable=False),
+            pa.field("status", pa.string(), nullable=False),
+            pa.field("severity", pa.string(), nullable=False),
+            pa.field("recommendation", pa.string(), nullable=False),
+            pa.field("description", pa.string(), nullable=False),
+            pa.field("remediation", pa.string(), nullable=False),
+            pa.field("last_assessed_at", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_defender_alerts": pa.schema(_ENTITY),
+    "silver_defender_attack_paths": pa.schema(_ENTITY),
+    "silver_defender_attack_path_nodes": pa.schema(_ENTITY),
+    "silver_defender_attack_path_connections": pa.schema(_ENTITY),
+    "silver_defender_secure_scores": pa.schema(_ENTITY),
+    "silver_defender_secure_score_controls": pa.schema(_ENTITY),
     "silver_patch_policies": pa.schema(
         [
             *_BASE,

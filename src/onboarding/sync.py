@@ -31,6 +31,13 @@ class SyncResult:
     record_count: int = 0
     message: str | None = None
     manifest: dict[str, Any] | None = None
+    # Optional discovery-observability rollup (entities/relationships added,
+    # dangling-relationship count, confidence distribution, ...), populated
+    # opportunistically from the ingestion manifest when the ingestion
+    # factory happens to surface one (see ``_discovery_metrics`` below).
+    # ``None`` by default so existing callers/tests that construct
+    # ``SyncResult`` without this field see no behavior change.
+    discovery_metrics: dict[str, Any] | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -46,6 +53,7 @@ class SyncResult:
             "record_count": self.record_count,
             "message": self.message,
             "manifest": self.manifest,
+            "discovery_metrics": self.discovery_metrics,
         }
 
 
@@ -233,6 +241,7 @@ class ConnectionSyncCoordinator:
             record_count=record_count,
             message=message,
             manifest=payload or None,
+            discovery_metrics=_discovery_metrics(payload),
         )
         return result, state
 
@@ -258,6 +267,24 @@ class ConnectionSyncCoordinator:
             "last_successful_sync_at": current.last_successful_sync_at,
             "stale_after_hours": self.stale_after_hours,
         }
+
+
+#: Keys under which an ingestion factory MAY surface an already-computed
+#: ``OntologyValidationReport.to_dict()``-shaped (or equivalent) rollup
+#: inside its returned manifest. Checked in order; the first match wins.
+#: This coordinator never computes the report itself -- it only forwards
+#: one if the ingestion pipeline already produced it, so this stays a
+#: read-only, purely-additive surface with zero coupling to the ontology
+#: validator internals.
+_DISCOVERY_METRICS_MANIFEST_KEYS: tuple[str, ...] = ("discovery_metrics", "ontology_report")
+
+
+def _discovery_metrics(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    for key in _DISCOVERY_METRICS_MANIFEST_KEYS:
+        value = manifest.get(key)
+        if isinstance(value, dict) and value:
+            return value
+    return None
 
 
 def _record_count(manifest: dict[str, Any]) -> int:
