@@ -10,6 +10,7 @@ threat model (T-03-04, T-03-05) for the guarantees this enforces.
 
 from __future__ import annotations
 
+import copy
 import hmac
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -151,7 +152,7 @@ class RemediationExecutionService:
             )
             execution_id = record["execution_id"]
             if not claimed:
-                return record
+                return self.execution_view(record)
             record = self._store.transition(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
@@ -245,6 +246,8 @@ class RemediationExecutionService:
                     outcome="failed",
                     now=self._now(),
                 )
+            if execution_id is not None:
+                return self.execution_view(self._store.get(execution_id))
             return {
                 "execution_id": execution_id,
                 "plan_id": plan_id,
@@ -275,6 +278,7 @@ class RemediationExecutionService:
                 message=message,
                 now=self._now(),
             )
+            return self.execution_view(self._store.get(execution_id))
         return {
             "execution_id": execution_id,
             "plan_id": plan_id,
@@ -382,6 +386,121 @@ class RemediationExecutionService:
             execution_id=execution_id,
         )
 
+    def get_execution(self, execution_id: str) -> dict[str, Any] | None:
+        """Return a server-projected execution record without polling it."""
+        if self._store is None:
+            return None
+        record = self._store.get(execution_id)
+        return self.execution_view(record) if record is not None else None
+
+    def list_executions(self, plan_id: str) -> list[dict[str, Any]]:
+        """Return all execution identities for a plan with eligibility fields."""
+        if self._store is None:
+            return []
+        return [
+            self.execution_view(record)
+            for record in self._store.list_for_plan(plan_id)
+        ]
+
+    def plan_eligibility(self, plan_id: str) -> dict[str, Any]:
+        """Project whether the current durable plan can be executed."""
+        plan = self._plans.get(plan_id)
+        if plan is None:
+            return {"executable": False, "ineligibility_reason": "plan_not_found"}
+        try:
+            self._check_approval_gate(plan)
+        except RemediationExecutionError as exc:
+            return {"executable": False, "ineligibility_reason": exc.reason}
+        return {"executable": True, "ineligibility_reason": ""}
+
+    @staticmethod
+    def execution_view(record: dict[str, Any]) -> dict[str, Any]:
+        """Add authoritative retry/cancel eligibility to a durable record."""
+        view = copy.deepcopy(record)
+        attempts = int(view.get("attempt_count") or 0)
+        remaining = max(0, MAX_EXECUTION_ATTEMPTS - attempts)
+        status = str(view.get("status") or "")
+        retryable = status in {"failed", "cancelled"} and remaining > 0
+        cancellable = (
+            status == "queued" and not bool(view.get("provider_job_id"))
+        )
+        explicit = str(view.get("ineligibility_reason") or "")
+        if explicit:
+            reason = explicit
+        elif status == "running" and view.get("provider_job_id"):
+            reason = "provider_not_cancellable"
+        elif status == "succeeded":
+            reason = "already_succeeded"
+        elif status in {"failed", "cancelled"} and remaining == 0:
+            reason = "max_attempts_exceeded"
+        elif retryable or cancellable:
+            reason = ""
+        else:
+            reason = "execution_not_retryable"
+        view.update(
+            {
+                "retryable": retryable,
+                "cancellable": cancellable,
+                "remaining_attempts": remaining,
+                "ineligibility_reason": reason,
+            }
+        )
+        return view
+
+    def cancel(self, execution_id: str, *, requested_by: str) -> dict[str, Any]:
+        """Cancel queued local work or record that provider work cannot cancel."""
+        if self._store is None:
+            raise RemediationExecutionError(
+                "No execution store is configured; nothing to cancel",
+                reason="store_not_configured",
+                details={"execution_id": execution_id},
+            )
+        record = self._store.get(execution_id)
+        if record is None:
+            raise RemediationExecutionError(
+                f"Execution {execution_id!r} was not found",
+                reason="execution_not_found",
+                details={"execution_id": execution_id},
+            )
+        if record.get("status") == "queued" and not record.get("provider_job_id"):
+            try:
+                cancelled = self._store.claim_cancel(
+                    execution_id,
+                    expected_revision=int(record.get("revision") or 0),
+                    actor=requested_by,
+                    now=self._now(),
+                )
+            except ExecutionClaimConflict as exc:
+                raise RemediationExecutionError(
+                    "Another lifecycle operation already claimed this execution",
+                    reason=exc.reason,
+                    details={"execution_id": execution_id},
+                ) from exc
+            return self.execution_view(cancelled)
+        if record.get("status") == "running" or record.get("provider_job_id"):
+            message = _append_note(
+                record.get("message"),
+                "Provider operation cannot be safely cancelled; monitor it to completion.",
+            )
+            try:
+                current = self._store.transition(
+                    execution_id,
+                    expected_revision=int(record.get("revision") or 0),
+                    expected_status=str(record.get("status") or ""),
+                    status=str(record.get("status") or ""),
+                    actor=requested_by,
+                    outcome="provider_not_cancellable",
+                    message=message,
+                    ineligibility_reason="provider_not_cancellable",
+                    now=self._now(),
+                )
+            except ExecutionClaimConflict:
+                current = self._store.get(execution_id)
+            return self.execution_view(current)
+        view = self.execution_view(record)
+        view["ineligibility_reason"] = "execution_not_cancellable"
+        return view
+
 
     def poll_verification(self, execution_id: str) -> dict[str, Any]:
         """Poll the real upstream source of truth for one running execution.
@@ -407,13 +526,13 @@ class RemediationExecutionService:
                 details={"execution_id": execution_id},
             )
         if record.get("status") != "running":
-            return record
+            return self.execution_view(record)
         if self._verifier is None:
             note = "Verification unavailable: no execution verifier is configured"
             message = _append_note(record.get("message"), note)
             if message == record.get("message"):
-                return record
-            return self._store.transition(
+                return self.execution_view(record)
+            return self.execution_view(self._store.transition(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
@@ -421,14 +540,14 @@ class RemediationExecutionService:
                 actor="execution-verifier",
                 message=message,
                 now=self._now(),
-            )
+            ))
 
         try:
             outcome = self._verifier.verify(record)
         except ExecutionVerificationUnavailable as exc:
             note = f"Verification unavailable: {exc}"
             message = _append_note(record.get("message"), note)
-            return self._store.transition(
+            return self.execution_view(self._store.transition(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
@@ -436,12 +555,12 @@ class RemediationExecutionService:
                 actor="execution-verifier",
                 message=message,
                 now=self._now(),
-            )
+            ))
 
         if not outcome.get("verifiable", False):
             note = f"Verification not available: {outcome.get('reason', 'unknown')}"
             message = _append_note(record.get("message"), note)
-            return self._store.transition(
+            return self.execution_view(self._store.transition(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
@@ -449,11 +568,11 @@ class RemediationExecutionService:
                 actor="execution-verifier",
                 message=message,
                 now=self._now(),
-            )
+            ))
 
         result_outcome = outcome.get("outcome")
         if result_outcome == "succeeded":
-            return self._store.transition(
+            return self.execution_view(self._store.transition(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
@@ -462,9 +581,9 @@ class RemediationExecutionService:
                 verified_state=outcome.get("verified_state", ""),
                 outcome="succeeded",
                 now=self._now(),
-            )
+            ))
         if result_outcome == "failed":
-            return self._store.transition(
+            return self.execution_view(self._store.transition(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
@@ -474,9 +593,9 @@ class RemediationExecutionService:
                 failure_details=outcome.get("failure_details", ""),
                 outcome="failed",
                 now=self._now(),
-            )
+            ))
         if result_outcome == "cancelled":
-            return self._store.transition(
+            return self.execution_view(self._store.transition(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
@@ -486,9 +605,9 @@ class RemediationExecutionService:
                 failure_details=outcome.get("failure_details", ""),
                 outcome="cancelled",
                 now=self._now(),
-            )
+            ))
         # Still running -- no-op, but record the latest verified_state seen.
-        return self._store.transition(
+        return self.execution_view(self._store.transition(
             execution_id,
             expected_revision=int(record.get("revision") or 0),
             expected_status="running",
@@ -496,7 +615,7 @@ class RemediationExecutionService:
             actor="execution-verifier",
             verified_state=outcome.get("verified_state", ""),
             now=self._now(),
-        )
+        ))
 
     def _latest_decision(self, plan_id: str) -> dict[str, Any] | None:
         decisions = self._plans.decisions.list(plan_id) if hasattr(self._plans, "decisions") else []
