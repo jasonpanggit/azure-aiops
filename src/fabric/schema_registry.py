@@ -445,6 +445,24 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("lineage_ref", pa.string(), nullable=True),
         ]
     ),
+    # MED-09: publication manifest -- the lifecycle-disposition
+    # (active/dormant/retired) registry for generated ontology
+    # projections (`ontology.publication_manifest.PublicationManifestStore`).
+    # This is intentionally NOT an extension of the existing per-connection
+    # snapshot manifest (`manifest.json`, read by
+    # `api/runtime.py::_load_snapshot_tables()`) -- structurally distinct
+    # table, distinct keys, distinct concept. See 10-RESEARCH.md's Pitfall #4.
+    "metadata_publication_manifest": pa.schema(
+        [
+            *_BASE,
+            pa.field("projection_name", pa.string(), nullable=False),
+            pa.field("disposition", pa.string(), nullable=False),
+            pa.field("compatibility_version", pa.string(), nullable=True),
+            pa.field("retired_reason", pa.string(), nullable=True),
+            pa.field("registered_at", pa.string(), nullable=False),
+            pa.field("updated_at", pa.string(), nullable=False),
+        ]
+    ),
 }
 
 
