@@ -51,6 +51,8 @@ _LOGGER = logging.getLogger(__name__)
 from intelligence.remediation.approval_decisions import RemediationDecisionStore
 from intelligence.remediation.defender_correlation import DefenderRemediationCorrelator
 from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
+from intelligence.remediation.execution_service import RemediationExecutionService
+from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.plan_repository import PlanRepository
 from network.design import NetworkDesignPolicyStore
 from network.flow import FlowQuery
@@ -2158,6 +2160,22 @@ def _remediation_decision_store() -> RemediationDecisionStore:
     return _REMEDIATION_DECISION_STORE
 
 
+_REMEDIATION_EXECUTION_STORE: RemediationExecutionStore | None = None
+
+
+def _remediation_execution_store() -> RemediationExecutionStore:
+    global _REMEDIATION_EXECUTION_STORE
+    if _REMEDIATION_EXECUTION_STORE is None:
+        root = aiops_home()
+        documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
+        path = None if documents is not None else root / "state" / "remediation_executions.json"
+        _REMEDIATION_EXECUTION_STORE = RemediationExecutionStore(
+            path=path,
+            document_store=documents,
+        )
+    return _REMEDIATION_EXECUTION_STORE
+
+
 def _load_situation_provider() -> Any:
     """Read the durable Phase 1 projection from the active generation."""
     from situations.store import SituationReadProvider
@@ -2570,6 +2588,13 @@ def build_context() -> ApiContext:
         incident_provider=lambda: providers.get("incidents", optional=True),
         remediation_provider=lambda: _attach_remediation_decisions(
             providers.get("remediation", optional=True)
+        ),
+        execution_provider=lambda: RemediationExecutionService(
+            plan_repository=getattr(
+                providers.get("remediation", optional=True), "repository", None
+            ),
+            patching_service=providers.get("patching", optional=True),
+            execution_store=_remediation_execution_store(),
         ),
         network_provider=lambda: providers.get("network", optional=True),
         vulnerability_provider=lambda: providers.get("vulnerability", optional=True),

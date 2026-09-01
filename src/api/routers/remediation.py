@@ -14,11 +14,15 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.models import operation_for_kind
+from operations.patching.service import PatchValidationError
 
-from ..dependencies import Context, Page, ReadScope
+from intelligence.remediation.execution_service import RemediationExecutionError
+
+from ..dependencies import Context, OperatePrincipal, Page, ReadScope
 from ..errors import ApiError, ErrorCode
-from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
+from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope
 from .operations import _HIDDEN, _filter_rows, _filter_scoped, _require
 
@@ -162,3 +166,82 @@ def plan_business_decision(
         evidence=_evidence(plan_id, str(plan.get("action_version") or "")),
         scope=scope.to_dict(),
     )
+
+
+def _execution_service(context: Context) -> Any:
+    service = getattr(context, "execution_provider", None)
+    resolved = service() if callable(service) else None
+    if resolved is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Remediation execution is not configured for this deployment",
+            {"capability": "remediation_execution"},
+        )
+    return resolved
+
+
+def _execution_evidence(execution_id: str) -> Evidence:
+    return Evidence(
+        source_engine="intelligence.RemediationExecutionService",
+        source_table="remediation_executions",
+        resource_id=execution_id,
+        # A first-party execution record: HOG wrote it.
+        confidence=CONFIDENCE_HIGH,
+    )
+
+
+@router.post(
+    "/plans/{plan_id}/execute",
+    status_code=202,
+    summary="Execute an already-approved controlled-patch-recovery plan",
+)
+def execute_plan(
+    plan_id: str, context: Context, principal: OperatePrincipal
+) -> dict[str, Any]:
+    # Narrow to what this principal may actually operate on before resolving
+    # the plan, so an out-of-scope plan is indistinguishable from a
+    # non-existent one -- matching create_patch_run's narrowing-before-
+    # resolving pattern.
+    write_scope = context.authorizer.effective_scope(principal, "operate")
+    _get_scoped_plan(context, write_scope, plan_id)
+
+    service = _execution_service(context)
+    try:
+        result = service.execute(plan_id, requested_by=getattr(principal, "subject", ""))
+    except RemediationExecutionError as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT, str(exc), {"reason": exc.reason, **exc.details}
+        ) from exc
+    except PatchValidationError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc), dict(exc.details)) from exc
+    except PatchExecutionUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            str(exc),
+            {"capability": getattr(exc, "capability", "patch_execution")},
+        ) from exc
+
+    return envelope(
+        result,
+        evidence=_execution_evidence(str(result.get("execution_id") or "")),
+        scope=write_scope.to_dict(),
+    )
+
+
+@router.get("/executions/{execution_id}", summary="Poll a remediation plan execution")
+def get_execution(execution_id: str, context: Context, scope: ReadScope) -> dict[str, Any]:
+    service = _execution_service(context)
+    store = getattr(service, "_store", None)
+    record = store.get(execution_id) if store is not None else None
+    if record is None:
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "Remediation execution not found",
+            details={"execution_id": execution_id},
+        )
+    return envelope(
+        record,
+        evidence=_execution_evidence(execution_id),
+        scope=scope.to_dict(),
+    )
+
