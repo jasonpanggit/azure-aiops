@@ -43,3 +43,94 @@ def test_dispatch_records_redacted_ledger_metadata():
         "status": "unavailable",
         "evidence": [],
     }
+
+
+class _VulnerabilityProvider:
+    freshness = "2026-09-01T00:00:00Z"
+
+    def __init__(self):
+        self.alert_rows = [{"id": f"alert-{i}", "status": "Active", "severity": "high", "subscription": "sub-a", "resourceIds": ["/subscriptions/123/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"], "timeGenerated": f"2026-09-01T00:{i:02d}:00Z"} for i in range(40)]
+        self.path_rows = [{"id": f"path-{i}", "subscription": "sub-a", "resourceIds": ["/subscriptions/123/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"], "nodes": [{"id": f"node-{i}", "resourceId": "/subscriptions/123/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"}]} for i in range(40)]
+        self.score_rows = [{"subscription_id": "sub-a", "currentScore": 40, "maxScore": 60, "observedAt": "2026-09-01T00:00:00Z"}]
+        self.control_rows = [{"id": f"control-{i}", "subscription": "sub-a", "assessmentDefinitions": ["/subscriptions/123/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"], "unhealthyResourceCount": i + 1, "currentScore": 0, "maxScore": 10, "title": f"Control {i}", "observedAt": "2026-09-01T00:00:00Z"} for i in range(40)]
+
+    def security_alerts(self, scope, active_only=True):
+        rows = self.alert_rows
+        return [row for row in rows if scope.is_unrestricted() or str(row.get("subscription") or "") in set(scope.values("subscription"))]
+
+    def defender_attack_paths_for_scope(self, scope):
+        rows = self.path_rows
+        return [row for row in rows if scope.is_unrestricted() or str(row.get("subscription") or "") in set(scope.values("subscription"))]
+
+    def secure_score_overview(self, scope):
+        rows = self.score_rows
+        return [row for row in rows if scope.is_unrestricted() or str(row.get("subscription_id") or "") in set(scope.values("subscription"))]
+
+    def secure_score_controls(self, scope):
+        rows = self.control_rows
+        return [row for row in rows if scope.is_unrestricted() or str(row.get("subscription") or "") in set(scope.values("subscription"))]
+
+
+class _ContextWithVulnerability:
+    provider_runtime = None
+
+    def __init__(self, provider):
+        self._provider = provider
+
+    def resolve_provider(self, name):
+        if name == "vulnerability":
+            return self._provider
+        return None
+
+
+def _call(server, name, arguments, scope):
+    return server.handle(
+        {"jsonrpc": "2.0", "id": "x", "method": "tools/call", "params": {"name": name, "arguments": arguments}},
+        context=_ContextWithVulnerability(_VulnerabilityProvider()),
+        principal=type("P", (), {"subject": "operator"})(),
+        scope=scope,
+        correlation_id="corr",
+    )
+
+
+def test_new_defender_tools_are_advertised_with_schemas():
+    defs = {item["name"]: item for item in tool_definitions()}
+    for name in ("defender_alerts", "defender_attack_paths", "defender_secure_score"):
+        assert name in defs
+        assert defs[name]["description"]
+        assert defs[name]["inputSchema"]["additionalProperties"] is False
+
+
+def test_defender_alerts_tool_returns_evidence_and_empty_status_when_no_rows():
+    from api.scope import Scope
+    response = _call(MCPServer(), "defender_alerts", {}, Scope({"subscription": ["sub-z"]}))
+    assert response["result"]["structuredContent"]["status"] == STATUS_EMPTY
+
+    response = _call(MCPServer(), "defender_alerts", {}, Scope({"subscription": ["sub-a"]}))
+    body = response["result"]["structuredContent"]
+    assert body["status"] == STATUS_OK
+    assert body["data"]
+    assert body["evidence"][0]["source_engine"] == "intelligence.VulnerabilityIntelligenceService"
+    assert body["evidence"][0]["source_table"] == "defender_alerts"
+    assert len(body["data"]) == 25
+
+
+def test_defender_attack_paths_tool_inherits_scope_filtering_and_bounds_results():
+    from api.scope import Scope
+    denied = _call(MCPServer(), "defender_attack_paths", {}, Scope({"subscription": ["sub-z"]}))
+    assert denied["result"]["structuredContent"]["status"] == STATUS_EMPTY
+    allowed = _call(MCPServer(), "defender_attack_paths", {}, Scope({"subscription": ["sub-a"]}))
+    body = allowed["result"]["structuredContent"]
+    assert body["status"] == STATUS_OK
+    assert body["evidence"][0]["source_table"] == "defender_attack_paths"
+    assert len(body["data"]) == 25
+
+
+def test_defender_secure_score_tool_returns_overview_and_unhealthy_controls():
+    from api.scope import Scope
+    response = _call(MCPServer(), "defender_secure_score", {}, Scope({"subscription": ["sub-a"]}))
+    body = response["result"]["structuredContent"]
+    assert body["status"] == STATUS_OK
+    assert set(body["data"]) == {"overview", "controls"}
+    assert body["evidence"][0]["source_table"] == "defender_secure_scores"
+    assert len(body["data"]["controls"]) == 25

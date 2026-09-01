@@ -91,3 +91,16 @@ def test_traffic_flow_is_not_described_as_observed_traffic() -> None:
     purpose = text[start : text.index("\n", start)]
     assert "not flow logs" in purpose, purpose
     assert "observed" not in purpose.replace("never what was observed", ""), purpose
+
+
+
+def test_new_defender_tools_are_advertised_and_assigned() -> None:
+    rows = _registry_rows()
+    for name in ("defender_alerts", "defender_attack_paths", "defender_secure_score"):
+        assert rows.get(name) == "operations-mcp"
+    text = _FOUNDRY_TF.read_text(encoding="utf-8")
+    remediation_block = text[text.index("remediation = concat(["):text.index("executive_summary =", text.index("remediation = concat(["))]
+    vulnerability_block = text[text.index("vulnerability = concat(["):text.index("patch =", text.index("vulnerability = concat(["))]
+    for block in (remediation_block, vulnerability_block):
+        for name in ("defender_alerts", "defender_attack_paths", "defender_secure_score"):
+            assert f'"{name}"' in block

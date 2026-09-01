@@ -33,6 +33,9 @@ locals {
       "cve_exposure",
       "cve_detail",
       "cve_attack_path",
+      "defender_alerts",
+      "defender_attack_paths",
+      "defender_secure_score",
     ], local.foundry_generic_context_tools)
     patch = local.foundry_generic_context_tools
     incident = concat([
@@ -43,6 +46,9 @@ locals {
     remediation = concat([
       "remediation_plans",
       "remediation_opportunities",
+      "defender_alerts",
+      "defender_attack_paths",
+      "defender_secure_score",
     ], local.foundry_generic_context_tools)
     executive_summary = local.foundry_generic_context_tools
   }
@@ -136,6 +142,9 @@ locals {
     cve_exposure              = { server = "operations-mcp", purpose = "List CVE exposure for a resource, asset, or scope." }
     cve_detail                = { server = "operations-mcp", purpose = "Get full detail (severity, exploitability) for a specific CVE." }
     cve_attack_path           = { server = "operations-mcp", purpose = "Trace a possible attack path a CVE enables through the environment." }
+    defender_alerts           = { server = "operations-mcp", purpose = "Read governed Defender alert evidence for the current scope; returns active alerts only and changes nothing." }
+    defender_attack_paths     = { server = "operations-mcp", purpose = "Read governed Defender attack-path evidence with resolved scoped nodes; changes nothing." }
+    defender_secure_score     = { server = "operations-mcp", purpose = "Read governed Defender secure-score overview and unhealthy controls for the current scope; changes nothing." }
     incidents                 = { server = "operations-mcp", purpose = "Look up governed incident records and their timeline/status." }
     remediation_plans         = { server = "operations-mcp", purpose = "Look up existing approved/proposed remediation plans." }
     remediation_opportunities = { server = "operations-mcp", purpose = "Identify candidate remediation opportunities not yet planned." }

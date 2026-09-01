@@ -533,6 +533,79 @@ def _tool_cve_attack_path(tool_context: ToolContext, args: Mapping[str, Any]) ->
     return _provider_result(tool_context, "vulnerability", run)
 
 
+
+def _tool_defender_alerts(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    """Active Defender alerts visible to the caller's scoped vulnerability view."""
+
+    def run(vulnerability: Any) -> ToolResult:
+        rows = vulnerability.security_alerts(tool_context.scope)
+        if not rows:
+            return ToolResult(status=STATUS_EMPTY)
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(rows),
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.VulnerabilityIntelligenceService",
+                    source_table="defender_alerts",
+                    timestamp=str(getattr(vulnerability, "freshness", "") or ""),
+                    confidence=CONFIDENCE_MEDIUM,
+                ),
+            ),
+        )
+
+    return _provider_result(tool_context, "vulnerability", run)
+
+
+
+def _tool_defender_attack_paths(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    """Scoped Defender attack paths with resolved nodes, bounded for prompt safety."""
+
+    def run(vulnerability: Any) -> ToolResult:
+        rows = vulnerability.defender_attack_paths_for_scope(tool_context.scope)
+        if not rows:
+            return ToolResult(status=STATUS_EMPTY)
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(rows),
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.VulnerabilityIntelligenceService",
+                    source_table="defender_attack_paths",
+                    timestamp=str(getattr(vulnerability, "freshness", "") or ""),
+                    confidence=CONFIDENCE_MEDIUM,
+                ),
+            ),
+        )
+
+    return _provider_result(tool_context, "vulnerability", run)
+
+
+
+def _tool_defender_secure_score(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    """Secure-score overview plus unhealthy controls for the caller's scoped estate."""
+
+    def run(vulnerability: Any) -> ToolResult:
+        overview = vulnerability.secure_score_overview(tool_context.scope)
+        controls = vulnerability.secure_score_controls(tool_context.scope)
+        if not overview and not controls:
+            return ToolResult(status=STATUS_EMPTY)
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound({"overview": overview, "controls": controls}),
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.VulnerabilityIntelligenceService",
+                    source_table="defender_secure_scores",
+                    timestamp=str(getattr(vulnerability, "freshness", "") or ""),
+                    confidence=CONFIDENCE_MEDIUM,
+                ),
+            ),
+        )
+
+    return _provider_result(tool_context, "vulnerability", run)
+
+
 def _tool_incidents(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     incident_id = str(args.get("incident_id") or "").strip()
 
@@ -763,6 +836,24 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             description="Multi-hop attack path graph for a CVE: reachable resources and business services through the dependency graph.",
             parameters={"cve_id": "CVE identifier, e.g. CVE-2024-12345"},
             handler=_tool_cve_attack_path,
+        ),
+        ToolSpec(
+            name="defender_alerts",
+            description="Active Defender alerts visible to the caller's scoped estate.",
+            parameters={},
+            handler=_tool_defender_alerts,
+        ),
+        ToolSpec(
+            name="defender_attack_paths",
+            description="Scoped Defender attack paths with resolved nodes and connections.",
+            parameters={},
+            handler=_tool_defender_attack_paths,
+        ),
+        ToolSpec(
+            name="defender_secure_score",
+            description="Secure-score overview together with unhealthy Defender controls.",
+            parameters={},
+            handler=_tool_defender_secure_score,
         ),
         ToolSpec(
             name="incidents",
