@@ -12,7 +12,6 @@ from typing import Any, Literal, Protocol
 
 from storage.onelake_documents import DocumentConflictError
 
-
 DecisionKind = Literal["approved", "rejected", "expired"]
 CONTROLLED_PATCH_RECOVERY = "controlled-patch-recovery"
 _SNAPSHOT_FIELDS = (

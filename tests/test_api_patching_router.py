@@ -15,7 +15,6 @@ from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
-from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 from onboarding.service import SubscriptionOnboardingService

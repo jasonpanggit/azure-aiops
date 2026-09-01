@@ -14,14 +14,13 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from operations.patching.adapters import PatchExecutionUnavailable
-from operations.patching.service import PatchValidationError
-
 from intelligence.remediation.approval_decisions import (
     ExecutionSnapshotError,
     build_execution_snapshot,
 )
 from intelligence.remediation.execution_service import RemediationExecutionError
+from operations.patching.adapters import PatchExecutionUnavailable
+from operations.patching.service import PatchValidationError
 
 from ..dependencies import Context, OperatePrincipal, Page, ReadScope
 from ..errors import ApiError, ErrorCode

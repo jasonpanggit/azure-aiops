@@ -12,7 +12,6 @@ from intelligence.remediation.approval_decisions import (
 )
 from operations.patching.models import AvailablePatch, PatchTarget
 
-
 TARGET_ID = (
     "/subscriptions/sub-1/resourceGroups/rg-prod/providers/"
     "Microsoft.Compute/virtualMachines/vm-payments"

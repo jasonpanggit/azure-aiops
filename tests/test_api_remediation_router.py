@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from remediation_scenario import remediation_planner
 
 from api.app import create_app
 from api.auth import StaticTokenAuthenticator
@@ -11,8 +12,6 @@ from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 from operations.patching.models import AvailablePatch, PatchTarget
 from tests.test_api_http import FakeSecretWriter
-
-from remediation_scenario import remediation_planner
 
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
 OPERATOR_TOKEN = "operator-token-0123456789abcd"

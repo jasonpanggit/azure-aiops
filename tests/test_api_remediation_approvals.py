@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from remediation_scenario import remediation_planner
 
 from api.app import create_app
 from api.auth import StaticTokenAuthenticator
@@ -17,9 +18,6 @@ from onboarding.service import SubscriptionOnboardingService
 from operations.patching.models import AvailablePatch, PatchTarget
 from tests.test_api_http import FakeSecretWriter
 
-from remediation_scenario import remediation_planner
-
-
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
 OPERATOR_TOKEN = "operator-token-0123456789abcd"
 READER_TOKEN = "reader-token-0123456789abcdef"
@@ -32,13 +30,13 @@ VM_PAYMENTS_ID = (
 
 def _future_expiry(days: int = 30) -> str:
     """Return an ISO-8601 date that is always in the future relative to wall clock."""
-    return (datetime.now(timezone.utc) + timedelta(days=days)).date().isoformat()
+    return (datetime.now(UTC) + timedelta(days=days)).date().isoformat()
 
 
 def _future_expiry_datetime(days: int = 30) -> str:
     """Return an ISO-8601 datetime that is always in the future relative to wall clock."""
     return (
-        (datetime.now(timezone.utc) + timedelta(days=days))
+        (datetime.now(UTC) + timedelta(days=days))
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z")
@@ -475,7 +473,6 @@ def test_plan_with_changed_defender_evidence_fails_freshness_check(tmp_path) -> 
     # Check for revalidation checks
     assert "revalidation" in decision
     # defender_evidence_fresh should be in the checks or status should indicate it
-    checks = decision["revalidation"].get("checks", [])
     # This test verifies the structure is present; implementation will add the actual check
 
 
@@ -724,21 +721,13 @@ def test_approval_revocation_is_recorded_and_auditable(tmp_path) -> None:
 def test_no_execution_route_in_remediation_api(tmp_path) -> None:
     """Test 3.4: No route applies a remediation change to Azure in this phase."""
     # Verify no execution routes exist by inspecting source
-    import os
     
     remediation_src_dir = "src/api/routers/operations.py"
     with open(remediation_src_dir, "r") as f:
         content = f.read()
     
     # Scan for execution/apply/execute route decorators on remediation endpoints
-    execution_verbs = ["@router.post", "@router.put", "@router.patch", "@router.delete"]
     execution_keywords = ["execute", "apply", "deploy", "remediate", "run-action"]
-    
-    # These verbs are OK on remediation endpoints - we expect decisions (POST)
-    allowed_posts = [
-        "/remediation-plans/{plan_id}/decisions",
-        "/remediation/",
-    ]
     
     # Verify there's no forbidden pattern
     for line in content.split("\n"):
@@ -750,16 +739,14 @@ def test_no_execution_route_in_remediation_api(tmp_path) -> None:
 def test_remediation_package_has_no_azure_or_subprocess_calls(tmp_path) -> None:
     """Test 3.5: Remediation package contains no Azure management-plane or subprocess calls."""
     import subprocess
-    import os
 
-    remediation_src = os.path.join(str(tmp_path), "src/intelligence/remediation")
-    
     # Check for azure.mgmt imports
     result = subprocess.run(
         ["grep", "-r", "azure\\.mgmt", "src/intelligence/remediation/", "--include=*.py"],
         capture_output=True,
         text=True,
-        cwd="/Users/jasonmba/workspace/azure-aiops"
+        cwd="/Users/jasonmba/workspace/azure-aiops",
+        check=False,
     )
     assert result.returncode != 0 or "azure.mgmt" not in result.stdout, "Found azure.mgmt imports in remediation package"
 
@@ -768,7 +755,8 @@ def test_remediation_package_has_no_azure_or_subprocess_calls(tmp_path) -> None:
         ["grep", "-r", "subprocess", "src/intelligence/remediation/", "--include=*.py"],
         capture_output=True,
         text=True,
-        cwd="/Users/jasonmba/workspace/azure-aiops"
+        cwd="/Users/jasonmba/workspace/azure-aiops",
+        check=False,
     )
     assert result.returncode != 0 or "subprocess" not in result.stdout, "Found subprocess calls in remediation package"
 

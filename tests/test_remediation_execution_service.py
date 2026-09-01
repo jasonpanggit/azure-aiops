@@ -13,16 +13,20 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from intelligence.remediation.approval_decisions import RemediationDecisionStore
-from intelligence.remediation.approval_decisions import execution_snapshot_hash
+from intelligence.remediation.approval_decisions import (
+    RemediationDecisionStore,
+    execution_snapshot_hash,
+)
 from intelligence.remediation.execution_service import (
     RemediationExecutionError,
     RemediationExecutionService,
 )
 from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.plan_repository import PlanRepository
-from operations.patching.adapters import PatchExecutionUnavailable, RecordingPatchExecutionAdapter
-from operations.patching.models import PatchTarget
+from operations.patching.adapters import (
+    PatchExecutionUnavailable,
+    RecordingPatchExecutionAdapter,
+)
 from operations.patching.service import PatchingService
 
 TARGET_ID = "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments"

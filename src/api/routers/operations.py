@@ -15,16 +15,17 @@ from typing import Any
 
 from fastapi import APIRouter, status
 
-from ..dependencies import Context, OperatePrincipal, Page, ReadScope
-from ..errors import ApiError, ErrorCode
-from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
-from ..models import RemediationDecisionRequest
-from ..scope import Scope, scope_attributes
 from intelligence.remediation.approval_decisions import (
     CONTROLLED_PATCH_RECOVERY,
     ExecutionSnapshotError,
     build_execution_snapshot,
 )
+
+from ..dependencies import Context, OperatePrincipal, Page, ReadScope
+from ..errors import ApiError, ErrorCode
+from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
+from ..models import RemediationDecisionRequest
+from ..scope import Scope, scope_attributes
 from .patching import _service as _patching_service
 
 router = APIRouter(prefix="/api/v1", tags=["operations"])

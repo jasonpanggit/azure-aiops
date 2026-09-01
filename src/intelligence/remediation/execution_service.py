@@ -11,8 +11,9 @@ threat model (T-03-04, T-03-05) for the guarantees this enforces.
 from __future__ import annotations
 
 import hmac
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any
 
 from intelligence.remediation.approval_decisions import execution_snapshot_hash
 from operations.patching.adapters import PatchExecutionUnavailable

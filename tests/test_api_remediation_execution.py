@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
+from remediation_scenario import remediation_planner
 
 from api.app import create_app
 from api.auth import StaticTokenAuthenticator
@@ -29,8 +30,6 @@ from onboarding.service import SubscriptionOnboardingService
 from operations.patching.adapters import RecordingPatchExecutionAdapter
 from operations.patching.service import PatchingService
 from tests.test_api_http import FakeSecretWriter
-
-from remediation_scenario import remediation_planner
 
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
 OPERATOR_TOKEN = "operator-token-0123456789abcd"
@@ -172,7 +171,7 @@ def _approve(planner, plan: dict) -> None:
 
 
 def test_execute_non_patch_recovery_plan_is_409(tmp_path) -> None:
-    client, planner, _ = _client(tmp_path)
+    client, _, _ = _client(tmp_path)
     plans = _plans(client)
     plan = next(p for p in plans if p["action_id"] != "controlled-patch-recovery")
 
@@ -185,7 +184,7 @@ def test_execute_non_patch_recovery_plan_is_409(tmp_path) -> None:
 
 
 def test_execute_unapproved_patch_recovery_plan_is_409(tmp_path) -> None:
-    client, planner, _ = _client(tmp_path)
+    client, _, _ = _client(tmp_path)
     plan = _patch_recovery_plan(client)
 
     response = client.post(
@@ -199,7 +198,7 @@ def test_execute_unapproved_patch_recovery_plan_is_409(tmp_path) -> None:
 
 
 def test_execute_approved_plan_succeeds_and_is_pollable(tmp_path) -> None:
-    client, planner, execution_store = _client(tmp_path)
+    client, planner, _ = _client(tmp_path)
     plan = _patch_recovery_plan(client)
     _approve(planner, plan)
 
@@ -263,7 +262,7 @@ def test_execution_retry_and_list_endpoints_are_mounted(tmp_path) -> None:
 
 
 def test_get_execution_response_includes_verification_and_history_fields(tmp_path) -> None:
-    client, planner, execution_store = _client(tmp_path)
+    client, planner, _ = _client(tmp_path)
     plan = _patch_recovery_plan(client)
     _approve(planner, plan)
 
