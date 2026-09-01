@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from azure.core.exceptions import ResourceExistsError
+from azure.core.exceptions import HttpResponseError, ResourceExistsError
 
 from storage.onelake_writer import LAKEHOUSE_FOLDERS, OneLakeWriter
 
@@ -103,3 +103,69 @@ def test_cloud_directory_creation_is_idempotent() -> None:
     OneLakeWriter("workspace", "lakehouse", service_client=Service()).ensure_directory(
         "bronze/resources"
     )
+
+
+def _lease_error(code: str) -> HttpResponseError:
+    error = HttpResponseError(message=code)
+    error.error_code = code
+    return error
+
+
+def test_cloud_sync_lock_breaks_stale_lease_when_already_present() -> None:
+    events: list[str] = []
+
+    class Directory:
+        def create_directory(self):
+            events.append("create_directory")
+
+    class File:
+        def create_file(self):
+            events.append("create_file")
+
+    class FileSystem:
+        def get_directory_client(self, _path):
+            return Directory()
+
+        def get_file_client(self, _path):
+            return File()
+
+    class Service:
+        def get_file_system_client(self, _name):
+            return FileSystem()
+
+    class Lease:
+        def __init__(self, _file_client):
+            self._first = True
+
+        def acquire(self, *, lease_duration):
+            events.append(f"acquire:{lease_duration}")
+            if self._first:
+                self._first = False
+                raise _lease_error("LeaseAlreadyPresent")
+
+        def break_lease(self, *, lease_break_period):
+            events.append(f"break:{lease_break_period}")
+            return 0
+
+        def release(self):
+            events.append("release")
+
+    import storage.onelake_writer as module
+
+    original = module.DataLakeLeaseClient
+    module.DataLakeLeaseClient = Lease
+    try:
+        with OneLakeWriter("workspace", "lakehouse", service_client=Service()).sync_lock():
+            events.append("inside")
+    finally:
+        module.DataLakeLeaseClient = original
+
+    assert events == [
+        "create_directory",
+        "create_file",
+        "acquire:-1",
+        "break:0",
+        "acquire:-1",
+        "inside",
+        "release",
+    ]

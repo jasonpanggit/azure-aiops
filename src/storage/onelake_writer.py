@@ -163,7 +163,10 @@ class OneLakeWriter:
             # leaving it orphaned indefinitely (lease_duration=-1 never
             # expires on its own). Break it and retry once rather than
             # requiring manual intervention.
-            if getattr(error, "error_code", "") != "LeaseIdMissing":
+            if getattr(error, "error_code", "") not in {
+                "LeaseIdMissing",
+                "LeaseAlreadyPresent",
+            }:
                 raise
             lease.break_lease(lease_break_period=0)
             lease.acquire(lease_duration=-1)
