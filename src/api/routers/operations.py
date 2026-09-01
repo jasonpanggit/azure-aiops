@@ -70,7 +70,8 @@ def _future_expiry(value: str, *, now: datetime | None = None) -> str:
     if not text:
         raise ApiError(
             ErrorCode.INVALID_REQUEST,
-            "Approved remediation decisions require expires_at",
+            "Approved remediation decisions must include expires_at (future-dated ISO-8601 timestamp); "
+            "rejected and expired decisions must not include expires_at",
         )
     normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
     try:
@@ -332,7 +333,9 @@ def record_remediation_decision(
             "Remediation decisions cannot authorize or follow execution in this phase",
             details={"plan_id": plan_id},
         )
-    expires_at = request.expires_at.strip()
+    
+    # Validate expires_at ONLY for approved decisions; reject/expired must be empty
+    expires_at = ""
     revalidation_checks = [
         "plan_exists",
         "scope_authorized",
@@ -343,6 +346,15 @@ def record_remediation_decision(
     if request.decision == "approved":
         expires_at = _future_expiry(request.expires_at)
         revalidation_checks.append("approval_not_expired")
+    elif request.decision in ("rejected", "expired"):
+        # Reject decisions must not carry expires_at metadata
+        if request.expires_at.strip():
+            raise ApiError(
+                ErrorCode.INVALID_REQUEST,
+                f"Decision '{request.decision}' must not include expires_at; use empty string",
+            )
+        expires_at = ""
+    
     decision = planner.repository.decisions.append(
         plan=plan,
         decision=request.decision,
