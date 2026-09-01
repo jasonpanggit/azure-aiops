@@ -234,12 +234,21 @@ locals {
   # above). Applied identically to every specialist -- there is one shared
   # index, so (unlike the MCP tools) there is no per-specialist allowed_tools
   # selection to make.
+  # NOTE: unlike the `mcp` tool type above (which resolves a bare connection
+  # *name* via ProjectManagedIdentity), the `azure_ai_search` tool type
+  # requires the full connection *resource ID*
+  # (".../projects/<project>/connections/<name>") -- passing the bare name
+  # here causes every knowledge-search call to fail at runtime with "Access
+  # denied. Check your permissions or managed identity access to the search
+  # service", even though the identity has full RBAC on the search service.
+  # Confirmed empirically against the live agent: identical request succeeds
+  # once `project_connection_id` is the full resource ID.
   foundry_ai_search_tool_config = var.enable_foundry_knowledge_search ? {
     type = "azure_ai_search"
     azure_ai_search = {
       indexes = [
         {
-          project_connection_id = local.foundry_ai_search_connection_name
+          project_connection_id = azapi_resource.foundry_ai_search_connection[0].id
           index_name            = var.foundry_knowledge_index_name
           query_type            = "vector_semantic_hybrid"
         }
@@ -379,8 +388,9 @@ resource "azurerm_cognitive_deployment" "embedding" {
   cognitive_account_id = azurerm_cognitive_account.foundry.id
 
   model {
-    format = "OpenAI"
-    name   = var.foundry_embedding_model_name
+    format  = "OpenAI"
+    name    = var.foundry_embedding_model_name
+    version = "1"
   }
 
   sku {
@@ -539,6 +549,28 @@ resource "azurerm_role_assignment" "foundry_search_service_contributor" {
   scope                            = azurerm_search_service.knowledge[0].id
   role_definition_name             = "Search Service Contributor"
   principal_id                     = azurerm_cognitive_account.foundry.identity[0].principal_id
+  skip_service_principal_aad_check = true
+}
+
+# The `authType = "AAD"` Azure AI Search connection below resolves at runtime
+# using the *project's* system-assigned identity (azurerm_cognitive_account_project.ops),
+# not the parent account's identity granted above -- these are two distinct
+# principals. Without these, agent calls to the knowledge search tool fail
+# with "Access denied. Check your permissions or managed identity access to
+# the search service" even though the account identity is fully authorized.
+resource "azurerm_role_assignment" "foundry_project_search_index_data_contributor" {
+  count                            = var.enable_foundry_knowledge_search ? 1 : 0
+  scope                            = azurerm_search_service.knowledge[0].id
+  role_definition_name             = "Search Index Data Contributor"
+  principal_id                     = azurerm_cognitive_account_project.ops.identity[0].principal_id
+  skip_service_principal_aad_check = true
+}
+
+resource "azurerm_role_assignment" "foundry_project_search_service_contributor" {
+  count                            = var.enable_foundry_knowledge_search ? 1 : 0
+  scope                            = azurerm_search_service.knowledge[0].id
+  role_definition_name             = "Search Service Contributor"
+  principal_id                     = azurerm_cognitive_account_project.ops.identity[0].principal_id
   skip_service_principal_aad_check = true
 }
 
@@ -760,6 +792,8 @@ resource "terraform_data" "foundry_agent" {
     azapi_resource.foundry_mcp_connection,
     azapi_resource.foundry_azure_mcp_connection,
     azapi_resource.foundry_ai_search_connection,
+    azurerm_role_assignment.foundry_project_search_index_data_contributor,
+    azurerm_role_assignment.foundry_project_search_service_contributor,
     terraform_data.foundry_knowledge_index,
   ]
 }
