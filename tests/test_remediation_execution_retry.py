@@ -9,6 +9,7 @@ so a failing target cannot be retried indefinitely (T-03-10, T-03-11).
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -19,6 +20,7 @@ from intelligence.remediation.execution_service import (
     RemediationExecutionError,
     RemediationExecutionService,
 )
+from intelligence.remediation.approval_decisions import execution_snapshot_hash
 from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.execution_verifier import ExecutionVerifier
 from intelligence.remediation.plan_repository import PlanRepository
@@ -105,6 +107,18 @@ def _full_plan(**overrides) -> dict:
         "execution_steps": [],
         "application": "Payments API",
         "business_service": "Checkout",
+        "business_decision": {
+            "disposition": "act_now",
+            "business_impact": {"status": "known"},
+            "review_requirements": [],
+            "unknowns": [],
+            "urgency_rationale": {
+                "evidence_citations": ["assessment:assess-001"]
+            },
+        },
+        "evidence_citations": [
+            {"source_type": "assessment", "source_id": "assess-001"}
+        ],
         "rollback_plan": {
             "rollback_actions": ["Restore from last known-good snapshot"],
             "automatic_rollback": False,
@@ -116,6 +130,14 @@ def _full_plan(**overrides) -> dict:
 
 
 def _approve(repository: PlanRepository, plan: dict, *, expires_at: str = "") -> None:
+    snapshot = {
+        "target_id": TARGET_ID,
+        "patch_ids": ["KB600001"],
+        "target_kind": "Azure VM",
+        "operation": "install_patches",
+        "action_version": plan["action_version"],
+    }
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
     repository.decisions.append(
         plan=plan,
         decision="approved",
@@ -124,6 +146,7 @@ def _approve(repository: PlanRepository, plan: dict, *, expires_at: str = "") ->
         scope={},
         action_version=plan["action_version"],
         expires_at=expires_at or (NOW + timedelta(days=1)).isoformat(),
+        execution_snapshot=snapshot,
         now=NOW,
     )
 
@@ -240,3 +263,77 @@ def test_execute_and_retry_share_the_same_approval_gate_implementation():
     retry_source = inspect.getsource(RemediationExecutionService.retry)
     assert "_check_approval_gate" in execute_source
     assert "_check_approval_gate" in retry_source
+
+
+def test_retry_rejects_all_non_retryable_states() -> None:
+    plan = _full_plan()
+    for status in ("queued", "running", "retrying", "succeeded"):
+        service, store, _ = _service(plan=plan)
+        result = service.execute(
+            plan["plan_id"], requested_by="operator@example.com"
+        )
+        store.update(result["execution_id"], status=status)
+
+        with pytest.raises(RemediationExecutionError) as excinfo:
+            service.retry(result["execution_id"])
+
+        assert excinfo.value.reason == "execution_not_retryable"
+
+
+def test_two_independent_stores_claim_one_concurrent_retry(tmp_path) -> None:
+    plan = _full_plan()
+    path = tmp_path / "state" / "remediation_executions.json"
+    adapter = _RecordingOperationUrlAdapter(fail=True)
+    first, first_store, repository = _service(
+        plan=plan,
+        adapter=adapter,
+        verifier_client=_client_returning(200, {"status": "Failed"}),
+    )
+    first._store = RemediationExecutionStore(path=path)
+    initial = first.execute(plan["plan_id"], requested_by="operator@example.com")
+    assert first_store is not first._store
+
+    adapter._fail = False
+    second = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=first._patching,
+        execution_store=RemediationExecutionStore(path=path),
+        execution_verifier=first._verifier,
+        now=lambda: NOW,
+    )
+    before = len(adapter.submissions)
+
+    def retry(service):
+        try:
+            return service.retry(initial["execution_id"])
+        except RemediationExecutionError as exc:
+            return exc.reason
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(retry, (first, second)))
+
+    assert len(adapter.submissions) == before + 1
+    assert "execution_claim_conflict" in outcomes
+
+
+def test_retry_appends_attempt_history_without_overwriting_first_failure() -> None:
+    plan = _full_plan()
+    adapter = _RecordingOperationUrlAdapter(fail=True)
+    service, store, _ = _service(plan=plan, adapter=adapter)
+    failed = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    assert failed["status"] == "failed"
+
+    adapter._fail = False
+    service.retry(failed["execution_id"])
+
+    record = store.get(failed["execution_id"])
+    assert record["attempt_count"] == 2
+    assert len(record["attempts"]) == 2
+    assert record["attempts"][0]["outcome"] == "failed"
+    assert "Azure rejected" in record["attempts"][0]["failure_details"]
+    assert record["attempts"][1]["provider_job_id"] == OPERATION_URL
+    assert [event["status"] for event in record["history"]][:3] == [
+        "queued",
+        "running",
+        "failed",
+    ]

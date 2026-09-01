@@ -9,6 +9,7 @@ approved decision.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -502,14 +503,31 @@ def test_execution_store_rejects_concurrent_execution_for_same_plan():
     assert second["execution_id"] == first["execution_id"]
 
 
-def test_execution_store_allows_new_execution_after_terminal_state():
+@pytest.mark.parametrize(
+    "status",
+    ["queued", "running", "retrying", "failed", "cancelled", "succeeded"],
+)
+def test_execution_identity_is_permanent_after_every_status(status):
     store = RemediationExecutionStore()
-    first = store.create("RMP-0001", requested_by="operator@example.com")
-    store.update(first["execution_id"], status="succeeded")
+    snapshot = _execution_snapshot(_plan())
+    first, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        execution_snapshot=snapshot,
+    )
+    assert created is True
+    store.update(first["execution_id"], status=status)
 
-    second = store.create("RMP-0001", requested_by="operator@example.com")
+    second, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="other@example.com",
+        approved_by="approver@example.com",
+        execution_snapshot=snapshot,
+    )
 
-    assert second["execution_id"] != first["execution_id"]
+    assert created is False
+    assert second["execution_id"] == first["execution_id"]
 
 
 def test_execute_persists_queued_then_running_then_terminal_lifecycle():
@@ -542,15 +560,56 @@ def test_execute_failure_persists_failed_status_with_message():
     assert "No execution identity configured" in execution["message"]
 
 
-def test_attempt_count_increments_only_on_distinct_resubmission():
-    store = RemediationExecutionStore()
-    first = store.create("RMP-0001", requested_by="operator@example.com")
-    assert first["attempt_count"] == 1
-    store.update(first["execution_id"], status="succeeded")
+def test_two_services_sharing_local_store_submit_once(tmp_path):
+    path = tmp_path / "state" / "remediation_executions.json"
+    adapter = RecordingPatchExecutionAdapter()
+    plan = _plan()
+    first, _ = _service_with_store(
+        plan=plan,
+        adapter=adapter,
+        execution_store=RemediationExecutionStore(path=path),
+    )
+    second, _ = _service_with_store(
+        plan=plan,
+        adapter=adapter,
+        execution_store=RemediationExecutionStore(path=path),
+    )
 
-    second = store.create("RMP-0001", requested_by="operator@example.com")
-    assert second["attempt_count"] == 1
-    assert second["execution_id"] != first["execution_id"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                lambda service: service.execute(
+                    plan["plan_id"], requested_by="operator@example.com"
+                ),
+                (first, second),
+            )
+        )
+
+    assert results[0]["execution_id"] == results[1]["execution_id"]
+    assert len(adapter.submissions) == 1
+
+
+def test_duplicate_execute_after_failure_never_resubmits():
+    plan = _plan()
+
+    class _FailingAdapter:
+        name = "failing"
+
+        def __init__(self):
+            self.calls = 0
+
+        def submit(self, run, target):
+            self.calls += 1
+            raise PatchExecutionUnavailable("ambiguous provider failure")
+
+    adapter = _FailingAdapter()
+    service, _ = _service_with_store(plan=plan, adapter=adapter)
+
+    first = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    second = service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    assert first["execution_id"] == second["execution_id"]
+    assert adapter.calls == 1
 
 
 def _full_plan(plan: dict) -> dict:
