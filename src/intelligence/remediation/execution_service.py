@@ -10,9 +10,11 @@ threat model (T-03-04, T-03-05) for the guarantees this enforces.
 
 from __future__ import annotations
 
+import hmac
 from datetime import UTC, datetime
 from typing import Any, Callable
 
+from intelligence.remediation.approval_decisions import execution_snapshot_hash
 from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.models import PatchTarget
 from operations.patching.service import PatchingService, PatchValidationError
@@ -40,6 +42,55 @@ class RemediationExecutionError(RuntimeError):
         super().__init__(message)
         self.reason = reason
         self.details = details or {}
+
+
+def validate_business_eligibility(plan: dict[str, Any]) -> None:
+    """Reject plans whose business decision is not deterministically executable."""
+    plan_id = str(plan.get("plan_id") or "")
+    decision = plan.get("business_decision") or {}
+    disposition = str(decision.get("disposition") or "")
+    if disposition not in {"act_now", "schedule"}:
+        raise RemediationExecutionError(
+            "The business decision disposition is not executable",
+            reason="disposition_not_executable",
+            details={"plan_id": plan_id, "disposition": disposition},
+        )
+    impact_status = str((decision.get("business_impact") or {}).get("status") or "")
+    if impact_status != "known":
+        raise RemediationExecutionError(
+            "Business impact must be known before execution",
+            reason="business_impact_unknown",
+            details={"plan_id": plan_id, "status": impact_status},
+        )
+    review_requirements = list(decision.get("review_requirements") or [])
+    if review_requirements:
+        raise RemediationExecutionError(
+            "Outstanding review requirements block execution",
+            reason="review_required",
+            details={"plan_id": plan_id, "review_requirements": review_requirements},
+        )
+    unknowns = list(decision.get("unknowns") or [])
+    if unknowns:
+        raise RemediationExecutionError(
+            "Unresolved business-decision unknowns block execution",
+            reason="decision_unknowns_present",
+            details={"plan_id": plan_id, "unknowns": unknowns},
+        )
+    decision_citations = list(
+        (decision.get("urgency_rationale") or {}).get("evidence_citations") or []
+    )
+    if not decision_citations:
+        raise RemediationExecutionError(
+            "The business decision has no urgency evidence citations",
+            reason="decision_evidence_missing",
+            details={"plan_id": plan_id},
+        )
+    if not list(plan.get("evidence_citations") or []):
+        raise RemediationExecutionError(
+            "The remediation plan has no evidence citations",
+            reason="plan_evidence_missing",
+            details={"plan_id": plan_id},
+        )
 
 
 class RemediationExecutionService:
@@ -140,6 +191,8 @@ class RemediationExecutionService:
                 reason="approval_expired",
                 details={"plan_id": plan_id, "expires_at": decision.get("expires_at")},
             )
+        validate_business_eligibility(plan)
+        self._validated_execution_snapshot(plan, decision)
         return decision
 
     def _submit_and_record(
@@ -151,7 +204,7 @@ class RemediationExecutionService:
         execution_id: str | None,
     ) -> dict[str, Any]:
         plan_id = str(plan.get("plan_id") or "")
-        target, patch_ids = self._resolve_target(plan)
+        target, patch_ids = self._resolve_target(plan, decision)
         try:
             run = self._patching.trigger(
                 target=target,
@@ -335,13 +388,44 @@ class RemediationExecutionService:
             expiry = expiry.replace(tzinfo=UTC)
         return expiry <= self._now()
 
-    def _resolve_target(self, plan: dict[str, Any]) -> tuple[PatchTarget, list[str]]:
-        resource = plan.get("resource") or {}
-        target_id = str(
-            resource.get("id")
-            or plan.get("resource_key")
-            or ""
-        ).strip()
+    def _validated_execution_snapshot(
+        self, plan: dict[str, Any], decision: dict[str, Any]
+    ) -> dict[str, Any]:
+        plan_id = str(plan.get("plan_id") or "")
+        snapshot = decision.get("execution_snapshot")
+        if not isinstance(snapshot, dict):
+            raise RemediationExecutionError(
+                "The approved decision has no executable snapshot",
+                reason="execution_snapshot_missing",
+                details={"plan_id": plan_id},
+            )
+        patch_ids = snapshot.get("patch_ids")
+        target_id = str(snapshot.get("target_id") or "").strip()
+        snapshot_version = str(snapshot.get("action_version") or "")
+        expected_version = str(plan.get("action_version") or "")
+        supplied_hash = str(snapshot.get("snapshot_hash") or "")
+        expected_hash = execution_snapshot_hash(snapshot)
+        if (
+            not target_id
+            or not isinstance(patch_ids, list)
+            or not patch_ids
+            or any(not isinstance(item, str) or not item.strip() for item in patch_ids)
+            or snapshot_version != expected_version
+            or snapshot_version != str(decision.get("action_version") or "")
+            or not hmac.compare_digest(supplied_hash, expected_hash)
+        ):
+            raise RemediationExecutionError(
+                "The approved execution snapshot is invalid or has been altered",
+                reason="execution_snapshot_invalid",
+                details={"plan_id": plan_id},
+            )
+        return snapshot
+
+    def _resolve_target(
+        self, plan: dict[str, Any], decision: dict[str, Any]
+    ) -> tuple[PatchTarget, list[str]]:
+        snapshot = self._validated_execution_snapshot(plan, decision)
+        target_id = str(snapshot["target_id"])
         target = self._patching.target(target_id)
         if target is None:
             raise RemediationExecutionError(
@@ -349,7 +433,24 @@ class RemediationExecutionService:
                 reason="target_not_found",
                 details={"plan_id": plan.get("plan_id"), "target_id": target_id},
             )
-        patch_ids = sorted(target.available_patch_ids)
+        patch_ids = list(snapshot["patch_ids"])
+        unavailable = sorted(
+            patch_id for patch_id in patch_ids if patch_id not in target.available_patch_ids
+        )
+        if (
+            unavailable
+            or target.inventory_kind != snapshot.get("target_kind")
+            or target.operation != snapshot.get("operation")
+        ):
+            raise RemediationExecutionError(
+                "The approved execution snapshot no longer matches the patch target",
+                reason="execution_snapshot_drift",
+                details={
+                    "plan_id": plan.get("plan_id"),
+                    "target_id": target_id,
+                    "unavailable_patch_ids": unavailable,
+                },
+            )
         return target, patch_ids
 
 
@@ -367,4 +468,5 @@ __all__ = [
     "MAX_EXECUTION_ATTEMPTS",
     "RemediationExecutionError",
     "RemediationExecutionService",
+    "validate_business_eligibility",
 ]

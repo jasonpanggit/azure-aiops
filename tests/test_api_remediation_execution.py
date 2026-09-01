@@ -18,7 +18,10 @@ from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
-from intelligence.remediation.approval_decisions import RemediationDecisionStore
+from intelligence.remediation.approval_decisions import (
+    RemediationDecisionStore,
+    execution_snapshot_hash,
+)
 from intelligence.remediation.execution_service import RemediationExecutionService
 from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.plan_repository import PlanRepository
@@ -65,6 +68,25 @@ def _client(tmp_path, *, planner=None, principals=None, adapter=None) -> TestCli
     resolved_planner = planner or remediation_planner(
         repository=PlanRepository(decision_store=decision_store)
     )
+    original_generate_plans = resolved_planner.generate_plans
+
+    def generate_eligible_plans():
+        result = original_generate_plans()
+        for row in result["plans"]:
+            if row.get("action_id") == "controlled-patch-recovery":
+                row["business_decision"] = {
+                    "disposition": "act_now",
+                    "business_impact": {"status": "known"},
+                    "review_requirements": [],
+                    "unknowns": [],
+                    "urgency_rationale": {
+                        "evidence_citations": ["assessment:assess-001"]
+                    },
+                }
+        resolved_planner.repository.replace_generation(result["plans"])
+        return result
+
+    resolved_planner.generate_plans = generate_eligible_plans
     execution_store = RemediationExecutionStore()
     patching_service = PatchingService(
         _FakeVulnerabilityService(),
@@ -116,14 +138,36 @@ def _patch_recovery_plan(client: TestClient) -> dict:
 
 
 def _approve(planner, plan: dict) -> None:
+    stored_plan = planner.repository.get(plan["plan_id"])
+    stored_plan["business_decision"] = {
+        "disposition": "act_now",
+        "business_impact": {"status": "known"},
+        "review_requirements": [],
+        "unknowns": [],
+        "urgency_rationale": {"evidence_citations": ["assessment:assess-001"]},
+    }
+    plans = [
+        stored_plan if row["plan_id"] == plan["plan_id"] else row
+        for row in planner.repository.list()
+    ]
+    planner.repository.replace_generation(plans)
+    snapshot = {
+        "target_id": VM_PAYMENTS_ID,
+        "patch_ids": ["KB600001"],
+        "target_kind": "Azure VM",
+        "operation": "install_patches",
+        "action_version": plan["action_version"],
+    }
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
     planner.repository.decisions.append(
-        plan=plan,
+        plan=stored_plan,
         decision="approved",
         approver="approver@example.com",
         reason="CAB approved after evidence review",
         scope={},
         action_version=plan["action_version"],
         expires_at=_future_expiry(),
+        execution_snapshot=snapshot,
     )
 
 
