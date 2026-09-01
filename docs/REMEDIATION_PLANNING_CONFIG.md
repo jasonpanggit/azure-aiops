@@ -81,6 +81,55 @@ Example:
 
 Malformed JSON, unknown policy conditions, duplicate identities, invalid thresholds, incomplete rollback metadata, or invalid effectiveness percentages fail closed.
 
+## Governed catalog and seeding
+
+The governed remediation catalog and approval policies live at
+`tests/fixtures/governed_remediation_catalog.json` in this repository. That
+file is the single source of truth for what actions the planner can propose;
+`remediation_planning_snapshot()` in `src/fabric/sync_service.py` reads only
+`silver/remediation_action_catalog` and `silver/remediation_approval_policies`
+from the lakehouse, so nothing is proposed anywhere until this content is
+seeded.
+
+Seed it into a lakehouse with:
+
+```bash
+.venv/bin/python scripts/seed_remediation_catalog.py --target <lakehouse-root-or-table-uri>
+```
+
+`--target` is required; the seeder refuses to run without an explicit target
+so it can never write to a default or production location by accident. Add
+`--dry-run` to see a summary of what would be written without writing
+anything, and `--catalog <path>` to seed from a different governed catalog
+file. The seeder validates the catalog through the real
+`RemediationOpportunityEngine` and `ApprovalEngine` before writing anything,
+and exits non-zero without writing if the content is invalid. It writes both
+tables in overwrite mode keyed on `action_id`/`policy_id`, so running it
+repeatedly against the same target converges on the same rows rather than
+accumulating duplicates.
+
+**Seeding a catalog action grants it no execution authority.** The seeder
+only writes declarative, human-reviewed description text into governed
+configuration tables; it performs no cloud calls, spawns no process, and
+nothing in this repository reads a seeded action as permission to run
+anything. Execution remains gated behind the existing approval workflow.
+
+### What evidence triggers each seeded action, and what approval it requires
+
+| Action | Triggering evidence | Approval roles required |
+| --- | --- | --- |
+| `critical-alert-containment` | `defender_active_critical_alert_count` >= 1 | Security Response Owner, plus production/mission-critical/high-execution-risk roles when those conditions match |
+| `attack-path-segmentation-review` | `defender_attack_path_membership_count` >= 1 | Security Response Owner, plus production/mission-critical/high-execution-risk roles when those conditions match |
+| `secure-score-control-remediation` | `defender_unhealthy_control_count` >= 1 or `defender_secure_score_gap` >= 10 | Security Response Owner, plus production/mission-critical/high-execution-risk roles when those conditions match |
+| `exploitable-finding-remediation` | `defender_exploitable_finding_count` >= 1 | Security Response Owner, plus production/mission-critical/high-execution-risk roles when those conditions match |
+| `controlled-patch-recovery` | `failed_update`, `patch_risk_score` >= 75, or `critical_vulnerability_count` >= 1 | Production change and mission-critical/high-execution-risk roles when those conditions match |
+| `configuration-baseline-recovery` | `configuration_drift_count` >= 1 or `policy_violation_count` >= 1 | Production change and mission-critical/high-execution-risk roles when those conditions match |
+
+Every action additionally requires a Stage Gate Approver for each of its
+declared `deployment_stages`. Each action's metadata marks whether it is a
+candidate for the Phase 3 low-risk allowlist; that marker is documentation
+only in this phase and enables no behavior.
+
 ## Sources
 
 Resource posture is assembled internally using canonical IDs from:

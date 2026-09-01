@@ -170,7 +170,7 @@ def test_seeder_writes_both_tables_with_round_tripping_json_columns(
     fixture = _load_fixture()
 
     catalog_rows = DeltaTable(
-        str(target / "silver_remediation_action_catalog")
+        str(target / "Tables" / "silver_remediation_action_catalog")
     ).to_pyarrow_table().to_pylist()
     assert len(catalog_rows) == len(fixture["action_catalog"])
     seeded_by_id = {row["action_id"]: row for row in catalog_rows}
@@ -186,7 +186,7 @@ def test_seeder_writes_both_tables_with_round_tripping_json_columns(
         assert json.loads(row["effectiveness_json"]) == action["effectiveness"]
 
     policy_rows = DeltaTable(
-        str(target / "silver_remediation_approval_policies")
+        str(target / "Tables" / "silver_remediation_approval_policies")
     ).to_pyarrow_table().to_pylist()
     assert len(policy_rows) == len(fixture["approval_policies"])
     seeded_policies_by_id = {row["policy_id"]: row for row in policy_rows}
@@ -205,13 +205,13 @@ def test_seeder_is_idempotent_across_repeated_runs(tmp_path: Path) -> None:
     first = _run_seeder("--target", str(target))
     assert first.returncode == 0
     first_catalog = DeltaTable(
-        str(target / "silver_remediation_action_catalog")
+        str(target / "Tables" / "silver_remediation_action_catalog")
     ).to_pyarrow_table().to_pylist()
 
     second = _run_seeder("--target", str(target))
     assert second.returncode == 0
     second_catalog = DeltaTable(
-        str(target / "silver_remediation_action_catalog")
+        str(target / "Tables" / "silver_remediation_action_catalog")
     ).to_pyarrow_table().to_pylist()
 
     assert len(first_catalog) == len(second_catalog)
