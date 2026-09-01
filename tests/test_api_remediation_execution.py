@@ -207,3 +207,55 @@ def test_execute_endpoints_are_mounted_in_the_running_app(tmp_path) -> None:
 
     assert "/api/v1/remediation/plans/{plan_id}/execute" in paths
     assert "/api/v1/remediation/executions/{execution_id}" in paths
+
+
+def test_execution_retry_and_list_endpoints_are_mounted(tmp_path) -> None:
+    client, _, _ = _client(tmp_path)
+    spec = client.get("/openapi.json").json()
+    paths = spec["paths"]
+
+    assert "/api/v1/remediation/executions/{execution_id}/retry" in paths
+    assert "/api/v1/remediation/plans/{plan_id}/executions" in paths
+
+
+def test_get_execution_response_includes_verification_and_history_fields(tmp_path) -> None:
+    client, planner, execution_store = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    _approve(planner, plan)
+
+    response = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute", headers=_auth()
+    )
+    assert response.status_code == 202, response.text
+    execution_id = response.json()["data"]["execution_id"]
+
+    poll = client.get(f"/api/v1/remediation/executions/{execution_id}", headers=_auth())
+    assert poll.status_code == 200, poll.text
+    execution = poll.json()["data"]
+    for field in (
+        "status",
+        "verified_state",
+        "failure_details",
+        "rollback_guidance",
+        "attempt_count",
+    ):
+        assert field in execution
+
+
+def test_retry_already_succeeded_execution_is_409(tmp_path) -> None:
+    client, planner, execution_store = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    _approve(planner, plan)
+
+    response = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute", headers=_auth()
+    )
+    execution_id = response.json()["data"]["execution_id"]
+    execution_store.update(execution_id, status="succeeded")
+
+    retry_response = client.post(
+        f"/api/v1/remediation/executions/{execution_id}/retry", headers=_auth()
+    )
+
+    assert retry_response.status_code == 409, retry_response.text
+    assert retry_response.json()["error"]["code"] == "conflict"
