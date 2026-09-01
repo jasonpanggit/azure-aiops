@@ -16,7 +16,7 @@ from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
 from storage.onelake_writer import OneLakeWriter
 from storage.partitioning import PartitioningPolicy
 
-from fabric_pipelines import change_pipeline, predictive_pipeline
+from fabric_pipelines import change_pipeline, incident_pipeline, predictive_pipeline
 
 from .data_quality import DataQualityValidator, QualityReport
 from .dataset_mapper import (
@@ -211,6 +211,12 @@ class FabricSyncService:
             )
             datasets["ontology_entities"].extend(predictive_pipeline_result.entities)
             datasets["ontology_relationships"].extend(predictive_pipeline_result.relationships)
+            incident_pipeline_result = incident_pipeline.run(
+                freshness=started_at,
+                **self._incident_pipeline_snapshot(),
+            )
+            datasets["ontology_entities"].extend(incident_pipeline_result.entities)
+            datasets["ontology_relationships"].extend(incident_pipeline_result.relationships)
             datasets = self._synchronize_ontology(datasets, source_run_id, started_at)
             if self.lifecycle_catalog:
                 datasets["silver_lifecycle_history"] = self._lifecycle_history_rows(
@@ -914,6 +920,35 @@ class FabricSyncService:
                 }
                 for row in read("silver", "incident_history")
             ],
+        }
+
+    def _incident_pipeline_snapshot(self) -> dict[str, Any]:
+        """Translate ``incident_intelligence_snapshot()``'s governed shape
+        into ``IncidentIntelligence.from_snapshot()``'s expected
+        ``resources`` shape (only ``resource_key`` is strictly required per
+        ``IncidentContextBuilder``). ``patch_findings``/``lifecycle_findings``
+        are empty here — those come from live cross-domain semantic-engine
+        posture in the on-demand query path (``runtime.py``), which this
+        batch sync flow does not have; this is additive forwarding of the
+        five keys ``incident_intelligence_snapshot()`` already produces, not
+        an invented cross-domain computation."""
+        snapshot = self.incident_intelligence_snapshot()
+        resources = [
+            {
+                "resource_key": str(row.get("resource_id") or ""),
+                "name": str(row.get("name") or ""),
+                "entity_type": str(row.get("entity_type") or "Resource"),
+            }
+            for row in snapshot["inventory"]
+        ]
+        return {
+            "resources": resources,
+            "incidents": snapshot["incidents"],
+            "alerts": snapshot["alerts"],
+            "resource_changes": snapshot["resource_changes"],
+            "patch_findings": [],
+            "lifecycle_findings": [],
+            "history": snapshot["history"],
         }
 
     def change_intelligence_snapshot(self) -> dict[str, Any]:
