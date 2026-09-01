@@ -193,6 +193,16 @@ def _map_http_error(error: httpx.HTTPStatusError) -> str:
     return f"HTTP_{error.response.status_code}"
 
 
+def _map_runtime_error(error: RuntimeError | TimeoutError) -> str:
+    if isinstance(error, TimeoutError):
+        return "OperationTimeout"
+    message = str(error)
+    for code in sorted(_BLOCKED_CODES):
+        if code in message:
+            return code
+    return "FabricOperationFailed"
+
+
 def _deploy_create(
     client: FabricClient,
     workspace_id: str,
@@ -247,8 +257,8 @@ def deploy_semantic_model(
         except httpx.HTTPStatusError as error:
             reason = _map_http_error(error)
             return _blocked_result(reason, item_id=item_id)
-        except (RuntimeError, TimeoutError):
-            return _blocked_result("FabricOperationFailed", item_id=item_id)
+        except (RuntimeError, TimeoutError) as error:
+            return _blocked_result(_map_runtime_error(error), item_id=item_id)
 
     try:
         created = _deploy_create(manager, workspace, semantic_name, definition)
@@ -257,8 +267,8 @@ def deploy_semantic_model(
     except httpx.HTTPStatusError as error:
         reason = _map_http_error(error)
         return _blocked_result(reason)
-    except (RuntimeError, TimeoutError):
-        return _blocked_result("FabricOperationFailed")
+    except (RuntimeError, TimeoutError) as error:
+        return _blocked_result(_map_runtime_error(error))
 
 
 __all__ = ["ITEM_TYPE", "build_semantic_model_definition", "deploy_semantic_model"]
