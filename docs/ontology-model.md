@@ -106,6 +106,7 @@ The generic `ontology_entities` and `ontology_relationships` tables remain canon
 - Remediation decision audit: `RemediationPlan --hasApprovalDecision--> ApprovalDecision`.
 - Remediation safety: `RemediationPlan --hasStep--> ExecutionStep`, `--hasRollbackPlan--> RollbackPlan`, and `--hasSimulation--> SimulationResult`.
 - Business risk reduction: `RemediationPlan --mitigatesRisk--> RiskAssessment` and `--protectsService--> BusinessService`.
+- Defender-targeted remediation intent: `RemediationPlan --addressesFinding--> DefenderAssessment`, `--addressesAlert--> SecurityAlert`, `--breaksAttackPath--> AttackPath`, and `--improvesControl--> SecureScoreControl`. These edges record intent to address specific Defender evidence, not outcome: a finding is not resolved until post-change evidence confirms it. Unified inventory remains the resource identity authority, so Defender and remediation join through the canonical resource ID, and the four Defender signal families keep separate meanings rather than being flattened into one risk count.
 - Blast radius of a grant: `RoleAssignment --definedBy--> RoleDefinition` (privilege check) combined with `RoleAssignment --scopedTo--> Resource` (reach), grouped by `principalId`.
 
 Traversals use canonical case-insensitive identities, active relationships only, cycle detection, and configured node/result limits. Agents consume the bounded Semantic Layer projection rather than these raw paths.

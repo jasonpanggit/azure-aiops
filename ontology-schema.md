@@ -326,6 +326,12 @@ Per-source assertions are preserved. A deterministic effective-edge view selects
 | `hasStep` | RemediationPlan → ExecutionStep | Plan includes an ordered proposed execution step. |
 | `hasRollbackPlan` | RemediationPlan → RollbackPlan | Plan has a rollback or compensation strategy. |
 | `hasSimulation` | RemediationPlan → SimulationResult | Plan has a bounded scenario simulation result. |
+| `addressesFinding` | RemediationPlan → DefenderAssessment | Plan records intent to address a Defender assessment; these edges record intent to address, and a finding is not resolved until post-change evidence confirms it. |
+| `addressesAlert` | RemediationPlan → SecurityAlert | Plan records intent to address a Defender alert; these edges record intent to address, and a finding is not resolved until post-change evidence confirms it. |
+| `breaksAttackPath` | RemediationPlan → AttackPath | Plan records intent to break a Defender attack path; these edges record intent to address, and a finding is not resolved until post-change evidence confirms it. |
+| `improvesControl` | RemediationPlan → SecureScoreControl | Plan records intent to improve a secure-score control; these edges record intent to address, and a finding is not resolved until post-change evidence confirms it. |
+
+Unified inventory remains the resource identity authority, so Defender and remediation join through the canonical resource ID. These four predicates keep separate meanings and are never flattened into a single risk count.
 
 ### Access-governance relationships
 

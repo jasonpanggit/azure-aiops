@@ -26,6 +26,7 @@ from .dataset_mapper import (
     ontology_entity_table,
     ontology_relationship_table,
     remediation_decision_ontology_rows,
+    remediation_plan_ontology_rows,
 )
 from .lakehouse_manager import LakehouseManager
 from .schema_registry import schema_for
@@ -71,6 +72,7 @@ class FabricSyncService:
         patch_policies: tuple[object, ...] = (),
         lifecycle_catalog: tuple[dict[str, Any], ...] = (),
         remediation_decision_reader=None,
+        remediation_plan_reader=None,
         rollback_sleep=time.sleep,
         clock=time.monotonic,
         sql_reader=None,
@@ -95,6 +97,7 @@ class FabricSyncService:
         self.patch_policies = patch_policies
         self.lifecycle_catalog = tuple(dict(row) for row in lifecycle_catalog)
         self.remediation_decision_reader = remediation_decision_reader
+        self.remediation_plan_reader = remediation_plan_reader
         self.rollback_sleep = rollback_sleep
         self.clock = clock
         # Optional read accelerator. When present, aggregate reads (freshness
@@ -196,6 +199,14 @@ class FabricSyncService:
                 )
                 datasets["ontology_entities"].extend(decision_entities)
                 datasets["ontology_relationships"].extend(decision_relationships)
+            if self.remediation_plan_reader is not None:
+                plan_entities, plan_relationships = remediation_plan_ontology_rows(
+                    self.remediation_plan_reader(),
+                    run_id,
+                    started_at,
+                )
+                datasets["ontology_entities"].extend(plan_entities)
+                datasets["ontology_relationships"].extend(plan_relationships)
             change_pipeline_result = change_pipeline.run(
                 freshness=started_at,
                 **self._change_pipeline_snapshot(),

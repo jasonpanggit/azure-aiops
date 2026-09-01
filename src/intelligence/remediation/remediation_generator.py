@@ -114,6 +114,7 @@ class RemediationGenerator:
             "title": str(action.get("title") or "Remediation plan")[:512],
             "status": "Draft - Approval Required",
             "resource": opportunity["resource"],
+            "resource_key": opportunity["_resource_key"],
             "application": opportunity["application"],
             "business_service": opportunity["business_service"],
             "environment": opportunity.get("environment", ""),
@@ -206,4 +207,3 @@ class RemediationGenerator:
             "detail": f"Estimated +{points} secure score point(s) from resolving {len(citations)} control gap(s).",
             "evidence_citations": [f"secure_score_control:{cid}" for cid in citation_ids],
         }
-

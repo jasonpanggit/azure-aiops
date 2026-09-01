@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from onboarding.network_normalize import NETWORK_ENTITY_TYPES
+from ontology.confidence import compute_confidence
 from ontology.entity_builder import PAAS_ENTITY_TYPES, EntityBuilder
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator
@@ -208,6 +209,10 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     ("RemediationPlan", "hasStep", "ExecutionStep"),
     ("RemediationPlan", "hasRollbackPlan", "RollbackPlan"),
     ("RemediationPlan", "hasSimulation", "SimulationResult"),
+    ("RemediationPlan", "addressesFinding", "DefenderAssessment"),
+    ("RemediationPlan", "addressesAlert", "SecurityAlert"),
+    ("RemediationPlan", "breaksAttackPath", "AttackPath"),
+    ("RemediationPlan", "improvesControl", "SecureScoreControl"),
     ("Prediction", "hasForecast", "Forecast"),
     ("Prediction", "hasTrend", "Trend"),
     ("Prediction", "accumulatesDebt", "OperationalDebt"),
@@ -582,6 +587,44 @@ def remediation_decision_ontology_rows(
                 ingestion_run_id,
                 str(decision.get("decided_at") or timestamp),
                 payload={"decision": decision.get("decision", "")},
+            )
+        )
+    return entities, relationships
+
+
+def remediation_plan_ontology_rows(
+    projection: dict[str, Any],
+    ingestion_run_id: str,
+    timestamp: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    entities = [
+        _remediation_ontology_entity(
+            row["entity_id"],
+            row["entity_type"],
+            row["name"],
+            row,
+            ingestion_run_id,
+            timestamp,
+        )
+        for row in projection.get("entities", [])
+    ]
+    relationships: list[dict[str, Any]] = []
+    for row in projection.get("relationships", []):
+        relationships.append(
+            _remediation_ontology_relationship(
+                str(row.get("subject_id") or ""),
+                str(row.get("relationship_type") or ""),
+                str(row.get("object_id") or ""),
+                ingestion_run_id,
+                timestamp,
+                payload={
+                    **({"payload": json.loads(str(row["payload_json"]))} if row.get("payload_json") else {}),
+                    "confidence": float(row.get("confidence") or compute_confidence("inventory")),
+                    "source": str(row.get("source") or "remediation-plan"),
+                },
+                object_type=str(row.get("object_type") or _remediation_object_type(str(row.get("relationship_type") or ""))),
+                confidence=float(row.get("confidence") or compute_confidence("inventory")),
+                source=str(row.get("source") or "remediation-plan"),
             )
         )
     return entities, relationships
@@ -1132,6 +1175,9 @@ def _remediation_ontology_relationship(
     timestamp: str,
     *,
     payload: dict[str, Any],
+    object_type: str = "ApprovalDecision",
+    confidence: float = 1.0,
+    source: str = "remediation-decision-store",
 ) -> dict[str, Any]:
     relationship_id = "remediation-rel://" + _version(
         {"subject_id": subject_id, "predicate": predicate, "object_id": object_id}
@@ -1147,9 +1193,9 @@ def _remediation_ontology_relationship(
         "subject_type": "RemediationPlan",
         "predicate": predicate,
         "object_id": object_id,
-        "object_type": "ApprovalDecision",
-        "confidence": 1.0,
-        "source": "remediation-decision-store",
+        "object_type": object_type,
+        "confidence": confidence,
+        "source": source,
         "payload_json": _canonical(payload),
         "lineage_json": _canonical({"source_entity_ids": [subject_id, object_id]}),
         "lifecycle_status": "active",
@@ -1157,6 +1203,22 @@ def _remediation_ontology_relationship(
         "retired_at": "",
         "ontology_version": "1",
     }
+
+
+def _remediation_object_type(predicate: str) -> str:
+    return {
+        "hasApprovalDecision": "ApprovalDecision",
+        "addressesFinding": "DefenderAssessment",
+        "addressesAlert": "SecurityAlert",
+        "breaksAttackPath": "AttackPath",
+        "improvesControl": "SecureScoreControl",
+        "requiresApproval": "ApprovalRequirement",
+        "hasStep": "ExecutionStep",
+        "hasRollbackPlan": "RollbackPlan",
+        "hasSimulation": "SimulationResult",
+        "mitigatesRisk": "RiskAssessment",
+        "protectsService": "BusinessService",
+    }.get(predicate, "ApprovalDecision")
 
 
 def _version(value: Any) -> str:

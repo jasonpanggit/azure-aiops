@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 from typing import Any
+
+from ontology.confidence import compute_confidence
 
 from .approval_decisions import RemediationDecisionStore, RevisionedDocumentStore
 
@@ -50,6 +53,7 @@ class PlanRepository:
     def ontology_projection(self) -> dict[str, Any]:
         entities: list[dict[str, Any]] = []
         relationships: list[dict[str, Any]] = []
+        pending_relationships: list[dict[str, Any]] = []
         for plan in self._plans:
             plan_id = plan["plan_id"]
             entities.append(self._entity(plan_id, "RemediationPlan", plan["title"]))
@@ -98,6 +102,12 @@ class PlanRepository:
                     self._relationship(plan_id, "hasSimulation", simulation_id),
                 ]
             )
+            relationships.extend(
+                self._defender_relationships_for_plan(
+                    plan,
+                    pending_relationships=pending_relationships,
+                )
+            )
             for decision in self.decisions.list(plan_id):
                 decision_id = decision["decision_id"]
                 entities.append(
@@ -118,8 +128,85 @@ class PlanRepository:
                 {row["entity_id"]: row for row in entities}.values()
             ),
             "relationships": relationships,
+            "pending_relationships": pending_relationships,
             "read_only": True,
         }
+
+    def _defender_relationships_for_plan(
+        self,
+        plan: dict[str, Any],
+        *,
+        pending_relationships: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        plan_id = str(plan.get("plan_id") or "")
+        resource_id = str(
+            plan.get("resource", {}).get("id")
+            or plan.get("resource", {}).get("resource_id")
+            or plan.get("resource_key")
+            or next(
+                (
+                    resource.get("resource_key")
+                    for resource in plan.get("dependencies", {}).get("resources", [])
+                    if resource.get("resource_key")
+                ),
+                "",
+            )
+            or next(
+                (
+                    citation.get("resource_id")
+                    for citation in plan.get("evidence_citations") or []
+                    if citation.get("resource_id")
+                ),
+                "",
+            )
+            or ""
+        ).strip().casefold()
+        if not plan_id:
+            return []
+        relationships: list[dict[str, Any]] = []
+        for citation in plan.get("evidence_citations") or []:
+            predicate_meta = self._predicate_for_citation(citation)
+            if predicate_meta is None:
+                continue
+            predicate, object_type = predicate_meta
+            object_id = str(citation.get("source_id") or "").strip()
+            if not object_id or not resource_id:
+                pending_relationships.append(
+                    {
+                        "plan_id": plan_id,
+                        "predicate": predicate,
+                        "object_type": object_type,
+                        "citation": copy.deepcopy(citation),
+                        "reason": "missing canonical resource id" if not resource_id else "missing citation source id",
+                    }
+                )
+                continue
+            relationships.append(
+                self._relationship(
+                    plan_id,
+                    predicate,
+                    object_id,
+                    object_type=object_type,
+                    payload={
+                        "resource_id": resource_id,
+                        "source_type": str(citation.get("source_type") or ""),
+                        "source_id": object_id,
+                    },
+                    source="remediation-plan-citation",
+                    confidence=compute_confidence("inventory", corroborated=False),
+                )
+            )
+        return relationships
+
+    @staticmethod
+    def _predicate_for_citation(citation: dict[str, Any]) -> tuple[str, str] | None:
+        source_type = str(citation.get("source_type") or "").strip().casefold()
+        return {
+            "assessment": ("addressesFinding", "DefenderAssessment"),
+            "alert": ("addressesAlert", "SecurityAlert"),
+            "attack_path": ("breaksAttackPath", "AttackPath"),
+            "secure_score_control": ("improvesControl", "SecureScoreControl"),
+        }.get(source_type)
 
     @staticmethod
     def _entity(identity: str, entity_type: str, name: str) -> dict[str, str]:
@@ -131,17 +218,33 @@ class PlanRepository:
         }
 
     @staticmethod
-    def _relationship(subject: str, relationship_type: str, object_id: str) -> dict[str, str]:
+    def _relationship(
+        subject: str,
+        relationship_type: str,
+        object_id: str,
+        *,
+        object_type: str = "",
+        payload: dict[str, Any] | None = None,
+        source: str = "remediation-plan",
+        confidence: float = 1.0,
+    ) -> dict[str, Any]:
         identity = hashlib.sha256(
             f"{subject}|{relationship_type}|{object_id}".encode()
         ).hexdigest()[:24]
-        return {
+        row = {
             "relationship_id": f"remediation-rel:{identity}",
             "subject_id": subject,
             "relationship_type": relationship_type,
             "object_id": object_id,
             "lifecycle_status": "draft",
+            "confidence": confidence,
+            "source": source,
         }
+        if object_type:
+            row["object_type"] = object_type
+        if payload is not None:
+            row["payload_json"] = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return row
 
     @staticmethod
     def _safe_key(value: Any) -> str:
