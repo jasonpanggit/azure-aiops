@@ -1,8 +1,8 @@
 ---
-status: verifying
+status: resolved
 trigger: "Topology staged rollout verification failed: topology_entities and topology_edges were not present_known or active after enabling topology_pipeline and running the Fabric sync."
 created: 2026-09-01T18:10:35+08:00
-updated: 2026-09-01T15:18:22Z
+updated: 2026-09-01T15:32:39Z
 ---
 
 # Debug Session: Fabric Topology Rollout
@@ -17,24 +17,10 @@ updated: 2026-09-01T15:18:22Z
 
 ## Current Focus
 
-reasoning_checkpoint:
-  hypothesis: "Topology rollout fails because three required mechanisms are missing together: FabricRuntimeConfig ignores `topology_pipeline.enabled` (so sync never runs topology derivation), schema registry omits `topology_entities`/`topology_edges` (so validator cannot classify them as present_known), and sync never writes publication-manifest entries for topology tables (so disposition remains unknown instead of active)."
-  confirming_evidence:
-    - "RED test fails with `AttributeError: FabricRuntimeConfig has no attribute topology_pipeline`."
-    - "RED test fails with `TypeError: FabricSyncService.__init__() got unexpected keyword argument 'topology_enabled'`."
-    - "RED test fails because `topology_entities` and `topology_edges` are absent from `fabric.schema_registry.SCHEMAS`."
-    - "Code search found no sync/runtime path writing `metadata_publication_manifest`; topology table disposition cannot become active."
-  falsification_test: "If config/runtime wiring, schema registration, and manifest upsert are implemented, then targeted RED tests pass and sync creates topology tables plus active manifest rows for `topology_entities` and `topology_edges`."
-  fix_rationale: "Adding explicit topology pipeline config parsing + sync wiring enables topology table generation; adding topology schemas makes validator classify them as known; upserting publication-manifest entries to active resolves the active-disposition requirement."
-  blind_spots: "Live Fabric workspace behavior may still differ due source_data_root path mismatch (`.hermes-local` vs `.aiops-local`) and external rollout checker logic not present in repo."
-  candidate_causes:
-    - "code: missing topology/ontology pipeline fields in FabricRuntimeConfig and missing topology execution path in FabricSyncService"
-    - "config: `source_data_root` currently points to a non-existent local path in this workspace snapshot"
-    - "environment: live rollout checker and Fabric workspace state may enforce additional constraints not represented in unit tests"
-    - "data: topology derivation depends on network entity families being present in source snapshot"
-  and_gate: "yes — `not present_known` requires schema-registry omission, while `not active` requires absent manifest writes, and missing table population requires inert topology runtime wiring."
-
-- next_action: inspect staged validator JSON output to explicitly confirm `topology_entities`/`topology_edges` are both present_known and active after the live sync run
+hypothesis: "Resolved: topology rollout blocker required a coordinated AND-gate fix across config/runtime/sync wiring, schema registration, governed topology envelope mapping, and topology manifest active upserts."
+test: "Re-confirm focused topology regression trio on current branch and confirm human verification in real rollout workflow."
+expecting: "Focused topology tests pass and user confirms issue is fixed end-to-end."
+next_action: "Archive resolved session, update knowledge base, and commit only debug documentation artifacts."
 
 ## Evidence
 
@@ -86,3 +72,16 @@ reasoning_checkpoint:
 - Guardrail signal #5 reapply leg confirmed: after reapplying stashed fixset, targeted trio rerun returned `... [100%]` exit 0 again, proving fix presence restores expected topology behavior.
 - Temporary rollout config `.planning/debug/tmp-fabric-topology-rollout.yaml` created from `fabric.config.yaml` with rollout-safe overrides applied: `topology_pipeline.enabled=true`, `ontology_pipeline.enabled=false`, and `source_data_root=./.aiops-local/connections/local-spn`.
 - Staged sync failed before execution because temporary config path was resolved relative to `.planning/debug` (config file directory), producing missing snapshot path `/Users/jasonmba/workspace/azure-aiops/.planning/debug/.aiops-local/...`; confirms local rollout config must use absolute `source_data_root` when staged config lives outside repo root.
+- Temporary rollout config was corrected to absolute `source_data_root: /Users/jasonmba/workspace/azure-aiops/.aiops-local/connections/local-spn`, preserving staged-only topology enablement (`topology_pipeline.enabled=true`, `ontology_pipeline.enabled=false`) without modifying baseline `fabric.config.yaml`.
+- Latest staged validator artifact `.planning/debug/tmp-topology-validate-report.json` (`mtime=2026-09-01T23:17:27Z`) reports `present_total=431`, `present_known_count=61`, `expected_missing_undispositioned_count=13`, `topology_entities ∈ present_known`, `topology_edges ∈ present_known`, and both dispositions set to `active`.
+- Baseline safety check confirms `fabric.config.yaml` remains `fabric.topology_pipeline.enabled=False` and `fabric.ontology_pipeline.enabled=False` after staged validation.
+- Re-confirmed focused topology regression trio on current branch passed green: `.venv/bin/python -m pytest -q tests/test_fabric_client.py::test_fabric_runtime_config_resolves_local_paths tests/test_incremental_sync.py::test_sync_with_topology_flag_publishes_topology_tables tests/test_topology_pipeline.py::test_validator_known_table_set_includes_topology_contract_tables` returned `... [100%]` exit 0.
+- Persistence check confirmed topology wiring remains present in current branch code (`config.py`, `runtime.py`, `sync_service.py`, `schema_registry.py`) via targeted `rg` probe for `topology_pipeline`, `topology_enabled`, `topology_entities`, and `topology_edges`.
+- Human verification checkpoint response received: "Confirmed fixed."
+
+## Resolution
+
+- **root_cause:** Topology rollout required an AND-gate fix across three missing mechanisms: runtime/config never enabled topology sync, schema registry omitted topology tables from known set, and sync lacked publication-manifest active upserts; additionally topology rows had to be mapped into governed envelope shape to satisfy data-quality validation.
+- **fix:** Added topology/ontology pipeline flag parsing in config, passed `topology_enabled` through runtime into sync service, derived and emitted governed topology rows (`topology_entities`, `topology_edges`) during sync, upserted active publication-manifest records for topology tables, and registered governed topology schemas in schema registry.
+- **verification:** Guardrail signals passed (target tests, adjacent suites, no-op/deletion, revert/reconfirm), mutation unavailable (`STRYKER_CONFIG_MISSING`), and staged validator report confirms both topology tables are present_known and active while baseline rollout flags stayed false.
+- **files_changed:** `src/fabric/config.py`, `src/fabric/runtime.py`, `src/fabric/sync_service.py`, `src/fabric/schema_registry.py`, `tests/test_fabric_client.py`, `tests/test_incremental_sync.py`, `tests/test_topology_pipeline.py`
