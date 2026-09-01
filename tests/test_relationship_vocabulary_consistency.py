@@ -11,9 +11,12 @@ of silently drifting.
 
 from __future__ import annotations
 
+import pytest
+
 from fabric.dataset_mapper import ONTOLOGY_ENTITY_TYPES, ONTOLOGY_RELATIONSHIP_TYPES
 from onboarding.ontology_metadata import RELATIONSHIP_TYPES
 from ontology.entity_builder import PAAS_ENTITY_TYPES
+from ontology.ontology_publisher import OntologyPublisher
 
 
 def test_onboarding_predicates_are_subset_of_fabric_vocabulary() -> None:
@@ -59,3 +62,47 @@ def test_modules_remain_independently_importable() -> None:
 
     module = importlib.import_module("onboarding.ontology_metadata")
     assert hasattr(module, "RELATIONSHIP_TYPES")
+
+
+def test_publish_never_resolves_when_build_definition_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`publish()` must validate before touching Fabric — preflight ordering.
+
+    `OntologyPublisher.publish()` calls `build_definition()` before
+    `manager.resolve()` so a bad ontology/relationship mapping never reaches
+    a live Fabric item lookup. Monkeypatch `manager.resolve` to fail loudly
+    if invoked, then assert it is never called when `build_definition` raises
+    `ValueError` for an invalid (empty) entity type mapping.
+    """
+
+    class _FakeManager:
+        def resolve(self, **kwargs: object) -> dict[str, object] | None:
+            raise AssertionError("unexpected call")
+
+    manager = _FakeManager()
+    resolve_calls: list[dict[str, object]] = []
+
+    def _fail_if_called(**kwargs: object) -> dict[str, object] | None:
+        resolve_calls.append(kwargs)
+        raise AssertionError(
+            "manager.resolve() must not be called when build_definition() raises"
+        )
+
+    monkeypatch.setattr(manager, "resolve", _fail_if_called)
+
+    publisher = OntologyPublisher(
+        manager,
+        workspace_id="workspace-1",
+        lakehouse_id="lakehouse-1",
+    )
+
+    with pytest.raises(ValueError, match="non-empty mapping"):
+        publisher.publish(
+            ontology_id="ontology-1",
+            ontology_name="AIOps Operational Context Graph",
+            entity_types={},
+            relationships={},
+        )
+
+    assert resolve_calls == []

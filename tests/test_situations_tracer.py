@@ -164,12 +164,31 @@ def test_normalizer_production_graph_contains_all_six_signal_families() -> None:
         "policy",
         "vulnerability",
     }
-    assert {row["source_family"] for row in graph.source_status} == {
+    # source_status additionally carries per-signal granular Defender family
+    # rows (defender_assessments, defender_subassessments, defender_alerts,
+    # defender_attack_paths, defender_secure_scores,
+    # defender_secure_score_controls) alongside the six canonical families —
+    # the normalizer emits status for every granular Defender signal, not
+    # just the coarse "defender" bucket used for evidence records.
+    source_status_families = {row["source_family"] for row in graph.source_status}
+    non_defender_families = {
         "arg_activity_log",
         "monitor",
         "service_health",
-        "defender",
         "policy",
         "vulnerability",
+    }
+    assert non_defender_families <= source_status_families
+    defender_families = {
+        family for family in source_status_families if family.startswith("defender")
+    }
+    assert defender_families == {
+        "defender",
+        "defender_assessments",
+        "defender_subassessments",
+        "defender_alerts",
+        "defender_attack_paths",
+        "defender_secure_scores",
+        "defender_secure_score_controls",
     }
     assert all(row["run_id"] == "six-family-run" for row in graph.evidence)
