@@ -21,8 +21,10 @@ Turn ingested Microsoft Defender insights into a unified, evidence-backed remedi
 **Recommendation and planning**
 - Match Defender evidence only to typed entries in the governed remediation action catalog; Defender prose may inform rationale but must not become executable instructions by itself.
 - Show which alerts, assessments, CVEs, attack paths, and secure-score controls each option addresses.
-- Generate plans with objective, scope, exact targets, prerequisites, dependency/blast-radius analysis, expected risk reduction, secure-score improvement, rollback, validation, approvals, and uncertainty.
-- Keep observed facts, derived inference, and unknowns visibly distinct; return an explicit no-safe-action or escalation result when catalog coverage or evidence is insufficient.
+- Treat remediation as business decision support, not finding closure: correlate technical evidence with applications, business services, dependencies, criticality, ownership, customer/SLA exposure, downtime, operational continuity, and change risk.
+- Compare acting now, scheduling, deferring, not-applicable/no-change, and escalation outcomes with explicit pros, cons, cost of inaction, residual risk, effort, reversibility, and business impact.
+- Generate plans with objective, scope, exact targets, prerequisites, dependency/blast-radius analysis, evidenced business impact, urgency rationale, expected risk reduction, secure-score improvement, rollback, validation, approvals, and uncertainty.
+- Keep observed facts, derived inference, and unknowns visibly distinct; return an explicit defer, not-applicable, no-safe-action, or escalation result when that is the evidence-backed outcome.
 
 **Agent behavior**
 - Extend the Remediation specialist with governed Defender evidence and remediation planning tools.
@@ -68,7 +70,8 @@ Turn ingested Microsoft Defender insights into a unified, evidence-backed remedi
 
 ### Specific Ideas (non-binding guidance)
 - Organize the page around Triage, Recommend, Approve, and Remediate/Verify lifecycle stages.
-- Prioritize actions that break the most critical attack paths or consolidate many Defender findings.
+- Prioritize actions that protect critical business services or break evidenced high-impact attack paths; raw finding count is never the primary objective.
+- Make "Why now?", "Why later?", "Why not applicable?", "Pros", "Cons", and "Cost of inaction" first-class decision fields.
 - Support questions such as "Which single action breaks the most critical attack paths?" and "Did the approved remediation clear the Defender assessment?"
 - Phase 2 delivers the first three stages and prepares, but does not activate, the final execution stage.
 
