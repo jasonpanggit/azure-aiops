@@ -29,8 +29,8 @@ from .network_normalize import (
     normalize_private_endpoint,
     normalize_route_table,
     normalize_vnet,
-    private_endpoint_dns_zone_ids,
     private_dns_link_target,
+    private_endpoint_dns_zone_ids,
 )
 
 #: Gateway and load-balancer families share one entity bucket each; the
@@ -720,6 +720,10 @@ class Normalizer:
                     dns_links.append((zone_id, vnet_id))
                 continue
             dns_zones[zone["id"]] = zone
+            dns_links.extend(
+                (zone["id"], vnet_id)
+                for vnet_id in zone["linkedVnetIds"]
+            )
             containment(row, zone)
         for zone_id, vnet_id in dns_links:
             zone = dns_zones.get(zone_id)

@@ -131,23 +131,31 @@ def test_raw_arg_rows_build_all_reported_network_links() -> None:
 
     expected_attachments = {
         (
-            "/subscriptions/sub-a/resourcegroups/rg/providers/"
-            "microsoft.network/azurefirewalls/fw",
+            (
+                "/subscriptions/sub-a/resourcegroups/rg/providers/"
+                "microsoft.network/azurefirewalls/fw"
+            ),
             _subnet_id("AzureFirewallSubnet").casefold(),
         ),
         (
-            "/subscriptions/sub-a/resourcegroups/rg/providers/"
-            "microsoft.network/bastionhosts/bastion",
+            (
+                "/subscriptions/sub-a/resourcegroups/rg/providers/"
+                "microsoft.network/bastionhosts/bastion"
+            ),
             _subnet_id("AzureBastionSubnet").casefold(),
         ),
         (
-            "/subscriptions/sub-a/resourcegroups/rg/providers/"
-            "microsoft.network/networkinterfaces/nic",
+            (
+                "/subscriptions/sub-a/resourcegroups/rg/providers/"
+                "microsoft.network/networkinterfaces/nic"
+            ),
             _subnet_id("workloads").casefold(),
         ),
         (
-            "/subscriptions/sub-a/resourcegroups/rg/providers/"
-            "microsoft.network/privateendpoints/pe",
+            (
+                "/subscriptions/sub-a/resourcegroups/rg/providers/"
+                "microsoft.network/privateendpoints/pe"
+            ),
             _subnet_id("private-endpoints").casefold(),
         ),
     }

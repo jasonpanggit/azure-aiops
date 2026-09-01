@@ -1,9 +1,9 @@
 ---
 slug: network-topology-links
-status: fixing
+status: resolved
 trigger: "Network topology relationships regressed after recent topology/Fabric/ontology changes"
 created: "2026-09-01T23:06:57.137+08:00"
-updated: "2026-09-02T00:32:00+08:00"
+updated: "2026-09-01T23:35:00+08:00"
 goal: find_and_fix
 ---
 
@@ -34,7 +34,7 @@ reasoning_checkpoint:
     - "config/query: NETWORK_RESOURCE_TYPES excludes privateEndpoints/privateDnsZoneGroups"
     - "environment: stale deployed/Fabric data could preserve the screenshot after local fixes, but current local canonical projections disprove an in-repo downstream loss"
   and_gate: "yes — the reported bundle spans independent outcomes: raw scoped graph attachments, Fabric DNS links, endpoint DNS membership, and standalone-zone findings each require its corresponding cause to be fixed."
-next_action: Inspect Fabric topology canonicalization and edge derivation, then minimally preserve linkedVnetIds and rerun only the canonical DNS regression.
+next_action: Complete. Local repository fix is implemented and verified; deployment/live browser refresh was not performed by this debug task.
 scope_check: Explicit maintenance interruption is recorded; preserve active Phase 03 remediation UI and Fabric work, do not commit or push.
 bug_class: bohrbug
 candidate_causes:
@@ -248,6 +248,91 @@ and_gate: "unknown — several resource families may share one normalization fai
   found: "test_private_endpoint_dns_zone_group_child_enriches_parent passes; the parent endpoint has the normalized child zone ID and the child is not emitted as a duplicate endpoint."
   implication: "The missing child query/merge boundary is repaired; proceed to Fabric's independent canonical PrivateDnsZone omission."
 
+- timestamp: "2026-09-02T00:35:00+08:00"
+  checked: "Fabric canonical Private DNS regression"
+  found: "test_fabric_derivation_preserves_canonical_dns_links passes after normalize_private_dns_zone preserves linkedVnetIds and both onboarding/Fabric derivation enqueue those canonical links."
+  implication: "Fabric now emits resolvesFor from both raw child-link and canonical parent shapes; proceed to zone-only gap analysis."
+
+- timestamp: "2026-09-02T00:38:00+08:00"
+  checked: "Standalone Private DNS zone gap and linked boundary"
+  found: "Both boundary tests pass: an unlinked zone yields one zone-targeted dns_dependency_gap, while a linked zone yields none."
+  implication: "Zone-only gap analysis is repaired without false-positive findings for linked zones."
+
+- timestamp: "2026-09-02T00:40:00+08:00"
+  checked: "Combined focused regression file"
+  found: "All five tests pass together."
+  implication: "The four defect boundaries and linked-zone neighbor are green; inspect adjacent pipeline contracts before broader verification."
+
+- timestamp: "2026-09-02T00:43:00+08:00"
+  checked: "Fabric topology input path"
+  found: "Fabric sync reads canonical PrivateEndpoint.jsonl into network_private_endpoints, so endpoint zone-group children are merged upstream by Normalizer and are not expected as direct derive_edges inputs."
+  implication: "No duplicate child merge is needed in topology_pipeline; keep the Fabric change limited to canonical linkedVnetIds."
+
+- timestamp: "2026-09-02T00:45:00+08:00"
+  checked: "Working-tree status and query catalog"
+  found: "Only four production files appear modified even though service/runtime/query were edited, and query_catalog's endpoint tuple is malformed on one line."
+  implication: "Those paths may carry assume-unchanged/skip-worktree flags or pre-existing hidden edits; inspect index state before further verification."
+
+- timestamp: "2026-09-02T00:48:00+08:00"
+  checked: "Git index flags and object hashes"
+  found: "All inspected paths are ordinary tracked files and their local/index/HEAD object hashes match; HEAD now contains the raw-ARG changes, regression test, and malformed query tuple. This occurred without any agent-issued commit command."
+  implication: "Treat concurrent/external HEAD advancement as the new baseline, do not reset it, and make the formatting correction as a normal working-tree edit."
+
+- timestamp: "2026-09-02T00:51:00+08:00"
+  checked: "Focused Ruff checks"
+  found: "Lint reports six local issues: unnecessary Z replacement, one import-order swap, and four unparenthesized split test literals. Format check also reports broad pre-existing formatting drift, especially in runtime.py."
+  implication: "Fix only local lint findings; do not mass-format large files or protected unrelated code."
+
+- timestamp: "2026-09-02T00:54:00+08:00"
+  checked: "Formatter diagnostic inventory"
+  found: "Ruff format would rewrite all eight inspected files, including very large pre-existing sections unrelated to this fix."
+  implication: "A mass-format is not a minimal or safe fix; rely on zero focused lint findings and diff review for changed-line style."
+
+- timestamp: "2026-09-02T00:56:00+08:00"
+  checked: "Focused lint and regression rerun"
+  found: "Ruff lint passes all eight focused paths and all five focused regressions remain green."
+  implication: "Proceed to adjacent regression suites and frontend/API integration checks."
+
+- timestamp: "2026-09-02T00:59:00+08:00"
+  checked: "Adjacent Python network/onboarding/query/Fabric suites"
+  found: "The combined adjacent suite completed at 100% with zero failures."
+  implication: "Existing topology, analysis, ontology, query-catalog, and Fabric-pipeline behavior remains compatible."
+
+- timestamp: "2026-09-02T01:03:00+08:00"
+  checked: "API runtime and frontend graph integration"
+  found: "tests/test_api_runtime.py passes (18 tests) and web/src/lib/network-graph.test.ts passes all 53 tests. Existing frontend tests explicitly preserve arbitrary resource relationships and case-insensitive ARM endpoint matching."
+  implication: "The API provider remains healthy and no frontend adapter change is required for the restored backend relationships."
+
+- timestamp: "2026-09-02T01:14:00+08:00"
+  checked: "Complete Python suite and frontend type check"
+  found: "Frontend npx tsc --noEmit passes. Full Python suite reaches 100% with five failures in unrelated MCP catalog, remediation fixture/projection, DefenderAssessment incremental state, and source-status tests; the focused import-graph suites remain green and none of these failures exercise the network fix. Several directly reflect the concurrent Defender/remediation commit."
+  implication: "Record the full-suite baseline failures but treat the adjacent-test guardrail as passing based on the network/onboarding/API/Fabric suites; proceed to isolated revert-and-reconfirm."
+
+- timestamp: "2026-09-02T01:19:00+08:00"
+  checked: "Guardrail revert in detached HEAD^ worktree"
+  found: "The agent-authored regression test returns exactly four failures and one pass: from_arg_rows absent, child zone IDs empty, canonical Fabric resolvesFor absent, and standalone-zone gaps empty."
+  implication: "The original defect boundaries return when the complete fix is absent, without modifying or stashing the active protected working tree."
+
+- timestamp: "2026-09-02T01:20:00+08:00"
+  checked: "Guardrail reapply confirmation in active worktree"
+  found: "The same focused regression test passes all five cases in the active fixed tree."
+  implication: "Revert-and-reconfirm passes: bug_returned_on_revert=true and fixed_on_reapply=true."
+
+- timestamp: "2026-09-02T01:24:00+08:00"
+  checked: "Fix-acceptance no-op/deletion and mutation-tool signals"
+  found: "The complete production diff is behavior-adding (171 additions, 12 replacements/deletions across target files), has no whitespace errors, and contains no short-circuit or assertion weakening. No Stryker configuration exists and the fix is Python, so the prescribed mutation signal is explicitly skipped."
+  implication: "No-op/deletion passes; mutation_check is skipped per the guardrail degradation rule; all other applicable signals pass."
+
+- timestamp: "2026-09-01T23:34:00+08:00"
+  checked: "Autonomous resume verification"
+  found: "Focused topology backend guardrails pass, frontend graph/topology tests pass 64/64, TypeScript no-emit passes, Ruff focused lint passes, and git diff whitespace checks pass."
+  implication: "The repository fix is complete for the reported topology relationship and Private DNS gap behavior; the remaining live-network refresh is an operational deployment/sync step outside this local code task."
+
+- timestamp: "2026-09-01T23:34:00+08:00"
+  checked: "Full Python suite baseline"
+  found: "Full Python suite still has five unrelated failures in MCP catalog ordering, remediation dependency/projection fixtures, DefenderAssessment incremental state, and source-status handling."
+  implication: "These failures are outside the topology relationship fix path and do not block this maintenance fix; they remain separate existing work."
+
 ## Eliminated
 
 - hypothesis: "The shared normalizers omit the firewall, Bastion, NIC, private endpoint, or Private DNS attachment references in the current synchronized snapshot."
@@ -269,7 +354,53 @@ root_cause:
   - "Fabric topology derivation re-normalizes canonical PrivateDnsZone rows as raw parents, resets linkedVnetIds, and only emits resolvesFor from absent virtualNetworkLinks child rows."
   - "Private endpoint privateDnsZoneGroups child resources are excluded from the network query contract and are not merged into parent endpoint privateDnsZoneIds."
   - "The private-DNS gap rule only iterates private endpoints, so a standalone PrivateDnsZone with no VNet links can never produce an inspection-gap finding."
-fix: not applied
-verification: not run
-files_changed: []
+fix:
+  - "Added a raw-ARG service constructor that runs the shared Normalizer, adapts canonical relationship keys, and is used by scoped hybrid network requests."
+  - "Queried and merged privateEndpoints/privateDnsZoneGroups child resources into parent endpoint DNS zone IDs."
+  - "Preserved canonical PrivateDnsZone.linkedVnetIds and emitted resolvesFor in onboarding and Fabric derivation."
+  - "Added a zone-level dns_dependency_gap for enabled-policy Private DNS zones with no VNet links."
+verification:
+  target_test:
+    result: pass
+    suite: "tests/test_network_topology_links_regression.py — 5 passed"
+  mutation_check:
+    result: skipped
+    reason_if_skipped: "No Stryker configuration is present and the changed implementation is Python; isolated revert-and-reconfirm covered all four agent-authored defect assertions."
+    mutant_killed: null
+  no_op_deletion:
+    result: pass
+    deletion_justified_by_rca: false
+    evidence: "Production changes add canonicalization, child merge, relationship derivation, and gap creation; no behavior-deleting shortcut or weakened assertion."
+  adjacent_tests:
+    result: pass
+    suites_run:
+      - "tests/test_network_topology.py"
+      - "tests/test_network_analysis.py"
+      - "tests/test_network_semantic.py"
+      - "tests/test_network_ontology.py"
+      - "tests/test_queries.py"
+      - "tests/test_topology_pipeline.py"
+      - "tests/test_api_runtime.py — 18 passed"
+      - "web/src/lib/network-graph.test.ts — 53 passed"
+    note: "The full Python suite reached 100% with five unrelated failures in MCP/remediation/Defender/source-status areas introduced or exposed by concurrent work; no adjacent network suite failed."
+  revert_and_reconfirm:
+    result: pass
+    bug_returned_on_revert: true
+    fixed_on_reapply: true
+    evidence: "Detached HEAD^ worktree produced 4 failed/1 passed; active tree produced 5 passed."
+  additional_checks:
+    ruff: pass
+    typescript_no_emit: pass
+    diff_check: pass
+    formatter: "not applied — Ruff would mass-format all inspected files due pre-existing baseline drift"
+  guardrail_verdict: accepted
+files_changed:
+  - src/network/service.py
+  - src/api/runtime.py
+  - src/onboarding/query_catalog.py
+  - src/onboarding/network_normalize.py
+  - src/onboarding/graph_normalize.py
+  - src/fabric_pipelines/topology_pipeline.py
+  - src/network/gaps.py
+  - tests/test_network_topology_links_regression.py
 oracle_type: "specified — all Azure subnet/VNet attachments in the report must produce graph edges, and every enabled-policy PrivateDnsZone without a VNet link must produce a gap."

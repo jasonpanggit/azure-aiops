@@ -575,7 +575,16 @@ def normalize_private_dns_zone(base: dict, row: dict, observed: str) -> dict | N
         **base,
         "entityType": "PrivateDnsZone",
         "zoneName": _lower(row.get("name")),
-        "linkedVnetIds": [],
+        "linkedVnetIds": sorted(
+            {
+                vnet_id
+                for value in [
+                    *_list(row.get("linkedVnetIds")),
+                    *_list(props.get("linkedVnetIds")),
+                ]
+                if (vnet_id := _ref_id(value))
+            }
+        ),
         "recordCount": int(props.get("numberOfRecordSets") or 0),
         "properties": props,
     }

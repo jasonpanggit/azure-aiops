@@ -178,6 +178,10 @@ def derive_edges(
                 dns_links.append((zone_id, vnet_id))
             continue
         dns_zones[zone["id"]] = zone
+        dns_links.extend(
+            (zone["id"], vnet_id)
+            for vnet_id in zone["linkedVnetIds"]
+        )
         containment(row, zone)
     for zone_id, vnet_id in dns_links:
         zone = dns_zones.get(zone_id)

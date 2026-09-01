@@ -210,9 +210,7 @@ class NetworkIntelligenceService:
         timestamp = datetime.now(UTC)
         if observed_at.strip():
             try:
-                timestamp = datetime.fromisoformat(
-                    observed_at.strip().replace("Z", "+00:00")
-                )
+                timestamp = datetime.fromisoformat(observed_at.strip())
             except ValueError:
                 pass
         graph = Normalizer().normalize(payload, timestamp, run_id="live-network")

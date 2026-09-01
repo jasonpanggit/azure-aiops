@@ -609,6 +609,38 @@ class NetworkGapAnalyzer:
         zones = {zone.resource_id: zone for zone in self.snapshot.private_dns_zones}
         gaps: list[NetworkGap] = []
 
+        for zone in zones.values():
+            if zone.linked_vnet_ids:
+                continue
+            gaps.append(
+                NetworkGap(
+                    gap_id=_gap_id("dns_dependency_gap", zone.resource_id),
+                    category="dns_dependency_gap",
+                    severity="high",
+                    title="Private DNS zone has no virtual network links",
+                    detail=(
+                        f"Private DNS zone '{zone.zone_name or zone.name}' is not linked "
+                        "to any VNet, so workloads cannot use it for Private Link name "
+                        "resolution."
+                    ),
+                    resource_id=zone.resource_id,
+                    resource_name=zone.name,
+                    resource_type="PrivateDnsZone",
+                    evidence={
+                        "zone_name": zone.zone_name,
+                        "linked_vnet_ids": [],
+                    },
+                    recommendation=(
+                        "Add a virtual network link from the private DNS zone to each "
+                        "VNet that consumes the private service."
+                    ),
+                    basis="private DNS zone virtual network links",
+                    connection_id=zone.connection_id,
+                    subscription_id=zone.subscription_id,
+                    environment=zone.environment,
+                )
+            )
+
         for endpoint in self.snapshot.private_endpoints:
             subnet = self._subnets.get(endpoint.subnet_id)
             consuming_vnet = subnet.vnet_id if subnet else ""
