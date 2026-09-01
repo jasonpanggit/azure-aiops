@@ -23,6 +23,15 @@ class FabricMetrics:
         self.ontology_missing_tags = meter.create_histogram("fabric.ontology.missing_tags")
         self.ontology_duration = meter.create_histogram("fabric.ontology.sync.duration", unit="s")
         self.ontology_errors = meter.create_counter("fabric.ontology.sync.errors")
+        # MED-01: ontology publish preflight rejections and retries. Counters
+        # only -- no request payloads, headers, principals, or scope values
+        # (see 10-03 threat model T-10-03-01) -- so the diagnostic string a
+        # rejection carries (which may echo a caller-influenced entity/
+        # relationship type name) never becomes a telemetry attribute.
+        self.publish_preflight_rejected = meter.create_counter(
+            "fabric.ontology.publish.preflight_rejected"
+        )
+        self.publish_retry = meter.create_counter("fabric.ontology.publish.retry")
 
     def record_table(self, table: str, result) -> None:
         attributes = {"table": table}
@@ -45,3 +54,23 @@ class FabricMetrics:
         self.ontology_duration.record(duration_seconds)
         if errors:
             self.ontology_errors.add(errors)
+
+    def record_publish_preflight_rejected(self) -> None:
+        """Ontology publish rejected at preflight validation (never retried).
+
+        No dimensions/attributes are attached: the rejection diagnostic text
+        (which may embed a caller-influenced entity/relationship type name)
+        must never flow into telemetry, only into the durable
+        `PublicationAttemptRecord` (`ontology.publication_state`).
+        """
+        self.publish_preflight_rejected.add(1)
+
+    def record_publish_retry(self, status_code: int | None) -> None:
+        """One retryable ontology-publish Fabric REST failure.
+
+        Tagged only with the (low-cardinality) HTTP status code that
+        triggered the retry -- never headers, payloads, or scope/principal
+        values, per the same discipline as every other `FabricMetrics`
+        counter.
+        """
+        self.publish_retry.add(1, {"status_code": str(status_code)})
