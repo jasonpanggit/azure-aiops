@@ -66,6 +66,7 @@ locals {
       "resourcehealth_availability-status_get",
       "monitor_activitylog_list",
       "arm_execute_query",
+      "wellarchitectedframework_serviceguide_get",
     ]
     vulnerability = [
       "advisor_recommendation_list",
@@ -91,6 +92,7 @@ locals {
       "policy_assignment_list",
       "role_assignment_list",
       "arm_execute_query",
+      "wellarchitectedframework_serviceguide_get",
     ]
     remediation = [
       "advisor_recommendation_list",
@@ -106,7 +108,7 @@ locals {
   # matching the question to a tool name, so this rule is injected verbatim
   # into every specialist prompt to make the choice deterministic rather than
   # left to name-matching alone.
-  foundry_mcp_routing_rule = "Routing rule for your two tool sources -- they answer different questions, not the same question twice: use your operations-mcp tools for governed, business-context-joined analysis (business impact, policy/design alignment, curated CVE/incident/remediation records, and Fabric-modeled topology) -- this is a curated model that is necessarily incomplete and can lag behind or omit resource configuration it was never ingested to capture. Use your azure-mcp tools (Microsoft's official Azure MCP Server) whenever the question needs the exact, current configuration of a specific Azure resource -- e.g. a firewall's actual rule collections, an NSG's actual rules, a VNet's actual subnets, current Advisor recommendations, Resource Health status, Monitor activity logs, ARM deployment status, cost data, or policy/role assignments -- because operations-mcp's curated topology does not and will never model every resource property. Do not conclude a resource has no configuration, no rules, or no data just because operations-mcp returned none or was silent on it -- that means the curated model does not have it, not that Azure does not have it; call azure-mcp (arm_execute_query, or another specific azure-mcp tool if one exists for that resource type) to get the live, authoritative answer before telling the operator something does not exist. If both sources are relevant, call operations-mcp first for governed/business context, then azure-mcp for the precise resource-level facts, and clearly attribute each claim to the source it came from."
+  foundry_mcp_routing_rule = "Routing rule for your tool sources -- they answer different questions, not the same question twice: use your operations-mcp tools for governed, business-context-joined analysis (business impact, policy/design alignment, curated CVE/incident/remediation records, and Fabric-modeled topology) -- this is a curated model that is necessarily incomplete and can lag behind or omit resource configuration it was never ingested to capture. Use your azure-mcp tools (Microsoft's official Azure MCP Server) whenever the question needs the exact, current configuration of a specific Azure resource -- e.g. a firewall's actual rule collections, an NSG's actual rules, a VNet's actual subnets, current Advisor recommendations, Resource Health status, Monitor activity logs, ARM deployment status, cost data, or policy/role assignments -- because operations-mcp's curated topology does not and will never model every resource property. When a finding calls a configuration a gap or deviation from 'design policy' or 'Azure best practice', ground that claim in your knowledge search tool (an Azure AI Search index of governance/design/best-practice documents, cited by source and title) before presenting it as a violation -- do not assert a best-practice claim from memory when this tool exists and can be queried. wellarchitectedframework_serviceguide_get (served via azure-mcp) remains available as a live, per-service fetch of Microsoft's own published Well-Architected Framework guidance when the knowledge search index does not cover a specific service in enough depth. Do not conclude a resource has no configuration, no rules, or no data just because operations-mcp returned none or was silent on it -- that means the curated model does not have it, not that Azure does not have it; call azure-mcp (arm_execute_query, or another specific azure-mcp tool if one exists for that resource type) to get the live, authoritative answer before telling the operator something does not exist. When multiple sources are relevant, call operations-mcp first for governed/business context, then azure-mcp for precise resource-level facts, then your knowledge search tool for the design-policy/best-practice standard to compare against, and clearly attribute each claim to the source it came from."
 
   # ---------------------------------------------------------------------------
   # Tool registry: single source of truth for "what does this tool do and when
@@ -139,34 +141,43 @@ locals {
     remediation_opportunities = { server = "operations-mcp", purpose = "Identify candidate remediation opportunities not yet planned." }
 
     # -- azure-mcp: Microsoft's official Azure MCP Server (live, raw Azure state) --
-    subscription_list                      = { server = "azure-mcp", purpose = "Enumerate accessible Azure subscriptions (generic scoping tool)." }
-    group_list                             = { server = "azure-mcp", purpose = "Enumerate resource groups in scope (generic scoping tool)." }
-    resourcehealth_availability-status_get = { server = "azure-mcp", purpose = "Get the current Azure Resource Health availability status for a resource." }
-    monitor_activitylog_list               = { server = "azure-mcp", purpose = "List recent Azure Monitor activity-log entries (control-plane operations) for a scope." }
-    advisor_recommendation_list            = { server = "azure-mcp", purpose = "List current Azure Advisor recommendations for a scope." }
-    advisor_recommendation_summary         = { server = "azure-mcp", purpose = "Summarize Azure Advisor recommendations by category/impact for a scope." }
-    compute_vm_get                         = { server = "azure-mcp", purpose = "Get live configuration/state of a specific Azure VM." }
-    appservice_webapp_get                  = { server = "azure-mcp", purpose = "Get live configuration/state of a specific App Service web app." }
-    functionapp_get                        = { server = "azure-mcp", purpose = "Get live configuration/state of a specific Function App." }
-    monitor_resource_log_query             = { server = "azure-mcp", purpose = "Run a log query against a resource's Azure Monitor logs." }
-    resourcehealth_health-events_list      = { server = "azure-mcp", purpose = "List recent Azure Resource Health events for a scope." }
-    arm_get_deployment_status              = { server = "azure-mcp", purpose = "Get the live status of an ARM deployment." }
-    policy_assignment_list                 = { server = "azure-mcp", purpose = "List live Azure Policy assignments for a scope." }
-    role_assignment_list                   = { server = "azure-mcp", purpose = "List live Azure RBAC role assignments for a scope." }
-    arm_query_costs                        = { server = "azure-mcp", purpose = "Query live Azure cost/usage data for a scope." }
-    arm_execute_query                      = { server = "azure-mcp", purpose = "Run a live Azure Resource Graph (KQL) query for exact, current resource properties (e.g. a firewall's applicationRuleCollections/networkRuleCollections, a VNet's subnets, an NSG's rules) that Fabric/operations-mcp topology has not modeled or may not have re-ingested yet." }
+    subscription_list                         = { server = "azure-mcp", purpose = "Enumerate accessible Azure subscriptions (generic scoping tool)." }
+    group_list                                = { server = "azure-mcp", purpose = "Enumerate resource groups in scope (generic scoping tool)." }
+    resourcehealth_availability-status_get    = { server = "azure-mcp", purpose = "Get the current Azure Resource Health availability status for a resource." }
+    monitor_activitylog_list                  = { server = "azure-mcp", purpose = "List recent Azure Monitor activity-log entries (control-plane operations) for a scope." }
+    advisor_recommendation_list               = { server = "azure-mcp", purpose = "List current Azure Advisor recommendations for a scope." }
+    advisor_recommendation_summary            = { server = "azure-mcp", purpose = "Summarize Azure Advisor recommendations by category/impact for a scope." }
+    compute_vm_get                            = { server = "azure-mcp", purpose = "Get live configuration/state of a specific Azure VM." }
+    appservice_webapp_get                     = { server = "azure-mcp", purpose = "Get live configuration/state of a specific App Service web app." }
+    functionapp_get                           = { server = "azure-mcp", purpose = "Get live configuration/state of a specific Function App." }
+    monitor_resource_log_query                = { server = "azure-mcp", purpose = "Run a log query against a resource's Azure Monitor logs." }
+    resourcehealth_health-events_list         = { server = "azure-mcp", purpose = "List recent Azure Resource Health events for a scope." }
+    arm_get_deployment_status                 = { server = "azure-mcp", purpose = "Get the live status of an ARM deployment." }
+    policy_assignment_list                    = { server = "azure-mcp", purpose = "List live Azure Policy assignments for a scope." }
+    role_assignment_list                      = { server = "azure-mcp", purpose = "List live Azure RBAC role assignments for a scope." }
+    arm_query_costs                           = { server = "azure-mcp", purpose = "Query live Azure cost/usage data for a scope." }
+    arm_execute_query                         = { server = "azure-mcp", purpose = "Run a live Azure Resource Graph (KQL) query for exact, current resource properties (e.g. a firewall's applicationRuleCollections/networkRuleCollections, a VNet's subnets, an NSG's rules) that Fabric/operations-mcp topology has not modeled or may not have re-ingested yet." }
+    wellarchitectedframework_serviceguide_get = { server = "azure-mcp", purpose = "Get official Microsoft Azure Well-Architected Framework guidance (reliability, security, cost, operational excellence, performance) for a specific Azure service -- ground a design-policy or best-practice gap finding in a real, citable Microsoft recommendation instead of asserting it from the model's own training knowledge." }
   }
 
   # Renders one specialist's full assigned tool set (operations-mcp +
   # azure-mcp) into "- tool_name (server): purpose" guide lines, sorted by
-  # server so the two tool sources stay visually grouped in the prompt.
+  # server so the two tool sources stay visually grouped in the prompt. The
+  # knowledge search tool (when enabled) is not an MCP tool call -- it has no
+  # entry in foundry_tool_registry -- so its guide line is appended
+  # separately rather than folded into this loop.
   foundry_specialist_tool_guide = {
-    for id in keys(local.foundry_specialist_tools) : id => join("\n", [
-      for name in concat(
-        lookup(local.foundry_specialist_tools, id, []),
-        concat(local.foundry_azure_mcp_generic_tools, lookup(local.foundry_azure_mcp_specialist_tools, id, []))
-      ) : "- ${name} (${local.foundry_tool_registry[name].server}): ${local.foundry_tool_registry[name].purpose}"
-    ])
+    for id in keys(local.foundry_specialist_tools) : id => join("\n", concat(
+      [
+        for name in concat(
+          lookup(local.foundry_specialist_tools, id, []),
+          concat(local.foundry_azure_mcp_generic_tools, lookup(local.foundry_azure_mcp_specialist_tools, id, []))
+        ) : "- ${name} (${local.foundry_tool_registry[name].server}): ${local.foundry_tool_registry[name].purpose}"
+      ],
+      var.enable_foundry_knowledge_search ? [
+        "- knowledge search (azure-ai-search): Search a general-purpose, citable knowledge base (design standards, governance policy, and Azure best-practice guidance -- not limited to any single framework) for evidence grounding a design-policy or best-practice claim."
+      ] : []
+    ))
   }
 
   # Role/behavior prompt per specialist -- deliberately contains NO tool
@@ -218,6 +229,24 @@ locals {
     project_connection_id = local.foundry_azure_mcp_connection_name
   } : null
 
+  # Knowledge-search tool-call config: Azure AI Search wired as a first-class
+  # Foundry "azure_ai_search" tool (distinct from the two `mcp` tool-callers
+  # above). Applied identically to every specialist -- there is one shared
+  # index, so (unlike the MCP tools) there is no per-specialist allowed_tools
+  # selection to make.
+  foundry_ai_search_tool_config = var.enable_foundry_knowledge_search ? {
+    type = "azure_ai_search"
+    azure_ai_search = {
+      indexes = [
+        {
+          project_connection_id = local.foundry_ai_search_connection_name
+          index_name            = var.foundry_knowledge_index_name
+          query_type            = "vector_semantic_hybrid"
+        }
+      ]
+    }
+  } : null
+
   foundry_specialists_json = jsonencode({
     for id, specialist in var.foundry_specialists : id => merge(specialist, {
       prompt = lookup(local.foundry_specialist_instructions, id, local.agent_instructions)
@@ -235,6 +264,9 @@ locals {
               lookup(local.foundry_azure_mcp_specialist_tools, id, [])
             )
           })
+        ],
+        local.foundry_ai_search_tool_config == null ? [] : [
+          local.foundry_ai_search_tool_config
         ]
       )
     })
@@ -264,6 +296,14 @@ locals {
   # apim.tf as azapi_resource.azure_mcp_server at path "azure-mcp".
   foundry_azure_mcp_server_url      = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/azure-mcp" : null
   foundry_azure_mcp_connection_name = "${local.base}-azure-mcp"
+
+  # Knowledge base: Azure AI Search service/index name and the Foundry
+  # project connection name that points at it (see azapi_resource.foundry_ai_search_connection
+  # below). Search service names must be lowercase alphanumeric/hyphen and
+  # globally unique, so it carries the unique suffix like the registry/Key
+  # Vault names above.
+  foundry_ai_search_service_name    = substr("${local.base}-search-${local.suffix}", 0, 60)
+  foundry_ai_search_connection_name = "${local.base}-ai-search"
 }
 
 resource "azurerm_cognitive_account" "foundry" {
@@ -320,6 +360,26 @@ resource "azurerm_cognitive_deployment" "chat" {
     # (i.e. 1K TPM), which throttles almost immediately under interactive use,
     # so it is always set explicitly.
     capacity = var.foundry_model_capacity
+  }
+}
+
+# Embedding model backing the knowledge-search index: vectorizes documents at
+# index time and queries at retrieval time. Deployed unconditionally
+# alongside the chat model (cheap, no-op if unused) so enabling
+# enable_foundry_knowledge_search later never needs a fresh cognitive account
+# rollout -- only the search service/index/tool wiring below activate.
+resource "azurerm_cognitive_deployment" "embedding" {
+  name                 = var.foundry_embedding_model_name
+  cognitive_account_id = azurerm_cognitive_account.foundry.id
+
+  model {
+    format = "OpenAI"
+    name   = var.foundry_embedding_model_name
+  }
+
+  sku {
+    name     = "Standard"
+    capacity = var.foundry_embedding_model_capacity
   }
 }
 
@@ -394,6 +454,142 @@ resource "azapi_resource" "foundry_azure_mcp_connection" {
       }
     }
   }
+}
+
+# ---------------------------------------------------------------------------
+# Knowledge base: Azure AI Search + Foundry project connection
+#
+# A general-purpose, citable document corpus wired into every specialist as a
+# first-class `azure_ai_search` Foundry tool -- distinct from the two `mcp`
+# tool-callers above. Not limited to any single framework (e.g. ALZ/WAF);
+# infra/scripts/create-foundry-knowledge-index.sh seeds it from whatever
+# documents are dropped in infra/knowledge/.
+#
+# `standard` is the minimum SKU that supports semantic ranking, which the
+# default query_type (vector_semantic_hybrid, set in
+# local.foundry_ai_search_tool_config) requires.
+# ---------------------------------------------------------------------------
+
+resource "azurerm_search_service" "knowledge" {
+  count               = var.enable_foundry_knowledge_search ? 1 : 0
+  name                = local.foundry_ai_search_service_name
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  sku                 = var.foundry_knowledge_search_sku
+  semantic_search_sku = "standard"
+
+  # Agents authenticate with the project's system-assigned identity (below);
+  # no API key credential to rotate.
+  local_authentication_enabled = false
+
+  identity {
+    type = "SystemAssigned"
+  }
+
+  tags = local.tags
+}
+
+# Connection category/authType for Azure AI Search differs from the MCP
+# `RemoteTool` connections above: `category = "CognitiveSearch"` and
+# `authType = "AAD"` (rather than the MCP-only "ProjectManagedIdentity") is
+# the documented shape for a keyless, RBAC-authenticated Foundry Azure AI
+# Search connection. `schema_validation_enabled = false` for the same reason
+# as the MCP connections -- azapi's built-in schema for this preview API
+# version does not yet model every category/authType combination.
+resource "azapi_resource" "foundry_ai_search_connection" {
+  count                     = var.enable_foundry_knowledge_search ? 1 : 0
+  type                      = "Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview"
+  name                      = local.foundry_ai_search_connection_name
+  schema_validation_enabled = false
+  parent_id                 = azurerm_cognitive_account_project.ops.id
+  body = {
+    properties = {
+      authType      = "AAD"
+      category      = "CognitiveSearch"
+      target        = "https://${azurerm_search_service.knowledge[0].name}.search.windows.net"
+      isSharedToAll = false
+      metadata = {
+        ApiType    = "Azure"
+        ResourceId = azurerm_search_service.knowledge[0].id
+      }
+    }
+  }
+}
+
+# The Foundry account (not just the project) needs its own identity granted
+# here: it is the account's system-assigned identity, not the project's, that
+# the agent runtime uses when calling out to a connected Azure AI Search
+# service on the caller's behalf.
+resource "azurerm_role_assignment" "foundry_search_index_data_contributor" {
+  count                            = var.enable_foundry_knowledge_search ? 1 : 0
+  scope                            = azurerm_search_service.knowledge[0].id
+  role_definition_name             = "Search Index Data Contributor"
+  principal_id                     = azurerm_cognitive_account.foundry.identity[0].principal_id
+  skip_service_principal_aad_check = true
+}
+
+resource "azurerm_role_assignment" "foundry_search_service_contributor" {
+  count                            = var.enable_foundry_knowledge_search ? 1 : 0
+  scope                            = azurerm_search_service.knowledge[0].id
+  role_definition_name             = "Search Service Contributor"
+  principal_id                     = azurerm_cognitive_account.foundry.identity[0].principal_id
+  skip_service_principal_aad_check = true
+}
+
+# The deploying principal needs the same two roles to create the index and
+# push documents into it after apply (see terraform_data.foundry_knowledge_index
+# below), since it runs the indexing script's REST calls under its own
+# credentials, not the Foundry account's identity.
+resource "azurerm_role_assignment" "deployer_search_index_data_contributor" {
+  count                = var.enable_foundry_knowledge_search ? 1 : 0
+  scope                = azurerm_search_service.knowledge[0].id
+  role_definition_name = "Search Index Data Contributor"
+  principal_id         = local.deployer_object_id
+}
+
+resource "azurerm_role_assignment" "deployer_search_service_contributor" {
+  count                = var.enable_foundry_knowledge_search ? 1 : 0
+  scope                = azurerm_search_service.knowledge[0].id
+  role_definition_name = "Search Service Contributor"
+  principal_id         = local.deployer_object_id
+}
+
+# Creates (or updates) the knowledge index and pushes every document under
+# infra/knowledge/ into it, embedding each with the deployment above. Runs via
+# local-exec (like the agent-creation script) because Terraform has no native
+# resource for Azure AI Search index schema or document ingestion.
+resource "terraform_data" "foundry_knowledge_index" {
+  count = var.enable_foundry_knowledge_search ? 1 : 0
+
+  triggers_replace = {
+    index_name      = var.foundry_knowledge_index_name
+    search_service  = azurerm_search_service.knowledge[0].name
+    embedding_model = azurerm_cognitive_deployment.embedding.name
+    knowledge_docs  = sha256(join("", [for f in fileset("${path.module}/../knowledge", "**") : filesha256("${path.module}/../knowledge/${f}")]))
+  }
+
+  provisioner "local-exec" {
+    command     = "${path.module}/../scripts/create-foundry-knowledge-index.sh"
+    interpreter = ["/bin/bash", "-c"]
+
+    environment = {
+      SEARCH_SERVICE_NAME      = azurerm_search_service.knowledge[0].name
+      SEARCH_INDEX_NAME        = var.foundry_knowledge_index_name
+      KNOWLEDGE_DOCS_DIR       = "${path.module}/../knowledge"
+      FOUNDRY_PROJECT_ENDPOINT = local.foundry_project_endpoint
+      FOUNDRY_EMBEDDING_MODEL  = azurerm_cognitive_deployment.embedding.name
+      AZURE_TENANT_ID          = var.tenant_id
+      AZURE_CLIENT_ID          = var.client_id
+      AZURE_CLIENT_SECRET      = var.client_secret
+    }
+  }
+
+  depends_on = [
+    azurerm_search_service.knowledge,
+    azurerm_cognitive_deployment.embedding,
+    azurerm_role_assignment.deployer_search_index_data_contributor,
+    azurerm_role_assignment.deployer_search_service_contributor,
+  ]
 }
 
 # ---------------------------------------------------------------------------
@@ -534,5 +730,7 @@ resource "terraform_data" "foundry_agent" {
     azurerm_role_assignment.deployer_foundry_manager,
     azapi_resource.foundry_mcp_connection,
     azapi_resource.foundry_azure_mcp_connection,
+    azapi_resource.foundry_ai_search_connection,
+    terraform_data.foundry_knowledge_index,
   ]
 }

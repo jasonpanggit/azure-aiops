@@ -417,6 +417,45 @@ variable "create_foundry_agent" {
   default     = true
 }
 
+variable "enable_foundry_knowledge_search" {
+  description = <<-EOT
+    Whether to provision an Azure AI Search service and wire it into every
+    Foundry specialist's Knowledge tools (azure_ai_search tool type).
+
+    This is a new billed resource (default SKU below supports semantic
+    ranking), distinct from the MCP tool-callers: it is a general-purpose,
+    citable document corpus (not limited to any one framework) that
+    specialists query directly for grounding, independent of operations-mcp
+    and azure-mcp.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "foundry_knowledge_search_sku" {
+  description = "SKU for the Azure AI Search service backing the Foundry knowledge base. 'standard' is the minimum tier that supports semantic ranking (used by the default vector_semantic_hybrid query type)."
+  type        = string
+  default     = "standard"
+}
+
+variable "foundry_knowledge_index_name" {
+  description = "Name of the Azure AI Search index specialists query for grounded knowledge."
+  type        = string
+  default     = "aiops-knowledge"
+}
+
+variable "foundry_embedding_model_name" {
+  description = "Embedding model deployment used to vectorize knowledge documents at index time and queries at retrieval time."
+  type        = string
+  default     = "text-embedding-3-small"
+}
+
+variable "foundry_embedding_model_capacity" {
+  description = "Embedding model deployment capacity in thousands of tokens per minute."
+  type        = number
+  default     = 30
+}
+
 # ---------------------------------------------------------------------------
 # Microsoft Fabric
 # ---------------------------------------------------------------------------
