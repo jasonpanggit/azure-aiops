@@ -254,6 +254,42 @@ def defender_remediation_cases(
     )
 
 
+@router.get("/remediation-plans/{plan_id}/decisions", summary="Read remediation decisions for a plan")
+def read_remediation_decisions(
+    plan_id: str,
+    context: Context,
+    scope: ReadScope,
+) -> dict[str, Any]:
+    planner = _require(context, "remediation_provider", "remediation", scope)
+    planner.generate_plans()  # Ensure plans are current
+    plan = planner.repository.get(plan_id)
+    if plan is None:
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "Remediation plan not found",
+            details={"plan_id": plan_id},
+        )
+    scoped_plan = _filter_scoped(plan, scope)
+    if scoped_plan is _HIDDEN:
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "Remediation plan not found",
+            details={"plan_id": plan_id},
+        )
+    decisions = planner.repository.decisions.list(plan_id)
+    return envelope(
+        {"decisions": decisions, "plan_id": plan_id},
+        evidence=Evidence(
+            source_engine="intelligence.RemediationPlanner",
+            source_table="remediation_approval_decisions",
+            timestamp="",
+            resource_id=plan_id,
+            confidence=CONFIDENCE_MEDIUM,
+        ),
+        scope=scope.to_dict(),
+    )
+
+
 @router.post(
     "/remediation-plans/{plan_id}/decisions",
     summary="Record a remediation recommendation decision",

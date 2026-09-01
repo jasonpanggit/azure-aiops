@@ -209,8 +209,8 @@ def _agent_contract(agent_id: str) -> dict[str, Any]:
             "domain_fields": {"approval_required", "policy_violations", "exceptions", "accountability"},
         },
         "remediation": {
-            "required": {"finding_id", "resource_ids", "remediation_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
-            "domain_fields": {"remediation_options", "rollback_plan", "validation_steps", "risk_assessment", "approval_required"},
+            "required": {"finding_id", "resource_ids", "remediation_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary", "pros", "cons", "urgency_reasoning"},
+            "domain_fields": {"remediation_options", "rollback_plan", "validation_steps", "risk_assessment", "approval_required", "pros", "cons", "urgency_reasoning"},
         },
         "executive_summary": {
             "required": {"finding_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},

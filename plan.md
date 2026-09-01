@@ -1,0 +1,12 @@
+- [ ] Review target files and existing contracts for 02-05 scope only
+- [ ] Task 1 RED: add failing tests for Defender evidence tools and registry drift coverage
+- [ ] Task 1 GREEN: implement Defender evidence tools + registrations
+- [ ] Task 1 VERIFY/COMMIT
+- [ ] Task 2 RED: add failing tests for correlated case/business decision tools
+- [ ] Task 2 GREEN: implement correlated case/business decision tools + registrations
+- [ ] Task 2 VERIFY/COMMIT
+- [ ] Task 3 RED: add failing tests for remediation specialist contract/prompt/delegation
+- [ ] Task 3 GREEN: implement prompt + contract/delegation changes
+- [ ] Task 3 VERIFY/COMMIT
+- [ ] Create 02-05-SUMMARY.md and commit
+- [ ] Final verification: status, tests, lint, touched files audit
