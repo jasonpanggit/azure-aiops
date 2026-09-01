@@ -77,7 +77,7 @@ Plans:
 
 ### Phase 3: Safe Remediation Execution
 
-**Goal:** An approved recommendation can safely run as a bounded, observable Azure job and produce a verified, auditable outcome.
+**Goal:** As a platform operator, I want to run an approved remediation as a bounded, observable Azure job, so that I receive a verified and auditable outcome.
 **Mode:** mvp
 **Depends on:** Phase 2
 **Requirements:** EXEC-01, EXEC-02, EXEC-03, EXEC-04, EXEC-05, EXEC-06
@@ -88,11 +88,14 @@ Plans:
   3. Approved execution enforces least privilege, bounded and validated targets, preconditions, timeouts, idempotency, and revalidation, then exposes queued, running, retrying, succeeded, failed, and cancelled states.
   4. Operator and auditor can see post-action actual state, outcome, failure details, verification results, and rollback or compensation status, including bounded retry history.
 
-**Plans:** 3 plans
+**Plans:** 6 plans (3 executed, 3 gap-closure)
 Plans:
-- [ ] 03-01-PLAN.md — Remediation router mounted with plan list/get/preview/approvals/business-decision reads (closes the 404 API gap)
-- [ ] 03-02-PLAN.md — Execution adapter generalization, approval-gated execute endpoint, durable job tracking
-- [ ] 03-03-PLAN.md — Post-action verification against upstream Azure source of truth, rollback guidance, bounded idempotent retries
+- [x] 03-01-PLAN.md — Remediation router mounted with plan list/get/preview/approvals/business-decision reads (closes the 404 API gap)
+- [x] 03-02-PLAN.md — Execution adapter generalization, approval-gated execute endpoint, durable job tracking
+- [x] 03-03-PLAN.md — Post-action verification against upstream Azure source of truth, rollback guidance, bounded idempotent retries
+- [ ] 03-04-PLAN.md — Bind exact server-derived patch selection and deterministic business evidence to approval; remove direct patch mutation
+- [ ] 03-05-PLAN.md — Enforce atomic execution/retry, authoritative verification, scope, cancellation, history, and eligibility contracts
+- [ ] 03-06-PLAN.md — Deliver remediation execution UI and remove direct patch inventory mutation
 **UI hint:** yes
 
 ### Phase 4: Domain Coverage and Operational Twin
