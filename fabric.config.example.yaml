@@ -14,6 +14,26 @@ fabric:
     max_evidence_rows: 50000
     max_output_items: 100
     max_serialized_bytes: 1000000
+  # DataQualityValidator's ownership/tag-coverage rule (MED-06): per-environment
+  # missing-ownership/missing-tag thresholds. `mode: warn` counts and reports the
+  # gap in QualityReport.rule_counts/failures without flipping `passed=False`;
+  # `mode: block` flips `passed=False` once the missing percentage exceeds the
+  # configured threshold. Selected by the caller's `environment` (dev/staging/prod)
+  # via `DataQualityValidator.from_config(environment)`.
+  data_quality:
+    ownership_tag_thresholds:
+      dev:
+        mode: warn
+        max_missing_ownership_pct: 100
+        max_missing_tag_pct: 100
+      staging:
+        mode: warn
+        max_missing_ownership_pct: 25
+        max_missing_tag_pct: 25
+      prod:
+        mode: block
+        max_missing_ownership_pct: 10
+        max_missing_tag_pct: 10
   auth:
     mode: managed_identity
     # Set only for a user-assigned managed identity.

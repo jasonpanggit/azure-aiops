@@ -1,14 +1,40 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
 import pyarrow as pa
+import yaml
+
+from ontology.relationship_builder import ASSET_TYPES
 
 from .schema_registry import schema_for
+
+# Rules that always block publication when non-zero, regardless of
+# environment/threshold config. Ownership/tag coverage is intentionally
+# excluded here -- it is governed by `DataQualityValidator`'s configurable
+# per-environment warn/block threshold instead (MED-06).
+_BLOCKING_RULES = (
+    "required_fields",
+    "schema_validation",
+    "duplicates",
+    "subscription_consistency",
+    "orphan_relationships",
+)
+
+# Safe-by-default: an unconfigured environment never blocks on ownership/tag
+# gaps -- it only ever counts and reports them. Production environments are
+# expected to opt into `mode: block` explicitly via fabric.config.yaml.
+DEFAULT_OWNERSHIP_TAG_THRESHOLDS: dict[str, Any] = {
+    "mode": "warn",
+    "max_missing_ownership_pct": 100.0,
+    "max_missing_tag_pct": 100.0,
+}
 
 
 @dataclass(frozen=True)
@@ -17,14 +43,32 @@ class QualityReport:
     rows_checked: int
     rule_counts: dict[str, int] = field(default_factory=dict)
     failures: tuple[dict[str, Any], ...] = ()
+    # Which rule names count toward `failed_records`/`passed`. Always includes
+    # the hard rules (required_fields, schema_validation, duplicates,
+    # subscription_consistency, orphan_relationships). `ownership_coverage`/
+    # `tag_coverage` are added only when the validator's configured mode is
+    # `block` and the missing-percentage threshold for that specific rule was
+    # exceeded -- in `warn` mode (or under-threshold in `block` mode) those
+    # rule's failure entries stay visible in `failures`/`rule_counts` for
+    # reporting, but never flip `passed`/count toward `failed_records`. This
+    # keeps ownership/tag gaps "counted and reported, never silently dropped"
+    # (MED-06) without breaking every other consumer of `failed_records` that
+    # predates this rule and expects it to mean "hard-blocking".
+    blocking_rules: frozenset[str] = field(default_factory=lambda: frozenset(_BLOCKING_RULES))
 
     @property
     def failed_records(self) -> int:
-        return len({int(failure["row_index"]) for failure in self.failures})
+        return len(
+            {
+                int(failure["row_index"])
+                for failure in self.failures
+                if failure["rule"] in self.blocking_rules
+            }
+        )
 
     @property
     def passed(self) -> bool:
-        return not self.failures
+        return self.failed_records == 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +91,48 @@ class DataQualityValidator:
         "ingestion_run_id",
     )
 
+    def __init__(
+        self,
+        *,
+        environment: str = "dev",
+        ownership_tag_thresholds: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.environment = environment
+        merged = dict(DEFAULT_OWNERSHIP_TAG_THRESHOLDS)
+        if ownership_tag_thresholds:
+            merged.update(ownership_tag_thresholds)
+        self.ownership_tag_thresholds = merged
+
+    @classmethod
+    def from_config(
+        cls,
+        environment: str,
+        *,
+        config_path: str | Path = "fabric.config.yaml",
+    ) -> "DataQualityValidator":
+        """Build a validator whose ownership/tag thresholds come from
+        `fabric.config.yaml`'s `fabric.data_quality.ownership_tag_thresholds.<environment>`
+        section. Missing file/section/keys fall back to the safe
+        (never-block) default -- config drives the rule, absence of config
+        never silently blocks publication.
+        """
+        thresholds: Mapping[str, Any] | None = None
+        path = Path(config_path)
+        if path.is_file():
+            try:
+                payload = yaml.safe_load(path.read_text()) or {}
+            except yaml.YAMLError:
+                payload = {}
+            section = (
+                (payload.get("fabric") or {})
+                .get("data_quality", {})
+                .get("ownership_tag_thresholds", {})
+            )
+            env_thresholds = section.get(environment)
+            if isinstance(env_thresholds, Mapping):
+                thresholds = env_thresholds
+        return cls(environment=environment, ownership_tag_thresholds=thresholds)
+
     def validate_table(
         self,
         table_name: str,
@@ -59,6 +145,8 @@ class DataQualityValidator:
             "schema_validation": 0,
             "duplicates": 0,
             "subscription_consistency": 0,
+            "ownership_coverage": 0,
+            "tag_coverage": 0,
         }
         seen: set[str] = set()
         for index, row in enumerate(rows):
@@ -85,11 +173,30 @@ class DataQualityValidator:
                 failures.append(
                     _failure(index, "subscription_consistency", f"{subscription}:{match.group(1)}")
                 )
+
+            # Ownership/tag coverage only makes sense for resource-like
+            # assets (the entities MED-06's live baseline counts as
+            # "84 missing ownership"/"52 missing tags") -- relationships and
+            # non-asset entities have no ownership/tagging concept of their
+            # own and are never flagged.
+            if str(row.get("entity_type") or "") in ASSET_TYPES:
+                payload = _parse_payload(row.get("payload_json"))
+                owner = payload.get("owner")
+                if not (isinstance(owner, str) and owner.strip()):
+                    counts["ownership_coverage"] += 1
+                    failures.append(_failure(index, "ownership_coverage", "missing owner"))
+                tags = payload.get("tags")
+                if not (isinstance(tags, dict) and tags):
+                    counts["tag_coverage"] += 1
+                    failures.append(_failure(index, "tag_coverage", "missing tags"))
+
+        blocking = _blocking_rules(counts, len(rows), self.ownership_tag_thresholds)
         return QualityReport(
             table_name=table_name,
             rows_checked=len(rows),
             rule_counts=counts,
             failures=tuple(failures),
+            blocking_rules=blocking,
         )
 
     def validate_relationships(
@@ -112,16 +219,42 @@ class DataQualityValidator:
                 failures.append(
                     _failure(index, "orphan_relationships", f"{subject}->{object_id}")
                 )
+        blocking = _blocking_rules(counts, len(rows), self.ownership_tag_thresholds)
         return QualityReport(
             table_name=table_name,
             rows_checked=len(rows),
             rule_counts=counts,
             failures=tuple(failures),
+            blocking_rules=blocking,
         )
 
 
 def _failure(index: int, rule: str, detail: str) -> dict[str, Any]:
     return {"row_index": index, "rule": rule, "detail": detail}
+
+
+def _parse_payload(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _blocking_rules(
+    counts: Mapping[str, int],
+    rows_checked: int,
+    thresholds: Mapping[str, Any],
+) -> frozenset[str]:
+    rules = set(_BLOCKING_RULES)
+    if thresholds.get("mode") == "block" and rows_checked:
+        ownership_pct = counts.get("ownership_coverage", 0) / rows_checked * 100
+        if ownership_pct > float(thresholds.get("max_missing_ownership_pct", 100.0)):
+            rules.add("ownership_coverage")
+        tag_pct = counts.get("tag_coverage", 0) / rows_checked * 100
+        if tag_pct > float(thresholds.get("max_missing_tag_pct", 100.0)):
+            rules.add("tag_coverage")
+    return frozenset(rules)
 
 
 def _schema_error(row: Mapping[str, Any], schema: pa.Schema) -> str:
