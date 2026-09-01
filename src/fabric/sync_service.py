@@ -522,7 +522,16 @@ class FabricSyncService:
             (str(row.get("timestamp") or "") for row in entities), default=""
         )
         entity_index = {row["resource_id"]: row for row in entities}
-        entity_keys = {str(key).casefold() for key in entity_index}
+        # Mirror SemanticValidator.validate_snapshot()'s entity_ids exactly:
+        # only ACTIVE entities count as valid fact targets. A security/cost
+        # fact referencing a retired/inactive resource_id is dangling from
+        # the validator's perspective even if the resource_id still exists
+        # somewhere in the (unfiltered) entities table.
+        entity_keys = {
+            str(row.get("resource_id") or "").casefold()
+            for row in entities
+            if row.get("lifecycle_status", "active") == "active"
+        }
         security: list[dict[str, Any]] = []
         for edge in relationships:
             if edge.get("predicate") != "affects":
