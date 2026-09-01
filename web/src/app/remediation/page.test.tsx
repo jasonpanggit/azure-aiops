@@ -2,11 +2,27 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { decideRemediationPlan, defenderCases, exposures, gaps, remediationOpportunities, remediationPlans, ruleFindings } = vi.hoisted(() => ({
+const {
+  approvals,
+  businessDecision,
+  decideRemediationPlan,
+  defenderCases,
+  exposures,
+  gaps,
+  plan,
+  preview,
+  remediationOpportunities,
+  remediationPlans,
+  ruleFindings,
+} = vi.hoisted(() => ({
+  approvals: vi.fn(),
+  businessDecision: vi.fn(),
   decideRemediationPlan: vi.fn(),
   defenderCases: vi.fn(),
   exposures: vi.fn(),
   gaps: vi.fn(),
+  plan: vi.fn(),
+  preview: vi.fn(),
   remediationOpportunities: vi.fn(),
   remediationPlans: vi.fn(),
   ruleFindings: vi.fn(),
@@ -21,6 +37,7 @@ vi.mock("@/lib/services", () => ({
   copilotEvidenceRows: () => [],
   networkApi: { gaps, ruleFindings },
   operationsApi: { decideRemediationPlan, remediationPlans, remediationOpportunities, defenderCases },
+  remediationApi: { approvals, businessDecision, plan, preview },
   vulnerabilityApi: { exposures },
 }));
 
@@ -210,6 +227,114 @@ describe("Governed Remediation Center", () => {
       execution_performed: false,
       read_only: true,
     }));
+    plan.mockResolvedValue(envelope({
+      plan_id: "plan-1",
+      action_id: "controlled-patch-recovery",
+      action_version: "version-1",
+      title: "Patch payroll database",
+      status: "approved",
+      resource: { id: "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll-db", name: "vm-payroll-db" },
+      business_service: "Payroll",
+      evidence_citations: [{ source_type: "assessment", source_id: "assess-patch-1" }],
+      executable: true,
+      ineligibility_reason: "",
+    }));
+    preview.mockResolvedValue(envelope({
+      target: {
+        resource: { id: "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll-db", name: "vm-payroll-db" },
+        resource_key: "vm-payroll-db",
+      },
+      operation: "install_patches",
+      preconditions: ["Maintenance window is open", "Recent backup is verified"],
+      expected_effect: { business_impact: "Reduce payroll outage exposure" },
+      collateral_impact: { risk_drivers: ["Reboot may interrupt active sessions"], dependencies: { affected_services: ["Payroll"] } },
+      execution_snapshot: {
+        target_id: "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll-db",
+        patch_ids: ["KB600001"],
+        target_kind: "Azure VM",
+        operation: "install_patches",
+        action_version: "version-1",
+        snapshot_hash: "snapshot-hash-1",
+      },
+      executable: true,
+      ineligibility_reason: "",
+    }));
+    approvals.mockResolvedValue(envelope({
+      plan_id: "plan-1",
+      approval_requirements: [{ role: "Change Manager", stage: "Production", status: "Approved" }],
+      decisions: [{
+        decision_id: "RMD-1",
+        plan_id: "plan-1",
+        decision: "approved",
+        approver: "operator@example.com",
+        decided_at: "2026-01-01T10:00:00Z",
+        reason: "CAB approved",
+        scope: {},
+        action_version: "version-1",
+        expires_at: "2026-12-31",
+        execution_snapshot: { snapshot_hash: "snapshot-hash-1" },
+      }],
+    }));
+    businessDecision.mockResolvedValue(envelope({
+      disposition: "act_now",
+      urgency_rationale: {
+        reason_code: "ACTIVE_EXPLOIT",
+        message: "Payroll-facing weakness has active exploit evidence",
+        evidence_citations: [{ source_type: "assessment", source_id: "assess-patch-1" }],
+      },
+      cost_of_action: { status: "known", detail: "15 minute maintenance window" },
+      cost_of_inaction: { status: "known", detail: "Continued payroll outage exposure" },
+      business_impact: { status: "known", detail: "Payroll processing" },
+      confidence: "high",
+      review_requirements: [],
+      unknowns: [],
+    }));
+  });
+
+  it("loads the governed preview and business evidence before exposing execution", async () => {
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Execution preview" })).toBeInTheDocument();
+    expect(screen.getByText("install_patches")).toBeInTheDocument();
+    expect(screen.getByText(/vm-payroll-db/)).toBeInTheDocument();
+    expect(screen.getByText(/Maintenance window is open/)).toBeInTheDocument();
+    expect(screen.getByText(/Reduce payroll outage exposure/)).toBeInTheDocument();
+    expect(screen.getByText(/Reboot may interrupt active sessions/)).toBeInTheDocument();
+    expect(screen.getByText(/15 minute maintenance window/)).toBeInTheDocument();
+    expect(screen.getByText(/Continued payroll outage exposure/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review and execute" })).toBeEnabled();
+    expect(plan).toHaveBeenCalledWith("plan-1", {});
+    expect(preview).toHaveBeenCalledWith("plan-1", {});
+    expect(approvals).toHaveBeenCalledWith("plan-1", {});
+    expect(businessDecision).toHaveBeenCalledWith("plan-1", {});
+  });
+
+  it("keeps non-patch generated plans recommendation-only using the server reason", async () => {
+    plan.mockResolvedValue(envelope({
+      plan_id: "plan-1",
+      action_id: "attack-path-segmentation-review",
+      action_version: "version-1",
+      title: "Review segmentation",
+      status: "approved",
+      executable: false,
+      ineligibility_reason: "action_not_executable",
+    }));
+    preview.mockResolvedValue(envelope({
+      target: { resource: {}, resource_key: "" },
+      operation: "not executable in this phase",
+      preconditions: [],
+      expected_effect: {},
+      collateral_impact: {},
+      execution_snapshot: null,
+      executable: false,
+      ineligibility_reason: "action_not_executable",
+    }));
+
+    renderPage();
+
+    expect(await screen.findByText(/Recommendation only/)).toBeInTheDocument();
+    expect(screen.getByText(/action not executable/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review and execute" })).not.toBeInTheDocument();
   });
 
   it("records approval decisions without enabling execution", async () => {
