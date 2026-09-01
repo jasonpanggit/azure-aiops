@@ -26,6 +26,7 @@ import {
 import type {
   RemediationApprovalContext,
   RemediationBusinessDecision,
+  RemediationExecution,
   RemediationExecutionPreview,
   RemediationPlanDetail,
 } from "@/lib/services";
@@ -296,6 +297,9 @@ function RemediationContent() {
   const [executionContextError, setExecutionContextError] = useState("");
   const [executionContextRefresh, setExecutionContextRefresh] = useState(0);
   const [executionConfirmOpen, setExecutionConfirmOpen] = useState(false);
+  const [activeExecution, setActiveExecution] = useState<RemediationExecution | null>(null);
+  const [executionSubmitting, setExecutionSubmitting] = useState(false);
+  const [executionActionError, setExecutionActionError] = useState("");
   const contextRequest = useRef(0);
   const [copilotOpen, setCopilotOpen] = useState(false);
   const allPlanRows = plans.data?.data.plans ?? [];
@@ -401,6 +405,7 @@ function RemediationContent() {
       setExecutionPreview(null);
       setApprovalContext(null);
       setBusinessDecision(null);
+      setActiveExecution(null);
       setExecutionContextError("");
       setExecutionContextLoading(false);
       return;
@@ -412,13 +417,15 @@ function RemediationContent() {
       remediationApi.preview(planId, scope),
       remediationApi.approvals(planId, scope),
       remediationApi.businessDecision(planId, scope),
+      remediationApi.executions(planId, scope),
     ])
-      .then(([planResponse, previewResponse, approvalsResponse, businessResponse]) => {
+      .then(([planResponse, previewResponse, approvalsResponse, businessResponse, executionsResponse]) => {
         if (contextRequest.current !== requestId) return;
         setPlanContext(planResponse.data);
         setExecutionPreview(previewResponse.data);
         setApprovalContext(approvalsResponse.data);
         setBusinessDecision(businessResponse.data);
+        setActiveExecution(executionsResponse.data.executions.slice(-1)[0] ?? null);
       })
       .catch((error) => {
         if (contextRequest.current !== requestId) return;
@@ -426,6 +433,7 @@ function RemediationContent() {
         setExecutionPreview(null);
         setApprovalContext(null);
         setBusinessDecision(null);
+        setActiveExecution(null);
         setExecutionContextError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
@@ -441,7 +449,53 @@ function RemediationContent() {
   useEffect(() => {
     setDecisionResult(null);
     setDecisionError("");
+    setExecutionActionError("");
   }, [selectedPlan?.plan_id]);
+
+  useEffect(() => {
+    const executionId = activeExecution?.execution_id;
+    if (
+      !executionId
+      || !["queued", "running", "retrying"].includes(activeExecution.status)
+      || !selectedPlan?.plan_id
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let remainingPolls = 40;
+    const selectedPlanId = selectedPlan.plan_id;
+
+    const poll = async () => {
+      if (cancelled || remainingPolls <= 0) {
+        if (!cancelled && remainingPolls <= 0) {
+          setExecutionActionError("Automatic polling paused after 40 checks. Refresh the plan to continue observing provider state.");
+        }
+        return;
+      }
+      remainingPolls -= 1;
+      try {
+        const response = await remediationApi.execution(executionId, scope);
+        if (cancelled || contextRequest.current < 1 || selectedPlan?.plan_id !== selectedPlanId) return;
+        setActiveExecution(response.data);
+        if (["queued", "running", "retrying"].includes(response.data.status)) {
+          timer = setTimeout(() => void poll(), 1500);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setExecutionActionError(error instanceof Error ? error.message : String(error));
+        timer = setTimeout(() => void poll(), 3000);
+      }
+    };
+
+    timer = setTimeout(() => void poll(), 1500);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // scopeKey and selected plan identity terminate stale polling across trust boundaries.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeExecution?.execution_id, selectedPlan?.plan_id, scopeKey]);
 
   const latestApproval = approvalContext?.decisions.slice(-1)[0] ?? null;
   const previewSnapshot = executionPreview?.execution_snapshot ?? null;
@@ -476,6 +530,49 @@ function RemediationContent() {
       || executionPreview?.ineligibility_reason
       || (!approvalIsCurrent ? "current_approval_required" : "")
       || (!businessEvidenceReady ? "decision_grade_business_evidence_required" : "");
+
+  const executePlan = async () => {
+    if (!selectedPlan || !canExecute || executionSubmitting) return;
+    setExecutionSubmitting(true);
+    setExecutionActionError("");
+    try {
+      const response = await remediationApi.execute(selectedPlan.plan_id, scope);
+      setActiveExecution(response.data);
+      setExecutionConfirmOpen(false);
+    } catch (error) {
+      setExecutionActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setExecutionSubmitting(false);
+    }
+  };
+
+  const retryExecution = async () => {
+    if (!activeExecution?.retryable || executionSubmitting) return;
+    setExecutionSubmitting(true);
+    setExecutionActionError("");
+    try {
+      const response = await remediationApi.retry(activeExecution.execution_id, scope);
+      setActiveExecution(response.data);
+    } catch (error) {
+      setExecutionActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setExecutionSubmitting(false);
+    }
+  };
+
+  const cancelExecution = async () => {
+    if (!activeExecution?.cancellable || executionSubmitting) return;
+    setExecutionSubmitting(true);
+    setExecutionActionError("");
+    try {
+      const response = await remediationApi.cancel(activeExecution.execution_id, scope);
+      setActiveExecution(response.data);
+    } catch (error) {
+      setExecutionActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setExecutionSubmitting(false);
+    }
+  };
   const pending = backlog.length;
   const evidencePack = selected ? {
     plan: selected.source,
@@ -950,12 +1047,31 @@ function RemediationContent() {
                   </section>
                   {canExecute ? (
                     <>
-                      <button type="button" className="button button-primary" onClick={() => setExecutionConfirmOpen(true)}>
+                      <button
+                        type="button"
+                        className="button button-primary"
+                        disabled={executionSubmitting || Boolean(activeExecution && ["queued", "running", "retrying"].includes(activeExecution.status))}
+                        onClick={() => setExecutionConfirmOpen(true)}
+                      >
                         Review and execute
                       </button>
                       {executionConfirmOpen && (
-                        <div className="callout" role="status">
-                          Confirmed for review: {previewSnapshot?.operation} on {previewSnapshot?.target_id}. Provider submission requires the final execution confirmation below.
+                        <div className="callout" role="alertdialog" aria-label="Confirm governed execution">
+                          <p>
+                            Submit <strong>{previewSnapshot?.operation}</strong> to exactly <code>{previewSnapshot?.target_id}</code>
+                            {" "}with patches {previewSnapshot?.patch_ids.join(", ")}. Submission is not success; Azure verification remains authoritative.
+                          </p>
+                          <button
+                            type="button"
+                            className="button button-primary"
+                            disabled={executionSubmitting}
+                            onClick={() => void executePlan()}
+                          >
+                            {executionSubmitting ? "Submitting…" : "Confirm execution"}
+                          </button>
+                          <button type="button" className="button button-quiet" disabled={executionSubmitting} onClick={() => setExecutionConfirmOpen(false)}>
+                            Keep reviewing
+                          </button>
                         </div>
                       )}
                     </>
@@ -964,6 +1080,65 @@ function RemediationContent() {
                       Recommendation only: <strong>{eligibilityReason(executionBlockReason || "server_did_not_mark_plan_executable")}</strong>.
                     </p>
                   )}
+                  {activeExecution && (
+                    <section className="remediation-section" aria-label="Execution outcome">
+                      <div className="card-header">
+                        <div>
+                          <h3>Execution {activeExecution.execution_id}</h3>
+                          <p>Durable state from the remediation execution service.</p>
+                        </div>
+                        <StatusBadge
+                          label={titleize(activeExecution.status)}
+                          tone={activeExecution.status === "succeeded" ? "success" : activeExecution.status === "failed" || activeExecution.status === "cancelled" ? "critical" : "warning"}
+                        />
+                      </div>
+                      <p>Verified actual state: <strong>{activeExecution.verified_state || "Verification pending"}</strong></p>
+                      <p>Provider job: <code>{activeExecution.provider_job_id || "Not submitted"}</code></p>
+                      <p>Outcome: {activeExecution.outcome || "Pending upstream verification"}</p>
+                      <p>Failure details: {activeExecution.failure_details || "No failure reported"}</p>
+                      <p>Attempts: {activeExecution.attempt_count} · Remaining retries: {activeExecution.remaining_attempts}</p>
+                      <p>Requested by: {activeExecution.requested_by} · Approved by: {activeExecution.approved_by}</p>
+                      <p>Created: {activeExecution.created_at} · Updated: {activeExecution.updated_at}</p>
+                      {activeExecution.message && <p className="callout">{activeExecution.message}</p>}
+                      {activeExecution.ineligibility_reason && (
+                        <p className="callout callout-warning">{eligibilityReason(activeExecution.ineligibility_reason)}</p>
+                      )}
+                      <h4>Rollback guidance</h4>
+                      {activeExecution.rollback_guidance.length > 0 ? (
+                        <ul>{activeExecution.rollback_guidance.map((guidance) => <li key={guidance}>{guidance}</li>)}</ul>
+                      ) : (
+                        <p>No automated rollback is available; follow the owning service runbook.</p>
+                      )}
+                      <h4>Immutable attempts and transitions</h4>
+                      {activeExecution.attempts.map((attempt) => (
+                        <div key={attempt.number}>
+                          <p><strong>Attempt {attempt.number}</strong> · {titleize(attempt.status)} · actor {attempt.actor || "Not recorded"}</p>
+                          <ol>
+                            {attempt.transitions.map((transition, index) => (
+                              <li key={`${attempt.number}-${transition.sequence ?? index}`}>
+                                {transition.timestamp || "Timestamp unavailable"} · {titleize(transition.status)} · {transition.actor || "Actor unavailable"}
+                                {transition.verified_state ? ` · ${transition.verified_state}` : ""}
+                                {transition.failure_details ? ` · ${transition.failure_details}` : ""}
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      ))}
+                      <div className="plan-actions">
+                        {activeExecution.retryable && (
+                          <button type="button" className="button button-primary" disabled={executionSubmitting} onClick={() => void retryExecution()}>
+                            Retry execution
+                          </button>
+                        )}
+                        {activeExecution.cancellable && (
+                          <button type="button" className="button button-quiet" disabled={executionSubmitting} onClick={() => void cancelExecution()}>
+                            Cancel queued execution
+                          </button>
+                        )}
+                      </div>
+                    </section>
+                  )}
+                  {executionActionError && <p className="callout callout-warning" role="alert">{executionActionError}</p>}
                 </>
               ) : (
                 <p className="callout callout-warning">Select a generated remediation plan to load its governed execution preview.</p>

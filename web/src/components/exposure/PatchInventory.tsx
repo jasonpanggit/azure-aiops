@@ -1,18 +1,17 @@
 "use client";
 
 import { Fragment, useCallback, useMemo, useState } from "react";
+import Link from "next/link";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
-import { useColumnFilters } from "@/lib/table-column-filters";
-import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import type { ScopeSelection } from "@/lib/scope";
 import { patchingApi } from "@/lib/services";
-import type { PatchRun, PatchTarget } from "@/lib/types";
-
-type RebootSetting = "IfRequired" | "Never" | "Always";
+import { useColumnFilters } from "@/lib/table-column-filters";
+import type { PatchTarget } from "@/lib/types";
+import { useTablePagination } from "@/lib/use-table-pagination";
 
 interface PatchInventoryProps {
   scope: ScopeSelection;
@@ -27,30 +26,29 @@ function stateTone(state: string): "critical" | "warning" | "success" | "neutral
   return "neutral";
 }
 
+function remediationHref(target: PatchTarget, selected: string[]): string {
+  const params = new URLSearchParams();
+  params.set("resource", target.target_id);
+  const patchIds = selected.length > 0
+    ? selected
+    : target.available_patches.map((patch) => patch.patch_id);
+  for (const patchId of patchIds) params.append("kb", patchId);
+  if (target.business_service) params.set("business_service", target.business_service);
+  return `/remediation?${params.toString()}`;
+}
+
 /**
- * Patchable inventory with explicit per-patch selection and a single guarded
- * trigger. The API re-validates every selected id against the target's own
- * availability list, so nothing chosen here can widen what a run may install.
+ * Read-only patch readiness inventory.
+ *
+ * Patch selection is context for a governed remediation handoff only. This
+ * component deliberately has no mutation client: approval, immutable snapshot
+ * capture, and execution all happen in the remediation workspace.
  */
 export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
-  const [runsToken, setRunsToken] = useState(0);
-  const targets = useApi(() => patchingApi.targets(scope), [scope, runsToken]);
-  const runs = useApi(() => patchingApi.runs(scope), [scope, runsToken]);
-
+  const targets = useApi(() => patchingApi.targets(scope), [scope]);
+  const runs = useApi(() => patchingApi.runs(scope), [scope]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [selection, setSelection] = useState<Record<string, string[]>>({});
-  const [reason, setReason] = useState("");
-  const [rebootSetting, setRebootSetting] = useState<RebootSetting>("IfRequired");
-  const [dryRun, setDryRun] = useState(true);
-  // Keyed by target: an AKS cluster can host several pools, so the pool named
-  // for one target must not leak onto another.
-  const [nodePools, setNodePools] = useState<Record<string, string>>({});
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [lastRun, setLastRun] = useState<PatchRun | null>(null);
-  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
-  const [bulkSubmitting, setBulkSubmitting] = useState(false);
-  const [bulkResult, setBulkResult] = useState<{ succeeded: number; failed: number } | null>(null);
 
   const filteredTargets = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -61,475 +59,200 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
         (value) => String(value ?? "").toLowerCase().includes(normalized)
       )
     );
-  }, [targets.data, query]);
+  }, [query, targets.data]);
 
-  const recentRuns = useMemo(() => runs.data?.data ?? [], [runs.data]);
-
-  const bulkEligibleTargets = useMemo(
-    () =>
-      filteredTargets.filter(
-        (target) =>
-          target.reachable &&
-          target.patchable &&
-          target.critical_count > 0 &&
-          target.available_patches.length > 0 &&
-          target.operation !== "node_image_upgrade" &&
-          !target.requires_node_pool
-      ),
-    [filteredTargets]
-  );
-
-  const runBulkTrigger = useCallback(async () => {
-    setBulkSubmitting(true);
-    setBulkResult(null);
-    setSubmitError(null);
-    let succeeded = 0;
-    let failed = 0;
-    for (const target of bulkEligibleTargets) {
-      const patchIds = target.available_patches.map((patch) => patch.patch_id);
-      try {
-        await patchingApi.trigger({
-          target_id: target.target_id,
-          patch_ids: patchIds,
-          reason: reason.trim() || "Bulk remediation: reachable + critical targets",
-          reboot_setting: rebootSetting,
-          dry_run: dryRun,
-        });
-        succeeded += 1;
-      } catch {
-        failed += 1;
-      }
-    }
-    setBulkSubmitting(false);
-    setBulkConfirmOpen(false);
-    setBulkResult({ succeeded, failed });
-    setRunsToken((token) => token + 1);
-  }, [bulkEligibleTargets, dryRun, reason, rebootSetting]);
-
-  const { filteredRows: columnFilteredTargets, filters: targetFilters, resetFilters: resetTargetFilters } = useColumnFilters(filteredTargets, [
+  const { filteredRows: visibleTargets, filters, resetFilters } = useColumnFilters(filteredTargets, [
     { id: "inventory", label: "Inventory", getValues: (target) => target.inventory_kind },
     { id: "service", label: "Service", getValues: (target) => target.business_service || "Unassigned service" },
     { id: "environment", label: "Environment", getValues: (target) => target.environment || "Unknown" },
     { id: "operation", label: "Operation", getValues: (target) => target.operation === "node_image_upgrade" ? "Node image upgrade" : "Install patches" },
   ]);
-  const { filteredRows: filteredRuns, filters: runFilters, resetFilters: resetRunFilters } = useColumnFilters(recentRuns, [
-    { id: "operation", label: "Operation", getValues: (run) => run.operation },
-    { id: "state", label: "State", getValues: (run) => run.state },
-    { id: "provider", label: "Provider", getValues: (run) => run.provider || "Unknown" },
-  ]);
-
-  const targetPaging = useTablePagination(columnFilteredTargets);
-  const runPaging = useTablePagination(filteredRuns);
-
-  const selectedFor = useCallback((targetId: string) => selection[targetId] ?? [], [selection]);
+  const paging = useTablePagination(visibleTargets);
 
   const togglePatch = useCallback((target: PatchTarget, patchId: string) => {
-    setSubmitError(null);
-    setSelection((prev) => {
-      const current = prev[target.target_id] ?? [];
-      const isSelected = current.includes(patchId);
-      // AKS node image upgrades accept exactly one target version.
+    setSelection((current) => {
+      const selected = current[target.target_id] ?? [];
       if (target.operation === "node_image_upgrade") {
-        return { ...prev, [target.target_id]: isSelected ? [] : [patchId] };
+        return { ...current, [target.target_id]: selected.includes(patchId) ? [] : [patchId] };
       }
       return {
-        ...prev,
-        [target.target_id]: isSelected ? current.filter((id) => id !== patchId) : [...current, patchId],
+        ...current,
+        [target.target_id]: selected.includes(patchId)
+          ? selected.filter((item) => item !== patchId)
+          : [...selected, patchId],
       };
     });
   }, []);
 
-  const trigger = useCallback(
-    async (target: PatchTarget) => {
-      const patchIds = selection[target.target_id] ?? [];
-      if (patchIds.length === 0) return;
-      const nodePool = (nodePools[target.target_id] ?? "").trim();
-      if (target.requires_node_pool && nodePool.length === 0) return;
-      setSubmitting(true);
-      setSubmitError(null);
-      try {
-        const response = await patchingApi.trigger({
-          target_id: target.target_id,
-          patch_ids: patchIds,
-          reason: reason.trim(),
-          reboot_setting: rebootSetting,
-          ...(nodePool ? { node_pool: nodePool } : {}),
-          dry_run: dryRun,
-        });
-        setLastRun(response.data);
-        setSelection((prev) => ({ ...prev, [target.target_id]: [] }));
-        setRunsToken((token) => token + 1);
-      } catch (error) {
-        setSubmitError(error instanceof Error ? error.message : String(error));
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [dryRun, nodePools, reason, rebootSetting, selection]
-  );
-
   if (targets.loading) {
-    return (
-      <StatePanel
-        title="Loading patchable inventory"
-        message="Reading server inventory and patch availability."
-        tone="loading"
-      />
-    );
+    return <StatePanel title="Loading patchable inventory" message="Reading patch readiness and governed handoff context." tone="loading" />;
   }
-
   if (targets.error) {
-    return (
-      <StatePanel
-        title="Patchable inventory unavailable"
-        message={targets.error.message || "The request failed."}
-        tone="error"
-      />
-    );
+    return <StatePanel title="Patchable inventory unavailable" message={targets.error.message || "The request failed."} tone="error" />;
   }
 
-  const warnings = targets.data?.warnings ?? [];
-
+  const recentRuns = runs.data?.data ?? [];
   return (
     <section className="card queue-card" data-testid="patch-inventory">
       <div className="card-header">
         <div>
-          <h2>Patch and node image remediation</h2>
+          <h2>Patch and node image readiness</h2>
           <p>
-            Select the updates to install on an Azure VM or Arc-enabled server, or the node image version to roll
-            out to an AKS node pool, then trigger the run. Every selection is re-validated by the API against what
-            that target actually has available.
+            Inspect available updates here, then open governed remediation to review business impact,
+            capture approval, and execute the server-owned patch snapshot.
           </p>
         </div>
       </div>
 
-      {warnings.length > 0 && (
-        <div className="card-body">
-          {warnings.map((warning) => (
-            <p className="muted" key={warning} role="status">
-              {warning}
-            </p>
-          ))}
+      {(targets.data?.warnings ?? []).map((warning) => (
+        <div className="card-body" key={warning}>
+          <p className="muted" role="status">{warning}</p>
         </div>
-      )}
+      ))}
 
-      <div className="card-body patch-run-controls">
-        <label className="form-field">
-          <span className="field-label">Reason (recorded on the run)</span>
-          <input
-            className="form-control"
-            type="text"
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            placeholder="e.g. Emergency patch for CVE-2026-0001"
-          />
-        </label>
-        <label className="form-field">
-          <span className="field-label">Reboot</span>
-          <select className="form-control" value={rebootSetting} onChange={(event) => setRebootSetting(event.target.value as RebootSetting)}>
-            <option value="IfRequired">If required</option>
-            <option value="Never">Never</option>
-            <option value="Always">Always</option>
-          </select>
-        </label>
-        <label className="toggle-field">
-          <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} />
-          <span>Dry run (validate without contacting Azure)</span>
-        </label>
-        {bulkEligibleTargets.length > 0 && (
-          <button
-            type="button"
-            className="button button-quiet"
-            onClick={() => setBulkConfirmOpen(true)}
-          >
-            Bulk-install all available updates ({bulkEligibleTargets.length} reachable + critical targets)
-          </button>
-        )}
+      <div className="card-body">
+        <p className="callout callout-warning">
+          Direct patch submission is disabled. Inventory selections are handed to the governed remediation workspace as review context only.
+        </p>
       </div>
-
-      {bulkConfirmOpen && (
-        <div className="card-body" role="alertdialog" aria-label="Confirm bulk remediation">
-          <p role="alert">
-            This will trigger a run on <strong>{bulkEligibleTargets.length}</strong> reachable target
-            {bulkEligibleTargets.length === 1 ? "" : "s"} with critical findings, installing every available
-            update on each{dryRun ? " as a dry run" : ""}. This cannot be undone once submitted.
-          </p>
-          <div className="patch-selection">
-            <button
-              type="button"
-              className="button button-primary"
-              disabled={bulkSubmitting}
-              onClick={() => void runBulkTrigger()}
-            >
-              {bulkSubmitting ? "Submitting…" : `Confirm bulk install (${bulkEligibleTargets.length} targets)`}
-            </button>
-            <button
-              type="button"
-              className="button button-quiet"
-              disabled={bulkSubmitting}
-              onClick={() => setBulkConfirmOpen(false)}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {bulkResult && (
-        <div className="card-body">
-          <p role="status">
-            Bulk remediation submitted: <strong>{bulkResult.succeeded}</strong> succeeded
-            {bulkResult.failed > 0 ? `, ${bulkResult.failed} failed` : ""}.
-          </p>
-        </div>
-      )}
-
-      {submitError && (
-        <div className="card-body">
-          <p className="muted" role="alert">
-            {submitError}
-          </p>
-        </div>
-      )}
-
-      {lastRun && (
-        <div className="card-body">
-          <p role="status">
-            Run <code>{lastRun.run_id}</code> is <strong>{lastRun.state}</strong>
-            {lastRun.message ? ` — ${lastRun.message}` : ""}
-          </p>
-        </div>
-      )}
 
       {filteredTargets.length === 0 ? (
-        <div className="card-body">
-          <p className="muted">No patchable servers match the current filters.</p>
-        </div>
+        <div className="card-body"><p className="muted">No patchable servers match the current filters.</p></div>
       ) : (
         <>
-        <TableColumnFilters
-          filters={targetFilters}
-          onReset={resetTargetFilters}
-          resultCount={columnFilteredTargets.length}
-          totalCount={filteredTargets.length}
-        />
-        <div className="table-scroll">
-          <table className="operations-table exposure-table">
-            <thead>
-              <tr>
-                <th>Server</th>
-                <th>Inventory</th>
-                <th>Scope</th>
-                <th>Open findings</th>
-                <th>Available updates</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {targetPaging.pageRows.map((target) => {
-                const selected = selectedFor(target.target_id);
-                const isOpen = expanded === target.target_id;
-                return (
-                  <Fragment key={target.target_id}>
-                    <tr>
-                      <td>
-                        <strong>{target.name || target.target_id}</strong>
-                        <div className="table-secondary">{target.target_id}</div>
-                      </td>
-                      <td>
-                        <StatusBadge label={target.inventory_kind} tone="neutral" />
-                        <div className="table-secondary">
-                          {target.operation === "node_image_upgrade" ? "Node image upgrade" : "Install patches"}
-                        </div>
-                      </td>
-                      <td>
-                        <strong>{target.business_service || "Unassigned service"}</strong>
-                        <div className="table-secondary">
-                          {[target.environment, target.region, target.owner].filter(Boolean).join(" · ") ||
-                            "No scope metadata"}
-                        </div>
-                      </td>
-                      <td>
-                        <strong>{target.cve_count} CVEs</strong>
-                        <div className="table-secondary">
-                          {target.critical_count} critical · {target.overdue_count} overdue
-                        </div>
-                      </td>
-                      <td>
-                        <strong>{target.available_patches.length} available</strong>
-                        <div className="table-secondary">
-                          {selected.length > 0 ? `${selected.length} selected` : "None selected"}
-                        </div>
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          className="button button-quiet"
-                          onClick={() => setExpanded(isOpen ? null : target.target_id)}
-                          aria-expanded={isOpen}
-                        >
-                          {isOpen ? "Hide updates" : "Choose updates"}
-                        </button>
-                      </td>
-                    </tr>
-                    {isOpen && (
-                      <tr className="detail-row">
-                        <td colSpan={6}>
-                          {!target.patchable ? (
-                            <p className="muted">
-                              {target.blocked_reason || "This target cannot be patched from HOG."}
-                            </p>
-                          ) : target.available_patches.length === 0 ? (
-                            <p className="muted">No updates are currently known for this target.</p>
-                          ) : (
-                            <div className="patch-selection">
-                              <ul className="patch-option-list">
-                                {target.available_patches.map((patch) => (
-                                  <li key={patch.patch_id}>
-                                    <label className="patch-option">
-                                      <input
-                                        type={target.operation === "node_image_upgrade" ? "radio" : "checkbox"}
-                                        name={`patch-${target.target_id}`}
-                                        checked={selected.includes(patch.patch_id)}
-                                        onChange={() => togglePatch(target, patch.patch_id)}
-                                      />
-                                      <span>
-                                        <strong>{patch.patch_id}</strong>
-                                        {patch.title ? ` — ${patch.title}` : ""}
-                                      </span>
-                                    </label>
-                                    <div className="table-secondary">
-                                      {[
-                                        patch.classification,
-                                        patch.severity,
-                                        patch.reboot_required ? "reboot required" : "",
-                                        patch.cve_ids.slice(0, 3).join(", "),
-                                        `source: ${patch.source}`,
-                                      ]
-                                        .filter(Boolean)
-                                        .join(" · ")}
-                                    </div>
-                                  </li>
-                                ))}
-                              </ul>
-                              {target.requires_node_pool && (
-                                <label className="form-field">
-                                  <span className="field-label">Agent pool</span>
-                                  <input
-                                    className="form-control"
-                                    value={nodePools[target.target_id] ?? ""}
-                                    placeholder="e.g. systempool"
-                                    onChange={(event) =>
-                                      setNodePools((prev) => ({
-                                        ...prev,
-                                        [target.target_id]: event.target.value,
-                                      }))
-                                    }
-                                  />
-                                </label>
-                              )}
-                              <button
-                                type="button"
-                                className="button button-primary"
-                                disabled={
-                                  submitting ||
-                                  selected.length === 0 ||
-                                  reason.trim().length === 0 ||
-                                  (target.requires_node_pool &&
-                                    (nodePools[target.target_id] ?? "").trim().length === 0)
-                                }
-                                onClick={() => void trigger(target)}
-                              >
-                                {submitting
-                                  ? "Submitting…"
-                                  : target.operation === "node_image_upgrade"
-                                    ? "Trigger node image upgrade"
-                                    : `Install ${selected.length} update${selected.length === 1 ? "" : "s"}`}
-                              </button>
-                              {reason.trim().length === 0 && (
-                                <p className="muted">A reason is required before a run can be triggered.</p>
-                              )}
-                              {target.requires_node_pool &&
-                                (nodePools[target.target_id] ?? "").trim().length === 0 && (
-                                  <p className="muted">
-                                    Name the agent pool to upgrade. HOG will not roll every pool in the
-                                    cluster.
-                                  </p>
-                                )}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        </>
-      )}
-      <TablePagination
-        total={targetPaging.total}
-        pageRows={targetPaging.pageRows.length}
-        page={targetPaging.page}
-        onPageChange={targetPaging.setPage}
-        pageSize={targetPaging.pageSize}
-        onPageSizeChange={targetPaging.setPageSize}
-        label="targets"
-      />
-
-      {recentRuns.length > 0 && (
-        <div className="card-body">
-          <h3>Recent runs</h3>
           <TableColumnFilters
-            filters={runFilters}
-            onReset={resetRunFilters}
-            resultCount={filteredRuns.length}
-            totalCount={recentRuns.length}
+            filters={filters}
+            onReset={resetFilters}
+            resultCount={visibleTargets.length}
+            totalCount={filteredTargets.length}
           />
           <div className="table-scroll">
-            <table className="operations-table">
+            <table className="operations-table exposure-table">
               <thead>
                 <tr>
-                  <th>Run</th>
-                  <th>Target</th>
-                  <th>Updates</th>
-                  <th>State</th>
-                  <th>Requested by</th>
+                  <th>Server</th>
+                  <th>Inventory</th>
+                  <th>Scope</th>
+                  <th>Open findings</th>
+                  <th>Available updates</th>
+                  <th>Governed action</th>
                 </tr>
               </thead>
               <tbody>
-                {runPaging.pageRows.map((run) => (
+                {paging.pageRows.map((target) => {
+                  const selected = selection[target.target_id] ?? [];
+                  const isOpen = expanded === target.target_id;
+                  return (
+                    <Fragment key={target.target_id}>
+                      <tr>
+                        <td>
+                          <strong>{target.name || target.target_id}</strong>
+                          <div className="table-secondary">{target.target_id}</div>
+                        </td>
+                        <td>
+                          <StatusBadge label={target.inventory_kind} tone="neutral" />
+                          <div className="table-secondary">
+                            {target.operation === "node_image_upgrade" ? "Node image upgrade" : "Install patches"}
+                          </div>
+                        </td>
+                        <td>
+                          <strong>{target.business_service || "Unassigned service"}</strong>
+                          <div className="table-secondary">
+                            {[target.environment, target.region, target.owner].filter(Boolean).join(" · ") || "No scope metadata"}
+                          </div>
+                        </td>
+                        <td>
+                          <strong>{target.cve_count} CVEs</strong>
+                          <div className="table-secondary">{target.critical_count} critical · {target.overdue_count} overdue</div>
+                        </td>
+                        <td>
+                          <strong>{target.available_patches.length} available</strong>
+                          <div className="table-secondary">{selected.length > 0 ? `${selected.length} selected` : "All shown for review"}</div>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="button button-quiet"
+                            onClick={() => setExpanded(isOpen ? null : target.target_id)}
+                            aria-expanded={isOpen}
+                          >
+                            {isOpen ? "Hide updates" : "Choose updates"}
+                          </button>
+                          <Link className="button button-primary" href={remediationHref(target, selected)}>
+                            Open governed remediation
+                          </Link>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr className="detail-row">
+                          <td colSpan={6}>
+                            {!target.patchable ? (
+                              <p className="muted">{target.blocked_reason || "This target is not currently patchable."}</p>
+                            ) : target.available_patches.length === 0 ? (
+                              <p className="muted">No updates are currently known for this target.</p>
+                            ) : (
+                              <div className="patch-selection">
+                                <ul className="patch-option-list">
+                                  {target.available_patches.map((patch) => (
+                                    <li key={patch.patch_id}>
+                                      <label className="patch-option">
+                                        <input
+                                          type={target.operation === "node_image_upgrade" ? "radio" : "checkbox"}
+                                          name={`patch-${target.target_id}`}
+                                          checked={selected.includes(patch.patch_id)}
+                                          onChange={() => togglePatch(target, patch.patch_id)}
+                                        />
+                                        <span><strong>{patch.patch_id}</strong>{patch.title ? ` — ${patch.title}` : ""}</span>
+                                      </label>
+                                      <div className="table-secondary">
+                                        {[patch.classification, patch.severity, patch.reboot_required ? "reboot required" : "", patch.cve_ids.slice(0, 3).join(", "), `source: ${patch.source}`].filter(Boolean).join(" · ")}
+                                      </div>
+                                    </li>
+                                  ))}
+                                </ul>
+                                <p className="muted">Selection narrows review context only; the server creates the authoritative executable snapshot.</p>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <TablePagination
+            total={paging.total}
+            pageRows={paging.pageRows.length}
+            page={paging.page}
+            onPageChange={paging.setPage}
+            pageSize={paging.pageSize}
+            onPageSizeChange={paging.setPageSize}
+            label="targets"
+          />
+        </>
+      )}
+
+      {recentRuns.length > 0 && (
+        <div className="card-body">
+          <h3>Historical patch runs</h3>
+          <div className="table-scroll">
+            <table className="operations-table">
+              <thead><tr><th>Run</th><th>Target</th><th>Updates</th><th>State</th><th>Requested by</th></tr></thead>
+              <tbody>
+                {recentRuns.map((run) => (
                   <tr key={run.run_id}>
-                    <td>
-                      <code>{run.run_id}</code>
-                      <div className="table-secondary">{run.created_at}</div>
-                    </td>
-                    <td>
-                      <strong>{run.target_id}</strong>
-                      <div className="table-secondary">{run.operation}</div>
-                    </td>
+                    <td><code>{run.run_id}</code><div className="table-secondary">{run.created_at}</div></td>
+                    <td><strong>{run.target_id}</strong><div className="table-secondary">{run.operation}</div></td>
                     <td>{run.patch_ids.join(", ") || "—"}</td>
-                    <td>
-                      <StatusBadge label={run.state} tone={stateTone(run.state)} />
-                      <div className="table-secondary">{run.message || run.provider || ""}</div>
-                    </td>
+                    <td><StatusBadge label={run.state} tone={stateTone(run.state)} /><div className="table-secondary">{run.message || run.provider || ""}</div></td>
                     <td>{run.requested_by}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <TablePagination
-            total={runPaging.total}
-            pageRows={runPaging.pageRows.length}
-            page={runPaging.page}
-            onPageChange={runPaging.setPage}
-            pageSize={runPaging.pageSize}
-            onPageSizeChange={runPaging.setPageSize}
-            label="runs"
-          />
         </div>
       )}
     </section>

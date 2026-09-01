@@ -578,7 +578,7 @@ describe("Governed Remediation Center", () => {
     expect(screen.queryByText("Succeeded")).not.toBeInTheDocument();
 
     await waitFor(() => expect(execution).toHaveBeenCalledWith("RME-1", {}), { timeout: 4000 });
-    expect(await screen.findByText("Succeeded")).toBeInTheDocument();
+    expect((await screen.findAllByText("Succeeded")).length).toBeGreaterThan(0);
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
@@ -607,7 +607,7 @@ describe("Governed Remediation Center", () => {
     expect(screen.getByText(/Azure Update Manager reported an installation failure/)).toBeInTheDocument();
     expect(screen.getByText(/Restore the last known-good image/)).toBeInTheDocument();
     expect(screen.getByText(/Attempt 1/)).toBeInTheDocument();
-    expect(screen.getByText(/operator@example.com/)).toBeInTheDocument();
+    expect(screen.getAllByText(/operator@example.com/).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Retry execution" }));
     await waitFor(() => expect(retry).toHaveBeenCalledWith("RME-1", {}));
@@ -623,11 +623,12 @@ describe("Governed Remediation Center", () => {
       ineligibility_reason: "",
     });
     executions.mockResolvedValue(envelope({ plan_id: "plan-1", executions: [queued] }));
-    renderPage();
+    const first = renderPage();
 
     fireEvent.click(await screen.findByRole("button", { name: "Cancel queued execution" }));
     await waitFor(() => expect(cancel).toHaveBeenCalledWith("RME-1", {}));
     expect(await screen.findByText("Cancelled")).toBeInTheDocument();
+    first.unmount();
 
     executions.mockResolvedValue(envelope({ plan_id: "plan-1", executions: [executionRecord()] }));
     const second = renderPage();
@@ -636,13 +637,16 @@ describe("Governed Remediation Center", () => {
   });
 
   it("cleans up active execution polling when the page unmounts", async () => {
-    renderPage();
+    execute.mockClear();
+    execution.mockClear();
+    const page = renderPage();
     fireEvent.click(await screen.findByRole("button", { name: "Review and execute" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm execution" }));
     await waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(execution).toHaveBeenCalled(), { timeout: 3000 });
 
     const callsAtUnmount = execution.mock.calls.length;
-    document.body.innerHTML = "";
+    page.unmount();
     await new Promise((resolve) => setTimeout(resolve, 2200));
     expect(execution.mock.calls.length).toBe(callsAtUnmount);
   });
