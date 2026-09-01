@@ -436,6 +436,13 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("availability", pa.string(), nullable=False),
             pa.field("quality", pa.string(), nullable=False),
             pa.field("error", pa.string(), nullable=False),
+            # MED-03: dataset-agnostic health provider
+            # (`src/fabric/medallion_health.py::dataset_status`) needs the
+            # underlying table's row-count and lineage evidence alongside
+            # the existing sync-attempt status columns above -- extending
+            # this table rather than creating a second status table.
+            pa.field("row_count", pa.int64(), nullable=True),
+            pa.field("lineage_ref", pa.string(), nullable=True),
         ]
     ),
 }

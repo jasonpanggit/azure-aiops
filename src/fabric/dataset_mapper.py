@@ -999,7 +999,22 @@ def _source_status_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
         "availability": str(row.get("availability") or "unknown"),
         "quality": str(row.get("quality") or "unknown"),
         "error": str(row.get("error") or ""),
+        # MED-03: dataset-agnostic health provider
+        # (`src/fabric/medallion_health.py::dataset_status`) evidence.
+        # `None` (unknown row count) stays `None` -- callers must not
+        # confuse "row count not reported by this source" with zero rows.
+        "row_count": _optional_int(row.get("row_count")),
+        "lineage_ref": str(row.get("lineage_ref") or ""),
     }
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _situation_ontology_entity(row: dict[str, Any], run_id: str) -> dict[str, Any]:

@@ -501,6 +501,10 @@ def _snapshot_failure_table(
                 "availability": "unavailable",
                 "quality": "degraded",
                 "error": error,
+                # MED-03: an unreachable connection has no known row count
+                # (never `0` -- that would misread as `healthy-empty`).
+                "row_count": None,
+                "lineage_ref": "",
             }
             for family in _DEFENDER_SOURCE_FAMILIES
         ]
