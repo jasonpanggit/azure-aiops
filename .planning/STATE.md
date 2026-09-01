@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 10-05-PLAN.md
-last_updated: "2026-09-01T08:48:15.585Z"
+stopped_at: Completed 10-06-PLAN.md
+last_updated: "2026-09-01T09:26:54.734Z"
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 64
-  completed_plans: 43
+  completed_plans: 45
 ---
 
 # Phase 09-11: Centralized Azure MCP Server in ACA
@@ -144,6 +144,7 @@ Phase 09-09 objectives are met. Suggested follow-ups (not blocking):
 | Phase 10 P03 | 21min | 3 tasks | 4 files |
 | Phase 10 P04 | 45min | 3 tasks | 7 files |
 | Phase 10 P05 | 20min | 3 tasks | 3 files |
+| Phase 10 P06 | 32min | 4 tasks | 10 files |
 
 ## Decisions
 
@@ -152,9 +153,10 @@ Phase 09-09 objectives are met. Suggested follow-ups (not blocking):
 - [Phase ?]: 10-03: PublicationStateStore persists via OneLakeDocumentStore.put() (last-writer-wins), reusing the same small-control-plane-document tier as the connection registry and CVE cache; retryable derived from fabric_client.FabricClient.TRANSIENT_STATUS.
 - [Phase ?]: MED-03: dataset_status() availability priority order is unavailable > failed > stale > degraded > healthy-empty > healthy
 - [Phase ?]: Publication manifest (MED-09) kept structurally distinct from the existing per-connection snapshot manifest; in-memory registry contract defined, Delta write wiring deferred to a later plan (10-09/health API).
+- [Phase ?]: 10-06: Change/Predictive domains wired identically (pure from_snapshot() projections); Remediation dispositioned dormant (needs a planner-generation prerequisite that never runs in batch sync, out of wiring-fix scope).
 
 ## Session
 
-**Last session:** 2026-09-01T08:48:15.572Z
-**Stopped at:** Completed 10-05-PLAN.md
+**Last session:** 2026-09-01T09:26:54.720Z
+**Stopped at:** Completed 10-06-PLAN.md
 **Resume file:** None

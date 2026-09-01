@@ -586,7 +586,7 @@ before re-opening this. Argue from the numbers.
 **Goal:** Deliver a reliable, governed Fabric medallion platform whose Bronze, Silver, and Gold products are observable, freshness-bounded, consumable through curated semantic contracts, and consistently surfaced through the API and web application.
 **Requirements**: MED-01, MED-02, MED-03, MED-04, MED-05, MED-06, MED-07, MED-08, MED-09, MED-10
 **Depends on:** Phase 9
-**Plans:** 5/15 plans executed
+**Plans:** 6/15 plans executed
 
 Plans:
 
@@ -595,7 +595,7 @@ Plans:
 - [x] 10-03-PLAN.md — Durable ontology publication terminal state & telemetry (MED-01)
 - [x] 10-04-PLAN.md — Dataset-agnostic freshness/status/quality health provider (MED-03)
 - [x] 10-05-PLAN.md — Publication manifest & lifecycle disposition registry (MED-09)
-- [ ] 10-06-PLAN.md — Change-domain ontology forwarding fix + predictive/remediation disposition audit (MED-04)
+- [x] 10-06-PLAN.md — Change-domain ontology forwarding fix + predictive/remediation disposition audit (MED-04)
 - [ ] 10-07-PLAN.md — OneLake data access, capacity health, Delta maintenance, lineage surfacing (MED-10)
 - [ ] 10-08-PLAN.md — Historical retention extension for cost/compliance/patch/change/incident (MED-07)
 - [ ] 10-09-PLAN.md — Gold/Silver restoration, staged rollout & disposition classification (MED-02)
