@@ -167,3 +167,47 @@ def test_vm_assessment_still_normalizes() -> None:
     assert entity is not None
     assert entity["entityType"] == "DefenderAssessment"
     assert entity["severity"] == "High"
+
+
+def test_assessment_severity_reads_metadata() -> None:
+    """Defender publishes assessment severity under properties.metadata.severity."""
+
+    row = {
+        "id": "/subscriptions/s/providers/microsoft.security/assessments/a1",
+        "name": "a1",
+        "properties": {
+            "displayName": "Machines should have vulnerabilities resolved",
+            "metadata": {"severity": "Medium"},
+            "status": {"code": "Unhealthy"},
+            "resourceDetails": {
+                "ResourceProvider": "hybridcompute",
+                "ResourceType": "machines",
+                "Id": "/subscriptions/s/providers/microsoft.hybridcompute/machines/VM1",
+            },
+        },
+    }
+
+    entity = normalize_assessment(row, "2026-09-01T00:00:00Z")
+
+    assert entity is not None
+    assert entity["severity"] == "Medium"
+
+
+def test_assessment_severity_defaults_to_unknown_without_source() -> None:
+    row = {
+        "id": "/subscriptions/s/providers/microsoft.security/assessments/a2",
+        "name": "a2",
+        "properties": {
+            "status": {"code": "Unhealthy"},
+            "resourceDetails": {
+                "ResourceProvider": "hybridcompute",
+                "ResourceType": "machines",
+                "Id": "/subscriptions/s/providers/microsoft.hybridcompute/machines/VM1",
+            },
+        },
+    }
+
+    entity = normalize_assessment(row, "2026-09-01T00:00:00Z")
+
+    assert entity is not None
+    assert entity["severity"] == "Unknown"

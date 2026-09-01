@@ -528,7 +528,13 @@ def _status(properties: Mapping[str, Any]) -> str:
 def _severity(properties: Mapping[str, Any]) -> str:
     status = _mapping(properties.get("status"))
     additional = _mapping(properties.get("additionalData"))
+    # Defender for Cloud publishes assessment severity under
+    # ``properties.metadata.severity``; the other locations are only populated
+    # by sub-assessment style payloads, so metadata has to be consulted or every
+    # recommendation degrades to "Unknown".
+    metadata = _mapping(properties.get("metadata"))
     return _first_text(
+        metadata.get("severity"),
         additional.get("severity"),
         status.get("severity"),
         properties.get("severity"),
