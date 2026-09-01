@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from ontology.publication_state import DEFAULT_ONTOLOGY_NAME, PublicationStateStore
 from ontology.subscription_connection import SubscriptionConnection, SyncState
 from storage.fs import join_root, resolve_root
 
@@ -95,6 +96,9 @@ class ConnectionSyncCoordinator:
         clock: Callable[[], datetime] | None = None,
         stale_after_hours: int = DEFAULT_STALE_AFTER_HOURS,
         publish_factory: Callable[[SubscriptionConnection], Any] | None = None,
+        publication_state_store: PublicationStateStore | None = None,
+        ontology_name: str = DEFAULT_ONTOLOGY_NAME,
+        metrics: Any | None = None,
     ) -> None:
         self.output_dir = resolve_root(str(output_dir))
         self.ingestion_factory = ingestion_factory
@@ -103,6 +107,28 @@ class ConnectionSyncCoordinator:
         if stale_after_hours < 1:
             raise ValueError("stale_after_hours must be positive")
         self.stale_after_hours = stale_after_hours
+        # Durable terminal-state record of ontology publish attempts (MED-01).
+        # Defaults to a store backed by this coordinator's own output root, so
+        # it uses the exact same storage tier (local disk in dev, OneLake in
+        # prod) as everything else this coordinator persists.
+        self.publication_state_store = publication_state_store or PublicationStateStore(
+            self.output_dir
+        )
+        self.ontology_name = ontology_name
+        # ``metrics`` follows the same optional-injection pattern as
+        # ``fabric.sync_service.OntologySyncService`` (``metrics or
+        # FabricMetrics()``). Import is local so plain ingestion-only callers
+        # (this coordinator's default mode with no ``publish_factory``) never
+        # require ``fabric.telemetry``/OpenTelemetry to be importable.
+        if metrics is not None:
+            self.metrics = metrics
+        else:
+            try:
+                from fabric.telemetry import FabricMetrics
+
+                self.metrics = FabricMetrics()
+            except ImportError:  # pragma: no cover - fabric.telemetry is a hard dependency elsewhere
+                self.metrics = None
 
     def connection_output_dir(self, connection: SubscriptionConnection) -> str:
         """Each connection writes to an isolated dataset root."""
@@ -211,6 +237,9 @@ class ConnectionSyncCoordinator:
                     f"{mode} sync completed but Fabric publish failed: "
                     f"{str(exc).strip() or exc.__class__.__name__}"
                 )
+                self._record_publication_attempt(exc)
+            else:
+                self._record_publication_attempt(None)
 
         finished = self.clock()
         message = publish_message or f"{mode} sync completed"
@@ -267,6 +296,85 @@ class ConnectionSyncCoordinator:
             "last_successful_sync_at": current.last_successful_sync_at,
             "stale_after_hours": self.stale_after_hours,
         }
+
+    def _record_publication_attempt(self, exc: Exception | None) -> None:
+        """Record this publish attempt's terminal state, durably and via telemetry.
+
+        Never allowed to raise: recording an attempt must not itself break
+        the sync run it is describing (mirrors the ``noqa: BLE001, S110``
+        discipline already used for ``_report`` above).
+
+        ``exc`` is ``None`` on a successful publish. A caught ``ValueError``
+        is a preflight rejection from ``OntologyPublisher.build_definition()``
+        (never reaches the network, never retried). Anything else is a Fabric
+        REST failure that reached ``fabric_client.py``'s bounded retry loop;
+        it is only marked ``retryable`` when it carries one of that module's
+        own ``TRANSIENT_STATUS`` codes (or is a transport-level failure),
+        i.e. exactly the class of error that loop already gives up on.
+        """
+        try:
+            metrics = self.metrics
+            if exc is None:
+                self.publication_state_store.record(
+                    ontology_name=self.ontology_name,
+                    outcome="succeeded",
+                    retryable=False,
+                    error="",
+                    attempted_at=_iso(self.clock()),
+                )
+                return
+            error = str(exc).strip() or exc.__class__.__name__
+            if isinstance(exc, ValueError):
+                self.publication_state_store.record(
+                    ontology_name=self.ontology_name,
+                    outcome="rejected",
+                    retryable=False,
+                    error=error,
+                    attempted_at=_iso(self.clock()),
+                )
+                if metrics is not None:
+                    metrics.record_publish_preflight_rejected()
+                return
+            retryable, status_code = _transient_fabric_status(exc)
+            self.publication_state_store.record(
+                ontology_name=self.ontology_name,
+                outcome="failed",
+                retryable=retryable,
+                error=error,
+                attempted_at=_iso(self.clock()),
+            )
+            if retryable and metrics is not None:
+                metrics.record_publish_retry(status_code)
+        except Exception:  # noqa: BLE001, S110 - recording must never break the sync run
+            logger.exception("Failed to record ontology publication attempt state")
+
+
+def _transient_fabric_status(exc: Exception) -> tuple[bool, int | None]:
+    """Return ``(retryable, status_code)`` for an exhausted-retry Fabric failure.
+
+    ``retryable`` mirrors ``fabric.fabric_client.FabricClient.TRANSIENT_STATUS``
+    -- the same status-code set that client's own backoff loop already
+    retries -- so a publish failure is only ever marked retryable when it's
+    the same class of error that loop just gave up on. Import is local to
+    avoid ``onboarding.sync`` depending on ``fabric`` at module load time for
+    callers (e.g. plain ingestion-only tests) that never touch Fabric.
+    """
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    try:
+        from fabric.fabric_client import FabricClient
+
+        if status_code in FabricClient.TRANSIENT_STATUS:
+            return True, status_code
+    except ImportError:  # pragma: no cover - fabric is a hard dependency elsewhere
+        pass
+    try:
+        import httpx
+
+        if isinstance(exc, httpx.TransportError):
+            return True, status_code
+    except ImportError:  # pragma: no cover - httpx is a hard dependency elsewhere
+        pass
+    return False, status_code
 
 
 #: Keys under which an ingestion factory MAY surface an already-computed
