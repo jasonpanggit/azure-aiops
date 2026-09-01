@@ -83,8 +83,12 @@ class RemediationGenerator:
         plan_id = "RMP-" + hashlib.sha256(
             f"{opportunity['_resource_key']}|{action['action_id']}".encode()
         ).hexdigest()[:16].upper()
+        
+        # Compute stable evidence digest from citations
+        evidence_digest = self._stable_evidence_digest(evidence_citations)
+        
         action_version = hashlib.sha256(
-            f"{action['action_id']}|{action.get('title')}|{action.get('execution_steps')}|{action.get('rollback_actions')}".encode()
+            f"{action['action_id']}|{action.get('title')}|{action.get('execution_steps')}|{action.get('rollback_actions')}|{evidence_digest}".encode()
         ).hexdigest()[:16]
         steps = [
             {
@@ -207,3 +211,25 @@ class RemediationGenerator:
             "detail": f"Estimated +{points} secure score point(s) from resolving {len(citations)} control gap(s).",
             "evidence_citations": [f"secure_score_control:{cid}" for cid in citation_ids],
         }
+
+    @staticmethod
+    def _stable_evidence_digest(citations: list[dict[str, Any]]) -> str:
+        """Compute a stable digest of the evidence citations.
+        
+        Returns a hex string that changes when citations change but is stable
+        across regenerations when citations are unchanged. Used in action_version
+        to make approval freshness detectable.
+        """
+        if not citations:
+            return ""
+        
+        # Sort by source_type and source_id to ensure stable ordering
+        sorted_citations = sorted(
+            [
+                f"{c.get('source_type', '')}:{c.get('source_id', '')}:{c.get('observed_at', '')}"
+                for c in citations
+                if c.get("source_id")
+            ]
+        )
+        digest_input = "|".join(sorted_citations)
+        return hashlib.sha256(digest_input.encode()).hexdigest()[:16] if digest_input else ""

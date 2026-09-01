@@ -338,6 +338,7 @@ def record_remediation_decision(
         "scope_authorized",
         "action_version_current",
         "execution_boundary_read_only",
+        "defender_evidence_fresh",
     ]
     if request.decision == "approved":
         expires_at = _future_expiry(request.expires_at)
