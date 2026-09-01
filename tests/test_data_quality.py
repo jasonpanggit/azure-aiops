@@ -237,7 +237,11 @@ def test_data_quality_ownership_tag_block_mode_flips_passed_over_threshold() -> 
 
 def test_data_quality_ownership_tag_block_mode_within_threshold_passes() -> None:
     populated = BASE
-    missing_owner = {**BASE, "payload_json": json.dumps({"tags": {"environment": "production"}})}
+    missing_owner = {
+        **BASE,
+        "resource_id": "/subscriptions/sub-1/resources/r2",
+        "payload_json": json.dumps({"tags": {"environment": "production"}}),
+    }
     validator = DataQualityValidator(
         ownership_tag_thresholds={
             "mode": "block",
