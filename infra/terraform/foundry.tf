@@ -532,6 +532,21 @@ resource "azapi_resource" "foundry_ai_search_connection" {
   }
 }
 
+# The search service's own system-assigned identity is who actually calls
+# the embedding deployment at query time -- Foundry's "azure_ai_search" tool
+# with query_type=vector_semantic_hybrid needs the index's vector field to
+# carry an integrated vectorizer (see create-foundry-knowledge-index.sh) so
+# Azure AI Search, not Foundry, embeds the caller's query text server-side.
+# Without this role the vectorizer call fails at query time with a 403, even
+# though document ingestion (which authenticates as the deployer instead)
+# already succeeded.
+resource "azurerm_role_assignment" "search_cognitive_services_openai_user" {
+  count                = var.enable_foundry_knowledge_search ? 1 : 0
+  scope                = azurerm_cognitive_account.foundry.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = azurerm_search_service.knowledge[0].identity[0].principal_id
+}
+
 # The Foundry account (not just the project) needs its own identity granted
 # here: it is the account's system-assigned identity, not the project's, that
 # the agent runtime uses when calling out to a connected Azure AI Search

@@ -66,6 +66,17 @@ echo "create-foundry-knowledge-index: upserting index '${SEARCH_INDEX_NAME}' on 
 # 1536 dims matches text-embedding-3-small/ada-002. If a larger embedding
 # model is configured, the index create call below will fail with a clear
 # dimension-mismatch error rather than silently truncating vectors.
+#
+# The vectorizer (azureOpenAIParameters below) is what makes
+# query_type=vector_semantic_hybrid usable from Foundry's azure_ai_search
+# tool: Foundry sends the raw query text and expects Azure AI Search itself
+# to embed it using this configuration, since Foundry does not separately
+# call an embedding model to vectorize the query on the caller's behalf.
+# Document vectors are still embedded and upserted explicitly below (not via
+# the vectorizer), since ingestion runs as this script/the deploying
+# principal rather than the search service's own identity -- but the field
+# and the vectorizer must still agree on the same embedding deployment/model
+# so query and document vectors are comparable.
 index_body=$(cat <<JSON
 {
   "name": "${SEARCH_INDEX_NAME}",
@@ -79,7 +90,16 @@ index_body=$(cat <<JSON
   ],
   "vectorSearch": {
     "algorithms": [{"name": "default-algo", "kind": "hnsw"}],
-    "profiles": [{"name": "default-profile", "algorithm": "default-algo"}]
+    "profiles": [{"name": "default-profile", "algorithm": "default-algo", "vectorizer": "default-vectorizer"}],
+    "vectorizers": [{
+      "name": "default-vectorizer",
+      "kind": "azureOpenAI",
+      "azureOpenAIParameters": {
+        "resourceUri": "${FOUNDRY_OPENAI_ENDPOINT}",
+        "deploymentId": "${FOUNDRY_EMBEDDING_MODEL}",
+        "modelName": "${FOUNDRY_EMBEDDING_MODEL}"
+      }
+    }]
   },
   "semantic": {
     "configurations": [{
