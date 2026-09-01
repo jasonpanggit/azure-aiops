@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from api.scope import Scope
 from fabric.gold_grounding_client import GoldGroundingUnavailable
 from fabric_pipelines.gold_grounding_contract import GoldGroundedFinding
 from operations.foundry_agent import AgentAnswer
@@ -30,6 +31,47 @@ class _Agent:
     def answer_findings(self, **kwargs):
         self.calls.append(kwargs)
         return AgentAnswer(text="ok", agent_name="operations-copilot")
+
+
+class _ProviderContext:
+    def __init__(self, inventory_read_port) -> None:
+        self._inventory_read_port = inventory_read_port
+
+    def resolve_provider(self, name: str):
+        if name != "inventory_read_port":
+            raise AssertionError(name)
+        return self._inventory_read_port
+
+
+class _InventoryPort:
+    def __init__(self, mapping: dict[str, dict[str, object] | None]) -> None:
+        self.mapping = {key.casefold(): value for key, value in mapping.items()}
+        self.calls: list[tuple[object, str]] = []
+
+    def get_resource(self, scope, resource_id: str):
+        self.calls.append((scope, resource_id))
+        return self.mapping.get(resource_id.casefold())
+
+
+class _Metrics:
+    def __init__(self) -> None:
+        self.inventory_conflict_calls = 0
+        self.query_calls: list[dict[str, object]] = []
+
+    def record_inventory_conflict(self) -> None:
+        self.inventory_conflict_calls += 1
+
+    def record_query(
+        self, *, degraded: bool, degraded_reason: str, citation_count: int, duration_ms: float
+    ) -> None:
+        self.query_calls.append(
+            {
+                "degraded": degraded,
+                "degraded_reason": degraded_reason,
+                "citation_count": citation_count,
+                "duration_ms": duration_ms,
+            }
+        )
 
 
 def _finding_line(
@@ -184,3 +226,205 @@ def test_narration_call_sets_max_output_tokens_800(monkeypatch) -> None:
     )
 
     assert agent.calls[0]["max_output_tokens"] == 800
+
+
+def test_inventory_missing_resource_adds_conflict_notice(monkeypatch) -> None:
+    def fake_query_gold_grounding(**_kwargs):
+        return {"isError": False, "content": [{"type": "text", "text": _finding_line()}]}
+
+    monkeypatch.setattr(
+        "operations.gold_grounding_specialist.query_gold_grounding",
+        fake_query_gold_grounding,
+    )
+    agent = _Agent()
+    inventory = _InventoryPort(mapping={})
+    metrics = _Metrics()
+    effective_scope = Scope.from_mapping({"subscription": ["sub-1"]})
+
+    asyncio.run(
+        answer_with_gold_grounding(
+            question="Question",
+            ontology_context={"findings": []},
+            scope=_Scope(),
+            agent=agent,
+            provider_context=_ProviderContext(inventory),
+            effective_scope=effective_scope,
+            metrics=metrics,
+        )
+    )
+
+    merged_context = agent.calls[0]["context"]
+    assert "gold_grounding_inventory_conflicts" in merged_context
+    conflicts = merged_context["gold_grounding_inventory_conflicts"]
+    assert conflicts[0]["reason"] == "resource_not_found"
+    assert conflicts[0]["citation"]["row_key"] == "row-1"
+    assert "Inventory is authoritative" in merged_context["gold_grounding_inventory_conflict_notice"]
+    assert metrics.inventory_conflict_calls == 1
+    assert inventory.calls and inventory.calls[0][0] == effective_scope
+
+
+def test_inventory_ownership_or_lifecycle_mismatch_adds_conflict_notice(monkeypatch) -> None:
+    resource_a = "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-a"
+    resource_b = "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-b"
+
+    def fake_query_gold_grounding(**_kwargs):
+        return {
+            "isError": False,
+            "content": [
+                {
+                    "type": "text",
+                    "text": _finding_line(
+                        resource_ids=[resource_a, resource_b],
+                        citations=[
+                            {
+                                "gold_table": "gold_business_service_health",
+                                "row_key": "row-subscription-mismatch",
+                                "as_of": "2026-09-01T00:00:00Z",
+                                "confidence": 0.9,
+                            },
+                            {
+                                "gold_table": "gold_business_service_health",
+                                "row_key": "row-lifecycle-retired",
+                                "as_of": "2026-09-01T00:00:00Z",
+                                "confidence": 0.8,
+                            },
+                        ],
+                    ),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "operations.gold_grounding_specialist.query_gold_grounding",
+        fake_query_gold_grounding,
+    )
+    agent = _Agent()
+    inventory = _InventoryPort(
+        mapping={
+            resource_a: {
+                "resource_id": resource_a,
+                "subscription_id": "sub-other",
+                "resource_group": "rg-1",
+                "lifecycle_status": "active",
+            },
+            resource_b: {
+                "resource_id": resource_b,
+                "subscription_id": "sub-1",
+                "resource_group": "rg-1",
+                "lifecycle_status": "retired",
+            },
+        }
+    )
+    metrics = _Metrics()
+
+    asyncio.run(
+        answer_with_gold_grounding(
+            question="Question",
+            ontology_context={"findings": []},
+            scope=_Scope(resource_ids=frozenset({resource_a, resource_b})),
+            agent=agent,
+            provider_context=_ProviderContext(inventory),
+            effective_scope=Scope.from_mapping({"subscription": ["sub-1"]}),
+            metrics=metrics,
+        )
+    )
+
+    conflicts = agent.calls[0]["context"]["gold_grounding_inventory_conflicts"]
+    reasons = {conflict["reason"] for conflict in conflicts}
+    assert "subscription_mismatch" in reasons
+    assert "lifecycle_mismatch" in reasons
+    assert metrics.inventory_conflict_calls == 2
+
+
+def test_inventory_conflict_counter_increments_per_conflicting_citation(monkeypatch) -> None:
+    resource = "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-a"
+
+    def fake_query_gold_grounding(**_kwargs):
+        return {
+            "isError": False,
+            "content": [
+                {
+                    "type": "text",
+                    "text": _finding_line(
+                        resource_ids=[resource],
+                        citations=[
+                            {
+                                "gold_table": "gold_business_service_health",
+                                "row_key": "row-conflict-1",
+                                "as_of": "2026-09-01T00:00:00Z",
+                                "confidence": 0.9,
+                            },
+                            {
+                                "gold_table": "gold_business_service_health",
+                                "row_key": "row-conflict-2",
+                                "as_of": "2026-09-01T00:00:00Z",
+                                "confidence": 0.8,
+                            },
+                        ],
+                    ),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "operations.gold_grounding_specialist.query_gold_grounding",
+        fake_query_gold_grounding,
+    )
+    agent = _Agent()
+    inventory = _InventoryPort(mapping={resource: None})
+    metrics = _Metrics()
+
+    asyncio.run(
+        answer_with_gold_grounding(
+            question="Question",
+            ontology_context={"findings": []},
+            scope=_Scope(resource_ids=frozenset({resource})),
+            agent=agent,
+            provider_context=_ProviderContext(inventory),
+            effective_scope=Scope.from_mapping({"subscription": ["sub-1"]}),
+            metrics=metrics,
+        )
+    )
+
+    assert metrics.inventory_conflict_calls == 2
+    assert len(agent.calls[0]["context"]["gold_grounding_inventory_conflicts"]) == 2
+
+
+def test_inventory_agreement_adds_no_conflict_and_no_counter_increment(monkeypatch) -> None:
+    resource = "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-a"
+
+    def fake_query_gold_grounding(**_kwargs):
+        return {"isError": False, "content": [{"type": "text", "text": _finding_line(resource_ids=[resource])}]}
+
+    monkeypatch.setattr(
+        "operations.gold_grounding_specialist.query_gold_grounding",
+        fake_query_gold_grounding,
+    )
+    agent = _Agent()
+    inventory = _InventoryPort(
+        mapping={
+            resource: {
+                "resource_id": resource,
+                "subscription_id": "sub-1",
+                "resource_group": "rg-1",
+                "lifecycle_status": "active",
+            }
+        }
+    )
+    metrics = _Metrics()
+
+    asyncio.run(
+        answer_with_gold_grounding(
+            question="Question",
+            ontology_context={"findings": []},
+            scope=_Scope(resource_ids=frozenset({resource})),
+            agent=agent,
+            provider_context=_ProviderContext(inventory),
+            effective_scope=Scope.from_mapping({"subscription": ["sub-1"]}),
+            metrics=metrics,
+        )
+    )
+
+    merged_context = agent.calls[0]["context"]
+    assert "gold_grounding_inventory_conflicts" not in merged_context
+    assert metrics.inventory_conflict_calls == 0
