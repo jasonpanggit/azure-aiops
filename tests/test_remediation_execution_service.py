@@ -395,7 +395,7 @@ def test_execute_valid_approved_plan_triggers_patching_service_with_no_caller_ov
 
     result = service.execute(plan["plan_id"], requested_by="operator@example.com")
 
-    assert result["status"] == "succeeded"
+    assert result["status"] == "running"
     assert len(adapter.submissions) == 1
     submitted_run, submitted_target = adapter.submissions[0]
     assert submitted_target.target_id == TARGET_ID
@@ -530,7 +530,7 @@ def test_execution_identity_is_permanent_after_every_status(status):
     assert second["execution_id"] == first["execution_id"]
 
 
-def test_execute_persists_queued_then_running_then_terminal_lifecycle():
+def test_execute_persists_running_until_authoritative_terminal_verification():
     plan = _plan()
     store = RemediationExecutionStore()
     service, store = _service_with_store(plan=plan, execution_store=store)
@@ -538,7 +538,7 @@ def test_execute_persists_queued_then_running_then_terminal_lifecycle():
     result = service.execute(plan["plan_id"], requested_by="operator@example.com")
 
     execution = store.get(result["execution_id"])
-    assert execution["status"] == "succeeded"
+    assert execution["status"] == "running"
     assert execution["plan_id"] == plan["plan_id"]
 
 

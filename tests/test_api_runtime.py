@@ -25,12 +25,12 @@ from api.runtime import (
     build_authenticator,
     build_context,
 )
-from intelligence.remediation.execution_verifier import ExecutionVerifier
-from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
 from api.scope import Scope
 from intelligence.inventory.normalization import normalize_os_inventory
+from intelligence.remediation.execution_verifier import ExecutionVerifier
 from onboarding.credentials import KeyVaultSecretWriter
 from onboarding.local_seed import seed_local_environment
+from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
 from storage.datasets import DatasetStore as NeutralDatasetStore
 
 TOKENS = '{"demo-token-0123456789abcdef": {"subject": "d@e.com", "grants": [{"role": "admin"}]}}'

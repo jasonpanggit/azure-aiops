@@ -15,12 +15,12 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
+from intelligence.remediation.approval_decisions import execution_snapshot_hash
 from intelligence.remediation.execution_service import (
     MAX_EXECUTION_ATTEMPTS,
     RemediationExecutionError,
     RemediationExecutionService,
 )
-from intelligence.remediation.approval_decisions import execution_snapshot_hash
 from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.execution_verifier import ExecutionVerifier
 from intelligence.remediation.plan_repository import PlanRepository
@@ -179,7 +179,7 @@ def _service(
 
 def test_retry_rejects_when_plan_approval_changed_since_original_attempt():
     plan = _full_plan()
-    service, store, repository = _service(
+    service, _, repository = _service(
         plan=plan, verifier_client=_client_returning(200, {"status": "Failed", "error": {}})
     )
     result = service.execute(plan["plan_id"], requested_by="operator@example.com")

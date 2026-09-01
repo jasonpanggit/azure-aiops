@@ -31,6 +31,8 @@ def test_run_lock_rejects_unsafe_document_names(tmp_path, name: str) -> None:
 
 
 def test_remediation_lock_is_isolated_from_ingestion_lock(tmp_path) -> None:
-    with RunLock(tmp_path):
-        with RunLock(tmp_path, lock_document="state/remediation_execution.lock"):
-            pass
+    with (
+        RunLock(tmp_path),
+        RunLock(tmp_path, lock_document="state/remediation_execution.lock"),
+    ):
+        pass

@@ -138,13 +138,14 @@ def test_verify_reports_not_verifiable_when_no_provider_job_id():
 from datetime import UTC, datetime, timedelta
 
 from intelligence.remediation.approval_decisions import (
-    RemediationDecisionStore,
     execution_snapshot_hash,
 )
 from intelligence.remediation.execution_service import RemediationExecutionService
 from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.plan_repository import PlanRepository
-from operations.patching.adapters import PatchExecutionResult, RecordingPatchExecutionAdapter
+from operations.patching.adapters import (
+    PatchExecutionResult,
+)
 from operations.patching.service import PatchingService
 
 TARGET_ID = "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments"
