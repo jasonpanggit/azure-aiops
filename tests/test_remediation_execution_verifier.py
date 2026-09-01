@@ -102,6 +102,19 @@ def test_verify_maps_running_status_alias_to_running_outcome():
     assert result["outcome"] == "running"
 
 
+@pytest.mark.parametrize("status", ["Canceled", "Cancelled"])
+def test_verify_maps_arm_cancellation_to_cancelled_outcome(status: str):
+    verifier = ExecutionVerifier(
+        credential=_FakeCredential(),
+        client=_client_returning(200, {"status": status}),
+    )
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == "cancelled"
+    assert result["verified_state"] == status
+
+
 def test_verify_raises_typed_error_on_network_failure():
     client = _client_raising_transport_error()
     verifier = ExecutionVerifier(credential=_FakeCredential(), client=client)
@@ -124,7 +137,10 @@ def test_verify_reports_not_verifiable_when_no_provider_job_id():
 
 from datetime import UTC, datetime, timedelta
 
-from intelligence.remediation.approval_decisions import RemediationDecisionStore
+from intelligence.remediation.approval_decisions import (
+    RemediationDecisionStore,
+    execution_snapshot_hash,
+)
 from intelligence.remediation.execution_service import RemediationExecutionService
 from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.plan_repository import PlanRepository
@@ -187,6 +203,18 @@ def _full_plan_with_rollback(**overrides) -> dict:
         "execution_steps": [],
         "application": "Payments API",
         "business_service": "Checkout",
+        "business_decision": {
+            "disposition": "act_now",
+            "business_impact": {"status": "known"},
+            "review_requirements": [],
+            "unknowns": [],
+            "urgency_rationale": {
+                "evidence_citations": ["assessment:assess-001"]
+            },
+        },
+        "evidence_citations": [
+            {"source_type": "assessment", "source_id": "assess-001"}
+        ],
         "rollback_plan": {
             "rollback_actions": ["Restore from last known-good snapshot", "Notify on-call"],
             "automatic_rollback": False,
@@ -200,6 +228,14 @@ def _full_plan_with_rollback(**overrides) -> dict:
 def _approved_repository(plan: dict) -> PlanRepository:
     repository = PlanRepository()
     repository.replace_generation([plan])
+    snapshot = {
+        "target_id": TARGET_ID,
+        "patch_ids": ["KB600001"],
+        "target_kind": "Azure VM",
+        "operation": "install_patches",
+        "action_version": plan["action_version"],
+    }
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
     repository.decisions.append(
         plan=plan,
         decision="approved",
@@ -208,6 +244,7 @@ def _approved_repository(plan: dict) -> PlanRepository:
         scope={},
         action_version=plan["action_version"],
         expires_at=(NOW + timedelta(days=1)).isoformat(),
+        execution_snapshot=snapshot,
         now=NOW,
     )
     return repository
@@ -299,3 +336,41 @@ def test_execution_verifier_module_never_calls_a_mutating_method():
     source = inspect.getsource(verifier_module)
     assert ".submit(" not in source
     assert ".trigger(" not in source
+
+
+def test_execute_without_verifier_stays_running_and_reports_degraded_verification():
+    plan = _full_plan_with_rollback()
+    store = RemediationExecutionStore()
+    repository = _approved_repository(plan)
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=PatchingService(
+            _FakeVulnerabilityService(),
+            adapter=_OperationUrlAdapter(),
+            require_human_approval=False,
+        ),
+        execution_store=store,
+        now=lambda: NOW,
+    )
+
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    polled = service.poll_verification(result["execution_id"])
+
+    assert result["status"] == "running"
+    assert polled["status"] == "running"
+    assert "verification unavailable" in polled["message"].casefold()
+
+
+def test_poll_verification_persists_arm_cancellation():
+    plan = _full_plan_with_rollback()
+    service, store = _service_with_verifier(
+        plan=plan,
+        verifier_client=_client_returning(200, {"status": "Cancelled"}),
+    )
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    polled = service.poll_verification(result["execution_id"])
+
+    assert polled["status"] == "cancelled"
+    assert polled["verified_state"] == "Cancelled"
+    assert store.get(result["execution_id"])["attempts"][0]["outcome"] == "cancelled"

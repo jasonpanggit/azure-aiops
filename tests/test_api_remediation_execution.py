@@ -197,7 +197,7 @@ def test_execute_unapproved_patch_recovery_plan_is_409(tmp_path) -> None:
     assert body["error"]["details"]["reason"] == "not_approved"
 
 
-def test_execute_approved_plan_succeeds_and_is_pollable(tmp_path) -> None:
+def test_execute_approved_plan_remains_running_and_is_pollable(tmp_path) -> None:
     client, planner, _ = _client(tmp_path)
     plan = _patch_recovery_plan(client)
     _approve(planner, plan)
@@ -208,13 +208,13 @@ def test_execute_approved_plan_succeeds_and_is_pollable(tmp_path) -> None:
 
     assert response.status_code == 202, response.text
     body = response.json()["data"]
-    assert body["status"] == "succeeded"
+    assert body["status"] == "running"
     execution_id = body["execution_id"]
 
     poll = client.get(f"/api/v1/remediation/executions/{execution_id}", headers=_auth())
     assert poll.status_code == 200, poll.text
     execution = poll.json()["data"]
-    assert execution["status"] == "succeeded"
+    assert execution["status"] == "running"
     assert execution["plan_id"] == plan["plan_id"]
 
 

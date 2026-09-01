@@ -18,11 +18,15 @@ from api.auth import (
 )
 from api.providers import STALE, ProviderRuntime, ProviderSpec
 from api.runtime import (
+    _execution_verifier,
     _load_fabric_iq_adapter,
+    _patch_execution_adapter,
     aiops_home,
     build_authenticator,
     build_context,
 )
+from intelligence.remediation.execution_verifier import ExecutionVerifier
+from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
 from api.scope import Scope
 from intelligence.inventory.normalization import normalize_os_inventory
 from onboarding.credentials import KeyVaultSecretWriter
@@ -49,6 +53,22 @@ def _clean_env(monkeypatch, tmp_path):
 def test_home_follows_aiops_home(monkeypatch, tmp_path):
     monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "custom"))
     assert aiops_home() == tmp_path / "custom"
+
+
+def test_azure_patch_runtime_shares_credential_with_execution_verifier(
+    monkeypatch,
+) -> None:
+    credential = object()
+    monkeypatch.setenv("AIOPS_PATCH_EXECUTION", "azure")
+    monkeypatch.setattr("api.runtime._azure_patch_credential", lambda: credential)
+
+    adapter = _patch_execution_adapter()
+    verifier = _execution_verifier()
+
+    assert isinstance(adapter, AzureArmPatchExecutionAdapter)
+    assert isinstance(verifier, ExecutionVerifier)
+    assert adapter._credential is credential
+    assert verifier._credential is credential
 
 
 def test_default_auth_mode_requires_configured_tokens():
