@@ -451,8 +451,11 @@ class EntityBuilder:
 
 
 def _classify(row: dict[str, Any]) -> str:
+    declared_type = str(row.get("entity_type") or "")
+    if declared_type and declared_type != "Resource":
+        return declared_type
     resource_type = str(row.get("resource_type") or _payload(row).get("resourceType") or "").casefold()
-    return RESOURCE_ENTITY_TYPES.get(resource_type, str(row.get("entity_type") or "Resource"))
+    return RESOURCE_ENTITY_TYPES.get(resource_type, declared_type or "Resource")
 
 
 def _payload(row: dict[str, Any]) -> dict[str, Any]:

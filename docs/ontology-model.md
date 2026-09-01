@@ -34,6 +34,14 @@ erDiagram
   ROLE_ASSIGNMENT }o--|| ROLE_DEFINITION : definedBy
   ROLE_ASSIGNMENT }o--o{ MANAGED_IDENTITY : grantedTo
   ROLE_ASSIGNMENT }o--|| RESOURCE : scopedTo
+  SECURITY_ALERT }o--o{ RESOURCE : affects
+  ATTACK_PATH ||--o{ ATTACK_PATH_NODE : traverses
+  ATTACK_PATH ||--o{ ATTACK_PATH_CONNECTION : contains
+  ATTACK_PATH }o--o{ DEFENDER_ASSESSMENT : supportedBy
+  ATTACK_PATH_NODE }o--o| RESOURCE : resolvesTo
+  SUBSCRIPTION ||--o{ SECURE_SCORE_SNAPSHOT : hasSecureScore
+  SECURE_SCORE_SNAPSHOT ||--o{ SECURE_SCORE_CONTROL : composedOf
+  SECURE_SCORE_CONTROL }o--o{ DEFENDER_ASSESSMENT : improvedBy
 ```
 
 The implementation also retains a generic `Resource` entity for Azure resource types without a specialized class.
@@ -54,6 +62,19 @@ Tag names are matched case-insensitively. Values are never enumerated or hardcod
 | `DependsOn`, `Dependencies`, `ApplicationDependencies` | Application | source application `depends_on` each comma/semicolon-delimited application |
 
 Every inferred entity stores `lineage_json`, semantic discovery metadata, source IDs, lifecycle state, and version.
+
+## Defender semantic evidence
+
+Defender signals retain separate meanings rather than being flattened into one risk count:
+
+- `SecurityAlert` is an observed threat with lifecycle state and affected-resource evidence.
+- `AttackPath`, `AttackPathNode`, and `AttackPathConnection` preserve Defender CSPM's exploit graph. Identities, IP addresses, Kubernetes objects, and other nodes remain explicitly unresolved when they cannot be mapped to an ARM resource.
+- `SecureScoreSnapshot` is immutable and timestamped; `SecureScoreControl` explains the score and links to supporting Defender assessments.
+- `DefenderAssessment` is a remediation opportunity, while `DefenderVulnerabilityFinding` is CVE evidence.
+
+Alerts, attack paths, secure scores, and controls have independent source status and freshness. Missing or failed source families are represented as unknown or unavailable, never healthy. Coverage is evaluated against the requested subscription scope using the latest status for each source, and mapping failures remain visible as degraded coverage.
+
+Multi-resource alerts and attack paths retain resource-to-scope attribution. Scoped API projections remove unauthorized resource IDs, nodes, and connections; unattributed mixed-scope signals fail closed. Secure-score snapshots are merged by their timestamped resource identity so later syncs do not overwrite historical observations.
 
 ## Fabric table bindings
 
@@ -94,7 +115,7 @@ Traversals use canonical case-insensitive identities, active relationships only,
 - Application context: applications, hosting resources, services, environments, owners, and support teams.
 - Infrastructure context: subscriptions, resource groups, resources, compliance assessments, and recommendations.
 - Subscription context: subscription hierarchy, resource groups, Arc-managed assets, and governance context.
-- Compliance context: patch assessments, Advisor recommendations, evaluated resources, and affected applications.
+- Compliance context: patch assessments, Advisor recommendations, policy/security baseline deviations, configuration drift, authorized/unapproved changes, evaluated resources, and affected applications.
 - Business context: business services, applications, services, owners, business functions, and infrastructure.
 - Remediation context: draft remediation plans, required approvals, approval/rejection/expiry decisions, ordered execution steps, rollback plans, simulation results, mitigated risks, protected business services, and linked applications.
 - Identity context: role assignments, role definitions, managed identities, and the principals/resources they connect — the source for the Identity page's access-governance views.

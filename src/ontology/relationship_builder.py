@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from .confidence import compute_confidence
 from .entity_builder import PAAS_ENTITY_TYPES, scoped_semantic_id, stable_version
 
 ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *PAAS_ENTITY_TYPES}
@@ -70,7 +72,7 @@ class RelationshipBuilder:
                 "predicate": predicate,
                 "object_id": obj["resource_id"],
                 "object_type": obj["entity_type"],
-                "confidence": 1.0,
+                "confidence": compute_confidence(source),
                 "source": source,
                 "payload_json": json.dumps(details or {}, sort_keys=True),
                 "lineage_json": json.dumps(
@@ -192,7 +194,75 @@ class RelationshipBuilder:
                     if business_service:
                         connect(business_service, "contains", application, "subscription_connection")
                         connect(business_service, "owns", application, "subscription_connection")
-        for asset_type in ASSET_TYPES:
+        # Tag inheritance fallback (enhancement 3b): inherit a child tag only
+        # when the parent scope has one unambiguous application candidate.
+        rg_application_candidates: dict[str, set[str]] = defaultdict(set)
+        subscription_application_candidates: dict[str, set[str]] = defaultdict(set)
+        explicit_rg_application_tags = {
+            group["resource_id"].casefold(): value
+            for group in by_type["ResourceGroup"]
+            if (
+                value := (
+                    _tags(group).get("appname", "")
+                    or _tags(group).get("application", "")
+                )
+            )
+        }
+        explicit_subscription_application_tags = {
+            subscription["subscription_id"].casefold(): value
+            for subscription in by_type["Subscription"]
+            if (
+                value := (
+                    _tags(subscription).get("appname", "")
+                    or _tags(subscription).get("application", "")
+                )
+            )
+        }
+        for asset_type in sorted(ASSET_TYPES):
+            for asset in by_type[asset_type]:
+                asset_tags = _tags(asset)
+                own_value = asset_tags.get("appname", "") or asset_tags.get("application", "")
+                if not own_value:
+                    continue
+                group_id = _group_id(asset["resource_id"])
+                if group_id:
+                    rg_application_candidates[group_id].add(own_value)
+                subscription_key = asset["subscription_id"].casefold()
+                if subscription_key:
+                    subscription_application_candidates[subscription_key].add(
+                        own_value
+                    )
+
+        def _unique_application_candidate(values: set[str]) -> str:
+            normalized = {
+                _normalize_tag_value(value): value
+                for value in sorted(values, key=lambda item: (item.casefold(), item))
+            }
+            return next(iter(normalized.values())) if len(normalized) == 1 else ""
+
+        # Fuzzy tag matching (enhancement 3a): index Applications by their
+        # normalized (case/whitespace/hyphen/underscore-insensitive) name
+        # scoped to (tenant, subscription) so "Order-Service" resolves to the
+        # same Application entity as "order_service".
+        applications_by_normalized_name: dict[tuple[str, str, str], dict[str, Any]] = {
+            (
+                application["tenant_id"],
+                application["subscription_id"],
+                _normalize_tag_value(application["name"]),
+            ): application
+            for application in by_type["Application"]
+        }
+
+        def _resolve_application(asset: dict[str, Any], name: str) -> dict[str, Any] | None:
+            normalized_match = applications_by_normalized_name.get(
+                (asset["tenant_id"], asset["subscription_id"], _normalize_tag_value(name))
+            )
+            if normalized_match is not None:
+                return normalized_match
+            exact_id = scoped_semantic_id("Application", asset["tenant_id"], asset["subscription_id"], name)
+            return by_id.get(exact_id)
+
+        for asset_type in sorted(ASSET_TYPES):
             for asset in by_type[asset_type]:
                 group_id = _group_id(asset["resource_id"])
                 connect(groups.get(group_id), "contains", asset, "inventory")
@@ -201,28 +271,35 @@ class RelationshipBuilder:
 
                 related = by_lineage.get(asset["resource_id"], [])
                 tags = _tags(asset)
+                own_application_value = tags.get("appname", "") or tags.get("application", "")
+                inherited_application_value = ""
+                if not own_application_value:
+                    subscription_key = asset["subscription_id"].casefold()
+                    inherited_application_value = (
+                        explicit_rg_application_tags.get(group_id, "")
+                        or _unique_application_candidate(
+                            rg_application_candidates.get(group_id, set())
+                        )
+                        or explicit_subscription_application_tags.get(
+                            subscription_key, ""
+                        )
+                        or _unique_application_candidate(
+                            subscription_application_candidates.get(
+                                subscription_key, set()
+                            )
+                        )
+                    )
                 application_names = {
                     value
-                    for value in (tags.get("appname", ""), tags.get("application", ""))
+                    for value in (tags.get("appname", ""), tags.get("application", ""), inherited_application_value)
                     if value
                 }
                 applications = [
-                    by_id[
-                        scoped_semantic_id(
-                            "Application",
-                            asset["tenant_id"],
-                            asset["subscription_id"],
-                            name,
-                        )
-                    ]
-                    for name in sorted(application_names)
-                    if scoped_semantic_id(
-                        "Application",
-                        asset["tenant_id"],
-                        asset["subscription_id"],
-                        name,
+                    application
+                    for application in (
+                        _resolve_application(asset, name) for name in sorted(application_names)
                     )
-                    in by_id
+                    if application is not None
                 ]
                 services = _of_type(related, "Service")
                 business_services = _of_type(related, "BusinessService")
@@ -247,9 +324,10 @@ class RelationshipBuilder:
                     for business_service in business_services:
                         connect(business_service, "contains", application, "resource_tag")
                         connect(business_service, "owns", application, "resource_tag")
-                    if application["name"].casefold() in {
-                        tags.get("appname", "").casefold(),
-                        tags.get("application", "").casefold(),
+                    if _normalize_tag_value(application["name"]) in {
+                        _normalize_tag_value(tags.get("appname", "")),
+                        _normalize_tag_value(tags.get("application", "")),
+                        _normalize_tag_value(inherited_application_value),
                     }:
                         for dependency_name in dependency_names:
                             dependency_id = scoped_semantic_id(
@@ -280,6 +358,96 @@ class RelationshipBuilder:
         for recommendation in by_type["AdvisorRecommendation"]:
             target = _target(recommendation)
             connect(recommendation, "affects", by_id.get(target), "advisor")
+        for assessment in by_type["DefenderAssessment"]:
+            target = by_id.get(str(_payload(assessment).get("targetResourceId") or "").casefold())
+            connect(assessment, "impacts", target, "defender")
+        for finding in by_type["DefenderVulnerabilityFinding"]:
+            payload = _payload(finding)
+            target = by_id.get(str(payload.get("targetResourceId") or "").casefold())
+            assessment = by_id.get(
+                str(payload.get("assessmentId") or "").casefold()
+            )
+            connect(finding, "impacts", target, "defender")
+            connect(target, "hasVulnerability", finding, "defender")
+            connect(finding, "derivedFrom", assessment, "defender")
+        for alert in by_type["SecurityAlert"]:
+            for resource_id in _payload(alert).get("resourceIds") or ():
+                connect(alert, "affects", by_id.get(str(resource_id).casefold()), "defender")
+        attack_path_nodes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for node in by_type["AttackPathNode"]:
+            attack_path_nodes[
+                str(_payload(node).get("attackPathId") or "").casefold()
+            ].append(node)
+        for path in by_type["AttackPath"]:
+            payload = _payload(path)
+            for node in attack_path_nodes.get(
+                str(path["resource_id"]).casefold(), ()
+            ):
+                connect(path, "traverses", node, "defender")
+            connect(
+                path,
+                "startsAt",
+                by_id.get(str(payload.get("entryPointNodeId") or "").casefold()),
+                "defender",
+            )
+            connect(
+                path,
+                "targets",
+                by_id.get(str(payload.get("targetNodeId") or "").casefold()),
+                "defender",
+            )
+            for assessment_id in payload.get("assessmentIds") or ():
+                connect(
+                    path,
+                    "supportedBy",
+                    by_id.get(str(assessment_id).casefold()),
+                    "defender",
+                )
+        for node in by_type["AttackPathNode"]:
+            resource_id = str(_payload(node).get("resourceId") or "").casefold()
+            connect(node, "resolvesTo", by_id.get(resource_id), "defender")
+        for connection in by_type["AttackPathConnection"]:
+            payload = _payload(connection)
+            path = by_id.get(str(payload.get("attackPathId") or "").casefold())
+            connect(path, "contains", connection, "defender")
+            connect(
+                connection,
+                "connectsFrom",
+                by_id.get(str(payload.get("sourceNodeId") or "").casefold()),
+                "defender",
+            )
+            connect(
+                connection,
+                "connectsTo",
+                by_id.get(str(payload.get("targetNodeId") or "").casefold()),
+                "defender",
+            )
+        secure_scores_by_source = {
+            str(_payload(score).get("sourceId") or "").casefold(): score
+            for score in by_type["SecureScoreSnapshot"]
+        }
+        for score in by_type["SecureScoreSnapshot"]:
+            subscription_id = str(
+                _payload(score).get("subscriptionResourceId") or ""
+            ).casefold()
+            connect(by_id.get(subscription_id), "hasSecureScore", score, "defender")
+        for control in by_type["SecureScoreControl"]:
+            payload = _payload(control)
+            connect(
+                secure_scores_by_source.get(
+                    str(payload.get("secureScoreSourceId") or "").casefold()
+                ),
+                "composedOf",
+                control,
+                "defender",
+            )
+            for assessment_id in payload.get("assessmentDefinitions") or ():
+                connect(
+                    control,
+                    "improvedBy",
+                    by_id.get(str(assessment_id).casefold()),
+                    "defender",
+                )
         for actual in by_type["CostActual"]:
             target = _target(actual)
             connect(by_id.get(target), "incurs_cost", actual, "cost_management")
@@ -539,6 +707,15 @@ def _tags(row: dict[str, Any]) -> dict[str, str]:
 
 def _tag_values(value: str) -> list[str]:
     return [item.strip() for item in value.replace(";", ",").split(",") if item.strip()]
+
+
+def _normalize_tag_value(value: str) -> str:
+    """Casefold and collapse hyphen/underscore/whitespace variance for tag matching.
+
+    Lets ``Order-Service``, ``order_service``, and ``order service`` be treated
+    as the same application/business-service tag value.
+    """
+    return "-".join(re.split(r"[-_\s]+", str(value or "").strip().casefold())).strip("-")
 
 
 def _payload(row: dict[str, Any]) -> dict[str, Any]:

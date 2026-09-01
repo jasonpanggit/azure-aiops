@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .entity_builder import PAAS_ENTITY_TYPES, stable_version
 from .ontology_validator import OntologyValidator
+from .pending_relationships import PendingRelationshipStore
 
 ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *PAAS_ENTITY_TYPES}
 
@@ -18,6 +19,7 @@ class OntologyGraphResult:
     views: dict[str, list[dict[str, Any]]]
     health: dict[str, Any]
     quality_report: dict[str, Any]
+    pending_relationships: list[dict[str, Any]] = field(default_factory=list)
 
 
 class OntologyGraphSynchronizer:
@@ -29,6 +31,7 @@ class OntologyGraphSynchronizer:
         *,
         max_entities: int = 100_000,
         max_relationships: int = 250_000,
+        pending_relationships: PendingRelationshipStore | None = None,
     ) -> None:
         for name, value in (
             ("max_entities", max_entities),
@@ -39,6 +42,13 @@ class OntologyGraphSynchronizer:
         self.validator = validator
         self.max_entities = max_entities
         self.max_relationships = max_relationships
+        # Deferred/retry store for dangling edges (enhancement: relationships
+        # whose subject/object hasn't been discovered yet are held here
+        # instead of being silently dropped, and are retried on the next
+        # synchronize() call once their missing endpoint appears). Optional
+        # so existing callers that don't pass one keep today's drop behavior
+        # -- they simply never see their dangling edges retried.
+        self.pending_relationships = pending_relationships
 
     def build(
         self,
@@ -77,8 +87,31 @@ class OntologyGraphSynchronizer:
             )
         ):
             raise ValueError("Ontology synchronization relationship source exceeds bound")
+
+        # Deferred/retry edges: relationships whose subject or object isn't
+        # in *this* sync's entity snapshot yet would make the current-graph
+        # validation fail as "dangling". Rather than let synchronize() raise
+        # (or silently drop them), set them aside in the pending store and
+        # validate only the edges that resolve cleanly right now. They're
+        # retried below, and on every future call, once their missing
+        # endpoint is discovered.
+        current_known_ids = {_canonical_id(row.get("resource_id")) for row in current_entity_rows}
+        resolvable_relationship_rows = current_relationship_rows
+        if self.pending_relationships is not None:
+            resolvable_relationship_rows = []
+            newly_dangling: list[dict[str, Any]] = []
+            for row in current_relationship_rows:
+                subject_id = _canonical_id(row.get("subject_id"))
+                object_id = _canonical_id(row.get("object_id"))
+                if subject_id in current_known_ids and object_id in current_known_ids:
+                    resolvable_relationship_rows.append(row)
+                else:
+                    newly_dangling.append(_normalize_relationship(row))
+            if newly_dangling:
+                self.pending_relationships.defer(newly_dangling)
+
         current_report = self.validator.validate(
-            current_entity_rows, current_relationship_rows
+            current_entity_rows, resolvable_relationship_rows
         )
         if not current_report.passed:
             raise ValueError("Invalid ontology graph: current snapshot validation failed")
@@ -95,7 +128,7 @@ class OntologyGraphSynchronizer:
         }
         relationships = {
             _canonical_id(row["resource_id"]): _normalize_relationship(row)
-            for row in current_relationship_rows
+            for row in resolvable_relationship_rows
         }
         previous_entity_index = {
             _canonical_id(row["resource_id"]): _normalize_entity(row)
@@ -121,6 +154,20 @@ class OntologyGraphSynchronizer:
         for previous in previous_relationship_index.values():
             if previous["resource_id"] not in relationships:
                 relationships[previous["resource_id"]] = _retire(previous, ontology_version, timestamp)
+
+        pending_relationship_rows: list[dict[str, Any]] = []
+        if self.pending_relationships is not None:
+            # Retry previously-deferred edges (including the ones just
+            # deferred above) against the now-final entity set, before the
+            # graph is validated and returned.
+            resolved_edges, pending_relationship_rows = self.pending_relationships.resolve(
+                set(entities.keys())
+            )
+            for resolved in resolved_edges:
+                resolved = dict(resolved)
+                resolved["ontology_version"] = ontology_version
+                relationships[resolved["resource_id"]] = resolved
+
         if len(entities) > self.max_entities:
             raise ValueError("Ontology synchronized entity graph exceeds bound")
         if len(relationships) > self.max_relationships:
@@ -138,6 +185,7 @@ class OntologyGraphSynchronizer:
             _views(entity_rows, relationship_rows),
             health,
             report,
+            pending_relationship_rows,
         )
 
 
@@ -238,6 +286,14 @@ def _views(
         "application_context": view({"Application"}),
         "infrastructure_context": view({"Subscription", "ResourceGroup"}),
         "subscription_context": view({"Subscription"}),
-        "compliance_context": view({"PatchAssessment", "AdvisorRecommendation"}),
+        "compliance_context": view({
+            "PatchAssessment",
+            "AdvisorRecommendation",
+            "PolicyDeviation",
+            "SecurityDeviation",
+            "ConfigurationDrift",
+            "UnapprovedChange",
+            "AuthorizedChange",
+        }),
         "business_context": view({"BusinessService", "Service"}),
     }
