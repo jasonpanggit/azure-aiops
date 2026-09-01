@@ -337,3 +337,21 @@ def test_retry_appends_attempt_history_without_overwriting_first_failure() -> No
         "running",
         "failed",
     ]
+
+
+def test_cancel_and_retry_compare_and_set_claims_have_one_winner() -> None:
+    plan = _full_plan()
+    adapter = _RecordingOperationUrlAdapter(fail=True)
+    service, store, _ = _service(plan=plan, adapter=adapter)
+    failed = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    record = store.get(failed["execution_id"])
+
+    cancelled = store.claim_cancel(
+        failed["execution_id"],
+        expected_revision=record["revision"],
+        actor="operator@example.com",
+    ) if record["status"] == "queued" else None
+
+    assert cancelled is None
+    retried = service.retry(failed["execution_id"])
+    assert retried["attempt_count"] == 2

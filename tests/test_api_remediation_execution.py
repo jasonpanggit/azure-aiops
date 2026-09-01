@@ -258,6 +258,7 @@ def test_execution_retry_and_list_endpoints_are_mounted(tmp_path) -> None:
     paths = spec["paths"]
 
     assert "/api/v1/remediation/executions/{execution_id}/retry" in paths
+    assert "/api/v1/remediation/executions/{execution_id}/cancel" in paths
     assert "/api/v1/remediation/plans/{plan_id}/executions" in paths
 
 
@@ -302,3 +303,84 @@ def test_retry_already_succeeded_execution_is_409(tmp_path) -> None:
 
     assert retry_response.status_code == 409, retry_response.text
     assert retry_response.json()["error"]["code"] == "conflict"
+
+
+def test_get_execution_outside_plan_scope_is_404(tmp_path) -> None:
+    client, planner, _ = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    _approve(planner, plan)
+    created = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute",
+        headers=_auth(),
+    ).json()["data"]
+
+    response = client.get(
+        f"/api/v1/remediation/executions/{created['execution_id']}",
+        headers=_auth(SCOPED_OPERATOR_TOKEN),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_cancel_queued_execution_and_return_server_eligibility(tmp_path) -> None:
+    client, planner, store = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    _approve(planner, plan)
+    decision = planner.repository.decisions.list(plan["plan_id"])[-1]
+    queued, _ = store.create_or_get(
+        plan["plan_id"],
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        execution_snapshot=decision["execution_snapshot"],
+    )
+
+    response = client.post(
+        f"/api/v1/remediation/executions/{queued['execution_id']}/cancel",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200, response.text
+    execution = response.json()["data"]
+    assert execution["status"] == "cancelled"
+    assert execution["retryable"] is True
+    assert execution["cancellable"] is False
+    assert execution["remaining_attempts"] == 2
+
+
+def test_submitted_provider_work_is_truthfully_not_cancellable(tmp_path) -> None:
+    client, planner, _ = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    _approve(planner, plan)
+    execution = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute",
+        headers=_auth(),
+    ).json()["data"]
+
+    response = client.post(
+        f"/api/v1/remediation/executions/{execution['execution_id']}/cancel",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200, response.text
+    current = response.json()["data"]
+    assert current["status"] == "running"
+    assert current["cancellable"] is False
+    assert current["ineligibility_reason"] == "provider_not_cancellable"
+    assert current["history"][-1]["outcome"] == "provider_not_cancellable"
+
+
+def test_execution_responses_publish_server_owned_eligibility(tmp_path) -> None:
+    client, planner, _ = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    _approve(planner, plan)
+
+    execution = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute",
+        headers=_auth(),
+    ).json()["data"]
+
+    assert execution["retryable"] is False
+    assert execution["cancellable"] is False
+    assert execution["remaining_attempts"] == 2
+    assert execution["ineligibility_reason"] == "provider_not_cancellable"

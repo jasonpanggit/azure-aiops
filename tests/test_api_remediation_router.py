@@ -152,6 +152,8 @@ def test_preview_returns_target_operation_preconditions_effect_and_collateral(
         "expected_effect",
         "collateral_impact",
         "execution_snapshot",
+        "executable",
+        "ineligibility_reason",
     }
     assert preview["target"]["resource_key"]
     assert isinstance(preview["preconditions"], list)
@@ -251,3 +253,20 @@ def test_remediation_router_is_mounted_in_the_running_app(tmp_path) -> None:
     assert "/api/v1/remediation-opportunities" in paths
     assert "/api/v1/remediation/defender-cases" in paths
     assert "/api/v1/remediation-plans/{plan_id}/decisions" in paths
+
+
+def test_plan_detail_and_preview_publish_server_owned_eligibility(tmp_path) -> None:
+    client = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+
+    detail = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}", headers=_auth()
+    ).json()["data"]
+    preview = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/preview", headers=_auth()
+    ).json()["data"]
+
+    assert detail["executable"] is False
+    assert detail["ineligibility_reason"] == "execution_unavailable"
+    assert preview["executable"] is False
+    assert preview["ineligibility_reason"] == "execution_unavailable"
