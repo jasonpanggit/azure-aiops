@@ -69,6 +69,27 @@ _ONTOLOGY_RELATIONSHIP = [
 ]
 
 SCHEMAS: dict[str, pa.Schema] = {
+    "assessment_change_findings": pa.schema(
+        [
+            *_BASE,
+            pa.field("change_id", pa.string(), nullable=False),
+            pa.field("resource_name", pa.string(), nullable=False),
+            pa.field("change_type", pa.string(), nullable=False),
+            pa.field("category", pa.string(), nullable=False),
+            pa.field("authorized", pa.bool_(), nullable=True),
+            pa.field("risk_score", pa.int64(), nullable=False),
+            pa.field("risk_level", pa.string(), nullable=False),
+            pa.field("compliance_score", pa.int64(), nullable=False),
+            pa.field("configuration_drifted", pa.bool_(), nullable=True),
+            pa.field("drift_fields", pa.list_(pa.string()), nullable=False),
+            pa.field("incident_id", pa.string(), nullable=False),
+            pa.field("incident_contribution_score", pa.int64(), nullable=False),
+            pa.field("application", pa.string(), nullable=False),
+            pa.field("business_service", pa.string(), nullable=False),
+            pa.field("confirmed_cause", pa.bool_(), nullable=False),
+            pa.field("source", pa.string(), nullable=False),
+        ]
+    ),
     "bronze_resources": pa.schema(_ASSET),
     "bronze_subscriptions": pa.schema(_ENTITY),
     "bronze_resourcegroups": pa.schema(_ENTITY),

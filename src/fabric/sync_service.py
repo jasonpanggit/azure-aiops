@@ -16,6 +16,8 @@ from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
 from storage.onelake_writer import OneLakeWriter
 from storage.partitioning import PartitioningPolicy
 
+from fabric_pipelines import change_pipeline
+
 from .data_quality import DataQualityValidator, QualityReport
 from .dataset_mapper import (
     ONTOLOGY_ENTITY_TYPES,
@@ -194,6 +196,15 @@ class FabricSyncService:
                 )
                 datasets["ontology_entities"].extend(decision_entities)
                 datasets["ontology_relationships"].extend(decision_relationships)
+            change_pipeline_result = change_pipeline.run(
+                freshness=started_at,
+                **self._change_pipeline_snapshot(),
+            )
+            datasets["ontology_entities"].extend(change_pipeline_result.entities)
+            datasets["ontology_relationships"].extend(change_pipeline_result.relationships)
+            datasets["assessment_change_findings"] = self._assessment_change_finding_rows(
+                change_pipeline_result.findings, run_id, started_at
+            )
             datasets = self._synchronize_ontology(datasets, source_run_id, started_at)
             if self.lifecycle_catalog:
                 datasets["silver_lifecycle_history"] = self._lifecycle_history_rows(
@@ -1027,6 +1038,88 @@ class FabricSyncService:
             "expected_configurations": configurations("expected_configurations"),
             "observed_configurations": configurations("observed_configurations"),
         }
+
+    def _change_pipeline_snapshot(self) -> dict[str, Any]:
+        """Translate ``change_intelligence_snapshot()``'s governed shape into
+        ``ChangeIntelligence.from_snapshot()``'s expected ``resources`` shape.
+
+        ``change_intelligence_snapshot()`` keeps ``expected_configurations``/
+        ``observed_configurations`` as separate resource-key-indexed maps
+        (the shape ``ChangeIntelligence.from_semantic_engine`` merges using
+        live semantic-engine context). ``from_snapshot`` instead expects each
+        resource's expected/observed configuration nested directly on the
+        resource row. This merges the governed inventory with those maps so
+        the same governed snapshot can feed both call paths.
+        """
+        snapshot = self.change_intelligence_snapshot()
+        expected = snapshot["expected_configurations"]
+        observed = snapshot["observed_configurations"]
+        resources = [
+            {
+                "resource_key": str(row.get("resource_id") or ""),
+                "name": str(row.get("name") or ""),
+                "entity_type": str(row.get("entity_type") or "Resource"),
+                "expected_configuration": expected.get(
+                    str(row.get("resource_id") or "").casefold()
+                )
+                or {},
+                "observed_configuration": observed.get(
+                    str(row.get("resource_id") or "").casefold()
+                )
+                or {},
+            }
+            for row in snapshot["inventory"]
+        ]
+        return {
+            "resources": resources,
+            "resource_changes": snapshot["resource_changes"],
+            "policy_deviations": snapshot["policy_deviations"],
+            "security_deviations": snapshot["security_deviations"],
+            "network_changes": snapshot["network_changes"],
+            "identity_changes": snapshot["identity_changes"],
+            "iac_changes": snapshot["iac_changes"],
+            "incidents": snapshot["incidents"],
+            "history": snapshot["history"],
+        }
+
+    def _assessment_change_finding_rows(
+        self, findings: list[dict[str, Any]], run_id: str, timestamp: str
+    ) -> list[dict[str, Any]]:
+        """Shape ``ChangePipelineResult.findings`` rows for the
+        ``assessment_change_findings`` Delta table's governed-row contract
+        (``DeltaWriter.REQUIRED_COLUMNS``)."""
+        rows = []
+        for finding in findings:
+            change_id = str(finding.get("change_id") or "")
+            rows.append(
+                {
+                    "tenant_id": "not-applicable",
+                    "subscription_id": "not-applicable",
+                    "resource_id": "assessment-change-finding://" + change_id,
+                    "timestamp": timestamp,
+                    "change_version": _hash_json(finding),
+                    "ingestion_run_id": run_id,
+                    "change_id": change_id,
+                    "resource_name": str(finding.get("resource_name") or ""),
+                    "change_type": str(finding.get("change_type") or ""),
+                    "category": str(finding.get("category") or ""),
+                    "authorized": finding.get("authorized"),
+                    "risk_score": int(finding.get("risk_score") or 0),
+                    "risk_level": str(finding.get("risk_level") or ""),
+                    "compliance_score": int(finding.get("compliance_score") or 0),
+                    "configuration_drifted": finding.get("configuration_drifted"),
+                    "drift_fields": list(finding.get("drift_fields") or []),
+                    "incident_id": str(finding.get("incident_id") or ""),
+                    "incident_contribution_score": int(
+                        finding.get("incident_contribution_score") or 0
+                    ),
+                    "application": str(finding.get("application") or ""),
+                    "business_service": str(finding.get("business_service") or ""),
+                    "confirmed_cause": bool(finding.get("confirmed_cause") or False),
+                    "source": str(finding.get("source") or ""),
+                }
+            )
+        return rows
 
     def predictive_intelligence_snapshot(self) -> dict[str, Any]:
         """Governed inventory and historical predictive feature observations."""
