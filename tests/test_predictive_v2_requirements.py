@@ -69,7 +69,7 @@ def test_predictive_knowledge_projection_models_required_entities_and_relationsh
     engine.analyze()
     projection = engine.knowledge_projection()
     entity_types = {row["entity_type"] for row in projection["entities"]}
-    relationship_types = {row["relationship_type"] for row in projection["relationships"]}
+    relationship_types = {row["predicate"] for row in projection["relationships"]}
 
     assert {"Prediction", "Forecast", "Trend", "OperationalDebt", "RiskDriver"} <= entity_types
     assert {"hasForecast", "hasTrend", "accumulatesDebt", "drivenBy"} <= relationship_types
