@@ -6,7 +6,7 @@ from fabric.auth import build_credential
 from fabric.config import FabricRuntimeConfig
 from fabric.fabric_client import FabricClient
 
-SUPPORTED_ITEM_TYPES = {"Lakehouse", "MirroredDatabase"}
+SUPPORTED_ITEM_TYPES = {"Lakehouse"}
 
 
 def _default_fabric_client() -> FabricClient:
@@ -20,8 +20,10 @@ def _item_type(client: FabricClient, workspace_id: str, item_id: str) -> str:
 
 
 def _assert_supported(item_type: str) -> None:
-    if item_type and item_type not in SUPPORTED_ITEM_TYPES:
-        supported = ", ".join(sorted(SUPPORTED_ITEM_TYPES))
+    normalized = item_type.casefold()
+    is_supported = item_type in SUPPORTED_ITEM_TYPES or normalized.startswith("mirrored")
+    if item_type and not is_supported:
+        supported = "Lakehouse and Mirrored* item types"
         raise ValueError(
             f"Data access roles are only supported for {supported}; item type was {item_type!r}"
         )
