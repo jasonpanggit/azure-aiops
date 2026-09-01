@@ -6,6 +6,9 @@ import type {
   ChangeAssessment,
   ChangeAssessmentSources,
   ChangeAssessmentSummary,
+  ComplianceDeviation,
+  ComplianceResourcePosture,
+  ComplianceSummary,
   ConnectionCreateRequest,
   ConnectionCreateResult,
   ConnectionHealthReport,
@@ -29,7 +32,13 @@ import type {
   NetworkTopology,
   RuleFinding,
   SearchResult,
-  ServerExposure,
+  AssetExposure,
+  DefenderPostureFinding,
+  DefenderAlert,
+  DefenderAttackPath,
+  DefenderOverview,
+  DefenderSecureScore,
+  DefenderSecureScoreControl,
   SemanticContext,
   SubscriptionConnection,
   CveDetail,
@@ -597,12 +606,32 @@ export const vulnerabilityApi = {
     if (filters?.reachableOnly) query.set("reachable_only", "true");
     return apiRequest<PatchPriority[]>("/vulnerabilities/patch-priorities", { query });
   },
-  serverExposures: (scope: ScopeSelection = {}, filters?: { q?: string; reachableOnly?: boolean }) => {
+  assetExposures: (scope: ScopeSelection = {}, filters?: { q?: string; reachableOnly?: boolean }) => {
     const query = scopeToSearchParams(scope);
     if (filters?.q) query.set("q", filters.q);
     if (filters?.reachableOnly) query.set("reachable_only", "true");
-    return apiRequest<ServerExposure[]>("/vulnerabilities/server-exposures", { query });
+    return apiRequest<AssetExposure[]>("/vulnerabilities/asset-exposures", { query });
   },
+  defenderPosture: (scope: ScopeSelection = {}, q?: string) => {
+    const query = scopeToSearchParams(scope);
+    if (q) query.set("q", q);
+    return apiRequest<DefenderPostureFinding[]>("/vulnerabilities/defender-posture", { query });
+  },
+  defenderOverview: (scope: ScopeSelection = {}) =>
+    apiRequest<DefenderOverview>("/defender/overview", { query: scopeToSearchParams(scope) }),
+  defenderAlerts: (scope: ScopeSelection = {}, activeOnly = true) => {
+    const query = scopeToSearchParams(scope);
+    query.set("active_only", String(activeOnly));
+    return apiRequest<DefenderAlert[]>("/defender/alerts", { query });
+  },
+  defenderAttackPaths: (scope: ScopeSelection = {}) =>
+    apiRequest<DefenderAttackPath[]>("/defender/attack-paths", { query: scopeToSearchParams(scope) }),
+  defenderSecureScore: (scope: ScopeSelection = {}) =>
+    apiRequest<DefenderSecureScore[]>("/defender/secure-score", { query: scopeToSearchParams(scope) }),
+  defenderSecureScoreControls: (scope: ScopeSelection = {}) =>
+    apiRequest<DefenderSecureScoreControl[]>("/defender/secure-score-controls", {
+      query: scopeToSearchParams(scope),
+    }),
   cves: (scope: ScopeSelection = {}, q?: string) => {
     const query = scopeToSearchParams(scope);
     if (q) query.set("q", q);
@@ -610,7 +639,10 @@ export const vulnerabilityApi = {
   },
   cve: (id: string, scope: ScopeSelection = {}) =>
     apiRequest<CveDetail>(`/cves/${encodeURIComponent(id)}`, { query: scopeToSearchParams(scope) }),
-  riskExceptions: () => apiRequest<RiskException[]>("/vulnerabilities/risk-exceptions"),
+  riskExceptions: (scope: ScopeSelection = {}) =>
+    apiRequest<RiskException[]>("/vulnerabilities/risk-exceptions", {
+      query: scopeToSearchParams(scope),
+    }),
   acceptRisk: (payload: { cve_id: string; server_id?: string; reason: string; approved_by?: string; expires_at?: string }) =>
     apiRequest<RiskException>("/vulnerabilities/risk-exceptions", { method: "POST", body: payload }),
   revokeRiskException: (exceptionId: string) =>
@@ -639,6 +671,26 @@ export const patchingApi = {
     apiRequest<PatchRun[]>("/patching/runs", { query: scopeToSearchParams(scope) }),
   trigger: (payload: PatchRunCreateRequest) =>
     apiRequest<PatchRun>("/patching/runs", { method: "POST", body: payload }),
+};
+
+/**
+ * Compliance posture: policy/security baseline deviations, configuration
+ * drift, and change-authorization findings from `ChangeIntelligence`. Unlike
+ * the network/vulnerability derived view this previously replaced, these
+ * come from evidence-backed ontology entities (`PolicyDeviation`,
+ * `SecurityDeviation`, `ConfigurationDrift`).
+ */
+export const complianceApi = {
+  posture: (scope: ScopeSelection = {}) =>
+    apiRequest<ComplianceResourcePosture[]>("/compliance/posture", { query: scopeToSearchParams(scope) }),
+  policyDeviations: (scope: ScopeSelection = {}) =>
+    apiRequest<ComplianceDeviation[]>("/compliance/policy-deviations", { query: scopeToSearchParams(scope) }),
+  securityDeviations: (scope: ScopeSelection = {}) =>
+    apiRequest<ComplianceDeviation[]>("/compliance/security-deviations", { query: scopeToSearchParams(scope) }),
+  configurationDrift: (scope: ScopeSelection = {}) =>
+    apiRequest<ComplianceResourcePosture[]>("/compliance/configuration-drift", { query: scopeToSearchParams(scope) }),
+  summary: (scope: ScopeSelection = {}) =>
+    apiRequest<ComplianceSummary>("/compliance/summary", { query: scopeToSearchParams(scope) }),
 };
 
 export const twinApi = {

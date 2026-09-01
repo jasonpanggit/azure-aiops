@@ -14,8 +14,8 @@ import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
-import { buildCopilotSnapshot, copilotEvidenceRows, networkApi, vulnerabilityApi } from "@/lib/services";
-import type { NetworkGap, NetworkTopology, RuleFinding, VulnerabilityExposure } from "@/lib/types";
+import { buildCopilotSnapshot, complianceApi, copilotEvidenceRows, networkApi, vulnerabilityApi } from "@/lib/services";
+import type { ComplianceDeviation, NetworkGap, NetworkTopology, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 
 type ViolationType =
   | "firewall_bypass"
@@ -356,6 +356,10 @@ export default function CompliancePage() {
   const gaps = useApi(() => networkApi.gaps(scope), [scope]);
   const findings = useApi(() => networkApi.ruleFindings(scope), [scope]);
   const exposures = useApi(() => vulnerabilityApi.exposures(scope), [scope]);
+  const policyDeviations = useApi(() => complianceApi.policyDeviations(scope), [scope]);
+  const securityDeviations = useApi(() => complianceApi.securityDeviations(scope), [scope]);
+  const drift = useApi(() => complianceApi.configurationDrift(scope), [scope]);
+  const summary = useApi(() => complianceApi.summary(scope), [scope]);
   const [policy, setPolicy] = useState<DesignPolicy>(() => loadPolicy());
   const [exceptions, setExceptions] = useState<PolicyException[]>(() => loadExceptions());
   const [selectedId, setSelectedId] = useState("");
@@ -383,7 +387,21 @@ export default function CompliancePage() {
     ...(gaps.data?.evidence ?? []),
     ...(findings.data?.evidence ?? []),
     ...(exposures.data?.evidence ?? []),
+    ...(policyDeviations.data?.evidence ?? []),
+    ...(securityDeviations.data?.evidence ?? []),
+    ...(drift.data?.evidence ?? []),
   ];
+
+  const governedDeviations: ComplianceDeviation[] = [
+    ...(policyDeviations.data?.data ?? []),
+    ...(securityDeviations.data?.data ?? []),
+  ];
+  const openGovernedDeviations = governedDeviations.filter((row) => row.status?.toLowerCase() !== "resolved");
+  const criticalGovernedCount = openGovernedDeviations.filter((row) => row.severity?.toLowerCase() === "critical").length;
+  const driftRows = drift.data?.data ?? [];
+  const governedLoading = policyDeviations.loading || securityDeviations.loading || drift.loading || summary.loading;
+  const governedError = policyDeviations.error ?? securityDeviations.error ?? drift.error ?? summary.error;
+  const changeSummary = summary.data?.data.summary;
 
   function savePolicy(next: DesignPolicy) {
     setPolicy(next);
@@ -411,7 +429,7 @@ export default function CompliancePage() {
         metadata={<><span>{policy.name}</span><span>{violations.length} evaluated violations</span><span>{exceptions.filter(isExceptionActive).length} active exceptions</span></>}
       />
 
-      <EvidenceBar evidence={evidence} knowledgeVersion={topology.data?.knowledge_version} warnings={[...(topology.data?.warnings ?? []), ...(gaps.data?.warnings ?? []), ...(findings.data?.warnings ?? []), ...(exposures.data?.warnings ?? [])]} />
+      <EvidenceBar evidence={evidence} knowledgeVersion={topology.data?.knowledge_version} warnings={[...(topology.data?.warnings ?? []), ...(gaps.data?.warnings ?? []), ...(findings.data?.warnings ?? []), ...(exposures.data?.warnings ?? []), ...(policyDeviations.data?.warnings ?? []), ...(securityDeviations.data?.warnings ?? [])]} />
 
       <div className="predeploy-summary">
         <section className="card">
@@ -425,12 +443,13 @@ export default function CompliancePage() {
         <section className="metric-grid compliance-metrics">
           <MetricCard label="Active violations" value={activeViolations.length} detail={`${violations.length - activeViolations.length} accepted by governed exception`} tone={activeViolations.length ? "warning" : "success"} />
           <MetricCard label="Critical findings" value={activeViolations.filter((item) => item.severity === "critical").length} detail="Includes public exposure and any-any rules" tone={activeViolations.some((item) => item.severity === "critical") ? "critical" : "success"} />
-          <MetricCard label="Trend" value={activeViolations.length ? "Needs action" : "Improving"} detail="Current live/discovered posture compared to policy pack" />
+          <MetricCard label="Open governed deviations" value={openGovernedDeviations.length} detail={changeSummary ? `${changeSummary.drifted_resource_count} drifted resources tracked by change intelligence` : "Policy and security baseline deviations"} tone={criticalGovernedCount ? "critical" : openGovernedDeviations.length ? "warning" : "success"} />
         </section>
       </div>
 
       {error ? <StatePanel title="Compliance evaluation unavailable" message={error.message} tone="error" /> : null}
       {loading ? <StatePanel title="Evaluating architecture posture" message="Comparing discovered subscriptions, VNets, routes, peerings, rules, private endpoints, and shared services to policy." tone="loading" /> : null}
+
 
       <div className="compliance-layout">
         <section className="card">
@@ -483,6 +502,42 @@ export default function CompliancePage() {
       <div className="compliance-layout">
         <section className="card">
           <div className="card-header">
+            <div><h2>Governed compliance deviations</h2><p>Policy and security baseline deviations from change intelligence, backed by evidence-linked ontology entities rather than keyword inference.</p></div>
+          </div>
+          {governedError ? <StatePanel title="Governed deviations unavailable" message={governedError.message} tone="error" /> : null}
+          {governedLoading ? <StatePanel title="Loading change intelligence posture" message="Fetching policy deviations, security deviations, and configuration drift." tone="loading" /> : null}
+          <div className="compliance-list">
+            {openGovernedDeviations.map((row) => (
+              <div key={row.deviation_id} className="compliance-row">
+                <StatusBadge label={row.severity} tone={statusTone(row.severity)} compact />
+                <div>
+                  <strong>{titleize(row.kind)} - {row.control}</strong>
+                  <span>{row.business_service || row.application || row.resource || "business context pending"}</span>
+                </div>
+                <StatusBadge label={row.status} tone={row.status?.toLowerCase() === "open" ? "critical" : "warning"} compact />
+              </div>
+            ))}
+            {openGovernedDeviations.length === 0 && !governedLoading ? <StatePanel title="No open governed deviations" message="Change intelligence reports no open policy or security baseline deviations for this scope." /> : null}
+          </div>
+        </section>
+
+        <aside className="card">
+          <div className="card-header">
+            <div><h2>Configuration drift</h2><p>Resources whose observed configuration no longer matches the expected baseline.</p></div>
+          </div>
+          <div className="card-body compliance-detail">
+            {driftRows.length > 0 ? (
+              <StructuredData value={driftRows} />
+            ) : (
+              <StatePanel title={drift.loading ? "Loading drift data" : "No configuration drift"} message={drift.loading ? "Evaluating configuration drift." : "All tracked resources match their expected configuration."} tone={drift.loading ? "loading" : undefined} />
+            )}
+          </div>
+        </aside>
+      </div>
+
+      <div className="compliance-layout">
+        <section className="card">
+          <div className="card-header">
             <div><h2>Policy administration</h2><p>Governed customer-specific policy pack for architecture compliance.</p></div>
             <StatusBadge label="Customer governed" tone="warning" />
           </div>
@@ -526,6 +581,7 @@ export default function CompliancePage() {
           evidence: copilotEvidenceRows("governance", evidence, [
             ...violations,
             ...(selected ? [selected] : []),
+            ...openGovernedDeviations,
           ]),
         })}
         starterQuestions={[

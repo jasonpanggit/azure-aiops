@@ -48,9 +48,17 @@ export default function ExposurePage() {
   const summary = useApi(() => vulnerabilityApi.summary(scope), [scope]);
   const exposures = useApi(() => vulnerabilityApi.exposures(scope, listFilters), [scope, listFilters]);
   const patches = useApi(() => vulnerabilityApi.patchPriorities(scope, listFilters), [scope, listFilters]);
-  const servers = useApi(() => vulnerabilityApi.serverExposures(scope, listFilters), [scope, listFilters]);
+  const servers = useApi(() => vulnerabilityApi.assetExposures(scope, listFilters), [scope, listFilters]);
+  const defenderPosture = useApi(
+    () => vulnerabilityApi.defenderPosture(scope, debouncedQuery || undefined),
+    [scope, debouncedQuery]
+  );
+  const defenderOverview = useApi(() => vulnerabilityApi.defenderOverview(scope), [scope]);
+  const defenderAlerts = useApi(() => vulnerabilityApi.defenderAlerts(scope), [scope]);
+  const defenderAttackPaths = useApi(() => vulnerabilityApi.defenderAttackPaths(scope), [scope]);
+  const defenderControls = useApi(() => vulnerabilityApi.defenderSecureScoreControls(scope), [scope]);
   const sla = useApi(() => vulnerabilityApi.slaCompliance(scope), [scope]);
-  const riskExceptions = useApi(() => vulnerabilityApi.riskExceptions(), [scope, exceptionsToken]);
+  const riskExceptions = useApi(() => vulnerabilityApi.riskExceptions(scope), [scope, exceptionsToken]);
 
   const revokeException = useCallback(async (exceptionId: string) => {
     setRevokingId(exceptionId);
@@ -119,7 +127,7 @@ export default function ExposurePage() {
       if (!normalized) return true;
       return [exposure.cve_id, exposure.missing_kb, exposure.recommended_patch, exposure.severity].some((value) =>
         String(value ?? "").toLowerCase().includes(normalized)
-      );
+      ) || (exposure.defender_recommendations ?? []).some((value) => value.toLowerCase().includes(normalized));
     });
   }, [exposures.data, query]);
 
@@ -129,7 +137,7 @@ export default function ExposurePage() {
       if (!normalized) return true;
       return [
         server.name,
-        server.server_id,
+        server.asset_id,
         server.inventory_kind,
         server.resource_type,
         server.business_service,
@@ -140,6 +148,8 @@ export default function ExposurePage() {
         server.network_exposure,
         ...server.cve_ids,
         ...server.missing_kbs,
+        ...(server.defender_recommendations ?? []),
+        ...(server.defender_software ?? []),
       ].some((value) => String(value ?? "").toLowerCase().includes(normalized));
     });
   }, [servers.data, query]);
@@ -149,6 +159,7 @@ export default function ExposurePage() {
     { id: "reachability", label: "Reachability", getValues: (server) => server.internet_exposed ? "Internet exposed" : server.reachable ? "Reachable" : "No path observed" },
     { id: "service", label: "Service", getValues: (server) => server.business_service || "Unassigned service" },
     { id: "environment", label: "Environment", getValues: (server) => server.environment || "Unknown" },
+    { id: "defender", label: "Defender", getValues: (server) => server.defender_observed ? "Defender observed" : "No Defender finding" },
   ]);
   const { filteredRows: columnFilteredPatches, filters: patchFilters, resetFilters: resetPatchFilters } = useColumnFilters(filteredPatches, [
     { id: "reachability", label: "Reachability", getValues: (patch) => patch.reachable_server_count ? "Reachable" : "No path observed" },
@@ -158,6 +169,7 @@ export default function ExposurePage() {
     { id: "severity", label: "Severity", getValues: (exposure) => exposure.severity },
     { id: "reachability", label: "Reachability", getValues: (exposure) => exposure.internet_exposed ? "Internet exposed" : exposure.reachable_server_count ? "Reachable" : "No path observed" },
     { id: "kb", label: "Patch KB", getValues: (exposure) => exposure.missing_kb || "No KB" },
+    { id: "defender", label: "Defender", getValues: (exposure) => exposure.defender_finding_count ? "Defender observed" : "Other source" },
   ]);
 
   const serverPaging = useTablePagination(columnFilteredServers);
@@ -174,29 +186,44 @@ export default function ExposurePage() {
   const serverInventorySummary = Object.entries(serverInventoryCounts)
     .map(([kind, count]) => `${kind}: ${count}`)
     .join(" · ");
+  const postureInventorySummary = useMemo(() => {
+    const counts = (defenderPosture.data?.data ?? []).reduce<Record<string, number>>((result, item) => {
+      result[item.inventory_kind] = (result[item.inventory_kind] ?? 0) + 1;
+      return result;
+    }, {});
+    return Object.entries(counts)
+      .map(([kind, count]) => `${kind}: ${count}`)
+      .join(" · ");
+  }, [defenderPosture.data]);
   // Named per-source so a single failing call (e.g. patches) doesn't block
   // rendering of sections whose own data loaded successfully.
   const sourceErrors = [
     { label: "Summary", error: summary.error },
     { label: "CVE exposures", error: exposures.error },
     { label: "Patch priorities", error: patches.error },
-    { label: "Server exposures", error: servers.error },
+    { label: "Asset exposures", error: servers.error },
+    { label: "Defender posture", error: defenderPosture.error },
+    { label: "Defender alerts", error: defenderAlerts.error },
+    { label: "Defender attack paths", error: defenderAttackPaths.error },
+    { label: "Defender secure score", error: defenderOverview.error ?? defenderControls.error },
   ].filter((entry): entry is { label: string; error: Error } => entry.error != null);
   const fatalError = summary.error ?? servers.error;
-  const loading = summary.loading || exposures.loading || patches.loading || servers.loading;
+  const loading = summary.loading || exposures.loading || patches.loading || servers.loading || defenderPosture.loading
+    || defenderOverview.loading || defenderAlerts.loading || defenderAttackPaths.loading || defenderControls.loading;
 
   return (
     <div className="page-container">
       <PageHeader
         eyebrow="Exposure management"
         title="Which exposure should be reduced first?"
-        description="Prioritize observed vulnerability exposure by reachability, affected services, exploit signals, and the patch evidence available in this scope."
+        description="Prioritize Defender for Cloud exposure across servers, containers, databases, storage, applications, and the rest of the discovered subscription inventory."
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about exposure" />}
         metadata={
           <>
             <span>{summary.data?.data.affected_business_service_count ?? 0} affected business services</span>
-            <span>{summary.data?.data.affected_server_count ?? 0} affected servers</span>
-            <span>{serverInventorySummary || "Server inventory grouped by host"}</span>
+            <span>{summary.data?.data.affected_asset_count ?? 0} affected assets</span>
+            <span>{summary.data?.data.defender_observed_asset_count ?? 0} Defender-observed vulnerable assets</span>
+            <span>{postureInventorySummary || serverInventorySummary || "Subscription inventory grouped by resource type"}</span>
             <span>Patch recommendations are advisory</span>
           </>
         }
@@ -208,6 +235,11 @@ export default function ExposurePage() {
           ...(exposures.data?.evidence ?? []),
           ...(patches.data?.evidence ?? []),
           ...(servers.data?.evidence ?? []),
+          ...(defenderPosture.data?.evidence ?? []),
+          ...(defenderOverview.data?.evidence ?? []),
+          ...(defenderAlerts.data?.evidence ?? []),
+          ...(defenderAttackPaths.data?.evidence ?? []),
+          ...(defenderControls.data?.evidence ?? []),
         ]}
         knowledgeVersion={summary.data?.knowledge_version}
         warnings={[
@@ -215,6 +247,11 @@ export default function ExposurePage() {
           ...(exposures.data?.warnings ?? []),
           ...(patches.data?.warnings ?? []),
           ...(servers.data?.warnings ?? []),
+          ...(defenderPosture.data?.warnings ?? []),
+          ...(defenderOverview.data?.warnings ?? []),
+          ...(defenderAlerts.data?.warnings ?? []),
+          ...(defenderAttackPaths.data?.warnings ?? []),
+          ...(defenderControls.data?.warnings ?? []),
         ]}
         fallbackTimestamp={summary.data?.data.freshness}
       />
@@ -235,7 +272,7 @@ export default function ExposurePage() {
         <MetricCard
           label="Exposed inventory"
           value={servers.data?.pagination?.total ?? servers.data?.data.length ?? "—"}
-          detail={serverInventorySummary || "Azure VM, Arc-enabled server, and AKS node exposure"}
+          detail={serverInventorySummary || "Affected resources across the subscription inventory"}
           tone={(summary.data?.data.reachable_server_count ?? 0) > 0 ? "warning" : "success"}
         />
         <MetricCard
@@ -263,10 +300,227 @@ export default function ExposurePage() {
             signals={[
               { label: "Critical CVEs", value: summary.data?.data.critical_count ?? 0, tone: "critical" },
               { label: "Internet exposed", value: summary.data?.data.internet_exposed_count ?? 0, tone: "critical" },
-              { label: "Reachable servers", value: summary.data?.data.reachable_server_count ?? 0, tone: "warning" },
+              { label: "Reachable assets", value: summary.data?.data.reachable_server_count ?? 0, tone: "warning" },
               { label: "Affected services", value: summary.data?.data.affected_business_service_count ?? 0, tone: "info" },
             ]}
           />
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-header">
+          <div>
+            <h2>Active threats and attack paths</h2>
+            <p>
+              Observed Defender alerts and Defender CSPM exploit routes remain distinct from posture findings so
+              one underlying issue is not counted as multiple vulnerabilities.
+            </p>
+          </div>
+          <span className="visual-card-kicker">Threat evidence</span>
+        </div>
+        <div className="card-body">
+          <div className="metric-grid exposure-metrics">
+            <MetricCard
+              label="Active alerts"
+              value={defenderOverview.data?.data.active_alert_count ?? "—"}
+              detail={`${defenderOverview.data?.data.critical_alert_count ?? 0} critical alerts`}
+              tone={(defenderOverview.data?.data.critical_alert_count ?? 0) > 0 ? "critical" : "warning"}
+            />
+            <MetricCard
+              label="Attack paths"
+              value={defenderOverview.data?.data.attack_path_count ?? "—"}
+              detail="Exploitable routes reported by Defender CSPM"
+              tone={(defenderOverview.data?.data.attack_path_count ?? 0) > 0 ? "critical" : "success"}
+            />
+            <MetricCard
+              label={
+                defenderOverview.data?.data.secure_scores.length === 1
+                  ? `Secure score — ${defenderOverview.data.data.secure_scores[0].subscription_id}`
+                  : "Secure scores"
+              }
+              value={
+                defenderOverview.data?.data.secure_scores.length === 1
+                  ? `${Math.round(defenderOverview.data.data.secure_scores[0].percentage * 100)}%`
+                  : defenderOverview.data?.data.secure_scores.length
+                    ? `${defenderOverview.data.data.secure_scores.length} subscriptions`
+                  : "Unknown"
+              }
+              detail={
+                defenderOverview.data?.data.secure_scores.length
+                  ? defenderOverview.data.data.secure_scores
+                      .map((score) => `${score.subscription_id}: ${Math.round(score.percentage * 100)}%`)
+                      .join(" · ")
+                  : "No secure-score snapshot is available"
+              }
+              tone={defenderOverview.data?.data.secure_scores.length ? "success" : "default"}
+            />
+            <MetricCard
+              label="Signal coverage"
+              value={`${Object.values(defenderOverview.data?.data.coverage ?? {}).filter((state) => state.availability === "available").length}/4`}
+              detail="Unavailable sources remain unknown, never healthy"
+              tone={Object.values(defenderOverview.data?.data.coverage ?? {}).some((state) => state.availability !== "available") ? "warning" : "success"}
+            />
+          </div>
+
+          <div className="table-scroll" style={{ marginTop: "1rem" }}>
+            <table className="operations-table exposure-table">
+              <thead>
+                <tr>
+                  <th>Active alert</th>
+                  <th>Severity</th>
+                  <th>Affected inventory</th>
+                  <th>Observed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(defenderAlerts.data?.data ?? []).slice(0, 8).map((alert) => (
+                  <tr key={alert.id}>
+                    <td>
+                      <strong>{alert.title || "Unnamed Defender alert"}</strong>
+                      <div className="table-secondary">{alert.intent || alert.productName || alert.description}</div>
+                    </td>
+                    <td><StatusBadge label={alert.severity} tone={statusTone(alert.severity)} compact /></td>
+                    <td>{alert.resourceIds.length ? alert.resourceIds.map((id) => id.split("/").pop()).join(", ") : "Unresolved entity"}</td>
+                    <td>{alert.timeGenerated || "Unknown"}<div className="table-secondary">{alert.status}</div></td>
+                  </tr>
+                ))}
+                {!defenderAlerts.loading && (defenderAlerts.data?.data.length ?? 0) === 0 && (
+                  <tr><td colSpan={4}>No active alert evidence is available for this scope.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="table-scroll" style={{ marginTop: "1rem" }}>
+            <table className="operations-table exposure-table">
+              <thead>
+                <tr>
+                  <th>Attack path</th>
+                  <th>Potential impact</th>
+                  <th>Graph</th>
+                  <th>Identity resolution</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(defenderAttackPaths.data?.data ?? []).slice(0, 8).map((path) => {
+                  const unresolved = path.nodes.filter((node) => !node.resolved).length;
+                  return (
+                    <tr key={path.id}>
+                      <td><strong>{path.title || "Unnamed attack path"}</strong><div className="table-secondary">{path.riskCategories.join(", ")}</div></td>
+                      <td>{path.potentialImpact || path.description || "Review path impact in Defender."}</td>
+                      <td>{path.nodeCount} nodes · {path.connectionCount} connections</td>
+                      <td><StatusBadge label={unresolved ? `${unresolved} unresolved` : "Resolved"} tone={unresolved ? "warning" : "success"} compact /></td>
+                    </tr>
+                  );
+                })}
+                {!defenderAttackPaths.loading && (defenderAttackPaths.data?.data.length ?? 0) === 0 && (
+                  <tr><td colSpan={4}>No attack-path evidence is available. Defender CSPM may be unavailable or have no current paths.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-header">
+          <div>
+            <h2>Secure-score improvement opportunities</h2>
+            <p>Controls are ranked by available score gain, with affected resource counts retained as posture evidence.</p>
+          </div>
+          <span className="visual-card-kicker">Posture trajectory</span>
+        </div>
+        <div className="card-body">
+          {(defenderControls.data?.data.length ?? 0) === 0 ? (
+            <p className="muted">Secure-score controls are unavailable for this scope; posture is unknown.</p>
+          ) : (
+            <OperationsSignalChart
+              signals={(defenderControls.data?.data ?? []).slice(0, 6).map((control) => ({
+                label: control.title,
+                value: Math.max(0, control.maxScore - control.currentScore),
+                tone: control.unhealthyResourceCount > 0 ? "warning" : "success",
+              }))}
+            />
+          )}
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-header">
+          <div>
+            <h2>Defender for Cloud posture</h2>
+            <p>
+              Recommendations and CVE subassessments across all enabled Defender plans. Missing Defender data is
+              shown as unknown rather than treated as healthy.
+            </p>
+          </div>
+          <span className="visual-card-kicker">Defender evidence</span>
+        </div>
+        <div className="card-body">
+          <div className="metric-grid exposure-metrics">
+            <MetricCard
+              label="Defender-observed assets"
+              value={summary.data?.data.defender_observed_asset_count ?? "—"}
+              detail="Inventory assets with actionable Defender vulnerability subassessments"
+              tone={(summary.data?.data.defender_observed_asset_count ?? 0) > 0 ? "warning" : "default"}
+            />
+            <MetricCard
+              label="Defender findings"
+              value={summary.data?.data.defender_finding_count ?? "—"}
+              detail="Actionable CVE-bearing Defender subassessments"
+              tone={(summary.data?.data.defender_finding_count ?? 0) > 0 ? "critical" : "success"}
+            />
+            <MetricCard
+              label="Defender recommendations"
+              value={summary.data?.data.defender_posture_count ?? summary.data?.data.defender_recommendation_count ?? "—"}
+              detail={postureInventorySummary || "Unhealthy recommendations across protected resource families"}
+              tone={(summary.data?.data.defender_posture_count ?? summary.data?.data.defender_recommendation_count ?? 0) > 0 ? "warning" : "success"}
+            />
+          </div>
+          {defenderPosture.error ? (
+            <p className="muted">Defender recommendation evidence is currently unavailable.</p>
+          ) : (defenderPosture.data?.data.length ?? 0) === 0 ? (
+            <p className="muted">
+              No unhealthy Defender recommendations were observed. This is not an all-clear when a Defender plan is not enabled or has no current assessment data.
+            </p>
+          ) : (
+            <div className="table-scroll" style={{ marginTop: "1rem" }}>
+              <table className="operations-table exposure-table">
+                <thead>
+                  <tr>
+                    <th>Asset</th>
+                    <th>Defender plan</th>
+                    <th>Severity</th>
+                    <th>Recommendation</th>
+                    <th>Remediation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {defenderPosture.data?.data.slice(0, 12).map((finding) => (
+                    <tr key={finding.assessment_id}>
+                      <td>
+                        <strong>{finding.asset_name || finding.asset_id}</strong>
+                        <div className="table-secondary">{finding.resource_type || finding.inventory_kind}</div>
+                      </td>
+                      <td>
+                        <StatusBadge label={finding.defender_plan} tone="neutral" />
+                        <div className="table-secondary">{finding.inventory_kind}</div>
+                      </td>
+                      <td>
+                        <StatusBadge label={finding.severity} tone={statusTone(finding.severity)} compact />
+                        <div className="table-secondary">{finding.status}</div>
+                      </td>
+                      <td>
+                        <strong>{finding.recommendation || "Unnamed Defender recommendation"}</strong>
+                        {finding.description && <div className="table-secondary">{finding.description}</div>}
+                      </td>
+                      <td>{finding.remediation || "Review the Defender recommendation for remediation guidance."}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </section>
 
@@ -457,7 +711,7 @@ export default function ExposurePage() {
                           {exception.cve_id}
                         </Link>
                       </td>
-                      <td>{exception.server_id || "All affected servers"}</td>
+                      <td>{exception.server_id || "All affected assets"}</td>
                       <td>{exception.reason}</td>
                       <td>{exception.approved_by || "Unrecorded"}</td>
                       <td>
@@ -524,7 +778,7 @@ export default function ExposurePage() {
             tone="error"
           />
         )}
-        {filteredServers.length === 0 && filteredPatches.length === 0 && filteredCves.length === 0 ? (
+        {filteredServers.length === 0 && filteredPatches.length === 0 && filteredCves.length === 0 && (defenderPosture.data?.data.length ?? 0) === 0 ? (
         <StatePanel
           title="No exposure matches these filters"
           message="Adjust the search or reachability filter. Results reflect the current operating context."
@@ -534,13 +788,13 @@ export default function ExposurePage() {
           <section className="card queue-card">
             <div className="card-header">
               <div>
-                <h2>Server-centric exposure inventory</h2>
-                <p>Read-only inventory grouped by compute host across Azure VMs, Arc-enabled servers, and AKS nodes with observed exposure and patch evidence.</p>
+                <h2>Subscription-wide exposure inventory</h2>
+                <p>Read-only findings grouped by affected asset across compute, containers, data, storage, application, and other discovered Azure resources.</p>
               </div>
             </div>
             {filteredServers.length === 0 ? (
               <div className="card-body">
-                <p className="muted">No server exposures match the current filters.</p>
+                <p className="muted">No asset exposures match the current filters.</p>
               </div>
             ) : (
               <>
@@ -554,20 +808,21 @@ export default function ExposurePage() {
                 <table className="operations-table exposure-table">
                   <thead>
                     <tr>
-                      <th>Server</th>
+                      <th>Asset</th>
                       <th>Inventory</th>
                       <th>Exposure</th>
                       <th>Scope</th>
+                      <th>Defender evidence</th>
                       <th>Open findings</th>
                       <th>Patch evidence</th>
                     </tr>
                   </thead>
                   <tbody>
                     {serverPaging.pageRows.map((server) => (
-                      <tr key={server.server_id}>
+                      <tr key={server.asset_id}>
                         <td>
-                          <strong>{server.name || server.server_id}</strong>
-                          <div className="table-secondary">{server.server_id}</div>
+                          <strong>{server.name || server.asset_id}</strong>
+                          <div className="table-secondary">{server.asset_id}</div>
                         </td>
                         <td>
                           <StatusBadge label={server.inventory_kind} tone="neutral" />
@@ -585,6 +840,20 @@ export default function ExposurePage() {
                           <div className="table-secondary">
                             {[server.application, server.environment, server.region, server.owner].filter(Boolean).join(" · ") || "No scope metadata"}
                           </div>
+                        </td>
+                        <td>
+                          <StatusBadge
+                            label={server.defender_observed ? "Defender observed" : "No Defender finding"}
+                            tone={server.defender_observed ? "warning" : "neutral"}
+                          />
+                          <div className="table-secondary">
+                            {server.defender_observed
+                              ? `${server.defender_finding_count} findings · ${(server.defender_software ?? []).slice(0, 2).join(", ") || "software unavailable"}`
+                              : "Assessment coverage unknown"}
+                          </div>
+                          {server.defender_recommendations?.[0] && (
+                            <div className="table-secondary">{server.defender_recommendations[0]}</div>
+                          )}
                         </td>
                         <td>
                           <strong>{server.cve_count} CVEs</strong>
@@ -610,7 +879,7 @@ export default function ExposurePage() {
               onPageChange={serverPaging.setPage}
               pageSize={serverPaging.pageSize}
               onPageSizeChange={serverPaging.setPageSize}
-              label="servers"
+              label="assets"
             />
           </section>
 
@@ -741,6 +1010,7 @@ export default function ExposurePage() {
                       <th>Reachability</th>
                       <th>Business impact</th>
                       <th>Risk reduction</th>
+                      <th>Defender evidence</th>
                       <th>Patch KB</th>
                       <th aria-label="Open" />
                     </tr>
@@ -765,12 +1035,12 @@ export default function ExposurePage() {
                             label={exposure.internet_exposed ? "Internet exposed" : exposure.reachable_server_count ? "Reachable" : "No path observed"}
                             tone={exposure.internet_exposed ? "critical" : exposure.reachable_server_count ? "warning" : "neutral"}
                           />
-                          <div className="table-secondary">{exposure.reachable_server_count} reachable servers</div>
+                          <div className="table-secondary">{exposure.reachable_server_count} reachable assets</div>
                         </td>
                         <td>
                           <strong>{exposure.affected_business_service_count} business services</strong>
                           <div className="table-secondary">
-                            {exposure.affected_application_count} apps · {exposure.affected_server_count} servers
+                            {exposure.affected_application_count} apps · {exposure.affected_asset_count} assets
                           </div>
                         </td>
                         <td>
@@ -780,9 +1050,27 @@ export default function ExposurePage() {
                           </div>
                         </td>
                         <td>
-                          <Link className="table-primary-link" href={`/exposure/kbs/${encodeURIComponent(exposure.missing_kb)}`}>
-                            {exposure.missing_kb}
-                          </Link>
+                          <StatusBadge
+                            label={exposure.defender_finding_count ? "Defender observed" : "Other source"}
+                            tone={exposure.defender_finding_count ? "warning" : "neutral"}
+                          />
+                          <div className="table-secondary">
+                            {exposure.defender_finding_count
+                              ? `${exposure.defender_finding_count} findings across ${exposure.defender_observed_asset_count} assets`
+                              : "No Defender subassessment"}
+                          </div>
+                          {exposure.defender_recommendations?.[0] && (
+                            <div className="table-secondary">{exposure.defender_recommendations[0]}</div>
+                          )}
+                        </td>
+                        <td>
+                          {exposure.missing_kb ? (
+                            <Link className="table-primary-link" href={`/exposure/kbs/${encodeURIComponent(exposure.missing_kb)}`}>
+                              {exposure.missing_kb}
+                            </Link>
+                          ) : (
+                            <span>No KB mapped</span>
+                          )}
                           <div className="table-secondary">{exposure.recommended_patch || "Recommended patch"}</div>
                         </td>
                         <td>
@@ -833,12 +1121,13 @@ export default function ExposurePage() {
             ...(exposures.data?.evidence ?? []),
             ...(patches.data?.evidence ?? []),
             ...(servers.data?.evidence ?? []),
-          ], [...filteredCves, ...filteredPatches, ...filteredServers]),
+            ...(defenderPosture.data?.evidence ?? []),
+          ], [...filteredCves, ...filteredPatches, ...filteredServers, ...(defenderPosture.data?.data ?? [])]),
         })}
         starterQuestions={[
           { label: "Which CVEs affect our highest-risk service?", tool: "cve_exposure", toolArguments: {} },
           { label: "What should be patched first?", tool: "cve_exposure", toolArguments: {} },
-          { label: "Which servers have failed patches?", tool: "cve_exposure", toolArguments: {} },
+          { label: "Which Defender plans have the most open recommendations?", tool: "cve_exposure", toolArguments: {} },
         ]}
       />
     </div>

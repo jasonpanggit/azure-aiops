@@ -488,6 +488,11 @@ export interface VulnerabilityExposure {
   epss_score: number;
   is_known_exploited: boolean;
   finding_ids: string[];
+  defender_finding_count: number;
+  defender_observed_server_count: number;
+  defender_recommendations: string[];
+  affected_asset_count: number;
+  defender_observed_asset_count: number;
 }
 
 export interface VulnerabilitySummary {
@@ -501,10 +506,16 @@ export interface VulnerabilitySummary {
   top_priority: VulnerabilityExposure[];
   freshness: string;
   metadata_source: string;
+  defender_finding_count: number;
+  defender_observed_server_count: number;
+  defender_recommendation_count: number;
+  affected_asset_count: number;
+  defender_observed_asset_count: number;
+  defender_posture_count: number;
 }
 
-export interface ServerExposure {
-  server_id: string;
+export interface AssetExposure {
+  asset_id: string;
   name: string;
   resource_type: string;
   inventory_kind: string;
@@ -530,6 +541,115 @@ export interface ServerExposure {
   priority_score: number;
   expected_risk_reduction: number;
   finding_ids: string[];
+  defender_observed: boolean;
+  defender_finding_count: number;
+  defender_recommendations: string[];
+  defender_last_assessed_at: string;
+  defender_software: string[];
+}
+
+export interface DefenderPostureFinding {
+  assessment_id: string;
+  asset_id: string;
+  asset_name: string;
+  resource_type: string;
+  inventory_kind: string;
+  defender_plan: string;
+  status: string;
+  severity: string;
+  recommendation: string;
+  description: string;
+  remediation: string;
+  last_assessed_at: string;
+  subscription_id: string;
+  subscription_connection?: string;
+  environment?: string;
+  business_service?: string;
+  application?: string;
+  owner?: string;
+  region?: string;
+  criticality?: string;
+}
+
+export interface DefenderAlert {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  severity: string;
+  intent: string;
+  productName: string;
+  timeGenerated: string;
+  remediationSteps: string[];
+  resourceIds: string[];
+  subscription_id: string;
+}
+
+export interface DefenderAttackPathNode {
+  id: string;
+  displayName: string;
+  nodeType: string;
+  resourceId: string;
+  resolved: boolean;
+}
+
+export interface DefenderAttackPath {
+  id: string;
+  title: string;
+  description: string;
+  potentialImpact: string;
+  riskCategories: string[];
+  manualRemediationSteps: string[];
+  nodeCount: number;
+  connectionCount: number;
+  nodes: DefenderAttackPathNode[];
+  connections: Array<{
+    id: string;
+    sourceNodeId: string;
+    targetNodeId: string;
+    connectionType: string;
+  }>;
+  subscription_id: string;
+}
+
+export interface DefenderSecureScore {
+  id: string;
+  subscription_id: string;
+  currentScore: number;
+  maxScore: number;
+  percentage: number;
+  observedAt: string;
+}
+
+export interface DefenderSecureScoreControl {
+  id: string;
+  title: string;
+  currentScore: number;
+  maxScore: number;
+  percentage: number;
+  unhealthyResourceCount: number;
+  healthyResourceCount: number;
+  assessmentDefinitions: string[];
+  subscription_id: string;
+}
+
+export interface DefenderOverview {
+  active_alert_count: number;
+  critical_alert_count: number;
+  attack_path_count: number;
+  unhealthy_recommendation_count: number;
+  secure_scores: DefenderSecureScore[];
+  top_controls: DefenderSecureScoreControl[];
+  coverage: Record<
+    "alerts" | "attack_paths" | "secure_score" | "recommendations",
+    {
+      availability: "available" | "unknown" | "unavailable";
+      freshness: "fresh" | "stale" | "unknown";
+      quality: "complete" | "degraded" | "unknown";
+      error: string;
+      observed_at: string;
+    }
+  >;
 }
 
 export interface VulnerabilityFinding {
@@ -562,6 +682,16 @@ export interface VulnerabilityFinding {
   risk_accepted: boolean;
   risk_acceptance_reason: string;
   risk_acceptance_expires_at: string;
+  source: string;
+  defender_assessment_id: string;
+  defender_recommendation: string;
+  defender_status: string;
+  defender_last_assessed_at: string;
+  defender_patchable: boolean;
+  defender_software_vendor: string;
+  defender_software_name: string;
+  defender_software_version: string;
+  defender_fixed_version: string;
 }
 
 export interface AttackPathNode {
@@ -619,6 +749,67 @@ export interface SlaComplianceReport {
   by_severity: SlaComplianceSeverityRow[];
   aging_buckets: Record<string, number>;
   freshness: string;
+}
+
+/** A `PolicyDeviation`/`SecurityDeviation` ontology entity, enriched with the
+ * resource's business context so the compliance page can render owner,
+ * application, and business service without a second lookup. */
+export interface ComplianceDeviation {
+  deviation_id: string;
+  kind: string;
+  observed_at: string;
+  severity: string;
+  control: string;
+  status: string;
+  resource: string;
+  application: string;
+  business_service: string;
+  environment: string;
+  business_criticality: string;
+  subscription: string;
+}
+
+/** Per-resource compliance posture: configuration drift plus open policy and
+ * security baseline deviation counts, backed by `ChangeIntelligence.analyze()`. */
+export interface ComplianceResourcePosture {
+  resource: { name: string; entity_type: string };
+  application: string;
+  business_service: string;
+  subscription_alias: string;
+  configuration_compliant: boolean | null;
+  evidence_status: string;
+  drift_fields: string[];
+  policy_deviation_count: number;
+  security_deviation_count: number;
+  violations: string[];
+  critical_deviation_count: number;
+  compliance_score: number | null;
+}
+
+export interface ComplianceAggregateRow {
+  name: string;
+  resource_count: number;
+  compliance_score: number | null;
+  drift_count: number;
+  violations: string[];
+  critical_deviation_count: number;
+}
+
+export interface ComplianceTrendPoint {
+  period: string;
+  [key: string]: unknown;
+}
+
+export interface ComplianceSummary {
+  summary: {
+    change_count: number;
+    high_risk_change_count: number;
+    drifted_resource_count: number;
+    incident_contributing_change_count: number;
+  };
+  trends: unknown;
+  application_compliance: ComplianceAggregateRow[];
+  business_service_compliance: ComplianceAggregateRow[];
 }
 
 export interface CveDetail {
