@@ -72,6 +72,7 @@ progress:
 | Phase 10 P11 | 4min | 3 tasks | 5 files |
 | Phase 10 P12 | 7min | 4 tasks | 5 files |
 | Phase 10 P13 | 9min | 3 tasks | 3 files |
+| Phase 10 P14 | 12min | 3 tasks | 6 files |
 
 ## Decisions
 
@@ -93,6 +94,7 @@ progress:
 - [Phase 10]: Gold-grounding evidence remains a qualifying layer in the existing narration context; no second prompt/orchestrator path was introduced.
 - [Phase 10]: Inventory read-port is authoritative for identity/lifecycle; citation conflicts are surfaced explicitly and counted per citation.
 - [Phase 10]: Gold-grounding baseline artifact is committed as an empty scaffold and populated only by live scheduled evaluation runs.
+- [Phase 10]: Fabric medallion visibility stays inside the existing Data & Integrations page, with independent section degradation and distinct healthy-empty/unavailable copy.
 - [Phase 10]: Fabric medallion router remains GET-only and exposes data-access roles as read-only summaries.
 - [Phase 10]: Capabilities response includes both internal lineage summaries and native Fabric lineage deep links.
 - [Phase 10]: Semantic readiness defaults to deployment-blocked when no durable deployment result is recorded.
