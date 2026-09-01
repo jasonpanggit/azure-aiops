@@ -20,6 +20,7 @@ from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.models import PatchTarget
 from operations.patching.service import PatchingService, PatchValidationError
 
+from .execution_store import ExecutionClaimConflict
 from .execution_verifier import ExecutionVerificationUnavailable, ExecutionVerifier
 
 # The only action_id this phase authorizes for execution. Every other
@@ -133,16 +134,31 @@ class RemediationExecutionService:
             )
 
         decision = self._check_approval_gate(plan)
+        snapshot = self._validated_execution_snapshot(plan, decision)
 
         execution_id = None
         if self._store is not None:
-            record = self._store.create(plan_id, requested_by=requested_by)
-            execution_id = record["execution_id"]
             rollback_guidance = list(
                 (plan.get("rollback_plan") or {}).get("rollback_actions") or []
             )
-            self._store.update(
-                execution_id, status="running", rollback_guidance=rollback_guidance
+            record, claimed = self._store.create_or_get(
+                plan_id,
+                requested_by=requested_by,
+                approved_by=str(decision.get("approver") or ""),
+                execution_snapshot=snapshot,
+                rollback_guidance=rollback_guidance,
+                now=self._now(),
+            )
+            execution_id = record["execution_id"]
+            if not claimed:
+                return record
+            record = self._store.transition(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="queued",
+                status="running",
+                actor=requested_by,
+                now=self._now(),
             )
 
         return self._submit_and_record(
@@ -217,7 +233,18 @@ class RemediationExecutionService:
         except (PatchValidationError, PatchExecutionUnavailable) as exc:
             message = str(exc)
             if execution_id is not None:
-                self._store.update(execution_id, status="failed", message=message)
+                current = self._store.get(execution_id)
+                self._store.transition(
+                    execution_id,
+                    expected_revision=int(current.get("revision") or 0),
+                    expected_status={"running", "retrying"},
+                    status="failed",
+                    actor=requested_by,
+                    message=message,
+                    failure_details=message,
+                    outcome="failed",
+                    now=self._now(),
+                )
             return {
                 "execution_id": execution_id,
                 "plan_id": plan_id,
@@ -233,11 +260,17 @@ class RemediationExecutionService:
         # wired verification.
         terminal_status = "running" if self._verifier is not None else "succeeded"
         if execution_id is not None:
-            self._store.update(
+            current = self._store.get(execution_id)
+            self._store.transition(
                 execution_id,
+                expected_revision=int(current.get("revision") or 0),
+                expected_status={"running", "retrying"},
                 status=terminal_status,
+                actor=requested_by,
                 provider_job_id=run.provider_job_id,
                 message=run.message,
+                outcome=terminal_status if terminal_status == "succeeded" else "",
+                now=self._now(),
             )
         return {
             "execution_id": execution_id,
@@ -270,12 +303,12 @@ class RemediationExecutionService:
                 reason="execution_not_found",
                 details={"execution_id": execution_id},
             )
-        if record.get("status") == "succeeded":
+        status = str(record.get("status") or "")
+        if status not in {"failed", "cancelled"}:
             raise RemediationExecutionError(
-                "This execution already succeeded; retrying would resubmit an "
-                "already-successful change",
-                reason="already_succeeded",
-                details={"execution_id": execution_id},
+                "This execution is not in a retryable terminal state",
+                reason="execution_not_retryable",
+                details={"execution_id": execution_id, "status": status},
             )
         attempt_count = int(record.get("attempt_count") or 0)
         if attempt_count >= MAX_EXECUTION_ATTEMPTS:
@@ -298,17 +331,50 @@ class RemediationExecutionService:
         # have changed since the original attempt even though this
         # execution was itself once approved.
         decision = self._check_approval_gate(plan)
+        approved_snapshot = self._validated_execution_snapshot(plan, decision)
+        immutable_snapshot = record.get("execution_snapshot") or {}
+        if (
+            execution_snapshot_hash(approved_snapshot)
+            != execution_snapshot_hash(immutable_snapshot)
+        ):
+            raise RemediationExecutionError(
+                "The current approval no longer matches the execution's immutable snapshot",
+                reason="execution_snapshot_changed",
+                details={"execution_id": execution_id, "plan_id": plan_id},
+            )
+        immutable_decision = dict(decision)
+        immutable_decision["execution_snapshot"] = immutable_snapshot
 
-        self._store.update(
-            execution_id,
-            status="retrying",
-            attempt_count=attempt_count + 1,
-        )
-        self._store.update(execution_id, status="running")
+        try:
+            claimed = self._store.claim_retry(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                actor=str(record.get("requested_by") or ""),
+                max_attempts=MAX_EXECUTION_ATTEMPTS,
+                now=self._now(),
+            )
+            self._store.transition(
+                execution_id,
+                expected_revision=int(claimed.get("revision") or 0),
+                expected_status="retrying",
+                status="running",
+                actor=str(record.get("requested_by") or ""),
+                now=self._now(),
+            )
+        except ExecutionClaimConflict as exc:
+            raise RemediationExecutionError(
+                "Another lifecycle operation already claimed this execution",
+                reason=exc.reason,
+                details={
+                    "execution_id": execution_id,
+                    "status": exc.record.get("status"),
+                    "revision": exc.record.get("revision"),
+                },
+            ) from exc
 
         return self._submit_and_record(
             plan=plan,
-            decision=decision,
+            decision=immutable_decision,
             requested_by=str(record.get("requested_by") or ""),
             execution_id=execution_id,
         )

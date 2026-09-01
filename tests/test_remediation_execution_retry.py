@@ -211,7 +211,7 @@ def test_retry_is_noop_for_already_succeeded_execution():
     with pytest.raises(RemediationExecutionError) as excinfo:
         service.retry(execution_id)
 
-    assert excinfo.value.reason == "already_succeeded"
+    assert excinfo.value.reason == "execution_not_retryable"
 
 
 def test_retry_increments_attempt_count_and_follows_submit_verify_flow():

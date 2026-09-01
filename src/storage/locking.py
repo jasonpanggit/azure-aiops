@@ -35,17 +35,32 @@ class RunLock:
 
     LOCK_DOCUMENT = "state/run.lock"
 
-    def __init__(self, root: Path | str, *, service_client: object | None = None) -> None:
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        service_client: object | None = None,
+        lock_document: str = LOCK_DOCUMENT,
+    ) -> None:
+        document = PurePosixPath(lock_document)
+        if (
+            not lock_document
+            or document.is_absolute()
+            or ".." in document.parts
+            or "." in document.parts
+        ):
+            raise ValueError("lock document must be a safe contained relative path")
+        self.lock_document = document.as_posix()
         root_str = str(root)
         self.is_remote = is_onelake_uri(root_str)
         self._service_client = service_client
         self._lease = None
         if self.is_remote:
             self.root = root_str.rstrip("/")
-            self.path = f"{self.root}/{self.LOCK_DOCUMENT}"
+            self.path = f"{self.root}/{self.lock_document}"
         else:
             self.root = Path(root_str)
-            self.path = self.root / "state" / "run.lock"
+            self.path = self.root / Path(self.lock_document)
         self._handle = None
 
     def _busy(self) -> RuntimeError:
@@ -72,7 +87,7 @@ class RunLock:
             credential=DefaultAzureCredential(),
         )
         file_system = service.get_file_system_client(workspace)
-        lock_path = PurePosixPath(*segments) / self.LOCK_DOCUMENT
+        lock_path = PurePosixPath(*segments) / self.lock_document
         return file_system.get_file_client(str(lock_path))
 
     def _acquire_remote(self) -> None:
