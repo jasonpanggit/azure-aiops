@@ -1,0 +1,320 @@
+{
+  "action_catalog": [
+    {
+      "action_id": "critical-alert-containment",
+      "title": "Contain and remediate an active critical security alert",
+      "opportunity_type": "Defender critical alert response",
+      "trigger": {
+        "any": [
+          {"field": "defender_active_critical_alert_count", "gte": 1}
+        ]
+      },
+      "execution_steps": [
+        "Review the active critical alert evidence and affected resource scope",
+        "Confirm the business-mapped owner and support team for the affected resource",
+        "Assess containment scope in the governed non-production environment where feasible",
+        "Present the containment and remediation approach with alert evidence for approval",
+        "Validate the alert clears and resource health remains stable after authorized action"
+      ],
+      "preconditions": [
+        "The critical alert evidence is current and attributable to a known resource",
+        "The resource owner and support team are identified",
+        "A verified recovery point exists for the affected resource"
+      ],
+      "rollback_actions": [
+        "Halt the authorized containment step",
+        "Restore the verified pre-action recovery point",
+        "Validate resource health and dependent service transactions"
+      ],
+      "success_criteria": [
+        "The active critical alert clears in Defender",
+        "Resource health checks pass",
+        "No new critical alert appears for the same resource within the validation window"
+      ],
+      "failure_criteria": [
+        "The alert remains active after the authorized action",
+        "Resource health degrades",
+        "A new critical alert appears on the same resource"
+      ],
+      "deployment_stages": ["Test", "Production"],
+      "effectiveness": {
+        "risk_reduction_percent": 75,
+        "compliance_improvement_percent": 40,
+        "lifecycle_exposure_reduction_percent": 0,
+        "operational_debt_reduction_percent": 30
+      },
+      "metadata": {
+        "phase_3_allowlist_candidate": false,
+        "phase_3_allowlist_rationale": "Alert containment can involve resource state changes and needs case-by-case scoping before any allowlisting."
+      }
+    },
+    {
+      "action_id": "attack-path-segmentation-review",
+      "title": "Break an evidenced attack path through governed segmentation review",
+      "opportunity_type": "Defender attack path exposure",
+      "trigger": {
+        "any": [
+          {"field": "defender_attack_path_membership_count", "gte": 1}
+        ]
+      },
+      "execution_steps": [
+        "Review the attack path graph and identify the node role this resource plays",
+        "Assess governed network and identity segmentation options that break the path",
+        "Validate the proposed segmentation change against dependent service traffic in Test",
+        "Present the segmentation change and attack path evidence for approval",
+        "Validate the attack path no longer includes this resource after authorized execution"
+      ],
+      "preconditions": [
+        "The attack path evidence is current",
+        "Dependent service traffic patterns are understood",
+        "A rollback network or identity configuration is captured"
+      ],
+      "rollback_actions": [
+        "Halt the authorized segmentation change",
+        "Restore the prior network or identity configuration",
+        "Validate dependent service connectivity and health"
+      ],
+      "success_criteria": [
+        "The resource is no longer a member of the evidenced attack path",
+        "Dependent service connectivity checks pass",
+        "No new attack path membership appears within the validation window"
+      ],
+      "failure_criteria": [
+        "The resource remains part of an attack path",
+        "Dependent service connectivity fails",
+        "A new attack path membership appears"
+      ],
+      "deployment_stages": ["Test", "UAT", "Production"],
+      "effectiveness": {
+        "risk_reduction_percent": 65,
+        "compliance_improvement_percent": 30,
+        "lifecycle_exposure_reduction_percent": 0,
+        "operational_debt_reduction_percent": 40
+      },
+      "metadata": {
+        "phase_3_allowlist_candidate": false,
+        "phase_3_allowlist_rationale": "Segmentation changes affect connectivity and require human judgment on blast radius."
+      }
+    },
+    {
+      "action_id": "secure-score-control-remediation",
+      "title": "Remediate an unhealthy secure-score control",
+      "opportunity_type": "Defender secure score debt",
+      "trigger": {
+        "any": [
+          {"field": "defender_unhealthy_control_count", "gte": 1},
+          {"field": "defender_secure_score_gap", "gte": 10}
+        ]
+      },
+      "execution_steps": [
+        "Review the unhealthy secure-score control recommendation and affected resource",
+        "Validate the governed remediation baseline for the control in Test",
+        "Document the approved configuration or policy delta",
+        "Present the staged control remediation for approval",
+        "Validate the control reports healthy after authorized execution"
+      ],
+      "preconditions": [
+        "The unhealthy control recommendation is current",
+        "A governed remediation baseline exists for the control",
+        "A last known-good configuration is retained"
+      ],
+      "rollback_actions": [
+        "Halt the staged control remediation",
+        "Restore the last known-good configuration",
+        "Validate secure-score control state and service health"
+      ],
+      "success_criteria": [
+        "The secure-score control reports healthy",
+        "The secure-score gap for this resource narrows",
+        "Service health checks pass"
+      ],
+      "failure_criteria": [
+        "The control remains unhealthy",
+        "Service health degrades",
+        "The secure-score gap does not narrow"
+      ],
+      "deployment_stages": ["Test", "Production"],
+      "effectiveness": {
+        "risk_reduction_percent": 55,
+        "compliance_improvement_percent": 80,
+        "lifecycle_exposure_reduction_percent": 0,
+        "operational_debt_reduction_percent": 50
+      },
+      "metadata": {
+        "phase_3_allowlist_candidate": true,
+        "phase_3_allowlist_rationale": "Well-scoped configuration control remediations are a reasonable low-risk Phase 3 starting subset per D-29."
+      }
+    },
+    {
+      "action_id": "exploitable-finding-remediation",
+      "title": "Remediate an exploitable vulnerability finding",
+      "opportunity_type": "Defender exploitable finding",
+      "trigger": {
+        "any": [
+          {"field": "defender_exploitable_finding_count", "gte": 1}
+        ]
+      },
+      "execution_steps": [
+        "Review the exploitable finding evidence and known-exploited status",
+        "Validate the approved remediation or update baseline in the governed non-production ring",
+        "Present the remediation evidence and maintenance window for approval",
+        "Stage the approved remediation for authorized execution",
+        "Validate the finding clears and service health remains stable"
+      ],
+      "preconditions": [
+        "An approved remediation or update baseline exists for the finding",
+        "A recent recoverable backup or snapshot is verified",
+        "Application and service owners acknowledge the maintenance window"
+      ],
+      "rollback_actions": [
+        "Stop the authorized remediation rollout",
+        "Restore the verified pre-change recovery point",
+        "Reapply the last known-good baseline",
+        "Validate service health and dependent transactions"
+      ],
+      "success_criteria": [
+        "The exploitable finding no longer appears for this resource",
+        "Application health checks pass",
+        "No new exploitable finding appears within the validation window"
+      ],
+      "failure_criteria": [
+        "The finding remains exploitable after remediation",
+        "Application health degrades",
+        "A dependent transaction validation fails"
+      ],
+      "deployment_stages": ["Development", "Test", "UAT", "Production"],
+      "effectiveness": {
+        "risk_reduction_percent": 80,
+        "compliance_improvement_percent": 60,
+        "lifecycle_exposure_reduction_percent": 0,
+        "operational_debt_reduction_percent": 45
+      },
+      "metadata": {
+        "phase_3_allowlist_candidate": false,
+        "phase_3_allowlist_rationale": "Exploitable finding remediation frequently requires a maintenance window and owner acknowledgement, so it should stay human-approved in Phase 3."
+      }
+    },
+    {
+      "action_id": "controlled-patch-recovery",
+      "title": "Controlled patch and failed-update recovery",
+      "opportunity_type": "Patch and vulnerability debt",
+      "trigger": {
+        "any": [
+          {"field": "failed_update", "equals": true},
+          {"field": "patch_risk_score", "gte": 75},
+          {"field": "critical_vulnerability_count", "gte": 1}
+        ]
+      },
+      "execution_steps": [
+        "Validate the approved update baseline and maintenance constraints",
+        "Test the update package in the governed non-production ring",
+        "Present test evidence and maintenance window for approval",
+        "Stage the approved platform change for authorized execution",
+        "Validate service health, compliance, and dependent transactions"
+      ],
+      "preconditions": [
+        "Approved update baseline exists",
+        "Recent recoverable backup or snapshot is verified",
+        "Application and service owners acknowledge the maintenance window"
+      ],
+      "rollback_actions": [
+        "Stop the authorized rollout at the current ring",
+        "Restore the verified pre-change recovery point using the approved platform",
+        "Reapply the last known-good update baseline",
+        "Validate service transactions and dependency health"
+      ],
+      "success_criteria": [
+        "Update assessment reports compliant",
+        "Critical vulnerability exposure is removed",
+        "Application health and dependent transaction checks pass"
+      ],
+      "failure_criteria": [
+        "Update installation fails",
+        "Application health degrades",
+        "A dependent transaction validation fails"
+      ],
+      "deployment_stages": ["Development", "Test", "UAT", "Production"],
+      "effectiveness": {
+        "risk_reduction_percent": 71,
+        "compliance_improvement_percent": 85,
+        "lifecycle_exposure_reduction_percent": 0,
+        "operational_debt_reduction_percent": 55
+      },
+      "metadata": {
+        "phase_3_allowlist_candidate": true,
+        "phase_3_allowlist_rationale": "Test-ring validated patch recovery on non-critical resources is a reasonable low-risk Phase 3 starting subset per D-29."
+      }
+    },
+    {
+      "action_id": "configuration-baseline-recovery",
+      "title": "Recover the governed configuration baseline",
+      "opportunity_type": "Configuration and policy debt",
+      "trigger": {
+        "any": [
+          {"field": "configuration_drift_count", "gte": 1},
+          {"field": "policy_violation_count", "gte": 1}
+        ]
+      },
+      "execution_steps": [
+        "Review expected and observed configuration evidence",
+        "Validate the governed baseline in Test",
+        "Document approved configuration deltas",
+        "Present the staged baseline recovery for approval",
+        "Validate policy and service health after authorized execution"
+      ],
+      "preconditions": [
+        "Expected configuration is governed and current",
+        "Observed drift evidence is fresh",
+        "A last known-good configuration is retained"
+      ],
+      "rollback_actions": [
+        "Stop staged recovery",
+        "Restore the last known-good configuration",
+        "Validate policy state and service transactions"
+      ],
+      "success_criteria": [
+        "Active drift is cleared",
+        "Policy evaluation passes",
+        "Application health remains stable"
+      ],
+      "failure_criteria": [
+        "Policy evaluation remains noncompliant",
+        "Service health degrades",
+        "Configuration validation fails"
+      ],
+      "deployment_stages": ["Test", "UAT", "Production"],
+      "effectiveness": {
+        "risk_reduction_percent": 48,
+        "compliance_improvement_percent": 90,
+        "lifecycle_exposure_reduction_percent": 0,
+        "operational_debt_reduction_percent": 60
+      },
+      "metadata": {
+        "phase_3_allowlist_candidate": true,
+        "phase_3_allowlist_rationale": "Baseline configuration recovery validated in Test is a reasonable low-risk Phase 3 starting subset per D-29."
+      }
+    }
+  ],
+  "approval_policies": [
+    {
+      "policy_id": "production-change",
+      "conditions": {"environment_in": ["Production"]},
+      "roles": ["Change Manager", "Application Owner", "Service Owner", "Support Team"]
+    },
+    {
+      "policy_id": "mission-critical",
+      "conditions": {"criticality_in": ["Mission Critical", "Critical"]},
+      "roles": ["Business Service Owner", "Operations Risk Owner"]
+    },
+    {
+      "policy_id": "high-execution-risk",
+      "conditions": {"minimum_execution_risk": 50},
+      "roles": ["Change Advisory Board"]
+    },
+    {
+      "policy_id": "defender-security-response",
+      "conditions": {"minimum_execution_risk": 0},
+      "roles": ["Security Response Owner"]
+    }
+  ]
+}
