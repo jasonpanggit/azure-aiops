@@ -88,7 +88,11 @@ Plans:
   3. Approved execution enforces least privilege, bounded and validated targets, preconditions, timeouts, idempotency, and revalidation, then exposes queued, running, retrying, succeeded, failed, and cancelled states.
   4. Operator and auditor can see post-action actual state, outcome, failure details, verification results, and rollback or compensation status, including bounded retry history.
 
-**Plans:** TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 03-01-PLAN.md — Remediation router mounted with plan list/get/preview/approvals/business-decision reads (closes the 404 API gap)
+- [ ] 03-02-PLAN.md — Execution adapter generalization, approval-gated execute endpoint, durable job tracking
+- [ ] 03-03-PLAN.md — Post-action verification against upstream Azure source of truth, rollback guidance, bounded idempotent retries
 **UI hint:** yes
 
 ### Phase 4: Domain Coverage and Operational Twin
