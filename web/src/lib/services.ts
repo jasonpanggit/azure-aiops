@@ -12,6 +12,7 @@ import type {
   ConnectionSyncResult,
   ConnectionUpdateRequest,
   ConnectionValidationReport,
+  DefenderRemediationCaseReport,
   DependencyGraph,
   Envelope,
   IncidentDetail,
@@ -485,6 +486,12 @@ export const operationsApi = {
     query.set("offset", String(offset));
     query.set("limit", String(limit));
     return apiRequest<RemediationOpportunityReport>("/remediation-opportunities", { query });
+  },
+  defenderCases: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<DefenderRemediationCaseReport>("/remediation/defender-cases", { query });
   },
   decideRemediationPlan: (
     planId: string,

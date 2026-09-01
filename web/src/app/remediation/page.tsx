@@ -16,9 +16,9 @@ import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { buildCopilotSnapshot, copilotEvidenceRows, networkApi, operationsApi, vulnerabilityApi } from "@/lib/services";
-import type { NetworkGap, RemediationDecision, RemediationOpportunity, RemediationPlan, RuleFinding, VulnerabilityExposure } from "@/lib/types";
+import type { DefenderRemediationCase, NetworkGap, RemediationDecision, RemediationOpportunity, RemediationPlan, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 
-type BacklogKind = "plan" | "opportunity" | "network" | "vulnerability" | "patch" | "lifecycle" | "configuration" | "incident" | "identity";
+type BacklogKind = "plan" | "opportunity" | "network" | "vulnerability" | "patch" | "lifecycle" | "configuration" | "incident" | "identity" | "defender";
 
 interface BacklogItem {
   uiId: string;
@@ -38,6 +38,7 @@ interface BacklogItem {
   evidence: unknown;
   source: unknown;
   plan?: RemediationPlan;
+  defenderCase?: DefenderRemediationCase;
 }
 
 function listValues(value: unknown): string[] {
@@ -91,24 +92,48 @@ function planToBacklog(plan: RemediationPlan): BacklogItem {
 }
 
 function opportunityToBacklog(opportunity: RemediationOpportunity): BacklogItem {
-  const id = opportunity.opportunity_id || `${opportunity.category}-${opportunity.resource}`;
+  const resourceName = opportunity.resource?.name || "Scope not identified";
+  const id = `${opportunity.action_id || opportunity.opportunity_type || "opportunity"}-${resourceName}`;
   return {
     uiId: `opportunity:${id}`,
     id,
-    kind: String(opportunity.category || "opportunity").includes("identity") ? "identity" : "opportunity",
-    sourceIds: { opportunity_id: id },
-    title: titleize(opportunity.category || "Remediation opportunity"),
+    kind: String(opportunity.opportunity_type || "opportunity").toLowerCase().includes("identity") ? "identity" : "opportunity",
+    sourceIds: { action_id: String(opportunity.action_id || "") },
+    title: titleize(opportunity.opportunity_type || "Remediation opportunity"),
     status: "candidate",
-    priority: opportunity.priority || "review",
+    priority: "review",
     businessService: String(opportunity.business_service ?? ""),
-    resource: opportunity.resource || "Scope not identified",
-    impact: opportunity.rationale?.[0] || "Candidate requires plan generation before approval.",
-    riskReduction: Number(opportunity.expected_risk_reduction ?? 0),
+    resource: resourceName,
+    impact: opportunity.evidence?.[0] || "Candidate requires plan generation before approval.",
+    riskReduction: Number(opportunity.predictive_risk_score ?? opportunity.patch_risk_score ?? 0),
     downtimeRisk: "unknown until simulated",
     complianceImprovement: 0,
-    debtReduction: 0,
+    debtReduction: Number(opportunity.operational_debt_score ?? 0),
     evidence: opportunity,
     source: opportunity,
+  };
+}
+
+function defenderCaseToBacklog(defenderCase: DefenderRemediationCase): BacklogItem {
+  const id = `${defenderCase.resource_key}:${defenderCase.weakness_key}`;
+  return {
+    uiId: `defender:${id}`,
+    id,
+    kind: "defender",
+    sourceIds: { resource_key: defenderCase.resource_key, weakness_key: defenderCase.weakness_key },
+    title: defenderCase.resource_name || defenderCase.resource_key,
+    status: defenderCase.business_mapping_review_required ? "review required" : "candidate",
+    priority: defenderCase.disposition || "review",
+    businessService: String((defenderCase.business_context as Record<string, unknown> | undefined)?.affected_services ?? ""),
+    resource: defenderCase.resource_name || defenderCase.resource_key,
+    impact: defenderCase.urgency_rationale || "Defender-correlated remediation case.",
+    riskReduction: 0,
+    downtimeRisk: defenderCase.cost_of_action || "unknown",
+    complianceImprovement: 0,
+    debtReduction: 0,
+    evidence: defenderCase.evidence_citations,
+    source: defenderCase,
+    defenderCase,
   };
 }
 
@@ -214,6 +239,7 @@ function RemediationContent() {
   const fromIncident = searchParams.get("incident") ?? "";
   const plans = useApi(() => operationsApi.remediationPlans(scope), [scope]);
   const opportunities = useApi(() => operationsApi.remediationOpportunities(scope), [scope]);
+  const defenderCases = useApi(() => operationsApi.defenderCases(scope), [scope]);
   const networkGaps = useApi(() => networkApi.gaps(scope), [scope]);
   const ruleFindings = useApi(() => networkApi.ruleFindings(scope), [scope]);
   const exposures = useApi(() => vulnerabilityApi.exposures(scope), [scope]);
@@ -247,6 +273,7 @@ function RemediationContent() {
     const rows = [
       ...planRows.map(planToBacklog),
       ...opportunityRows.map(opportunityToBacklog),
+      ...(defenderCases.data?.data.cases ?? []).map(defenderCaseToBacklog),
       ...(networkGaps.data?.data.gaps ?? []).map(networkGapToBacklog),
       ...(ruleFindings.data?.data.findings ?? []).map(ruleToBacklog),
       ...(exposures.data?.data ?? []).map(exposureToBacklog),
@@ -319,7 +346,7 @@ function RemediationContent() {
         if (sortBy === "source") return left.kind.localeCompare(right.kind) || right.riskReduction - left.riskReduction;
         return right.riskReduction - left.riskReduction;
       });
-  }, [planRows, opportunityRows, networkGaps.data, ruleFindings.data, exposures.data, category, fromBusinessService, fromIncident, priorityFilter, query, sortBy, statusFilter]);
+  }, [planRows, opportunityRows, defenderCases.data, networkGaps.data, ruleFindings.data, exposures.data, category, fromBusinessService, fromIncident, priorityFilter, query, sortBy, statusFilter]);
   const selected = backlog.find((item) => item.uiId === selectedId) ?? backlog.find((item) => item.kind === "plan") ?? backlog[0] ?? null;
   const selectedPlan = selected?.plan ?? null;
   const pending = backlog.length;
@@ -329,21 +356,23 @@ function RemediationContent() {
     sourceEvidence: [
       ...(plans.data?.evidence ?? []),
       ...(opportunities.data?.evidence ?? []),
+      ...(defenderCases.data?.evidence ?? []),
       ...(networkGaps.data?.evidence ?? []),
       ...(ruleFindings.data?.evidence ?? []),
       ...(exposures.data?.evidence ?? []),
     ],
     review_boundary: "Phase 2 records approval decisions only; Azure execution, rollback, and realized-outcome capture remain unavailable.",
   } : {};
-  const loading = plans.loading || opportunities.loading || networkGaps.loading || ruleFindings.loading || exposures.loading;
+  const loading = plans.loading || opportunities.loading || defenderCases.loading || networkGaps.loading || ruleFindings.loading || exposures.loading;
   const sourceWarnings = [
     ...sourceWarning("Remediation plans", plans.error),
     ...sourceWarning("Remediation opportunities", opportunities.error),
+    ...sourceWarning("Defender remediation cases", defenderCases.error),
     ...sourceWarning("Network gaps", networkGaps.error),
     ...sourceWarning("Configuration findings", ruleFindings.error),
     ...sourceWarning("Vulnerability exposures", exposures.error),
   ];
-  const pageError = !loading && backlog.length === 0 ? plans.error ?? opportunities.error ?? networkGaps.error ?? ruleFindings.error ?? exposures.error : null;
+  const pageError = !loading && backlog.length === 0 ? plans.error ?? opportunities.error ?? defenderCases.error ?? networkGaps.error ?? ruleFindings.error ?? exposures.error : null;
 
   const recordDecision = async () => {
     if (!selectedPlan?.action_version) return;
@@ -382,9 +411,9 @@ function RemediationContent() {
         }
       />
       <EvidenceBar
-        evidence={[...(plans.data?.evidence ?? []), ...(opportunities.data?.evidence ?? []), ...(networkGaps.data?.evidence ?? []), ...(ruleFindings.data?.evidence ?? []), ...(exposures.data?.evidence ?? [])]}
+        evidence={[...(plans.data?.evidence ?? []), ...(opportunities.data?.evidence ?? []), ...(defenderCases.data?.evidence ?? []), ...(networkGaps.data?.evidence ?? []), ...(ruleFindings.data?.evidence ?? []), ...(exposures.data?.evidence ?? [])]}
         knowledgeVersion={plans.data?.knowledge_version}
-        warnings={[...sourceWarnings, ...(plans.data?.warnings ?? []), ...(opportunities.data?.warnings ?? []), ...(networkGaps.data?.warnings ?? []), ...(ruleFindings.data?.warnings ?? []), ...(exposures.data?.warnings ?? [])]}
+        warnings={[...sourceWarnings, ...(plans.data?.warnings ?? []), ...(opportunities.data?.warnings ?? []), ...(defenderCases.data?.warnings ?? []), ...(networkGaps.data?.warnings ?? []), ...(ruleFindings.data?.warnings ?? []), ...(exposures.data?.warnings ?? [])]}
       />
 
       <CopilotDrawer
@@ -407,6 +436,7 @@ function RemediationContent() {
           evidence: copilotEvidenceRows("remediation", [
             ...(plans.data?.evidence ?? []),
             ...(opportunities.data?.evidence ?? []),
+            ...(defenderCases.data?.evidence ?? []),
             ...(networkGaps.data?.evidence ?? []),
             ...(ruleFindings.data?.evidence ?? []),
             ...(exposures.data?.evidence ?? []),
@@ -507,7 +537,7 @@ function RemediationContent() {
       </div>
 
       <div className="segmented-control remediation-filter" aria-label="Remediation category filter">
-        {(["all", "network", "vulnerability", "patch", "configuration", "incident", "identity", "lifecycle"] as const).map((value) => (
+        {(["all", "network", "vulnerability", "patch", "configuration", "incident", "identity", "lifecycle", "defender"] as const).map((value) => (
           <button type="button" key={value} className={category === value ? "segmented-active" : ""} onClick={() => setCategory(value)}>
             {value === "all" ? "All" : titleize(value)}
           </button>
@@ -571,6 +601,51 @@ function RemediationContent() {
               {selected ? (
                 <>
                   <h3>{selected.title}</h3>
+                  {selected.defenderCase ? (
+                    <>
+                      <div className="simulation-grid">
+                        <MetricCard
+                          label={selected.defenderCase.business_mapping_review_required ? "Review required" : "Confidence"}
+                          value={selected.defenderCase.business_mapping_review_required ? "Business mapping unknown" : `${Math.round((selected.defenderCase.confidence ?? 0) * 100)}%`}
+                          detail={selected.defenderCase.business_mapping_review_required ? "No priority can be assigned until business ownership is confirmed." : "Correlation confidence across evidence sources"}
+                          tone={selected.defenderCase.business_mapping_review_required ? "warning" : "success"}
+                          size={selected.defenderCase.business_mapping_review_required ? "text" : undefined}
+                        />
+                        <MetricCard label="Disposition" value={titleize(selected.defenderCase.disposition || "review")} detail={selected.defenderCase.urgency_rationale || "See urgency rationale"} tone="warning" size="text" />
+                        <MetricCard label="Cost of acting" value={selected.defenderCase.cost_of_action || "Not assessed"} detail="Cost of action" size="text" />
+                        <MetricCard label="Cost of inaction" value={selected.defenderCase.cost_of_inaction || "Not assessed"} detail="Cost of inaction" size="text" tone="warning" />
+                      </div>
+                      <section className="remediation-section">
+                        <h4>Evidence citations</h4>
+                        <ul>
+                          {(selected.defenderCase.evidence_citations || []).map((citation, index) => (
+                            <li key={index}>{citation.source_type}:{citation.source_id} - {citation.severity || "unspecified"} severity - {citation.summary}</li>
+                          ))}
+                        </ul>
+                        {selected.defenderCase.contradictory_evidence && (
+                          <p className="callout callout-warning">Evidence sources disagree on severity for this case; confidence has been reduced.</p>
+                        )}
+                      </section>
+                      <section className="remediation-section">
+                        <h4>Observed, inferred, and unknown</h4>
+                        <p>Observed: {listValues(selected.defenderCase.observed_facts).join("; ") || "None recorded"}</p>
+                        <p>Inferred: {listValues(selected.defenderCase.derived_inferences).join("; ") || "None recorded"}</p>
+                        <p>Unknown: {listValues(selected.defenderCase.unknowns).join("; ") || "None recorded"}</p>
+                      </section>
+                      {selected.defenderCase.outcome === "no_safe_action" ? (
+                        <section className="remediation-section">
+                          <h4>Outcome</h4>
+                          <p className="callout callout-warning">No safe automated action exists for this case: {selected.defenderCase.outcome_reason || "no catalog match was found"}. This case requires manual review; no approval control is offered.</p>
+                        </section>
+                      ) : (
+                        <section className="remediation-section">
+                          <h4>Execution boundary</h4>
+                          <p>Phase 2 surfaces this Defender-correlated case for review. Azure execution, rollback actions, and realized-outcome validation remain unavailable here.</p>
+                        </section>
+                      )}
+                    </>
+                  ) : (
+                    <>
                   <div className="simulation-grid">
                     <MetricCard label="Projected risk reduction" value={`${Math.round(selected.riskReduction)}%`} detail="Current vs projected risk" tone="success" />
                     <MetricCard label="Downtime risk" value={selected.downtimeRisk} detail="Requires maintenance-window review" tone="warning" size="text" />
@@ -626,6 +701,8 @@ function RemediationContent() {
                     <h4>Execution boundary</h4>
                     <p>Phase 2 can record decisions for this recommendation. Azure execution, rollback actions, and realized-outcome validation remain unavailable here.</p>
                   </section>
+                    </>
+                  )}
                 </>
               ) : <StatePanel title="No plan selected" message="Select a backlog item to generate a governed plan." />}
             </div>

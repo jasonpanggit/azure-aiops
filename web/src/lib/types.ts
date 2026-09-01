@@ -1069,12 +1069,21 @@ export interface RemediationPlanReport {
 }
 
 export interface RemediationOpportunity {
-  opportunity_id?: string;
-  resource?: string;
-  category?: string;
-  priority?: string;
-  rationale?: string[];
-  recommended_action?: Record<string, unknown>;
+  resource?: { name?: string; entity_type?: string };
+  application?: string;
+  business_service?: string;
+  environment?: string;
+  owner?: string;
+  subscription_id?: string;
+  subscription_connection?: string;
+  opportunity_type?: string;
+  action_id?: string;
+  evidence?: string[];
+  patch_risk_score?: number;
+  lifecycle_risk_score?: number;
+  predictive_risk_score?: number;
+  operational_debt_score?: number;
+  read_only?: boolean;
   [key: string]: unknown;
 }
 
@@ -1082,6 +1091,46 @@ export interface RemediationOpportunityReport {
   opportunities: RemediationOpportunity[];
   generated_at?: string;
   summary?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface DefenderRemediationCitation {
+  source_type: string;
+  source_id: string;
+  observed_at?: string;
+  freshness?: string;
+  summary?: string;
+  severity?: string;
+}
+
+export interface DefenderRemediationCase {
+  resource_key: string;
+  weakness_key: string;
+  resource_name?: string;
+  evidence_citations: DefenderRemediationCitation[];
+  business_context?: Record<string, unknown>;
+  business_mapping_review_required?: boolean;
+  cost_of_action?: string;
+  cost_of_inaction?: string;
+  disposition?: string;
+  urgency_rationale?: string;
+  confidence?: number;
+  max_severity?: string;
+  catalog_match?: boolean;
+  outcome?: string;
+  outcome_reason?: string;
+  observed_facts?: string[];
+  derived_inferences?: string[];
+  unknowns?: string[];
+  source_family_status?: Record<string, { availability?: string; freshness?: string }>;
+  contradictory_evidence?: boolean;
+  read_only?: boolean;
+  [key: string]: unknown;
+}
+
+export interface DefenderRemediationCaseReport {
+  cases: DefenderRemediationCase[];
+  read_only?: boolean;
   [key: string]: unknown;
 }
 
