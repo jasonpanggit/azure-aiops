@@ -77,7 +77,7 @@ def list_plans(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]
     visible = _filter_rows(result.get("plans"), scope)
     if not isinstance(visible, list):
         visible = []
-    visible = [_plan_with_eligibility(context, row) for row in visible]
+    visible = [_plan_with_eligibility(context, scope, row) for row in visible]
     public = {**result, "plans": visible[page.offset : page.offset + page.limit]}
     if not scope.is_unrestricted():
         public = {
@@ -99,7 +99,7 @@ def list_plans(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]
 def get_plan(plan_id: str, context: Context, scope: ReadScope) -> dict[str, Any]:
     plan = _get_scoped_plan(context, scope, plan_id)
     return envelope(
-        _plan_with_eligibility(context, plan),
+        _plan_with_eligibility(context, scope, plan),
         evidence=_evidence(plan_id, str(plan.get("action_version") or "")),
         scope=scope.to_dict(),
     )
@@ -147,7 +147,7 @@ def preview_plan(plan_id: str, context: Context, scope: ReadScope) -> dict[str, 
             "dependencies": plan.get("dependencies"),
         },
         "execution_snapshot": execution_snapshot,
-        **_plan_eligibility(context, plan),
+        **_plan_eligibility(context, scope, plan),
     }
     return envelope(
         preview,
@@ -184,9 +184,9 @@ def plan_business_decision(
     )
 
 
-def _execution_service(context: Context) -> Any:
+def _execution_service(context: Context, scope: Scope) -> Any:
     service = getattr(context, "execution_provider", None)
-    resolved = service() if callable(service) else None
+    resolved = service(scope) if callable(service) else None
     if resolved is None:
         raise ApiError(
             ErrorCode.PROVIDER_UNAVAILABLE,
@@ -196,20 +196,20 @@ def _execution_service(context: Context) -> Any:
     return resolved
 
 
-def _optional_execution_service(context: Context) -> Any | None:
+def _optional_execution_service(context: Context, scope: Scope) -> Any | None:
     provider = getattr(context, "execution_provider", None)
-    return provider() if callable(provider) else None
+    return provider(scope) if callable(provider) else None
 
 
-def _plan_eligibility(context: Context, plan: dict[str, Any]) -> dict[str, Any]:
-    service = _optional_execution_service(context)
+def _plan_eligibility(context: Context, scope: Scope, plan: dict[str, Any]) -> dict[str, Any]:
+    service = _optional_execution_service(context, scope)
     if service is None:
         return {"executable": False, "ineligibility_reason": "execution_unavailable"}
     return service.plan_eligibility(str(plan.get("plan_id") or ""))
 
 
-def _plan_with_eligibility(context: Context, plan: dict[str, Any]) -> dict[str, Any]:
-    return {**plan, **_plan_eligibility(context, plan)}
+def _plan_with_eligibility(context: Context, scope: Scope, plan: dict[str, Any]) -> dict[str, Any]:
+    return {**plan, **_plan_eligibility(context, scope, plan)}
 
 
 def _execution_or_404(service: Any, execution_id: str) -> dict[str, Any]:
@@ -248,7 +248,7 @@ def execute_plan(
     write_scope = context.authorizer.effective_scope(principal, "operate")
     _get_scoped_plan(context, write_scope, plan_id)
 
-    service = _execution_service(context)
+    service = _execution_service(context, write_scope)
     try:
         result = service.execute(plan_id, requested_by=getattr(principal, "subject", ""))
     except RemediationExecutionError as exc:
@@ -273,7 +273,7 @@ def execute_plan(
 
 @router.get("/executions/{execution_id}", summary="Poll a remediation plan execution")
 def get_execution(execution_id: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    service = _execution_service(context)
+    service = _execution_service(context, scope)
     record = _execution_or_404(service, execution_id)
     _get_scoped_plan(context, scope, str(record.get("plan_id") or ""))
     if record.get("status") == "running":
@@ -292,7 +292,7 @@ def list_plan_executions(
     plan_id: str, context: Context, scope: ReadScope
 ) -> dict[str, Any]:
     _get_scoped_plan(context, scope, plan_id)
-    service = _execution_service(context)
+    service = _execution_service(context, scope)
     records = service.list_executions(plan_id)
     return envelope(
         {"plan_id": plan_id, "executions": records},
@@ -309,13 +309,14 @@ def list_plan_executions(
 def retry_execution(
     execution_id: str, context: Context, principal: OperatePrincipal
 ) -> dict[str, Any]:
-    service = _execution_service(context)
+    service = _execution_service(context, Scope.unrestricted())
     record = _execution_or_404(service, execution_id)
     # Narrow to what this principal may actually operate on before
     # resolving/retrying, matching execute_plan's narrowing-before-
     # resolving pattern.
     write_scope = context.authorizer.effective_scope(principal, "operate")
     _get_scoped_plan(context, write_scope, str(record.get("plan_id") or ""))
+    service = _execution_service(context, write_scope)
 
     try:
         result = service.retry(execution_id)
@@ -346,10 +347,11 @@ def retry_execution(
 def cancel_execution(
     execution_id: str, context: Context, principal: OperatePrincipal
 ) -> dict[str, Any]:
-    service = _execution_service(context)
+    service = _execution_service(context, Scope.unrestricted())
     record = _execution_or_404(service, execution_id)
     write_scope = context.authorizer.effective_scope(principal, "operate")
     _get_scoped_plan(context, write_scope, str(record.get("plan_id") or ""))
+    service = _execution_service(context, write_scope)
     try:
         result = service.cancel(
             execution_id,

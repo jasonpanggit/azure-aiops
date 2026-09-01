@@ -35,6 +35,7 @@ ADMIN_TOKEN = "admin-token-0123456789abcdef"
 OPERATOR_TOKEN = "operator-token-0123456789abcd"
 READER_TOKEN = "reader-token-0123456789abcdef"
 SCOPED_OPERATOR_TOKEN = "scoped-operator-token-012345"
+SUBSCRIPTION_OPERATOR_TOKEN = "subscription-operator-01234"
 
 VM_PAYMENTS_ID = "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments"
 
@@ -73,6 +74,12 @@ def _client(tmp_path, *, planner=None, principals=None, adapter=None) -> TestCli
         result = original_generate_plans()
         for row in result["plans"]:
             if row.get("action_id") == "controlled-patch-recovery":
+                row["resource_key"] = VM_PAYMENTS_ID
+                row["subscription_id"] = "sub-1"
+                row["resource"] = {
+                    **(row.get("resource") or {}),
+                    "id": VM_PAYMENTS_ID,
+                }
                 row["business_decision"] = {
                     "disposition": "act_now",
                     "business_impact": {"status": "known"},
@@ -87,6 +94,7 @@ def _client(tmp_path, *, planner=None, principals=None, adapter=None) -> TestCli
 
     resolved_planner.generate_plans = generate_eligible_plans
     execution_store = RemediationExecutionStore()
+    decision_store = RemediationDecisionStore()
     patching_service = PatchingService(
         _FakeVulnerabilityService(),
         adapter=adapter or RecordingPatchExecutionAdapter(),
@@ -106,12 +114,16 @@ def _client(tmp_path, *, planner=None, principals=None, adapter=None) -> TestCli
                     subject="scoped-operator@example.com",
                     grants=(Grant("operator", Scope({"subscription": ["sub-does-not-exist"]})),),
                 ),
+                SUBSCRIPTION_OPERATOR_TOKEN: Principal(
+                    subject="subscription-operator@example.com",
+                    grants=(Grant("operator", Scope({"subscription": ["sub-1"]})),),
+                ),
             }
         ),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
         remediation_provider=lambda: resolved_planner,
-        execution_provider=lambda: RemediationExecutionService(
+        execution_provider=lambda scope: RemediationExecutionService(
             plan_repository=resolved_planner.repository,
             patching_service=patching_service,
             execution_store=execution_store,
@@ -230,6 +242,123 @@ def test_execute_out_of_scope_plan_is_404_not_409(tmp_path) -> None:
 
     assert response.status_code == 404, response.text
     assert response.json()["error"]["code"] == "not_found"
+
+
+def test_scoped_execute_uses_the_same_hybrid_providers_as_preview_and_approval(
+    tmp_path,
+) -> None:
+    unscoped_planner = remediation_planner(repository=PlanRepository())
+    execution_store = RemediationExecutionStore()
+    decision_store = RemediationDecisionStore()
+    patching_service = PatchingService(
+        _FakeVulnerabilityService(),
+        adapter=RecordingPatchExecutionAdapter(),
+        require_human_approval=False,
+    )
+
+    def scoped_planner_factory():
+        planner = remediation_planner(
+            repository=PlanRepository(decision_store=decision_store)
+        )
+        original_generate_plans = planner.generate_plans
+
+        def generate_eligible_scoped_plans():
+            result = original_generate_plans()
+            for row in result["plans"]:
+                if row.get("action_id") == "controlled-patch-recovery":
+                    row["resource_key"] = VM_PAYMENTS_ID
+                    row["subscription_id"] = "sub-1"
+                    row["resource"] = {
+                        **(row.get("resource") or {}),
+                        "id": VM_PAYMENTS_ID,
+                    }
+                    row["business_decision"] = {
+                        "disposition": "act_now",
+                        "business_impact": {"status": "known"},
+                        "review_requirements": [],
+                        "unknowns": [],
+                        "urgency_rationale": {
+                            "evidence_citations": ["assessment:assess-001"]
+                        },
+                    }
+            planner.repository.replace_generation(result["plans"])
+            return result
+
+        planner.generate_plans = generate_eligible_scoped_plans
+        return planner
+
+    def execution_service_for_scope(scope: Scope) -> RemediationExecutionService:
+        if list(scope.values("subscription")) == ["sub-1"]:
+            planner = scoped_planner_factory()
+            planner.generate_plans()
+            patching = patching_service
+        else:
+            planner = unscoped_planner
+            patching = None
+        return RemediationExecutionService(
+            plan_repository=getattr(planner, "repository", None),
+            patching_service=patching,
+            execution_store=execution_store,
+        )
+
+    def fresh_scoped_planner(_subscription_ids):
+        return scoped_planner_factory()
+
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(
+            tmp_path / "aiops", secret_writer=FakeSecretWriter()
+        ),
+        authenticator=StaticTokenAuthenticator(
+            {
+                SUBSCRIPTION_OPERATOR_TOKEN: Principal(
+                    subject="subscription-operator@example.com",
+                    grants=(Grant("operator", Scope({"subscription": ["sub-1"]})),),
+                )
+            }
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        remediation_provider=lambda: unscoped_planner,
+        patching_provider=lambda: None,
+        hybrid_remediation_provider=fresh_scoped_planner,
+        hybrid_patching_provider=lambda subscription_ids: (
+            patching_service if subscription_ids == ["sub-1"] else None
+        ),
+        execution_provider=execution_service_for_scope,
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    headers = _auth(SUBSCRIPTION_OPERATOR_TOKEN)
+    plan = next(
+        p
+        for p in client.get("/api/v1/remediation/plans", headers=headers).json()["data"][
+            "plans"
+        ]
+        if p["action_id"] == "controlled-patch-recovery"
+    )
+    preview = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/preview", headers=headers
+    ).json()["data"]
+
+    approval = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=headers,
+        json={
+            "decision": "approved",
+            "reason": "CAB approved exact server preview",
+            "action_version": plan["action_version"],
+            "expires_at": _future_expiry(),
+            "preview_snapshot_hash": preview["execution_snapshot"]["snapshot_hash"],
+        },
+    )
+    assert approval.status_code == 201, approval.text
+
+    response = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute",
+        headers=headers,
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["data"]["status"] == "running"
 
 
 def test_get_unknown_execution_is_404(tmp_path) -> None:

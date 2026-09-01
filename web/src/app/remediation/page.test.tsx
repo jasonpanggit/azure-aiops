@@ -106,7 +106,7 @@ function executionRecord(overrides: Record<string, unknown> = {}) {
       snapshot_hash: "snapshot-hash-1",
     },
     attempts: [{
-      number: 1,
+      attempt_number: 1,
       status: "running",
       actor: "operator@example.com",
       transitions: [{

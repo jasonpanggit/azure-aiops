@@ -1111,11 +1111,11 @@ function RemediationContent() {
                       )}
                       <h4>Immutable attempts and transitions</h4>
                       {activeExecution.attempts.map((attempt) => (
-                        <div key={attempt.number}>
-                          <p><strong>Attempt {attempt.number}</strong> · {titleize(attempt.status)} · actor {attempt.actor || "Not recorded"}</p>
+                        <div key={attempt.attempt_number}>
+                          <p><strong>Attempt {attempt.attempt_number}</strong> · {titleize(attempt.status)} · actor {attempt.actor || "Not recorded"}</p>
                           <ol>
                             {attempt.transitions.map((transition, index) => (
-                              <li key={`${attempt.number}-${transition.sequence ?? index}`}>
+                              <li key={`${attempt.attempt_number}-${transition.sequence ?? index}`}>
                                 {transition.timestamp || "Timestamp unavailable"} · {titleize(transition.status)} · {transition.actor || "Actor unavailable"}
                                 {transition.verified_state ? ` · ${transition.verified_state}` : ""}
                                 {transition.failure_details ? ` · ${transition.failure_details}` : ""}

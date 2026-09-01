@@ -596,7 +596,7 @@ export interface RemediationExecutionTransition {
 }
 
 export interface RemediationExecutionAttempt {
-  number: number;
+  attempt_number: number;
   status: RemediationExecutionStatus;
   actor?: string;
   created_at?: string;

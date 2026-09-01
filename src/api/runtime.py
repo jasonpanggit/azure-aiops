@@ -108,6 +108,7 @@ from .dependencies import ApiContext
 from .governance_snapshot import GovernanceSnapshot
 from .providers import ProviderRuntime, ProviderSpec, ProviderValue
 from .rbac import Authorizer, Grant, Principal
+from .scope import Scope
 from .telemetry import ApiTelemetry
 
 ENV_HOME = "AIOPS_HOME"
@@ -2493,6 +2494,29 @@ def build_context() -> ApiContext:
             require_human_approval=_require_human_approval,
         )
 
+    def _planner_for_scope(scope: Scope) -> Any:
+        subscription_ids = list(scope.values("subscription"))
+        if subscription_ids:
+            return hybrid_remediation(subscription_ids)
+        return _attach_remediation_decisions(providers.get("remediation", optional=True))
+
+    def _patching_for_scope(scope: Scope) -> Any:
+        subscription_ids = list(scope.values("subscription"))
+        if subscription_ids:
+            return hybrid_patching(subscription_ids)
+        return providers.get("patching", optional=True)
+
+    def _execution_service_for_scope(scope: Scope) -> RemediationExecutionService:
+        planner = _planner_for_scope(scope)
+        if planner is not None and hasattr(planner, "generate_plans"):
+            planner.generate_plans()
+        return RemediationExecutionService(
+            plan_repository=getattr(planner, "repository", None),
+            patching_service=_patching_for_scope(scope),
+            execution_store=_remediation_execution_store(),
+            execution_verifier=_execution_verifier(),
+        )
+
     def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:
         # Live per-connection utilization: each request re-lists in-scope
         # compute resources via ARG and fetches fresh Monitor Metrics, so no
@@ -2618,14 +2642,7 @@ def build_context() -> ApiContext:
         remediation_provider=lambda: _attach_remediation_decisions(
             providers.get("remediation", optional=True)
         ),
-        execution_provider=lambda: RemediationExecutionService(
-            plan_repository=getattr(
-                providers.get("remediation", optional=True), "repository", None
-            ),
-            patching_service=providers.get("patching", optional=True),
-            execution_store=_remediation_execution_store(),
-            execution_verifier=_execution_verifier(),
-        ),
+        execution_provider=_execution_service_for_scope,
         network_provider=lambda: providers.get("network", optional=True),
         vulnerability_provider=lambda: providers.get("vulnerability", optional=True),
         patching_provider=lambda: providers.get("patching", optional=True),
