@@ -65,7 +65,7 @@ class FabricSyncService:
     def __init__(
         self,
         *,
-        source_root: Path,
+        source_root: Path | str,
         onelake: OneLakeWriter,
         delta_writer: DeltaWriter,
         validator: DataQualityValidator,
@@ -88,7 +88,21 @@ class FabricSyncService:
         clock=time.monotonic,
         sql_reader=None,
     ) -> None:
-        self.source_root = Path(source_root).resolve()
+        # ``source_root`` is normally a local disk path (CLI/manual sync), but
+        # the API-triggered refresh path (``inventory_orchestration.
+        # run_inventory_refresh_all_connections``) passes the connection
+        # registry's combined-snapshot root, which is an ``abfss://`` OneLake
+        # URI whenever ``AIOPS_HOME`` points at OneLake (the production
+        # default -- see ``arg.config.deploy.yaml``). ``pathlib.Path``
+        # mangles that URI's ``//`` (producing paths like
+        # ``/app/abfss:/workspace@onelake...``), so remote roots must use
+        # ``storage.fs.resolve_root`` instead, exactly like ``DatasetStore``
+        # and ``RunLock`` already do.
+        from storage.fs import is_onelake_uri, resolve_fs, resolve_root
+
+        self.source_root = resolve_root(str(source_root)) if is_onelake_uri(source_root) else Path(source_root).resolve()
+        self._source_root_is_remote = is_onelake_uri(source_root)
+        self._source_fs = resolve_fs(str(self.source_root))[0] if self._source_root_is_remote else None
         self.onelake = onelake
         self.delta = delta_writer
         self.validator = validator
@@ -137,7 +151,7 @@ class FabricSyncService:
         started_clock = self.clock()
         run_id = str(uuid.uuid4())
         snapshot = self._resolve_snapshot(replay_source_run_id)
-        manifest = _read_json(snapshot / "manifest.json")
+        manifest = self._read_manifest(snapshot)
         source_run_id = str(manifest.get("runId") or replay_source_run_id or "unknown")
         replay = bool(replay_source_run_id)
         started_at = _utc_now()
@@ -159,7 +173,7 @@ class FabricSyncService:
         ontology_health: dict[str, Any] = {}
         data_committed = False
         try:
-            datasets = self.mapper.load(snapshot, run_id)
+            datasets = self.mapper.load(snapshot, run_id, fs=self._source_fs)
             datasets["silver_patch_policies"] = [
                 {
                     "tenant_id": "not-applicable",
@@ -1350,7 +1364,7 @@ class FabricSyncService:
 
     def validate_current(self) -> list[QualityReport]:
         snapshot = self._resolve_snapshot("")
-        datasets = self.mapper.load(snapshot, "validation")
+        datasets = self.mapper.load(snapshot, "validation", fs=self._source_fs)
         return self._validate(datasets)
 
     def _validate(self, datasets: dict[str, list[dict]]) -> list[QualityReport]:
@@ -1408,7 +1422,9 @@ class FabricSyncService:
             schema=schema_for("metadata_quality_reports"),
         )
 
-    def _resolve_snapshot(self, replay_source_run_id: str) -> Path:
+    def _resolve_snapshot(self, replay_source_run_id: str) -> Path | str:
+        if self._source_root_is_remote:
+            return self._resolve_snapshot_remote(replay_source_run_id)
         candidate = (
             self.source_root / "generations" / replay_source_run_id
             if replay_source_run_id
@@ -1422,6 +1438,43 @@ class FabricSyncService:
         if not (resolved / "manifest.json").is_file():
             raise ValueError(f"Source snapshot has no manifest: {candidate}")
         return resolved
+
+    def _resolve_snapshot_remote(self, replay_source_run_id: str) -> str:
+        """Resolve a snapshot under an ``abfss://`` OneLake ``source_root``.
+
+        Mirrors ``DatasetStore.current_generation``'s pointer-file protocol
+        (no symlinks on OneLake): ``current.json`` at the root names the
+        active generation directory under ``generations/``.
+        """
+        fs = self._source_fs
+        root = str(self.source_root)
+        if replay_source_run_id:
+            candidate = f"{root}/generations/{replay_source_run_id}"
+        else:
+            pointer_path = f"{root}/current.json"
+            if not fs.exists(pointer_path):
+                raise ValueError(f"Source snapshot has no manifest: {root}/current")
+            with fs.open(pointer_path, "rt") as handle:
+                pointer = json.loads(handle.read())
+            name = str(pointer.get("generation") or "").strip()
+            if not name:
+                raise ValueError(f"Source snapshot has no manifest: {root}/current")
+            candidate = f"{root}/generations/{name}"
+        if not fs.exists(candidate):
+            raise ValueError(f"Source snapshot escapes configured root: {candidate}")
+        if not fs.exists(f"{candidate}/manifest.json"):
+            raise ValueError(f"Source snapshot has no manifest: {candidate}")
+        return candidate
+
+    def _read_manifest(self, snapshot: Path | str) -> dict[str, Any]:
+        if self._source_root_is_remote:
+            fs = self._source_fs
+            with fs.open(f"{snapshot}/manifest.json", "rt") as handle:
+                payload = json.loads(handle.read())
+            if not isinstance(payload, dict):
+                raise TypeError(f"Expected object JSON: {snapshot}/manifest.json")
+            return payload
+        return _read_json(Path(snapshot) / "manifest.json")
 
     def _register_fabric_assets(self, tables: set[str]) -> None:
         if self.lakehouse_manager is None:
