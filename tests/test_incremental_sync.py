@@ -879,8 +879,18 @@ def test_sync_service_history_tables_use_merge_write_mode_contract(tmp_path: Pat
         validator=DataQualityValidator(),
     )
 
-    assert service._write_mode_for_table("silver_change_history") is DeltaWriteMode.MERGE
-    assert service._write_mode_for_table("silver_incident_history") is DeltaWriteMode.MERGE
-    assert service._write_mode_for_table("silver_predictive_history") is DeltaWriteMode.MERGE
-    assert service._write_mode_for_table("silver_cost_actuals") is DeltaWriteMode.MERGE
+    expected_history_tables = {
+        "bronze_resource_changes",
+        "silver_patch_history",
+        "silver_lifecycle_history",
+        "silver_defender_secure_scores",
+        "silver_change_history",
+        "silver_incident_history",
+        "silver_predictive_history",
+        "silver_cost_actuals",
+    }
+    assert service._MERGE_WRITE_TABLES == expected_history_tables
+    for table_name in expected_history_tables:
+        assert service._write_mode_for_table(table_name) is DeltaWriteMode.MERGE
+    assert service._write_mode_for_table("metadata_audit_events") is DeltaWriteMode.APPEND
     assert service._write_mode_for_table("silver_compliance") is DeltaWriteMode.OVERWRITE
