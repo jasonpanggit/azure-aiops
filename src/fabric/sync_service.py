@@ -51,6 +51,17 @@ class FabricSyncResult:
 
 
 class FabricSyncService:
+    _MERGE_WRITE_TABLES: frozenset[str] = frozenset({
+        "bronze_resource_changes",
+        "silver_patch_history",
+        "silver_lifecycle_history",
+        "silver_defender_secure_scores",
+        "silver_change_history",
+        "silver_incident_history",
+        "silver_predictive_history",
+        "silver_cost_actuals",
+    })
+
     def __init__(
         self,
         *,
@@ -276,20 +287,7 @@ class FabricSyncService:
             ) -> tuple[str, str, int | None, DeltaWriteResult]:
                 table_name, rows = item
                 layer, logical_name = table_name.split("_", 1)
-                mode = (
-                    DeltaWriteMode.APPEND
-                    if table_name == "metadata_audit_events"
-                    else
-                    DeltaWriteMode.MERGE
-                    if table_name
-                    in {
-                        "bronze_resource_changes",
-                        "silver_patch_history",
-                        "silver_lifecycle_history",
-                        "silver_defender_secure_scores",
-                    }
-                    else DeltaWriteMode.OVERWRITE
-                )
+                mode = self._write_mode_for_table(table_name)
                 table_uri = self.onelake.table_uri(layer, logical_name)
                 before_version = self.delta.version(table_uri)
                 result = self.delta.write(
@@ -1446,6 +1444,13 @@ class FabricSyncService:
                 target=shortcut.target,
                 conflict_policy=shortcut.conflict_policy,
             )
+
+    def _write_mode_for_table(self, table_name: str) -> DeltaWriteMode:
+        if table_name == "metadata_audit_events":
+            return DeltaWriteMode.APPEND
+        if table_name in self._MERGE_WRITE_TABLES:
+            return DeltaWriteMode.MERGE
+        return DeltaWriteMode.OVERWRITE
 
 
 def _state_row(
