@@ -140,6 +140,20 @@ def test_deploy_unchanged_returns_noop_for_equal_definition() -> None:
     assert result == {"status": "unchanged", "item_id": "semantic-1"}
 
 
+def test_deploy_changed_definition_updates_existing_item() -> None:
+    display_name = "aiops_gold_semantic_model"
+    manager = _FakeManager(
+        items=[{"id": "semantic-1", "displayName": display_name}],
+        definition=build_semantic_model_definition(display_name, ["gold_old_table"]),
+    )
+
+    result = deploy_semantic_model(
+        manager, "workspace-1", display_name, ["gold_new_table"]
+    )
+
+    assert result == {"status": "updated", "item_id": "semantic-1"}
+
+
 @pytest.mark.parametrize(
     "error_code",
     [
@@ -159,6 +173,7 @@ def test_deploy_maps_documented_create_errors_to_deployment_blocked(error_code: 
 
     assert result["status"] == "deployment-blocked"
     assert result["reason"] == error_code
+    assert result["manifest_disposition"] == "dormant"
 
 
 def test_deploy_maps_operation_failed_code_to_deployment_blocked() -> None:
