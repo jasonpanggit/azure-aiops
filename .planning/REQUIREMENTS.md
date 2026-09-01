@@ -38,10 +38,10 @@ Requirements for the controlled Azure pilot.
 
 - [x] **EXEC-01**: Platform exposes a typed, allowlisted catalog containing one or two low-risk Azure remediation actions and no arbitrary shell or CLI execution.
 - [ ] **EXEC-02**: An approver can preview the planned target set, API operations, preconditions, expected effect, and possible collateral impact before approval.
-- [ ] **EXEC-03**: Approved actions enforce least privilege, bounded targets, parameter validation, timeouts, idempotency, and explicit preconditions.
-- [ ] **EXEC-04**: Execution runs as a durable job with visible queued, running, succeeded, failed, retrying, and cancelled states.
-- [ ] **EXEC-05**: The platform performs post-action verification and records actual state, outcome, failure details, and rollback or compensation status when applicable.
-- [ ] **EXEC-06**: Retries are bounded, visible, idempotent, and revalidated when target state or approval context changes.
+- [x] **EXEC-03**: Approved actions enforce least privilege, bounded targets, parameter validation, timeouts, idempotency, and explicit preconditions.
+- [x] **EXEC-04**: Execution runs as a durable job with visible queued, running, succeeded, failed, retrying, and cancelled states.
+- [x] **EXEC-05**: The platform performs post-action verification and records actual state, outcome, failure details, and rollback or compensation status when applicable.
+- [x] **EXEC-06**: Retries are bounded, visible, idempotent, and revalidated when target state or approval context changes.
 
 ### Pilot Experience
 
@@ -143,10 +143,10 @@ Traceability is populated during roadmap creation.
 | APPROVE-03 | Phase 2 | Pending |
 | EXEC-01 | Phase 3 | Complete |
 | EXEC-02 | Phase 3 | Pending |
-| EXEC-03 | Phase 3 | Pending |
-| EXEC-04 | Phase 3 | Pending |
-| EXEC-05 | Phase 3 | Pending |
-| EXEC-06 | Phase 3 | Pending |
+| EXEC-03 | Phase 3 | Complete |
+| EXEC-04 | Phase 3 | Complete |
+| EXEC-05 | Phase 3 | Complete |
+| EXEC-06 | Phase 3 | Complete |
 | PILOT-01 | Phase 4 | Pending |
 | PILOT-02 | Phase 4 | Pending |
 | PILOT-03 | Phase 4 | Pending |
