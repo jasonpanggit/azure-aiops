@@ -43,6 +43,7 @@ from .routers import context as context_routes
 from .routers import copilot as copilot_routes
 from .routers import governance as governance_routes
 from .routers import mcp as mcp_routes
+from .routers import remediation as remediation_routes
 from .routers import resource_health as resource_health_routes
 from .telemetry import Timer
 
@@ -244,6 +245,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     app.include_router(operations.router)
     app.include_router(patching.router)
     app.include_router(planned.router)
+    app.include_router(remediation_routes.router)
     app.include_router(resource_health_routes.router)
     # Imported here rather than at module scope: the pre-deployment engine
     # imports ``api.scope`` and ``api.evidence``, so a top-level import would
