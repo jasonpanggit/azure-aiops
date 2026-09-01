@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,6 +19,8 @@ class ChangePipelineResult:
     findings: list[dict[str, Any]]
     compliance: list[dict[str, Any]]
     summary: dict[str, Any]
+    entities: list[dict[str, Any]] = field(default_factory=list)
+    relationships: list[dict[str, Any]] = field(default_factory=list)
 
 
 def run(*, now: Any | None = None, **snapshot: Any) -> ChangePipelineResult:
@@ -28,11 +30,14 @@ def run(*, now: Any | None = None, **snapshot: Any) -> ChangePipelineResult:
     )
     analysis = engine.analyze()
     findings = [_finding_row(row) for row in analysis["findings"]]
+    projection = engine.knowledge_projection()
     return ChangePipelineResult(
         table_name=OUTPUT_TABLE,
         findings=findings,
         compliance=analysis["compliance"],
         summary=analysis["summary"],
+        entities=list(projection["entities"]),
+        relationships=list(projection["relationships"]),
     )
 
 
