@@ -27,6 +27,7 @@ READER_TOKEN = "reader-token-0123456789abcde"
 
 VM_ID = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"
 AKS_ID = "/subscriptions/sub-2/resourceGroups/rg/providers/Microsoft.ContainerService/managedClusters/aks1"
+STORAGE_ID = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/data"
 
 
 class FakeSecretWriter:
@@ -60,6 +61,15 @@ def _vulnerability_service() -> VulnerabilityIntelligenceService:
                 "missing_kb": "KB600002",
                 "business_service": "Platform",
                 "subscription_id": "sub-2",
+            },
+            {
+                "id": "finding-storage",
+                "cve_id": "CVE-2026-0001",
+                "server_id": STORAGE_ID,
+                "resource_type": "Microsoft.Storage/storageAccounts",
+                "business_service": "Payments",
+                "subscription_id": "sub-1",
+                "source": "Microsoft Defender for Cloud",
             },
         ],
         freshness="2026-01-01T00:00:00+00:00",
@@ -126,6 +136,13 @@ def test_targets_expose_inventory_kind_and_operation(client: TestClient) -> None
     assert vm["operation"] == "install_patches"
     assert "KB600001" in [patch["patch_id"] for patch in vm["available_patches"]]
     assert aks["operation"] == "node_image_upgrade"
+
+
+def test_non_compute_defender_assets_never_become_patch_targets(client: TestClient) -> None:
+    response = client.get("/api/v1/patching/targets", headers=_auth())
+
+    assert response.status_code == 200
+    assert STORAGE_ID not in {row["target_id"] for row in response.json()["data"]}
 
 
 def test_runs_route_is_not_shadowed_by_the_target_path_converter(client: TestClient) -> None:

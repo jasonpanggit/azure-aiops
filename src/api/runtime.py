@@ -18,6 +18,7 @@ import logging
 import os
 import time
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,10 @@ from onboarding.query_contract import QuerySpec
 
 _LOGGER = logging.getLogger(__name__)
 
+from intelligence.remediation.approval_decisions import RemediationDecisionStore
+from intelligence.remediation.defender_correlation import DefenderRemediationCorrelator
+from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
+from intelligence.remediation.plan_repository import PlanRepository
 from network.design import NetworkDesignPolicyStore
 from network.flow import FlowQuery
 from network.models import PRIVATE_LINK_RESOURCE_TYPES
@@ -76,10 +81,6 @@ from operations.patching import (
     UnconfiguredPatchExecutionAdapter,
 )
 from operations.tools import FabricIQToolAdapter
-from intelligence.remediation.approval_decisions import RemediationDecisionStore
-from intelligence.remediation.defender_correlation import DefenderRemediationCorrelator
-from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
-from intelligence.remediation.plan_repository import PlanRepository
 from semantic.hybrid_query import HybridQueryService
 from semantic.live_operations import (
     LiveRemediationPlanner,
@@ -352,6 +353,7 @@ def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
     mapper = InventoryDatasetMapper()
     tables_by_connection: list[dict[str, list[dict]]] = []
     freshness = ""
+    failure_freshness = ""
     for connection in connections:
         connection_root = _connection_dataset_dir(root, connection.connection_id)
         store = DatasetStore(connection_root)
@@ -361,31 +363,145 @@ def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
         manifest_path = f"{snapshot_dir}/manifest.json"
         if store.is_remote:
             if not store.fs.exists(manifest_path):
+                failed_at = datetime.now(UTC).isoformat()
+                tables_by_connection.append(
+                    _snapshot_failure_table(
+                        connection,
+                        "Snapshot manifest is missing",
+                        failed_at,
+                    )
+                )
+                failure_freshness = max(failure_freshness, failed_at)
+                _LOGGER.warning(
+                    "Snapshot manifest missing for connection %s at %s",
+                    connection.connection_id,
+                    manifest_path,
+                )
                 continue
             try:
                 with store.fs.open(manifest_path, "rt") as handle:
                     manifest = json.loads(handle.read())
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError) as exc:
+                failed_at = datetime.now(UTC).isoformat()
+                tables_by_connection.append(
+                    _snapshot_failure_table(
+                        connection,
+                        "Snapshot manifest could not be read",
+                        failed_at,
+                    )
+                )
+                failure_freshness = max(failure_freshness, failed_at)
+                _LOGGER.warning(
+                    "Snapshot manifest read failed for connection %s: %s",
+                    connection.connection_id,
+                    exc,
+                )
                 continue
         else:
             manifest_file = Path(manifest_path)
             if not manifest_file.exists():
+                failed_at = datetime.now(UTC).isoformat()
+                tables_by_connection.append(
+                    _snapshot_failure_table(
+                        connection,
+                        "Snapshot manifest is missing",
+                        failed_at,
+                    )
+                )
+                failure_freshness = max(failure_freshness, failed_at)
+                _LOGGER.warning(
+                    "Snapshot manifest missing for connection %s at %s",
+                    connection.connection_id,
+                    manifest_file,
+                )
                 continue
             try:
                 manifest = json.loads(manifest_file.read_text())
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError) as exc:
+                failed_at = datetime.now(UTC).isoformat()
+                tables_by_connection.append(
+                    _snapshot_failure_table(
+                        connection,
+                        "Snapshot manifest could not be read",
+                        failed_at,
+                    )
+                )
+                failure_freshness = max(failure_freshness, failed_at)
+                _LOGGER.warning(
+                    "Snapshot manifest read failed for connection %s: %s",
+                    connection.connection_id,
+                    exc,
+                )
                 continue
         run_id = str(manifest.get("runId") or connection.connection_id)
         try:
             tables = mapper.load(snapshot_dir, run_id, fs=store.fs if store.is_remote else None)
-        except Exception:  # noqa: BLE001, S112 - a malformed connection shouldn't take the API down
+        except Exception as exc:  # noqa: BLE001 - isolate malformed connection snapshots.
+            failed_at = datetime.now(UTC).isoformat()
+            tables_by_connection.append(
+                _snapshot_failure_table(
+                    connection,
+                    "Snapshot mapping failed",
+                    failed_at,
+                    run_id=run_id,
+                )
+            )
+            failure_freshness = max(failure_freshness, failed_at)
+            _LOGGER.warning(
+                "Snapshot mapping failed for connection %s run %s: %s",
+                connection.connection_id,
+                run_id,
+                exc,
+            )
             continue
         tables_by_connection.append(tables)
         started_at = str(manifest.get("startedAt") or "")
         freshness = max(freshness, started_at)
-    result = (tables_by_connection, freshness)
+    result = (tables_by_connection, freshness or failure_freshness)
     _snapshot_tables_cache[cache_key] = (now, result)
     return result
+
+
+_DEFENDER_SOURCE_FAMILIES = (
+    "defender_assessments",
+    "defender_alerts",
+    "defender_attack_paths",
+    "defender_secure_scores",
+)
+
+
+def _snapshot_failure_table(
+    connection: Any,
+    error: str,
+    observed_at: str,
+    *,
+    run_id: str = "",
+) -> dict[str, list[dict[str, Any]]]:
+    """Represent one failed connection as degraded Defender source coverage."""
+    subscription_id = str(getattr(connection, "subscription_id", "") or "")
+    connection_id = str(getattr(connection, "connection_id", "") or "")
+    requested_scope = {"subscription": [subscription_id]} if subscription_id else {}
+    return {
+        "metadata_source_status": [
+            {
+                "source_family": family,
+                "run_id": run_id or connection_id,
+                "status": "failed",
+                "observed_at": observed_at,
+                "ingested_at": observed_at,
+                "requested_scope": requested_scope,
+                "requested_scope_json": json.dumps(requested_scope, sort_keys=True),
+                "subscription_id": subscription_id,
+                "subscription_connection": connection_id,
+                "provider_status": "failed",
+                "freshness": "unknown",
+                "availability": "unavailable",
+                "quality": "degraded",
+                "error": error,
+            }
+            for family in _DEFENDER_SOURCE_FAMILIES
+        ]
+    }
 
 
 def _load_semantic_snapshot() -> SemanticEngine | None:
@@ -656,6 +772,20 @@ def _build_vulnerability_service(
     if not freshness:
         return None
     pending: list[dict[str, Any]] = []
+    defender_findings: list[dict[str, Any]] = []
+    defender_assessments: list[dict[str, Any]] = []
+    defender_signals: dict[str, list[dict[str, Any]]] = {
+        name: []
+        for name in (
+            "alerts",
+            "attack_paths",
+            "attack_path_nodes",
+            "attack_path_connections",
+            "secure_scores",
+            "secure_score_controls",
+            "source_status",
+        )
+    }
     installed_kbs: set[tuple[str, str]] = set()
     for table in tables:
         for row in table.get("silver_patch_findings") or []:
@@ -675,8 +805,73 @@ def _build_vulnerability_service(
                     "severity": row.get("severity") or "Unknown",
                     "recommended_patch": row.get("update_name") or kb_id,
                     "first_observed_at": row.get("published_at") or row.get("timestamp") or "",
+                    "source": "Azure Update Manager",
                 }
             )
+        for row in table.get("silver_defender_findings") or []:
+            cve_id = str(row.get("cve_id") or "").strip().upper()
+            target = str(row.get("target_resource_id") or "")
+            status = str(row.get("status") or "Unhealthy")
+            if (
+                not cve_id.startswith("CVE-")
+                or not target
+                or status.casefold() in {"healthy", "notapplicable", "not applicable", "resolved"}
+            ):
+                continue
+            defender_findings.append(
+                {
+                    "finding_id": str(row.get("resource_id") or f"{target}|{cve_id}|defender"),
+                    "server_id": target,
+                    "cve_id": cve_id,
+                    "severity": row.get("severity") or "Unknown",
+                    "recommended_patch": row.get("fixed_version")
+                    or row.get("recommendation")
+                    or "",
+                    "first_observed_at": row.get("last_assessed_at")
+                    or row.get("timestamp")
+                    or "",
+                    "source": "Microsoft Defender for Cloud",
+                    "defender_assessment_id": row.get("assessment_id") or "",
+                    "defender_recommendation": row.get("recommendation") or "",
+                    "defender_status": status,
+                    "defender_last_assessed_at": row.get("last_assessed_at") or "",
+                    "defender_patchable": bool(row.get("patchable", False)),
+                    "defender_software_vendor": row.get("software_vendor") or "",
+                    "defender_software_name": row.get("software_name") or "",
+                    "defender_software_version": row.get("software_version") or "",
+                    "defender_fixed_version": row.get("fixed_version") or "",
+                }
+            )
+        for row in table.get("silver_defender_assessments") or []:
+            target = str(row.get("target_resource_id") or "")
+            if not target:
+                continue
+            defender_assessments.append(
+                {
+                    "assessment_id": str(row.get("resource_id") or ""),
+                    "server_id": target,
+                    "target_resource_id": target,
+                    "resource_type": str(row.get("target_resource_type") or ""),
+                    "status": str(row.get("status") or "Unknown"),
+                    "severity": str(row.get("severity") or "Unknown"),
+                    "recommendation": str(row.get("recommendation") or ""),
+                    "description": str(row.get("description") or ""),
+                    "remediation": str(row.get("remediation") or ""),
+                    "last_assessed_at": str(row.get("last_assessed_at") or ""),
+                    "subscription_id": str(row.get("subscription_id") or ""),
+                }
+            )
+        for name, signal_rows in defender_signals.items():
+            rows = table.get(f"silver_defender_{name}") or []
+            if name == "source_status" and not rows:
+                rows = [
+                    row
+                    for row in table.get("metadata_source_status") or []
+                    if str(row.get("source_family") or "").startswith(
+                        "defender_"
+                    )
+                ]
+            signal_rows.extend(rows)
     # Combine both ARG tables: a KB reported as still "missing" by the latest
     # assessment but already recorded as "installed" for that same target is
     # remediated (e.g. the install ran after the assessment snapshot) and
@@ -707,7 +902,9 @@ def _build_vulnerability_service(
             }
             for cve_id in cve_ids
         )
-    findings = expanded_findings
+    findings = _merge_vulnerability_finding_rows(
+        [*expanded_findings, *defender_findings]
+    )
 
     all_cve_ids = tuple(
         sorted({item["cve_id"] for item in findings if item["cve_id"].upper().startswith("CVE-")})
@@ -722,9 +919,25 @@ def _build_vulnerability_service(
     kev_catalog = _resolve_kev_catalog()
 
     _attach_business_context(findings, semantic)
+    _attach_business_context(defender_assessments, semantic)
+    _attach_defender_signal_context(defender_signals["alerts"], semantic)
+    _attach_defender_signal_context(defender_signals["attack_paths"], semantic)
+    _attach_defender_signal_context(defender_signals["attack_path_nodes"], semantic)
 
     service = VulnerabilityIntelligenceService.from_rows(
         findings=findings,
+        defender_assessments=defender_assessments,
+        defender_alerts=defender_signals["alerts"],
+        defender_attack_paths=defender_signals["attack_paths"],
+        defender_attack_path_nodes=defender_signals["attack_path_nodes"],
+        defender_attack_path_connections=defender_signals[
+            "attack_path_connections"
+        ],
+        defender_secure_scores=defender_signals["secure_scores"],
+        defender_secure_score_controls=defender_signals[
+            "secure_score_controls"
+        ],
+        defender_source_status=defender_signals["source_status"],
         security_updates=[
             {
                 "kb_id": item["missing_kb"],
@@ -737,6 +950,7 @@ def _build_vulnerability_service(
                 ),
             }
             for item in findings
+            if item.get("missing_kb")
         ],
         cves=cve_rows,
         freshness=freshness,
@@ -752,6 +966,242 @@ def _build_vulnerability_service(
     if risk_exceptions:
         service = service.apply_risk_exceptions(risk_exceptions)
     return service
+
+
+def _merge_vulnerability_finding_rows(
+    findings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge one exposure deterministically while retaining every evidence id."""
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for finding in findings:
+        key = (
+            str(finding.get("server_id") or "").casefold(),
+            str(finding.get("cve_id") or "").casefold(),
+        )
+        grouped.setdefault(key, []).append(finding)
+
+    merged: list[dict[str, Any]] = []
+    for key in sorted(grouped):
+        rows = sorted(grouped[key], key=_finding_evidence_sort_key)
+        primary = rows[0]
+        latest_defender = _latest_defender_observation(rows)
+        if (
+            latest_defender is not None
+            and str(primary.get("source") or "") == "Microsoft Defender for Cloud"
+        ):
+            primary = latest_defender
+        combined = dict(primary)
+        defender_bundle_fields = {
+            field
+            for row in rows
+            for field in row
+            if field.startswith("defender_") and field != "defender_evidence_ids"
+        }
+
+        # Fill source-specific fields without allowing ingestion order to
+        # select a different value. Explicit operational fields below use
+        # their own semantics instead of this stable fallback.
+        explicit_fields = {
+            "finding_id",
+            "id",
+            "source",
+            "severity",
+            "first_observed_at",
+            "missing_kb",
+            "recommended_patch",
+            "evidence_ids",
+            "sources",
+            "recommendations",
+            "software_observations",
+            "defender_evidence_ids",
+        } | defender_bundle_fields
+        for field in sorted({name for row in rows for name in row} - explicit_fields):
+            values = [
+                row[field]
+                for row in rows
+                if field in row and row[field] not in (None, "", [], ())
+            ]
+            if not values:
+                continue
+            if all(isinstance(value, bool) for value in values):
+                combined[field] = any(values)
+            elif all(isinstance(value, (list, tuple, set)) for value in values):
+                combined[field] = sorted(
+                    {
+                        str(item)
+                        for value in values
+                        for item in value
+                        if str(item)
+                    }
+                )
+            else:
+                combined[field] = min(values, key=_stable_finding_value_key)
+
+        if latest_defender is not None:
+            for field in defender_bundle_fields:
+                # Copy the observation as one coherent bundle, including
+                # explicit empty/false values that supersede stale details.
+                combined[field] = latest_defender.get(field)
+
+        evidence_ids = {
+            str(value)
+            for row in rows
+            for value in (
+                *(row.get("evidence_ids") or ()),
+                row.get("finding_id") or row.get("id") or "",
+            )
+            if str(value)
+        }
+        sources = {
+            str(value)
+            for row in rows
+            for value in (*(row.get("sources") or ()), row.get("source") or "")
+            if str(value)
+        }
+        recommendations = {
+            str(value)
+            for row in rows
+            for value in (
+                *(row.get("recommendations") or ()),
+                row.get("recommended_patch") or "",
+                row.get("defender_recommendation") or "",
+            )
+            if str(value)
+        }
+        software_observations = {
+            str(value)
+            for row in rows
+            for value in row.get("software_observations") or ()
+            if str(value)
+        }
+        software_observations.update(
+            software
+            for row in rows
+            if (
+                software := " ".join(
+                    str(value)
+                    for value in (
+                        row.get("defender_software_vendor"),
+                        row.get("defender_software_name"),
+                        row.get("defender_software_version"),
+                        row.get("defender_fixed_version"),
+                    )
+                    if value
+                )
+            )
+        )
+        primary_evidence_id = str(
+            primary.get("finding_id") or primary.get("id") or ""
+        )
+        combined["finding_id"] = primary_evidence_id
+        combined["source"] = str(primary.get("source") or "")
+        combined["severity"] = _strongest_finding_severity(rows)
+        combined["first_observed_at"] = _earliest_finding_observation(rows)
+        combined["missing_kb"] = min(
+            (str(row.get("missing_kb")) for row in rows if row.get("missing_kb")),
+            key=str.casefold,
+            default="",
+        )
+        remediation_rows = [row for row in rows if row.get("recommended_patch")]
+        combined["recommended_patch"] = (
+            str(min(remediation_rows, key=_finding_evidence_sort_key)["recommended_patch"])
+            if remediation_rows
+            else ""
+        )
+        combined["evidence_ids"] = sorted(evidence_ids)
+        combined["sources"] = sorted(sources)
+        combined["recommendations"] = sorted(recommendations)
+        combined["software_observations"] = sorted(software_observations)
+        combined["defender_evidence_ids"] = sorted(
+            {
+                str(value)
+                for row in rows
+                if str(row.get("source") or "") == "Microsoft Defender for Cloud"
+                for value in (
+                    *(row.get("defender_evidence_ids") or ()),
+                    row.get("finding_id") or row.get("id") or "",
+                )
+                if str(value)
+            }
+        )
+        merged.append(combined)
+    return merged
+
+
+def _finding_evidence_sort_key(row: Mapping[str, Any]) -> tuple[int, str, str, str]:
+    source = str(row.get("source") or "")
+    source_rank = {
+        "Azure Update Manager": 0,
+        "Microsoft Defender for Cloud": 1,
+    }.get(source, 2)
+    evidence_id = str(row.get("finding_id") or row.get("id") or "")
+    return (
+        source_rank,
+        source.casefold(),
+        evidence_id.casefold(),
+        json.dumps(dict(row), sort_keys=True, default=str),
+    )
+
+
+def _latest_defender_observation(
+    rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    candidates: list[tuple[datetime, dict[str, Any]]] = []
+    for row in sorted(rows, key=_finding_evidence_sort_key):
+        if str(row.get("source") or "") != "Microsoft Defender for Cloud":
+            continue
+        value = str(
+            row.get("defender_last_assessed_at")
+            or row.get("first_observed_at")
+            or ""
+        )
+        if not value:
+            continue
+        try:
+            observed = datetime.fromisoformat(value)
+        except ValueError:
+            continue
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=UTC)
+        candidates.append((observed.astimezone(UTC), row))
+    return max(candidates, key=lambda candidate: candidate[0])[1] if candidates else None
+
+
+def _stable_finding_value_key(value: Any) -> tuple[str, str]:
+    rendered = json.dumps(value, sort_keys=True, default=str)
+    return (rendered.casefold(), rendered)
+
+
+def _strongest_finding_severity(rows: list[dict[str, Any]]) -> str:
+    rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
+    values = {
+        str(row.get("severity") or "Unknown")
+        for row in rows
+        if row.get("severity")
+    }
+    return min(
+        values or {"Unknown"},
+        key=lambda value: (-rank.get(value.casefold(), 0), value.casefold(), value),
+    )
+
+
+def _earliest_finding_observation(rows: list[dict[str, Any]]) -> str:
+    observations: list[tuple[datetime, str]] = []
+    invalid: list[str] = []
+    for row in rows:
+        value = str(row.get("first_observed_at") or "")
+        if not value:
+            continue
+        try:
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            observations.append((parsed.astimezone(UTC), value))
+        except ValueError:
+            invalid.append(value)
+    if observations:
+        return min(observations, key=lambda item: (item[0], item[1]))[1]
+    return min(invalid, key=str.casefold, default="")
 
 
 def _load_vulnerability_service() -> VulnerabilityIntelligenceService | None:
@@ -807,10 +1257,52 @@ def _write_risk_exceptions(
 
 
 def list_risk_exceptions() -> list[RiskException]:
+    """Return every active risk exception, unfiltered by caller scope.
+
+    WR-02: this contract is load-bearing for `revoke_risk_exception`'s
+    restricted-scope authorization path (see `vulnerability.py`). If this
+    function is ever changed to pre-filter by scope, add an equivalent
+    unfiltered accessor rather than changing this one; the regression test
+    `test_revoke_denies_when_risk_exception_list_pre_filters_by_scope`
+    exists specifically to catch a violation of this contract, but only
+    if the contract is not silently narrowed here.
+
+    This function does quarantine (drop) malformed or expired entries at
+    load time -- that filtering is a data-integrity concern, not a
+    scope/authorization concern, and does not violate the contract above.
+    """
     documents, entries, _revision = _read_risk_exceptions()
     if documents is None:
-        return list(_risk_exception_store.values())
-    return [RiskException(**entries[key]) for key in sorted(entries)]
+        candidates: list[Any] = list(_risk_exception_store.values())
+    else:
+        candidates = []
+        for key in sorted(entries):
+            payload = entries[key]
+            if not isinstance(payload, Mapping):
+                _LOGGER.warning("Quarantining malformed risk exception %s", key)
+                continue
+            try:
+                candidates.append(RiskException(**payload))
+            except (TypeError, ValueError):
+                _LOGGER.warning("Quarantining malformed risk exception %s", key)
+
+    active: list[RiskException] = []
+    now_iso = datetime.now(UTC).isoformat()
+    for exception in candidates:
+        if not isinstance(exception, RiskException):
+            _LOGGER.warning("Quarantining malformed in-memory risk exception")
+            continue
+        try:
+            if exception.is_expired(now_iso=now_iso):
+                continue
+        except (TypeError, ValueError, OverflowError):
+            _LOGGER.warning(
+                "Quarantining risk exception %s with invalid expiry",
+                exception.exception_id,
+            )
+            continue
+        active.append(exception)
+    return active
 
 
 def add_risk_exception(exception: RiskException) -> None:
@@ -863,6 +1355,83 @@ def _attach_business_context(
         item["subscription_id"] = public.get("subscription_id", "")
         item["subscription_connection"] = public.get("subscription_connection", "")
         item["region"] = public.get("region", "")
+
+
+def _attach_defender_signal_context(
+    rows: list[dict[str, Any]], semantic: SemanticEngine | None
+) -> None:
+    """Attach aggregate and per-resource scope values to a Defender signal."""
+    if semantic is None:
+        return
+    entities = semantic.indexes.entities
+    dimensions = (
+        "application",
+        "business_service",
+        "owner",
+        "environment",
+        "criticality",
+        "subscription_id",
+        "subscription_connection",
+        "region",
+    )
+    plural_names = {
+        "application": "applications",
+        "business_service": "business_services",
+        "owner": "owners",
+        "environment": "environments",
+        "criticality": "criticalities",
+        "subscription_id": "subscription_ids",
+        "subscription_connection": "subscription_connections",
+        "region": "regions",
+    }
+    for row in rows:
+        resource_ids = {
+            str(resource_id).casefold()
+            for resource_id in row.get("resourceIds") or ()
+            if str(resource_id).strip()
+        }
+        resource_id = str(row.get("resourceId") or "").casefold()
+        if resource_id:
+            resource_ids.add(resource_id)
+        public_rows = [
+            semantic.indexes.public(resource_id)
+            for resource_id in sorted(resource_ids)
+            if resource_id in entities
+        ]
+        resource_scope: dict[str, dict[str, str]] = {}
+        for resource_id in sorted(resource_ids):
+            if resource_id not in entities:
+                continue
+            public = semantic.indexes.public(resource_id)
+            resource_scope[resource_id] = {
+                "application": str(public.get("application") or ""),
+                "business_service": str(public.get("business_service") or ""),
+                "owner": str(public.get("owner") or ""),
+                "environment": str(public.get("environment") or ""),
+                "criticality": str(public.get("criticality") or ""),
+                "subscription": str(public.get("subscription_id") or ""),
+                "subscription_connection": str(
+                    public.get("subscription_connection") or ""
+                ),
+                "region": str(public.get("region") or ""),
+            }
+        if resource_scope:
+            # Retain attribution so request-time projection can remove
+            # unauthorized resources instead of authorizing an aggregate row
+            # merely because any one resource matched.
+            row["_resource_scope"] = resource_scope
+        for dimension in dimensions:
+            values = sorted(
+                {
+                    str(public.get(dimension) or "")
+                    for public in public_rows
+                    if public.get(dimension)
+                }
+            )
+            if values:
+                row[plural_names[dimension]] = values
+                if len(values) == 1:
+                    row[dimension] = values[0]
 
 
 def _network_reachability_resolver(
@@ -1091,6 +1660,7 @@ def _fabric_vulnerability_service(
 ) -> VulnerabilityIntelligenceService | None:
     semantic_snapshot = runtime.service.semantic_snapshot()
     patch = runtime.service.patch_intelligence_snapshot()
+    defender = runtime.service.defender_intelligence_snapshot()
     findings = [
         {
             **row,
@@ -1102,10 +1672,39 @@ def _fabric_vulnerability_service(
         }
         for row in patch.get("findings") or []
     ]
+    defender_findings = [
+        {
+            **row,
+            "target_resource_id": row.get("target_resource_id")
+            or row.get("resource_key")
+            or row.get("resource_id")
+            or "",
+        }
+        for row in patch.get("defender_findings") or []
+    ]
+    defender_assessments = [
+        {
+            **row,
+            "target_resource_id": row.get("target_resource_id")
+            or row.get("resource_key")
+            or "",
+        }
+        for row in patch.get("defender_assessments") or []
+    ]
     semantic = runtime.semantic_engine()
     network = _fabric_network_service(runtime)
     return _build_vulnerability_service(
-        [{"silver_patch_findings": findings}],
+        [
+            {
+                "silver_patch_findings": findings,
+                "silver_defender_findings": defender_findings,
+                "silver_defender_assessments": defender_assessments,
+                **{
+                    f"silver_defender_{name}": rows
+                    for name, rows in defender.items()
+                },
+            }
+        ],
         str(semantic_snapshot.get("freshness") or ""),
         semantic=semantic,
         network=network,
@@ -1161,6 +1760,17 @@ def _fabric_remediation_planner(runtime: FabricRuntime) -> Any:
         getattr(runtime.operations_agent(), "remediation_planner", None)
     )
     return _attach_defender_correlator(planner, runtime)
+
+
+def _fabric_change_intelligence(runtime: FabricRuntime) -> Any:
+    """Resolve the compliance/change-intelligence engine for this snapshot.
+
+    Reuses the instance already built by ``operations_agent()`` (gated by
+    ``change_intelligence.enabled``) rather than reconstructing it, so
+    compliance reads share the exact snapshot the operations narration path
+    reasons over.
+    """
+    return getattr(runtime.operations_agent(), "change_intelligence", None)
 
 
 def _latest_discovery(onboarding: SubscriptionOnboardingService) -> str:
@@ -1271,6 +1881,7 @@ def _build_provider_runtime(
             "vulnerability": lambda: with_fabric(_fabric_vulnerability_service),
             "incidents": lambda: with_fabric(_fabric_incident_engine),
             "remediation": lambda: with_fabric(_fabric_remediation_planner),
+            "change": lambda: with_fabric(_fabric_change_intelligence),
         }
     elif mode == "demo":
         loaders = {
@@ -1279,6 +1890,7 @@ def _build_provider_runtime(
             "vulnerability": _load_vulnerability_service,
             "incidents": _load_incident_engine,
             "remediation": lambda: None,
+            "change": lambda: None,
         }
     else:
         loaders = {name: (lambda: None) for name in (
@@ -1287,6 +1899,7 @@ def _build_provider_runtime(
             "vulnerability",
             "incidents",
             "remediation",
+            "change",
         )}
 
     foundry_configured = bool(
@@ -1925,6 +2538,7 @@ def build_context() -> ApiContext:
         network_provider=lambda: providers.get("network", optional=True),
         vulnerability_provider=lambda: providers.get("vulnerability", optional=True),
         patching_provider=lambda: providers.get("patching", optional=True),
+        change_provider=lambda: providers.get("change", optional=True),
         governance_provider=_load_governance_snapshot,
         settings_store=_settings_store(),
         network_policy_store=_network_policy_store(),

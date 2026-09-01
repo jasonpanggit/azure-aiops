@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from test_entity_builder import resource
 
 from ontology.entity_builder import EntityBuilder
@@ -31,6 +33,45 @@ def test_relationships_are_stable_and_deduplicated():
 
     assert len(ids) == len(set(ids))
     assert RelationshipBuilder().build(entities, "run-3")[0]["resource_id"] == relationships[0]["resource_id"]
+
+
+def test_defender_vulnerability_finding_links_to_source_assessment():
+    assessment_id = (
+        "/subscriptions/sub-1/providers/microsoft.security/assessments/va-machines"
+    )
+    finding_id = f"{assessment_id}/subassessments/finding-1"
+    entities = EntityBuilder().build(
+        [
+            resource(
+                resource_id=assessment_id,
+                entity_type="DefenderAssessment",
+                resource_type="microsoft.security/assessments",
+                payload_json=json.dumps({"targetResourceId": resource()["resource_id"]}),
+            ),
+            resource(
+                resource_id=finding_id,
+                entity_type="DefenderVulnerabilityFinding",
+                resource_type="microsoft.security/assessments/subassessments",
+                payload_json=json.dumps(
+                    {
+                        "targetResourceId": resource()["resource_id"],
+                        "assessmentId": assessment_id,
+                    }
+                ),
+            ),
+            resource(),
+        ],
+        "run-defender",
+    )
+
+    relationships = RelationshipBuilder().build(entities, "run-defender")
+
+    assert any(
+        row["subject_id"] == finding_id
+        and row["predicate"] == "derivedFrom"
+        and row["object_id"] == assessment_id
+        for row in relationships
+    )
 
 
 def test_application_dependencies_are_discovered_from_dependency_tags():
@@ -135,3 +176,208 @@ def test_management_group_hierarchy_is_discovered():
         and row["object_type"] == "Subscription"
         for row in relationships
     )
+
+
+def test_normalize_tag_value_treats_hyphen_underscore_space_as_equivalent():
+    from ontology.relationship_builder import _normalize_tag_value
+
+    assert _normalize_tag_value("Order-Service") == _normalize_tag_value("order_service")
+    assert _normalize_tag_value("Order Service") == _normalize_tag_value("order-service")
+    assert _normalize_tag_value("  Order   Service  ") == _normalize_tag_value("order_service")
+
+
+def test_fuzzy_tag_value_links_asset_to_same_application_entity():
+    hyphenated_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm1",
+        name="vm1",
+    )
+    underscored_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm2",
+        name="vm2",
+        payload_json=resource()["payload_json"].replace("Payments API", "Payments_API").replace(
+            '"id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"',
+            '"id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm2"',
+        ).replace('"name": "vm1"', '"name": "vm2"'),
+    )
+
+    entities = EntityBuilder().build([hyphenated_vm, underscored_vm], "run-2")
+    relationships = RelationshipBuilder().build(entities, "run-2")
+
+    member_of_applications = {
+        row["object_id"]
+        for row in relationships
+        if row["subject_type"] == "VirtualMachine" and row["predicate"] == "member_of"
+    }
+
+    assert len(member_of_applications) == 1
+
+
+def test_resource_group_level_tag_is_inherited_by_untagged_sibling():
+    tagged_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm1",
+        name="vm1",
+    )
+    payload = json.loads(tagged_vm["payload_json"])
+    untagged_payload = dict(payload)
+    untagged_payload["id"] = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm2"
+    untagged_payload["name"] = "vm2"
+    untagged_payload["tags"] = {"Environment": "Production"}
+    untagged_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm2",
+        name="vm2",
+        payload_json=json.dumps(untagged_payload),
+    )
+
+    entities = EntityBuilder().build([tagged_vm, untagged_vm], "run-2")
+    relationships = RelationshipBuilder().build(entities, "run-2")
+
+    untagged_entity_id = next(
+        entity["resource_id"]
+        for entity in entities
+        if entity["entity_type"] == "VirtualMachine" and entity["name"] == "vm2"
+    )
+    assert any(
+        row["subject_id"] == untagged_entity_id and row["predicate"] == "member_of"
+        for row in relationships
+    )
+
+
+def test_subscription_level_tag_is_inherited_across_resource_groups():
+    tagged_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg-a/providers/microsoft.compute/virtualmachines/vm1",
+        name="vm1",
+    )
+    payload = json.loads(tagged_vm["payload_json"])
+    untagged_payload = dict(payload)
+    untagged_payload["id"] = (
+        "/subscriptions/sub-1/resourceGroups/rg-b/providers/Microsoft.Compute/virtualMachines/vm2"
+    )
+    untagged_payload["resourceGroup"] = "rg-b"
+    untagged_payload["name"] = "vm2"
+    untagged_payload["tags"] = {}
+    untagged_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg-b/providers/microsoft.compute/virtualmachines/vm2",
+        name="vm2",
+        payload_json=json.dumps(untagged_payload),
+    )
+
+    entities = EntityBuilder().build([tagged_vm, untagged_vm], "run-2")
+    relationships = RelationshipBuilder().build(entities, "run-2")
+
+    untagged_entity_id = next(
+        entity["resource_id"]
+        for entity in entities
+        if entity["entity_type"] == "VirtualMachine" and entity["name"] == "vm2"
+    )
+    assert any(
+        row["subject_id"] == untagged_entity_id and row["predicate"] == "member_of"
+        for row in relationships
+    )
+
+
+def test_resource_level_tag_takes_priority_over_inherited_tag():
+    tagged_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm1",
+        name="vm1",
+    )
+    payload = json.loads(tagged_vm["payload_json"])
+    own_tagged_payload = dict(payload)
+    own_tagged_payload["id"] = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm2"
+    own_tagged_payload["name"] = "vm2"
+    own_tagged_payload["tags"] = {"AppName": "Ledger API"}
+    own_tagged_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm2",
+        name="vm2",
+        payload_json=json.dumps(own_tagged_payload),
+    )
+
+    entities = EntityBuilder().build([tagged_vm, own_tagged_vm], "run-2")
+    relationships = RelationshipBuilder().build(entities, "run-2")
+
+    own_tagged_entity_id = next(
+        entity["resource_id"]
+        for entity in entities
+        if entity["entity_type"] == "VirtualMachine" and entity["name"] == "vm2"
+    )
+    ledger_application_id = next(
+        entity["resource_id"]
+        for entity in entities
+        if entity["entity_type"] == "Application" and entity["name"] == "Ledger API"
+    )
+    payments_application_id = next(
+        entity["resource_id"]
+        for entity in entities
+        if entity["entity_type"] == "Application" and entity["name"] == "Payments API"
+    )
+
+    member_of_object_ids = {
+        row["object_id"]
+        for row in relationships
+        if row["subject_id"] == own_tagged_entity_id and row["predicate"] == "member_of"
+    }
+    assert member_of_object_ids == {ledger_application_id}
+    assert payments_application_id not in member_of_object_ids
+
+
+def test_application_inheritance_is_deterministic_and_skips_ambiguous_scope():
+    payments_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.compute/virtualmachines/payments",
+        name="payments",
+    )
+    base_payload = json.loads(payments_vm["payload_json"])
+    payments_payload = dict(base_payload)
+    payments_payload["id"] = payments_vm["resource_id"]
+    payments_payload["name"] = "payments"
+    payments_vm["payload_json"] = json.dumps(payments_payload)
+
+    ledger_payload = dict(base_payload)
+    ledger_payload["id"] = (
+        "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/"
+        "virtualMachines/ledger"
+    )
+    ledger_payload["name"] = "ledger"
+    ledger_payload["tags"] = {"AppName": "Ledger API"}
+    ledger_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.compute/virtualmachines/ledger",
+        name="ledger",
+        payload_json=json.dumps(ledger_payload),
+    )
+
+    untagged_payload = dict(base_payload)
+    untagged_payload["id"] = (
+        "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/"
+        "virtualMachines/untagged"
+    )
+    untagged_payload["name"] = "untagged"
+    untagged_payload["tags"] = {}
+    untagged_vm = resource(
+        resource_id="/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.compute/virtualmachines/untagged",
+        name="untagged",
+        payload_json=json.dumps(untagged_payload),
+    )
+
+    results = []
+    for source_rows in (
+        [payments_vm, ledger_vm, untagged_vm],
+        [untagged_vm, ledger_vm, payments_vm],
+    ):
+        entities = EntityBuilder().build(source_rows, "run-ambiguous")
+        relationships = RelationshipBuilder().build(
+            entities, "run-ambiguous"
+        )
+        untagged_id = next(
+            entity["resource_id"]
+            for entity in entities
+            if entity["entity_type"] == "VirtualMachine"
+            and entity["name"] == "untagged"
+        )
+        results.append(
+            {
+                row["object_id"]
+                for row in relationships
+                if row["subject_id"] == untagged_id
+                and row["predicate"] == "member_of"
+            }
+        )
+
+    assert results == [set(), set()]

@@ -331,6 +331,28 @@ class TestConnectionsCrud:
         assert response.status_code == 404
         assert response.json()["error"]["code"] == "not_found"
 
+    def test_unknown_connection_health_is_handled_not_a_server_crash(self, onboarding):
+        """A missing connection is a domain 404, never an unhandled ASGI crash.
+
+        ``raise_server_exceptions=False`` on the shared fixture masks handler
+        escapes, so this asserts against a strict client: if the exception
+        reaches ServerErrorMiddleware (which always re-raises), this fails.
+        """
+        context = ApiContext(
+            onboarding=onboarding,
+            authenticator=StaticTokenAuthenticator(_principals()),
+            authorizer=Authorizer(),
+            telemetry=ApiTelemetry(),
+        )
+        strict = TestClient(create_app(context))
+        for path in (
+            "/api/v1/subscription-connections/nope",
+            "/api/v1/subscription-connections/nope/health",
+        ):
+            response = strict.get(path, headers=_auth(ADMIN_TOKEN))
+            assert response.status_code == 404, path
+            assert response.json()["error"]["code"] == "not_found"
+
     def test_metadata_mapping(self, client):
         _create(client, "conn-a", SUB_A, metadata={})
         response = client.put(

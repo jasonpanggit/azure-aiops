@@ -12,6 +12,8 @@ against OneLake (the URI only changes which fsspec filesystem is resolved).
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import pytest
 
@@ -119,3 +121,72 @@ def test_remote_write_uses_datalake_upload_data_not_adlfs(tmp_path):
     [(path, data)] = written.items()
     assert path == "state/registry.json"
     assert json.loads(data.decode("utf-8")) == {"revision": 1, "items": ["a"]}
+
+
+def test_concurrent_read_does_not_observe_partial_write(tmp_path):
+    """Regression test: a read racing a slow, in-flight write must never see
+    a partially-written document. Before this fix, ``read()`` held no lock,
+    so a reader landing between the local write's ``mkdir``/``write_text``
+    calls (or, on OneLake, between the DFS create/append/flush steps) could
+    observe a missing/truncated file, fail to parse it, and silently return
+    ``{}`` -- indistinguishable from "document never existed". That made an
+    existing subscription connection look "not registered" for the instant a
+    concurrent sync was persisting ``sync_state``.
+    """
+    store = OneLakeDocumentStore(tmp_path)
+    store.write("state/registry.json", {"revision": 1, "connections": ["demo"]}, expected_revision=0)
+
+    slow_enough = threading.Event()
+    release_writer = threading.Event()
+
+    def slow_write(self, name, payload, *, expected_revision):
+        # Simulate a slow persist: acquire the lock, signal the reader thread
+        # it may now attempt a concurrent read, then hold the lock a bit
+        # before actually touching the filesystem.
+        with self._lock:
+            current = int(self._read_locked(name).get("revision") or 0)
+            if current != expected_revision:
+                raise DocumentConflictError("stale revision")
+            slow_enough.set()
+            release_writer.wait(timeout=2)
+            body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+            path = self._path(name)
+            from pathlib import Path
+
+            local_path = Path(path)
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_text(body, encoding="utf-8")
+
+    store.write = slow_write.__get__(store, OneLakeDocumentStore)
+
+    results: list[dict] = []
+
+    def reader():
+        slow_enough.wait(timeout=2)
+        results.append(store.read("state/registry.json"))
+
+    reader_thread = threading.Thread(target=reader)
+    reader_thread.start()
+
+    writer_thread = threading.Thread(
+        target=lambda: store.write(
+            "state/registry.json",
+            {"revision": 2, "connections": ["demo", "second"]},
+            expected_revision=1,
+        )
+    )
+    writer_thread.start()
+
+    time.sleep(0.05)
+    release_writer.set()
+    writer_thread.join(timeout=2)
+    reader_thread.join(timeout=2)
+
+    assert len(results) == 1
+    # The reader must see either the pre-write or post-write document in
+    # full -- never an empty/partial one produced by observing the write
+    # mid-flight.
+    assert results[0] in (
+        {"revision": 1, "connections": ["demo"]},
+        {"revision": 2, "connections": ["demo", "second"]},
+    )

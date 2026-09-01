@@ -20,9 +20,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
+from onboarding.credentials import SecretNotFoundError, SecretStorageError
+from onboarding.service import OnboardingError
+
 from .dependencies import ApiContext, OperatePrincipal
 from .errors import ApiError, ErrorCode, translate
 from .models import EnvelopeModel, ErrorModel
+from .routers import compliance as compliance_routes
 from .routers import (
     connections,
     graph,
@@ -228,6 +232,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     telemetry = context.telemetry
 
     app.include_router(connections.router)
+    app.include_router(compliance_routes.router)
     app.include_router(context_routes.router)
     app.include_router(copilot_routes.router)
     app.include_router(graph.router)
@@ -352,6 +357,34 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
             {"fields": fields},
         )
         return JSONResponse(status_code=error.status_code, content=_error_body(error, request))
+
+    async def _domain_error(request: Request, exc: Exception) -> JSONResponse:
+        error = translate(exc)
+        logger.warning(
+            "api_domain_error correlation_id=%s error_code=%s",
+            getattr(request.state, "correlation_id", ""),
+            error.code,
+        )
+        return JSONResponse(status_code=error.status_code, content=_error_body(error, request))
+
+    # Registered per concrete base class rather than relying on the catch-all
+    # ``Exception`` handler below. Starlette routes an ``Exception`` handler to
+    # ServerErrorMiddleware, which *always* re-raises after producing the
+    # response ("We always continue to raise the exception") -- so a plain
+    # 404 such as ConnectionNotFoundError still printed a full traceback and
+    # tore down the connection. These handlers live in ExceptionMiddleware,
+    # which returns the response without re-raising.
+    for _domain_exc in (
+        LookupError,
+        ValueError,
+        TypeError,
+        PermissionError,
+        NotImplementedError,
+        OnboardingError,
+        SecretNotFoundError,
+        SecretStorageError,
+    ):
+        app.add_exception_handler(_domain_exc, _domain_error)
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:

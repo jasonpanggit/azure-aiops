@@ -232,6 +232,105 @@ def test_cost_management_client_retries_throttled_requests() -> None:
     assert sleeps == [0.0]
 
 
+def test_cost_management_client_isolates_a_throttled_subscription() -> None:
+    """One throttled subscription must not discard other subscriptions' costs."""
+
+    class Token:
+        token = "connection-token"
+
+    class Credential:
+        def get_token(self, scope: str):
+            return Token()
+
+    def requester(method: str, url: str, **kwargs):
+        if "sub-throttled" in url:
+            return httpx.Response(
+                429,
+                json={"error": {"code": "429", "message": "Too many requests."}},
+                headers={"Retry-After": "0"},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "properties": {
+                    "columns": [{"name": "PreTaxCost"}, {"name": "UsageDate"}],
+                    "rows": [[4.56, "20260824"]],
+                }
+            },
+        )
+
+    rows = AzureCostManagementClient(
+        Credential(),
+        requester=requester,
+        retry_sleep=lambda _: None,
+    ).query_actual_costs(["sub-throttled", "sub-ok"])
+
+    assert [row["subscriptionId"] for row in rows] == ["sub-ok"]
+    assert rows[0]["cost"] == 4.56
+
+
+def test_cost_management_client_raises_when_every_subscription_fails() -> None:
+    class Token:
+        token = "connection-token"
+
+    class Credential:
+        def get_token(self, scope: str):
+            return Token()
+
+    def requester(method: str, url: str, **kwargs):
+        return httpx.Response(429, json={"error": {"code": "429"}}, headers={"Retry-After": "0"})
+
+    try:
+        AzureCostManagementClient(
+            Credential(),
+            requester=requester,
+            retry_sleep=lambda _: None,
+        ).query_actual_costs(["sub-1", "sub-2"])
+    except RuntimeError as exc:
+        assert "every subscription" in str(exc)
+    else:  # pragma: no cover - guard
+        raise AssertionError("expected RuntimeError when all subscriptions fail")
+
+
+def test_cost_management_retry_honours_vendor_ratelimit_header() -> None:
+    """Cost Management publishes its budget via a vendor header, not Retry-After."""
+
+    class Token:
+        token = "connection-token"
+
+    class Credential:
+        def get_token(self, scope: str):
+            return Token()
+
+    responses = [
+        httpx.Response(
+            429,
+            json={"error": {"code": "429"}},
+            headers={
+                "x-ms-ratelimit-microsoft.costmanagement-entity-retry-after": "7",
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "properties": {
+                    "columns": [{"name": "PreTaxCost"}, {"name": "UsageDate"}],
+                    "rows": [[1.0, "20260824"]],
+                }
+            },
+        ),
+    ]
+    sleeps: list[float] = []
+
+    AzureCostManagementClient(
+        Credential(),
+        requester=lambda method, url, **kwargs: responses.pop(0),
+        retry_sleep=sleeps.append,
+    ).query_actual_costs(["sub-1"])
+
+    assert sleeps == [7.0]
+
+
 def test_monitor_metrics_client_returns_latest_average_per_metric() -> None:
     class Token:
         token = "connection-token"

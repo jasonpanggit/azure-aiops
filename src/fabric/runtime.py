@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MethodType
 from typing import Any
 

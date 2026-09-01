@@ -53,6 +53,7 @@ class ApiContext:
     hybrid_incident_provider: Callable[[list[str]], Any] | None = None
     hybrid_remediation_provider: Callable[[list[str]], Any] | None = None
     hybrid_patching_provider: Callable[[list[str]], Any] | None = None
+    hybrid_change_provider: Callable[[list[str]], Any] | None = None
     # Live resource-health utilization (CPU/disk/network) via Azure Monitor
     # Metrics. Resolved per request like the other hybrid providers since it
     # performs a live per-connection Azure call rather than reading a snapshot.
@@ -63,6 +64,10 @@ class ApiContext:
     remediation_provider: Callable[[], Any] | None = None
     network_provider: Callable[[], Any] | None = None
     vulnerability_provider: Callable[[], Any] | None = None
+    # Compliance posture (policy/security deviations, configuration drift,
+    # unapproved changes) is a projection of the same knowledge snapshot as
+    # the other intelligence engines, so it is resolved per request too.
+    change_provider: Callable[[], Any] | None = None
     # Patch remediation is the read projection (what's installable) plus the
     # guarded trigger path. It is resolved per request like the other
     # projections so a fresh snapshot is picked up without a restart.

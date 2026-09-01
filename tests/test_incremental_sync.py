@@ -86,6 +86,81 @@ def test_incremental_sync_writes_bronze_silver_ontology_and_state(tmp_path: Path
     assert (lakehouse / "Files/ontology/metadata/catalog.json").is_file()
 
 
+def test_secure_score_snapshots_remain_queryable_across_syncs(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    store = DatasetStore(source)
+    score_id = (
+        "/subscriptions/sub-1/providers/Microsoft.Security/"
+        "secureScores/ascScore"
+    )
+
+    def publish_score(run_id: str, observed_at: datetime, current: int) -> None:
+        payload = json.loads(FIXTURE.read_text())
+        payload["defender_secure_scores"] = [
+            {
+                "id": score_id,
+                "name": "ascScore",
+                "type": "microsoft.security/securescores",
+                "tenantId": "tenant-1",
+                "subscriptionId": "sub-1",
+                "properties": {
+                    "score": {
+                        "current": current,
+                        "max": 100,
+                        "percentage": current / 100,
+                    }
+                },
+            }
+        ]
+        graph = Normalizer().normalize(payload, observed_at)
+        # Audit-event identity is intentionally immutable and tested elsewhere;
+        # this regression isolates secure-score history across source runs.
+        graph.audit_events = []
+        store.publish(
+            graph,
+            payload,
+            {
+                "runId": run_id,
+                "startedAt": observed_at.isoformat(),
+                "status": "completed",
+            },
+        )
+
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter(
+            "workspace",
+            "lakehouse",
+            local_root=lakehouse,
+        ),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+
+    publish_score(
+        "source-score-1",
+        datetime(2026, 8, 17, tzinfo=UTC),
+        40,
+    )
+    service.sync()
+    publish_score(
+        "source-score-2",
+        datetime(2026, 8, 18, tzinfo=UTC),
+        50,
+    )
+    service.sync()
+
+    scores = service.defender_intelligence_snapshot()["secure_scores"]
+    assert len(scores) == 2
+    assert {
+        json.loads(row["payload_json"])["currentScore"] for row in scores
+    } == {40.0, 50.0}
+    assert len({row["resource_id"] for row in scores}) == 2
+
+
 def test_sync_persists_governed_patch_policies_for_runtime_intelligence(
     tmp_path: Path,
 ) -> None:

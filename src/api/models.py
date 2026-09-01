@@ -222,7 +222,8 @@ class RiskExceptionCreateRequest(ApiModel):
     reason: str = Field(min_length=1, description="Justification for accepting this risk")
     approved_by: str = Field("", description="Approver identity/name")
     expires_at: str = Field(
-        "", description="ISO-8601 expiry; omit for an exception with no expiry"
+        "",
+        description="Timezone-aware ISO-8601 expiry; omit for an exception with no expiry",
     )
 
 

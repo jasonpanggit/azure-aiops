@@ -318,3 +318,39 @@ def test_publisher_rejects_relationships_with_unknown_endpoint_types():
             {("Missing", "owns", "Application"): "relationships"},
             "Operational_Context",
         )
+
+
+def test_synchronize_defers_dangling_edge_instead_of_dropping_it():
+    from ontology.pending_relationships import PendingRelationshipStore
+
+    store = PendingRelationshipStore()
+    a = entity("a")
+    edge_to_missing_b = relationship("edge-ab", "a", "b")
+
+    result = OntologyGraphSynchronizer(SyncValidator(), pending_relationships=store).synchronize(
+        [a], [edge_to_missing_b]
+    )
+
+    assert all(row["resource_id"] != "edge-ab" for row in result.relationships)
+    assert len(result.pending_relationships) == 1
+    assert result.pending_relationships[0]["resource_id"] == "edge-ab"
+    assert len(store) == 1
+
+
+def test_synchronize_resolves_deferred_edge_once_target_entity_appears():
+    from ontology.pending_relationships import PendingRelationshipStore
+
+    store = PendingRelationshipStore()
+    a = entity("a")
+    edge_to_missing_b = relationship("edge-ab", "a", "b")
+    synchronizer = OntologyGraphSynchronizer(SyncValidator(), pending_relationships=store)
+
+    first = synchronizer.synchronize([a], [edge_to_missing_b])
+    assert len(first.pending_relationships) == 1
+
+    b = entity("b")
+    second = synchronizer.synchronize([a, b], [])
+
+    assert any(row["resource_id"] == "edge-ab" for row in second.relationships)
+    assert second.pending_relationships == []
+    assert len(store) == 0
