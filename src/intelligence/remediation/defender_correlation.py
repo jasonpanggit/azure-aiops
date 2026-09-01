@@ -101,10 +101,13 @@ class DefenderRemediationCorrelator:
         self.max_cases = max_cases
         self.max_citations_per_case = max_citations_per_case
         self.resources_by_key: dict[str, dict[str, Any]] = {}
+        self.resources: list[dict[str, Any]] = []
         for resource in resource_lookup:
-            key = _canonical(resource.get("resource_key"))
+            row = dict(resource)
+            self.resources.append(row)
+            key = _canonical(row.get("resource_key"))
             if key:
-                self.resources_by_key[key] = dict(resource)
+                self.resources_by_key[key] = row
         self.action_catalog = [dict(action) for action in action_catalog or ()]
 
     def cases(self, scope: Scope | None = None) -> list[dict[str, Any]]:
