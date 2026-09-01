@@ -4,6 +4,7 @@ import { ScopeProvider } from "@/lib/scope-context";
 
 const {
   approvals,
+  approve,
   businessDecision,
   decideRemediationPlan,
   defenderCases,
@@ -16,6 +17,7 @@ const {
   ruleFindings,
 } = vi.hoisted(() => ({
   approvals: vi.fn(),
+  approve: vi.fn(),
   businessDecision: vi.fn(),
   decideRemediationPlan: vi.fn(),
   defenderCases: vi.fn(),
@@ -37,7 +39,7 @@ vi.mock("@/lib/services", () => ({
   copilotEvidenceRows: () => [],
   networkApi: { gaps, ruleFindings },
   operationsApi: { decideRemediationPlan, remediationPlans, remediationOpportunities, defenderCases },
-  remediationApi: { approvals, businessDecision, plan, preview },
+  remediationApi: { approvals, approve, businessDecision, plan, preview },
   vulnerabilityApi: { exposures },
 }));
 
@@ -275,6 +277,22 @@ describe("Governed Remediation Center", () => {
         execution_snapshot: { snapshot_hash: "snapshot-hash-1" },
       }],
     }));
+    approve.mockResolvedValue(envelope({
+      decision_id: "RMD-2",
+      plan_id: "plan-1",
+      decision: "approved",
+      approver: "operator@example.com",
+      decided_at: "2026-01-02T10:00:00Z",
+      reason: "CAB approved",
+      scope: {},
+      action_version: "version-1",
+      expires_at: "2026-12-31",
+      revalidation: { status: "passed", checks: ["execution_snapshot_current"] },
+      execution_authorized: false,
+      execution_performed: false,
+      read_only: true,
+      execution_snapshot: { snapshot_hash: "snapshot-hash-1" },
+    }));
     businessDecision.mockResolvedValue(envelope({
       disposition: "act_now",
       urgency_rationale: {
@@ -295,8 +313,8 @@ describe("Governed Remediation Center", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "Execution preview" })).toBeInTheDocument();
-    expect(screen.getByText("install_patches")).toBeInTheDocument();
-    expect(screen.getByText(/vm-payroll-db/)).toBeInTheDocument();
+    expect(await screen.findByText("install_patches")).toBeInTheDocument();
+    expect(screen.getAllByText(/vm-payroll-db/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Maintenance window is open/)).toBeInTheDocument();
     expect(screen.getByText(/Reduce payroll outage exposure/)).toBeInTheDocument();
     expect(screen.getByText(/Reboot may interrupt active sessions/)).toBeInTheDocument();
@@ -333,11 +351,11 @@ describe("Governed Remediation Center", () => {
     renderPage();
 
     expect(await screen.findByText(/Recommendation only/)).toBeInTheDocument();
-    expect(screen.getByText(/action not executable/i)).toBeInTheDocument();
+    expect(await screen.findByText("Action Not Executable")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Review and execute" })).not.toBeInTheDocument();
   });
 
-  it("records approval decisions without enabling execution", async () => {
+  it("records approval decisions against the reviewed execution snapshot", async () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "Unified remediation backlog" })).toBeInTheDocument();
@@ -345,26 +363,28 @@ describe("Governed Remediation Center", () => {
     expect(screen.getByText("Restore hub inspection path")).toBeInTheDocument();
     expect(screen.getAllByText("CVE-2026-0001: Install KB500").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "Approval decision record" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Execution handoff boundary" })).toBeInTheDocument();
-    expect(screen.getByText(/No Azure execution, rollback, or realized-outcome controls/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Execution preview" })).toBeInTheDocument();
+    await screen.findByText("install_patches");
     expect(screen.getAllByText(/Validate the update baseline/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Change Manager - Production - Required - Not Approved/)).toBeInTheDocument();
     expect(screen.getByLabelText("Search")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search"), { target: { value: "CVE-2026-0001" } });
     expect(screen.getAllByText("CVE-2026-0001: Install KB500").length).toBeGreaterThan(0);
     fireEvent.change(screen.getByLabelText("Search"), { target: { value: "" } });
+    await screen.findByText("install_patches");
 
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "CAB approved" } });
     fireEvent.change(screen.getByLabelText("Expires at"), { target: { value: "2026-12-31" } });
     fireEvent.click(screen.getByRole("button", { name: "Record decision" }));
 
-    await waitFor(() => expect(decideRemediationPlan).toHaveBeenCalledWith("plan-1", {
+    await waitFor(() => expect(approve).toHaveBeenCalledWith("plan-1", {
       decision: "approved",
       reason: "CAB approved",
       action_version: "version-1",
       expires_at: "2026-12-31",
+      preview_snapshot_hash: "snapshot-hash-1",
     }, {}));
-    expect(await screen.findByText(/execution_performed=false/)).toBeInTheDocument();
+    expect(await screen.findByText(/server eligibility is being refreshed/)).toBeInTheDocument();
   });
 
   it("renders available sources when one provider fails", async () => {

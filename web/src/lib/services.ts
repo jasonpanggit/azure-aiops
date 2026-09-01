@@ -22,6 +22,7 @@ import type {
   IncidentReport,
   RemediationOpportunityReport,
   RemediationDecision,
+  RemediationPlan,
   RemediationPlanReport,
   FlowResult,
   HubDependents,
@@ -511,6 +512,194 @@ export const operationsApi = {
       method: "POST",
       query: scopeToSearchParams(scope),
       body: { ...payload, expires_at: payload.expires_at ?? "" },
+    }),
+};
+
+export type RemediationExecutionStatus =
+  | "queued"
+  | "running"
+  | "retrying"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface RemediationExecutionSnapshot {
+  target_id: string;
+  patch_ids: string[];
+  target_kind: string;
+  operation: string;
+  action_version: string;
+  snapshot_hash: string;
+}
+
+export interface RemediationEligibility {
+  executable: boolean;
+  ineligibility_reason: string;
+}
+
+export type RemediationPlanDetail = Omit<RemediationPlan, "resource"> &
+  RemediationEligibility & {
+    action_id?: string;
+    opportunity_type?: string;
+    resource?: Record<string, unknown> | string;
+    resource_key?: string;
+  };
+
+export interface RemediationExecutionPreview extends RemediationEligibility {
+  target: {
+    resource: Record<string, unknown> | string;
+    resource_key: string;
+  };
+  operation: string;
+  preconditions: unknown[];
+  expected_effect: Record<string, unknown>;
+  collateral_impact: Record<string, unknown>;
+  execution_snapshot: RemediationExecutionSnapshot | null;
+}
+
+export interface RemediationApprovalDecision extends RemediationDecision {
+  execution_snapshot?: RemediationExecutionSnapshot | null;
+}
+
+export interface RemediationApprovalContext {
+  plan_id: string;
+  approval_requirements: Array<Record<string, unknown>>;
+  decisions: RemediationApprovalDecision[];
+}
+
+export interface RemediationBusinessDecision {
+  disposition?: "act_now" | "schedule" | "defer" | "not_applicable" | "escalate";
+  urgency_rationale?: {
+    reason_code?: string;
+    message?: string;
+    evidence_citations?: Array<Record<string, unknown>>;
+  };
+  cost_of_action?: Record<string, unknown> | string;
+  cost_of_inaction?: Record<string, unknown> | string;
+  business_impact?: Record<string, unknown> | string;
+  confidence?: unknown;
+  review_requirements?: unknown[] | Record<string, unknown>;
+  unknowns?: unknown[];
+  evidence_citations?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface RemediationExecutionTransition {
+  sequence?: number;
+  status: RemediationExecutionStatus;
+  actor?: string;
+  timestamp?: string;
+  provider_job_id?: string;
+  verified_state?: string;
+  failure_details?: string;
+  outcome?: string;
+  message?: string;
+}
+
+export interface RemediationExecutionAttempt {
+  number: number;
+  status: RemediationExecutionStatus;
+  actor?: string;
+  created_at?: string;
+  updated_at?: string;
+  provider_job_id?: string;
+  verified_state?: string;
+  failure_details?: string;
+  outcome?: string;
+  execution_snapshot?: RemediationExecutionSnapshot;
+  transitions: RemediationExecutionTransition[];
+}
+
+export interface RemediationExecution {
+  execution_id: string;
+  plan_id: string;
+  status: RemediationExecutionStatus;
+  requested_by: string;
+  approved_by: string;
+  created_at: string;
+  updated_at: string;
+  provider_job_id: string;
+  message: string;
+  attempt_count: number;
+  rollback_guidance: string[];
+  verified_state: string;
+  failure_details: string;
+  outcome?: string;
+  execution_snapshot: RemediationExecutionSnapshot;
+  attempts: RemediationExecutionAttempt[];
+  history: RemediationExecutionTransition[];
+  retryable: boolean;
+  cancellable: boolean;
+  remaining_attempts: number;
+  ineligibility_reason: string;
+}
+
+export interface RemediationExecutionList {
+  plan_id: string;
+  executions: RemediationExecution[];
+}
+
+export const remediationApi = {
+  plans: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<{ plans: RemediationPlanDetail[]; generated_at?: string }>("/remediation/plans", { query });
+  },
+  plan: (planId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationPlanDetail>(`/remediation/plans/${encodeURIComponent(planId)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+  preview: (planId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationExecutionPreview>(`/remediation/plans/${encodeURIComponent(planId)}/preview`, {
+      query: scopeToSearchParams(scope),
+    }),
+  approvals: (planId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationApprovalContext>(`/remediation/plans/${encodeURIComponent(planId)}/approvals`, {
+      query: scopeToSearchParams(scope),
+    }),
+  businessDecision: (planId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationBusinessDecision>(`/remediation/plans/${encodeURIComponent(planId)}/business-decision`, {
+      query: scopeToSearchParams(scope),
+    }),
+  approve: (
+    planId: string,
+    payload: {
+      decision: RemediationDecision["decision"];
+      reason: string;
+      action_version: string;
+      expires_at?: string;
+      preview_snapshot_hash?: string;
+    },
+    scope: ScopeSelection = {},
+  ) =>
+    apiRequest<RemediationApprovalDecision>(`/remediation-plans/${encodeURIComponent(planId)}/decisions`, {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+      body: { ...payload, expires_at: payload.expires_at ?? "", preview_snapshot_hash: payload.preview_snapshot_hash ?? "" },
+    }),
+  execute: (planId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationExecution>(`/remediation/plans/${encodeURIComponent(planId)}/execute`, {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+    }),
+  execution: (executionId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationExecution>(`/remediation/executions/${encodeURIComponent(executionId)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+  executions: (planId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationExecutionList>(`/remediation/plans/${encodeURIComponent(planId)}/executions`, {
+      query: scopeToSearchParams(scope),
+    }),
+  retry: (executionId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationExecution>(`/remediation/executions/${encodeURIComponent(executionId)}/retry`, {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+    }),
+  cancel: (executionId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationExecution>(`/remediation/executions/${encodeURIComponent(executionId)}/cancel`, {
+      method: "POST",
+      query: scopeToSearchParams(scope),
     }),
 };
 

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/types";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -15,7 +15,20 @@ import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
-import { buildCopilotSnapshot, copilotEvidenceRows, networkApi, operationsApi, vulnerabilityApi } from "@/lib/services";
+import {
+  buildCopilotSnapshot,
+  copilotEvidenceRows,
+  networkApi,
+  operationsApi,
+  remediationApi,
+  vulnerabilityApi,
+} from "@/lib/services";
+import type {
+  RemediationApprovalContext,
+  RemediationBusinessDecision,
+  RemediationExecutionPreview,
+  RemediationPlanDetail,
+} from "@/lib/services";
 import type { DefenderRemediationCase, NetworkGap, RemediationDecision, RemediationOpportunity, RemediationPlan, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 
 type BacklogKind = "plan" | "opportunity" | "network" | "vulnerability" | "patch" | "lifecycle" | "configuration" | "incident" | "identity" | "defender";
@@ -150,6 +163,26 @@ function renderValue(value: unknown, fallback = "Not specified"): string {
   return text || fallback;
 }
 
+function renderDetails(value: unknown, fallback = "Not specified"): string {
+  if (Array.isArray(value)) {
+    const rendered = value.map((item) => renderDetails(item, "")).filter(Boolean);
+    return rendered.join(", ") || fallback;
+  }
+  if (isRecord(value)) {
+    const rendered = Object.entries(value)
+      .filter(([, item]) => item !== null && item !== undefined && item !== "")
+      .map(([key, item]) => `${titleize(key)}: ${renderDetails(item, "")}`);
+    return rendered.join(" · ") || fallback;
+  }
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function eligibilityReason(reason: string): string {
+  if (!reason) return "";
+  return titleize(reason.replaceAll("_", " "));
+}
+
 function sourceWarning(label: string, error: Error | ApiError | null): string[] {
   if (!error) return [];
   const message = error instanceof ApiError && error.isNotImplemented
@@ -255,6 +288,15 @@ function RemediationContent() {
   const [decisionSubmitting, setDecisionSubmitting] = useState(false);
   const [decisionResult, setDecisionResult] = useState<RemediationDecision | null>(null);
   const [decisionError, setDecisionError] = useState("");
+  const [planContext, setPlanContext] = useState<RemediationPlanDetail | null>(null);
+  const [executionPreview, setExecutionPreview] = useState<RemediationExecutionPreview | null>(null);
+  const [approvalContext, setApprovalContext] = useState<RemediationApprovalContext | null>(null);
+  const [businessDecision, setBusinessDecision] = useState<RemediationBusinessDecision | null>(null);
+  const [executionContextLoading, setExecutionContextLoading] = useState(false);
+  const [executionContextError, setExecutionContextError] = useState("");
+  const [executionContextRefresh, setExecutionContextRefresh] = useState(0);
+  const [executionConfirmOpen, setExecutionConfirmOpen] = useState(false);
+  const contextRequest = useRef(0);
   const [copilotOpen, setCopilotOpen] = useState(false);
   const allPlanRows = plans.data?.data.plans ?? [];
   const allOpportunityRows = opportunities.data?.data.opportunities ?? [];
@@ -349,6 +391,91 @@ function RemediationContent() {
   }, [planRows, opportunityRows, defenderCases.data, networkGaps.data, ruleFindings.data, exposures.data, category, fromBusinessService, fromIncident, priorityFilter, query, sortBy, statusFilter]);
   const selected = backlog.find((item) => item.uiId === selectedId) ?? backlog.find((item) => item.kind === "plan") ?? backlog[0] ?? null;
   const selectedPlan = selected?.plan ?? null;
+  const scopeKey = JSON.stringify(scope);
+  useEffect(() => {
+    const planId = selectedPlan?.plan_id;
+    const requestId = ++contextRequest.current;
+    setExecutionConfirmOpen(false);
+    if (!planId) {
+      setPlanContext(null);
+      setExecutionPreview(null);
+      setApprovalContext(null);
+      setBusinessDecision(null);
+      setExecutionContextError("");
+      setExecutionContextLoading(false);
+      return;
+    }
+    setExecutionContextLoading(true);
+    setExecutionContextError("");
+    void Promise.all([
+      remediationApi.plan(planId, scope),
+      remediationApi.preview(planId, scope),
+      remediationApi.approvals(planId, scope),
+      remediationApi.businessDecision(planId, scope),
+    ])
+      .then(([planResponse, previewResponse, approvalsResponse, businessResponse]) => {
+        if (contextRequest.current !== requestId) return;
+        setPlanContext(planResponse.data);
+        setExecutionPreview(previewResponse.data);
+        setApprovalContext(approvalsResponse.data);
+        setBusinessDecision(businessResponse.data);
+      })
+      .catch((error) => {
+        if (contextRequest.current !== requestId) return;
+        setPlanContext(null);
+        setExecutionPreview(null);
+        setApprovalContext(null);
+        setBusinessDecision(null);
+        setExecutionContextError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (contextRequest.current === requestId) setExecutionContextLoading(false);
+      });
+    return () => {
+      if (contextRequest.current === requestId) contextRequest.current += 1;
+    };
+    // scopeKey intentionally invalidates in-flight detail reads when any scope dimension changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPlan?.plan_id, scopeKey, executionContextRefresh]);
+
+  useEffect(() => {
+    setDecisionResult(null);
+    setDecisionError("");
+  }, [selectedPlan?.plan_id]);
+
+  const latestApproval = approvalContext?.decisions.slice(-1)[0] ?? null;
+  const previewSnapshot = executionPreview?.execution_snapshot ?? null;
+  const approvalSnapshot = latestApproval?.execution_snapshot ?? null;
+  const reviewRequirements = businessDecision?.review_requirements;
+  const businessEvidenceReady = Boolean(
+    businessDecision
+      && ["act_now", "schedule"].includes(businessDecision.disposition ?? "")
+      && isRecord(businessDecision.business_impact)
+      && businessDecision.business_impact.status === "known"
+      && (businessDecision.urgency_rationale?.evidence_citations?.length ?? 0) > 0
+      && (Array.isArray(reviewRequirements) ? reviewRequirements.length === 0 : !reviewRequirements || Object.keys(reviewRequirements).length === 0)
+      && (businessDecision.unknowns?.length ?? 0) === 0
+  );
+  const approvalIsCurrent = Boolean(
+    latestApproval?.decision === "approved"
+      && previewSnapshot
+      && approvalSnapshot?.snapshot_hash === previewSnapshot.snapshot_hash
+  );
+  const controlledPatchPlan = (planContext?.action_id ?? planContext?.opportunity_type) === "controlled-patch-recovery";
+  const canExecute = Boolean(
+    controlledPatchPlan
+      && planContext?.executable
+      && executionPreview?.executable
+      && previewSnapshot
+      && approvalIsCurrent
+      && businessEvidenceReady
+  );
+  const executionBlockReason = !controlledPatchPlan
+    ? planContext?.ineligibility_reason || "action_not_executable"
+    : planContext?.ineligibility_reason
+      || executionPreview?.ineligibility_reason
+      || (!approvalIsCurrent ? "current_approval_required" : "")
+      || (!businessEvidenceReady ? "decision_grade_business_evidence_required" : "");
   const pending = backlog.length;
   const evidencePack = selected ? {
     plan: selected.source,
@@ -391,15 +518,25 @@ function RemediationContent() {
     setDecisionError("");
     setDecisionResult(null);
     try {
-      const result = await operationsApi.decideRemediationPlan(selectedPlan.plan_id, {
+      const result = await remediationApi.approve(selectedPlan.plan_id, {
         decision: decisionChoice,
         reason: decisionReason.trim(),
         action_version: selectedPlan.action_version,
         expires_at: decisionExpiresAt.trim(),
+        preview_snapshot_hash: decisionChoice === "approved" ? previewSnapshot?.snapshot_hash : undefined,
       }, scope);
       setDecisionResult(result.data);
       setDecisionReason("");
+      setExecutionContextRefresh((value) => value + 1);
     } catch (error) {
+      if (
+        error instanceof ApiError
+        && error.details?.reason === "stale_execution_preview"
+      ) {
+        setDecisionError("The execution preview changed. Review the refreshed target and operation before approving again.");
+        setExecutionContextRefresh((value) => value + 1);
+        return;
+      }
       setDecisionError(error instanceof Error ? error.message : String(error));
     } finally {
       setDecisionSubmitting(false);
@@ -410,13 +547,13 @@ function RemediationContent() {
     <div className="page-container remediation-center">
       <PageHeader
         eyebrow="Governed remediation center"
-        title="What can be reviewed next?"
-        description="Review evidence-backed recommendations and record bounded approval decisions. Azure execution, rollback, and realized outcomes remain out of scope."
+        title="Review, approve, and observe safe remediation"
+        description="Review business impact and the exact server-owned operation before executing an approved controlled patch recovery."
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about remediation" />}
         metadata={
           <>
-            <span>Phase 2 approval decisions</span>
-            <span>No Azure execution</span>
+            <span>Approval-bound execution</span>
+            <span>Verified provider outcomes</span>
             <span>Evidence-backed recommendations</span>
           </>
         }
@@ -541,9 +678,9 @@ function RemediationContent() {
         />
         <MetricCard
           label="Execution boundary"
-          value="No execution"
-          detail="Decisions are recorded; provider changes remain disabled"
-          tone="warning"
+          value="Governed"
+          detail="Only approved controlled patch recovery is executable"
+          tone="success"
         />
       </div>
 
@@ -562,7 +699,7 @@ function RemediationContent() {
           tone="error"
         />
       ) : loading ? (
-        <StatePanel title="Reading remediation candidates" message="Joining source evidence with projected impact; execution remains unavailable." tone="loading" />
+        <StatePanel title="Reading remediation candidates" message="Joining source evidence with projected impact and governed execution eligibility." tone="loading" />
       ) : (
         <div className="remediation-layout">
           <section className="card">
@@ -605,7 +742,7 @@ function RemediationContent() {
             <div className="card-header">
               <div>
                 <h2>Evidence and projected impact</h2>
-                <p>Affected entities, source evidence, and projected impact are reviewable; no change is executed here.</p>
+                <p>Affected entities, business evidence, and the exact provider operation are reviewed together.</p>
               </div>
             </div>
             <div className="card-body remediation-plan-detail">
@@ -710,7 +847,7 @@ function RemediationContent() {
                   </section>
                   <section className="remediation-section">
                     <h4>Execution boundary</h4>
-                    <p>Phase 2 can record decisions for this recommendation. Azure execution, rollback actions, and realized-outcome validation remain unavailable here.</p>
+                    <p>{controlledPatchPlan ? "This generated plan can proceed only through its current server-approved execution snapshot." : "This plan is recommendation-only in the current execution phase."}</p>
                   </section>
                     </>
                   )}
@@ -738,14 +875,14 @@ function RemediationContent() {
             <div className="card-header">
               <div>
                 <h2>Approval decision record</h2>
-                <p>Record a bounded human decision for the selected remediation plan. This does not authorize or execute Azure changes.</p>
+                <p>Record a bounded human decision against the current server-generated execution preview.</p>
               </div>
               <StatusBadge label={selectedPlan ? "Decision-ready" : "Plan required"} tone="info" />
             </div>
             <div className="card-body remediation-form-grid">
               {selectedPlan ? (
                 <>
-                  <p className="callout callout-warning">Decision records are audit evidence only. They do not trigger jobs, unlock MCP actions, or perform rollback.</p>
+                  <p className="callout callout-warning">Approval records the current preview hash. It does not itself submit provider work.</p>
                   <label>
                     Decision
                     <select value={decisionChoice} onChange={(event) => setDecisionChoice(event.target.value as RemediationDecision["decision"])}>
@@ -766,7 +903,7 @@ function RemediationContent() {
                     {decisionSubmitting ? "Recording decision..." : "Record decision"}
                   </button>
                   {decisionError && <p className="callout callout-warning">{decisionError}</p>}
-                  {decisionResult && <p className="callout">Recorded {decisionResult.decision} decision {decisionResult.decision_id}; execution_performed=false.</p>}
+                  {decisionResult && <p className="callout">Recorded {decisionResult.decision} decision {decisionResult.decision_id}; server eligibility is being refreshed.</p>}
                 </>
               ) : (
                 <p className="callout callout-warning">Only generated remediation plans can receive approval decisions. Select a plan row to continue.</p>
@@ -777,16 +914,60 @@ function RemediationContent() {
           <section className="card">
             <div className="card-header">
               <div>
-                <h2>Execution handoff boundary</h2>
-                <p>Execution channels and outcome capture are intentionally not active in Phase 2.</p>
+                <h2>Execution preview</h2>
+                <p>Business impact, approval evidence, target, and operation must agree before execution is offered.</p>
               </div>
+              <StatusBadge
+                label={canExecute ? "Eligible" : "Recommendation only"}
+                tone={canExecute ? "success" : "warning"}
+              />
             </div>
             <div className="card-body remediation-form-grid">
-              <p className="callout callout-warning">No Azure execution, rollback, or realized-outcome controls are available from this decision workspace.</p>
-              <details>
-                <summary>View candidate evidence pack</summary>
-                <StructuredData value={evidencePack} />
-              </details>
+              {executionContextLoading ? (
+                <StatePanel title="Loading execution preview" message="Reading current approval, business evidence, and provider target." tone="loading" />
+              ) : executionContextError ? (
+                <StatePanel title="Execution preview unavailable" message={executionContextError} tone="error" />
+              ) : executionPreview && planContext ? (
+                <>
+                  <section className="remediation-section">
+                    <h3>Business-impact evidence</h3>
+                    <p>Disposition: {eligibilityReason(businessDecision?.disposition ?? "not_assessed")}</p>
+                    <p>Urgency: {businessDecision?.urgency_rationale?.message || "No evidence-backed urgency rationale was returned."}</p>
+                    <p>Cost of acting: {renderDetails(businessDecision?.cost_of_action)}</p>
+                    <p>Cost of inaction: {renderDetails(businessDecision?.cost_of_inaction)}</p>
+                    <p>Business impact: {renderDetails(businessDecision?.business_impact)}</p>
+                    <p>Confidence: {renderDetails(businessDecision?.confidence)}</p>
+                  </section>
+                  <section className="remediation-section">
+                    <h3>Exact approved operation</h3>
+                    <p>Target: {previewSnapshot?.target_id || renderDetails(executionPreview.target)}</p>
+                    <p>Target kind: {previewSnapshot?.target_kind || "Not executable"}</p>
+                    <p>ARM operation: <code>{executionPreview.operation}</code></p>
+                    <p>Patch selection: {previewSnapshot?.patch_ids.join(", ") || "No approved patch selection"}</p>
+                    <p>Preconditions: {renderDetails(executionPreview.preconditions)}</p>
+                    <p>Expected effect: {renderDetails(executionPreview.expected_effect)}</p>
+                    <p>Collateral impact: {renderDetails(executionPreview.collateral_impact)}</p>
+                  </section>
+                  {canExecute ? (
+                    <>
+                      <button type="button" className="button button-primary" onClick={() => setExecutionConfirmOpen(true)}>
+                        Review and execute
+                      </button>
+                      {executionConfirmOpen && (
+                        <div className="callout" role="status">
+                          Confirmed for review: {previewSnapshot?.operation} on {previewSnapshot?.target_id}. Provider submission requires the final execution confirmation below.
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="callout callout-warning">
+                      Recommendation only: <strong>{eligibilityReason(executionBlockReason || "server_did_not_mark_plan_executable")}</strong>.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="callout callout-warning">Select a generated remediation plan to load its governed execution preview.</p>
+              )}
             </div>
           </section>
         </div>
