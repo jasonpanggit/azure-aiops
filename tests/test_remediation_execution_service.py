@@ -18,6 +18,7 @@ from intelligence.remediation.execution_service import (
     RemediationExecutionError,
     RemediationExecutionService,
 )
+from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.plan_repository import PlanRepository
 from operations.patching.adapters import PatchExecutionUnavailable, RecordingPatchExecutionAdapter
 from operations.patching.models import PatchTarget
@@ -255,6 +256,121 @@ def test_patch_execution_unavailable_surfaces_as_failed_not_swallowed():
 
     assert result["status"] == "failed"
     assert "No execution identity configured" in result["message"]
+
+
+def _service_with_store(
+    *,
+    plan: dict | None,
+    adapter=None,
+    execution_store: RemediationExecutionStore | None = None,
+    require_human_approval: bool = False,
+) -> tuple[RemediationExecutionService, RemediationExecutionStore]:
+    store = execution_store or RemediationExecutionStore()
+    vulnerability_service = _FakeVulnerabilityService(TARGET_ID)
+    patching_service = PatchingService(
+        vulnerability_service,
+        adapter=adapter or RecordingPatchExecutionAdapter(),
+        require_human_approval=require_human_approval,
+    )
+    repository = PlanRepository()
+    if plan is not None:
+        repository.replace_generation([_full_plan(plan)])
+        _approve(repository.decisions, _full_plan(plan))
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=patching_service,
+        execution_store=store,
+        now=lambda: NOW,
+    )
+    return service, store
+
+
+def test_execution_store_persists_record_surviving_round_trip(tmp_path):
+    path = tmp_path / "executions.json"
+    store = RemediationExecutionStore(path=path)
+    record = store.create("RMP-0001", requested_by="operator@example.com")
+
+    assert record["plan_id"] == "RMP-0001"
+    assert record["status"] == "queued"
+    assert record["requested_by"] == "operator@example.com"
+    for field in (
+        "execution_id",
+        "plan_id",
+        "status",
+        "requested_by",
+        "approved_by",
+        "created_at",
+        "updated_at",
+        "provider_job_id",
+        "message",
+        "attempt_count",
+        "rollback_guidance",
+    ):
+        assert field in record
+
+    reread_store = RemediationExecutionStore(path=path)
+    reread = reread_store.get(record["execution_id"])
+    assert reread == record
+
+
+def test_execution_store_rejects_concurrent_execution_for_same_plan():
+    store = RemediationExecutionStore()
+    first = store.create("RMP-0001", requested_by="operator@example.com")
+
+    second = store.create("RMP-0001", requested_by="operator2@example.com")
+
+    assert second["execution_id"] == first["execution_id"]
+
+
+def test_execution_store_allows_new_execution_after_terminal_state():
+    store = RemediationExecutionStore()
+    first = store.create("RMP-0001", requested_by="operator@example.com")
+    store.update(first["execution_id"], status="succeeded")
+
+    second = store.create("RMP-0001", requested_by="operator@example.com")
+
+    assert second["execution_id"] != first["execution_id"]
+
+
+def test_execute_persists_queued_then_running_then_terminal_lifecycle():
+    plan = _plan()
+    store = RemediationExecutionStore()
+    service, store = _service_with_store(plan=plan, execution_store=store)
+
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    execution = store.get(result["execution_id"])
+    assert execution["status"] == "succeeded"
+    assert execution["plan_id"] == plan["plan_id"]
+
+
+def test_execute_failure_persists_failed_status_with_message():
+    plan = _plan()
+
+    class _FailingAdapter:
+        name = "failing"
+
+        def submit(self, run, target):
+            raise PatchExecutionUnavailable("No execution identity configured")
+
+    service, store = _service_with_store(plan=plan, adapter=_FailingAdapter())
+
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    execution = store.get(result["execution_id"])
+    assert execution["status"] == "failed"
+    assert "No execution identity configured" in execution["message"]
+
+
+def test_attempt_count_increments_only_on_distinct_resubmission():
+    store = RemediationExecutionStore()
+    first = store.create("RMP-0001", requested_by="operator@example.com")
+    assert first["attempt_count"] == 1
+    store.update(first["execution_id"], status="succeeded")
+
+    second = store.create("RMP-0001", requested_by="operator@example.com")
+    assert second["attempt_count"] == 1
+    assert second["execution_id"] != first["execution_id"]
 
 
 def _full_plan(plan: dict) -> dict:
