@@ -499,7 +499,13 @@ class FoundryPromptAgent:
         """Verify the configured identity can acquire a Foundry data-plane token."""
         self._tokens.token()
 
-    def answer(self, *, question: str, context: Any) -> AgentAnswer:
+    def answer(
+        self,
+        *,
+        question: str,
+        context: Any,
+        max_output_tokens: int | None = None,
+    ) -> AgentAnswer:
         """Narrate ``context`` in response to ``question``.
 
         The retrieved context is passed as JSON in the user turn rather than
@@ -508,14 +514,13 @@ class FoundryPromptAgent:
         that came out of the knowledge layer.
         """
         prompt = self.build_prompt(question, context)
-        response = self._post(
-            "/openai/v1/responses",
-            {
-                "agent_reference": {"type": "agent_reference", "name": self.agent_name},
-                "input": [{"role": "user", "content": prompt}],
-            },
-            versioned=False,
-        )
+        payload = {
+            "agent_reference": {"type": "agent_reference", "name": self.agent_name},
+            "input": [{"role": "user", "content": prompt}],
+        }
+        if max_output_tokens is not None:
+            payload["max_output_tokens"] = max(1, int(max_output_tokens))
+        response = self._post("/openai/v1/responses", payload, versioned=False)
         text = _extract_text(response)
         if not text:
             raise FoundryAgentError("Foundry agent returned an empty answer")
@@ -534,9 +539,14 @@ class FoundryPromptAgent:
         context: Any,
         evidence_refs: set[str],
         resource_ids: set[str] | None = None,
+        max_output_tokens: int | None = None,
     ) -> AgentAnswer:
         """Request and strictly validate a specialist finding response."""
-        answer = self.answer(question=question, context=context)
+        answer = self.answer(
+            question=question,
+            context=context,
+            max_output_tokens=max_output_tokens,
+        )
         # Parsing enforces strict validation as a side effect; the parsed
         # findings themselves are not needed by this contract check.
         parse_specialist_findings(
@@ -655,10 +665,28 @@ class MicrosoftAgentFrameworkFoundryAgent:
     def validate_access(self) -> None:
         self._build_sdk_agent()
 
-    def answer(self, *, question: str, context: Any) -> AgentAnswer:
+    async def _run_agent(self, prompt: str, *, max_output_tokens: int | None = None) -> Any:
+        sdk_agent = self._build_sdk_agent()
+        if max_output_tokens is None:
+            return await sdk_agent.run(prompt)
+        try:
+            return await sdk_agent.run(prompt, max_output_tokens=max(1, int(max_output_tokens)))
+        except TypeError:
+            # Older Agent Framework runtime without max_output_tokens support.
+            return await sdk_agent.run(prompt)
+
+    def answer(
+        self,
+        *,
+        question: str,
+        context: Any,
+        max_output_tokens: int | None = None,
+    ) -> AgentAnswer:
         prompt = self.build_prompt(question, context)
         try:
-            response = _run_awaitable(self._build_sdk_agent().run(prompt))
+            response = _run_awaitable(
+                self._run_agent(prompt, max_output_tokens=max_output_tokens)
+            )
         except Exception as exc:
             raise FoundryAgentError(
                 "Microsoft Agent Framework Foundry agent request failed"
@@ -681,8 +709,13 @@ class MicrosoftAgentFrameworkFoundryAgent:
         context: Any,
         evidence_refs: set[str],
         resource_ids: set[str] | None = None,
+        max_output_tokens: int | None = None,
     ) -> AgentAnswer:
-        answer = self.answer(question=question, context=context)
+        answer = self.answer(
+            question=question,
+            context=context,
+            max_output_tokens=max_output_tokens,
+        )
         parse_specialist_findings(
             answer.text,
             evidence_refs=evidence_refs,
