@@ -46,7 +46,6 @@ import type {
   KbDetail,
   PatchPriority,
   PatchRun,
-  PatchRunCreateRequest,
   PatchTarget,
   RiskException,
   SlaComplianceReport,
@@ -845,9 +844,8 @@ export const vulnerabilityApi = {
 };
 
 /**
- * Patch remediation: patchable inventory, and the single guarded trigger.
- * The API re-validates every selection against the target's own available
- * patches, so the UI's job is only to make the operator's choice explicit.
+ * Read-only patch inventory and historical runs. All mutation is routed
+ * through approval-bound remediation execution.
  */
 export const patchingApi = {
   targets: (scope: ScopeSelection = {}) =>
@@ -858,8 +856,6 @@ export const patchingApi = {
     }),
   runs: (scope: ScopeSelection = {}) =>
     apiRequest<PatchRun[]>("/patching/runs", { query: scopeToSearchParams(scope) }),
-  trigger: (payload: PatchRunCreateRequest) =>
-    apiRequest<PatchRun>("/patching/runs", { method: "POST", body: payload }),
 };
 
 /**
