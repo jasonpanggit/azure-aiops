@@ -1,16 +1,23 @@
-"""Durability regression tests for ontology publish attempts (MED-01).
+"""Durability and telemetry regression tests for ontology publish (MED-01).
 
-`onboarding.sync.ConnectionSyncCoordinator` previously surfaced a Fabric
-publish failure only via `logger.exception(...)` -- a process-log-level
-signal that disappears on restart and is invisible to anything outside the
-process (notably a future Fabric medallion health API). This file proves
-every publish outcome (preflight-rejected, retryable-failed, succeeded)
-produces a durable `PublicationAttemptRecord` via
-`ontology.publication_state.PublicationStateStore`, and that those records
-survive a fresh `PublicationStateStore` instance reading the same backing
-store (not merely in-memory).
+Covers the remaining "durable state and telemetry" half of MED-01 -- the
+preflight-validation half (`OntologyPublisher.build_definition()` running
+before any Fabric network call) was already proven in Plan 10-01. This file
+proves:
 
-Telemetry and call-ordering regression tests are added in Plan 10-03 Task 3.
+- Every publish outcome (preflight-rejected, retryable-failed, succeeded)
+  produces a durable `PublicationAttemptRecord` via
+  `ontology.publication_state.PublicationStateStore`
+  (`ConnectionSyncCoordinator._record_publication_attempt`).
+- Those records survive a fresh `PublicationStateStore` instance reading the
+  same backing store (not merely in-memory).
+- `FabricMetrics.publish_preflight_rejected`/`publish_retry` increment on the
+  matching code paths, with no PII/payload attributes recorded.
+- `manager.resolve()` is never invoked when `build_definition()` raises --
+  the same preflight-ordering invariant
+  `tests/test_relationship_vocabulary_consistency.py` asserts directly
+  against `OntologyPublisher`, re-asserted here end-to-end through
+  `ConnectionSyncCoordinator`.
 """
 
 from __future__ import annotations
@@ -72,6 +79,20 @@ class _NeverCalledManager:
         raise AssertionError("manager.resolve() must not be called when build_definition() raises")
 
 
+class _FakeMetrics:
+    """A `FabricMetrics` double recording calls without touching OpenTelemetry."""
+
+    def __init__(self) -> None:
+        self.preflight_rejected_calls = 0
+        self.retry_calls: list[int | None] = []
+
+    def record_publish_preflight_rejected(self) -> None:
+        self.preflight_rejected_calls += 1
+
+    def record_publish_retry(self, status_code: int | None) -> None:
+        self.retry_calls.append(status_code)
+
+
 class _RejectingPublish:
     """Runs a real `OntologyPublisher.publish()` with an invalid relationship
     mapping so `build_definition()` raises its "endpoint type is not defined"
@@ -102,6 +123,7 @@ def _coordinator(
     tmp_path: Path,
     *,
     publish_factory,
+    metrics: object | None = None,
     publication_state_store: PublicationStateStore | None = None,
 ) -> ConnectionSyncCoordinator:
     return ConnectionSyncCoordinator(
@@ -109,8 +131,12 @@ def _coordinator(
         ingestion_factory=lambda _connection: _FakeIngestion(_MANIFEST),
         publish_factory=publish_factory,
         publication_state_store=publication_state_store,
+        metrics=metrics,
         clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
     )
+
+
+# --- Task 1: durable per-publication-attempt terminal-state record --------
 
 
 def test_preflight_rejection_records_durable_state(tmp_path: Path) -> None:
@@ -173,3 +199,90 @@ def test_publication_attempt_count_increments_across_repeated_attempts(tmp_path:
     record = coordinator.publication_state_store.get(coordinator.ontology_name)
     assert record is not None
     assert record.attempt_count == 2
+
+
+# --- Task 2: telemetry for publish preflight rejections and retries -------
+
+
+def test_preflight_rejection_increments_telemetry_counter(tmp_path: Path) -> None:
+    metrics = _FakeMetrics()
+    coordinator = _coordinator(
+        tmp_path, publish_factory=lambda _c: _RejectingPublish(), metrics=metrics
+    )
+
+    coordinator.run(_connection(), mode="initial")
+
+    assert metrics.preflight_rejected_calls == 1
+    assert metrics.retry_calls == []
+
+
+def test_transient_failure_increments_telemetry_counter(tmp_path: Path) -> None:
+    metrics = _FakeMetrics()
+    exc = _http_status_error(503)
+    coordinator = _coordinator(
+        tmp_path, publish_factory=lambda _c: _FakePublish(exc=exc), metrics=metrics
+    )
+
+    coordinator.run(_connection(), mode="initial")
+
+    assert metrics.retry_calls == [503]
+    assert metrics.preflight_rejected_calls == 0
+
+
+def test_successful_publish_does_not_increment_telemetry_counters(tmp_path: Path) -> None:
+    metrics = _FakeMetrics()
+    coordinator = _coordinator(
+        tmp_path, publish_factory=lambda _c: _FakePublish(), metrics=metrics
+    )
+
+    coordinator.run(_connection(), mode="initial")
+
+    assert metrics.preflight_rejected_calls == 0
+    assert metrics.retry_calls == []
+
+
+def test_non_transient_failure_does_not_increment_retry_telemetry_counter(tmp_path: Path) -> None:
+    """A non-transient (e.g. 400) or non-HTTP exception is `failed` but not
+    `retryable` -- it must not be counted as a retry, since `fabric_client.py`
+    never retries it either."""
+    metrics = _FakeMetrics()
+    exc = _http_status_error(400)
+    coordinator = _coordinator(
+        tmp_path, publish_factory=lambda _c: _FakePublish(exc=exc), metrics=metrics
+    )
+
+    coordinator.run(_connection(), mode="initial")
+
+    record = coordinator.publication_state_store.get(coordinator.ontology_name)
+    assert record is not None
+    assert record.outcome == "failed"
+    assert record.retryable is False
+    assert metrics.retry_calls == []
+    assert metrics.preflight_rejected_calls == 0
+
+
+# --- Task 3: call-ordering regression --------------------------------------
+
+
+def test_manager_resolve_never_invoked_when_build_definition_raises(tmp_path: Path) -> None:
+    """End-to-end preflight-ordering regression through the sync coordinator.
+
+    Completes the assertion noted but not filed as its own test in Plan
+    10-01 Task 1: `manager.resolve()` must never be reached when
+    `build_definition()` raises, exercised here through the full
+    `ConnectionSyncCoordinator.run()` -> `publish_factory` ->
+    `OntologyPublisher.publish()` path (not just a direct
+    `OntologyPublisher.publish()` call, as
+    `tests/test_relationship_vocabulary_consistency.py` already covers).
+    """
+    manager = _NeverCalledManager()
+    coordinator = _coordinator(
+        tmp_path, publish_factory=lambda _c: _RejectingPublish(manager=manager)
+    )
+
+    result, _state = coordinator.run(_connection(), mode="initial")
+
+    assert result.status == "failed"
+    record = coordinator.publication_state_store.get(coordinator.ontology_name)
+    assert record is not None
+    assert record.outcome == "rejected"
