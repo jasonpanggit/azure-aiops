@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -13,6 +14,7 @@ from api.telemetry import ApiTelemetry
 from intelligence.remediation.approval_decisions import RemediationDecisionStore
 from intelligence.remediation.plan_repository import PlanRepository
 from onboarding.service import SubscriptionOnboardingService
+from operations.patching.models import AvailablePatch, PatchTarget
 from tests.test_api_http import FakeSecretWriter
 
 from remediation_scenario import remediation_planner
@@ -39,7 +41,26 @@ def _future_expiry_datetime(days: int = 30) -> str:
     )
 
 
+class _PatchingService:
+    def __init__(self) -> None:
+        self.patch_ids = ["KB600002", "KB600001"]
+        self.target_available = True
+
+    def target(self, target_id: str, scope=None) -> PatchTarget | None:
+        if not self.target_available:
+            return None
+        return PatchTarget(
+            target_id=target_id,
+            inventory_kind="Azure VM",
+            available_patches=tuple(
+                AvailablePatch(patch_id=patch_id) for patch_id in self.patch_ids
+            ),
+        )
+
+
 def _client(tmp_path, *, planner=None, principals=None) -> TestClient:
+    resolved_planner = planner or remediation_planner()
+    patching_service = _PatchingService()
     context = ApiContext(
         onboarding=SubscriptionOnboardingService(
             tmp_path / "aiops", secret_writer=FakeSecretWriter()
@@ -58,9 +79,12 @@ def _client(tmp_path, *, planner=None, principals=None) -> TestClient:
         ),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
-        remediation_provider=lambda: planner or remediation_planner(),
+        remediation_provider=lambda: resolved_planner,
+        patching_provider=lambda: patching_service,
     )
-    return TestClient(create_app(context), raise_server_exceptions=False)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    client.patch_service = patching_service  # type: ignore[attr-defined]
+    return client
 
 
 def _auth(token: str = OPERATOR_TOKEN) -> dict[str, str]:
@@ -71,6 +95,147 @@ def _first_plan(client: TestClient) -> dict:
     response = client.get("/api/v1/remediation-plans", headers=_auth())
     assert response.status_code == 200, response.text
     return response.json()["data"]["plans"][0]
+
+
+def _patch_recovery_plan(client: TestClient) -> dict:
+    response = client.get("/api/v1/remediation-plans", headers=_auth())
+    assert response.status_code == 200, response.text
+    return next(
+        plan
+        for plan in response.json()["data"]["plans"]
+        if plan["action_id"] == "controlled-patch-recovery"
+    )
+
+
+def _preview_hash(client: TestClient, plan: dict) -> str:
+    response = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/preview",
+        headers=_auth(),
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["execution_snapshot"]["snapshot_hash"]
+
+
+def _approval_payload(plan: dict, preview_hash: str | None) -> dict:
+    payload = {
+        "decision": "approved",
+        "reason": "CAB approved exact server preview",
+        "action_version": plan["action_version"],
+        "expires_at": _future_expiry_datetime(),
+    }
+    if preview_hash is not None:
+        payload["preview_snapshot_hash"] = preview_hash
+    return payload
+
+
+def test_patch_approval_persists_only_the_matching_server_snapshot(tmp_path) -> None:
+    client = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    preview_hash = _preview_hash(client, plan)
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json=_approval_payload(plan, preview_hash),
+    )
+
+    assert response.status_code == 201, response.text
+    snapshot = response.json()["data"]["execution_snapshot"]
+    assert snapshot["snapshot_hash"] == preview_hash
+    assert snapshot["target_id"] == plan["resource_key"]
+    assert snapshot["patch_ids"] == ["KB600001", "KB600002"]
+    assert snapshot["action_version"] == plan["action_version"]
+
+
+@pytest.mark.parametrize("preview_hash", [None, "0" * 64])
+def test_patch_approval_rejects_omitted_or_wrong_preview_hash_without_persisting(
+    tmp_path, preview_hash: str | None
+) -> None:
+    client = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json=_approval_payload(plan, preview_hash),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["details"]["reason"] == "stale_execution_preview"
+    decisions = client.get(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+    ).json()["data"]["decisions"]
+    assert decisions == []
+
+
+def test_patch_approval_rejects_patch_drift_since_preview(tmp_path) -> None:
+    client = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    preview_hash = _preview_hash(client, plan)
+    client.patch_service.patch_ids.append("KB600003")  # type: ignore[attr-defined]
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json=_approval_payload(plan, preview_hash),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["details"]["reason"] == "stale_execution_preview"
+
+
+def test_patch_preview_fails_closed_when_no_patches_are_available(tmp_path) -> None:
+    client = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    client.patch_service.patch_ids = []  # type: ignore[attr-defined]
+
+    response = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/preview",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["details"]["reason"] == "no_patches_available"
+
+
+def test_rejected_patch_decision_needs_no_preview_and_has_no_snapshot(tmp_path) -> None:
+    client = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "rejected",
+            "reason": "Risk too high",
+            "action_version": plan["action_version"],
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["data"]["execution_snapshot"] is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["execution_snapshot", "target_id", "patch_ids", "operation"],
+)
+def test_decision_request_rejects_caller_owned_execution_fields(
+    tmp_path, field: str
+) -> None:
+    client = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    payload = _approval_payload(plan, _preview_hash(client, plan))
+    payload[field] = {} if field == "execution_snapshot" else "caller-value"
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json=payload,
+    )
+
+    assert response.status_code == 422
 
 
 def test_operator_records_approval_decision_without_execution(tmp_path) -> None:
