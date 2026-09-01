@@ -522,6 +522,7 @@ class FabricSyncService:
             (str(row.get("timestamp") or "") for row in entities), default=""
         )
         entity_index = {row["resource_id"]: row for row in entities}
+        entity_keys = {str(key).casefold() for key in entity_index}
         security: list[dict[str, Any]] = []
         for edge in relationships:
             if edge.get("predicate") != "affects":
@@ -534,16 +535,26 @@ class FabricSyncService:
                 payload = parsed if isinstance(parsed, dict) else {}
             except json.JSONDecodeError:
                 payload = {}
-            if str(payload.get("category") or "").casefold() == "security":
-                security.append(
-                    {
-                        "target_resource_id": str(edge.get("object_id") or ""),
-                        "title": str(advisor.get("name") or "Security recommendation"),
-                        "severity": str(payload.get("impact") or "unknown"),
-                        "source": "Azure Advisor",
-                        "timestamp": str(advisor.get("timestamp") or ""),
-                    }
-                )
+            if str(payload.get("category") or "").casefold() != "security":
+                continue
+            target = str(edge.get("object_id") or "")
+            # Advisor recommendations can outlive the resource they target
+            # (deleted/renamed since the recommendation was raised). Skip
+            # those instead of emitting a dangling reference that fails
+            # SemanticEngine.from_rows validation and takes down every
+            # downstream provider (semantic, vulnerability, incidents,
+            # remediation) on the next refresh.
+            if target.casefold() not in entity_keys:
+                continue
+            security.append(
+                {
+                    "target_resource_id": target,
+                    "title": str(advisor.get("name") or "Security recommendation"),
+                    "severity": str(payload.get("impact") or "unknown"),
+                    "source": "Azure Advisor",
+                    "timestamp": str(advisor.get("timestamp") or ""),
+                }
+            )
         business_functions = {
             row["resource_id"]: row
             for row in entities
@@ -569,6 +580,7 @@ class FabricSyncService:
             for edge in relationships
             if edge.get("predicate") == "belongs_to"
             and str(edge.get("object_id") or "") in service_functions
+            and str(edge.get("subject_id") or "").casefold() in entity_keys
         ]
         raw_version = str(
             latest.get("source_run_id")
