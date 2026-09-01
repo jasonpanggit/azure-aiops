@@ -49,6 +49,8 @@ async def answer_with_gold_grounding(
     ontology_context: dict[str, Any],
     scope: Any,
     agent: Any,
+    provider_context: Any | None = None,
+    effective_scope: Any | None = None,
     metrics: GoldGroundingMetrics | None = None,
 ) -> AgentAnswer:
     """Merge Gold-grounding evidence into the existing specialist context."""
@@ -83,12 +85,25 @@ async def answer_with_gold_grounding(
         gold_evidence=gold_evidence,
         degraded_reason=degraded_reason,
     )
+    inventory_conflicts = _collect_inventory_conflicts(
+        gold_evidence=gold_evidence,
+        provider_context=provider_context,
+        effective_scope=effective_scope,
+        scope=scope,
+        metrics=metrics,
+    )
 
     merged_context: dict[str, Any] = {
         **ontology_context,
         "gold_grounding": gold_evidence,
         "gold_grounding_degraded": degraded_reason or None,
     }
+    if inventory_conflicts:
+        merged_context["gold_grounding_inventory_conflicts"] = inventory_conflicts
+        merged_context["gold_grounding_inventory_conflict_notice"] = (
+            "Inventory is authoritative for resource identity and lifecycle; "
+            "Gold-grounding citations include conflicts that must defer to inventory."
+        )
 
     evidence_refs = set(getattr(scope, "evidence_refs", set()) or set())
     if gold_evidence and (gold_evidence.get("findings") or []):
@@ -247,6 +262,173 @@ def _drop_lowest_ranked_citation(findings: list[dict[str, Any]]) -> bool:
     if not citations:
         findings.pop(worst_index)
     return True
+
+
+def _collect_inventory_conflicts(
+    *,
+    gold_evidence: dict[str, Any] | None,
+    provider_context: Any | None,
+    effective_scope: Any | None,
+    scope: Any,
+    metrics: GoldGroundingMetrics,
+) -> list[dict[str, Any]]:
+    findings = (gold_evidence or {}).get("findings") if isinstance(gold_evidence, dict) else None
+    if not isinstance(findings, list) or not findings:
+        return []
+    if provider_context is None:
+        return []
+
+    inventory_port = _resolve_inventory_port(provider_context)
+    if inventory_port is None:
+        return []
+
+    inventory_scope = _resolve_inventory_scope(effective_scope=effective_scope, scope=scope)
+    if inventory_scope is None:
+        conflicts: list[dict[str, Any]] = []
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            for citation in _citations(finding):
+                conflict = {
+                    "reason": "inventory_scope_missing",
+                    "citation": citation,
+                    "inventory": None,
+                }
+                conflicts.append(conflict)
+                _record_inventory_conflict(metrics)
+        return conflicts
+
+    conflicts: list[dict[str, Any]] = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        resource_ids = [
+            str(resource_id).strip()
+            for resource_id in (finding.get("resource_ids") or [])
+            if str(resource_id).strip()
+        ]
+        citations = _citations(finding)
+        if not citations or not resource_ids:
+            continue
+        for index, citation in enumerate(citations):
+            resource_id = resource_ids[index] if index < len(resource_ids) else resource_ids[-1]
+            inventory = inventory_port.get_resource(inventory_scope, resource_id)
+            conflict = _inventory_conflict_for(
+                resource_id=resource_id,
+                inventory=inventory,
+                citation=citation,
+            )
+            if conflict is None:
+                continue
+            conflicts.append(conflict)
+            _record_inventory_conflict(metrics)
+    return conflicts
+
+
+def _resolve_inventory_port(provider_context: Any) -> Any | None:
+    resolver = getattr(provider_context, "resolve_provider", None)
+    if not callable(resolver):
+        return None
+    try:
+        return resolver("inventory_read_port")
+    except Exception:
+        return None
+
+
+def _resolve_inventory_scope(*, effective_scope: Any | None, scope: Any) -> Any | None:
+    if effective_scope is not None and hasattr(effective_scope, "matches") and hasattr(
+        effective_scope, "to_dict"
+    ):
+        return effective_scope
+    if hasattr(scope, "matches") and hasattr(scope, "to_dict"):
+        return scope
+    return None
+
+
+def _citations(finding: dict[str, Any]) -> list[dict[str, Any]]:
+    citations_raw = finding.get("citations") or []
+    citations: list[dict[str, Any]] = []
+    for citation in citations_raw:
+        if isinstance(citation, dict):
+            citations.append(citation)
+    return citations
+
+
+def _inventory_conflict_for(
+    *,
+    resource_id: str,
+    inventory: dict[str, Any] | None,
+    citation: dict[str, Any],
+) -> dict[str, Any] | None:
+    if inventory is None:
+        return {
+            "reason": "resource_not_found",
+            "resource_id": resource_id,
+            "citation": citation,
+            "inventory": None,
+        }
+
+    expected_subscription, expected_resource_group = _parse_resource_identity(resource_id)
+    inventory_subscription = str(inventory.get("subscription_id") or "").strip()
+    inventory_resource_group = str(inventory.get("resource_group") or "").strip()
+    subscription_mismatch = bool(expected_subscription) and (
+        inventory_subscription.casefold() != expected_subscription.casefold()
+    )
+    resource_group_mismatch = bool(expected_resource_group) and (
+        inventory_resource_group.casefold() != expected_resource_group.casefold()
+    )
+    if subscription_mismatch or resource_group_mismatch:
+        return {
+            "reason": "subscription_mismatch",
+            "resource_id": resource_id,
+            "citation": citation,
+            "inventory": {
+                "resource_id": inventory.get("resource_id"),
+                "subscription_id": inventory.get("subscription_id"),
+                "resource_group": inventory.get("resource_group"),
+                "lifecycle_status": inventory.get("lifecycle_status"),
+            },
+        }
+
+    lifecycle = str(inventory.get("lifecycle_status") or "").strip().casefold()
+    if lifecycle in {"retired", "deleted", "deleting", "decommissioned", "terminated"}:
+        return {
+            "reason": "lifecycle_mismatch",
+            "resource_id": resource_id,
+            "citation": citation,
+            "inventory": {
+                "resource_id": inventory.get("resource_id"),
+                "subscription_id": inventory.get("subscription_id"),
+                "resource_group": inventory.get("resource_group"),
+                "lifecycle_status": inventory.get("lifecycle_status"),
+            },
+        }
+
+    return None
+
+
+def _parse_resource_identity(resource_id: str) -> tuple[str, str]:
+    parts = [part for part in str(resource_id).strip("/").split("/") if part]
+    expected_subscription = ""
+    expected_resource_group = ""
+    for index, part in enumerate(parts):
+        lowered = part.casefold()
+        if lowered == "subscriptions" and index + 1 < len(parts):
+            expected_subscription = parts[index + 1]
+        if lowered == "resourcegroups" and index + 1 < len(parts):
+            expected_resource_group = parts[index + 1]
+    return expected_subscription, expected_resource_group
+
+
+def _record_inventory_conflict(metrics: GoldGroundingMetrics) -> None:
+    recorder = getattr(metrics, "record_inventory_conflict", None)
+    if callable(recorder):
+        recorder()
+        return
+    counter = getattr(metrics, "inventory_conflict", None)
+    add = getattr(counter, "add", None)
+    if callable(add):
+        add(1)
 
 
 async def _answer_findings_async(
