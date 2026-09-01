@@ -284,6 +284,12 @@ locals {
   # stable and is what the agent REST API documents.
   foundry_project_endpoint = "https://${local.foundry_subdomain}.services.ai.azure.com/api/projects/${local.foundry_project_name}"
 
+  # Data-plane endpoint used to call the embedding deployment directly
+  # (the Cognitive Services account's own OpenAI-compatible surface, not the
+  # project endpoint above -- the project endpoint's /embeddings route
+  # returns 404, this is the documented data plane for model inference).
+  foundry_openai_endpoint = "https://${local.foundry_subdomain}.openai.azure.com"
+
   # Points specialists at APIM's native MCP surface (see apim.tf's
   # azapi_resource.mcp_server), not the plain HTTP-proxy API -- the native
   # surface speaks real JSON-RPC MCP and is what the Foundry `mcp` tool type
@@ -554,6 +560,27 @@ resource "azurerm_role_assignment" "deployer_search_service_contributor" {
   principal_id         = local.deployer_object_id
 }
 
+# The deploying principal also calls the embedding deployment directly
+# (Cognitive Services account's own openai.azure.com data plane, not the
+# project endpoint) from the indexing script to vectorize each document
+# chunk before upserting it into the search index.
+resource "azurerm_role_assignment" "deployer_cognitive_services_openai_user" {
+  count                = var.enable_foundry_knowledge_search ? 1 : 0
+  scope                = azurerm_cognitive_account.foundry.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = local.deployer_object_id
+}
+
+# Entra ID data-plane calls to Cognitive Services (embeddings, inference)
+# require this role in addition to the more specific OpenAI role above --
+# management roles (Owner/Contributor) do not grant data-plane access.
+resource "azurerm_role_assignment" "deployer_cognitive_services_user" {
+  count                = var.enable_foundry_knowledge_search ? 1 : 0
+  scope                = azurerm_cognitive_account.foundry.id
+  role_definition_name = "Cognitive Services User"
+  principal_id         = local.deployer_object_id
+}
+
 # Creates (or updates) the knowledge index and pushes every document under
 # infra/knowledge/ into it, embedding each with the deployment above. Runs via
 # local-exec (like the agent-creation script) because Terraform has no native
@@ -573,14 +600,14 @@ resource "terraform_data" "foundry_knowledge_index" {
     interpreter = ["/bin/bash", "-c"]
 
     environment = {
-      SEARCH_SERVICE_NAME      = azurerm_search_service.knowledge[0].name
-      SEARCH_INDEX_NAME        = var.foundry_knowledge_index_name
-      KNOWLEDGE_DOCS_DIR       = "${path.module}/../knowledge"
-      FOUNDRY_PROJECT_ENDPOINT = local.foundry_project_endpoint
-      FOUNDRY_EMBEDDING_MODEL  = azurerm_cognitive_deployment.embedding.name
-      AZURE_TENANT_ID          = var.tenant_id
-      AZURE_CLIENT_ID          = var.client_id
-      AZURE_CLIENT_SECRET      = var.client_secret
+      SEARCH_SERVICE_NAME     = azurerm_search_service.knowledge[0].name
+      SEARCH_INDEX_NAME       = var.foundry_knowledge_index_name
+      KNOWLEDGE_DOCS_DIR      = "${path.module}/../knowledge"
+      FOUNDRY_OPENAI_ENDPOINT = local.foundry_openai_endpoint
+      FOUNDRY_EMBEDDING_MODEL = azurerm_cognitive_deployment.embedding.name
+      AZURE_TENANT_ID         = var.tenant_id
+      AZURE_CLIENT_ID         = var.client_id
+      AZURE_CLIENT_SECRET     = var.client_secret
     }
   }
 
@@ -589,6 +616,8 @@ resource "terraform_data" "foundry_knowledge_index" {
     azurerm_cognitive_deployment.embedding,
     azurerm_role_assignment.deployer_search_index_data_contributor,
     azurerm_role_assignment.deployer_search_service_contributor,
+    azurerm_role_assignment.deployer_cognitive_services_openai_user,
+    azurerm_role_assignment.deployer_cognitive_services_user,
   ]
 }
 

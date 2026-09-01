@@ -15,7 +15,7 @@
 #   SEARCH_SERVICE_NAME      Azure AI Search service name (no .search.windows.net)
 #   SEARCH_INDEX_NAME        Index name to create/update
 #   KNOWLEDGE_DOCS_DIR       Directory of documents to embed and index
-#   FOUNDRY_PROJECT_ENDPOINT https://<sub>.services.ai.azure.com/api/projects/<project>
+#   FOUNDRY_OPENAI_ENDPOINT  https://<account>.openai.azure.com (Cognitive Services account, not the project endpoint)
 #   FOUNDRY_EMBEDDING_MODEL  Embedding model deployment name
 #   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
 #
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 for var in SEARCH_SERVICE_NAME SEARCH_INDEX_NAME KNOWLEDGE_DOCS_DIR \
-           FOUNDRY_PROJECT_ENDPOINT FOUNDRY_EMBEDDING_MODEL \
+           FOUNDRY_OPENAI_ENDPOINT FOUNDRY_EMBEDDING_MODEL \
            AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
   if [[ -z "${!var:-}" ]]; then
     echo "create-foundry-knowledge-index: ${var} is required" >&2
@@ -40,8 +40,8 @@ SEARCH_ENDPOINT="https://${SEARCH_SERVICE_NAME}.search.windows.net"
 SEARCH_API_VERSION="2024-07-01"
 
 # Two independent Entra tokens: one scoped to Azure AI Search's own data
-# plane (index/document management), one scoped to the Foundry project's
-# inference endpoint (to call the embedding deployment). They are different
+# plane (index/document management), one scoped to the Cognitive Services
+# data plane (to call the embedding deployment directly). They are different
 # resources and cannot share a token.
 search_token=$(curl -sS --fail-with-body \
   -X POST "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
@@ -58,7 +58,7 @@ foundry_token=$(curl -sS --fail-with-body \
   --data-urlencode 'grant_type=client_credentials' \
   --data-urlencode "client_id=${AZURE_CLIENT_ID}" \
   --data-urlencode "client_secret=${AZURE_CLIENT_SECRET}" \
-  --data-urlencode 'scope=https://ai.azure.com/.default' \
+  --data-urlencode 'scope=https://cognitiveservices.azure.com/.default' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
 
 echo "create-foundry-knowledge-index: upserting index '${SEARCH_INDEX_NAME}' on ${SEARCH_ENDPOINT}"
@@ -86,7 +86,7 @@ index_body=$(cat <<JSON
       "name": "default-semantic",
       "prioritizedFields": {
         "titleField": {"fieldName": "title"},
-        "contentFields": [{"fieldName": "content"}]
+        "prioritizedContentFields": [{"fieldName": "content"}]
       }
     }]
   }
@@ -102,7 +102,7 @@ curl -sS --fail-with-body \
 
 echo "create-foundry-knowledge-index: index ready, chunking and embedding documents from ${KNOWLEDGE_DOCS_DIR}"
 
-FOUNDRY_PROJECT_ENDPOINT="$FOUNDRY_PROJECT_ENDPOINT" \
+FOUNDRY_OPENAI_ENDPOINT="$FOUNDRY_OPENAI_ENDPOINT" \
 FOUNDRY_EMBEDDING_MODEL="$FOUNDRY_EMBEDDING_MODEL" \
 FOUNDRY_TOKEN="$foundry_token" \
 SEARCH_ENDPOINT="$SEARCH_ENDPOINT" \
@@ -118,7 +118,7 @@ import re
 import urllib.request
 
 docs_dir = os.environ["KNOWLEDGE_DOCS_DIR"]
-foundry_endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"].rstrip("/")
+openai_endpoint = os.environ["FOUNDRY_OPENAI_ENDPOINT"].rstrip("/")
 embedding_model = os.environ["FOUNDRY_EMBEDDING_MODEL"]
 foundry_token = os.environ["FOUNDRY_TOKEN"]
 search_endpoint = os.environ["SEARCH_ENDPOINT"]
@@ -144,8 +144,10 @@ def chunk(text: str):
 
 
 def embed(text: str):
-    url = f"{foundry_endpoint}/embeddings?api-version=v1"
-    body = json.dumps({"input": text, "model": embedding_model}).encode()
+    # Cognitive Services account's own OpenAI-compatible data plane (not the
+    # Foundry project endpoint -- that endpoint's /embeddings route 404s).
+    url = f"{openai_endpoint}/openai/deployments/{embedding_model}/embeddings?api-version=2024-02-01"
+    body = json.dumps({"input": text}).encode()
     req = urllib.request.Request(url, data=body, method="POST", headers={
         "Authorization": f"Bearer {foundry_token}",
         "Content-Type": "application/json",
