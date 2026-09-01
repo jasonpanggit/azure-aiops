@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from typing import Any
 
@@ -43,6 +44,13 @@ class RemediationGenerator:
         self.clock = clock
         self.defender_correlator = defender_correlator
         self.business_decisions = business_decision_engine or BusinessDecisionEngine()
+
+    @staticmethod
+    def _stable_serialize(obj: Any) -> str:
+        """Serialize lists/dicts to stable JSON for hash determinism across Python versions."""
+        if isinstance(obj, (list, dict)):
+            return json.dumps(obj, sort_keys=True, separators=(',', ':'))
+        return str(obj)
 
     def generate(self, opportunity: dict[str, Any]) -> dict[str, Any]:
         resource = opportunity["_resource"]
@@ -87,8 +95,9 @@ class RemediationGenerator:
         # Compute stable evidence digest from citations
         evidence_digest = self._stable_evidence_digest(evidence_citations)
         
+        # Ensure stable serialization of structured fields
         action_version = hashlib.sha256(
-            f"{action['action_id']}|{action.get('title')}|{action.get('execution_steps')}|{action.get('rollback_actions')}|{evidence_digest}".encode()
+            f"{action['action_id']}|{action.get('title')}|{self._stable_serialize(action.get('execution_steps'))}|{self._stable_serialize(action.get('rollback_actions'))}|{evidence_digest}".encode()
         ).hexdigest()[:16]
         steps = [
             {
@@ -219,9 +228,13 @@ class RemediationGenerator:
         Returns a hex string that changes when citations change but is stable
         across regenerations when citations are unchanged. Used in action_version
         to make approval freshness detectable.
+        
+        Empty citation list produces a distinct digest (not empty string) so that
+        absence of evidence is detectable as a change.
         """
         if not citations:
-            return ""
+            # Use a stable sentinel for "no evidence" so empty→nonempty is detectable
+            return hashlib.sha256(b"__no_evidence__").hexdigest()[:16]
         
         # Sort by source_type and source_id to ensure stable ordering
         sorted_citations = sorted(
@@ -232,4 +245,4 @@ class RemediationGenerator:
             ]
         )
         digest_input = "|".join(sorted_citations)
-        return hashlib.sha256(digest_input.encode()).hexdigest()[:16] if digest_input else ""
+        return hashlib.sha256(digest_input.encode()).hexdigest()[:16] if digest_input else hashlib.sha256(b"__no_evidence__").hexdigest()[:16]
