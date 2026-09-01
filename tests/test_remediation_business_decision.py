@@ -381,3 +381,121 @@ def test_escalate_decision_has_no_approvable_option():
     recommended = next(option for option in decision["options"] if option["recommended"])
     assert recommended["option_id"] == "escalate"
     assert not any(option["approvable"] for option in decision["options"])
+
+
+# -- Task 3: business decisions threaded into generated plans ----------------
+
+
+def _generator_scenario(defender_correlator_instance=None):
+    from intelligence.remediation.approval_engine import ApprovalEngine
+    from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
+    from intelligence.remediation.execution_simulator import ExecutionSimulator
+    from intelligence.remediation.impact_estimator import ImpactEstimator
+    from intelligence.remediation.plan_prioritizer import PlanPrioritizer
+    from intelligence.remediation.remediation_generator import RemediationGenerator
+    from intelligence.remediation.risk_analyzer import RiskAnalyzer
+    from intelligence.remediation.rollback_planner import RollbackPlanner
+
+    return RemediationGenerator(
+        dependency_analyzer=DependencyAnalyzer(),
+        risk_analyzer=RiskAnalyzer(),
+        approval_engine=ApprovalEngine([]),
+        rollback_planner=RollbackPlanner(),
+        simulator=ExecutionSimulator(),
+        impact_estimator=ImpactEstimator(),
+        prioritizer=PlanPrioritizer(),
+        defender_correlator=defender_correlator_instance,
+    )
+
+
+def _mapped_opportunity() -> dict:
+    resource = _resource_by_key(MAPPED_RESOURCE_ID)
+    return {
+        "_resource_key": MAPPED_RESOURCE_ID,
+        "_resource": resource,
+        "_action": ACTION,
+        "resource": {"name": resource["name"], "entity_type": resource.get("entity_type", "Resource")},
+        "application": resource.get("application", "Unknown"),
+        "business_service": resource.get("business_service", "Unknown"),
+        "environment": resource.get("environment", ""),
+        "owner": resource.get("owner", ""),
+        "subscription_id": resource.get("subscription_id", ""),
+        "subscription_connection": resource.get("subscription_connection", ""),
+        "opportunity_type": ACTION["opportunity_type"],
+        "action_id": ACTION["action_id"],
+        "evidence": ["defender_recommendation:Enable disk encryption"],
+        "read_only": True,
+    }
+
+
+def test_defender_sourced_plan_carries_full_business_decision_section():
+    generator = _generator_scenario(defender_correlator())
+    plan = generator.generate(_mapped_opportunity())
+    decision = plan["business_decision"]
+    assert decision["disposition"] in DISPOSITIONS
+    assert decision["urgency_rationale"]["reason_code"]
+    assert set(("service_risk", "customer_impact")) <= set(decision["cost_of_action"])
+    assert set(("service_risk", "customer_impact")) <= set(decision["cost_of_inaction"])
+    assert decision["options"]
+    assert "confidence" in decision
+    assert "review_requirements" in decision
+
+
+def test_plan_carries_expected_secure_score_improvement_or_unknown_marker():
+    generator = _generator_scenario(defender_correlator())
+    plan = generator.generate(_mapped_opportunity())
+    improvement = plan["expected_secure_score_improvement"]
+    assert improvement["status"] in {"known", "unknown"}
+    assert improvement["status"] == "known"
+    assert improvement["points"] > 0
+
+    generator_no_correlator = _generator_scenario(None)
+    plan_no_case = generator_no_correlator.generate(_mapped_opportunity())
+    assert plan_no_case["expected_secure_score_improvement"]["status"] == "unknown"
+
+
+def test_plan_carries_uncertainty_section_from_unknowns_grouping():
+    generator = _generator_scenario(defender_correlator())
+    plan = generator.generate(_mapped_opportunity())
+    assert isinstance(plan["uncertainty"], list)
+    # Sourced from the decision's own unknowns grouping, not restated prose.
+    assert plan["uncertainty"] == plan["business_decision"]["unknowns"]
+
+
+def test_plan_and_opportunity_carry_evidence_citations_alongside_evidence_list():
+    generator = _generator_scenario(defender_correlator())
+    opportunity = _mapped_opportunity()
+    plan = generator.generate(opportunity)
+    assert isinstance(plan["evidence"], list)
+    assert all(isinstance(item, str) for item in plan["evidence"])
+    assert isinstance(plan["evidence_citations"], list)
+    assert plan["evidence_citations"]
+    assert all("source_type" in citation for citation in plan["evidence_citations"])
+
+
+def test_non_defender_opportunity_still_generates_with_unknown_business_decision():
+    generator = _generator_scenario(None)
+    plan = generator.generate(_mapped_opportunity())
+    decision = plan["business_decision"]
+    assert decision["disposition"] in DISPOSITIONS
+    assert plan["expected_secure_score_improvement"]["status"] == "unknown"
+    assert isinstance(plan["uncertainty"], list)
+
+
+def test_plan_still_reports_read_only_posture_with_no_execution_authorization():
+    generator = _generator_scenario(defender_correlator())
+    plan = generator.generate(_mapped_opportunity())
+    assert plan["read_only"] is True
+    assert plan["execution_authorized"] is False
+    assert plan["execution_performed"] is False
+    assert plan["recommended_action"]["advisory_only"] is True
+
+
+def test_full_remediation_suite_still_passes_with_generator_extension():
+    # Guardrail placeholder: the plan-level verification block runs the full
+    # remediation suite directly; this test asserts the extension point the
+    # rest of the suite depends on (an optional, defaulted constructor
+    # parameter) does not require every existing caller to change.
+    generator = _generator_scenario()
+    plan = generator.generate(_mapped_opportunity())
+    assert plan["business_decision"]["disposition"] in DISPOSITIONS
