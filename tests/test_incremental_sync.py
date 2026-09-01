@@ -19,6 +19,7 @@ from semantic.semantic_engine import SemanticEngine
 from storage.delta_writer import DeltaWriteMode
 from storage.delta_writer import DeltaWriter
 from storage.onelake_writer import OneLakeWriter
+from topology_comparison_scenario import topology_comparison_scenario
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
 
@@ -41,6 +42,17 @@ def _source_snapshot(root: Path) -> None:
         graph,
         payload,
         {"runId": "source-run-1", "startedAt": "2026-08-17T00:00:00Z", "status": "completed"},
+    )
+
+
+def _source_snapshot_with_topology(root: Path) -> None:
+    payload = json.loads(FIXTURE.read_text())
+    payload.update(topology_comparison_scenario())
+    graph = Normalizer().normalize(payload, datetime(2026, 8, 17, tzinfo=UTC))
+    DatasetStore(root).publish(
+        graph,
+        payload,
+        {"runId": "source-run-topology", "startedAt": "2026-08-17T00:00:00Z", "status": "completed"},
     )
 
 
@@ -85,6 +97,33 @@ def test_incremental_sync_writes_bronze_silver_ontology_and_state(tmp_path: Path
     assert costs[0]["usage_date"] == "2026-08-17"
     assert (lakehouse / "Tables/ontology_entities/_delta_log").is_dir()
     assert (lakehouse / "Files/ontology/metadata/catalog.json").is_file()
+
+
+def test_sync_with_topology_flag_publishes_topology_tables(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    _source_snapshot_with_topology(source)
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter("workspace", "lakehouse", local_root=lakehouse),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+        topology_enabled=True,
+    )
+
+    service.sync()
+
+    topology_entities_path = lakehouse / "Tables/topology_entities"
+    topology_edges_path = lakehouse / "Tables/topology_edges"
+    manifest_path = lakehouse / "Tables/metadata_publication_manifest"
+    assert topology_entities_path.is_dir()
+    assert topology_edges_path.is_dir()
+    assert DeltaTable(str(topology_entities_path)).to_pyarrow_table().num_rows > 0
+    assert DeltaTable(str(topology_edges_path)).to_pyarrow_table().num_rows > 0
+    manifest_rows = DeltaTable(str(manifest_path)).to_pyarrow_table().to_pylist()
+    manifest_by_name = {row["projection_name"]: row["disposition"] for row in manifest_rows}
+    assert manifest_by_name["topology_entities"] == "active"
+    assert manifest_by_name["topology_edges"] == "active"
 
 
 def test_secure_score_snapshots_remain_queryable_across_syncs(

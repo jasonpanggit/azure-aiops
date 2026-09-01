@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from .design import NetworkDesignPolicy, load_design_policy
@@ -173,6 +174,65 @@ class NetworkIntelligenceService:
         return cls(
             load_network_snapshot(rows),
             policy=resolved,
+            semantic_relationships=semantic_relationships,
+        )
+
+    @classmethod
+    def from_arg_rows(
+        cls,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        observed_at: str = "",
+        policy: NetworkDesignPolicy | None = None,
+        policy_path: str | None = None,
+    ) -> NetworkIntelligenceService:
+        """Normalize raw ARG resources before loading the typed network view.
+
+        ``from_rows`` consumes canonical ontology entities. Request-time ARG
+        queries instead return parent/child ARM resources without
+        ``entityType``; feeding those rows directly to the ontology loader
+        produces an empty topology. Reuse the ingestion normalizer so live and
+        synchronized views share the same ID and nested-resource semantics.
+        """
+        from onboarding.graph_normalize import Normalizer
+        from onboarding.query_catalog import NETWORK_RESOURCE_TYPES
+
+        materialized = [dict(row) for row in rows]
+        payload: dict[str, list[dict]] = {"resources": materialized}
+        for family, resource_types in NETWORK_RESOURCE_TYPES.items():
+            accepted = {resource_type.casefold() for resource_type in resource_types}
+            payload[family] = [
+                row
+                for row in materialized
+                if str(row.get("type") or "").casefold() in accepted
+            ]
+
+        timestamp = datetime.now(UTC)
+        if observed_at.strip():
+            try:
+                timestamp = datetime.fromisoformat(
+                    observed_at.strip().replace("Z", "+00:00")
+                )
+            except ValueError:
+                pass
+        graph = Normalizer().normalize(payload, timestamp, run_id="live-network")
+        normalized_rows = [
+            entity
+            for entities in graph.entities.values()
+            for entity in entities
+        ]
+        semantic_relationships = [
+            {
+                **relationship,
+                "subject_id": relationship.get("subjectId", ""),
+                "object_id": relationship.get("objectId", ""),
+            }
+            for relationship in graph.relationships
+        ]
+        return cls.from_rows(
+            normalized_rows,
+            policy=policy,
+            policy_path=policy_path,
             semantic_relationships=semantic_relationships,
         )
 

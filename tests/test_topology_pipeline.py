@@ -340,6 +340,13 @@ def test_ontology_binding_registers_topology_tables_without_inferring_relationsh
     assert "infer" not in json.dumps(definition).lower()
 
 
+def test_validator_known_table_set_includes_topology_contract_tables() -> None:
+    from fabric.schema_registry import SCHEMAS
+
+    assert "topology_entities" in SCHEMAS
+    assert "topology_edges" in SCHEMAS
+
+
 def _acl_rules():
     """Two NSGs deliberately reusing one rule name, plus a distinct name.
 

@@ -1,0 +1,122 @@
+fabric:
+  semantic:
+    max_results: 50
+    max_traversal_nodes: 500
+    max_traversal_depth: 32
+    max_source_rows: 50000
+    max_serialized_bytes: 1000000
+  operations_agent:
+    max_output_items: 100
+    max_serialized_bytes: 1000000
+  patch_intelligence:
+    enabled: true
+    max_resources: 5000
+    max_evidence_rows: 50000
+    max_output_items: 100
+    max_serialized_bytes: 1000000
+  data_quality:
+    ownership_tag_thresholds:
+      dev:
+        mode: warn
+        max_missing_ownership_pct: 100
+        max_missing_tag_pct: 100
+      staging:
+        mode: warn
+        max_missing_ownership_pct: 25
+        max_missing_tag_pct: 25
+      prod:
+        mode: block
+        max_missing_ownership_pct: 10
+        max_missing_tag_pct: 10
+  medallion_health:
+    freshness_slo:
+      default_cadence_minutes: 60
+      default_slo_multiplier: 3
+      tables:
+        silver_incidents:
+          cadence_minutes: 15
+        silver_alerts:
+          cadence_minutes: 15
+        silver_cost_actuals:
+          cadence_minutes: 1440
+        bronze_resource_changes:
+          cadence_minutes: 60
+  auth:
+    mode: service_principal
+    tenant_id: ffc83107-fcc0-4d2e-8798-d582da36505e
+    client_id: 306c1437-0e7d-43bd-940b-79b878166331
+    client_secret_env: AZURE_CLIENT_SECRET
+    managed_identity_client_id: ''
+  workspace_id: 1c328da7-2490-48dc-9ba6-de8c1f333756
+  workspace_name: aiops-dev-ops
+  lakehouse_id: 6317eaf6-e597-4b4e-a07d-c53027c01feb
+  lakehouse_name: operational_context_graph_v2
+  create_lakehouse_if_missing: false
+  table_schema: ''
+  ontology:
+    enabled: true
+    ontology_id: ''
+    ontology_name: Operational_Context_Ontology_v2
+  topology_pipeline:
+    enabled: true
+    ontology_id: ''
+    ontology_name: Topology_Comparison_Ontology
+    flow_log_source: fixture
+  ontology_pipeline:
+    enabled: false
+  impact_context_pipeline:
+    enabled: false
+  vulnerability_pipeline:
+    enabled: true
+  governance_pipeline:
+    enabled: true
+  lifecycle_pipeline:
+    enabled: true
+  patch_pipeline:
+    enabled: true
+  change_pipeline:
+    enabled: true
+  predeploy_pipeline:
+    enabled: true
+  relationship_suggestion_agent:
+    item_id: 3b346ed2-1ed2-4f41-8e9c-bfa152855a8b
+    display_name: relationship_suggestion_agent
+  source_data_root: /Users/jasonmba/workspace/azure-aiops/.aiops-local/connections/local-spn
+  registration_attempts: 20
+  patch_policies:
+  - name: Production baseline
+    environment: Production
+    max_patch_age_days: 30
+    minimum_compliance_score: 90
+  - name: Development baseline
+    environment: Development
+    max_patch_age_days: 60
+    minimum_compliance_score: 80
+  lifecycle:
+    enabled: true
+    catalog_path: ''
+    approaching_months: 24
+    near_months: 12
+    critical_months: 6
+    max_output_items: 100
+    max_serialized_bytes: 1000000
+  incident_causality:
+    enabled: true
+    lookback_hours: 168
+    max_incidents: 10000
+    max_evidence_rows: 50000
+  change_intelligence:
+    enabled: true
+    max_changes: 50000
+    max_output_items: 100
+  predictive:
+    enabled: true
+    max_history_rows: 50000
+    max_output_items: 100
+  remediation:
+    enabled: true
+    max_resources: 5000
+    max_plans: 1000
+    max_output_items: 100
+    max_dependencies: 100
+  shortcuts: []

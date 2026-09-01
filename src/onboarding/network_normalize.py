@@ -504,6 +504,30 @@ def _rule_protocols(rule: dict) -> list[str]:
     return values
 
 
+def private_endpoint_dns_zone_ids(row: dict) -> list[str]:
+    """Reads zone IDs from canonical endpoints and Azure zone-group children."""
+    props = row.get("properties") or {}
+    values = [
+        *_list(row.get("privateDnsZoneIds")),
+        *_list(props.get("privateDnsZoneIds")),
+    ]
+    configs = [
+        *_list(props.get("privateDnsZoneConfigs")),
+        *_list(
+            (props.get("privateDnsZoneGroup") or {}).get(
+                "privateDnsZoneConfigs"
+            )
+        ),
+    ]
+    for config in configs:
+        config_props = config.get("properties") or {}
+        values.append(
+            config_props.get("privateDnsZoneId")
+            or config.get("privateDnsZoneId")
+        )
+    return sorted({zone_id for value in values if (zone_id := _ref_id(value))})
+
+
 def normalize_private_endpoint(base: dict, row: dict, observed: str) -> dict:
     props = row.get("properties") or {}
     connections = _list(props.get("privateLinkServiceConnections")) + _list(
@@ -531,9 +555,7 @@ def normalize_private_endpoint(base: dict, row: dict, observed: str) -> dict:
         "targetResourceId": target,
         "groupIds": sorted(set(group_ids)),
         "privateIps": private_ips,
-        "privateDnsZoneIds": _ref_ids(
-            (props.get("privateDnsZoneGroup") or {}).get("privateDnsZoneConfigs")
-        ),
+        "privateDnsZoneIds": private_endpoint_dns_zone_ids(row),
         "connectionState": state,
         "properties": props,
     }

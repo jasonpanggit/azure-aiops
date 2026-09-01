@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,11 +13,13 @@ from typing import Any
 
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator
+from ontology.publication_manifest import PublicationManifestStore
 from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
 from storage.onelake_writer import OneLakeWriter
 from storage.partitioning import PartitioningPolicy
 
 from fabric_pipelines import change_pipeline, incident_pipeline, predictive_pipeline
+from fabric_pipelines.topology_pipeline import derive_edges, to_topology_edge_row
 
 from .data_quality import DataQualityValidator, QualityReport
 from .dataset_mapper import (
@@ -77,6 +80,7 @@ class FabricSyncService:
         shortcuts: tuple[object, ...] = (),
         registration_attempts: int = 20,
         write_workers: int = 4,
+        topology_enabled: bool = False,
         ontology_publisher=None,
         ontology_id: str = "",
         ontology_name: str = "Operational_Context_Graph",
@@ -116,6 +120,7 @@ class FabricSyncService:
         if write_workers < 1:
             raise ValueError("write_workers must be positive")
         self.write_workers = write_workers
+        self.topology_enabled = topology_enabled
         self.ontology_publisher = ontology_publisher
         self.ontology_id = ontology_id
         self.ontology_name = ontology_name
@@ -174,6 +179,13 @@ class FabricSyncService:
         data_committed = False
         try:
             datasets = self.mapper.load(snapshot, run_id, fs=self._source_fs)
+            if self.topology_enabled:
+                self._extend_with_topology_tables(
+                    datasets,
+                    snapshot=snapshot,
+                    observed_at=started_at,
+                    run_id=run_id,
+                )
             datasets["silver_patch_policies"] = [
                 {
                     "tenant_id": "not-applicable",
@@ -336,6 +348,8 @@ class FabricSyncService:
 
             catalog = _catalog_metadata(datasets, table_results, run_id, source_run_id)
             self._register_fabric_assets(set(table_results))
+            if self.topology_enabled:
+                self._write_topology_manifest(run_id=run_id, observed_at=started_at)
             self.onelake.write_json("ontology/metadata/catalog.json", catalog)
             data_committed = True
             self._publish_ontology(datasets)
@@ -839,7 +853,6 @@ class FabricSyncService:
             "assessments": read("silver", "compliance"),
             "findings": read("silver", "patch_findings"),
             "defender_findings": read("silver", "defender_findings"),
-            "defender_assessments": read("silver", "defender_assessments"),
             "installations": read("silver", "patch_installations"),
             "history": read("silver", "patch_history"),
             "policies": policies,
@@ -853,6 +866,7 @@ class FabricSyncService:
             return self.delta.read(uri) if self.delta.version(uri) is not None else []
 
         return {
+            "assessments": read("defender_assessments"),
             "alerts": read("defender_alerts"),
             "attack_paths": read("defender_attack_paths"),
             "attack_path_nodes": read("defender_attack_path_nodes"),
@@ -1526,6 +1540,258 @@ class FabricSyncService:
             return DeltaWriteMode.MERGE
         return DeltaWriteMode.OVERWRITE
 
+    def _extend_with_topology_tables(
+        self,
+        datasets: dict[str, list[dict[str, Any]]],
+        *,
+        snapshot: Path | str,
+        observed_at: str,
+        run_id: str,
+    ) -> None:
+        topology_rows = self._load_topology_rows(snapshot)
+        entities, edges = derive_edges(topology_rows, observed=observed_at)
+        governed_entities = [
+            self._as_governed_topology_entity(
+                row,
+                run_id=run_id,
+                observed_at=observed_at,
+            )
+            for row in entities
+        ]
+        entity_by_id = {
+            str(row.get("entity_id") or "").casefold(): row for row in governed_entities
+        }
+        governed_edges = [
+            self._as_governed_topology_edge(
+                to_topology_edge_row(edge),
+                entity_by_id=entity_by_id,
+                run_id=run_id,
+                observed_at=observed_at,
+            )
+            for edge in edges
+        ]
+        datasets["topology_entities"] = governed_entities
+        datasets["topology_edges"] = governed_edges
+
+    def _as_governed_topology_entity(
+        self,
+        row: dict[str, Any],
+        *,
+        run_id: str,
+        observed_at: str,
+    ) -> dict[str, Any]:
+        entity_id = str(row.get("entity_id") or "")
+        if not entity_id:
+            entity_id = "topology-entity://" + _hash_json(row)[:24]
+        tenant_id = str(row.get("tenant_id") or "unknown")
+        subscription_id = str(
+            row.get("subscription_id") or _subscription_from_id(entity_id) or "unknown"
+        )
+        timestamp = str(
+            row.get("last_observed_timestamp")
+            or row.get("created_timestamp")
+            or observed_at
+        )
+        payload = {
+            "entity_id": entity_id,
+            "entity_type": str(row.get("entity_type") or ""),
+            "name": str(row.get("name") or ""),
+            "display_name": str(row.get("display_name") or ""),
+            "tenant_id": tenant_id,
+            "subscription_id": subscription_id,
+            "source_system": str(row.get("source_system") or ""),
+            "source_id": str(row.get("source_id") or ""),
+            "created_timestamp": str(row.get("created_timestamp") or timestamp),
+            "last_observed_timestamp": str(row.get("last_observed_timestamp") or timestamp),
+            "schema_version": str(row.get("schema_version") or "1.0.0"),
+            "attributes_json": str(row.get("attributes_json") or "{}"),
+        }
+        return {
+            "tenant_id": tenant_id,
+            "subscription_id": subscription_id,
+            "resource_id": entity_id,
+            "timestamp": timestamp,
+            "change_version": _hash_json(payload),
+            "ingestion_run_id": run_id,
+            **payload,
+        }
+
+    def _as_governed_topology_edge(
+        self,
+        row: dict[str, Any],
+        *,
+        entity_by_id: dict[str, dict[str, Any]],
+        run_id: str,
+        observed_at: str,
+    ) -> dict[str, Any]:
+        relationship_id = str(row.get("relationship_id") or "")
+        if not relationship_id:
+            relationship_id = _hash_json(row)[:24]
+        subject_id = str(row.get("subject_id") or "")
+        object_id = str(row.get("object_id") or "")
+        subject = entity_by_id.get(subject_id.casefold(), {})
+        obj = entity_by_id.get(object_id.casefold(), {})
+        tenant_id = str(
+            subject.get("tenant_id") or obj.get("tenant_id") or "unknown"
+        )
+        subscription_id = str(
+            subject.get("subscription_id")
+            or obj.get("subscription_id")
+            or _subscription_from_id(subject_id)
+            or _subscription_from_id(object_id)
+            or "unknown"
+        )
+        timestamp = str(
+            row.get("last_observed_timestamp")
+            or row.get("created_timestamp")
+            or observed_at
+        )
+        payload = {
+            "relationship_id": relationship_id,
+            "subject_id": subject_id,
+            "predicate": str(row.get("predicate") or ""),
+            "object_id": object_id,
+            "confidence": float(row.get("confidence") or 0.0),
+            "source": str(row.get("source") or ""),
+            "created_timestamp": str(row.get("created_timestamp") or timestamp),
+            "last_observed_timestamp": str(row.get("last_observed_timestamp") or timestamp),
+            "assertion_state": str(row.get("assertion_state") or "accepted"),
+            "schema_version": str(row.get("schema_version") or "1.0.0"),
+        }
+        return {
+            "tenant_id": tenant_id,
+            "subscription_id": subscription_id,
+            "resource_id": relationship_id,
+            "timestamp": timestamp,
+            "change_version": _hash_json(payload),
+            "ingestion_run_id": run_id,
+            **payload,
+        }
+
+    def _load_topology_rows(self, snapshot: Path | str) -> dict[str, list[dict[str, Any]]]:
+        file_by_key = {
+            "network_vnets": "VNet.jsonl",
+            "network_security_groups": "NetworkSecurityGroup.jsonl",
+            "network_interfaces": "NetworkInterface.jsonl",
+            "network_route_tables": "RouteTable.jsonl",
+            "network_firewalls": "AzureFirewall.jsonl",
+            "network_firewall_policies": "FirewallPolicy.jsonl",
+            "network_private_endpoints": "PrivateEndpoint.jsonl",
+            "network_private_dns_zones": "PrivateDnsZone.jsonl",
+            "network_gateways": "NetworkGateway.jsonl",
+            "network_load_balancers": "LoadBalancer.jsonl",
+        }
+
+        def normalize(row: dict[str, Any]) -> dict[str, Any]:
+            row_id = str(row.get("id") or row.get("sourceId") or "").casefold()
+            if not row.get("type") and row.get("resourceType"):
+                row["type"] = str(row.get("resourceType"))
+            return {
+                **row,
+                "id": row_id,
+                "tenantId": str(row.get("tenantId") or row.get("tenant_id") or ""),
+                "subscriptionId": str(
+                    row.get("subscriptionId")
+                    or row.get("subscription_id")
+                    or _subscription_from_id(row_id)
+                ),
+            }
+
+        if self._source_root_is_remote:
+            fs = self._source_fs
+            root = str(snapshot)
+
+            def read_rows(filename: str) -> list[dict[str, Any]]:
+                path = f"{root}/entities/{filename}"
+                if not fs.exists(path):
+                    return []
+                with fs.open(path, "rt") as handle:
+                    return [
+                        normalize(json.loads(line))
+                        for line in handle.read().splitlines()
+                        if line.strip()
+                    ]
+
+        else:
+            root = Path(snapshot)
+
+            def read_rows(filename: str) -> list[dict[str, Any]]:
+                path = root / "entities" / filename
+                if not path.is_file():
+                    return []
+                return [
+                    normalize(json.loads(line))
+                    for line in path.read_text().splitlines()
+                    if line.strip()
+                ]
+
+        return {key: read_rows(filename) for key, filename in file_by_key.items()}
+
+    def _write_topology_manifest(self, *, run_id: str, observed_at: str) -> None:
+        table_uri = self.onelake.table_uri("metadata", "publication_manifest")
+        current_rows = self.delta.read(table_uri) if self.delta.version(table_uri) is not None else []
+        store = PublicationManifestStore.from_list([
+            {
+                "projection_name": str(row.get("projection_name") or ""),
+                "disposition": str(row.get("disposition") or "active"),
+                "compatibility_version": (
+                    str(row.get("compatibility_version"))
+                    if row.get("compatibility_version")
+                    else None
+                ),
+                "retired_reason": (
+                    str(row.get("retired_reason")) if row.get("retired_reason") else None
+                ),
+                "registered_at": str(row.get("registered_at") or ""),
+                "updated_at": str(row.get("updated_at") or ""),
+            }
+            for row in current_rows
+            if str(row.get("projection_name") or "")
+        ])
+        for table_name in ("topology_entities", "topology_edges"):
+            entry = store.get(table_name)
+            if entry.disposition == "unknown":
+                store.register(table_name, disposition="active")
+            else:
+                store.set_disposition(table_name, "active")
+        rows = []
+        for entry in store.to_list():
+            content = {
+                "projection_name": str(entry.get("projection_name") or ""),
+                "disposition": str(entry.get("disposition") or "active"),
+                "compatibility_version": (
+                    str(entry.get("compatibility_version"))
+                    if entry.get("compatibility_version")
+                    else None
+                ),
+                "retired_reason": (
+                    str(entry.get("retired_reason")) if entry.get("retired_reason") else None
+                ),
+                "registered_at": str(entry.get("registered_at") or observed_at),
+                "updated_at": str(entry.get("updated_at") or observed_at),
+            }
+            rows.append(
+                {
+                    "tenant_id": "system",
+                    "subscription_id": "system",
+                    "resource_id": (
+                        "publication-manifest://"
+                        + str(content["projection_name"]).casefold()
+                    ),
+                    "timestamp": observed_at,
+                    "change_version": _hash_json(content),
+                    "ingestion_run_id": run_id,
+                    **content,
+                }
+            )
+        self.delta.write(
+            table_uri,
+            rows,
+            mode=DeltaWriteMode.OVERWRITE,
+            key_columns=("resource_id",),
+            schema=schema_for("metadata_publication_manifest"),
+        )
+
 
 def _state_row(
     run_id: str,
@@ -1684,6 +1950,11 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TypeError(f"Expected object JSON: {path}")
     return payload
+
+
+def _subscription_from_id(value: str) -> str:
+    match = re.search(r"/subscriptions/([^/]+)", str(value), flags=re.IGNORECASE)
+    return str(match.group(1)) if match else ""
 
 
 def _utc_now() -> str:

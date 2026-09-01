@@ -1728,7 +1728,7 @@ def _fabric_vulnerability_service(
             or row.get("resource_key")
             or "",
         }
-        for row in patch.get("defender_assessments") or []
+        for row in defender.get("assessments") or []
     ]
     semantic = runtime.semantic_engine()
     network = _fabric_network_service(runtime)
@@ -2422,6 +2422,10 @@ def build_context() -> ApiContext:
         cached = _hybrid_network_cache.get(cache_key)
         if cached is not None and now - cached[0] < _HYBRID_NETWORK_CACHE_TTL_SECONDS:
             rows = cached[1]
+            observed_at = max(
+                (str(row.get("observed_at") or "") for row in rows),
+                default="",
+            )
         else:
             # Private Link candidates are fetched alongside the network plane
             # so private-endpoint coverage can be judged per resource rather
@@ -2445,9 +2449,12 @@ def build_context() -> ApiContext:
                 subscription_ids=subscription_ids,
             )
             rows = list(observation.rows)
+            observed_at = observation.observed_at
             _hybrid_network_cache[cache_key] = (now, rows)
-        return NetworkIntelligenceService.from_rows(
-            rows, policy=_network_policy_store().read()
+        return NetworkIntelligenceService.from_arg_rows(
+            rows,
+            observed_at=observed_at,
+            policy=_network_policy_store().read(),
         )
 
     def hybrid_vulnerability(

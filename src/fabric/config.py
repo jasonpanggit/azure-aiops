@@ -25,6 +25,11 @@ class OntologyRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class PipelineToggleRuntimeConfig:
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class PatchPolicyRuntimeConfig:
     name: str
     environment: str
@@ -117,6 +122,12 @@ class FabricRuntimeConfig:
     # ODBC driver is unavailable.
     sql_endpoint_enabled: bool = True
     ontology: OntologyRuntimeConfig = field(default_factory=OntologyRuntimeConfig)
+    topology_pipeline: PipelineToggleRuntimeConfig = field(
+        default_factory=PipelineToggleRuntimeConfig
+    )
+    ontology_pipeline: PipelineToggleRuntimeConfig = field(
+        default_factory=PipelineToggleRuntimeConfig
+    )
     patch_policies: tuple[PatchPolicyRuntimeConfig, ...] = field(default_factory=tuple)
     patch_intelligence: PatchIntelligenceRuntimeConfig = field(
         default_factory=PatchIntelligenceRuntimeConfig
@@ -153,6 +164,26 @@ class FabricRuntimeConfig:
             for item in (fabric.get("shortcuts") or [])
         )
         ontology_payload = fabric.get("ontology") or {}
+        raw_topology_payload = fabric.get("topology_pipeline", {})
+        if raw_topology_payload is False:
+            topology_payload = {"enabled": False}
+        elif isinstance(raw_topology_payload, dict):
+            topology_payload = raw_topology_payload
+        else:
+            raise TypeError("fabric.topology_pipeline must be a mapping or false")
+        topology_enabled = topology_payload.get("enabled", False)
+        if not isinstance(topology_enabled, bool):
+            raise TypeError("fabric.topology_pipeline.enabled must be boolean")
+        raw_ontology_pipeline_payload = fabric.get("ontology_pipeline", {})
+        if raw_ontology_pipeline_payload is False:
+            ontology_pipeline_payload = {"enabled": False}
+        elif isinstance(raw_ontology_pipeline_payload, dict):
+            ontology_pipeline_payload = raw_ontology_pipeline_payload
+        else:
+            raise TypeError("fabric.ontology_pipeline must be a mapping or false")
+        ontology_pipeline_enabled = ontology_pipeline_payload.get("enabled", False)
+        if not isinstance(ontology_pipeline_enabled, bool):
+            raise TypeError("fabric.ontology_pipeline.enabled must be boolean")
         raw_patch_payload = fabric.get("patch_intelligence", {})
         if raw_patch_payload is False:
             patch_payload = {"enabled": False}
@@ -256,6 +287,10 @@ class FabricRuntimeConfig:
                 ontology_name=str(
                     ontology_payload.get("ontology_name") or "Operational_Context_Graph"
                 ),
+            ),
+            topology_pipeline=PipelineToggleRuntimeConfig(enabled=topology_enabled),
+            ontology_pipeline=PipelineToggleRuntimeConfig(
+                enabled=ontology_pipeline_enabled
             ),
             patch_policies=tuple(
                 PatchPolicyRuntimeConfig(

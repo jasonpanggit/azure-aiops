@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import pyarrow as pa
 
+from fabric_pipelines.topology_fabric_contracts import (
+    TOPOLOGY_EDGES_CONTRACT,
+    TOPOLOGY_ENTITIES_CONTRACT,
+)
+
 SCHEMA_VERSION = "2.0.0"
 
 _BASE = [
@@ -68,6 +73,20 @@ _ONTOLOGY_RELATIONSHIP = [
     pa.field("ontology_version", pa.string(), nullable=False),
 ]
 
+_TOPOLOGY_ENTITY = [
+    *_BASE,
+    *[
+        field
+        for field in TOPOLOGY_ENTITIES_CONTRACT.schema
+        if field.name not in {"tenant_id", "subscription_id"}
+    ],
+]
+
+_TOPOLOGY_EDGE = [
+    *_BASE,
+    *list(TOPOLOGY_EDGES_CONTRACT.schema),
+]
+
 SCHEMAS: dict[str, pa.Schema] = {
     "assessment_change_findings": pa.schema(
         [
@@ -128,6 +147,8 @@ SCHEMAS: dict[str, pa.Schema] = {
     ),
     "silver_vm_inventory": pa.schema(_ASSET),
     "silver_server_inventory": pa.schema(_ASSET),
+    "topology_entities": pa.schema(_TOPOLOGY_ENTITY),
+    "topology_edges": pa.schema(_TOPOLOGY_EDGE),
     "silver_compliance": pa.schema(
         [
             *_ENTITY,

@@ -29,6 +29,7 @@ from .network_normalize import (
     normalize_private_endpoint,
     normalize_route_table,
     normalize_vnet,
+    private_endpoint_dns_zone_ids,
     private_dns_link_target,
 )
 
@@ -672,11 +673,33 @@ class Normalizer:
                 record("FirewallRule", rule)
                 link(rule["collectionId"], "hasRule", rule["id"])
 
-        for row in payload.get("network_private_endpoints", []):
+        endpoint_rows = payload.get("network_private_endpoints", [])
+        endpoint_zone_ids: dict[str, set[str]] = {}
+        for row in endpoint_rows:
+            if (
+                _lower(row.get("type"))
+                != "microsoft.network/privateendpoints/privatednszonegroups"
+            ):
+                continue
+            child_id = _lower(row.get("id"))
+            parent_id = child_id.split("/privatednszonegroups/", 1)[0]
+            endpoint_zone_ids.setdefault(parent_id, set()).update(
+                private_endpoint_dns_zone_ids(row)
+            )
+
+        for row in endpoint_rows:
+            if _lower(row.get("type")) != "microsoft.network/privateendpoints":
+                continue
             base = _base(row, observed, source)
             base["resourceType"] = _lower(row.get("type"))
             base["tags"] = row.get("tags") or {}
             endpoint = normalize_private_endpoint(base, row, observed)
+            endpoint["privateDnsZoneIds"] = sorted(
+                {
+                    *endpoint["privateDnsZoneIds"],
+                    *endpoint_zone_ids.get(endpoint["id"], set()),
+                }
+            )
             record("PrivateEndpoint", endpoint)
             containment(row, endpoint)
             if endpoint.get("subnetId"):

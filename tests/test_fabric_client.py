@@ -433,6 +433,10 @@ fabric:
     enabled: true
     max_history_rows: 40000
     max_output_items: 60
+  topology_pipeline:
+    enabled: true
+  ontology_pipeline:
+    enabled: false
 """
     )
 
@@ -456,6 +460,8 @@ fabric:
     assert config.predictive.enabled is True
     assert config.predictive.max_history_rows == 40000
     assert config.predictive.max_output_items == 60
+    assert config.topology_pipeline.enabled is True
+    assert config.ontology_pipeline.enabled is False
 
 
 @pytest.mark.parametrize("value", [True, 1.5])

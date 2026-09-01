@@ -189,7 +189,8 @@ NETWORK_RESOURCE_TYPES: dict[str, tuple[str, ...]] = {
         "microsoft.network/firewallpolicies",
         "microsoft.network/firewallpolicies/rulecollectiongroups",
     ),
-    "network_private_endpoints": ("microsoft.network/privateendpoints",),
+    "network_private_endpoints": (    "microsoft.network/privateendpoints",
+    "microsoft.network/privateendpoints/privatednszonegroups",),
     "network_private_dns_zones": (
         "microsoft.network/privatednszones",
         "microsoft.network/privatednszones/virtualnetworklinks",
