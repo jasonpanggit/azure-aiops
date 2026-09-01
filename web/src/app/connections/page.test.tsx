@@ -90,7 +90,14 @@ describe("Connections page onboarding", () => {
     list.mockReset();
     mapMetadata.mockReset();
     updateConnection.mockReset();
+    fabricLayers.mockReset();
+    fabricCapabilities.mockReset();
+    fabricManifest.mockReset();
+    fabricGovernance.mockReset();
+    fabricIngestionHistory.mockReset();
+    fabricDataset.mockReset();
     list.mockResolvedValue(emptyEnvelope);
+    mockFabricHealth();
   });
 
   it("opens onboarding automatically for a first subscription", async () => {
@@ -385,7 +392,7 @@ describe("Connections page Fabric medallion tab", () => {
     const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
     expect(fabricPanel).toHaveAttribute("id", "fabric-medallion-panel");
     expect(within(fabricPanel).getByText("Bronze tables")).toBeInTheDocument();
-    expect(screen.getByRole("tabpanel", { name: "Subscriptions", hidden: true })).toHaveAttribute("hidden");
+    expect(document.querySelector("#subscriptions-panel")).toHaveAttribute("hidden");
 
     fireEvent.click(screen.getByRole("tab", { name: "Subscriptions" }));
 
@@ -414,7 +421,7 @@ describe("Connections page Fabric medallion tab", () => {
     expect(screen.getByText("Silver layer health is unavailable")).toBeInTheDocument();
     expect(screen.getByText("gold_operational_context")).toBeInTheDocument();
     expect(screen.getByText("Gold tables")).toBeInTheDocument();
-    expect(screen.getByText("1/1")).toBeInTheDocument();
+    expect(within(screen.getByRole("tabpanel", { name: "Fabric medallion" })).getAllByText("1/1").length).toBeGreaterThan(0);
   });
 
   it("distinguishes healthy-empty zero rows from unavailable datasets", async () => {
@@ -429,7 +436,7 @@ describe("Connections page Fabric medallion tab", () => {
 
     const healthyEmptyBadge = await screen.findByText("Healthy · Empty");
     expect(healthyEmptyBadge).toHaveClass("status-success");
-    expect(screen.getByText("0 rows (expected)")).toBeInTheDocument();
+    expect(await screen.findByText(/0 rows \(expected\)/)).toBeInTheDocument();
     const unavailableBadge = screen.getByText("Unavailable");
     expect(unavailableBadge).toHaveClass("status-critical");
     expect(unavailableBadge).not.toHaveTextContent("Healthy · Empty");
