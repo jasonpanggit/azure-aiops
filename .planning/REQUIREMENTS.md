@@ -75,7 +75,7 @@ Requirements for the controlled Azure pilot.
 - [x] **MED-06**: Graph publication enforces referential integrity and configurable ownership and tagging quality thresholds without inventing unsupported relationships.
 - [ ] **MED-07**: Cost, compliance, patch, change, incident, and lifecycle analytics retain governed historical facts under explicit retention contracts.
 - [ ] **MED-08**: The Fabric Data Agent is grounded only in curated Gold products and is evaluated reproducibly for groundedness, precision, freshness, citations, and safe degradation.
-- [ ] **MED-09**: Generated ontology projections are governed by a publication manifest, lifecycle status, and consumer-facing abstraction that prevents direct dependency on unstable physical tables.
+- [x] **MED-09**: Generated ontology projections are governed by a publication manifest, lifecycle status, and consumer-facing abstraction that prevents direct dependency on unstable physical tables.
 - [ ] **MED-10**: Fabric data access, lineage, capacity health, and Delta maintenance controls are implemented with least privilege and are visible through scope-enforced API and web surfaces.
 
 ## v2 Requirements
@@ -171,7 +171,7 @@ Traceability is populated during roadmap creation.
 | MED-06 | Phase 10 | Complete |
 | MED-07 | Phase 10 | Pending |
 | MED-08 | Phase 10 | Pending |
-| MED-09 | Phase 10 | Pending |
+| MED-09 | Phase 10 | Complete |
 | MED-10 | Phase 10 | Pending |
 
 **Coverage:**
