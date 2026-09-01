@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03-06-PLAN.md
 status: in_progress
-stopped_at: Completed 10-11-PLAN.md
-last_updated: "2026-09-01T16:45:17.114Z"
+stopped_at: Completed 10-12-PLAN.md
+last_updated: "2026-09-01T17:07:36.750Z"
 progress:
   total_phases: 8
   completed_phases: 3
   total_plans: 70
-  completed_plans: 60
+  completed_plans: 61
 ---
 
 # Phase 03: Safe Remediation Execution
@@ -70,6 +70,7 @@ progress:
 | Phase 10 P09 | 30min | 3 tasks | 4 files |
 | Phase 10 P10 | 4min | 3 tasks | 2 files |
 | Phase 10 P11 | 4min | 3 tasks | 5 files |
+| Phase 10 P12 | 7min | 4 tasks | 5 files |
 
 ## Decisions
 
@@ -88,9 +89,12 @@ progress:
 - [Phase 10]: Gold grounding retrieval now fails closed via GoldGroundingUnavailable and caller degradation instead of fabricated evidence.
 - [Phase 10]: Gold-grounding contract enforces citation presence and /subscriptions/ ARM resource-id shape at model-construction time.
 - [Phase 10]: Gold grounding telemetry records only low-cardinality degraded attributes with 40-char reason truncation.
+- [Phase 10]: Gold-grounding evidence remains a qualifying layer in the existing narration context; no second prompt/orchestrator path was introduced.
+- [Phase 10]: Inventory read-port is authoritative for identity/lifecycle; citation conflicts are surfaced explicitly and counted per citation.
+- [Phase 10]: Gold-grounding baseline artifact is committed as an empty scaffold and populated only by live scheduled evaluation runs.
 
 ## Session
 
-**Last session:** 2026-09-01T16:45:17.102Z
-**Stopped at:** Completed 10-11-PLAN.md
+**Last session:** 2026-09-01T17:07:36.736Z
+**Stopped at:** Completed 10-12-PLAN.md
 **Resume file:** None

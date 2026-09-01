@@ -21,3 +21,12 @@ current task's changes).
   `tests/test_incremental_sync.py`, and `tests/test_api_vulnerability_router.py`
   (the modules that reference `data_quality`/`DataQualityValidator`) all pass
   green after the 10-02 changes. Re-check once the 10-03-adjacent work lands.
+
+## From 10-12 execution (summary ledger write)
+
+- **`.planning/WINDOWS.md` contains a pre-existing invalid kind value
+  (`"live-source-data"`).** The `gsd_run windows append --kind stub ...` call
+  failed while trying to record the intentional baseline placeholder stub.
+  This is outside 10-12 implementation scope; the 10-12 summary still records
+  the stub locally under "Known Stubs". Reconcile the invalid ledger entry
+  format before the next ship gate that relies on WINDOWS parsing.
