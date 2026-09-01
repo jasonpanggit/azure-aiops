@@ -2,7 +2,7 @@
 status: resolved
 trigger: "It still shows model not supported in foundry portal"
 created: 2026-09-01T11:48:05+08:00
-updated: 2026-09-01T12:21:00+08:00
+updated: 2026-09-01T12:24:00+08:00
 ---
 
 # Debug Session: Foundry Portal Model Support
@@ -117,6 +117,10 @@ updated: 2026-09-01T12:21:00+08:00
   checked: Final pre-commit validation and worktree scope
   found: `terraform fmt -check`, `terraform validate`, and scoped `git diff --check` pass. The source diff remains exactly two model/version substitutions across `infra/terraform/variables.tf` and `infra/README.md`; unrelated dirty files remain unstaged.
   implication: The archived fix is valid and can be committed without absorbing unrelated worktree changes.
+- timestamp: 2026-09-01T12:24:00+08:00
+  checked: Archive and persistence
+  found: Source fix committed as `f5ae8447`; resolved session committed as `81625904`; knowledge-base entry committed as `9c82eadb`. MemPalace indexing was skipped because project configuration has it disabled; the Markdown knowledge base is the durable fallback.
+  implication: Resolution artifacts are archived and durable, with unrelated worktree changes left outside these commits.
 
 ## Resolution
 
@@ -171,10 +175,10 @@ files_changed:
 
 ## Current Focus
 
-- hypothesis: Confirmed—the current latest Knowledge-enabled agent versions are portal-compatible because they use a model that Microsoft's current matrix supports for both Azure AI Search and MCP.
+- hypothesis: Confirmed and archived—the current latest Knowledge-enabled agent versions use a model that Microsoft's current matrix supports for both Azure AI Search and MCP.
 - test: Accepted derived contract oracle: official compatibility matrix plus authoritative latest-agent/deployment metadata plus successful fresh Search/MCP Responses.
 - expecting: Satisfied for all eight current specialists.
-- next_action: Commit only `infra/terraform/variables.tf` and `infra/README.md`, then commit this resolved session and its knowledge-base entry through the GSD docs commit helper.
+- next_action: None; session complete. Portal users must select the latest agent version rather than a historical `gpt-5-mini` version.
 - bug_class: bohrbug
 - reasoning_checkpoint:
     hypothesis: The selected prompt-agent model is outside the direct Azure AI Search compatibility matrix.
