@@ -661,3 +661,263 @@ class TestFabricMedallionRouterTask1:
             headers=_auth(SCOPED_TOKEN),
         )
         assert hidden_detail.status_code == 404
+
+
+class TestFabricMedallionRouterTask2:
+    @pytest.fixture
+    def fabric_medallion_capabilities_client(self, tmp_path, monkeypatch) -> TestClient:
+        from api.routers import fabric_medallion as fabric_medallion_router
+
+        context = ApiContext(
+            onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+            authenticator=StaticTokenAuthenticator(_principals()),
+            authorizer=Authorizer(),
+            telemetry=ApiTelemetry(),
+        )
+        app = create_app(context)
+        app.include_router(fabric_medallion_router.router)
+
+        now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        source_rows = [
+            {
+                "source_family": "gold_operational_context",
+                "status": "succeeded",
+                "availability": "healthy",
+                "quality": "complete",
+                "row_count": 4,
+                "ingested_at": now,
+                "lineage_ref": "gold-ops-entity",
+                "requested_scope_json": json.dumps({"subscription": [SUB_A]}),
+                "subscription_id": SUB_A,
+                "subscription_connection": "conn-a",
+            },
+            {
+                "source_family": "silver_incidents",
+                "status": "failed",
+                "availability": "degraded",
+                "quality": "incomplete",
+                "row_count": 0,
+                "ingested_at": now,
+                "error": "capacity throttled",
+                "lineage_ref": "silver-incident-entity",
+                "requested_scope_json": json.dumps({"subscription": [SUB_A]}),
+                "subscription_id": SUB_A,
+                "subscription_connection": "conn-a",
+            },
+            {
+                "source_family": "bronze_inventory",
+                "status": "unavailable",
+                "availability": "unavailable",
+                "quality": "unknown",
+                "row_count": 0,
+                "ingested_at": now,
+                "error": "workspace offline",
+                "lineage_ref": "bronze-inventory-entity",
+                "requested_scope_json": json.dumps({"subscription": [SUB_A]}),
+                "subscription_id": SUB_A,
+                "subscription_connection": "conn-a",
+            },
+        ]
+
+        quality_rows = [
+            {
+                "observed_at": now,
+                "report_json": json.dumps(
+                    [
+                        {
+                            "table_name": "silver_incidents",
+                            "rule_counts": {
+                                "ownership_coverage": 2,
+                                "tag_coverage": 1,
+                                "orphan_relationships": 3,
+                            },
+                        },
+                        {
+                            "table_name": "gold_operational_context",
+                            "rule_counts": {
+                                "ownership_coverage": 1,
+                                "tag_coverage": 0,
+                                "orphan_relationships": 1,
+                            },
+                        },
+                    ]
+                ),
+            }
+        ]
+
+        publication_rows = [
+            {
+                "projection_name": "ontology_entities",
+                "status": "succeeded",
+                "attempted_at": now,
+                "attempts": 1,
+                "retry_eligible": False,
+                "message": "",
+                "source": "publication-manifest",
+            }
+        ]
+
+        semantic_entities = {
+            "gold-ops-entity": {
+                "upstream": ["silver-incident-entity"],
+                "downstream": [],
+                "lineage_depth": 1,
+            },
+            "silver-incident-entity": {
+                "upstream": ["bronze-inventory-entity"],
+                "downstream": ["gold-ops-entity"],
+                "lineage_depth": 2,
+            },
+            "bronze-inventory-entity": {
+                "upstream": [],
+                "downstream": ["silver-incident-entity"],
+                "lineage_depth": 0,
+            },
+        }
+
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "_scoped_source_rows",
+            lambda _context, _scope: source_rows,
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "_metadata_quality_report_rows",
+            lambda _context, _scope: quality_rows,
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "_publication_attempt_rows",
+            lambda _context, _scope: publication_rows,
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "_capacity_config",
+            lambda _context, _scope: {
+                "subscription_id": SUB_A,
+                "resource_group": "rg-fabric",
+                "capacity_name": "cap-aiops-prod",
+                "workspace_id": "workspace-abc",
+                "lakehouse_id": "lakehouse-def",
+            },
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "check_capacity_state",
+            lambda **_kwargs: {"status": "healthy", "reason": "", "checked_at": now},
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "list_roles",
+            lambda _workspace_id, _item_id: [
+                {"principal": "reader", "role": "Lakehouse.Reader"},
+                {"principal": "contributor", "role": "Lakehouse.Contributor"},
+            ],
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "last_maintenance_status",
+            lambda _workspace_id, _lakehouse_id: {
+                "status": "healthy",
+                "checked_at": now,
+                "last_compaction_at": now,
+            },
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "_semantic_entities",
+            lambda _context: semantic_entities,
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "entity_lineage_summary",
+            lambda entity_id, entities: {
+                "entity_id": entity_id,
+                "upstream_count": len(entities.get(entity_id, {}).get("upstream", [])),
+                "downstream_count": len(
+                    entities.get(entity_id, {}).get("downstream", [])
+                ),
+                "lineage_depth": entities.get(entity_id, {}).get("lineage_depth", 0),
+            },
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "native_lineage_url",
+            lambda workspace_id: f"https://fabric.microsoft.com/lineage/{workspace_id}",
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "_semantic_readiness",
+            lambda _context, _scope: {
+                "status": "deployment-blocked",
+                "reason": "definition_validated_not_deployed",
+            },
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "gold_grounding_configured",
+            lambda _scope: True,
+        )
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_fabric_medallion_governance_returns_gap_and_blocker_counts(
+        self, fabric_medallion_capabilities_client
+    ):
+        response = fabric_medallion_capabilities_client.get(
+            "/api/v1/fabric-medallion/governance", headers=_auth(ADMIN_TOKEN)
+        )
+        assert response.status_code == 200
+
+        payload = response.json()["data"]
+        assert payload["ownership_gap_count"] == 3
+        assert payload["tag_gap_count"] == 1
+        assert payload["referential_integrity_blockers"] == 4
+        assert payload["gaps"][0]["table_name"] == "silver_incidents"
+        assert all("owner" not in entry for entry in payload["gaps"])
+
+    def test_fabric_medallion_ingestion_history_marks_retry_eligibility(
+        self, fabric_medallion_capabilities_client
+    ):
+        response = fabric_medallion_capabilities_client.get(
+            "/api/v1/fabric-medallion/ingestion-history",
+            headers=_auth(ADMIN_TOKEN),
+        )
+        assert response.status_code == 200
+
+        runs = response.json()["data"]["runs"]
+        by_status = {row["status"]: row for row in runs}
+        assert by_status["failed"]["retry_eligible"] is True
+        assert by_status["unavailable"]["retry_eligible"] is False
+        assert by_status["succeeded"]["retry_eligible"] is False
+
+    def test_fabric_medallion_capabilities_compose_read_only_signals_and_lineage(
+        self, fabric_medallion_capabilities_client
+    ):
+        response = fabric_medallion_capabilities_client.get(
+            "/api/v1/fabric-medallion/capabilities",
+            headers=_auth(ADMIN_TOKEN),
+        )
+        assert response.status_code == 200
+
+        data = response.json()["data"]
+        assert data["capacity"]["status"] == "healthy"
+        assert data["data_access_roles"]["status"] == "available"
+        assert data["data_access_roles"]["total_roles"] == 2
+        assert data["maintenance"]["status"] == "healthy"
+        assert data["semantic_readiness"]["status"] == "deployment-blocked"
+        assert data["data_agent_readiness"]["status"] == "available"
+        assert data["lineage"]["native_lineage_url"].endswith("/workspace-abc")
+        assert any(
+            row["table_name"] == "gold_operational_context"
+            and row["lineage"]["upstream_count"] == 1
+            for row in data["lineage"]["datasets"]
+        )
+
+    def test_fabric_medallion_router_routes_are_get_only(self):
+        from api.routers import fabric_medallion as fabric_medallion_router
+
+        for route in fabric_medallion_router.router.routes:
+            if not route.path.startswith("/api/v1/fabric-medallion"):
+                continue
+            methods = set(getattr(route, "methods", set()))
+            assert methods <= {"GET", "HEAD", "OPTIONS"}
