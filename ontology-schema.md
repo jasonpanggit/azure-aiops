@@ -68,17 +68,17 @@ Properties: `azureResourceId`, `vmId`, `vmSize`, `osType`, `powerState`, `provis
 
 Authority: ARG for inventory; Compute/Resource Health for runtime status.
 
-### ArcMachine
+### ArcServer
 
-Azure Arc-enabled server represented by `Microsoft.HybridCompute/machines`.
+Azure Arc-enabled server represented by `Microsoft.HybridCompute/machines`. (Physical entity type name: `ArcServer` — matches `fabric.dataset_mapper.ONTOLOGY_ENTITY_TYPES` exactly; this section previously used the non-implemented alias `ArcMachine`.)
 
 Properties: `azureResourceId`, `machineId`, `agentVersion`, `status`, `osType`, `osName`, `lastStatusChange`, `connectivityState`, `patchAssessmentMode`.
 
 Authority: ARG and Azure Arc APIs.
 
-### AKSCluster
+### KubernetesCluster
 
-Azure Kubernetes Service cluster boundary.
+Azure Kubernetes Service cluster boundary. (Physical entity type name: `KubernetesCluster` — matches `fabric.dataset_mapper.ONTOLOGY_ENTITY_TYPES` exactly; this section previously used the non-implemented alias `AKSCluster`.)
 
 Properties: `azureResourceId`, `kubernetesVersion`, `fqdn`, `privateFqdn`, `provisioningState`, `nodeResourceGroup`, `identityType`, `networkPlugin`.
 
@@ -131,6 +131,30 @@ A source-referenced person only where policy permits.
 Properties: `entraObjectId`, `userPrincipalNameHash` or approved UPN, `displayName`, `employmentState`, `contactReference`.
 
 Authority: Entra ID. Minimize personal data; do not copy group membership history into the ontology unless required.
+
+### RoleAssignment
+
+An observed RBAC grant: one security principal holding one role at one scope. This is the primary access-governance signal — who can do what, and how far that reach extends.
+
+Properties: `principalId` (the security principal's object id — not display name; names never establish identity), `principalType` (`User`, `Group`, `ServicePrincipal`, or `ManagedIdentity`), `roleDefinitionId` (reference to the granted `RoleDefinition`), `assignmentScope` (the ARM scope the grant applies to — management group, subscription, resource group, or resource), `createdOn`, `updatedOn` (used to assess staleness against the access-review threshold).
+
+Authority: ARG `authorizationresources`. Never enumerated or copied beyond the observed subscriptions a connection is onboarded for — a principal's blast radius is always relative to observed scope, not implied to be tenant-absolute.
+
+### RoleDefinition
+
+A built-in or custom Azure role's name and permission set, used to classify a `RoleAssignment` as privileged.
+
+Properties: `roleName`, `roleType` (`BuiltInRole` or `CustomRole`), `actions` (the permission strings that determine privilege, e.g. wildcard or `Microsoft.Authorization/*`), `description`.
+
+Authority: ARG `authorizationresources`.
+
+### ManagedIdentity
+
+A system- or user-assigned managed identity, tracked so an identity holding no observed role assignment is still visible — an unused identity is itself a governance finding, not silence.
+
+Properties: `principalId`, `clientId`, `location`, `resourceGroup`, and the attaching resource when resolvable from the identity's own resource metadata.
+
+Authority: ARG `Resources`.
 
 ### Incident
 
@@ -272,6 +296,14 @@ Every relationship has:
 
 Per-source assertions are preserved. A deterministic effective-edge view selects accepted, non-expired assertions under a versioned precedence/confidence policy.
 
+### Effective graph views
+
+- **Evidence view:** every assertion exactly as received/scored.
+- **Current accepted view:** accepted, non-expired assertions above predicate threshold.
+- **Proposed view:** candidate mappings for stewards.
+- **Incident-time view:** graph as observed at an incident timestamp.
+- **Agent-safe view:** accepted edges plus confidence/source/timestamp, with sensitive fields removed.
+
 ## 7. Required relationship semantics
 
 | Predicate | Allowed examples | Meaning |
@@ -279,7 +311,7 @@ Per-source assertions are preserved. A deterministic effective-edge view selects
 | `belongsTo` | Azure asset → ResourceGroup; ResourceGroup → Subscription; Person → Team; asset/application → CostCentre | Administrative or governed membership. |
 | `ownedBy` | asset/Application/BusinessService/Runbook/CostCentre → Team or Person | Accountable ownership, not mere creator/access. |
 | `supports` | Resource/Application/Team → Application or BusinessService | Subject contributes capability to object. |
-| `hosts` | VM/ArcMachine/AKSCluster/Resource → Application | Subject provides execution boundary. |
+| `hosts` | VM/ArcServer/KubernetesCluster/Resource → Application | Subject provides execution boundary. |
 | `dependsOn` | Application/BusinessService/asset → Application or asset | Subject requires object for correct operation. |
 | `calls` | Application → Application/Database/StorageAccount | Observed logical invocation. |
 | `connectsTo` | asset/Application → asset | Network/session connectivity without claiming semantic dependency. |
@@ -294,6 +326,16 @@ Per-source assertions are preserved. A deterministic effective-edge view selects
 | `hasStep` | RemediationPlan → ExecutionStep | Plan includes an ordered proposed execution step. |
 | `hasRollbackPlan` | RemediationPlan → RollbackPlan | Plan has a rollback or compensation strategy. |
 | `hasSimulation` | RemediationPlan → SimulationResult | Plan has a bounded scenario simulation result. |
+
+### Access-governance relationships
+
+Entity types are registered (`fabric.dataset_mapper.ONTOLOGY_ENTITY_TYPES` includes `RoleAssignment`, `RoleDefinition`, `ManagedIdentity`); the predicates below are the intended contract. `ONTOLOGY_RELATIONSHIP_TYPES` does not yet wire connecting edges for these three types — see §10 for current implementation status.
+
+| Predicate | Allowed examples | Meaning |
+|---|---|---|
+| `grantedTo` | RoleAssignment → ManagedIdentity (or an equivalent User/Group/ServicePrincipal reference retained as a source pointer, not a published Team/individual entity) | The subject RoleAssignment grants access to the object security principal. |
+| `definedBy` | RoleAssignment → RoleDefinition | The subject RoleAssignment's permissions are defined by the object RoleDefinition. |
+| `scopedTo` | RoleAssignment → Resource (or a management group/subscription/resource-group scope recorded on the assignment itself when no single Resource entity represents that scope) | The subject RoleAssignment applies at the object's scope. |
 
 ### Incident-learning extension relationships
 
@@ -347,6 +389,18 @@ Recommended managed OneLake tables:
 - `entity_alias`, `evidence_reference`, `steward_decision`, `source_watermark`, and `publication_manifest`.
 
 Current preview constraints include managed Lakehouse tables, one static binding per entity type, string/integer identity keys, restrictions around OneLake security/Delta column mapping, and explicit graph refresh.[1][2] Validate all constraints in a spike before production.
+
+### Current implementation status against this logical contract
+
+`fabric.dataset_mapper.ONTOLOGY_ENTITY_TYPES`/`ONTOLOGY_RELATIONSHIP_TYPES` are the live physical vocabulary. This document is the target logical contract; the two are not yet fully converged. Known gaps as of this reconciliation:
+
+- **Implemented and name-aligned:** `Resource`, `Subscription`, `ResourceGroup`, `VirtualMachine`, `ArcServer`, `KubernetesCluster`, `Application`, `BusinessService`, `Incident`, `RemediationPlan`, `ApprovalRequirement`, `ApprovalDecision`, `ExecutionStep`, `RollbackPlan`, `RiskAssessment`, `SimulationResult`, `RootCause`, `RoleAssignment`, `RoleDefinition`, `ManagedIdentity`, plus the `requiresPlan`/`mitigatesRisk`/`protectsService`/`requiresApproval`/`hasApprovalDecision`/`hasStep`/`hasRollbackPlan`/`hasSimulation`/`supports`/`impacts`/`belongsTo` predicates.
+- **Implemented under a different physical name:** `Team` is split across `SupportTeam` (operational support) and `Owner` (accountability); `Patch` is split across `PatchAssessment` and `PatchInstallation`; `Finding` is represented by the more specific `OperationalFinding`, `AdvisorRecommendation`, and Defender-family entity types (`DefenderAssessment`, `SecurityAlert`, etc.) rather than one unified type.
+- **Not yet backed by a dedicated entity type** (currently folded into the generic `Resource` bucket): `Database`, `StorageAccount`.
+- **Not yet implemented:** `Runbook`, `CostCentre`, `Person`.
+- **Registered but not yet connected:** `RoleAssignment`/`RoleDefinition`/`ManagedIdentity` exist as entity types (`ONTOLOGY_ENTITY_TYPES`) but `ONTOLOGY_RELATIONSHIP_TYPES` does not yet include the `grantedTo`/`definedBy`/`scopedTo` edges from §7 — the identity-governance entities are ingested but not yet graph-connected.
+
+Closing these gaps (or deciding to retire the unimplemented logical types) is tracked as Phase 10 follow-up work, not resolved by this reconciliation pass.
 
 ## 11. Quality invariants
 
