@@ -17,6 +17,8 @@ from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.models import PatchTarget
 from operations.patching.service import PatchingService, PatchValidationError
 
+from .execution_verifier import ExecutionVerificationUnavailable, ExecutionVerifier
+
 # The only action_id this phase authorizes for execution. Every other
 # governed catalog action remains recommendation-only (EXEC-01).
 CONTROLLED_PATCH_RECOVERY = "controlled-patch-recovery"
@@ -49,11 +51,13 @@ class RemediationExecutionService:
         plan_repository: Any,
         patching_service: PatchingService,
         execution_store: Any | None = None,
+        execution_verifier: ExecutionVerifier | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._plans = plan_repository
         self._patching = patching_service
         self._store = execution_store
+        self._verifier = execution_verifier
         self._now = now
 
     def execute(self, plan_id: str, *, requested_by: str) -> dict[str, Any]:
@@ -109,7 +113,12 @@ class RemediationExecutionService:
         if self._store is not None:
             record = self._store.create(plan_id, requested_by=requested_by)
             execution_id = record["execution_id"]
-            self._store.update(execution_id, status="running")
+            rollback_guidance = list(
+                (plan.get("rollback_plan") or {}).get("rollback_actions") or []
+            )
+            self._store.update(
+                execution_id, status="running", rollback_guidance=rollback_guidance
+            )
 
         target, patch_ids = self._resolve_target(plan)
         try:
@@ -131,21 +140,85 @@ class RemediationExecutionService:
                 "message": message,
             }
 
+        # Submission acceptance and a verified outcome are distinct states.
+        # If a verifier is configured, the record stays "running" until a
+        # poll confirms a terminal ARM outcome; without a verifier
+        # configured, the pre-existing (03-02) behavior of recording
+        # "succeeded" immediately is preserved for callers that have not
+        # wired verification.
+        terminal_status = "running" if self._verifier is not None else "succeeded"
         if execution_id is not None:
             self._store.update(
                 execution_id,
-                status="succeeded",
+                status=terminal_status,
                 provider_job_id=run.provider_job_id,
                 message=run.message,
             )
         return {
             "execution_id": execution_id,
             "plan_id": plan_id,
-            "status": "succeeded",
+            "status": terminal_status,
             "provider_job_id": run.provider_job_id,
             "message": run.message,
             "run_id": run.run_id,
         }
+
+    def poll_verification(self, execution_id: str) -> dict[str, Any]:
+        """Poll the real upstream source of truth for one running execution.
+
+        A terminal ARM outcome ("succeeded"/"failed") updates the stored
+        record accordingly. A still-running outcome is a no-op -- the
+        record stays "running". A not-verifiable or verification-unavailable
+        result leaves ``status`` unchanged but appends a note to ``message``
+        so a poller can see verification itself is degraded, without
+        falsely claiming success or failure.
+        """
+        if self._store is None:
+            raise RemediationExecutionError(
+                "No execution store is configured; nothing to poll",
+                reason="store_not_configured",
+                details={"execution_id": execution_id},
+            )
+        record = self._store.get(execution_id)
+        if record is None:
+            raise RemediationExecutionError(
+                f"Execution {execution_id!r} was not found",
+                reason="execution_not_found",
+                details={"execution_id": execution_id},
+            )
+        if self._verifier is None:
+            return record
+
+        try:
+            outcome = self._verifier.verify(record)
+        except ExecutionVerificationUnavailable as exc:
+            note = f"Verification unavailable: {exc}"
+            message = _append_note(record.get("message"), note)
+            return self._store.update(execution_id, message=message)
+
+        if not outcome.get("verifiable", False):
+            note = f"Verification not available: {outcome.get('reason', 'unknown')}"
+            message = _append_note(record.get("message"), note)
+            return self._store.update(execution_id, message=message)
+
+        result_outcome = outcome.get("outcome")
+        if result_outcome == "succeeded":
+            return self._store.update(
+                execution_id,
+                status="succeeded",
+                verified_state=outcome.get("verified_state", ""),
+            )
+        if result_outcome == "failed":
+            return self._store.update(
+                execution_id,
+                status="failed",
+                verified_state=outcome.get("verified_state", ""),
+                failure_details=outcome.get("failure_details", ""),
+            )
+        # Still running -- no-op, but record the latest verified_state seen.
+        return self._store.update(
+            execution_id, verified_state=outcome.get("verified_state", "")
+        )
 
     def _latest_decision(self, plan_id: str) -> dict[str, Any] | None:
         decisions = self._plans.decisions.list(plan_id) if hasattr(self._plans, "decisions") else []
@@ -181,6 +254,15 @@ class RemediationExecutionService:
             )
         patch_ids = sorted(target.available_patch_ids)
         return target, patch_ids
+
+
+def _append_note(existing_message: Any, note: str) -> str:
+    text = str(existing_message or "").strip()
+    if not text:
+        return note
+    if note in text:
+        return text
+    return f"{text} | {note}"
 
 
 __all__ = [
