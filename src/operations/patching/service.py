@@ -23,6 +23,9 @@ from .models import (
     OPERATION_NODE_IMAGE_UPGRADE,
     RUN_STATE_FAILED,
     RUN_STATE_PENDING,
+    TARGET_KIND_AKS_NODE,
+    TARGET_KIND_ARC_SERVER,
+    TARGET_KIND_AZURE_VM,
     AvailablePatch,
     PatchRun,
     PatchTarget,
@@ -100,8 +103,17 @@ class PatchingService:
 
     def targets(self, scope: Any = None) -> list[PatchTarget]:
         """Patchable compute inventory in scope, with available patches."""
-        rows = self._vulnerability.server_exposures(scope)
-        return [self._target_from_exposure(row) for row in rows]
+        supported_kinds = {
+            TARGET_KIND_AKS_NODE,
+            TARGET_KIND_ARC_SERVER,
+            TARGET_KIND_AZURE_VM,
+        }
+        rows = self._vulnerability.asset_exposures(scope)
+        return [
+            self._target_from_exposure(row)
+            for row in rows
+            if row.get("inventory_kind") in supported_kinds
+        ]
 
     def target(self, target_id: str, scope: Any = None) -> PatchTarget | None:
         normalized = str(target_id or "").strip()
@@ -111,7 +123,7 @@ class PatchingService:
         return None
 
     def _target_from_exposure(self, row: dict[str, Any]) -> PatchTarget:
-        target_id = str(row.get("server_id") or "")
+        target_id = str(row.get("asset_id") or "")
         inventory_kind = str(row.get("inventory_kind") or "")
         patches = self._available_patches(target_id, inventory_kind, row)
         is_node_image = operation_for_kind(inventory_kind) == OPERATION_NODE_IMAGE_UPGRADE

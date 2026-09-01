@@ -1,7 +1,7 @@
 import cytoscape from "cytoscape";
 import { describe, expect, it } from "vitest";
 
-import { STYLESHEET, applyHoverFocus, clearHoverFocus } from "./TopologyGraph";
+import { STYLESHEET, applyHoverFocus, clearHoverFocus, syncFindingBadge } from "./TopologyGraph";
 
 /**
  * Cytoscape validates stylesheet property values at instantiation and throws if
@@ -42,6 +42,34 @@ describe("topology stylesheet", () => {
     const cy = mount([{ data: { id: "a", kind: "hub", icon: "/azure-icons/fw.svg" } }]);
 
     expect(cy.getElementById("a").style("background-image")).toBe("/azure-icons/fw.svg");
+  });
+
+  it("removes a stale badge when the node no longer has findings", () => {
+    const cy = mount([{ data: { id: "a", kind: "hub", icon: "/azure-icons/vnet.svg", label: "hub" } }]);
+    const node = cy.getElementById("a");
+
+    syncFindingBadge(node, { severity: "critical", count: 1 });
+    expect(node.style("background-image")).toContain("data:image/svg+xml");
+
+    syncFindingBadge(node, undefined);
+
+    expect(node.data("badge")).toBeUndefined();
+    expect(node.style("background-image")).toBe("/azure-icons/vnet.svg");
+
+    syncFindingBadge(node, { severity: "high", count: 2 });
+    expect(node.style("background-image")).toContain("data:image/svg+xml");
+  });
+
+  it("clears a stale badge from a node that has no service icon", () => {
+    const cy = mount([{ data: { id: "a" } }]);
+    const node = cy.getElementById("a");
+
+    syncFindingBadge(node, { severity: "critical", count: 1 });
+    expect(node.style("background-image")).toContain("data:image/svg+xml");
+
+    syncFindingBadge(node, undefined);
+
+    expect(node.style("background-image")).toBe("none");
   });
 });
 

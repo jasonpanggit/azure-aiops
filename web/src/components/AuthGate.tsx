@@ -29,12 +29,38 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   return (
     <>
-      <AuthenticatedTemplate>{children}</AuthenticatedTemplate>
+      <AuthenticatedTemplate>
+        <AuthenticatedShell>{children}</AuthenticatedShell>
+      </AuthenticatedTemplate>
       <UnauthenticatedTemplate>
         <SignInPrompt />
       </UnauthenticatedTemplate>
     </>
   );
+}
+
+/**
+ * Holds the app back until MSAL has finished starting up.
+ *
+ * `AuthenticatedTemplate` renders as soon as a cached account exists, which
+ * happens before `initialize()`/`handleRedirectPromise()` have resolved on a
+ * browser refresh. Pages mount and immediately fire API calls against an
+ * instance that cannot yet issue tokens, so the requests go out with no
+ * Authorization header and the API rejects them with "A bearer token is
+ * required". Waiting for `inProgress` to settle removes that startup race.
+ */
+function AuthenticatedShell({ children }: { children: React.ReactNode }) {
+  const { inProgress } = useMsal();
+
+  if (inProgress === InteractionStatus.Startup || inProgress === InteractionStatus.HandleRedirect) {
+    return (
+      <div style={{ display: "flex", justifyContent: "center", padding: tokens.spacingVerticalXXL }}>
+        <Spinner label="Restoring session..." />
+      </div>
+    );
+  }
+
+  return <>{children}</>;
 }
 
 function SignInPrompt() {

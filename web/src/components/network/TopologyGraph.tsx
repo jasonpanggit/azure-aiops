@@ -45,6 +45,23 @@ function severityBadgeUri(severity: string): string {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
+/** Synchronizes one node's imperative Cytoscape badge data with its finding. */
+export function syncFindingBadge(
+  node: cytoscape.NodeSingular,
+  finding: { severity: string; count: number } | undefined
+): void {
+  if (finding) {
+    const badge = severityBadgeUri(finding.severity);
+    node.data("badge", badge);
+    node.data("badgeTitle", `${finding.count} open finding${finding.count === 1 ? "" : "s"} (${finding.severity})`);
+    node.style("background-image", [node.data("icon") || "none", badge]);
+  } else {
+    node.removeData("badge");
+    node.removeData("badgeTitle");
+    node.style("background-image", node.data("icon") || "none");
+  }
+}
+
 /**
  * Cytoscape stylesheet. Official Azure icons sit on a white tile and are only
  * framed by a role-coloured border — Microsoft's icon terms forbid altering the
@@ -430,13 +447,7 @@ export default function TopologyGraph({
     cy.batch(() => {
       cy.nodes().forEach((node) => {
         const finding = findingSeverityByResource?.get(node.id());
-        if (finding) {
-          node.data("badge", severityBadgeUri(finding.severity));
-          node.data("badgeTitle", `${finding.count} open finding${finding.count === 1 ? "" : "s"} (${finding.severity})`);
-        } else {
-          node.removeData("badge");
-          node.removeData("badgeTitle");
-        }
+        syncFindingBadge(node, finding);
       });
     });
   }, [findingSeverityByResource, elements]);

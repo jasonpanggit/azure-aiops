@@ -99,7 +99,20 @@ class OneLakeDocumentStore:
         A missing or malformed document reads as empty rather than raising:
         callers treat "no document" and "unreadable document" identically
         (start from scratch), and a corrupt blob must not take the API down.
+
+        Guarded by the same lock as :meth:`write`: ``upload_data`` on OneLake's
+        DFS endpoint is a non-atomic create/append/flush sequence, so an
+        unguarded read racing a concurrent write in this process could observe
+        a partially-written (empty or truncated) file, fail to parse it, and
+        silently return ``{}`` -- making an existing connection look
+        "not registered" for the instant the write was in flight. The lock
+        only serializes this process's own threads; cross-replica safety
+        still comes from the revision compare-and-swap in :meth:`write`.
         """
+        with self._lock:
+            return self._read_locked(name)
+
+    def _read_locked(self, name: str) -> dict[str, Any]:
         path = self._path(name)
         try:
             if self.is_remote:
@@ -127,7 +140,7 @@ class OneLakeDocumentStore:
         into a :class:`DocumentConflictError` the caller retries.
         """
         with self._lock:
-            current = int(self.read(name).get("revision") or 0)
+            current = int(self._read_locked(name).get("revision") or 0)
             if current != expected_revision:
                 raise DocumentConflictError(
                     f"Document {name} changed during update (revision {current}, "

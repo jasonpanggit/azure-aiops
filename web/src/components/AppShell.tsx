@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { healthApi, type HealthResponse } from "../lib/services";
+import { AccountMenu } from "./AccountMenu";
 import { ScopeSelector } from "./ScopeSelector";
 
 const PRIMARY_NAV = [
@@ -133,9 +134,7 @@ export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
           <span className="shell-status-dot" />
           Advisory mode
         </div>
-        <div className="shell-avatar" aria-label="Signed-in operator">
-          OP
-        </div>
+        <AccountMenu />
       </header>
 
       <aside className={`shell-sidebar${open ? " shell-sidebar-open" : ""}`} aria-label="Primary navigation">

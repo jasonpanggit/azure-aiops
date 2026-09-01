@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess  # nosec B404
 import time
 from collections.abc import Callable
@@ -11,6 +12,8 @@ from typing import Any, Protocol
 import httpx
 
 from .query_contract import QuerySpec
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -249,14 +252,34 @@ class AzureCostManagementClient:
         end_date = (end or datetime.now(UTC)).astimezone(UTC).date()
         start_date = end_date - lookback + timedelta(days=1)
         rows: list[dict[str, Any]] = []
+        failures: list[str] = []
         for subscription_id in subscription_ids:
-            rows.extend(
-                self._query_subscription(
-                    str(subscription_id),
-                    access_token=access_token,
-                    start=start_date,
-                    end=end_date,
+            # Cost Management throttles per-subscription. One throttled or
+            # unauthorized subscription must not discard the cost actuals
+            # already collected for every other subscription in the scope,
+            # so failures are isolated and only escalate if *every*
+            # subscription failed.
+            try:
+                rows.extend(
+                    self._query_subscription(
+                        str(subscription_id),
+                        access_token=access_token,
+                        start=start_date,
+                        end=end_date,
+                    )
                 )
+            except (RuntimeError, TypeError) as exc:
+                failures.append(str(subscription_id))
+                logger.warning(
+                    "Cost Management query failed for subscription '%s'; "
+                    "continuing with remaining subscriptions: %s",
+                    subscription_id,
+                    exc,
+                )
+        if failures and len(failures) == len(subscription_ids):
+            raise RuntimeError(
+                "Cost Management query failed for every subscription in scope: "
+                + ", ".join(failures)
             )
         return rows
 
@@ -548,12 +571,23 @@ def _cost_usage_date(value: Any) -> str:
 
 
 def _retry_delay(response: httpx.Response, attempt: int) -> float:
-    retry_after = response.headers.get("Retry-After")
-    if retry_after:
+    # Cost Management does not always send a standard ``Retry-After``; its
+    # throttling budget is published through vendor-specific headers instead,
+    # and ignoring them made the client retry far sooner than the service
+    # allows, burning the whole retry budget on guaranteed-429 attempts.
+    for header in (
+        "Retry-After",
+        "x-ms-ratelimit-microsoft.costmanagement-entity-retry-after",
+        "x-ms-ratelimit-microsoft.costmanagement-tenant-retry-after",
+        "x-ms-ratelimit-microsoft.costmanagement-client-retry-after",
+    ):
+        raw = response.headers.get(header)
+        if not raw:
+            continue
         try:
-            return max(float(retry_after), 0.0)
+            return max(float(raw), 0.0)
         except ValueError:
-            pass
+            continue
     return min(2.0**attempt, 30.0)
 
 
