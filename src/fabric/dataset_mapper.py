@@ -39,6 +39,7 @@ ENTITY_FILES = (
     "ManagedIdentity",
     "DefenderAssessment",
     "DefenderVulnerabilityFinding",
+    "ContainerImageExposure",
     "SecurityAlert",
     "AttackPath",
     "AttackPathNode",
@@ -135,6 +136,7 @@ ONTOLOGY_ENTITY_TYPES = (
     "MissingUpdate",
     "DefenderAssessment",
     "DefenderVulnerabilityFinding",
+    "ContainerImageExposure",
     "SecurityAlert",
     "AttackPath",
     "AttackPathNode",
@@ -248,6 +250,8 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     *(("DefenderVulnerabilityFinding", "impacts", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *((asset, "hasVulnerability", "DefenderVulnerabilityFinding") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     ("DefenderVulnerabilityFinding", "derivedFrom", "DefenderAssessment"),
+    ("ContainerImageExposure", "impacts", "Resource"),
+    ("Resource", "hasImageExposure", "ContainerImageExposure"),
     *(("SecurityAlert", "affects", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *sorted(PAAS_ENTITY_TYPES))),
     ("AttackPath", "traverses", "AttackPathNode"),
     ("AttackPath", "startsAt", "AttackPathNode"),
@@ -406,6 +410,10 @@ class InventoryDatasetMapper:
             "bronze_defender_findings": [
                 _entity_row(row, "DefenderVulnerabilityFinding", ingestion_run_id)
                 for row in entities["DefenderVulnerabilityFinding"]
+            ],
+            "bronze_container_image_exposure": [
+                _entity_row(row, "ContainerImageExposure", ingestion_run_id)
+                for row in entities["ContainerImageExposure"]
             ],
             **{
                 f"bronze_defender_{dataset}": [

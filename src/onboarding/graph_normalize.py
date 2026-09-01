@@ -10,8 +10,10 @@ from typing import Any
 from ontology.confidence import compute_confidence
 
 from .defender_normalize import (
+    is_container_image_assessment,
     normalize_assessment,
     normalize_attack_path,
+    normalize_container_image_exposure,
     normalize_secure_score,
     normalize_secure_score_control,
     normalize_security_alert,
@@ -53,6 +55,7 @@ ENTITY_TYPES = (
     "ManagedIdentity",
     "DefenderAssessment",
     "DefenderVulnerabilityFinding",
+    "ContainerImageExposure",
     "SecurityAlert",
     "AttackPath",
     "AttackPathNode",
@@ -196,7 +199,14 @@ class Normalizer:
             if target:
                 _add_edge(edge_index, entity["id"], "impacts", target, "arg:AdvisorResources", observed, compute_confidence("arg:AdvisorResources"))
 
+        image_assessments: list[Mapping[str, Any]] = []
         for row in payload.get("defender_assessments", []):
+            # Container image package findings are rolled up per image below;
+            # carrying them individually buries infrastructure findings under
+            # tens of thousands of per-package rows.
+            if is_container_image_assessment(row):
+                image_assessments.append(row)
+                continue
             entity = normalize_assessment(row, observed)
             if entity is None:
                 continue
@@ -208,6 +218,20 @@ class Normalizer:
                     entity["id"],
                     "impacts",
                     target,
+                    "arg:SecurityResources",
+                    observed,
+                    compute_confidence("arg:SecurityResources"),
+                )
+
+        for entity in normalize_container_image_exposure(image_assessments, observed):
+            entity_index["ContainerImageExposure"][entity["id"]] = entity
+            registry = entity.get("registryResourceId", "")
+            if registry:
+                _add_edge(
+                    edge_index,
+                    entity["id"],
+                    "impacts",
+                    registry,
                     "arg:SecurityResources",
                     observed,
                     compute_confidence("arg:SecurityResources"),

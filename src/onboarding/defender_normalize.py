@@ -2,11 +2,139 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from typing import Any
 
 _CVE_PATTERN = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
+
+#: Severity ranking used to pick the worst finding when rolling container image
+#: package findings up into a single per-image entity.
+_SEVERITY_RANK = {
+    "critical": 4,
+    "high": 3,
+    "medium": 2,
+    "moderate": 2,
+    "low": 1,
+    "informational": 0,
+    "unknown": 0,
+}
+
+
+def is_container_image_assessment(row: Mapping[str, Any]) -> bool:
+    """True when an assessment targets a container image inside a registry.
+
+    Defender emits one assessment per vulnerable *package* per *image digest*,
+    so a registry with a few hundred image tags produces tens of thousands of
+    rows that bury the handful of infrastructure findings operators act on.
+    These are rolled up into one :func:`normalize_container_image_exposure`
+    entity per image instead of being carried through individually.
+    """
+    details = _mapping(_mapping(row.get("properties")).get("resourceDetails"))
+    provider = _first_text(details.get("ResourceProvider"), details.get("resourceProvider"))
+    resource_type = _first_text(details.get("ResourceType"), details.get("resourceType"))
+    return provider.casefold() == "acr" or resource_type.casefold().lstrip(".") == "containerimage"
+
+
+def normalize_container_image_exposure(
+    rows: list[Mapping[str, Any]], observed: str
+) -> list[dict[str, Any]]:
+    """Roll per-package container image findings up to one entity per image.
+
+    ``rows`` are the assessments filtered by :func:`is_container_image_assessment`.
+    The result carries the vulnerable-package count, distinct CVE count and the
+    worst observed severity so the exposure surface keeps the signal without the
+    per-package row explosion.
+    """
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        target = _target_resource_id(_mapping(row.get("properties")))
+        if target:
+            grouped.setdefault(target, []).append(row)
+
+    entities: list[dict[str, Any]] = []
+    for target, group in grouped.items():
+        unhealthy = [
+            row
+            for row in group
+            if _status(_mapping(row.get("properties"))).casefold() == "unhealthy"
+        ]
+        if not unhealthy:
+            continue
+        first = unhealthy[0]
+        properties = _mapping(first.get("properties"))
+        image = _image_details(properties)
+        cves: set[str] = set()
+        packages: set[str] = set()
+        severity_counts: dict[str, int] = {}
+        worst = "Unknown"
+        last_assessed = ""
+        for row in unhealthy:
+            row_properties = _mapping(row.get("properties"))
+            additional = _mapping(row_properties.get("additionalData"))
+            cves.update(_cve_ids_from_details(additional))
+            package = _first_text(
+                additional.get("SoftwareName"),
+                additional.get("softwareName"),
+                row_properties.get("displayName"),
+            )
+            if package:
+                packages.add(package)
+            # Image findings carry per-CVE severities inside the CvesDetails
+            # JSON string; the assessment-level severity field is absent.
+            for severity in _image_severities(additional) or (_severity(row_properties),):
+                if not severity:
+                    continue
+                severity_counts[severity] = severity_counts.get(severity, 0) + 1
+                if _SEVERITY_RANK.get(severity.casefold(), 0) > _SEVERITY_RANK.get(
+                    worst.casefold(), 0
+                ):
+                    worst = severity
+            assessed = _first_text(
+                row_properties.get("statusChangeDate"),
+                row_properties.get("timeGenerated"),
+            )
+            if assessed > last_assessed:
+                last_assessed = assessed
+
+        registry_id = target.split("/securityentitydata/", 1)[0]
+        repository = image.get("repository", "")
+        digest = image.get("digest", "")
+        display = f"{repository}@{digest[:19]}" if repository and digest else (repository or target)
+        entities.append(
+            {
+                **_base(first, observed, "ContainerImageExposure"),
+                "id": target,
+                "name": display,
+                "displayName": display,
+                "sourceId": target,
+                "targetResourceId": registry_id or target,
+                "registryResourceId": registry_id,
+                "registryHost": image.get("registryHost", ""),
+                "repository": repository,
+                "imageDigest": digest,
+                "imageTags": image.get("tags", []),
+                "imageUri": image.get("imageUri", ""),
+                "lastPushedAt": image.get("lastPushedAt", ""),
+                "status": "Unhealthy",
+                "severity": worst,
+                "severityCounts": severity_counts,
+                "criticalCount": severity_counts.get("Critical", 0),
+                "highCount": severity_counts.get("High", 0),
+                "vulnerablePackageCount": len(packages),
+                "cveCount": len(cves),
+                "cveIds": sorted(cves),
+                "vulnerablePackages": sorted(packages),
+                "recommendation": (
+                    f"Rebuild or patch image {display}: {len(packages)} vulnerable "
+                    f"package(s), {len(cves)} CVE(s)"
+                ),
+                "lastAssessedAt": last_assessed or observed,
+                "resourceType": "Microsoft.ContainerRegistry/registries/images",
+            }
+        )
+    return entities
 
 
 def normalize_assessment(row: Mapping[str, Any], observed: str) -> dict[str, Any] | None:
@@ -426,6 +554,66 @@ def _cve_ids(properties: Mapping[str, Any]) -> tuple[str, ...]:
             )
             found.update(match.upper() for match in _CVE_PATTERN.findall(candidate))
     return tuple(sorted(found))
+
+
+def _cve_ids_from_details(additional: Mapping[str, Any]) -> set[str]:
+    """CVE ids from a container image assessment's ``additionalData``.
+
+    Container image findings carry their CVEs as a JSON *string* under
+    ``CvesDetails``/``ScannersDetails`` rather than the structured fields
+    :func:`_cve_ids` reads, so the raw text is pattern-matched instead.
+    """
+    found: set[str] = set()
+    for key in ("CvesDetails", "cvesDetails", "ScannersDetails", "scannersDetails"):
+        found.update(match.upper() for match in _CVE_PATTERN.findall(_text(additional.get(key))))
+    return found
+
+
+def _image_severities(additional: Mapping[str, Any]) -> tuple[str, ...]:
+    """Per-CVE severities from a container image assessment's ``CvesDetails``.
+
+    ``CvesDetails`` is a JSON *string* holding one object per CVE, each with its
+    own ``Severity``. The assessment itself carries no severity field, so
+    without parsing this every image would roll up as ``Unknown``.
+    """
+    raw = _first_text(additional.get("CvesDetails"), additional.get("cvesDetails"))
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(
+        _text(item.get("Severity")) for item in parsed if isinstance(item, Mapping) and item.get("Severity")
+    )
+
+
+def _image_details(properties: Mapping[str, Any]) -> dict[str, Any]:
+    """Parse the ``resourceAdditionalData`` JSON blob on image assessments."""
+    raw = _first_text(
+        properties.get("resourceAdditionalData"),
+        properties.get("ResourceAdditionalData"),
+    )
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(parsed, Mapping):
+        return {}
+    repository_details = _mapping(parsed.get("RepositoryDetails"))
+    tags = parsed.get("Tags")
+    return {
+        "repository": _text(repository_details.get("RepositoryName")),
+        "registryHost": _text(repository_details.get("RegistryHost")),
+        "digest": _text(parsed.get("Digest")),
+        "imageUri": _text(parsed.get("ImageUri")),
+        "tags": [_text(tag) for tag in tags] if isinstance(tags, (list, tuple)) else [],
+        "lastPushedAt": _text(parsed.get("LastPushedToRegistryUTC")),
+    }
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

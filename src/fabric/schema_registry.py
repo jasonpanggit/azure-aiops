@@ -131,6 +131,7 @@ SCHEMAS: dict[str, pa.Schema] = {
     "bronze_patchinstallation": pa.schema(_ENTITY),
     "bronze_defender_assessments": pa.schema(_ENTITY),
     "bronze_defender_findings": pa.schema(_ENTITY),
+    "bronze_container_image_exposure": pa.schema(_ENTITY),
     "bronze_defender_alerts": pa.schema(_ENTITY),
     "bronze_defender_attack_paths": pa.schema(_ENTITY),
     "bronze_defender_attack_path_nodes": pa.schema(_ENTITY),
