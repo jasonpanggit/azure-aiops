@@ -53,6 +53,12 @@ import type {
   VulnerabilityExposure,
   VulnerabilitySummary,
   EvidenceItem,
+  FabricCapabilities,
+  FabricDataset,
+  FabricGovernanceSummary,
+  FabricIngestionRun,
+  FabricLayerCounts,
+  FabricManifestEntry,
   TwinComparison,
   TwinExport,
   TwinQueryResult,
@@ -166,6 +172,23 @@ export const connectionsApi = {
 
   health: (id: string) =>
     apiRequest<ConnectionHealthReport>(`/subscription-connections/${encodeURIComponent(id)}/health`),
+};
+
+
+export const fabricMedallionApi = {
+  layers: () =>
+    apiRequest<{ layers: Record<"bronze" | "silver" | "gold", FabricLayerCounts> }>("/fabric-medallion/layers"),
+
+  dataset: (tableName: string) =>
+    apiRequest<FabricDataset>(`/fabric-medallion/datasets/${encodeURIComponent(tableName)}`),
+
+  manifest: () => apiRequest<{ entries: FabricManifestEntry[] }>("/fabric-medallion/manifest"),
+
+  governance: () => apiRequest<FabricGovernanceSummary>("/fabric-medallion/governance"),
+
+  ingestionHistory: () => apiRequest<{ runs: FabricIngestionRun[] }>("/fabric-medallion/ingestion-history"),
+
+  capabilities: () => apiRequest<FabricCapabilities>("/fabric-medallion/capabilities"),
 };
 
 export const inventoryApi = {
