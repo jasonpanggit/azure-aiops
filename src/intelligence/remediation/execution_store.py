@@ -103,6 +103,10 @@ class RemediationExecutionStore:
                     row
                     for row in state["executions"]
                     if str(row.get("execution_identity") or "") == identity
+                    or (
+                        not row.get("execution_identity")
+                        and str(row.get("plan_id") or "") == str(plan_id)
+                    )
                 ),
                 None,
             )
@@ -205,6 +209,7 @@ class RemediationExecutionStore:
                 status=EXECUTION_STATUS_RETRYING,
             )
             record["attempt_count"] = number
+            record["ineligibility_reason"] = ""
             record.setdefault("attempts", []).append(attempt)
             record.setdefault("history", []).extend(copy.deepcopy(attempt["transitions"]))
             self._replace_record(
@@ -305,8 +310,11 @@ class RemediationExecutionStore:
         if status not in EXECUTION_STATUSES:
             raise ValueError(f"Unknown execution status {status!r}")
         timestamp = _timestamp(now)
+        previous_status = str(record.get("status") or "")
         record.update(fields)
         record["status"] = status
+        if status != previous_status and "ineligibility_reason" not in fields:
+            record["ineligibility_reason"] = ""
         if outcome:
             record["outcome"] = outcome
         current = _current_attempt(record)
