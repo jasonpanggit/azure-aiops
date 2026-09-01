@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
 from intelligence.remediation.defender_correlation import DefenderRemediationCorrelator
+from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
 from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 
 MAPPED_RESOURCE_ID = (

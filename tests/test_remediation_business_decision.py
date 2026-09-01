@@ -10,12 +10,6 @@ how severe the underlying technical signal is.
 
 from __future__ import annotations
 
-from intelligence.remediation.business_decision import BusinessDecisionEngine, DISPOSITIONS
-from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
-from intelligence.remediation.execution_simulator import ExecutionSimulator
-from intelligence.remediation.risk_analyzer import RiskAnalyzer
-from intelligence.remediation.rollback_planner import RollbackPlanner
-
 from defender_correlation_scenario import (
     ACTION_CATALOG,
     MAPPED_RESOURCE_ID,
@@ -24,6 +18,16 @@ from defender_correlation_scenario import (
     defender_correlator,
     defender_resources,
 )
+
+from intelligence.remediation.business_decision import (
+    DISPOSITIONS,
+    BusinessDecisionEngine,
+)
+from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
+from intelligence.remediation.execution_simulator import ExecutionSimulator
+from intelligence.remediation.risk_analyzer import RiskAnalyzer
+from intelligence.remediation.rollback_planner import RollbackPlanner
+
 
 def _full_action() -> dict:
     """The catalog action fixture only sets risk_reduction_percent; the
@@ -434,8 +438,8 @@ def test_defender_sourced_plan_carries_full_business_decision_section():
     decision = plan["business_decision"]
     assert decision["disposition"] in DISPOSITIONS
     assert decision["urgency_rationale"]["reason_code"]
-    assert set(("service_risk", "customer_impact")) <= set(decision["cost_of_action"])
-    assert set(("service_risk", "customer_impact")) <= set(decision["cost_of_inaction"])
+    assert {"service_risk", "customer_impact"} <= set(decision["cost_of_action"])
+    assert {"service_risk", "customer_impact"} <= set(decision["cost_of_inaction"])
     assert decision["options"]
     assert "confidence" in decision
     assert "review_requirements" in decision
