@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from fastapi import APIRouter
 
+from fabric.capacity_health import check_capacity_state
+from fabric.config import FabricRuntimeConfig
+from fabric.data_access_roles import list_roles
+from fabric.lineage import entity_lineage_summary, native_lineage_url
 from fabric.medallion_health import dataset_status
+from fabric.table_maintenance import last_maintenance_status
+from ontology.publication_state import PublicationAttemptRecord
+from operations.gold_grounding_specialist import gold_grounding_configured
 from storage.datasets import DatasetStore
 
 from ..dependencies import Context, ReadScope
@@ -21,6 +29,11 @@ SOURCE_ENGINE = "fabric.medallion_health"
 SOURCE_TABLE = "metadata_source_status"
 MANIFEST_ENGINE = "ontology.publication_manifest"
 MANIFEST_TABLE = "metadata_publication_manifest"
+GOVERNANCE_ENGINE = "fabric.data_quality"
+GOVERNANCE_TABLE = "metadata_quality_reports"
+INGESTION_ENGINE = "onboarding.sync"
+INGESTION_TABLE = "metadata_ingestion_state"
+CAPABILITIES_ENGINE = "fabric.medallion_capabilities"
 
 
 def _evidence(*, source_engine: str, source_table: str, timestamp: str = "") -> Evidence:
@@ -136,6 +149,155 @@ def _metadata_publication_manifest_rows(context: Context) -> list[dict[str, Any]
     )
 
 
+def _connection_scope_attributes(detail: dict[str, Any]) -> dict[str, str]:
+    return {
+        "business_service": str(detail.get("business_service") or ""),
+        "application": str(detail.get("application") or ""),
+        "environment": str(detail.get("environment") or ""),
+        "subscription": str(detail.get("subscription_id") or ""),
+        "subscription_connection": str(detail.get("connection_id") or ""),
+        "owner": str(detail.get("owner") or ""),
+        "support_team": str(detail.get("support_team") or ""),
+        "region": str(detail.get("region") or ""),
+        "criticality": str(detail.get("criticality") or ""),
+    }
+
+
+def _connection_visible(scope: Scope, detail: dict[str, Any]) -> bool:
+    if scope.is_unrestricted():
+        return True
+    attributes = {key: value for key, value in _connection_scope_attributes(detail).items() if value}
+    return bool(attributes) and scope.matches(attributes)
+
+
+def _metadata_quality_report_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for detail, _status_rows in _connection_rows(context):
+        if not _connection_visible(scope, detail):
+            continue
+        dataset_root = str(detail.get("dataset_root") or "")
+        if not dataset_root:
+            continue
+        for row in DatasetStore(dataset_root).read_dataset("metadata_quality_reports"):
+            current = dict(row)
+            current.setdefault("subscription_id", str(detail.get("subscription_id") or ""))
+            current.setdefault("subscription_connection", str(detail.get("connection_id") or ""))
+            rows.append(current)
+    return rows
+
+
+def _parse_quality_report(value: Any) -> list[dict[str, Any]]:
+    parsed: Any = value
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError:
+            parsed = []
+    if isinstance(parsed, dict):
+        reports = parsed.get("reports")
+        if isinstance(reports, list):
+            parsed = reports
+    if not isinstance(parsed, list):
+        return []
+    return [row for row in parsed if isinstance(row, dict)]
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _publication_attempt_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
+    if not any(_connection_visible(scope, detail) for detail, _rows in _connection_rows(context)):
+        return []
+    coordinator = getattr(context.onboarding, "sync_coordinator", None)
+    store = getattr(coordinator, "publication_state_store", None)
+    if store is None:
+        return []
+    records = store.list()
+    mapped: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, PublicationAttemptRecord):
+            continue
+        outcome = str(record.outcome or "")
+        if outcome == "failed":
+            status = "failed"
+        elif outcome == "rejected":
+            status = "unavailable"
+        elif outcome == "succeeded":
+            status = "succeeded"
+        else:
+            status = "unknown"
+        mapped.append(
+            {
+                "projection_name": record.ontology_name,
+                "status": status,
+                "attempted_at": record.attempted_at,
+                "attempts": int(record.attempt_count),
+                "retry_eligible": bool(record.retryable) if status == "failed" else False,
+                "message": str(record.error or ""),
+                "source": "publication-state",
+            }
+        )
+    return sorted(mapped, key=lambda row: str(row.get("attempted_at") or ""), reverse=True)
+
+
+def _capacity_config(context: Context, scope: Scope) -> dict[str, str]:
+    config_path = os.environ.get("AIOPS_FABRIC_CONFIG", "fabric.config.yaml").strip() or "fabric.config.yaml"
+    try:
+        config = FabricRuntimeConfig.load(config_path)
+    except Exception:  # noqa: BLE001 - missing config degrades to unknown capability state
+        config = None
+    scope_subscriptions = scope.to_dict().get("subscription") or []
+    subscription_id = str(scope_subscriptions[0] if scope_subscriptions else "")
+    if not subscription_id:
+        subscription_id = os.environ.get("AIOPS_FABRIC_CAPACITY_SUBSCRIPTION_ID", "").strip()
+    return {
+        "subscription_id": subscription_id,
+        "resource_group": os.environ.get("AIOPS_FABRIC_CAPACITY_RESOURCE_GROUP", "").strip(),
+        "capacity_name": os.environ.get("AIOPS_FABRIC_CAPACITY_NAME", "").strip(),
+        "workspace_id": str(getattr(config, "workspace_id", "") or os.environ.get("FABRIC_WORKSPACE_ID", "")).strip(),
+        "lakehouse_id": str(getattr(config, "lakehouse_id", "")).strip(),
+    }
+
+
+def _semantic_entities(context: Context) -> dict[str, dict[str, Any]]:
+    semantic = context.resolve_provider("semantic", optional=True)
+    indexes = getattr(semantic, "indexes", None)
+    entities = getattr(indexes, "entities", None)
+    if not isinstance(entities, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for key, value in entities.items():
+        if not key:
+            continue
+        if isinstance(value, dict):
+            normalized[str(key).casefold()] = dict(value)
+        else:
+            dump = getattr(value, "model_dump", None)
+            if callable(dump):
+                payload = dump(mode="json")
+                if isinstance(payload, dict):
+                    normalized[str(key).casefold()] = payload
+    return normalized
+
+
+def _semantic_readiness(context: Context, scope: Scope) -> dict[str, str]:
+    attempts = _publication_attempt_rows(context, scope)
+    latest = attempts[0] if attempts else None
+    if latest:
+        if str(latest.get("status") or "") == "succeeded":
+            return {"status": "available"}
+        reason = str(latest.get("message") or "") or "no_recorded_semantic_model_deployment_result"
+        return {"status": "deployment-blocked", "reason": reason}
+    return {
+        "status": "deployment-blocked",
+        "reason": "no_recorded_semantic_model_deployment_result",
+    }
+
+
 def _scoped_source_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
     return [row for row in _metadata_source_status_rows(context) if _row_visible(scope, row)]
 
@@ -233,3 +395,187 @@ def medallion_manifest(context: Context, scope: ReadScope) -> dict[str, Any]:
         scope=scope.to_dict(),
     )
 
+
+@router.get("/governance", summary="Fabric governance gaps from data-quality reports")
+def medallion_governance(context: Context, scope: ReadScope) -> dict[str, Any]:
+    rows = _metadata_quality_report_rows(context, scope)
+    by_table: dict[str, dict[str, int | str]] = {}
+    ownership_gap_count = 0
+    tag_gap_count = 0
+    referential_blockers = 0
+
+    for row in rows:
+        for report in _parse_quality_report(row.get("report_json")):
+            table_name = str(report.get("table_name") or "")
+            if not table_name:
+                continue
+            counts = report.get("rule_counts")
+            if not isinstance(counts, dict):
+                continue
+            ownership = _int_value(counts.get("ownership_coverage"))
+            tags = _int_value(counts.get("tag_coverage"))
+            referential = _int_value(counts.get("orphan_relationships"))
+            ownership_gap_count += ownership
+            tag_gap_count += tags
+            referential_blockers += referential
+            current = by_table.setdefault(
+                table_name,
+                {
+                    "table_name": table_name,
+                    "ownership_gap_count": 0,
+                    "tag_gap_count": 0,
+                    "referential_integrity_blockers": 0,
+                },
+            )
+            current["ownership_gap_count"] = _int_value(current["ownership_gap_count"]) + ownership
+            current["tag_gap_count"] = _int_value(current["tag_gap_count"]) + tags
+            current["referential_integrity_blockers"] = (
+                _int_value(current["referential_integrity_blockers"]) + referential
+            )
+
+    gaps = sorted(
+        by_table.values(),
+        key=lambda entry: (
+            -_int_value(entry.get("referential_integrity_blockers")),
+            -_int_value(entry.get("ownership_gap_count")),
+            str(entry.get("table_name") or "").casefold(),
+        ),
+    )
+    return envelope(
+        {
+            "ownership_gap_count": ownership_gap_count,
+            "tag_gap_count": tag_gap_count,
+            "referential_integrity_blockers": referential_blockers,
+            "gaps": gaps,
+        },
+        evidence=_evidence(
+            source_engine=GOVERNANCE_ENGINE,
+            source_table=GOVERNANCE_TABLE,
+            timestamp=max((_status_timestamp(row) for row in rows), default=""),
+        ),
+        scope=scope.to_dict(),
+    )
+
+
+@router.get("/ingestion-history", summary="Fabric ingestion and publication run history")
+def medallion_ingestion_history(context: Context, scope: ReadScope) -> dict[str, Any]:
+    source_rows = _scoped_source_rows(context, scope)
+    runs: list[dict[str, Any]] = []
+    for row in source_rows:
+        raw_status = str(row.get("status") or "").casefold()
+        availability = str(row.get("availability") or "").casefold()
+        if availability == "unavailable" or raw_status == "unavailable":
+            status = "unavailable"
+            retry_eligible = False
+        elif raw_status in {"failed", "error", "cancelled", "canceled"}:
+            status = "failed"
+            retry_eligible = True
+        elif raw_status in {"succeeded", "completed", "success"}:
+            status = "succeeded"
+            retry_eligible = False
+        else:
+            status = "unknown"
+            retry_eligible = False
+        runs.append(
+            {
+                "projection_name": str(row.get("source_family") or row.get("table_name") or ""),
+                "status": status,
+                "attempted_at": _status_timestamp(row),
+                "attempts": _int_value(row.get("attempts") or 1),
+                "retry_eligible": retry_eligible,
+                "message": str(row.get("error") or ""),
+                "source": "source-status",
+            }
+        )
+    runs.extend(_publication_attempt_rows(context, scope))
+    ordered = sorted(runs, key=lambda row: str(row.get("attempted_at") or ""), reverse=True)
+    return envelope(
+        {"runs": ordered},
+        evidence=_evidence(
+            source_engine=INGESTION_ENGINE,
+            source_table=INGESTION_TABLE,
+            timestamp=max((str(row.get("attempted_at") or "") for row in ordered), default=""),
+        ),
+        scope=scope.to_dict(),
+    )
+
+
+@router.get("/capabilities", summary="Fabric medallion platform capabilities snapshot")
+def medallion_capabilities(context: Context, scope: ReadScope) -> dict[str, Any]:
+    config = _capacity_config(context, scope)
+    source_rows = _scoped_source_rows(context, scope)
+
+    raw_capacity = check_capacity_state(
+        subscription_id=str(config.get("subscription_id") or ""),
+        resource_group=str(config.get("resource_group") or ""),
+        capacity_name=str(config.get("capacity_name") or ""),
+    )
+    capacity = dict(raw_capacity)
+    capacity.setdefault("status", str(raw_capacity.get("state") or "unknown"))
+
+    workspace_id = str(config.get("workspace_id") or "")
+    lakehouse_id = str(config.get("lakehouse_id") or "")
+    try:
+        roles = list_roles(workspace_id, lakehouse_id)
+        role_state = {"status": "available", "total_roles": len(roles), "roles": roles}
+    except Exception:  # noqa: BLE001 - role summary is best-effort and read-only
+        role_state = {"status": "unavailable", "total_roles": 0, "roles": []}
+
+    try:
+        maintenance = last_maintenance_status(workspace_id, lakehouse_id)
+    except Exception:  # noqa: BLE001 - maintenance read degrades to unknown
+        maintenance = {"status": "unknown", "last_run_at": "", "activity_name": ""}
+
+    entities = _semantic_entities(context)
+    lineage_rows: list[dict[str, Any]] = []
+    for table_name in _registered_tables(source_rows):
+        table_rows = [
+            row
+            for row in source_rows
+            if str(row.get("source_family") or row.get("table_name") or "") == table_name
+        ]
+        lineage_ref = next(
+            (
+                str(row.get("lineage_ref") or "")
+                for row in table_rows
+                if str(row.get("lineage_ref") or "")
+            ),
+            "",
+        )
+        lineage_rows.append(
+            {
+                "table_name": table_name,
+                "status": str(dataset_status(table_name, source_status=source_rows).get("availability") or "unknown"),
+                "lineage_ref": lineage_ref,
+                "lineage": entity_lineage_summary(lineage_ref, entities),
+            }
+        )
+    try:
+        workspace_lineage_url = native_lineage_url(workspace_id)
+    except Exception:  # noqa: BLE001 - no workspace configured
+        workspace_lineage_url = ""
+
+    data_agent_ready = bool(gold_grounding_configured(scope))
+    capabilities = {
+        "capacity": capacity,
+        "data_access_roles": role_state,
+        "maintenance": maintenance,
+        "semantic_readiness": _semantic_readiness(context, scope),
+        "data_agent_readiness": {
+            "status": "available" if data_agent_ready else "unknown",
+            "configured": data_agent_ready,
+        },
+        "lineage": {
+            "native_lineage_url": workspace_lineage_url,
+            "datasets": lineage_rows,
+        },
+    }
+    return envelope(
+        capabilities,
+        evidence=_evidence(
+            source_engine=CAPABILITIES_ENGINE,
+            source_table=SOURCE_TABLE,
+            timestamp=max((_status_timestamp(row) for row in source_rows), default=""),
+        ),
+        scope=scope.to_dict(),
+    )
