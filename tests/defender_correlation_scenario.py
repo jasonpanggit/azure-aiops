@@ -127,7 +127,7 @@ def defender_alerts() -> list[dict[str, Any]]:
             "id": "alert-001",
             "status": "Active",
             "severity": "high",
-            "title": "Suspicious process execution",
+            "title": "Enable disk encryption",
             "description": "A suspicious process executed on this host.",
             "timeGenerated": "2026-08-18T10:00:00Z",
             "resourceIds": [MAPPED_RESOURCE_ID],
@@ -144,8 +144,8 @@ def defender_attack_paths() -> list[dict[str, Any]]:
     return [
         {
             "id": "path-001",
-            "title": "Internet exposed VM to key vault",
-            "displayName": "Internet exposed VM to key vault",
+            "title": "Enable disk encryption",
+            "displayName": "Enable disk encryption",
             "resourceIds": [MAPPED_RESOURCE_ID],
             "targetNodeId": "node-002",
             "subscription_id": "sub-1",
