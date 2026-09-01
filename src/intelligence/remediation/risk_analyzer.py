@@ -31,6 +31,7 @@ class RiskAnalyzer:
                 "patch_risk_score",
                 "lifecycle_risk_score",
                 "predictive_risk_score",
+                "defender_secure_score_gap",
             )
             if field in resource and resource[field] is not None
         ]
@@ -77,7 +78,7 @@ class RiskAnalyzer:
                 ["Known operational posture evidence"]
                 if operational is not None
                 else ["Operational posture evidence unavailable"],
-                "Known" if len(operational_values) == 4 else "Partial" if operational_values else "Unknown",
+                "Known" if len(operational_values) == 5 else "Partial" if operational_values else "Unknown",
             ),
             "business_risk": self._dimension(
                 business,

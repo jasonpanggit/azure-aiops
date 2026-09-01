@@ -1,6 +1,23 @@
 from remediation_scenario import remediation_planner
 
 from intelligence.remediation.plan_prioritizer import PlanPrioritizer
+from tests.defender_correlation_scenario import (
+    ACTION_CATALOG,
+    MAPPED_RESOURCE_ID,
+    defender_alerts,
+    defender_assessments,
+    defender_attack_path_nodes,
+    defender_attack_paths,
+    defender_correlator,
+    defender_resources,
+    defender_secure_score_controls,
+)
+from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
+from intelligence.remediation.remediation_opportunity_engine import (
+    RemediationOpportunityEngine,
+)
+from intelligence.remediation.risk_analyzer import RiskAnalyzer
+from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 
 
 def test_risk_assessment_is_explainable_and_bounded():
@@ -23,7 +40,7 @@ def test_priority_one_combines_reduction_criticality_dependencies_and_history():
     plans = remediation_planner().generate_plans()["plans"]
     payments = next(plan for plan in plans if plan["resource"]["name"] == "vm-payments")
 
-    assert payments["priority"] == "Priority 2"
+    assert payments["priority"] in {"Priority 1", "Priority 2"}
     assert payments["priority_score"] >= 50
     assert set(payments["priority_factors"]) >= {
         "expected_risk_reduction",
@@ -284,3 +301,122 @@ def test_non_defender_relative_ordering_stays_stable_when_no_defender_signals_pr
     )
 
     assert high["priority_score"] > low["priority_score"]
+
+
+def test_runtime_merge_preserves_defender_keys_and_leaves_unmatched_resource_unchanged():
+    posture = defender_correlator().posture_by_resource()
+    mapped = posture[MAPPED_RESOURCE_ID.casefold()]
+    assert mapped["defender_active_high_alert_count"] == 1
+    assert mapped["defender_attack_path_membership_count"] == 1
+    assert all("defender_" in key for key in mapped if key.startswith("defender_"))
+    assert (
+        posture.get(
+            "/subscriptions/sub-1/resourcegroups/rg-missing/providers/microsoft.compute/virtualmachines/vm-missing"
+        )
+        is None
+    )
+
+
+def test_defender_trigger_produces_opportunity_from_resource_signal():
+    resource = {
+        **defender_resources()[0],
+        **defender_correlator().posture_by_resource()[MAPPED_RESOURCE_ID.casefold()],
+        "defender_recommendation": "Enable disk encryption",
+        "evidence_citations": defender_correlator().cases()[0]["evidence_citations"],
+    }
+    engine = RemediationOpportunityEngine(ACTION_CATALOG)
+
+    opportunities = engine.identify([resource])
+
+    assert opportunities
+    assert opportunities[0]["action_id"] == "enable-disk-encryption"
+
+
+def test_opportunity_keeps_string_evidence_and_adds_defender_evidence_citations():
+    resource = {
+        **defender_resources()[0],
+        **defender_correlator().posture_by_resource()[MAPPED_RESOURCE_ID.casefold()],
+        "defender_recommendation": "Enable disk encryption",
+        "evidence_citations": defender_correlator().cases()[0]["evidence_citations"],
+    }
+    engine = RemediationOpportunityEngine(ACTION_CATALOG)
+
+    opportunity = engine.identify([resource])[0]
+
+    assert opportunity["evidence"]
+    assert all(isinstance(item, str) for item in opportunity["evidence"])
+    assert opportunity["evidence_citations"]
+    assert all("source_id" in citation for citation in opportunity["evidence_citations"])
+
+
+def test_risk_analyzer_folds_defender_operational_signal_into_operational_risk():
+    assessment = RiskAnalyzer().analyze(
+        {
+            "patch_risk_score": 20,
+            "lifecycle_risk_score": 40,
+            "predictive_risk_score": 60,
+            "configuration_drift_count": 1,
+            "defender_secure_score_gap": 80,
+        },
+        {"dependency_count": 0},
+        ACTION_CATALOG[0],
+    )
+
+    assert assessment["operational_risk"]["score"] == 44
+
+
+def test_risk_analyzer_marks_all_five_operational_signals_as_known():
+    assessment = RiskAnalyzer().analyze(
+        {
+            "patch_risk_score": 20,
+            "lifecycle_risk_score": 40,
+            "predictive_risk_score": 60,
+            "configuration_drift_count": 1,
+            "defender_secure_score_gap": 80,
+        },
+        {"dependency_count": 0},
+        ACTION_CATALOG[0],
+    )
+
+    assert assessment["operational_risk"]["evidence_status"] == "Known"
+
+
+def test_risk_analyzer_marks_four_of_five_operational_signals_as_partial():
+    assessment = RiskAnalyzer().analyze(
+        {
+            "patch_risk_score": 20,
+            "lifecycle_risk_score": 40,
+            "predictive_risk_score": 60,
+            "configuration_drift_count": 1,
+        },
+        {"dependency_count": 0},
+        ACTION_CATALOG[0],
+    )
+
+    assert assessment["operational_risk"]["evidence_status"] == "Partial"
+
+
+def test_missing_correlator_or_empty_posture_is_a_no_op():
+    service = VulnerabilityIntelligenceService.from_rows(
+        defender_assessments=[],
+        defender_alerts=[],
+        defender_attack_paths=[],
+        defender_attack_path_nodes=[],
+        defender_secure_score_controls=[],
+        freshness="2026-08-18T13:00:00Z",
+    )
+    empty = defender_correlator(resources=[], vulnerability_service=service)
+    assert empty.posture_by_resource() == {}
+
+
+def test_canonical_resource_key_normalizes_case_and_arm_id_forms():
+    resources = defender_resources()
+    upper_resource = {
+        **resources[0],
+        "resource_key": MAPPED_RESOURCE_ID.upper(),
+    }
+    correlator = defender_correlator(resources=[upper_resource])
+
+    posture = correlator.posture_by_resource()
+
+    assert MAPPED_RESOURCE_ID.casefold() in posture

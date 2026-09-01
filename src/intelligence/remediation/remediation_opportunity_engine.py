@@ -40,6 +40,7 @@ class RemediationOpportunityEngine:
                 if identity in seen:
                     raise ValueError("Duplicate remediation opportunity identity")
                 seen.add(identity)
+                citations = self._evidence_citations(resource, matched)
                 opportunities.append(
                     {
                         "_resource_key": resource_key,
@@ -66,6 +67,7 @@ class RemediationOpportunityEngine:
                         "opportunity_type": str(action.get("opportunity_type") or "Operational debt")[:256],
                         "action_id": str(action["action_id"]),
                         "evidence": matched,
+                        "evidence_citations": citations,
                         "patch_risk_score": self._score(resource, "patch_risk_score"),
                         "lifecycle_risk_score": self._score(
                             resource, "lifecycle_risk_score"
@@ -154,6 +156,21 @@ class RemediationOpportunityEngine:
             if matched:
                 evidence.append(f"{field.replace('_', ' ')}: {actual}"[:1024])
         return evidence
+
+    @staticmethod
+    def _evidence_citations(resource: dict[str, Any], matched: list[str]) -> list[dict[str, Any]]:
+        if not matched:
+            return []
+        recommendation = str(resource.get("defender_recommendation") or "").casefold()
+        citations = []
+        for citation in resource.get("evidence_citations") or ():
+            if not isinstance(citation, dict):
+                continue
+            summary = str(citation.get("summary") or "").casefold()
+            if recommendation and recommendation not in summary:
+                continue
+            citations.append(dict(citation))
+        return citations
 
     @staticmethod
     def _numeric(value: Any) -> int:
