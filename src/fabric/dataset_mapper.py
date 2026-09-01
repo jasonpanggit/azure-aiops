@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from onboarding.network_normalize import NETWORK_ENTITY_TYPES
-from ontology.entity_builder import EntityBuilder
+from ontology.entity_builder import PAAS_ENTITY_TYPES, EntityBuilder
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator
 from ontology.relationship_builder import RelationshipBuilder
@@ -124,6 +124,16 @@ ONTOLOGY_ENTITY_TYPES = (
     "SubscriptionConnection",
     "ConnectionHealth",
     "MissingUpdate",
+    # PaaS resource types used as relationship subject/object types by
+    # RelationshipBuilder (src/ontology/relationship_builder.py). Without
+    # these, any inferred relationship touching a PaaS resource fails
+    # ontology publish with "relationship endpoint type is not defined".
+    *sorted(PAAS_ENTITY_TYPES),
+    # Synthetic subject type for observed VNet flow-log traffic (see the
+    # FlowObservation -> trafficObserved -> NetworkSecurityRule relationship
+    # below). It has no ARM resource id and never appears in inventory, but
+    # must still be a registered entity type for that relationship to publish.
+    "FlowObservation",
 )
 
 #: Entity types that can appear as the object of a network containment edge.

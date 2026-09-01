@@ -6,6 +6,7 @@ ingestion run id, and updates that connection's :class:`SyncState` only.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from ontology.subscription_connection import SubscriptionConnection, SyncState
 from storage.fs import join_root, resolve_root
 
 DEFAULT_STALE_AFTER_HOURS = 24
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -191,6 +194,11 @@ class ConnectionSyncCoordinator:
                 )
                 self.publish_factory(connection).run()
             except Exception as exc:  # noqa: BLE001 - publish failures are surfaced, not fatal
+                logger.exception(
+                    "Fabric publish failed for connection '%s' during %s sync",
+                    connection.connection_id,
+                    mode,
+                )
                 publish_message = (
                     f"{mode} sync completed but Fabric publish failed: "
                     f"{str(exc).strip() or exc.__class__.__name__}"

@@ -104,9 +104,18 @@ class OntologyPublisher:
                 or not table_name.strip()
             ):
                 raise ValueError("Ontology relationship binding is invalid")
-            source_type, _, target_type = relationship
+            source_type, predicate, target_type = relationship
             if source_type not in entity_types or target_type not in entity_types:
-                raise ValueError("Ontology relationship endpoint type is not defined")
+                missing = [
+                    value
+                    for value in (source_type, target_type)
+                    if value not in entity_types
+                ]
+                raise ValueError(
+                    "Ontology relationship endpoint type is not defined: "
+                    f"relationship=({source_type!r}, {predicate!r}, {target_type!r}) "
+                    f"missing_types={missing!r} table={table_name!r}"
+                )
         parts = [
             _part("definition.json", {}),
             _part(".platform", {"metadata": {"type": "Ontology", "displayName": ontology_name}}),
