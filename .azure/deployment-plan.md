@@ -321,3 +321,32 @@ replaced.
   operator's investigation history would need both a new route and a listing
   capability on the document store (`LedgerDocumentStore` exposes `read`/`put`
   only). Not required by any current caller.
+
+## Web image rebuild — Phase 3 remediation execution fixes (2026-09-01)
+
+- Trigger: Phase 3 (Safe Remediation Execution) code-verified 19/19; web fixes
+  from commit `33bbc4a7` (scope-aware execution service resolution,
+  `attempt_number` field rename) had not yet been rolled out to `aiops-dev`.
+- Build: `az acr build` for `aiops-web` only (api/mcp images unchanged), ACR
+  run `crat`, tag `fix-ontology-sync-publish-20260901-171839`. Build args:
+  `NEXT_PUBLIC_ENTRA_CLIENT_ID`, `NEXT_PUBLIC_ENTRA_TENANT_ID`,
+  `NEXT_PUBLIC_ENTRA_API_SCOPE` read from `web/.env.local`.
+- Deploy: `az containerapp update --name aiops-dev-web --image
+  aiopsdevacrg6ludc.azurecr.io/aiops-web:fix-ontology-sync-publish-20260901-171839`
+  (direct image update, not a full `terraform apply`, to avoid touching
+  unrelated in-flight config from other concurrent sessions working on this
+  repo). `terraform.tfvars` `image_tag` was intentionally NOT updated by this
+  path — a future `deploy.sh apply` will still read the prior tag
+  (`active-entity-fix`) until reconciled.
+- Result: new revision `aiops-dev-web--0000130` created at 2026-09-01T17:22:31Z,
+  Active=True, Traffic=100%. Prior revisions `--0000128`/`--0000129` remain
+  Active=True/Traffic=0 (not deprovisioned).
+- Smoke checks (unauthenticated, page-load only):
+  - `GET /remediation` → 200
+  - `GET /` → 200
+  - `GET /api/config` → 200
+- Not verified in this pass: authenticated remediation UI behavior (preview/
+  approve/execute flows) — the live remediation plan dataset is still empty
+  per `03-UAT.md`, so full remediation UAT remains blocked pending real data.
+- Follow-up: reconcile `infra/terraform/terraform.tfvars` `image_tag` on the
+  next full Terraform apply so state doesn't drift from the live revision.
