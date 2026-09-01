@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -20,6 +22,21 @@ ADMIN_TOKEN = "admin-token-0123456789abcdef"
 OPERATOR_TOKEN = "operator-token-0123456789abcd"
 READER_TOKEN = "reader-token-0123456789abcdef"
 SCOPED_OPERATOR_TOKEN = "scoped-operator-token-012345"
+
+
+def _future_expiry(days: int = 30) -> str:
+    """Return an ISO-8601 date that is always in the future relative to wall clock."""
+    return (datetime.now(timezone.utc) + timedelta(days=days)).date().isoformat()
+
+
+def _future_expiry_datetime(days: int = 30) -> str:
+    """Return an ISO-8601 datetime that is always in the future relative to wall clock."""
+    return (
+        (datetime.now(timezone.utc) + timedelta(days=days))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _client(tmp_path, *, planner=None, principals=None) -> TestClient:
@@ -67,7 +84,7 @@ def test_operator_records_approval_decision_without_execution(tmp_path) -> None:
             "decision": "approved",
             "reason": "CAB approved after evidence review",
             "action_version": plan["action_version"],
-            "expires_at": "2026-09-01",
+            "expires_at": _future_expiry(),
         },
     )
 
@@ -103,7 +120,7 @@ def test_remediation_decision_survives_provider_rebuild(tmp_path) -> None:
             "decision": "approved",
             "reason": "CAB approved after evidence review",
             "action_version": plan["action_version"],
-            "expires_at": "2026-09-01T00:00:00Z",
+            "expires_at": _future_expiry_datetime(),
         },
     )
 
