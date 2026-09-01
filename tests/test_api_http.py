@@ -7,6 +7,8 @@ are validated end to end rather than in isolation.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -504,3 +506,156 @@ class TestPlannedCapabilities:
         response = client.get(path, headers=_auth(ADMIN_TOKEN))
         assert response.status_code != 200
         assert response.json()["error"]["code"] != "not_implemented"
+
+
+class TestFabricMedallionRouterTask1:
+    @pytest.fixture
+    def fabric_medallion_client(self, tmp_path, monkeypatch) -> TestClient:
+        from api.routers import fabric_medallion as fabric_medallion_router
+
+        context = ApiContext(
+            onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+            authenticator=StaticTokenAuthenticator(_principals()),
+            authorizer=Authorizer(),
+            telemetry=ApiTelemetry(),
+        )
+        app = create_app(context)
+        app.include_router(fabric_medallion_router.router)
+
+        source_rows = [
+            {
+                "source_family": "bronze_resources",
+                "status": "succeeded",
+                "availability": "healthy",
+                "quality": "complete",
+                "row_count": 12,
+                "ingested_at": "2026-09-01T00:00:00Z",
+                "lineage_ref": "bronze-entity",
+                "requested_scope_json": json.dumps({"subscription": [SUB_A]}),
+            },
+            {
+                "source_family": "silver_incidents",
+                "status": "succeeded",
+                "availability": "healthy",
+                "quality": "complete",
+                "row_count": 3,
+                "ingested_at": "2026-09-01T00:00:00Z",
+                "lineage_ref": "silver-entity",
+                "requested_scope_json": json.dumps({"subscription": [SUB_A]}),
+            },
+            {
+                "source_family": "gold_operational_context",
+                "status": "succeeded",
+                "availability": "healthy",
+                "quality": "complete",
+                "row_count": 1,
+                "ingested_at": "2026-09-01T00:00:00Z",
+                "lineage_ref": "gold-entity",
+                "requested_scope_json": json.dumps({"subscription": [SUB_A]}),
+            },
+            {
+                "source_family": "gold_hidden",
+                "status": "succeeded",
+                "availability": "healthy",
+                "quality": "complete",
+                "row_count": 1,
+                "ingested_at": "2026-09-01T00:00:00Z",
+                "lineage_ref": "gold-hidden-entity",
+                "requested_scope_json": json.dumps({"subscription": [SUB_B]}),
+            },
+        ]
+        manifest_rows = [
+            {
+                "projection_name": "topology_entities",
+                "disposition": "active",
+                "compatibility_version": None,
+                "retired_reason": None,
+                "registered_at": "2026-09-01T00:00:00Z",
+                "updated_at": "2026-09-01T00:00:00Z",
+            },
+            {
+                "projection_name": "topology_edges",
+                "disposition": "dormant",
+                "compatibility_version": None,
+                "retired_reason": None,
+                "registered_at": "2026-09-01T00:00:00Z",
+                "updated_at": "2026-09-01T00:00:00Z",
+            },
+        ]
+
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "_metadata_source_status_rows",
+            lambda _context: source_rows,
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "_metadata_publication_manifest_rows",
+            lambda _context: manifest_rows,
+        )
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_fabric_medallion_layers_returns_bronze_silver_gold_summaries(
+        self, fabric_medallion_client
+    ):
+        response = fabric_medallion_client.get(
+            "/api/v1/fabric-medallion/layers", headers=_auth(ADMIN_TOKEN)
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body["data"]["layers"]) == {"bronze", "silver", "gold"}
+        assert body["data"]["layers"]["bronze"] == {"healthy": 1, "total": 1}
+        assert body["data"]["layers"]["silver"] == {"healthy": 1, "total": 1}
+        assert body["data"]["layers"]["gold"] == {"healthy": 2, "total": 2}
+        assert body["evidence"][0]["source_engine"] == "fabric.medallion_health"
+
+    def test_fabric_medallion_dataset_detail_wraps_status_and_404s_unknown(
+        self, fabric_medallion_client
+    ):
+        response = fabric_medallion_client.get(
+            "/api/v1/fabric-medallion/datasets/bronze_resources",
+            headers=_auth(ADMIN_TOKEN),
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["availability"] == "healthy"
+        assert data["row_count"] == 12
+
+        missing = fabric_medallion_client.get(
+            "/api/v1/fabric-medallion/datasets/does_not_exist",
+            headers=_auth(ADMIN_TOKEN),
+        )
+        assert missing.status_code == 404
+        assert missing.json()["error"]["code"] == "not_found"
+
+    def test_fabric_medallion_manifest_returns_all_entries_with_dispositions(
+        self, fabric_medallion_client
+    ):
+        response = fabric_medallion_client.get(
+            "/api/v1/fabric-medallion/manifest", headers=_auth(ADMIN_TOKEN)
+        )
+
+        assert response.status_code == 200
+        entries = response.json()["data"]["entries"]
+        assert {entry["projection_name"] for entry in entries} == {
+            "topology_entities",
+            "topology_edges",
+        }
+        assert {entry["disposition"] for entry in entries} == {"active", "dormant"}
+
+    def test_fabric_medallion_routes_enforce_auth_and_scope(self, fabric_medallion_client):
+        unauthenticated = fabric_medallion_client.get("/api/v1/fabric-medallion/layers")
+        assert unauthenticated.status_code == 401
+
+        forbidden_scope = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/layers?subscription={SUB_B}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert forbidden_scope.status_code == 403
+
+        hidden_detail = fabric_medallion_client.get(
+            "/api/v1/fabric-medallion/datasets/gold_hidden",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert hidden_detail.status_code == 404
