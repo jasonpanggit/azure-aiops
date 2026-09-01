@@ -2,70 +2,72 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: complete
-stopped_at: Phase 2 complete and verified
-last_updated: "2026-09-01T18:25:00.000Z"
+current_plan: 03-05-PLAN.md
+status: in_progress
+stopped_at: Completed 03-04-PLAN.md
+last_updated: "2026-09-01T14:49:21.893Z"
 progress:
-  total_phases: 7
-  active_phase: 0
+  total_phases: 8
+  active_phase: 3
   completed_phases: 2
-  total_plans: 64
-  completed_plans: 8
-  current_plan: ready-for-phase-3
+  total_plans: 70
+  completed_plans: 55
 ---
 
-# Phase 02: Investigation, Recommendation, and Approval
+# Phase 03: Safe Remediation Execution
 
 ## Current Status
 
-**Active Phase:** Phase 2 (Investigation, Recommendation, and Approval)  
-**Wave:** 4 (Final)  
-**Current Plan:** 02-08-PLAN.md (Decision workspace, approval freshness, UI)  
-**Status:** Executing (non-autonomous plan, final checkpoint for Phase 2)
+**Active Phase:** Phase 3 (Safe Remediation Execution)  
+**Wave:** 5  
+**Current Plan:** 03-05-PLAN.md  
+**Status:** In progress (4/6 plans complete)
 
 ## Completed Plans (This Session)
 
-- **02-01** ✅ COMPLETE — Investigation, recommendation, approval foundation
-- **02-02** ✅ COMPLETE — Tracer: end-to-end Defender-correlated business-decision case
-- **02-03** ✅ COMPLETE — Governed action catalog and idempotent seeder (Wave 3)
-- **02-04** ✅ COMPLETE — Business decision intelligence: dispositions, costs, alternatives (Wave 3)
-- **02-05** ✅ COMPLETE — Read-only Defender MCP tools and remediation specialist contract (Wave 4)
-- **02-06** ✅ COMPLETE — Ontology relationships for plan-to-Defender evidence (Wave 4, scope-clarified)
-- **02-07** ✅ COMPLETE — Business-impact-first ranking, risk signals, correlation hardening (Wave 4)
-- **02-08** ✅ COMPLETE — Decision workspace, decision audit route, approval freshness (Wave 4, non-autonomous)
+- **03-01** ✅ COMPLETE — Remediation read and preview API
+- **03-02** ✅ COMPLETE — Approval-gated execution and durable job tracking
+- **03-03** ✅ COMPLETE — Verified outcomes, rollback guidance, and bounded retries
+- **03-04** ✅ COMPLETE — Approval-bound snapshots, eligibility, and bypass removal
 
 ## In Progress
 
-- **Phase 2 Verification** ⏳ CODE REVIEW — All 8 plans complete, verifying Phase 2 deliverables
+- **03-05** ⏳ NEXT — Atomic lifecycle, authoritative verification, scope, cancellation, and history
+- **03-06** ⏳ PLANNED — Operator remediation execution UI
 
 ## Work Completed This Session
 
-### Wave 3 (Parallel)
-- 02-03: Governed remediation catalog seeder (3 commits, 29/29 tests)
-- 02-04: Business decision engine (5 commits, 104/104 tests)
-
-### Wave 4 (Parallel, with cleanup)
-- 02-05: Defender MCP tools (4 commits, 41 tests, clean)
-- 02-06: Ontology wiring (2 commits, scope-clarified to include remediation_generator.py)
-- 02-07: Business-impact prioritization (5 commits, 104+ tests, clean)
-- 02-08: Decision workspace and approval freshness (6 commits, 42 tests, complete)
-
-### Verification Phase
-- Code review: 9 files analyzed (standard depth)
-- 6 findings (1 CR, 3 WR, 2 Info) documented in 02-REVIEW.md
-- All fixes applied: 4 atomic commits, 47/47 Phase 2 tests passing
-- ROADMAP.md updated with Phase 2 completion
+- Preview and approval now share one scoped canonical execution-snapshot builder.
+- Approved execution validates exact target, patch IDs, action version, and hash.
+- Business-impact eligibility fails deterministically before target or Azure access.
+- Public `POST /api/v1/patching/runs` is removed; read endpoints remain.
+- Combined 03-04 regression suite: 93 passed; scoped Ruff checks pass.
 
 ## Technical Notes
 
-- **02-06 scope clarification**: Added `resource_key` field to `remediation_generator.py` output (necessary for Defender evidence correlation downstream). Originally not in declared scope but correctly recognized as required by the implementation. Verified as prerequisite for 02-08.
-- **Business-impact safety mechanism**: 02-07 implements technical-severity cap (65/100 max) when business mapping unknown, enforcing user's core requirement that remediation cannot happen "for its own sake."
-- **Defender evidence integration**: 02-05 and 02-06 wire Defender evidence as data source; 02-07 threads it into risk/priority scoring.
+- **Approval safety boundary:** The durable decision snapshot is the sole execution parameter source.
+- **No widening:** Current target state may invalidate an approval but can never add patches.
+- **Scope preservation:** Existing unrelated Fabric working-tree changes were not touched or used.
 
 ## Next Steps
 
-**Phase 2 is now locked in as complete.** Ready for Phase 3 (Safe Remediation Execution) planning/execution:
+1. Execute 03-05 lifecycle and authoritative verification hardening.
+2. Execute 03-06 operator UI and complete Phase 3 verification.
 
-1. Proceed to Phase 3 planning (gsd-discuss-phase + gsd-plan-phase)
-2. Or, prepare for deployment to production (build and deploy to ACA)
+## Performance Metrics
 
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 03 P04 | 7 min | 4 tasks | 12 files |
+
+## Decisions
+
+- [Phase 03]: Only approved controlled-patch-recovery decisions carry an execution snapshot; non-approved decisions carry none.
+- [Phase 03]: Execution validates snapshot integrity and availability but never widens the approved patch selection.
+- [Phase 03]: The public patching router is read-only; mutations route only through approved remediation execution.
+
+## Session
+
+**Last session:** 2026-09-01T14:49:21.879Z
+**Stopped at:** Completed 03-04-PLAN.md
+**Resume file:** None

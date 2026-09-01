@@ -88,14 +88,16 @@ Plans:
   3. Approved execution enforces least privilege, bounded and validated targets, preconditions, timeouts, idempotency, and revalidation, then exposes queued, running, retrying, succeeded, failed, and cancelled states.
   4. Operator and auditor can see post-action actual state, outcome, failure details, verification results, and rollback or compensation status, including bounded retry history.
 
-**Plans:** 6 plans (3 executed, 3 gap-closure)
+**Plans:** 4/6 plans executed (3 executed, 3 gap-closure)
 Plans:
+
 - [x] 03-01-PLAN.md — Remediation router mounted with plan list/get/preview/approvals/business-decision reads (closes the 404 API gap)
 - [x] 03-02-PLAN.md — Execution adapter generalization, approval-gated execute endpoint, durable job tracking
 - [x] 03-03-PLAN.md — Post-action verification against upstream Azure source of truth, rollback guidance, bounded idempotent retries
-- [ ] 03-04-PLAN.md — Bind exact server-derived patch selection and deterministic business evidence to approval; remove direct patch mutation
+- [x] 03-04-PLAN.md — Bind exact server-derived patch selection and deterministic business evidence to approval; remove direct patch mutation
 - [ ] 03-05-PLAN.md — Enforce atomic execution/retry, authoritative verification, scope, cancellation, history, and eligibility contracts
 - [ ] 03-06-PLAN.md — Deliver remediation execution UI and remove direct patch inventory mutation
+
 **UI hint:** yes
 
 ### Phase 4: Domain Coverage and Operational Twin
@@ -135,7 +137,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Evidence and Situation Foundation | 3/3 | In Progress|  |
 | 2. Investigation, Recommendation, and Approval | 0/TBD | Not started | - |
-| 3. Safe Remediation Execution | 0/TBD | Not started | - |
+| 3. Safe Remediation Execution | 4/6 | In Progress|  |
 | 4. Domain Coverage and Operational Twin | 0/TBD | Not started | - |
 | 5. Controlled Pilot Readiness | 0/TBD | Not started | - |
 | 6. Software and OS Inventory Visibility | 9/9 | Code-complete, UAT pending | - |

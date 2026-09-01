@@ -36,7 +36,7 @@ Requirements for the controlled Azure pilot.
 
 ### Execute and Verify
 
-- [ ] **EXEC-01**: Platform exposes a typed, allowlisted catalog containing one or two low-risk Azure remediation actions and no arbitrary shell or CLI execution.
+- [x] **EXEC-01**: Platform exposes a typed, allowlisted catalog containing one or two low-risk Azure remediation actions and no arbitrary shell or CLI execution.
 - [ ] **EXEC-02**: An approver can preview the planned target set, API operations, preconditions, expected effect, and possible collateral impact before approval.
 - [ ] **EXEC-03**: Approved actions enforce least privilege, bounded targets, parameter validation, timeouts, idempotency, and explicit preconditions.
 - [ ] **EXEC-04**: Execution runs as a durable job with visible queued, running, succeeded, failed, retrying, and cancelled states.
@@ -141,7 +141,7 @@ Traceability is populated during roadmap creation.
 | APPROVE-01 | Phase 2 | Pending |
 | APPROVE-02 | Phase 2 | Pending |
 | APPROVE-03 | Phase 2 | Pending |
-| EXEC-01 | Phase 3 | Pending |
+| EXEC-01 | Phase 3 | Complete |
 | EXEC-02 | Phase 3 | Pending |
 | EXEC-03 | Phase 3 | Pending |
 | EXEC-04 | Phase 3 | Pending |
