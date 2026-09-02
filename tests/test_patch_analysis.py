@@ -85,6 +85,30 @@ def test_duplicate_resource_names_remain_distinct_and_require_canonical_evidence
         ).analyze()
 
 
+def test_evidence_for_a_decommissioned_or_unknown_resource_is_dropped_not_fatal():
+    scenario = json.loads(Path("tests/fixtures/mock_patch_intelligence.json").read_text())
+    scenario["assessments"].append(
+        {
+            "resource": "vm-decommissioned-99",
+            "assessed_at": "2026-08-17T00:00:00Z",
+            "status": "noncompliant",
+            "available_updates": 3,
+            "missing_critical_updates": 1,
+            "missing_security_updates": 1,
+        }
+    )
+
+    result = PatchIntelligence.from_semantic_snapshot(
+        **scenario,
+        now=lambda: datetime(2026, 8, 18, tzinfo=UTC),
+    ).analyze()
+
+    assert result["findings"]
+    assert all(
+        item["resource"]["name"] != "vm-decommissioned-99" for item in result["findings"]
+    )
+
+
 def test_patch_snapshot_bounds_every_evidence_collection():
     scenario = json.loads(Path("tests/fixtures/mock_patch_intelligence.json").read_text())
     scenario["history"] = scenario["history"] * 3
