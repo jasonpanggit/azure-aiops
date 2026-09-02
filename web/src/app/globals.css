@@ -3816,6 +3816,81 @@ body.topology-fullscreen-open {
   font-size: 12px;
 }
 
+.fabric-subscription-summary {
+  margin-bottom: 22px;
+}
+
+.fabric-summary-grid,
+.fabric-dataset-card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.fabric-summary-grid > div,
+.fabric-dataset-card {
+  min-width: 0;
+  padding: 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.fabric-summary-grid span,
+.fabric-dataset-card span {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.fabric-summary-grid strong,
+.fabric-dataset-card strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.fabric-summary-grid p {
+  margin: 6px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.fabric-dataset-card-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 16px;
+}
+
+.fabric-dataset-card {
+  display: grid;
+  gap: 12px;
+}
+
+.fabric-dataset-card dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.fabric-dataset-card dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.fabric-dataset-card dt {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.fabric-dataset-card dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .compliance-detail {
   display: grid;
   gap: 12px;

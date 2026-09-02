@@ -451,7 +451,11 @@ def medallion_dataset(table_name: str, context: Context, scope: ReadScope) -> di
 
 @router.get("/manifest", summary="Fabric publication manifest dispositions")
 def medallion_manifest(context: Context, scope: ReadScope) -> dict[str, Any]:
-    rows = _metadata_publication_manifest_rows(context)
+    rows = [
+        row
+        for row in _metadata_publication_manifest_rows(context)
+        if _row_visible(scope, row)
+    ]
     entries = [
         {
             "projection_name": str(row.get("projection_name") or ""),
@@ -460,6 +464,8 @@ def medallion_manifest(context: Context, scope: ReadScope) -> dict[str, Any]:
             "retired_reason": row.get("retired_reason"),
             "registered_at": str(row.get("registered_at") or ""),
             "updated_at": str(row.get("updated_at") or ""),
+            "subscription_id": _scope_attributes(row).get("subscription", ""),
+            "subscription_connection": _scope_attributes(row).get("subscription_connection", ""),
         }
         for row in rows
         if str(row.get("projection_name") or "")

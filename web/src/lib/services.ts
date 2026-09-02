@@ -176,19 +176,35 @@ export const connectionsApi = {
 
 
 export const fabricMedallionApi = {
-  layers: () =>
-    apiRequest<{ layers: Record<"bronze" | "silver" | "gold", FabricLayerCounts> }>("/fabric-medallion/layers"),
+  layers: (scope: ScopeSelection = {}) =>
+    apiRequest<{ layers: Record<"bronze" | "silver" | "gold", FabricLayerCounts> }>("/fabric-medallion/layers", {
+      query: scopeToSearchParams(scope),
+    }),
 
-  dataset: (tableName: string) =>
-    apiRequest<FabricDataset>(`/fabric-medallion/datasets/${encodeURIComponent(tableName)}`),
+  dataset: (tableName: string, scope: ScopeSelection = {}) =>
+    apiRequest<FabricDataset>(`/fabric-medallion/datasets/${encodeURIComponent(tableName)}`, {
+      query: scopeToSearchParams(scope),
+    }),
 
-  manifest: () => apiRequest<{ entries: FabricManifestEntry[] }>("/fabric-medallion/manifest"),
+  manifest: (scope: ScopeSelection = {}) =>
+    apiRequest<{ entries: FabricManifestEntry[] }>("/fabric-medallion/manifest", {
+      query: scopeToSearchParams(scope),
+    }),
 
-  governance: () => apiRequest<FabricGovernanceSummary>("/fabric-medallion/governance"),
+  governance: (scope: ScopeSelection = {}) =>
+    apiRequest<FabricGovernanceSummary>("/fabric-medallion/governance", {
+      query: scopeToSearchParams(scope),
+    }),
 
-  ingestionHistory: () => apiRequest<{ runs: FabricIngestionRun[] }>("/fabric-medallion/ingestion-history"),
+  ingestionHistory: (scope: ScopeSelection = {}) =>
+    apiRequest<{ runs: FabricIngestionRun[] }>("/fabric-medallion/ingestion-history", {
+      query: scopeToSearchParams(scope),
+    }),
 
-  capabilities: () => apiRequest<FabricCapabilities>("/fabric-medallion/capabilities"),
+  capabilities: (scope: ScopeSelection = {}) =>
+    apiRequest<FabricCapabilities>("/fabric-medallion/capabilities", {
+      query: scopeToSearchParams(scope),
+    }),
 };
 
 export const inventoryApi = {

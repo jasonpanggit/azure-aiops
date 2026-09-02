@@ -8,6 +8,7 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
+import type { ScopeSelection } from "@/lib/scope";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
@@ -680,21 +681,40 @@ export default function ConnectionsPage() {
       )}
       </section>
 
-      <FabricMedallionPanel hidden={tab !== "fabric-medallion"} refreshKey={fabricRefreshKey} />
+      <FabricMedallionPanel hidden={tab !== "fabric-medallion"} refreshKey={fabricRefreshKey} scope={scope} connections={rows} />
     </div>
   );
 }
 
-function FabricMedallionPanel({ hidden, refreshKey }: { hidden: boolean; refreshKey: number }) {
-  const layerSummary = useApi(() => fabricMedallionApi.layers(), [refreshKey]);
-  const manifest = useApi(() => fabricMedallionApi.manifest(), [refreshKey]);
-  const governance = useApi(() => fabricMedallionApi.governance(), [refreshKey]);
-  const ingestionHistory = useApi(() => fabricMedallionApi.ingestionHistory(), [refreshKey]);
-  const capabilities = useApi(() => fabricMedallionApi.capabilities(), [refreshKey]);
+function FabricMedallionPanel({
+  hidden,
+  refreshKey,
+  scope,
+  connections,
+}: {
+  hidden: boolean;
+  refreshKey: number;
+  scope: ScopeSelection;
+  connections: SubscriptionConnection[];
+}) {
+  const scopeKey = JSON.stringify(scope);
+  const layerSummary = useApi(() => fabricMedallionApi.layers(scope), [refreshKey, scopeKey]);
+  const manifest = useApi(() => fabricMedallionApi.manifest(scope), [refreshKey, scopeKey]);
+  const governance = useApi(() => fabricMedallionApi.governance(scope), [refreshKey, scopeKey]);
+  const ingestionHistory = useApi(() => fabricMedallionApi.ingestionHistory(scope), [refreshKey, scopeKey]);
+  const capabilities = useApi(() => fabricMedallionApi.capabilities(scope), [refreshKey, scopeKey]);
   const counts = layerSummary.data?.data.layers ?? EMPTY_FABRIC_COUNTS;
   const tableNames = useMemo(() => tableNamesByLayer(capabilities.data?.data), [capabilities.data]);
   const totalTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].total, 0);
   const healthyTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].healthy, 0);
+  const governanceSummary = governance.data?.data;
+  const lifecycleEntries = manifest.data?.data.entries ?? [];
+  const openGovernanceGaps =
+    (governanceSummary?.ownership_gap_count ?? 0) +
+    (governanceSummary?.tag_gap_count ?? 0) +
+    (governanceSummary?.referential_integrity_blockers ?? 0);
+  const activeLifecycleCount = lifecycleEntries.filter((entry) => entry.disposition === "active").length;
+  const inactiveLifecycleCount = lifecycleEntries.length - activeLifecycleCount;
 
   return (
     <section
@@ -725,6 +745,14 @@ function FabricMedallionPanel({ hidden, refreshKey }: { hidden: boolean; refresh
       </div>
 
       <FabricCapabilityCallouts capabilities={capabilities.data?.data} error={capabilities.error} />
+      <FabricSubscriptionSummary
+        scope={scope}
+        connections={connections}
+        counts={counts}
+        governanceGapCount={openGovernanceGaps}
+        activeLifecycleCount={activeLifecycleCount}
+        inactiveLifecycleCount={inactiveLifecycleCount}
+      />
 
       {FABRIC_LAYER_KEYS.map((layer) => (
         <FabricLayerSection
@@ -732,6 +760,7 @@ function FabricMedallionPanel({ hidden, refreshKey }: { hidden: boolean; refresh
           layer={layer}
           tableNames={tableNames[layer]}
           counts={counts[layer]}
+          scope={scope}
           refreshKey={refreshKey}
         />
       ))}
@@ -748,14 +777,17 @@ function FabricLayerSection({
   layer,
   tableNames,
   counts,
+  scope,
   refreshKey,
 }: {
   layer: FabricLayerKey;
   tableNames: string[];
   counts: FabricLayerCounts;
+  scope: ScopeSelection;
   refreshKey: number;
 }) {
-  const datasets = useApi(() => loadLayerDatasets(tableNames), [refreshKey, tableNames.join("|")]);
+  const scopeKey = JSON.stringify(scope);
+  const datasets = useApi(() => loadLayerDatasets(tableNames, scope), [refreshKey, tableNames.join("|"), scopeKey]);
   const rows = useMemo(() => datasets.data ?? [], [datasets.data]);
   const { filteredRows, filters, resetFilters } = useColumnFilters(rows, [
     { id: "status", label: "Status", getValues: (dataset) => dataset.availability || "unknown" },
@@ -787,6 +819,22 @@ function FabricLayerSection({
           <StatePanel title={`No ${label} datasets registered`} message="No datasets are registered for this layer in the current scope." />
         ) : (
           <>
+            <div className="fabric-dataset-card-grid" aria-label={`${label} dataset health cards`}>
+              {rows.map((dataset) => (
+                <article key={dataset.table_name} className="fabric-dataset-card">
+                  <div>
+                    <strong>{dataset.table_name}</strong>
+                    <span>{datasetRowsCopy(dataset)} · observed {relativeTime(dataset.observed_at)}</span>
+                  </div>
+                  <StatusBadge label={datasetStatusLabel(dataset.availability)} tone={statusTone(dataset.availability)} />
+                  <dl>
+                    <div><dt>Freshness</dt><dd>{dataset.freshness || "unknown"}</dd></div>
+                    <div><dt>Quality</dt><dd>{dataset.quality || "unknown"}</dd></div>
+                    <div><dt>Watermark</dt><dd>{dataset.watermark || "unknown"}</dd></div>
+                  </dl>
+                </article>
+              ))}
+            </div>
             <TableColumnFilters filters={filters} onReset={resetFilters} resultCount={filteredRows.length} totalCount={rows.length} />
             <div className="table-scroll">
               <table className="operations-table">
@@ -806,6 +854,68 @@ function FabricLayerSection({
             <TablePagination total={paging.total} pageRows={paging.pageRows.length} page={paging.page} onPageChange={paging.setPage} pageSize={paging.pageSize} onPageSizeChange={paging.setPageSize} label={`${layer} datasets`} />
           </>
         )}
+      </div>
+    </section>
+  );
+}
+
+function FabricSubscriptionSummary({
+  scope,
+  connections,
+  counts,
+  governanceGapCount,
+  activeLifecycleCount,
+  inactiveLifecycleCount,
+}: {
+  scope: ScopeSelection;
+  connections: SubscriptionConnection[];
+  counts: Record<FabricLayerKey, FabricLayerCounts>;
+  governanceGapCount: number;
+  activeLifecycleCount: number;
+  inactiveLifecycleCount: number;
+}) {
+  const selectedSubscriptions = scope.subscription ?? [];
+  const selectedConnections = selectedSubscriptions.length
+    ? connections.filter((connection) => selectedSubscriptions.includes(connection.subscription_id))
+    : connections;
+  const scopeLabel = selectedSubscriptions.length
+    ? selectedSubscriptions.join(", ")
+    : "All onboarded subscriptions";
+  const totalTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].total, 0);
+  const healthyTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].healthy, 0);
+
+  return (
+    <section className="card fabric-subscription-summary" aria-label="Subscription-level Fabric medallion summary">
+      <div className="card-header">
+        <div>
+          <h2>Subscription-level Fabric status</h2>
+          <p>Bronze, Silver, Gold, lifecycle, and governance signals are filtered by the current subscription scope.</p>
+        </div>
+        <StatusBadge label={scopeLabel} tone={selectedSubscriptions.length ? "info" : "neutral"} />
+      </div>
+      <div className="card-body">
+        <div className="fabric-summary-grid">
+          <div>
+            <span>Scope</span>
+            <strong>{scopeLabel}</strong>
+            <p>{selectedConnections.length} subscription connection{selectedConnections.length === 1 ? "" : "s"} included.</p>
+          </div>
+          <div>
+            <span>Medallion health</span>
+            <strong>{healthyTables}/{totalTables} datasets healthy</strong>
+            <p>{FABRIC_LAYER_KEYS.map((layer) => `${FABRIC_LAYER_LABELS[layer]} ${formatHealthCount(counts[layer])}`).join(" · ")}</p>
+          </div>
+          <div>
+            <span>Lifecycle</span>
+            <strong>{activeLifecycleCount} active contracts</strong>
+            <p>{inactiveLifecycleCount} dormant, retired, or deployment-blocked contract{inactiveLifecycleCount === 1 ? "" : "s"}.</p>
+          </div>
+          <div>
+            <span>Governance</span>
+            <strong>{governanceGapCount} open gap{governanceGapCount === 1 ? "" : "s"}</strong>
+            <p>Ownership, tags, and referential integrity are tracked from Fabric quality reports.</p>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -936,9 +1046,9 @@ function FabricCapabilityCallouts({ capabilities, error }: { capabilities?: Fabr
   );
 }
 
-async function loadLayerDatasets(tableNames: string[]): Promise<FabricDataset[]> {
+async function loadLayerDatasets(tableNames: string[], scope: ScopeSelection): Promise<FabricDataset[]> {
   if (tableNames.length === 0) return [];
-  const results = await Promise.allSettled(tableNames.map((tableName) => fabricMedallionApi.dataset(tableName)));
+  const results = await Promise.allSettled(tableNames.map((tableName) => fabricMedallionApi.dataset(tableName, scope)));
   const datasets: FabricDataset[] = [];
   for (const result of results) {
     if (result.status === "rejected") {

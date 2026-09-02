@@ -678,6 +678,8 @@ export interface FabricManifestEntry {
   retired_reason: string | null;
   registered_at: string;
   updated_at: string;
+  subscription_id?: string;
+  subscription_connection?: string;
 }
 
 export interface FabricGovernanceGap {
