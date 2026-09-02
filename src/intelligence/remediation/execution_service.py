@@ -310,19 +310,13 @@ class RemediationExecutionService:
                 reason="execution_not_found",
                 details={"execution_id": execution_id},
             )
+
         status = str(record.get("status") or "")
         if status not in {"failed", "cancelled"}:
             raise RemediationExecutionError(
                 "This execution is not in a retryable terminal state",
                 reason="execution_not_retryable",
                 details={"execution_id": execution_id, "status": status},
-            )
-        attempt_count = int(record.get("attempt_count") or 0)
-        if attempt_count >= MAX_EXECUTION_ATTEMPTS:
-            raise RemediationExecutionError(
-                f"This execution has reached the maximum of {MAX_EXECUTION_ATTEMPTS} attempts",
-                reason="max_attempts_exceeded",
-                details={"execution_id": execution_id, "attempt_count": attempt_count},
             )
 
         plan_id = str(record.get("plan_id") or "")
