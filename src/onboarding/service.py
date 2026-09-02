@@ -82,6 +82,54 @@ class SubscriptionOnboardingService:
         self.secret_writer = secret_writer
         self.health = health_evaluator or HealthEvaluator(clock=clock)
         self.clock = clock or (lambda: datetime.now(UTC))
+        self._reconcile_orphaned_syncs()
+
+    def _reconcile_orphaned_syncs(self) -> None:
+        """Fail any connection left mid-sync by a process that no longer exists.
+
+        Syncs run on an in-process ``ThreadPoolExecutor`` (see
+        :meth:`sync_async`); there is nothing durable about that thread. If
+        the container is restarted or redeployed while a sync is running --
+        a rolling ACA deploy, a crash, an OOM kill -- the thread dies with it,
+        but the on-disk ``sync_state.status`` stays "running" forever because
+        nothing ever transitions it. Every subsequent poll from the UI then
+        reports "running"/"unknown" indefinitely, and every later manual sync
+        attempt piles onto the same stuck state (bumping ``attempts`` without
+        ever resolving it). Since this constructor runs once per process
+        startup, any connection still marked "running" at this point cannot
+        actually have a live worker -- this process has none running yet --
+        so it's safe to mark it failed here and let the next sync attempt
+        start clean.
+        """
+        try:
+            connections = self.registry.list()
+        except Exception:
+            logger.debug("Unable to load registry for orphaned-sync reconciliation", exc_info=True)
+            return
+        for connection in connections:
+            state = connection.sync_state
+            if state is None or state.status != "running":
+                continue
+            try:
+                failed_state = dataclasses.replace(
+                    state,
+                    status="failed",
+                    last_failed_at=_iso(self.clock()),
+                    attempts=state.attempts + 1,
+                    stage="failed",
+                    stage_message="Sync interrupted by a service restart or deployment",
+                    message="Sync interrupted by a service restart or deployment",
+                )
+                self._save_operation_state(connection.connection_id, sync_state=failed_state)
+                logger.warning(
+                    "Reconciled orphaned sync for connection %s (run_id=%s)",
+                    connection.connection_id,
+                    state.run_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Unable to reconcile orphaned sync for %s", connection.connection_id, exc_info=True
+                )
 
     @classmethod
     def _shared_executor(cls) -> ThreadPoolExecutor:
@@ -526,10 +574,12 @@ class SubscriptionOnboardingService:
                 "support_team": business.support_team,
                 "criticality": business.criticality,
                 "region": business.region,
-                # sync_status intentionally omitted from the list response: the
-                # registry backing this summary is disk-cached and can lag live
-                # state by several minutes. detail() below restores it since
-                # that call is only made for a single connection.
+                # sync_status is read from the same disk-cached registry as
+                # every other field in this summary, so it can lag live state
+                # by a few minutes during an in-flight sync — but omitting it
+                # entirely left the connections table showing "unknown" for
+                # every connection, which is worse than briefly-stale status.
+                "sync_status": sync_state.status,
                 "sync_record_count": sync_state.record_count,
                 "last_synced_at": sync_state.last_synced_at,
                 "last_successful_sync_at": sync_state.last_successful_sync_at,

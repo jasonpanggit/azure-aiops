@@ -226,8 +226,12 @@ def test_normalizer_preserves_defender_threat_path_and_score_semantics() -> None
     assert defender_status["defender_attack_paths"]["availability"] == "available"
 
 
-def test_defender_assessment_html_is_escaped() -> None:
-    """Verify that HTML tags in Defender assessment fields are escaped."""
+def test_defender_assessment_html_is_stripped_to_plain_text() -> None:
+    """Verify that HTML markup in Defender assessment fields is stripped, not escaped.
+
+    JSX renders these fields as plain text (auto-escaping on display), so the
+    backend must return clean readable text rather than raw or escaped HTML.
+    """
     from onboarding.defender_normalize import normalize_assessment
      
     row = {
@@ -248,13 +252,13 @@ def test_defender_assessment_html_is_escaped() -> None:
      
     result = normalize_assessment(row, "2026-08-17T00:00:00Z")
     assert result is not None
-    assert result["recommendation"] == "Test &lt;b&gt;Assessment&lt;/b&gt;"
-    assert result["description"] == "Description with &lt;br&gt; tag"
-    assert result["remediation"] == "Fix with &lt;a href=&#x27;https://example.com&#x27;&gt;link&lt;/a&gt;"
+    assert result["recommendation"] == "Test Assessment"
+    assert result["description"] == "Description with\ntag"
+    assert result["remediation"] == "Fix with link"
 
 
-def test_defender_vulnerability_finding_html_is_escaped() -> None:
-    """Verify that HTML tags in Defender vulnerability finding fields are escaped."""
+def test_defender_vulnerability_finding_html_is_stripped_to_plain_text() -> None:
+    """Verify that HTML markup in Defender vulnerability finding fields is stripped."""
     from onboarding.defender_normalize import normalize_vulnerability_subassessments
      
     row = {
@@ -282,13 +286,13 @@ def test_defender_vulnerability_finding_html_is_escaped() -> None:
      
     assert len(results) == 1
     # recommendation is mapped from remediation/remediationDescription
-    assert results[0]["recommendation"] == "Remediate with &lt;span&gt;HTML&lt;/span&gt;"
+    assert results[0]["recommendation"] == "Remediate with HTML"
     # description is mapped from properties.description
-    assert results[0]["description"] == "CVE with &lt;code&gt;tag&lt;/code&gt;"
+    assert results[0]["description"] == "CVE with tag"
 
 
-def test_security_alert_html_is_escaped() -> None:
-    """Verify that HTML tags in Defender security alert fields are escaped."""
+def test_security_alert_html_is_stripped_to_plain_text() -> None:
+    """Verify that HTML markup in Defender security alert fields is stripped."""
     from onboarding.defender_normalize import normalize_security_alert
      
     row = {
@@ -321,7 +325,35 @@ def test_security_alert_html_is_escaped() -> None:
      
     result = normalize_security_alert(row, "2026-08-17T00:00:00Z")
     assert result is not None
-    assert result["title"] == "Alert with &lt;b&gt;HTML&lt;/b&gt;"
-    assert result["description"] == "Alert description with &lt;br&gt; tags"
-    assert result["remediationSteps"][0] == "Step 1 with &lt;a href=&#x27;#&#x27;&gt;link&lt;/a&gt;"
-    assert result["remediationSteps"][1] == "Step 2 with &lt;code&gt;tag&lt;/code&gt;"
+    assert result["title"] == "Alert with HTML"
+    assert result["description"] == "Alert description with\ntags"
+    assert result["remediationSteps"][0] == "Step 1 with link"
+    assert result["remediationSteps"][1] == "Step 2 with tag"
+
+
+def test_html_entities_are_unescaped_to_readable_text() -> None:
+    """Verify that HTML entities from Azure's authored content render as plain text.
+
+    Azure Defender content is authored as HTML, so it uses entities like
+    ``&#x27;`` (apostrophe) and ``&amp;`` (ampersand) — these must be decoded
+    to their literal characters, not left as raw entity codes.
+    """
+    from onboarding.defender_normalize import normalize_assessment
+
+    row = {
+        "id": "/subscriptions/sub-1/providers/Microsoft.Security/assessments/assessment-1",
+        "name": "assessment-1",
+        "type": "Microsoft.Security/assessments",
+        "properties": {
+            "displayName": "It&#x27;s important &amp; urgent",
+            "status": {"code": "Healthy"},
+            "resourceDetails": {
+                "Source": "Azure",
+                "Id": "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-1",
+            },
+        },
+    }
+
+    result = normalize_assessment(row, "2026-08-17T00:00:00Z")
+    assert result is not None
+    assert result["recommendation"] == "It's important & urgent"
