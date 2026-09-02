@@ -173,7 +173,17 @@ class OneLakeWriter:
         try:
             yield
         finally:
-            lease.release()
+            try:
+                lease.release()
+            except HttpResponseError:
+                # A concurrent sync can have broken and re-acquired this
+                # lease while we were running (see the LeaseAlreadyPresent
+                # recovery above), leaving our lease ID stale by the time we
+                # get here. That is not actionable from this side: the lock
+                # is either held by that other run or has already expired,
+                # so failing the whole sync over a release mismatch would
+                # only mask a publish that otherwise completed successfully.
+                pass
 
 
 def _safe_relative(value: str) -> Path:
