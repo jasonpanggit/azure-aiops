@@ -17,7 +17,11 @@ import { connectionsApi, fabricMedallionApi } from "@/lib/services";
 import type { BusinessMetadata, ConnectionCreateRequest, Envelope, FabricCapabilities, FabricDataset, FabricGovernanceSummary, FabricIngestionRun, FabricManifestEntry, FabricLayerCounts, SubscriptionConnection, SyncState } from "@/lib/types";
 
 const SYNC_POLL_INTERVAL_MS = 1500;
-const SYNC_POLL_TIMEOUT_MS = 10 * 60 * 1000;
+// Discovery + merge + ontology + Fabric publish can take well past 10 minutes
+// for large subscriptions (observed ~16 min for ~12.7k records); the poll
+// window must comfortably exceed that so the UI doesn't report a false
+// timeout while the background sync is still healthy and progressing.
+const SYNC_POLL_TIMEOUT_MS = 20 * 60 * 1000;
 
 type FabricLayerKey = "bronze" | "silver" | "gold";
 
@@ -208,7 +212,9 @@ export default function ConnectionsPage() {
       }
       await new Promise((resolve) => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
     }
-    throw new Error("Timed out waiting for sync to complete.");
+    throw new Error(
+      "Still waiting for sync to reach a final state after 20 minutes. It may still be running in the background — check the connection's status and refresh shortly."
+    );
   }
 
   async function deleteConnection(connection: SubscriptionConnection) {
