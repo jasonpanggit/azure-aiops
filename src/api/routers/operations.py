@@ -176,12 +176,21 @@ def incident_detail(
 
 
 @router.get("/remediation-plans", summary="Remediation plans")
-def remediation_plans(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+def remediation_plans(
+    context: Context, scope: ReadScope, page: Page, resource_key: str = ""
+) -> dict[str, Any]:
     planner = _require(context, "remediation_provider", "remediation", scope)
     plans = planner.generate_plans()
     visible = _filter_rows(plans.get("plans"), scope)
     if not isinstance(visible, list):
         visible = []
+    if resource_key:
+        canonical = resource_key.strip().casefold()
+        visible = [
+            row
+            for row in visible
+            if str(row.get("resource_key") or "").strip().casefold() == canonical
+        ]
     public = {**plans, "plans": visible[page.offset : page.offset + page.limit]}
     if not scope.is_unrestricted():
         public = {

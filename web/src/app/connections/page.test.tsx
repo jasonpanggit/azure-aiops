@@ -401,7 +401,8 @@ describe("Connections page Fabric medallion tab", () => {
     expect(fabricPanel).toHaveAttribute("id", "fabric-medallion-panel");
     expect(within(fabricPanel).getByText("Bronze tables")).toBeInTheDocument();
     expect(within(fabricPanel).getByRole("heading", { name: "Subscription-level Fabric status" })).toBeInTheDocument();
-    expect(within(fabricPanel).getAllByText("All onboarded subscriptions").length).toBeGreaterThan(0);
+    const subscriptionSelect = screen.getByDisplayValue(/Production/);
+    expect(subscriptionSelect).toBeInTheDocument();
     expect(document.querySelector("#subscriptions-panel")).toHaveAttribute("hidden");
 
     fireEvent.click(screen.getByRole("tab", { name: "Subscriptions" }));
@@ -491,14 +492,13 @@ describe("Connections page Fabric medallion tab", () => {
     renderConnectionsPage();
 
     expect(await screen.findByText("Production")).toBeInTheDocument();
-    const fabricLink = screen.getByRole("link", { name: "Fabric" });
-    expect(fabricLink).toHaveAttribute(
-      "href",
-      `/connections/fabric?subscription=${encodeURIComponent(connection.subscription_id)}`,
-    );
 
     fireEvent.click(screen.getByRole("tab", { name: "Fabric medallion" }));
-    expect(screen.getByRole("link", { name: "Per-subscription view" })).toHaveAttribute("href", "/connections/fabric");
+    const subscriptionSelect = await screen.findByDisplayValue(
+      new RegExp(`${connection.name}.*${connection.subscription_id}`)
+    );
+    expect(subscriptionSelect).toBeInTheDocument();
+    expect(subscriptionSelect).toHaveAttribute("name", "subscriptionId");
   });
 
   it("explains an unpublished watermark instead of labelling it unknown", async () => {

@@ -271,7 +271,8 @@ function RemediationContent() {
   const fromKb = searchParams.get("kb") ?? "";
   const fromBusinessService = searchParams.get("business_service") ?? "";
   const fromIncident = searchParams.get("incident") ?? "";
-  const plans = useApi(() => operationsApi.remediationPlans(scope), [scope]);
+  const fromResourceKey = searchParams.get("resource_key") ?? "";
+  const plans = useApi(() => operationsApi.remediationPlans(scope, 0, 100, fromResourceKey), [scope, fromResourceKey]);
   const opportunities = useApi(() => operationsApi.remediationOpportunities(scope), [scope]);
   const defenderCases = useApi(() => operationsApi.defenderCases(scope), [scope]);
   const networkGaps = useApi(() => networkApi.gaps(scope), [scope]);
@@ -312,9 +313,15 @@ function RemediationContent() {
   const planRows = fromBusinessService
     ? allPlanRows.filter((plan) => plan.business_service === fromBusinessService)
     : allPlanRows;
-  const opportunityRows = fromBusinessService
-    ? allOpportunityRows.filter((opportunity) => opportunity.business_service === fromBusinessService)
-    : allOpportunityRows;
+  const opportunityRows = (
+    fromBusinessService
+      ? allOpportunityRows.filter((opportunity) => opportunity.business_service === fromBusinessService)
+      : allOpportunityRows
+  ).filter((opportunity) =>
+    fromResourceKey
+      ? String(opportunity.resource_key ?? opportunity.resource?.name ?? "") === fromResourceKey
+      : true,
+  );
   const backlog = useMemo(() => {
     const rows = [
       ...planRows.map(planToBacklog),
@@ -702,7 +709,7 @@ function RemediationContent() {
         ]}
       />
 
-      {(fromCve || fromKb || fromIncident) && (
+      {(fromCve || fromKb || fromIncident || fromResourceKey) && (
         <div className="callout" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <span>
             Filtered from{" "}
@@ -718,7 +725,9 @@ function RemediationContent() {
               </Link>
             )}
             {fromIncident && `Incident ${fromIncident}`}
-            {fromIncident && (fromCve || fromKb || fromBusinessService) ? " · " : ""}
+            {fromIncident && (fromCve || fromKb || fromBusinessService || fromResourceKey) ? " · " : ""}
+            {fromResourceKey && `Resource ${fromResourceKey}`}
+            {fromResourceKey && fromBusinessService ? " · " : ""}
             {fromBusinessService
               ? `showing plans and opportunities for the "${fromBusinessService}" business service.`
               : "this environment has no business-service mapping for that handoff, so all plans are shown."}

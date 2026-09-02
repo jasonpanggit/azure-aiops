@@ -81,6 +81,7 @@ export default function ConnectionsPage() {
   const [syncProgress, setSyncProgress] = useState<{ connectionId: string; state: SyncState } | null>(null);
   const [tab, setTab] = useState<"subscriptions" | "fabric-medallion">("subscriptions");
   const [fabricRefreshKey, setFabricRefreshKey] = useState(0);
+  const [selectedSubscriptionId, setSelectedSubscriptionId] = useState<string>("");
   const connections = useApi(() => connectionsApi.list(scope), [scope, refreshKey]);
   const rows = useMemo(() => connections.data?.data ?? [], [connections.data]);
   const { filteredRows, filters, resetFilters } = useColumnFilters(rows, [
@@ -105,6 +106,13 @@ export default function ConnectionsPage() {
       setShowOnboarding(true);
     }
   }, [connections.error, connections.loading, rows.length]);
+
+  useEffect(() => {
+    // Set default subscription when switching to fabric-medallion tab
+    if (tab === "fabric-medallion" && !selectedSubscriptionId && rows.length > 0) {
+      setSelectedSubscriptionId(rows[0].subscription_id);
+    }
+  }, [tab, selectedSubscriptionId, rows]);
 
   function update(key: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -360,9 +368,20 @@ export default function ConnectionsPage() {
             </button>
           ) : (
             <div className="page-header-actions-group">
-              <Link className="button" href="/connections/fabric">
-                Per-subscription view
-              </Link>
+              <select 
+                name="subscriptionId"
+                className="form-control"
+                value={selectedSubscriptionId}
+                onChange={(e) => setSelectedSubscriptionId(e.target.value)}
+                disabled={rows.length === 0}
+              >
+                <option value="">Select a subscription</option>
+                {rows.map((conn) => (
+                  <option key={conn.subscription_id} value={conn.subscription_id}>
+                    {conn.name} ({conn.subscription_id})
+                  </option>
+                ))}
+              </select>
               <button
                 type="button"
                 className="button button-primary"
@@ -677,7 +696,13 @@ export default function ConnectionsPage() {
       )}
       </section>
 
-      <FabricMedallionPanel hidden={tab !== "fabric-medallion"} refreshKey={fabricRefreshKey} scope={scope} connections={rows} />
+      <FabricMedallionPanel 
+        hidden={tab !== "fabric-medallion"} 
+        refreshKey={fabricRefreshKey} 
+        scope={scope} 
+        connections={rows}
+        subscriptionId={selectedSubscriptionId}
+      />
     </div>
   );
 }
