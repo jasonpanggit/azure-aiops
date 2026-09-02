@@ -626,13 +626,34 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+_TAG_PATTERN = re.compile(r"<[^>]+>")
+_BLOCK_TAG_PATTERN = re.compile(r"<(br|/p|/div|/li)\s*/?>", re.IGNORECASE)
+_WHITESPACE_PATTERN = re.compile(r"[ \t]+")
+
+
 def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
 def _escape_html(value: Any) -> str:
-    """Escape HTML special characters to prevent injection."""
-    return html.escape(_text(value))
+    """Convert Defender's HTML-formatted text into clean plain text.
+
+    Azure Defender recommendation/description/remediation fields are authored
+    as HTML fragments (``<br>``, ``<b>``, ``<a href="...">`` and HTML entities
+    like ``&lt;`` or ``&#x27;``) intended for an HTML-rendering client. This
+    frontend renders these values as plain text via JSX, which auto-escapes
+    on display — so passing the raw HTML through unmodified showed literal
+    tags, and a prior fix that called ``html.escape()`` only made it worse by
+    double-escaping (``<br>`` became ``&lt;br&gt;``, which JSX then escaped
+    again to ``&amp;lt;br&amp;gt;``). Instead, unescape any HTML entities and
+    replace block-level tags with line breaks/spaces, then strip the
+    remaining markup so only clean, readable text is returned.
+    """
+    text = html.unescape(_text(value))
+    text = _BLOCK_TAG_PATTERN.sub("\n", text)
+    text = _TAG_PATTERN.sub("", text)
+    text = _WHITESPACE_PATTERN.sub(" ", text)
+    return "\n".join(line.strip() for line in text.split("\n")).strip()
 
 
 def _first_text(*values: Any) -> str:
