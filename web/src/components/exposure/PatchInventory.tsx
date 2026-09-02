@@ -28,7 +28,7 @@ function stateTone(state: string): "critical" | "warning" | "success" | "neutral
 
 function remediationHref(target: PatchTarget, selected: string[]): string {
   const params = new URLSearchParams();
-  params.set("resource", target.target_id);
+  params.set("resource_key", target.target_id);
   const patchIds = selected.length > 0
     ? selected
     : target.available_patches.map((patch) => patch.patch_id);

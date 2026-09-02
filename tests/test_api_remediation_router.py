@@ -7,6 +7,7 @@ from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
+from api.runtime import _attach_live_defender_correlator
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from intelligence.remediation.plan_repository import PlanRepository
@@ -52,6 +53,36 @@ class _LiveVulnerabilityService:
         self.duplicate_asset_rows = duplicate_asset_rows
 
     def exposures(self, scope=None) -> list[dict]:
+        return []
+
+    def defender_overview(self, scope=None) -> dict:
+        return {
+            "coverage": {
+                "recommendations": {"availability": "available", "freshness": "fresh"},
+                "alerts": {"availability": "available", "freshness": "fresh"},
+                "attack_paths": {"availability": "available", "freshness": "fresh"},
+                "secure_score": {"availability": "available", "freshness": "fresh"},
+            }
+        }
+
+    def defender_posture(self, scope=None) -> list[dict]:
+        return [
+            {
+                "assessment_id": "assessment-live-patch",
+                "asset_id": LIVE_VM_PAYMENTS_ID,
+                "severity": "High",
+                "recommendation": "Install missing security updates",
+                "last_assessed_at": self.freshness,
+            }
+        ]
+
+    def security_alerts(self, scope=None, active_only: bool = False) -> list[dict]:
+        return []
+
+    def defender_attack_paths_for_scope(self, scope=None) -> list[dict]:
+        return []
+
+    def secure_score_controls(self, scope=None) -> list[dict]:
         return []
 
     def asset_exposures(self, scope=None) -> list[dict]:
@@ -143,6 +174,34 @@ def test_list_plans_returns_envelope_with_plans(tmp_path) -> None:
     assert isinstance(body["data"]["plans"], list)
     assert len(body["data"]["plans"]) > 0
     assert body["evidence"][0]["source_engine"] == "intelligence.RemediationPlanner"
+
+
+def test_list_plans_filters_by_nested_resource_key(tmp_path) -> None:
+    client = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    resource_key = (
+        plan.get("resource_key")
+        or plan["resource"].get("resource_key")
+        or plan["resource"].get("id")
+    )
+
+    response = client.get(
+        "/api/v1/remediation/plans",
+        params={"resource_key": resource_key},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200, response.text
+    plans = response.json()["data"]["plans"]
+    assert plan["plan_id"] in {row["plan_id"] for row in plans}
+    assert {
+        (
+            row.get("resource_key")
+            or row.get("resource", {}).get("resource_key")
+            or row.get("resource", {}).get("id")
+        )
+        for row in plans
+    } == {resource_key}
 
 
 def test_get_plan_returns_full_plan(tmp_path) -> None:
@@ -343,7 +402,7 @@ def test_live_planner_collapses_duplicate_asset_rows_for_same_patch_target() -> 
     assert len({plan["plan_id"] for plan in result["plans"]}) == 1
 
 
-def test_unrestricted_read_uses_live_onboarded_subscriptions_when_available(tmp_path) -> None:
+def test_unrestricted_read_uses_snapshot_provider_without_explicit_subscription(tmp_path) -> None:
     service = _LiveVulnerabilityService()
     captured_subscription_ids: list[str] = []
     onboarding = SubscriptionOnboardingService(
@@ -369,7 +428,7 @@ def test_unrestricted_read_uses_live_onboarded_subscriptions_when_available(tmp_
         ),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
-        remediation_provider=lambda: remediation_planner(resources=[], repository=PlanRepository()),
+        remediation_provider=lambda: remediation_planner(repository=PlanRepository()),
         hybrid_remediation_provider=live_planner,
     )
     client = TestClient(create_app(context), raise_server_exceptions=False)
@@ -377,7 +436,79 @@ def test_unrestricted_read_uses_live_onboarded_subscriptions_when_available(tmp_
     response = client.get("/api/v1/remediation/plans", headers=_auth())
 
     assert response.status_code == 200, response.text
+    assert captured_subscription_ids == []
+    plans = response.json()["data"]["plans"]
+    assert any(plan["action_id"] == "controlled-patch-recovery" for plan in plans)
+
+
+def test_subscription_scoped_read_uses_live_remediation_provider(tmp_path) -> None:
+    service = _LiveVulnerabilityService()
+    captured_subscription_ids: list[str] = []
+
+    def live_planner(subscription_ids: list[str]) -> LiveRemediationPlanner:
+        captured_subscription_ids.extend(subscription_ids)
+        return LiveRemediationPlanner(service, repository=PlanRepository())
+
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(FakeSecretWriter()),
+        authenticator=StaticTokenAuthenticator(
+            {READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        remediation_provider=lambda: remediation_planner(resources=[], repository=PlanRepository()),
+        hybrid_remediation_provider=live_planner,
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/remediation/plans",
+        params={"subscription": LIVE_SUBSCRIPTION_ID},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200, response.text
     assert captured_subscription_ids == [LIVE_SUBSCRIPTION_ID]
     plans = response.json()["data"]["plans"]
     assert len(plans) == 1
     assert plans[0]["resource"]["id"] == LIVE_VM_PAYMENTS_ID
+
+
+def test_defender_cases_fall_back_to_live_onboarded_subscriptions(tmp_path) -> None:
+    service = _LiveVulnerabilityService()
+    onboarding = SubscriptionOnboardingService(
+        tmp_path / "aiops",
+        secret_writer=FakeSecretWriter(),
+    )
+    onboarding.add(
+        connection_id="prod-core",
+        name="Prod core",
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        subscription_id=LIVE_SUBSCRIPTION_ID,
+        client_id="22222222-2222-2222-2222-222222222222",
+        secret_ref="keyvault://example-kv/secrets/prod-core",
+    )
+
+    def live_planner(subscription_ids: list[str]) -> LiveRemediationPlanner:
+        assert subscription_ids == [LIVE_SUBSCRIPTION_ID]
+        planner = LiveRemediationPlanner(service, repository=PlanRepository())
+        return _attach_live_defender_correlator(planner, service)
+
+    context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(
+            {READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        remediation_provider=lambda: remediation_planner(repository=PlanRepository()),
+        hybrid_remediation_provider=live_planner,
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get("/api/v1/remediation/defender-cases", headers=_auth())
+
+    assert response.status_code == 200, response.text
+    cases = response.json()["data"]["cases"]
+    assert len(cases) == 1
+    assert cases[0]["resource_key"] == LIVE_VM_PAYMENTS_ID

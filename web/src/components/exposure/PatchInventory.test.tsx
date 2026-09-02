@@ -88,7 +88,7 @@ describe("PatchInventory", () => {
     const handoff = screen.getByRole("link", { name: "Open governed remediation" });
     expect(handoff).toHaveAttribute(
       "href",
-      `/remediation?resource=${encodeURIComponent(VM_ID)}&kb=KB600001&business_service=Payments`
+      `/remediation?resource_key=${encodeURIComponent(VM_ID)}&kb=KB600001&business_service=Payments`
     );
     expect(screen.queryByRole("button", { name: /Install|Trigger|Bulk/i })).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/Reason/)).not.toBeInTheDocument();

@@ -34,6 +34,16 @@ router = APIRouter(prefix="/api/v1/remediation", tags=["remediation"])
 _CONTROLLED_PATCH_RECOVERY = "controlled-patch-recovery"
 
 
+def _plan_resource_key(row: dict[str, Any]) -> str:
+    resource = row.get("resource") if isinstance(row.get("resource"), dict) else {}
+    return str(
+        row.get("resource_key")
+        or resource.get("resource_key")
+        or resource.get("id")
+        or ""
+    ).strip()
+
+
 def _planner(context: Context, scope: Scope) -> Any:
     """Resolve the remediation planner exactly as ``operations.py`` does."""
     return _require(context, "remediation_provider", "remediation", scope)
@@ -84,7 +94,7 @@ def list_plans(
         visible = [
             row
             for row in visible
-            if str(row.get("resource_key") or "").strip().casefold() == canonical
+            if _plan_resource_key(row).casefold() == canonical
         ]
     visible = [_plan_with_eligibility(context, scope, row) for row in visible]
     public = {**result, "plans": visible[page.offset : page.offset + page.limit]}

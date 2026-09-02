@@ -41,13 +41,6 @@ def _onboarded_subscription_ids(context: Context) -> list[str]:
 
 def _require(context: Context, attribute: str, capability: str, scope: Scope) -> Any:
     subscription_ids = list(scope.values("subscription"))
-    if (
-        capability == "remediation"
-        and not subscription_ids
-        and scope.is_unrestricted()
-        and context.hybrid_remediation_provider is not None
-    ):
-        subscription_ids = _onboarded_subscription_ids(context)
     if subscription_ids:
         if capability == "incidents" and context.hybrid_incident_provider is not None:
             return context.hybrid_incident_provider(subscription_ids)
@@ -86,6 +79,16 @@ def _filter_scoped(value: Any, scope: Scope) -> Any:
 def _filter_rows(rows: Any, scope: Scope) -> Any:
     filtered = _filter_scoped(rows, scope)
     return [] if filtered is _HIDDEN else filtered
+
+
+def _plan_resource_key(row: dict[str, Any]) -> str:
+    resource = row.get("resource") if isinstance(row.get("resource"), dict) else {}
+    return str(
+        row.get("resource_key")
+        or resource.get("resource_key")
+        or resource.get("id")
+        or ""
+    ).strip()
 
 
 def _future_expiry(value: str, *, now: datetime | None = None) -> str:
@@ -189,7 +192,7 @@ def remediation_plans(
         visible = [
             row
             for row in visible
-            if str(row.get("resource_key") or "").strip().casefold() == canonical
+            if _plan_resource_key(row).casefold() == canonical
         ]
     public = {**plans, "plans": visible[page.offset : page.offset + page.limit]}
     if not scope.is_unrestricted():
@@ -252,6 +255,16 @@ def defender_remediation_cases(
 ) -> dict[str, Any]:
     planner = _require(context, "remediation_provider", "remediation", scope)
     correlator = getattr(planner, "defender_correlator", None)
+    if (
+        correlator is None
+        and context.hybrid_remediation_provider is not None
+        and not list(scope.values("subscription"))
+        and scope.is_unrestricted()
+    ):
+        subscription_ids = _onboarded_subscription_ids(context)
+        if subscription_ids:
+            live_planner = context.hybrid_remediation_provider(subscription_ids)
+            correlator = getattr(live_planner, "defender_correlator", None)
     if correlator is None:
         raise ApiError(
             ErrorCode.PROVIDER_UNAVAILABLE,

@@ -16,9 +16,11 @@ const {
   gaps,
   plan,
   preview,
+  runs,
   retry,
   remediationOpportunities,
   remediationPlans,
+  targets,
   ruleFindings,
 } = vi.hoisted(() => ({
   approvals: vi.fn(),
@@ -34,9 +36,11 @@ const {
   gaps: vi.fn(),
   plan: vi.fn(),
   preview: vi.fn(),
+  runs: vi.fn(),
   retry: vi.fn(),
   remediationOpportunities: vi.fn(),
   remediationPlans: vi.fn(),
+  targets: vi.fn(),
   ruleFindings: vi.fn(),
 }));
 
@@ -49,6 +53,7 @@ vi.mock("@/lib/services", () => ({
   copilotEvidenceRows: () => [],
   networkApi: { gaps, ruleFindings },
   operationsApi: { decideRemediationPlan, remediationPlans, remediationOpportunities, defenderCases },
+  patchingApi: { targets, runs },
   remediationApi: {
     approvals,
     approve,
@@ -389,6 +394,46 @@ describe("Governed Remediation Center", () => {
       review_requirements: [],
       unknowns: [],
     }));
+    targets.mockResolvedValue(envelope([{
+      target_id: "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll-db",
+      name: "vm-payroll-db",
+      inventory_kind: "Azure VM",
+      resource_type: "microsoft.compute/virtualmachines",
+      subscription_id: "sub-1",
+      subscription_connection: "",
+      resource_group: "rg",
+      environment: "prod",
+      business_service: "Payroll",
+      application: "Payroll App",
+      owner: "payroll-team",
+      region: "australiaeast",
+      criticality: "high",
+      os_family: "Windows",
+      reachable: true,
+      internet_exposed: false,
+      cve_count: 1,
+      critical_count: 1,
+      overdue_count: 1,
+      max_days_open: 45,
+      available_patches: [{
+        patch_id: "KB600001",
+        title: "Cumulative security update",
+        classification: "Security",
+        severity: "Critical",
+        cve_ids: ["CVE-2026-0001"],
+        reboot_required: true,
+        published_at: "2026-01-01T00:00:00Z",
+        source: "derived:open-findings",
+        node_pool: "",
+        current_version: "",
+        target_version: "",
+      }],
+      patchable: true,
+      blocked_reason: "",
+      requires_node_pool: false,
+      operation: "install_patches",
+    }]));
+    runs.mockResolvedValue(envelope([]));
     executions.mockResolvedValue(envelope({ plan_id: "plan-1", executions: [] }));
     execute.mockResolvedValue(envelope(executionRecord()));
     execution.mockResolvedValue(envelope(executionRecord()));
@@ -459,6 +504,11 @@ describe("Governed Remediation Center", () => {
     expect(screen.getAllByText("CVE-2026-0001: Install KB500").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "Approval decision record" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Execution preview" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Patch and node image readiness" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open governed remediation" })).toHaveAttribute(
+      "href",
+      `/remediation?resource_key=${encodeURIComponent("/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll-db")}&kb=KB600001&business_service=Payroll`
+    );
     await screen.findByText("install_patches");
     expect(screen.getAllByText(/Validate the update baseline/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Change Manager - Production - Required - Not Approved/)).toBeInTheDocument();

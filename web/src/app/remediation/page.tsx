@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/types";
+import { PatchInventory } from "@/components/exposure/PatchInventory";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -126,6 +127,31 @@ function opportunityToBacklog(opportunity: RemediationOpportunity): BacklogItem 
     evidence: opportunity,
     source: opportunity,
   };
+}
+
+function resourceCandidates(value: unknown): string[] {
+  if (!isRecord(value)) return [];
+  const resource = isRecord(value.resource) ? value.resource : {};
+  return [
+    value.resource_key,
+    value.resource_id,
+    value.target_id,
+    value.asset_id,
+    resource.id,
+    resource.resource_key,
+    resource.name,
+  ]
+    .filter((candidate): candidate is string => typeof candidate === "string")
+    .map((candidate) => candidate.trim())
+    .filter(Boolean);
+}
+
+function matchesResource(value: unknown, resourceKey: string): boolean {
+  const canonical = resourceKey.trim().toLowerCase();
+  return !canonical || resourceCandidates(value).some((candidate) => {
+    const normalized = candidate.toLowerCase();
+    return normalized === canonical || normalized.endsWith(`/${canonical}`);
+  });
 }
 
 function defenderCaseToBacklog(defenderCase: DefenderRemediationCase): BacklogItem {
@@ -271,7 +297,7 @@ function RemediationContent() {
   const fromKb = searchParams.get("kb") ?? "";
   const fromBusinessService = searchParams.get("business_service") ?? "";
   const fromIncident = searchParams.get("incident") ?? "";
-  const fromResourceKey = searchParams.get("resource_key") ?? "";
+  const fromResourceKey = searchParams.get("resource_key") ?? searchParams.get("resource") ?? "";
   const plans = useApi(() => operationsApi.remediationPlans(scope, 0, 100, fromResourceKey), [scope, fromResourceKey]);
   const opportunities = useApi(() => operationsApi.remediationOpportunities(scope), [scope]);
   const defenderCases = useApi(() => operationsApi.defenderCases(scope), [scope]);
@@ -317,11 +343,7 @@ function RemediationContent() {
     fromBusinessService
       ? allOpportunityRows.filter((opportunity) => opportunity.business_service === fromBusinessService)
       : allOpportunityRows
-  ).filter((opportunity) =>
-    fromResourceKey
-      ? String(opportunity.resource_key ?? opportunity.resource?.name ?? "") === fromResourceKey
-      : true,
-  );
+  ).filter((opportunity) => matchesResource(opportunity, fromResourceKey));
   const backlog = useMemo(() => {
     const rows = [
       ...planRows.map(planToBacklog),
@@ -789,6 +811,8 @@ function RemediationContent() {
           tone="success"
         />
       </div>
+
+      <PatchInventory scope={scope} query={query} />
 
       <div className="segmented-control remediation-filter" aria-label="Remediation category filter">
         {(["all", "network", "vulnerability", "patch", "configuration", "incident", "identity", "lifecycle", "defender"] as const).map((value) => (
