@@ -1819,6 +1819,41 @@ def _fabric_remediation_planner(runtime: FabricRuntime) -> Any:
     return _attach_defender_correlator(planner, runtime)
 
 
+def _attach_live_defender_correlator(
+    planner: Any, vulnerability_service: Any
+) -> Any:
+    """Attach a read-only Defender remediation correlator to a live planner.
+
+    Mirrors ``_attach_defender_correlator`` for the Fabric-snapshot path, but
+    for ``LiveRemediationPlanner`` instances, whose resources/action-catalog
+    are derived directly from live asset exposures rather than a persisted
+    action catalog. No-ops defensively when the vulnerability service is
+    unavailable, leaving the planner unchanged (surfaced by the API as
+    "Defender remediation correlation is unavailable" rather than failing).
+    """
+    if planner is None or vulnerability_service is None:
+        return planner
+    resources = [
+        {
+            "resource_key": row.get("asset_id", ""),
+            **row,
+        }
+        for row in vulnerability_service.asset_exposures()
+    ]
+    # No declarative action catalog is attached here (unlike the Fabric
+    # snapshot path, which reads a governed catalog table): the live path has
+    # no persisted, human-reviewed catalog to match against yet, so every
+    # case honestly reports the "no_safe_action" outcome rather than
+    # fabricating a match. Correlation itself (evidence citations, severity,
+    # confidence, cost-of-action/inaction) is still fully available.
+    planner.defender_correlator = DefenderRemediationCorrelator(
+        vulnerability_service=vulnerability_service,
+        dependency_analyzer=DependencyAnalyzer(),
+        resource_lookup=resources,
+    )
+    return planner
+
+
 def _fabric_change_intelligence(runtime: FabricRuntime) -> Any:
     """Resolve the compliance/change-intelligence engine for this snapshot.
 
@@ -2500,10 +2535,12 @@ def build_context() -> ApiContext:
         return live_incident_engine(live_resources, subscription_ids=subscription_ids)
 
     def hybrid_remediation(subscription_ids: list[str]) -> LiveRemediationPlanner:
-        return LiveRemediationPlanner(
-            hybrid_vulnerability(subscription_ids),
+        vulnerability_service = hybrid_vulnerability(subscription_ids)
+        planner = LiveRemediationPlanner(
+            vulnerability_service,
             repository=PlanRepository(decision_store=_remediation_decision_store()),
         )
+        return _attach_live_defender_correlator(planner, vulnerability_service)
 
     def hybrid_patching(subscription_ids: list[str]) -> PatchingService | None:
         service = hybrid_vulnerability(subscription_ids)

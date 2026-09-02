@@ -71,12 +71,21 @@ def _evidence(plan_id: str, timestamp: str = "") -> Evidence:
 
 
 @router.get("/plans", summary="List remediation plans")
-def list_plans(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+def list_plans(
+    context: Context, scope: ReadScope, page: Page, resource_key: str = ""
+) -> dict[str, Any]:
     planner = _planner(context, scope)
     result = planner.generate_plans()
     visible = _filter_rows(result.get("plans"), scope)
     if not isinstance(visible, list):
         visible = []
+    if resource_key:
+        canonical = resource_key.strip().casefold()
+        visible = [
+            row
+            for row in visible
+            if str(row.get("resource_key") or "").strip().casefold() == canonical
+        ]
     visible = [_plan_with_eligibility(context, scope, row) for row in visible]
     public = {**result, "plans": visible[page.offset : page.offset + page.limit]}
     if not scope.is_unrestricted():

@@ -523,10 +523,11 @@ export const operationsApi = {
   },
   incident: (id: string, scope: ScopeSelection = {}) =>
     apiRequest<IncidentDetail>(`/incidents/${encodeURIComponent(id)}`, { query: scopeToSearchParams(scope) }),
-  remediationPlans: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+  remediationPlans: (scope: ScopeSelection = {}, offset = 0, limit = 100, resourceKey = "") => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
     query.set("limit", String(limit));
+    if (resourceKey) query.set("resource_key", resourceKey);
     return apiRequest<RemediationPlanReport>("/remediation-plans", { query });
   },
   remediationOpportunities: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {

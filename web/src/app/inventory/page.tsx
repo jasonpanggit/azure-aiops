@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -998,6 +999,7 @@ export default function InventoryPage() {
                                       <th>Canonical identity</th>
                                       <th>Raw identity</th>
                                       <th>Observed</th>
+                                      <th>Actions</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -1009,6 +1011,16 @@ export default function InventoryPage() {
                                         <td>{machine.canonical_identity}<span className="table-subtitle">{machine.canonical_name} {machine.canonical_version}</span></td>
                                         <td>{machine.raw_identity.name || "Unknown"}<span className="table-subtitle">{machine.raw_identity.version || "Unknown"} · {machine.join_status === "linked" ? "exact resource join" : "resource join unavailable"}</span></td>
                                         <td>{formatDateTime(machine.observed_at)}</td>
+                                        <td>
+                                          {machine.resource_id && (
+                                            <Link
+                                              className="table-primary-link"
+                                              href={`/remediation?resource_key=${encodeURIComponent(machine.resource_id)}`}
+                                            >
+                                              Remediate
+                                            </Link>
+                                          )}
+                                        </td>
                                       </tr>
                                     ))}
                                   </tbody>

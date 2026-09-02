@@ -314,3 +314,53 @@ def test_inventory_runtime_marks_old_generation_stale_without_erasing_rows(
 
     assert health["providers"]["inventory"]["state"] == STALE
     assert runtime.get("inventory").snapshot.observations
+
+
+def test_attach_live_defender_correlator_wires_planner_when_service_available() -> None:
+    from intelligence.remediation.plan_repository import PlanRepository
+    from semantic.live_operations import LiveRemediationPlanner
+
+    class _FakeVulnerabilityService:
+        freshness = "2026-01-01T00:00:00Z"
+
+        def asset_exposures(self, scope=None):
+            return [{"asset_id": "vm-1", "name": "vm-1"}]
+
+        def defender_posture(self, scope=None):
+            return []
+
+        def security_alerts(self, scope=None, **kwargs):
+            return []
+
+        def defender_attack_paths_for_scope(self, scope=None):
+            return []
+
+        def secure_score_controls(self, scope=None):
+            return []
+
+        def defender_overview(self, scope=None):
+            return {"coverage": {}}
+
+    from api.runtime import _attach_live_defender_correlator
+
+    service = _FakeVulnerabilityService()
+    planner = LiveRemediationPlanner(service, repository=PlanRepository())
+
+    result = _attach_live_defender_correlator(planner, service)
+
+    assert result is planner
+    assert planner.defender_correlator is not None
+    assert planner.defender_correlator.cases() == []
+
+
+def test_attach_live_defender_correlator_noop_without_service() -> None:
+    from api.runtime import _attach_live_defender_correlator
+    from intelligence.remediation.plan_repository import PlanRepository
+    from semantic.live_operations import LiveRemediationPlanner
+
+    planner = LiveRemediationPlanner(None, repository=PlanRepository())
+
+    result = _attach_live_defender_correlator(planner, None)
+
+    assert result is planner
+    assert getattr(planner, "defender_correlator", None) is None
