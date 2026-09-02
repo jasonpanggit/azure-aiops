@@ -51,7 +51,10 @@ export function FabricMedallionPanel({
   asTabPanel?: boolean;
 }) {
   // Create a subscription-scoped context if subscriptionId is provided
-  const subscriptionScope = subscriptionId ? { subscription: [subscriptionId] } : scope;
+  const subscriptionScope = useMemo(
+    () => (subscriptionId ? { ...scope, subscription: [subscriptionId] } : scope),
+    [scope, subscriptionId],
+  );
   const scopeKey = JSON.stringify(subscriptionScope);
   const layerSummary = useApi(() => fabricMedallionApi.layers(subscriptionScope), [refreshKey, scopeKey]);
   const manifest = useApi(() => fabricMedallionApi.manifest(subscriptionScope), [refreshKey, scopeKey]);
