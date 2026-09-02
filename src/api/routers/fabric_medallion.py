@@ -174,36 +174,73 @@ def _metadata_source_status_rows(context: Context) -> list[dict[str, Any]]:
     return rows
 
 
+def _manifest_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("subscription_id") or ""),
+        str(row.get("subscription_connection") or ""),
+        str(row.get("projection_name") or ""),
+    )
+
+
+def _manifest_row_visible(scope: Scope, row: dict[str, Any]) -> bool:
+    if scope.is_unrestricted():
+        return True
+    attributes = _scope_attributes(row)
+    if attributes.get("subscription") == "system":
+        return True
+    return bool(attributes) and scope.matches(attributes)
+
+
+def _manifest_subscription_id(scope: Scope, row: dict[str, Any]) -> str:
+    attributes = _scope_attributes(row)
+    subscription = attributes.get("subscription", "")
+    if subscription == "system":
+        requested_subscriptions = scope.to_dict().get("subscription") or []
+        if requested_subscriptions:
+            return str(requested_subscriptions[0])
+    return subscription
+
+
 def _metadata_publication_manifest_rows(context: Context) -> list[dict[str, Any]]:
-    latest_by_projection: dict[str, dict[str, Any]] = {}
-    for _detail, _status_rows in _connection_rows(context):
-        dataset_root = str(_detail.get("dataset_root") or "")
+    latest_by_projection: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for detail, _status_rows in _connection_rows(context):
+        dataset_root = str(detail.get("dataset_root") or "")
         if not dataset_root:
             continue
         for row in DatasetStore(dataset_root).read_dataset("metadata_publication_manifest"):
             projection = str(row.get("projection_name") or "")
             if not projection:
                 continue
-            previous = latest_by_projection.get(projection)
             current = dict(row)
+            if detail.get("subscription_id"):
+                current["subscription_id"] = str(detail.get("subscription_id") or "")
+            if detail.get("connection_id"):
+                current["subscription_connection"] = str(detail.get("connection_id") or "")
+            key = _manifest_key(current)
+            previous = latest_by_projection.get(key)
             if previous is None or str(current.get("updated_at") or "") >= str(
                 previous.get("updated_at") or ""
             ):
-                latest_by_projection[projection] = current
+                latest_by_projection[key] = current
     if not latest_by_projection:
         for row in _lakehouse_delta_rows("metadata_publication_manifest"):
             projection = str(row.get("projection_name") or "")
             if not projection:
                 continue
-            previous = latest_by_projection.get(projection)
             current = dict(row)
+            key = _manifest_key(current)
+            previous = latest_by_projection.get(key)
             if previous is None or str(current.get("updated_at") or "") >= str(
                 previous.get("updated_at") or ""
             ):
-                latest_by_projection[projection] = current
+                latest_by_projection[key] = current
     return sorted(
         latest_by_projection.values(),
-        key=lambda row: str(row.get("projection_name") or "").casefold(),
+        key=lambda row: (
+            str(row.get("subscription_id") or "").casefold(),
+            str(row.get("subscription_connection") or "").casefold(),
+            str(row.get("projection_name") or "").casefold(),
+        ),
     )
 
 
@@ -451,7 +488,11 @@ def medallion_dataset(table_name: str, context: Context, scope: ReadScope) -> di
 
 @router.get("/manifest", summary="Fabric publication manifest dispositions")
 def medallion_manifest(context: Context, scope: ReadScope) -> dict[str, Any]:
-    rows = _metadata_publication_manifest_rows(context)
+    rows = [
+        row
+        for row in _metadata_publication_manifest_rows(context)
+        if _manifest_row_visible(scope, row)
+    ]
     entries = [
         {
             "projection_name": str(row.get("projection_name") or ""),
@@ -460,6 +501,8 @@ def medallion_manifest(context: Context, scope: ReadScope) -> dict[str, Any]:
             "retired_reason": row.get("retired_reason"),
             "registered_at": str(row.get("registered_at") or ""),
             "updated_at": str(row.get("updated_at") or ""),
+            "subscription_id": _manifest_subscription_id(scope, row),
+            "subscription_connection": _scope_attributes(row).get("subscription_connection", ""),
         }
         for row in rows
         if str(row.get("projection_name") or "")

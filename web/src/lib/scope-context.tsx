@@ -16,8 +16,14 @@ const ScopeContext = createContext<ScopeContextValue | null>(null);
  * environment, subscription, owner, support team, region, criticality)
  * shared across every view — dashboard, search, connections, graph.
  */
-export function ScopeProvider({ children }: { children: React.ReactNode }) {
-  const [scope, setScope] = useState<ScopeSelection>(emptyScope());
+export function ScopeProvider({
+  children,
+  initialScope,
+}: {
+  children: React.ReactNode;
+  initialScope?: ScopeSelection;
+}) {
+  const [scope, setScope] = useState<ScopeSelection>(initialScope ?? emptyScope());
 
   const value = useMemo<ScopeContextValue>(
     () => ({
