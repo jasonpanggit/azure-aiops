@@ -42,20 +42,24 @@ export function FabricMedallionPanel({
   refreshKey,
   scope,
   connections,
+  subscriptionId,
   asTabPanel = true,
 }: {
   hidden?: boolean;
   refreshKey: number;
   scope: ScopeSelection;
   connections: SubscriptionConnection[];
+  subscriptionId?: string;
   asTabPanel?: boolean;
 }) {
-  const scopeKey = JSON.stringify(scope);
-  const layerSummary = useApi(() => fabricMedallionApi.layers(scope), [refreshKey, scopeKey]);
-  const manifest = useApi(() => fabricMedallionApi.manifest(scope), [refreshKey, scopeKey]);
-  const governance = useApi(() => fabricMedallionApi.governance(scope), [refreshKey, scopeKey]);
-  const ingestionHistory = useApi(() => fabricMedallionApi.ingestionHistory(scope), [refreshKey, scopeKey]);
-  const capabilities = useApi(() => fabricMedallionApi.capabilities(scope), [refreshKey, scopeKey]);
+  // Create a subscription-scoped context if subscriptionId is provided
+  const subscriptionScope = subscriptionId ? { subscription: [subscriptionId] } : scope;
+  const scopeKey = JSON.stringify(subscriptionScope);
+  const layerSummary = useApi(() => fabricMedallionApi.layers(subscriptionScope), [refreshKey, scopeKey]);
+  const manifest = useApi(() => fabricMedallionApi.manifest(subscriptionScope), [refreshKey, scopeKey]);
+  const governance = useApi(() => fabricMedallionApi.governance(subscriptionScope), [refreshKey, scopeKey]);
+  const ingestionHistory = useApi(() => fabricMedallionApi.ingestionHistory(subscriptionScope), [refreshKey, scopeKey]);
+  const capabilities = useApi(() => fabricMedallionApi.capabilities(subscriptionScope), [refreshKey, scopeKey]);
   const counts = layerSummary.data?.data.layers ?? EMPTY_FABRIC_COUNTS;
   const tableNames = useMemo(() => tableNamesByLayer(capabilities.data?.data), [capabilities.data]);
   const totalTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].total, 0);
@@ -100,7 +104,7 @@ export function FabricMedallionPanel({
 
       <FabricCapabilityCallouts capabilities={capabilities.data?.data} error={capabilities.error} />
       <FabricSubscriptionSummary
-        scope={scope}
+        scope={subscriptionScope}
         connections={connections}
         counts={counts}
         governanceGapCount={openGovernanceGaps}
@@ -114,7 +118,7 @@ export function FabricMedallionPanel({
           layer={layer}
           tableNames={tableNames[layer]}
           counts={counts[layer]}
-          scope={scope}
+          scope={subscriptionScope}
           refreshKey={refreshKey}
         />
       ))}
