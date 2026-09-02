@@ -675,6 +675,46 @@ class TestFabricMedallionRouterTask1:
         }
         assert {entry["subscription_id"] for entry in entries} == {SUB_A}
 
+    def test_fabric_medallion_manifest_keeps_system_lifecycle_for_scoped_requests(
+        self, fabric_medallion_client, monkeypatch
+    ):
+        from api.routers import fabric_medallion as fabric_medallion_router
+
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "_metadata_publication_manifest_rows",
+            lambda _context: [
+                {
+                    "projection_name": "system_projection",
+                    "disposition": "deployment-blocked",
+                    "compatibility_version": None,
+                    "retired_reason": "blocked",
+                    "registered_at": "2026-09-01T00:00:00Z",
+                    "updated_at": "2026-09-01T00:00:00Z",
+                    "subscription_id": "system",
+                }
+            ],
+        )
+
+        response = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/manifest?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["entries"] == [
+            {
+                "projection_name": "system_projection",
+                "disposition": "deployment-blocked",
+                "compatibility_version": None,
+                "retired_reason": "blocked",
+                "registered_at": "2026-09-01T00:00:00Z",
+                "updated_at": "2026-09-01T00:00:00Z",
+                "subscription_id": SUB_A,
+                "subscription_connection": "",
+            }
+        ]
+
     def test_fabric_medallion_routes_enforce_auth_and_scope(self, fabric_medallion_client):
         unauthenticated = fabric_medallion_client.get("/api/v1/fabric-medallion/layers")
         assert unauthenticated.status_code == 401
