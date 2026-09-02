@@ -497,12 +497,13 @@ class Normalizer:
             signal_payloads["arg_activity_log"] = [
                 {
                     "id": row.get("id"),
-                    "resource_id": row.get("targetResourceId"),
-                    "observed_at": row.get("changedAt") or observed,
-                    "watermark": row.get("changedAt") or observed,
-                    "assertion": row.get("changeType") or "resource changed",
+                    "resource_id": (row.get("properties") or {}).get("targetResourceId"),
+                    "observed_at": ((row.get("properties") or {}).get("changeAttributes") or {}).get("timestamp") or observed,
+                    "watermark": ((row.get("properties") or {}).get("changeAttributes") or {}).get("timestamp") or observed,
+                    "assertion": (row.get("properties") or {}).get("changeType") or "resource changed",
+                    "status": row.get("status"),
                 }
-                for row in graph.changes
+                for row in payload.get("resource_changes", [])
             ]
         signal_evidence, source_statuses = normalize_signal_families(
             signal_payloads,

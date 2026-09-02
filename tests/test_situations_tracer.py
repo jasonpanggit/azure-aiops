@@ -136,7 +136,8 @@ def test_production_ingestion_retains_failed_arg_status_without_watermark(tmp_pa
         clock=lambda: datetime(2026, 8, 25, 2, tzinfo=UTC),
     )
     service.run()
-    status = service.store.read_dataset("situations/source_status")[0]
+    statuses = service.store.read_dataset("situations/source_status")
+    status = next(row for row in statuses if row["source_family"] == "arg_activity_log")
 
     assert status["status"] == "failed"
     assert status["watermark"] == ""

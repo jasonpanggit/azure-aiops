@@ -102,12 +102,19 @@ class PlanRepository:
                     self._relationship(plan_id, "hasSimulation", simulation_id),
                 ]
             )
-            relationships.extend(
-                self._defender_relationships_for_plan(
-                    plan,
-                    pending_relationships=pending_relationships,
-                )
+            defender_relationships = self._defender_relationships_for_plan(
+                plan,
+                pending_relationships=pending_relationships,
             )
+            relationships.extend(defender_relationships)
+            for relationship in defender_relationships:
+                entities.append(
+                    self._entity(
+                        relationship["object_id"],
+                        relationship["object_type"],
+                        relationship["object_id"],
+                    )
+                )
             for decision in self.decisions.list(plan_id):
                 decision_id = decision["decision_id"]
                 entities.append(
