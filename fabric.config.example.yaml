@@ -69,6 +69,11 @@ fabric:
   workspace_name: ""
   lakehouse_id: "00000000-0000-0000-0000-000000000000"
   lakehouse_name: ""
+  # Fabric capacity metadata used for read-only health checks; no secrets.
+  capacity:
+    subscription_id: "00000000-0000-0000-0000-000000000000"
+    resource_group: ""
+    capacity_name: ""
   create_lakehouse_if_missing: false
   # Set to dbo (or another schema) for a schema-enabled Lakehouse.
   table_schema: ""

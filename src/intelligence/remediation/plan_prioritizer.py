@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 
 class PlanPrioritizer:
     """Prioritizes planning candidates without authorizing execution."""
@@ -12,7 +14,7 @@ class PlanPrioritizer:
     LIFECYCLE_RISK_WEIGHT = 5
     PATCH_RISK_WEIGHT = 5
     INCIDENT_HISTORY_WEIGHT = 2
-    _SERVICE_CRITICALITY_SCORES = {
+    _SERVICE_CRITICALITY_SCORES: ClassVar[dict[str, int]] = {
         "critical": 12,
         "mission critical": 12,
         "high": 25,

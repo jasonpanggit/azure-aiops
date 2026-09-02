@@ -169,3 +169,54 @@ def test_cloud_sync_lock_breaks_stale_lease_when_already_present() -> None:
         "inside",
         "release",
     ]
+
+
+def test_cloud_sync_lock_tolerates_lease_id_mismatch_on_release() -> None:
+    """A concurrent sync may break and re-acquire our lease before we exit.
+
+    ``release()`` then fails with LeaseIdMismatchWithLeaseOperation because
+    the lease ID we hold is stale. That must not fail the sync: the publish
+    work inside the ``with`` block already completed successfully.
+    """
+
+    class Directory:
+        def create_directory(self):
+            pass
+
+    class File:
+        def create_file(self):
+            pass
+
+    class FileSystem:
+        def get_directory_client(self, _path):
+            return Directory()
+
+        def get_file_client(self, _path):
+            return File()
+
+    class Service:
+        def get_file_system_client(self, _name):
+            return FileSystem()
+
+    class Lease:
+        def __init__(self, _file_client):
+            pass
+
+        def acquire(self, *, lease_duration):
+            pass
+
+        def release(self):
+            raise _lease_error("LeaseIdMismatchWithLeaseOperation")
+
+    import storage.onelake_writer as module
+
+    original = module.DataLakeLeaseClient
+    module.DataLakeLeaseClient = Lease
+    completed = False
+    try:
+        with OneLakeWriter("workspace", "lakehouse", service_client=Service()).sync_lock():
+            completed = True
+    finally:
+        module.DataLakeLeaseClient = original
+
+    assert completed

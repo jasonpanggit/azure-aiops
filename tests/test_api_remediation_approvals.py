@@ -739,13 +739,16 @@ def test_no_execution_route_in_remediation_api(tmp_path) -> None:
 def test_remediation_package_has_no_azure_or_subprocess_calls(tmp_path) -> None:
     """Test 3.5: Remediation package contains no Azure management-plane or subprocess calls."""
     import subprocess
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
 
     # Check for azure.mgmt imports
     result = subprocess.run(
         ["grep", "-r", "azure\\.mgmt", "src/intelligence/remediation/", "--include=*.py"],
         capture_output=True,
         text=True,
-        cwd="/Users/jasonmba/workspace/azure-aiops",
+        cwd=repo_root,
         check=False,
     )
     assert result.returncode != 0 or "azure.mgmt" not in result.stdout, "Found azure.mgmt imports in remediation package"
@@ -755,7 +758,7 @@ def test_remediation_package_has_no_azure_or_subprocess_calls(tmp_path) -> None:
         ["grep", "-r", "subprocess", "src/intelligence/remediation/", "--include=*.py"],
         capture_output=True,
         text=True,
-        cwd="/Users/jasonmba/workspace/azure-aiops",
+        cwd=repo_root,
         check=False,
     )
     assert result.returncode != 0 or "subprocess" not in result.stdout, "Found subprocess calls in remediation package"

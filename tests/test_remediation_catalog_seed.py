@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 from deltalake import DeltaTable
 
 from fabric.schema_registry import schema_for
@@ -14,7 +13,6 @@ from intelligence.remediation.approval_engine import ApprovalEngine
 from intelligence.remediation.remediation_opportunity_engine import (
     RemediationOpportunityEngine,
 )
-from storage.delta_writer import DeltaWriteMode, DeltaWriter
 
 FIXTURE_PATH = Path("tests/fixtures/governed_remediation_catalog.json")
 SEEDER_PATH = Path("scripts/seed_remediation_catalog.py")

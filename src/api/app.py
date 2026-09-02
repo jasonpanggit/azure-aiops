@@ -29,6 +29,7 @@ from .models import EnvelopeModel, ErrorModel
 from .routers import compliance as compliance_routes
 from .routers import (
     connections,
+    fabric_medallion,
     graph,
     inventory,
     multi_agent,
@@ -233,6 +234,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     telemetry = context.telemetry
 
     app.include_router(connections.router)
+    app.include_router(fabric_medallion.router)
     app.include_router(compliance_routes.router)
     app.include_router(context_routes.router)
     app.include_router(copilot_routes.router)

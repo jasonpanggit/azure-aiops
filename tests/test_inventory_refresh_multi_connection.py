@@ -9,6 +9,7 @@ combined snapshot.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -157,3 +158,81 @@ def test_refresh_all_connections_merges_successful_connections_and_isolates_fail
         "/subscriptions/aaa/sites/app1"
     ]
     assert result["combined_manifest"]["sourceConnectionIds"] == ["conn-a"]
+
+
+def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from api.inventory_orchestration import (
+        run_inventory_refresh_all_connections,
+    )
+    from onboarding.config import ConnectorConfig
+    from storage.datasets import DatasetStore
+
+    _build_registry(tmp_path)
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f"storage:\n  output_dir: {tmp_path / 'compat'}\n", encoding="utf-8")
+    pipelines: dict[str, FakePipeline] = {
+        "conn-a": FakePipeline(
+            tmp_path / "connections" / "conn-a",
+            [{"resource_id": "/subscriptions/aaa/vm1", "connection_id": "conn-a"}],
+        ),
+        "conn-b": FakePipeline(
+            tmp_path / "connections" / "conn-b",
+            [{"resource_id": "/subscriptions/bbb/vm2", "connection_id": "conn-b"}],
+        ),
+    }
+    calls: list[str] = []
+
+    def fake_build(config: ConnectorConfig, connection, resolver=None):
+        return pipelines[connection.connection_id]
+
+    class FakeRuntime:
+        def __init__(self, source_root: Path) -> None:
+            self.source_root = source_root
+            self.service = self
+
+        def sync(self):
+            calls.append(self.source_root)
+            return type(
+                "Publication",
+                (),
+                {
+                    "run_id": "fabric-run",
+                    "source_run_id": "combined-run",
+                    "status": "completed",
+                    "tables": ("metadata_source_status",),
+                },
+            )()
+
+    @dataclass(frozen=True)
+    class FabricConfig:
+        source_data_root: Path
+
+    monkeypatch.setattr(
+        "onboarding.runtime.build_connection_inventory_pipeline", fake_build
+    )
+    monkeypatch.setattr(
+        "intelligence.inventory.combine.republish_combined_snapshot_to_fabric",
+        lambda *_args, **_kwargs: {"status": "published"},
+    )
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        lambda _path: FabricConfig(source_data_root=tmp_path / "stale-current-alias"),
+    )
+    monkeypatch.setattr(
+        "fabric.runtime.build_runtime",
+        lambda config: FakeRuntime(config.source_data_root),
+    )
+
+    result = run_inventory_refresh_all_connections(
+        str(config_path),
+        fabric_config_path="fabric.yaml",
+        registry_root=str(tmp_path),
+    )
+
+    expected_generation = Path(DatasetStore(tmp_path / "compat").current_generation() or "")
+    assert result["fabric_publication"]["fabricTables"] == ["metadata_source_status"]
+    assert calls == [str(expected_generation)]
+    assert (Path(calls[0]) / "manifest.json").is_file()

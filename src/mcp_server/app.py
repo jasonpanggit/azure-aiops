@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import secrets
@@ -15,7 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from onboarding.credentials import KeyVaultSecretProvider, SecretNotFoundError
-from onboarding.registry import ConnectionNotFoundError, ConnectionRegistry
+from onboarding.registry import ConnectionRegistry
 
 logger = logging.getLogger(__name__)
 UPSTREAM_MCP_URL_ENV = "AIOPS_OPERATIONS_MCP_URL"
@@ -61,7 +60,6 @@ class MCPToolResponse(BaseModel):
 class SubscriptionNotOnboardedError(Exception):
     """Raised when a subscription is not in the connection registry."""
 
-    pass
 
 
 class MCPServerState:
@@ -171,8 +169,7 @@ async def health() -> dict[str, Any]:
             "connections_loaded": len(state.connections),
             "vault": state.config.akv_name,
         }
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
+    except Exception as e:  # noqa: BLE001 - health endpoint must report any failure
         raise HTTPException(status_code=503, detail=f"Service unavailable: {e}")
 
 
@@ -196,7 +193,7 @@ async def execute_tool(request: MCPToolRequest) -> MCPToolResponse:
 
     # Validate subscription and resolve credential
     try:
-        credential = state.resolve_credential(request.subscription_id)
+        state.resolve_credential(request.subscription_id)
     except SubscriptionNotOnboardedError as e:
         logger.warning(f"Subscription not onboarded: {e}")
         raise HTTPException(
@@ -225,8 +222,7 @@ async def execute_tool(request: MCPToolRequest) -> MCPToolResponse:
             "status": "dispatch_not_yet_implemented",
         }
         return MCPToolResponse(success=True, result=result)
-    except Exception as e:
-        logger.error(f"Tool execution failed: {e}")
+    except Exception as e:  # noqa: BLE001 - tool dispatch must report any failure
         return MCPToolResponse(success=False, error=str(e))
 
 

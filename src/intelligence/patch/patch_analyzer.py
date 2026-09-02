@@ -98,7 +98,15 @@ class PatchAnalyzer:
     ) -> dict[str, list[dict[str, Any]]]:
         indexed: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            key = self.context_builder.key_for(row)
+            try:
+                key = self.context_builder.key_for(row)
+            except LookupError:
+                # Evidence referencing a resource no longer present in the
+                # current semantic snapshot (e.g. decommissioned resource, or
+                # a sync timing gap between Defender data and inventory).
+                # Excluding stale evidence is correct; it must not fail the
+                # whole analysis pass.
+                continue
             indexed.setdefault(key, []).append(dict(row))
         return indexed
 

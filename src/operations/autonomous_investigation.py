@@ -619,7 +619,7 @@ def run_autonomous_investigation(
         for future in completed:
             try:
                 agent_runs.append(future.result(timeout=0))
-            except Exception as exc:  # noqa: BLE001 - record agent failure in the ledger.
+            except Exception as exc:
                 agent = futures[future]
                 _LOGGER.exception("agent %s failed during investigation", agent.id)
                 agent_runs.append(_failed_run(agent, f"failed: {exc.__class__.__name__}: {exc}"))

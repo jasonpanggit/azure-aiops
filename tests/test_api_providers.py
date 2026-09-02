@@ -63,6 +63,30 @@ def test_failed_refresh_retains_last_good_provider():
     assert "ConnectionError" in health["providers"]["semantic"]["degraded_reason"]
 
 
+def test_optional_provider_failure_does_not_block_readiness():
+    runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: SnapshotProvider(
+                    version="ontology-v1",
+                    freshness="2026-08-22T00:00:00Z",
+                )
+            ),
+            "inventory": ProviderSpec(
+                lambda: (_ for _ in ()).throw(ConnectionError("OneLake busy")),
+                required=False,
+            ),
+        },
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+    )
+
+    health = runtime.refresh(force=True)
+
+    assert health["readiness"] == READY
+    assert health["providers"]["inventory"]["state"] == "unavailable"
+    assert "ConnectionError" in health["providers"]["inventory"]["degraded_reason"]
+
+
 def test_stale_snapshot_is_explicit():
     runtime = ProviderRuntime(
         {

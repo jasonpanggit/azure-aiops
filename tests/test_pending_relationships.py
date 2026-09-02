@@ -61,6 +61,6 @@ def test_to_list_and_from_list_round_trip_pending_edges():
     serialized = store.to_list()
     rehydrated = PendingRelationshipStore.from_list(serialized)
 
-    resolved, pending = rehydrated.resolve({"a", "b"})
+    resolved, _pending = rehydrated.resolve({"a", "b"})
     assert len(resolved) == 1
     assert resolved[0]["resource_id"] == "edge-1"

@@ -158,7 +158,9 @@ def test_publication_manifest_schema_is_structurally_distinct_from_snapshot_mani
 
     # The publication manifest table name itself must never be "manifest"
     # or collide with the snapshot manifest's file name.
-    assert "metadata_publication_manifest" != "manifest.json"
+    manifest_table_name = "metadata_publication_manifest"
+    snapshot_manifest_file = "manifest.json"
+    assert manifest_table_name != snapshot_manifest_file
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +179,7 @@ def test_publication_manifest_entry_tracks_registered_and_updated_timestamps() -
     assert entry.updated_at == now.isoformat()
 
     later = datetime(2026, 1, 2, tzinfo=UTC)
-    store._clock = _clock(later)  # noqa: SLF001 -- test-only clock swap
+    store._clock = _clock(later)
     store.set_disposition("application_context", "dormant")
     updated_entry = store.get("application_context")
 

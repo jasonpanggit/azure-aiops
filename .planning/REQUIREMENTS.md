@@ -68,15 +68,15 @@ Requirements for the controlled Azure pilot.
 ### Fabric Medallion Capability
 
 - [x] **MED-01**: Fabric ontology publication validates entity and relationship vocabulary before commit, retries transient failures within bounded limits, and exposes terminal failures through durable state and telemetry.
-- [ ] **MED-02**: Expected Gold topology, assessment, and operational-context outputs are live and verified or explicitly retired through a versioned compatibility disposition.
+- [x] **MED-02**: Expected Gold topology, assessment, and operational-context outputs are live and verified or explicitly retired through a versioned compatibility disposition.
 - [x] **MED-03**: Every governed Bronze, Silver, Gold, and metadata product exposes configurable freshness objectives, source status, quality, row-count, lineage, and last-success evidence.
 - [x] **MED-04**: High-value Silver operational datasets declared by the platform are populated or explicitly dispositioned, including security, incident, change, configuration, policy, predictive, and remediation domains.
-- [ ] **MED-05**: Gold exposes curated, versioned consumption contracts and a Direct Lake-compatible semantic serving definition while unified inventory remains the sole resource-identity authority.
+- [x] **MED-05**: Gold exposes curated, versioned consumption contracts and a Direct Lake-compatible semantic serving definition while unified inventory remains the sole resource-identity authority.
 - [x] **MED-06**: Graph publication enforces referential integrity and configurable ownership and tagging quality thresholds without inventing unsupported relationships.
 - [x] **MED-07**: Cost, compliance, patch, change, incident, and lifecycle analytics retain governed historical facts under explicit retention contracts.
-- [ ] **MED-08**: The Fabric Data Agent is grounded only in curated Gold products and is evaluated reproducibly for groundedness, precision, freshness, citations, and safe degradation.
+- [x] **MED-08**: The Fabric Data Agent is grounded only in curated Gold products and is evaluated reproducibly for groundedness, precision, freshness, citations, and safe degradation.
 - [x] **MED-09**: Generated ontology projections are governed by a publication manifest, lifecycle status, and consumer-facing abstraction that prevents direct dependency on unstable physical tables.
-- [ ] **MED-10**: Fabric data access, lineage, capacity health, and Delta maintenance controls are implemented with least privilege and are visible through scope-enforced API and web surfaces.
+- [x] **MED-10**: Fabric data access, lineage, capacity health, and Delta maintenance controls are implemented with least privilege and are visible through scope-enforced API and web surfaces.
 
 ## v2 Requirements
 
@@ -164,15 +164,15 @@ Traceability is populated during roadmap creation.
 | INV-11 | Phase 8 | Complete |
 | INV-12 | Phase 8 | Complete |
 | MED-01 | Phase 10 | Complete |
-| MED-02 | Phase 10 | Pending |
+| MED-02 | Phase 10 | Complete |
 | MED-03 | Phase 10 | Complete |
 | MED-04 | Phase 10 | Complete |
-| MED-05 | Phase 10 | Pending |
+| MED-05 | Phase 10 | Complete |
 | MED-06 | Phase 10 | Complete |
 | MED-07 | Phase 10 | Complete |
-| MED-08 | Phase 10 | Pending |
+| MED-08 | Phase 10 | Complete |
 | MED-09 | Phase 10 | Complete |
-| MED-10 | Phase 10 | Pending |
+| MED-10 | Phase 10 | Complete |
 
 **Coverage:**
 

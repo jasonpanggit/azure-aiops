@@ -60,7 +60,10 @@ def test_end_to_end_mock_ingestion_tracks_incremental_state(tmp_path: Path) -> N
 
     state = json.loads((tmp_path / "state/state.json").read_text())
     assert first["status"] == "completed"
-    assert second["changedDatasets"] == []
+    assert sorted(second["changedDatasets"]) == [
+        "entities/DefenderAssessment",
+        "situations/source_status",
+    ]
     assert state["lastSuccessfulRun"] == "2026-08-17T02:00:00Z"
     assert state["resourceChangesWatermark"] == "2026-08-17T00:30:00Z"
     assert state["watermarkVersion"] == 2

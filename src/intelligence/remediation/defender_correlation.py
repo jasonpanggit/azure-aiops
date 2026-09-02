@@ -60,7 +60,7 @@ def _weakness_key(row: Mapping[str, Any], *, id_field: str, id_prefix: str) -> s
     ).strip()
     if text:
         return f"text:{text.casefold()}"
-    return f"id:{id_prefix}:{str(row.get(id_field) or '')}"
+    return f"id:{id_prefix}:{row.get(id_field) or ''!s}"
 
 
 class DefenderRemediationCase:
@@ -502,7 +502,7 @@ class DefenderRemediationCorrelator:
         if not observed_at:
             return "unknown"
         try:
-            parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(observed_at)
         except ValueError:
             return "unknown"
         if parsed.tzinfo is None:
@@ -566,8 +566,10 @@ class DefenderRemediationCorrelator:
             return (
                 "defer",
                 "no_safe_action",
-                "No governed catalog action addresses this weakness; recommend platform-team review "
-                "before any change is proposed.",
+                (
+                    "No governed catalog action addresses this weakness; recommend "
+                    "platform-team review before any change is proposed."
+                ),
             )
         if max_severity in {"critical", "high"}:
             return "act_now", "actionable", ""

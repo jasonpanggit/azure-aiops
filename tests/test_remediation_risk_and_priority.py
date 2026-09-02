@@ -1,23 +1,17 @@
 from remediation_scenario import remediation_planner
 
 from intelligence.remediation.plan_prioritizer import PlanPrioritizer
-from tests.defender_correlation_scenario import (
-    ACTION_CATALOG,
-    MAPPED_RESOURCE_ID,
-    defender_alerts,
-    defender_assessments,
-    defender_attack_path_nodes,
-    defender_attack_paths,
-    defender_correlator,
-    defender_resources,
-    defender_secure_score_controls,
-)
-from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
 from intelligence.remediation.remediation_opportunity_engine import (
     RemediationOpportunityEngine,
 )
 from intelligence.remediation.risk_analyzer import RiskAnalyzer
 from intelligence.vulnerability.service import VulnerabilityIntelligenceService
+from tests.defender_correlation_scenario import (
+    ACTION_CATALOG,
+    MAPPED_RESOURCE_ID,
+    defender_correlator,
+    defender_resources,
+)
 
 
 def test_risk_assessment_is_explainable_and_bounded():

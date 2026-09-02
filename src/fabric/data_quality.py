@@ -4,8 +4,8 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
@@ -109,7 +109,7 @@ class DataQualityValidator:
         environment: str,
         *,
         config_path: str | Path = "fabric.config.yaml",
-    ) -> "DataQualityValidator":
+    ) -> DataQualityValidator:
         """Build a validator whose ownership/tag thresholds come from
         `fabric.config.yaml`'s `fabric.data_quality.ownership_tag_thresholds.<environment>`
         section. Missing file/section/keys fall back to the safe

@@ -303,6 +303,7 @@ class SubscriptionOnboardingService:
         freshness = self.sync_coordinator.freshness(connection.sync_state)
         return {
             **self._summary(connection),
+            "sync_status": (connection.sync_state or SyncState()).status,
             "credential": self.resolver.describe(connection.credential),
             "business_metadata": business.to_dict(),
             "missing_metadata": business.missing_fields(),
@@ -525,7 +526,10 @@ class SubscriptionOnboardingService:
                 "support_team": business.support_team,
                 "criticality": business.criticality,
                 "region": business.region,
-                "sync_status": sync_state.status,
+                # sync_status intentionally omitted from the list response: the
+                # registry backing this summary is disk-cached and can lag live
+                # state by several minutes. detail() below restores it since
+                # that call is only made for a single connection.
                 "sync_record_count": sync_state.record_count,
                 "last_synced_at": sync_state.last_synced_at,
                 "last_successful_sync_at": sync_state.last_successful_sync_at,

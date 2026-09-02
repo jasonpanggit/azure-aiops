@@ -652,6 +652,112 @@ export interface DefenderOverview {
   >;
 }
 
+export interface FabricLayerCounts {
+  healthy: number;
+  total: number;
+}
+
+export interface FabricDataset {
+  table_name: string;
+  availability: string;
+  freshness: string;
+  quality: string;
+  row_count: number;
+  stale_after_seconds: number | null;
+  observed_at: string;
+  ingested_at: string;
+  watermark: string;
+  error: string;
+  lineage_ref: string;
+}
+
+export interface FabricManifestEntry {
+  projection_name: string;
+  disposition: string;
+  compatibility_version: string | null;
+  retired_reason: string | null;
+  registered_at: string;
+  updated_at: string;
+}
+
+export interface FabricGovernanceGap {
+  table_name: string;
+  ownership_gap_count: number;
+  tag_gap_count: number;
+  referential_integrity_blockers: number;
+}
+
+export interface FabricGovernanceSummary {
+  ownership_gap_count: number;
+  tag_gap_count: number;
+  referential_integrity_blockers: number;
+  gaps: FabricGovernanceGap[];
+}
+
+export interface FabricIngestionRun {
+  projection_name: string;
+  status: string;
+  attempted_at: string;
+  attempts: number;
+  retry_eligible: boolean;
+  message: string;
+  source: string;
+}
+
+export interface FabricCapacityStatus {
+  status: string;
+  state?: string;
+  capacity_name?: string;
+  name?: string;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
+export interface FabricRoleSummary {
+  status: string;
+  total_roles: number;
+  roles: Record<string, unknown>[];
+}
+
+export interface FabricMaintenanceStatus {
+  status: string;
+  last_run_at: string;
+  activity_name: string;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
+export interface FabricLineageSummary {
+  table_name: string;
+  status: string;
+  lineage_ref: string;
+  lineage: Record<string, unknown>;
+}
+
+export interface FabricCapabilities {
+  capacity: FabricCapacityStatus;
+  data_access_roles: FabricRoleSummary;
+  maintenance: FabricMaintenanceStatus;
+  semantic_readiness: { status: string; reason?: string };
+  data_agent_readiness: { status: string; configured: boolean };
+  lineage: {
+    native_lineage_url: string;
+    datasets: FabricLineageSummary[];
+  };
+}
+
+export interface FabricMedallionHealth {
+  layers: {
+    bronze: FabricDataset[];
+    silver: FabricDataset[];
+    gold: FabricDataset[];
+  };
+  manifest: FabricManifestEntry[];
+  governance_gaps: FabricGovernanceGap[];
+  ingestion_runs: FabricIngestionRun[];
+  semantic_readiness: { status: string; reason?: string };
+  coverage: Record<string, "available" | "unknown">;
+}
+
+
 export interface VulnerabilityFinding {
   finding_id: string;
   cve_id: string;

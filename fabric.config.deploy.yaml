@@ -36,6 +36,10 @@ fabric:
   # Fresh, disposable validation lakehouse created for API cutover testing.
   lakehouse_id: "6317eaf6-e597-4b4e-a07d-c53027c01feb"
   lakehouse_name: "operational_context_graph_v2"
+  capacity:
+    subscription_id: "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+    resource_group: "aiops-dev-rg"
+    capacity_name: "aiopsdevcapg6ludc"
   create_lakehouse_if_missing: false
   table_schema: ""
   ontology:

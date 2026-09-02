@@ -1,9 +1,28 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { create, getConnection, health, list, mapMetadata, updateConnection } = vi.hoisted(() => ({
+const {
+  create,
+  fabricCapabilities,
+  fabricDataset,
+  fabricGovernance,
+  fabricIngestionHistory,
+  fabricLayers,
+  fabricManifest,
+  getConnection,
+  health,
+  list,
+  mapMetadata,
+  updateConnection,
+} = vi.hoisted(() => ({
   create: vi.fn(),
+  fabricCapabilities: vi.fn(),
+  fabricDataset: vi.fn(),
+  fabricGovernance: vi.fn(),
+  fabricIngestionHistory: vi.fn(),
+  fabricLayers: vi.fn(),
+  fabricManifest: vi.fn(),
   getConnection: vi.fn(),
   health: vi.fn(),
   list: vi.fn(),
@@ -20,6 +39,14 @@ vi.mock("@/lib/services", () => ({
     mapMetadata,
     update: updateConnection,
     validate: vi.fn(),
+  },
+  fabricMedallionApi: {
+    layers: fabricLayers,
+    dataset: fabricDataset,
+    manifest: fabricManifest,
+    governance: fabricGovernance,
+    ingestionHistory: fabricIngestionHistory,
+    capabilities: fabricCapabilities,
   },
 }));
 
@@ -63,7 +90,14 @@ describe("Connections page onboarding", () => {
     list.mockReset();
     mapMetadata.mockReset();
     updateConnection.mockReset();
+    fabricLayers.mockReset();
+    fabricCapabilities.mockReset();
+    fabricManifest.mockReset();
+    fabricGovernance.mockReset();
+    fabricIngestionHistory.mockReset();
+    fabricDataset.mockReset();
     list.mockResolvedValue(emptyEnvelope);
+    mockFabricHealth();
   });
 
   it("opens onboarding automatically for a first subscription", async () => {
@@ -262,5 +296,166 @@ describe("Connections page onboarding", () => {
     expect(health).toHaveBeenCalledWith("prod");
     expect(screen.queryByRole("button", { name: "Validate" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sync" })).not.toBeInTheDocument();
+  });
+});
+
+
+type Envelope<T> = {
+  data: T;
+  evidence: Array<{ source_engine: string; source_table: string; timestamp: string; confidence: string }>;
+  scope: Record<string, string[]>;
+  knowledge_version: string;
+  warnings: string[];
+};
+
+function envelope<T>(data: T): Envelope<T> {
+  return {
+    data,
+    evidence: [{ source_engine: "fabric.medallion_health", source_table: "metadata_source_status", timestamp: "2026-01-01T00:00:00Z", confidence: "high" }],
+    scope: {},
+    knowledge_version: "fabric-test",
+    warnings: [],
+  };
+}
+
+function dataset(tableName: string, availability: string, rowCount: number) {
+  return {
+    table_name: tableName,
+    availability,
+    freshness: availability === "unavailable" ? "unknown" : "fresh",
+    quality: availability === "unavailable" ? "unknown" : "complete",
+    row_count: rowCount,
+    stale_after_seconds: 3600,
+    observed_at: "2026-01-01T00:00:00Z",
+    ingested_at: "2026-01-01T00:00:00Z",
+    watermark: "2026-01-01T00:00:00Z",
+    error: availability === "unavailable" ? "capacity paused" : "",
+    lineage_ref: `lineage://${tableName}`,
+  };
+}
+
+function capabilitiesFor(tableNames: string[]) {
+  return envelope({
+    capacity: { status: "healthy", capacity_name: "cap-aiops" },
+    data_access_roles: { status: "available", total_roles: 2, roles: [] },
+    maintenance: { status: "healthy", last_run_at: "2026-01-01T00:00:00Z", activity_name: "vacuum" },
+    semantic_readiness: { status: "deployment-blocked", reason: "preview deployment requires manual promotion" },
+    data_agent_readiness: { status: "available", configured: true },
+    lineage: {
+      native_lineage_url: "https://fabric.microsoft.com/workspace/workspace-abc",
+      datasets: tableNames.map((table_name) => ({ table_name, status: "healthy", lineage_ref: `lineage://${table_name}`, lineage: {} })),
+    },
+  });
+}
+
+function mockFabricHealth(tableNames: string[] = ["bronze_resources", "silver_incidents", "gold_operational_context"]) {
+  fabricLayers.mockResolvedValue(envelope({
+    layers: {
+      bronze: { healthy: 1, total: 1 },
+      silver: { healthy: 1, total: 1 },
+      gold: { healthy: 1, total: 1 },
+    },
+  }));
+  fabricCapabilities.mockResolvedValue(capabilitiesFor(tableNames));
+  fabricManifest.mockResolvedValue(envelope({ entries: [] }));
+  fabricGovernance.mockResolvedValue(envelope({ ownership_gap_count: 0, tag_gap_count: 0, referential_integrity_blockers: 0, gaps: [] }));
+  fabricIngestionHistory.mockResolvedValue(envelope({ runs: [] }));
+  fabricDataset.mockImplementation((tableName: string) => Promise.resolve(envelope(dataset(tableName, "healthy", 12))));
+}
+
+describe("Connections page Fabric medallion tab", () => {
+  beforeEach(() => {
+    create.mockReset();
+    getConnection.mockReset();
+    health.mockReset();
+    list.mockReset();
+    mapMetadata.mockReset();
+    updateConnection.mockReset();
+    fabricLayers.mockReset();
+    fabricCapabilities.mockReset();
+    fabricManifest.mockReset();
+    fabricGovernance.mockReset();
+    fabricIngestionHistory.mockReset();
+    fabricDataset.mockReset();
+    list.mockResolvedValue({ ...emptyEnvelope, data: [connection] });
+    mockFabricHealth();
+  });
+
+  it("switches between Subscriptions and Fabric medallion panels without rewriting subscription content", async () => {
+    renderConnectionsPage();
+
+    expect(await screen.findByText("Production")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Subscriptions" })).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Fabric medallion" }));
+
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    expect(fabricPanel).toHaveAttribute("id", "fabric-medallion-panel");
+    expect(within(fabricPanel).getByText("Bronze tables")).toBeInTheDocument();
+    expect(document.querySelector("#subscriptions-panel")).toHaveAttribute("hidden");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Subscriptions" }));
+
+    expect(screen.getByText("Production")).toBeInTheDocument();
+    expect(screen.getByRole("tabpanel", { name: "Subscriptions" })).not.toHaveAttribute("hidden");
+  });
+
+  it("isolates Bronze and Silver dataset failures while Gold data and summary metrics stay populated", async () => {
+    mockFabricHealth(["bronze_resources", "silver_incidents", "gold_operational_context"]);
+    fabricLayers.mockResolvedValue(envelope({
+      layers: {
+        bronze: { healthy: 0, total: 1 },
+        silver: { healthy: 0, total: 1 },
+        gold: { healthy: 1, total: 1 },
+      },
+    }));
+    fabricDataset.mockImplementation((tableName: string) => {
+      if (tableName.startsWith("gold_")) return Promise.resolve(envelope(dataset(tableName, "healthy", 140)));
+      return Promise.reject(new Error(`${tableName} unavailable`));
+    });
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+
+    expect(await screen.findByText("Bronze layer health is unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Silver layer health is unavailable")).toBeInTheDocument();
+    expect(screen.getByText("gold_operational_context")).toBeInTheDocument();
+    expect(screen.getByText("Gold tables")).toBeInTheDocument();
+    expect(within(screen.getByRole("tabpanel", { name: "Fabric medallion" })).getAllByText("1/1").length).toBeGreaterThan(0);
+  });
+
+  it("distinguishes healthy-empty zero rows from unavailable datasets", async () => {
+    mockFabricHealth(["bronze_empty", "gold_unavailable"]);
+    fabricDataset.mockImplementation((tableName: string) => {
+      if (tableName === "bronze_empty") return Promise.resolve(envelope(dataset(tableName, "healthy-empty", 0)));
+      return Promise.resolve(envelope(dataset(tableName, "unavailable", 0)));
+    });
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+
+    const healthyEmptyBadge = await screen.findByText("Healthy · Empty");
+    expect(healthyEmptyBadge).toHaveClass("status-success");
+    expect(await screen.findByText(/0 rows \(expected\)/)).toBeInTheDocument();
+    const unavailableBadge = screen.getByText("Unavailable");
+    expect(unavailableBadge).toHaveClass("status-critical");
+    expect(unavailableBadge).not.toHaveTextContent("Healthy · Empty");
+  });
+
+  it("shows retry guidance only for failed ingestion rows and never renders inert retry buttons", async () => {
+    fabricIngestionHistory.mockResolvedValue(envelope({
+      runs: [
+        { projection_name: "gold_operational_context", status: "failed", attempted_at: "2026-01-01T00:00:00Z", attempts: 3, retry_eligible: true, message: "warehouse timeout", source: "source-status" },
+        { projection_name: "silver_incidents", status: "unavailable", attempted_at: "2026-01-01T00:00:00Z", attempts: 1, retry_eligible: false, message: "capacity paused", source: "source-status" },
+      ],
+    }));
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+
+    expect(await screen.findByText("Ingestion failed — 3 of 3 attempts exhausted · last error: warehouse timeout")).toBeInTheDocument();
+    expect(screen.getByText("Source unavailable — Fabric capacity or workspace could not be reached")).toBeInTheDocument();
+    expect(screen.getByText("Retry via subscription sync")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry ingestion/i })).not.toBeInTheDocument();
   });
 });

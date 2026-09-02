@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from intelligence.remediation.plan_prioritizer import PlanPrioritizer
+from intelligence.remediation.remediation_opportunity_engine import (
+    RemediationOpportunityEngine,
+)
+from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 from tests.defender_correlation_scenario import (
     ACTION_CATALOG,
-    MAPPED_RESOURCE_ID,
     UNMAPPED_RESOURCE_ID,
-    UNMATCHED_WEAKNESS_RESOURCE_ID,
     defender_alerts,
     defender_assessments,
     defender_attack_path_nodes,
@@ -15,11 +18,6 @@ from tests.defender_correlation_scenario import (
     defender_resources,
     defender_secure_score_controls,
 )
-from intelligence.remediation.remediation_opportunity_engine import (
-    RemediationOpportunityEngine,
-)
-from intelligence.remediation.plan_prioritizer import PlanPrioritizer
-from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 
 
 def test_large_attack_path_is_bounded_and_reports_truncation():

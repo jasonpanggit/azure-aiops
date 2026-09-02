@@ -14,8 +14,7 @@ from mcp_server.app import (
     app,
 )
 from onboarding.credentials import SecretNotFoundError
-from onboarding.registry import ConnectionNotFoundError
-from ontology.subscription_connection import SubscriptionConnection, CredentialReference
+from ontology.subscription_connection import CredentialReference, SubscriptionConnection
 
 
 @pytest.fixture

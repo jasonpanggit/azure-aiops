@@ -224,3 +224,104 @@ def test_normalizer_preserves_defender_threat_path_and_score_semantics() -> None
     }
     assert defender_status["defender_alerts"]["availability"] == "available"
     assert defender_status["defender_attack_paths"]["availability"] == "available"
+
+
+def test_defender_assessment_html_is_escaped() -> None:
+    """Verify that HTML tags in Defender assessment fields are escaped."""
+    from onboarding.defender_normalize import normalize_assessment
+     
+    row = {
+        "id": "/subscriptions/sub-1/providers/Microsoft.Security/assessments/assessment-1",
+        "name": "assessment-1",
+        "type": "Microsoft.Security/assessments",
+        "properties": {
+            "displayName": "Test <b>Assessment</b>",
+            "description": "Description with <br> tag",
+            "remediation": "Fix with <a href='https://example.com'>link</a>",
+            "status": {"code": "Healthy"},
+            "resourceDetails": {
+                "Source": "Azure",
+                "Id": "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-1",
+            },
+        },
+    }
+     
+    result = normalize_assessment(row, "2026-08-17T00:00:00Z")
+    assert result is not None
+    assert result["recommendation"] == "Test &lt;b&gt;Assessment&lt;/b&gt;"
+    assert result["description"] == "Description with &lt;br&gt; tag"
+    assert result["remediation"] == "Fix with &lt;a href=&#x27;https://example.com&#x27;&gt;link&lt;/a&gt;"
+
+
+def test_defender_vulnerability_finding_html_is_escaped() -> None:
+    """Verify that HTML tags in Defender vulnerability finding fields are escaped."""
+    from onboarding.defender_normalize import normalize_vulnerability_subassessments
+     
+    row = {
+        "id": "/subscriptions/sub-1/providers/Microsoft.Security/assessments/assessment-1/subAssessments/sub-1",
+        "name": "sub-1",
+        "type": "Microsoft.Security/assessments/subAssessments",
+        "properties": {
+            "status": {"code": "Unhealthy"},
+            "category": ["Vulnerabilities"],
+            "description": "CVE with <code>tag</code>",
+            "remediation": "Remediate with <span>HTML</span>",
+            "impact": "High",
+            "resourceDetails": {
+                "Source": "Azure",
+                "Id": "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-1",
+            },
+            "additionalData": {
+                "cveId": "CVE-2026-0001",
+                "softwareName": "OpenSSL",
+            },
+        },
+    }
+     
+    results = normalize_vulnerability_subassessments(row, "2026-08-17T00:00:00Z")
+     
+    assert len(results) == 1
+    # recommendation is mapped from remediation/remediationDescription
+    assert results[0]["recommendation"] == "Remediate with &lt;span&gt;HTML&lt;/span&gt;"
+    # description is mapped from properties.description
+    assert results[0]["description"] == "CVE with &lt;code&gt;tag&lt;/code&gt;"
+
+
+def test_security_alert_html_is_escaped() -> None:
+    """Verify that HTML tags in Defender security alert fields are escaped."""
+    from onboarding.defender_normalize import normalize_security_alert
+     
+    row = {
+        "id": "/subscriptions/sub-1/providers/Microsoft.Security/securityAlerts/alert-1",
+        "name": "alert-1",
+        "type": "Microsoft.Security/securityAlerts",
+        "properties": {
+            "alertDisplayName": "Alert with <b>HTML</b>",
+            "description": "Alert description with <br> tags",
+            "status": "Active",
+            "severity": "High",
+            "alertType": "ThreatIntelligence",
+            "intent": "Exploitation",
+            "productName": "Azure Security Center",
+            "vendorName": "Microsoft",
+            "remediationSteps": [
+                "Step 1 with <a href='#'>link</a>",
+                "Step 2 with <code>tag</code>",
+            ],
+            "resourceIdentifiers": [
+                {
+                    "type": "AzureResource",
+                    "workspaceId": "/subscriptions/sub-1",
+                    "workspaceName": "sub-1",
+                    "resourceId": "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-1",
+                }
+            ],
+        },
+    }
+     
+    result = normalize_security_alert(row, "2026-08-17T00:00:00Z")
+    assert result is not None
+    assert result["title"] == "Alert with &lt;b&gt;HTML&lt;/b&gt;"
+    assert result["description"] == "Alert description with &lt;br&gt; tags"
+    assert result["remediationSteps"][0] == "Step 1 with &lt;a href=&#x27;#&#x27;&gt;link&lt;/a&gt;"
+    assert result["remediationSteps"][1] == "Step 2 with &lt;code&gt;tag&lt;/code&gt;"

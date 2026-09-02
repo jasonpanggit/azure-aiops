@@ -89,12 +89,22 @@ def run_inventory_refresh_all_connections(
             fabric_config_path,
         )
         fabric_config = FabricRuntimeConfig.load(fabric_config_path)
+        from storage.datasets import DatasetStore
+
+        combined_store = DatasetStore(config.output_dir)
+        combined_generation = combined_store.current_generation()
+        if combined_generation is None:
+            raise RuntimeError("Combined inventory snapshot was not published")
         runtime = build_runtime(
             dataclasses.replace(
                 fabric_config,
-                source_data_root=config.output_dir,
+                source_data_root=combined_generation,
             )
         )
+        if combined_store.is_remote:
+            runtime.service._source_root_is_remote = True
+            runtime.service._source_fs = combined_store.fs
+            runtime.service._resolved_source_root = combined_generation
         publication = runtime.service.sync()
         fabric_publication = {
             "runId": publication.run_id,

@@ -43,7 +43,9 @@ def test_initialize_and_exact_read_only_catalog(tmp_path):
         "business_service_context", "application_context", "impact_context",
         "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context",
         "cve_exposure", "cve_detail", "cve_attack_path",
-        "incidents", "remediation_plans", "remediation_opportunities",
+        "defender_alerts", "defender_attack_paths", "defender_secure_score",
+        "incidents", "defender_remediation_cases", "remediation_business_decision",
+        "remediation_plans", "remediation_opportunities",
     ]
 
 

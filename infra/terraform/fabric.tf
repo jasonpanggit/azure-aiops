@@ -35,6 +35,15 @@ resource "azurerm_fabric_capacity" "main" {
   tags = local.tags
 }
 
+resource "azurerm_role_assignment" "fabric_capacity_reader_apps" {
+  count = var.enable_fabric ? 1 : 0
+
+  scope                            = azurerm_fabric_capacity.main[0].id
+  role_definition_name             = "Reader"
+  principal_id                     = azurerm_user_assigned_identity.apps.principal_id
+  skip_service_principal_aad_check = true
+}
+
 data "fabric_capacity" "main" {
   count        = var.enable_fabric ? 1 : 0
   display_name = azurerm_fabric_capacity.main[0].name
