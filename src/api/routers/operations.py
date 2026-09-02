@@ -31,8 +31,23 @@ from .patching import _service as _patching_service
 router = APIRouter(prefix="/api/v1", tags=["operations"])
 
 
+def _onboarded_subscription_ids(context: Context) -> list[str]:
+    connections = context.onboarding.registry.list(include_disabled=False)
+    seen: dict[str, None] = {}
+    for connection in connections:
+        seen.setdefault(str(connection.subscription_id), None)
+    return list(seen)
+
+
 def _require(context: Context, attribute: str, capability: str, scope: Scope) -> Any:
     subscription_ids = list(scope.values("subscription"))
+    if (
+        capability == "remediation"
+        and not subscription_ids
+        and scope.is_unrestricted()
+        and context.hybrid_remediation_provider is not None
+    ):
+        subscription_ids = _onboarded_subscription_ids(context)
     if subscription_ids:
         if capability == "incidents" and context.hybrid_incident_provider is not None:
             return context.hybrid_incident_provider(subscription_ids)

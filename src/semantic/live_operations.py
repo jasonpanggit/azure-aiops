@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from intelligence.remediation.plan_repository import PlanRepository
-
 from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 from onboarding.query_contract import QuerySpec
 
@@ -293,7 +292,13 @@ class LiveRemediationPlanner:
         self.repository = repository or PlanRepository()
 
     def identify_opportunities(self) -> dict[str, Any]:
-        opportunities = [self._opportunity(row) for row in self._exposures()]
+        opportunities = list(
+            {
+                opportunity["opportunity_id"]: opportunity
+                for row in self._patch_targets()
+                for opportunity in (self._opportunity(row),)
+            }.values()
+        )
         return {
             "opportunities": opportunities,
             "collection_metadata": {
@@ -310,7 +315,13 @@ class LiveRemediationPlanner:
         }
 
     def generate_plans(self) -> dict[str, Any]:
-        plans = [self._plan(row) for row in self._exposures()]
+        plans = list(
+            {
+                plan["plan_id"]: plan
+                for row in self._patch_targets()
+                for plan in (self._plan(row),)
+            }.values()
+        )
         self.repository.replace_generation(plans)
         return {
             "plans": plans,
@@ -338,22 +349,47 @@ class LiveRemediationPlanner:
             return []
         return self.vulnerability_service.exposures()
 
+    def _patch_targets(self) -> list[dict[str, Any]]:
+        if self.vulnerability_service is None:
+            return []
+        return self.vulnerability_service.asset_exposures()
+
     def _opportunity(self, row: dict[str, Any]) -> dict[str, Any]:
+        target_id = _first(row.get("asset_id"), row.get("server_id"))
+        missing_kbs = _strings(
+            row.get("missing_kbs")
+            or ([row.get("missing_kb")] if row.get("missing_kb") else [])
+        )
+        patch_label = (
+            ", ".join(missing_kbs)
+            or _text(row.get("recommended_patch"))
+            or "available updates"
+        )
         resource = {
-            "resource_key": row.get("server_id", ""),
-            "name": row.get("server_name") or row.get("server_id", ""),
-            "business_service": row.get("business_service", ""),
-            "application": row.get("application", ""),
-            "environment": row.get("environment", ""),
-            "subscription_id": row.get("subscription_id", ""),
+            "id": target_id,
+            "resource_key": target_id,
+            "name": _first(row.get("name"), row.get("server_name"), target_id),
+            "entity_type": _first(
+                row.get("inventory_kind"), row.get("resource_type"), "Resource"
+            ),
+            "business_service": _text(row.get("business_service")),
+            "application": _text(row.get("application")),
+            "environment": _text(row.get("environment")),
+            "subscription_id": _text(row.get("subscription_id")),
+            "subscription_connection": _text(row.get("subscription_connection")),
+            "resource_type": _text(row.get("resource_type")),
+            "region": _text(row.get("region")),
+            "criticality": _text(row.get("criticality")),
         }
         return {
-            "opportunity_id": f"live-patch-{row.get('server_id', '')}-{row.get('missing_kb', '')}",
+            "opportunity_id": f"live-patch-{_hash({'target': target_id, 'patches': sorted(missing_kbs)})[:16]}",
             "opportunity_type": "Patch and vulnerability debt",
             "resource": resource,
-            "priority": row.get("priority", "Priority 2"),
-            "risk_score": row.get("risk_score", 0),
-            "recommended_action": f"Install {row.get('recommended_patch') or row.get('missing_kb')}",
+            "priority": _priority_from_score(
+                row.get("priority_score", row.get("risk_score", 0))
+            ),
+            "risk_score": _numeric(row.get("priority_score", row.get("risk_score", 0))),
+            "recommended_action": f"Install {patch_label}",
             "read_only": True,
         }
 
@@ -368,15 +404,24 @@ class LiveRemediationPlanner:
         return {
             "plan_id": opportunity["opportunity_id"],
             "action_version": action_version,
+            "action_id": "controlled-patch-recovery",
+            "title": f"Patch {opportunity['resource']['name']}",
+            "status": "Draft - Approval Required",
             "opportunity_type": opportunity["opportunity_type"],
             "resource": opportunity["resource"],
             "application": opportunity["resource"].get("application", ""),
             "business_service": opportunity["resource"].get("business_service", ""),
+            "environment": opportunity["resource"].get("environment", ""),
+            "owner": _text(row.get("owner")),
+            "subscription_id": opportunity["resource"].get("subscription_id", ""),
+            "subscription_connection": opportunity["resource"].get(
+                "subscription_connection", ""
+            ),
             "priority": opportunity["priority"],
-            "priority_score": row.get("risk_score", 0),
+            "priority_score": opportunity["risk_score"],
             "recommended_action": opportunity["recommended_action"],
             "simulation_result": {
-                "risk_reduction_percent": min(int(row.get("risk_score") or 0), 100),
+                "risk_reduction_percent": min(int(opportunity["risk_score"]), 100),
                 "operational_debt_reduction_percent": 25,
             },
             "approval_requirements": [
@@ -388,8 +433,11 @@ class LiveRemediationPlanner:
             "rollback_plan": {"reversible": True, "steps": ["Uninstall patch if rollback is required"]},
             "risk_assessment": {
                 "overall_risk": {
-                    "level": str(row.get("priority", "Priority 2")),
-                    "drivers": [],
+                    "level": opportunity["priority"],
+                    "drivers": [
+                        f"{row.get('cve_count', 0)} open CVE(s)",
+                        f"{row.get('finding_count', 0)} unresolved patch finding(s)",
+                    ],
                 }
             },
             "execution_steps": [
@@ -401,7 +449,72 @@ class LiveRemediationPlanner:
                     "execution_status": "Not Executed",
                 }
             ],
+            "business_impact": {
+                "affected_services": [row.get("business_service")] if row.get("business_service") else [],
+                "affected_applications": [row.get("application")] if row.get("application") else [],
+                "blast_radius": row.get("finding_count", 0),
+                "expected_risk_reduction_percent": row.get("expected_risk_reduction", 0),
+            },
+            "business_decision": {
+                "disposition": "schedule",
+                "business_impact": {
+                    "status": "known" if row.get("business_service") or row.get("application") else "unknown"
+                },
+                "review_requirements": [],
+                "unknowns": [] if row.get("business_service") or row.get("application") else ["Business ownership is unknown for this target."],
+                "urgency_rationale": {
+                    "evidence_citations": [
+                        f"patch-finding:{finding_id}"
+                        for finding_id in row.get("finding_ids", [])[:10]
+                    ]
+                },
+            },
+            "evidence": [
+                f"{row.get('finding_count', 0)} unresolved patch finding(s)",
+                f"Missing updates: {', '.join(_strings(row.get('missing_kbs')))}",
+            ],
+            "evidence_citations": [
+                {
+                    "source_type": "assessment",
+                    "source_id": str(finding_id),
+                    "resource_id": opportunity["resource"].get("id", ""),
+                    "summary": "Open patch finding from live vulnerability exposure",
+                    "observed_at": self.freshness,
+                    "freshness": "current",
+                }
+                for finding_id in row.get("finding_ids", [])[:10]
+            ],
             "read_only": True,
             "execution_authorized": False,
             "execution_performed": False,
         }
+
+
+def _priority_from_score(value: Any) -> str:
+    score = _numeric(value)
+    if score >= 90:
+        return "Priority 1"
+    if score >= 60:
+        return "Priority 2"
+    if score >= 30:
+        return "Priority 3"
+    return "Priority 4"
+
+
+def _numeric(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _strings(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = [value]
+    return [text for item in values if (text := _text(item))]

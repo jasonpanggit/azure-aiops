@@ -3,12 +3,12 @@ status: partial
 phase: 03-safe-remediation-execution
 source: 03-01-SUMMARY.md, 03-02-SUMMARY.md, 03-03-SUMMARY.md, 03-04-SUMMARY.md, 03-05-SUMMARY.md, 03-06-SUMMARY.md
 started: 2026-09-01T16:02:55Z
-updated: 2026-09-01T16:02:55Z
+updated: 2026-09-01T23:59:00Z
 ---
 
 ## Current Test
 
-[testing paused - live dataset has no executable remediation candidates]
+[testing paused - live mutating patch execution declined by operator]
 
 ## Tests
 
@@ -29,9 +29,10 @@ observed: `GET /api/v1/remediation/plans` with an Entra access token for `api://
 
 ### 4. Preview, approve, execute, and observe a controlled patch remediation
 expected: A least-privileged operator selects a subscription-scoped `controlled-patch-recovery` plan, previews the exact target/patch snapshot, approves the current preview hash, executes once, and polls until ARM/provider verification supplies the terminal outcome and audit history.
-result: blocked
-blocked_by: live-data
-reason: The deployed remediation plan list returned zero plans (`plan_count: 0`), so there is no live `controlled-patch-recovery` candidate to preview, approve, execute, or observe.
+result: partial
+blocked_by: operator-deferred-live-mutation
+observed: The hardened live API returned one subscription-scoped `controlled-patch-recovery` plan for Arc-enabled server `vm1`; preview returned HTTP 200 with operation `install_patches`, patch IDs `4589210`, `5120236`, `5120418`, `890830`, snapshot hash `f55dadce0b6feffffc61124eae3034b3ae54d1e2b5f9f0064fa340f42454cc82`, and `not_approved` eligibility before approval.
+reason: The operator declined the mutating approval-and-execute step, so live execution and ARM/provider terminal polling were not performed.
 
 ## Summary
 
@@ -40,19 +41,20 @@ passed: 3
 issues: 0
 pending: 0
 skipped: 0
-blocked: 1
+blocked: 0
+partial: 1
 
 ## Gaps
 
 - truth: "A live least-privileged Azure operator can complete preview -> approval -> execute -> observe for one subscription-scoped controlled patch remediation."
-  status: failed
-  reason: "The deployed API is reachable and authenticated, but the current live ontology/provider snapshot contains zero remediation plans."
+  status: partial
+  reason: "The deployed API is reachable, authenticated, and now produces an eligible live preview candidate, but the operator declined the mutating approval-and-execute step."
   severity: blocker
   test: 4
-  root_cause: "Live data does not currently include an executable remediation candidate; code-level and TestClient regression verification covers the behavior, but deployed UAT needs at least one eligible controlled-patch-recovery plan."
+  root_cause: "Live execution remains intentionally unverified because installing patches on the Arc-enabled server requires explicit operator approval."
   artifacts:
     - path: ".planning/phases/03-safe-remediation-execution/03-UAT.md"
-      issue: "Live UAT blocked by empty remediation plan dataset."
+      issue: "Live UAT preview passes, but approval/execution/polling remains deferred."
   missing:
-    - "Publish or ingest a live snapshot that produces at least one eligible controlled-patch-recovery remediation plan, then rerun Phase 3 live UAT."
+    - "When approved, run the exact preview-bound approval, execute the controlled patch remediation, and poll to ARM/provider terminal outcome."
   debug_session: ""
