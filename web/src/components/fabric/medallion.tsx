@@ -173,37 +173,35 @@ function FabricLayerSection({
           <StatePanel title={`No ${label} datasets registered`} message="No datasets are registered for this layer in the current scope." />
         ) : (
           <>
+            <TableColumnFilters filters={filters} onReset={resetFilters} resultCount={filteredRows.length} totalCount={rows.length} />
             <div className="fabric-dataset-card-grid" aria-label={`${label} dataset health cards`}>
-              {rows.map((dataset) => (
+              {paging.pageRows.map((dataset) => (
                 <article key={dataset.table_name} className="fabric-dataset-card">
-                  <div>
+                  <div className="fabric-dataset-card-head">
                     <strong>{dataset.table_name}</strong>
-                    <span>{datasetRowsCopy(dataset)} · observed {relativeTime(dataset.observed_at)}</span>
+                    <StatusBadge label={datasetStatusLabel(dataset.availability)} tone={statusTone(dataset.availability)} />
                   </div>
-                  <StatusBadge label={datasetStatusLabel(dataset.availability)} tone={statusTone(dataset.availability)} />
+                  <p className="fabric-dataset-card-summary">{datasetSummaryCopy(dataset)}</p>
                   <dl>
-                    <div><dt>Freshness</dt><dd>{dataset.freshness || "unknown"}</dd></div>
-                    <div><dt>Quality</dt><dd>{dataset.quality || "unknown"}</dd></div>
-                    <div><dt>Watermark</dt><dd>{dataset.watermark || "unknown"}</dd></div>
+                    <div>
+                      <dt>Freshness</dt>
+                      <dd>{freshnessCopy(dataset)}</dd>
+                    </div>
+                    <div>
+                      <dt>Quality</dt>
+                      <dd>{qualityCopy(dataset)}</dd>
+                    </div>
+                    <div>
+                      <dt title={WATERMARK_HELP}>Watermark</dt>
+                      <dd title={WATERMARK_HELP}>{watermarkCopy(dataset)}</dd>
+                    </div>
+                    <div>
+                      <dt>Lineage</dt>
+                      <dd title={dataset.lineage_ref}>{dataset.lineage_ref || "Not traced"}</dd>
+                    </div>
                   </dl>
                 </article>
               ))}
-            </div>
-            <TableColumnFilters filters={filters} onReset={resetFilters} resultCount={filteredRows.length} totalCount={rows.length} />
-            <div className="table-scroll">
-              <table className="operations-table">
-                <thead><tr><th>Dataset</th><th>Status</th><th>Freshness</th><th>Lineage</th></tr></thead>
-                <tbody>
-                  {paging.pageRows.map((dataset) => (
-                    <tr key={dataset.table_name}>
-                      <td><strong>{dataset.table_name}</strong><div className="table-secondary">{datasetRowsCopy(dataset)} · observed {relativeTime(dataset.observed_at)}</div></td>
-                      <td><StatusBadge label={datasetStatusLabel(dataset.availability)} tone={statusTone(dataset.availability)} /></td>
-                      <td><StatusBadge label={dataset.freshness || "unknown"} tone={statusTone(dataset.freshness)} /><div className="table-secondary">watermark {dataset.watermark || "unknown"}</div></td>
-                      <td><span title={dataset.lineage_ref}>{dataset.lineage_ref || "No lineage reference"}</span></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
             <TablePagination total={paging.total} pageRows={paging.pageRows.length} page={paging.page} onPageChange={paging.setPage} pageSize={paging.pageSize} onPageSizeChange={paging.setPageSize} label={`${layer} datasets`} />
           </>
@@ -270,6 +268,10 @@ export function FabricSubscriptionSummary({
             <p>Ownership, tags, and referential integrity are tracked from Fabric quality reports.</p>
           </div>
         </div>
+        <p className="fabric-summary-note">
+          <strong>Watermark</strong> is the newest upstream record a dataset&apos;s last sync consumed. &ldquo;Not yet
+          published&rdquo; means the dataset has no completed sync yet — it is not a health failure.
+        </p>
       </div>
     </section>
   );
@@ -288,20 +290,26 @@ function FabricManifestPanel({ manifest }: { manifest: { data: Envelope<{ entrie
         ) : entries.length === 0 ? (
           <StatePanel title="No Fabric medallion datasets registered" message="Complete an initial subscription sync to publish Bronze, Silver, and Gold datasets. Layer health appears here once the first sync completes." />
         ) : (
-          <div className="table-scroll">
-            <table className="operations-table">
-              <thead><tr><th>Projection</th><th>Disposition</th><th>Compatibility</th><th>Updated</th></tr></thead>
-              <tbody>
-                {entries.map((entry) => (
-                  <tr key={entry.projection_name}>
-                    <td><strong>{entry.projection_name}</strong><div className="table-secondary">{entry.retired_reason || "Lifecycle tracked in publication manifest"}</div></td>
-                    <td><StatusBadge label={datasetStatusLabel(entry.disposition)} tone={statusTone(entry.disposition)} /></td>
-                    <td>{entry.compatibility_version || "Not versioned"}</td>
-                    <td>{formatDateTime(entry.updated_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="fabric-lifecycle-groups">
+            {groupByDisposition(entries).map(([disposition, group]) => (
+              <div key={disposition} className="fabric-lifecycle-group">
+                <div className="fabric-lifecycle-group-head">
+                  <StatusBadge label={datasetStatusLabel(disposition)} tone={statusTone(disposition)} />
+                  <span>{group.length} contract{group.length === 1 ? "" : "s"}</span>
+                </div>
+                <ul className="fabric-lifecycle-list">
+                  {group.map((entry) => (
+                    <li key={entry.projection_name}>
+                      <strong>{entry.projection_name}</strong>
+                      <span>
+                        {entry.retired_reason || `Version ${entry.compatibility_version || "unversioned"}`}
+                        {entry.updated_at ? ` · updated ${relativeTime(entry.updated_at)}` : ""}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -449,6 +457,54 @@ export function datasetStatusLabel(value?: string | null): string {
 function datasetRowsCopy(dataset: FabricDataset): string {
   if (dataset.availability === "healthy-empty") return "0 rows (expected)";
   return `${dataset.row_count} row${dataset.row_count === 1 ? "" : "s"}`;
+}
+
+const WATERMARK_HELP =
+  "The newest upstream record the last sync consumed. Everything up to this point is published; anything newer arrives on the next sync.";
+
+// Deployment-blocked and retired contracts lead, so lifecycle problems are
+// visible without scrolling past the healthy majority.
+const DISPOSITION_ORDER = ["deployment-blocked", "retired", "dormant", "active"];
+
+function groupByDisposition(entries: FabricManifestEntry[]): [string, FabricManifestEntry[]][] {
+  const groups = new Map<string, FabricManifestEntry[]>();
+  for (const entry of entries) {
+    const key = entry.disposition || "unknown";
+    const existing = groups.get(key);
+    if (existing) existing.push(entry);
+    else groups.set(key, [entry]);
+  }
+  return Array.from(groups.entries()).sort(([a], [b]) => {
+    const rankA = DISPOSITION_ORDER.indexOf(a);
+    const rankB = DISPOSITION_ORDER.indexOf(b);
+    return (rankA === -1 ? DISPOSITION_ORDER.length : rankA) - (rankB === -1 ? DISPOSITION_ORDER.length : rankB);
+  });
+}
+
+function datasetSummaryCopy(dataset: FabricDataset): string {
+  const observed = dataset.observed_at ? `last synced ${relativeTime(dataset.observed_at)}` : "never synced";
+  return `${datasetRowsCopy(dataset)} · ${observed}`;
+}
+
+function freshnessCopy(dataset: FabricDataset): string {
+  const freshness = (dataset.freshness || "").toLowerCase();
+  if (freshness === "fresh") return "Within its freshness target";
+  if (freshness === "stale") return `Past its freshness target${dataset.observed_at ? ` — last synced ${relativeTime(dataset.observed_at)}` : ""}`;
+  return "No freshness target evaluated yet";
+}
+
+function qualityCopy(dataset: FabricDataset): string {
+  const quality = (dataset.quality || "").toLowerCase();
+  if (quality === "complete") return "All quality checks passed";
+  if (quality === "degraded") return dataset.error || "Quality checks reported issues";
+  return "No quality checks recorded yet";
+}
+
+/** Renders the upstream checkpoint in operator language instead of a bare
+ *  timestamp, so an unpublished dataset never looks like a failure. */
+function watermarkCopy(dataset: FabricDataset): string {
+  if (!dataset.watermark) return "Not yet published";
+  return `Caught up to ${formatDateTime(dataset.watermark)}`;
 }
 
 function missingResourceCopy(count: number, kind: "ownership" | "tags"): string {
