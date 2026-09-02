@@ -254,22 +254,22 @@ export default function ExposurePage() {
                   <MetricCard
                     label="Overall compliance"
                     value={
-                      sla.data?.data.overall_compliance_rate == null
+                      sla.data?.data?.overall_compliance_rate == null
                         ? "—"
                         : `${Math.round(sla.data.data.overall_compliance_rate * 100)}%`
                     }
-                    detail={sla.data ? `${sla.data.data.compliant_count} of ${sla.data.data.tracked_count} tracked findings within SLA` : "SLA data unavailable"}
-                    tone={(sla.data?.data.overdue_count ?? 0) > 0 ? "warning" : "success"}
+                    detail={sla.data?.data ? `${sla.data.data.compliant_count} of ${sla.data.data.tracked_count} tracked findings within SLA` : "SLA data unavailable"}
+                    tone={(sla.data?.data?.overdue_count ?? 0) > 0 ? "warning" : "success"}
                   />
                   <MetricCard
                     label="Overdue findings"
-                    value={sla.data?.data.overdue_count ?? "—"}
-                    detail={sla.data ? `${sla.data.data.open_count} total open findings` : "SLA data unavailable"}
-                    tone={(sla.data?.data.overdue_count ?? 0) > 0 ? "critical" : "success"}
+                    value={sla.data?.data?.overdue_count ?? "—"}
+                    detail={sla.data?.data ? `${sla.data.data.open_count} total open findings` : "SLA data unavailable"}
+                    tone={(sla.data?.data?.overdue_count ?? 0) > 0 ? "critical" : "success"}
                   />
                   <MetricCard
                     label="Active risk exceptions"
-                    value={riskExceptions.data?.data.length ?? "—"}
+                    value={riskExceptions.data?.data?.length ?? "—"}
                     detail={expiringExceptionCount > 0 ? `${expiringExceptionCount} expiring within 7 days` : "None expiring soon"}
                     tone={expiringExceptionCount > 0 ? "warning" : "default"}
                   />

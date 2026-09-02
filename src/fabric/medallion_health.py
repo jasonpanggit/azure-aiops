@@ -245,11 +245,17 @@ def dataset_status(
         else:
             availability = "healthy"
         return {
+            "table_name": table_name,
             "availability": availability,
             "freshness": "unknown",
             "quality": "unknown",
             "row_count": total_row_count,
+            "stale_after_seconds": _freshness_slo_seconds(table_name, config=freshness_slo),
+            "observed_at": "",
+            "ingested_at": "",
+            "watermark": "",
             "last_success_at": "",
+            "error": "",
             "lineage_ref": "",
         }
 
@@ -291,6 +297,14 @@ def dataset_status(
         sorted({str(row.get("error") or "") for row in rows if row.get("error")})
     )
 
+    # The durable upstream checkpoint the last sync advanced to. Falls back to
+    # the ingestion timestamp so a published dataset never reports "unknown"
+    # purely because its pipeline does not carry a distinct watermark column.
+    watermark = max(
+        (str(row.get("watermark") or "") for row in rows),
+        default="",
+    ) or latest_observed_at
+
     if any_unavailable:
         availability = "unavailable"
     elif any_failed:
@@ -305,15 +319,19 @@ def dataset_status(
         availability = "healthy"
 
     result: dict[str, Any] = {
+        "table_name": table_name,
         "availability": availability,
         "freshness": freshness,
         "quality": quality,
         "row_count": total_row_count,
+        "stale_after_seconds": _freshness_slo_seconds(table_name, config=freshness_slo),
+        "observed_at": max((str(row.get("observed_at") or "") for row in rows), default=""),
+        "ingested_at": max((str(row.get("ingested_at") or "") for row in rows), default=""),
+        "watermark": watermark,
         "last_success_at": last_success_at,
+        "error": error,
         "lineage_ref": lineage_ref,
     }
-    if error:
-        result["error"] = error
     return result
 
 

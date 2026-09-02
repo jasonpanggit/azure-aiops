@@ -500,4 +500,50 @@ describe("Connections page Fabric medallion tab", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Fabric medallion" }));
     expect(screen.getByRole("link", { name: "Per-subscription view" })).toHaveAttribute("href", "/connections/fabric");
   });
+
+  it("explains an unpublished watermark instead of labelling it unknown", async () => {
+    mockFabricHealth(["bronze_resources"]);
+    fabricDataset.mockResolvedValue(envelope({ ...dataset("bronze_resources", "healthy", 4), watermark: "" }));
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    expect(await within(fabricPanel).findByText("Not yet published")).toBeInTheDocument();
+    expect(within(fabricPanel).queryByText("watermark unknown")).not.toBeInTheDocument();
+    expect(within(fabricPanel).getAllByText(/Watermark/).length).toBeGreaterThan(0);
+  });
+
+  it("renders a populated watermark as a caught-up checkpoint", async () => {
+    mockFabricHealth(["bronze_resources"]);
+    fabricDataset.mockResolvedValue(envelope(dataset("bronze_resources", "healthy", 4)));
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    expect(await within(fabricPanel).findByText(/Caught up to/)).toBeInTheDocument();
+  });
+
+  it("groups lifecycle contracts by disposition with blockers listed first", async () => {
+    fabricManifest.mockResolvedValue(envelope({
+      entries: [
+        { projection_name: "gold_active_one", disposition: "active", compatibility_version: "1.0.0", updated_at: "2026-01-01T00:00:00Z" },
+        { projection_name: "gold_blocked_one", disposition: "deployment-blocked", compatibility_version: "1.0.0", updated_at: "2026-01-01T00:00:00Z", retired_reason: "semantic model not deployed" },
+      ],
+    }));
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    expect(await within(fabricPanel).findByText("gold_blocked_one")).toBeInTheDocument();
+    expect(within(fabricPanel).getByText("gold_active_one")).toBeInTheDocument();
+    expect(within(fabricPanel).getByText(/semantic model not deployed/)).toBeInTheDocument();
+
+    const names = within(fabricPanel)
+      .getAllByText(/^gold_(blocked|active)_one$/)
+      .map((node) => node.textContent);
+    expect(names.indexOf("gold_blocked_one")).toBeLessThan(names.indexOf("gold_active_one"));
+  });
 });

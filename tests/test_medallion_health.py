@@ -323,3 +323,74 @@ def test_dataset_status_merges_latest_per_scope(tmp_path) -> None:
     assert result["availability"] == "healthy"
     # Row counts from both scopes' latest rows are combined, not shadowed.
     assert result["row_count"] == 20 + 15
+
+
+# ---------------------------------------------------------------------------
+# Dataset contract completeness: watermark and timestamps
+# ---------------------------------------------------------------------------
+
+
+def test_dataset_status_returns_watermark_and_timestamps_from_source_rows() -> None:
+    """The published contract carries the upstream checkpoint and both
+    timestamps, so operators never see "watermark unknown" for a dataset the
+    sync pipeline actually stamped."""
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+    result = dataset_status(
+        "bronze_resources",
+        source_status=[
+            {
+                "source_family": "bronze_resources",
+                "status": "succeeded",
+                "availability": "available",
+                "quality": "complete",
+                "observed_at": "2026-01-01T11:50:00Z",
+                "ingested_at": "2026-01-01T11:55:00Z",
+                "watermark": "2026-01-01T11:45:00Z",
+                "row_count": 20,
+                "lineage_ref": "bronze_resources-table",
+            }
+        ],
+        clock=_clock(now),
+    )
+
+    assert result["table_name"] == "bronze_resources"
+    assert result["watermark"] == "2026-01-01T11:45:00Z"
+    assert result["observed_at"] == "2026-01-01T11:50:00Z"
+    assert result["ingested_at"] == "2026-01-01T11:55:00Z"
+    assert result["stale_after_seconds"] > 0
+    assert result["error"] == ""
+
+
+def test_dataset_status_falls_back_to_ingestion_timestamp_when_no_watermark_column() -> None:
+    """A pipeline that carries no distinct watermark column still reports a
+    usable checkpoint rather than an alarming "unknown"."""
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+    result = dataset_status(
+        "silver_incidents",
+        source_status=[
+            {
+                "source_family": "silver_incidents",
+                "status": "succeeded",
+                "availability": "available",
+                "quality": "complete",
+                "observed_at": "2026-01-01T11:50:00Z",
+                "ingested_at": "2026-01-01T11:50:00Z",
+                "row_count": 5,
+            }
+        ],
+        clock=_clock(now),
+    )
+
+    assert result["watermark"] == "2026-01-01T11:50:00Z"
+
+
+def test_dataset_status_reports_empty_watermark_when_never_published() -> None:
+    """An unregistered dataset reports an empty watermark, which the UI
+    renders as "not yet published" rather than a health problem."""
+    result = dataset_status("gold_missing", source_status=[])
+
+    assert result["table_name"] == "gold_missing"
+    assert result["watermark"] == ""
+    assert result["availability"] == "unavailable"
