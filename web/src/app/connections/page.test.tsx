@@ -486,4 +486,18 @@ describe("Connections page Fabric medallion tab", () => {
     expect(screen.getByText("Retry via subscription sync")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /retry ingestion/i })).not.toBeInTheDocument();
   });
+
+  it("links each subscription row to its own Fabric medallion page", async () => {
+    renderConnectionsPage();
+
+    expect(await screen.findByText("Production")).toBeInTheDocument();
+    const fabricLink = screen.getByRole("link", { name: "Fabric" });
+    expect(fabricLink).toHaveAttribute(
+      "href",
+      `/connections/fabric?subscription=${encodeURIComponent(connection.subscription_id)}`,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Fabric medallion" }));
+    expect(screen.getByRole("link", { name: "Per-subscription view" })).toHaveAttribute("href", "/connections/fabric");
+  });
 });

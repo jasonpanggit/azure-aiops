@@ -3816,6 +3816,21 @@ body.topology-fullscreen-open {
   font-size: 12px;
 }
 
+.page-header-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fabric-subscription-picker {
+  margin-bottom: 22px;
+}
+
+.fabric-subscription-picker .form-field {
+  max-width: 520px;
+  margin-bottom: 16px;
+}
+
 .fabric-subscription-summary {
   margin-bottom: 22px;
 }
