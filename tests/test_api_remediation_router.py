@@ -355,7 +355,7 @@ def test_unrestricted_read_uses_live_onboarded_subscriptions_when_available(tmp_
         tenant_id="11111111-1111-1111-1111-111111111111",
         subscription_id=LIVE_SUBSCRIPTION_ID,
         client_id="22222222-2222-2222-2222-222222222222",
-        secret_ref="keyvault://kv/secrets/prod-core",
+        secret_ref="keyvault://example-kv/secrets/prod-core",
     )
 
     def live_planner(subscription_ids: list[str]) -> LiveRemediationPlanner:

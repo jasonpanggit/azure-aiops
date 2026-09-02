@@ -6,8 +6,8 @@ import httpx
 import pytest
 
 from fabric.gold_grounding_client import (
-    GoldGroundingUnavailable,
     MAX_RETRIES,
+    GoldGroundingUnavailable,
     query_gold_grounding,
 )
 from operations.gold_grounding_metrics import GoldGroundingMetrics

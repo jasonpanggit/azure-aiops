@@ -246,7 +246,7 @@ class PublicationManifestStore:
         rows: list[dict[str, str | None]],
         *,
         clock: Callable[[], datetime] = _default_clock,
-    ) -> "PublicationManifestStore":
+    ) -> PublicationManifestStore:
         """Rehydrates a store previously flattened with :meth:`to_list`."""
         store = cls(clock=clock)
         for row in rows:

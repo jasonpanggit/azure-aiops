@@ -227,7 +227,7 @@ class ConnectionSyncCoordinator:
                     85,
                 )
                 self.publish_factory(connection).run()
-            except Exception as exc:  # noqa: BLE001 - publish failures are surfaced, not fatal
+            except Exception as exc:
                 logger.exception(
                     "Fabric publish failed for connection '%s' during %s sync",
                     connection.connection_id,
@@ -345,7 +345,7 @@ class ConnectionSyncCoordinator:
             )
             if retryable and metrics is not None:
                 metrics.record_publish_retry(status_code)
-        except Exception:  # noqa: BLE001, S110 - recording must never break the sync run
+        except Exception:
             logger.exception("Failed to record ontology publication attempt state")
 
 

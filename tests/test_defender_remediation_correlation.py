@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from defender_correlation_scenario import (
+    MAPPED_RESOURCE_ID,
+    UNMAPPED_RESOURCE_ID,
+    UNMATCHED_WEAKNESS_RESOURCE_ID,
+    defender_correlator,
+    defender_resources,
+)
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -12,14 +19,6 @@ from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 from tests.test_api_http import FakeSecretWriter
-
-from defender_correlation_scenario import (
-    MAPPED_RESOURCE_ID,
-    UNMAPPED_RESOURCE_ID,
-    UNMATCHED_WEAKNESS_RESOURCE_ID,
-    defender_correlator,
-    defender_resources,
-)
 
 OPERATOR_TOKEN = "operator-token-0123456789abcd"
 SCOPED_OPERATOR_TOKEN = "scoped-operator-token-012345"
@@ -229,9 +228,6 @@ def test_out_of_scope_defender_case_is_absent_for_scoped_operator(tmp_path) -> N
 def test_degraded_source_family_reports_unavailable_and_still_returns_healthy_cases(
     tmp_path,
 ) -> None:
-    from intelligence.vulnerability.service import VulnerabilityIntelligenceService
-    from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
-    from intelligence.remediation.defender_correlation import DefenderRemediationCorrelator
     from defender_correlation_scenario import (
         ACTION_CATALOG,
         defender_alerts,
@@ -240,6 +236,12 @@ def test_degraded_source_family_reports_unavailable_and_still_returns_healthy_ca
         defender_attack_paths,
         defender_secure_score_controls,
     )
+
+    from intelligence.remediation.defender_correlation import (
+        DefenderRemediationCorrelator,
+    )
+    from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
+    from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 
     service = VulnerabilityIntelligenceService.from_rows(
         defender_assessments=defender_assessments(),
@@ -285,9 +287,6 @@ def test_degraded_source_family_reports_unavailable_and_still_returns_healthy_ca
 
 
 def test_contradictory_evidence_reports_disagreement_and_reduced_confidence(tmp_path) -> None:
-    from intelligence.vulnerability.service import VulnerabilityIntelligenceService
-    from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
-    from intelligence.remediation.defender_correlation import DefenderRemediationCorrelator
     from defender_correlation_scenario import (
         ACTION_CATALOG,
         defender_alerts,
@@ -296,6 +295,12 @@ def test_contradictory_evidence_reports_disagreement_and_reduced_confidence(tmp_
         defender_attack_paths,
         defender_secure_score_controls,
     )
+
+    from intelligence.remediation.defender_correlation import (
+        DefenderRemediationCorrelator,
+    )
+    from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
+    from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 
     assessments = defender_assessments()
     assessments[0]["severity"] = "low"

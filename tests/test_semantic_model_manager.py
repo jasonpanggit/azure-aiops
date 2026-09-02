@@ -7,8 +7,10 @@ import httpx
 import pytest
 
 from fabric.fabric_client import FabricClient
-from fabric.semantic_model_manager import build_semantic_model_definition
-from fabric.semantic_model_manager import deploy_semantic_model
+from fabric.semantic_model_manager import (
+    build_semantic_model_definition,
+    deploy_semantic_model,
+)
 
 
 def _parts(definition: dict) -> dict[str, dict]:
@@ -93,8 +95,7 @@ class _FakeManager:
     def iter_items(self, path: str, *, params: dict | None = None):
         self.calls.append(("ITER", path))
         assert params == {"type": "SemanticModel"}
-        for item in self._items:
-            yield item
+        yield from self._items
 
     def request(self, method: str, path: str, **kwargs):
         self.calls.append((method, path))

@@ -79,7 +79,7 @@ class PendingRelationshipStore:
         """
         resolved: list[dict[str, Any]] = []
         still_pending: list[dict[str, Any]] = []
-        for relationship_id, edge in self._pending.items():
+        for edge in self._pending.values():
             if _missing_ids(edge, known_entity_ids):
                 still_pending.append(edge)
             else:
@@ -96,7 +96,7 @@ class PendingRelationshipStore:
     @classmethod
     def from_list(
         cls, edges: list[dict[str, Any]], *, max_pending: int = DEFAULT_MAX_PENDING
-    ) -> "PendingRelationshipStore":
+    ) -> PendingRelationshipStore:
         """Rehydrates a store previously flattened with :meth:`to_list`."""
         store = cls(max_pending=max_pending)
         store.defer(list(edges))

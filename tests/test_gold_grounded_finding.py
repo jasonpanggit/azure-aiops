@@ -75,17 +75,14 @@ def test_gold_grounded_finding_requires_scoped_resource_ids() -> None:
 
 def test_parse_gold_grounded_findings_skips_prose_and_parses_json_lines() -> None:
     payload_line = GoldGroundedFinding.model_validate(_valid_finding_payload()).model_dump_json()
-    findings = parse_gold_grounded_findings(
-        "\n".join(
-            [
-                "non-json preface",
-                "```json",
-                payload_line,
-                "```",
-                "footer",
-            ]
-        )
-    )
+    lines = [
+        "non-json preface",
+        "```json",
+        payload_line,
+        "```",
+        "footer",
+    ]
+    findings = parse_gold_grounded_findings("\n".join(lines))
     assert len(findings) == 1
     assert findings[0].finding_id == "finding-1"
     assert findings[0].degraded is False
@@ -97,14 +94,13 @@ def test_parse_gold_grounded_findings_returns_degraded_after_retry_budget_exhaus
     sleeps: list[float] = []
     monkeypatch.setattr("fabric_pipelines.gold_grounding_contract.time.sleep", lambda seconds: sleeps.append(seconds))
 
+    lines = [
+        "{bad json line",
+        '{"finding_id":"missing-citations","resource_ids":["/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"],"citations":[],"scope_ok":true,"summary":"x"}',
+        '{"finding_id":"still-invalid","resource_ids":["bad-id"],"citations":[{"gold_table":"x","row_key":"y","as_of":"2026-09-01T00:00:00Z","confidence":0.7}],"scope_ok":true,"summary":"x"}',
+    ]
     findings = parse_gold_grounded_findings(
-        "\n".join(
-            [
-                "{bad json line",
-                '{"finding_id":"missing-citations","resource_ids":["/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"],"citations":[],"scope_ok":true,"summary":"x"}',
-                '{"finding_id":"still-invalid","resource_ids":["bad-id"],"citations":[{"gold_table":"x","row_key":"y","as_of":"2026-09-01T00:00:00Z","confidence":0.7}],"scope_ok":true,"summary":"x"}',
-            ]
-        ),
+        "\n".join(lines),
         tool_call_id="tool-1",
     )
 

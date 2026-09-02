@@ -9,6 +9,7 @@ provider fails loudly (503) instead of silently reporting "fully compliant".
 from __future__ import annotations
 
 import pytest
+from change_scenario import change_engine
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -18,8 +19,6 @@ from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
-
-from change_scenario import change_engine
 
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
 SCOPED_TOKEN = "scoped-token-0123456789abcde"

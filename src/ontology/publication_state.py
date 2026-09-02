@@ -67,7 +67,7 @@ class PublicationAttemptRecord:
         }
 
     @classmethod
-    def from_mapping(cls, row: dict[str, Any]) -> "PublicationAttemptRecord | None":
+    def from_mapping(cls, row: dict[str, Any]) -> PublicationAttemptRecord | None:
         try:
             return cls(
                 attempt_id=str(row["attempt_id"]),

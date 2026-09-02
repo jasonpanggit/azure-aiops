@@ -54,7 +54,7 @@ class FreshnessSloConfig:
     def from_config(
         cls,
         config_path: str | Path = "fabric.config.yaml",
-    ) -> "FreshnessSloConfig":
+    ) -> FreshnessSloConfig:
         """Load `fabric.medallion_health.freshness_slo` from `config_path`.
 
         Missing file/section/keys fall back to the safe defaults -- absence
@@ -120,7 +120,7 @@ def _parse_timestamp(value: str) -> datetime | None:
     if not value:
         return None
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value))
     except ValueError:
         return None
     if parsed.tzinfo is None:

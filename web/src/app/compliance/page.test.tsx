@@ -2,11 +2,15 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { exposures, gaps, ruleFindings, topology } = vi.hoisted(() => ({
+const { exposures, gaps, ruleFindings, topology, policyDeviations, securityDeviations, configurationDrift, complianceSummary } = vi.hoisted(() => ({
   exposures: vi.fn(),
   gaps: vi.fn(),
   ruleFindings: vi.fn(),
   topology: vi.fn(),
+  policyDeviations: vi.fn(),
+  securityDeviations: vi.fn(),
+  configurationDrift: vi.fn(),
+  complianceSummary: vi.fn(),
 }));
 
 vi.mock("@/lib/services", () => ({
@@ -14,6 +18,12 @@ vi.mock("@/lib/services", () => ({
   copilotEvidenceRows: () => [],
   networkApi: { topology, gaps, ruleFindings },
   vulnerabilityApi: { exposures },
+  complianceApi: {
+    policyDeviations,
+    securityDeviations,
+    configurationDrift,
+    summary: complianceSummary,
+  },
 }));
 
 import CompliancePage from "./page";
@@ -106,6 +116,10 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
       is_known_exploited: true,
       finding_ids: ["vf-1"],
     }]));
+    policyDeviations.mockResolvedValue(envelope([]));
+    securityDeviations.mockResolvedValue(envelope([]));
+    configurationDrift.mockResolvedValue(envelope([]));
+    complianceSummary.mockResolvedValue(envelope({}));
   });
 
   it("evaluates posture, maps violations to business context, and governs exceptions", async () => {

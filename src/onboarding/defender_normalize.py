@@ -96,8 +96,7 @@ def normalize_container_image_exposure(
                 row_properties.get("statusChangeDate"),
                 row_properties.get("timeGenerated"),
             )
-            if assessed > last_assessed:
-                last_assessed = assessed
+            last_assessed = max(last_assessed, assessed)
 
         registry_id = target.split("/securityentitydata/", 1)[0]
         repository = image.get("repository", "")

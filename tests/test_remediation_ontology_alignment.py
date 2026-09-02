@@ -1,7 +1,12 @@
 from pathlib import Path
 
 from remediation_scenario import remediation_planner
-from fabric.dataset_mapper import ONTOLOGY_RELATIONSHIP_TYPES, remediation_decision_ontology_rows, remediation_plan_ontology_rows
+
+from fabric.dataset_mapper import (
+    ONTOLOGY_RELATIONSHIP_TYPES,
+    remediation_decision_ontology_rows,
+    remediation_plan_ontology_rows,
+)
 from tests.defender_correlation_scenario import defender_correlator
 
 
@@ -70,7 +75,7 @@ def test_durable_approval_decisions_publish_to_ontology_rows():
 
 def test_plan_defender_evidence_relationships_are_registered_and_projected():
     planner = remediation_planner(defender_correlator=defender_correlator())
-    plan = planner.generate_plans()["plans"][0]
+    planner.generate_plans()
 
     projection = planner.repository.ontology_projection()
     relationship_types = {row["relationship_type"] for row in projection["relationships"]}
@@ -169,7 +174,7 @@ def test_plan_relationship_rows_publish_through_sync_path():
     planner = remediation_planner(defender_correlator=defender_correlator())
     planner.generate_plans()
     projection = planner.repository.ontology_projection()
-    entities, relationships = remediation_plan_ontology_rows(
+    _entities, relationships = remediation_plan_ontology_rows(
         projection,
         "run-1",
         "2026-08-31T00:00:00Z",
