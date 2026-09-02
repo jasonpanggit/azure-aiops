@@ -893,7 +893,7 @@ function FabricIngestionPanel({ ingestionHistory }: { ingestionHistory: { data: 
                   <strong>{run.projection_name}</strong>
                   <span>{ingestionRunCopy(run)}</span>
                 </div>
-                {run.status === "failed" && run.retry_eligible ? <button type="button" className="button button-quiet">Retry ingestion</button> : <StatusBadge label={datasetStatusLabel(run.status)} tone={statusTone(run.status)} />}
+                {run.status === "failed" && run.retry_eligible ? <span className="table-secondary">Retry via subscription sync</span> : <StatusBadge label={datasetStatusLabel(run.status)} tone={statusTone(run.status)} />}
               </div>
             ))}
           </div>

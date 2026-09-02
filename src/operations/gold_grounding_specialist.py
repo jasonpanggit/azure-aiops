@@ -16,10 +16,10 @@ from fabric_pipelines.gold_grounding_contract import (
     parse_gold_grounded_findings,
 )
 from operations.foundry_agent import (
+    _MAX_CONTEXT_CHARS,
     AgentAnswer,
     FoundryAgentError,
     MicrosoftAgentFrameworkFoundryAgent,
-    _MAX_CONTEXT_CHARS,
     parse_specialist_findings,
 )
 from operations.gold_grounding_metrics import GoldGroundingMetrics
@@ -166,7 +166,11 @@ def _parse_gold_findings(result: dict[str, Any]) -> list[GoldGroundedFinding]:
                     lines.append(text)
             elif isinstance(row, str) and row.strip():
                 lines.append(row)
-    return parse_gold_grounded_findings("\n".join(lines), tool_call_id="gold-grounding")
+    response_text = "\n".join(lines)
+    findings = parse_gold_grounded_findings(response_text, tool_call_id="gold-grounding")
+    if response_text.strip() and not findings:
+        raise GoldGroundingUnavailable("unparseable Gold evidence")
+    return findings
 
 
 def _degraded_reason_from_findings(findings: list[GoldGroundedFinding]) -> str:
@@ -331,7 +335,7 @@ def _resolve_inventory_port(provider_context: Any) -> Any | None:
         return None
     try:
         return resolver("inventory_read_port")
-    except Exception:
+    except (LookupError, RuntimeError, TypeError, ValueError):
         return None
 
 

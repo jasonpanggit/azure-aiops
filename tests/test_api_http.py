@@ -801,6 +801,106 @@ def test_fabric_medallion_reads_live_delta_metadata_when_json_snapshot_is_empty(
     assert governance.json()["data"]["tag_gap_count"] == 1
 
 
+def test_fabric_medallion_governance_delta_fallback_filters_scope(
+    tmp_path, monkeypatch
+):
+    from fabric.schema_registry import schema_for
+
+    config_path = tmp_path / "fabric.config.yaml"
+    lakehouse_root = tmp_path / "onelake"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    config_path.write_text(
+        "\n".join(
+            [
+                "fabric:",
+                f"  source_data_root: {source_root}",
+                "  workspace_id: workspace-a",
+                "  lakehouse_id: lakehouse-a",
+                f"  local_onelake_root: {lakehouse_root}",
+                "",
+            ]
+        )
+    )
+    monkeypatch.setenv("AIOPS_FABRIC_CONFIG", str(config_path))
+    onelake = OneLakeWriter(
+        "workspace-a",
+        "lakehouse-a",
+        local_root=lakehouse_root,
+    )
+    observed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    base = {
+        "tenant_id": "tenant-a",
+        "timestamp": observed_at,
+        "change_version": "v1",
+        "ingestion_run_id": "run-a",
+    }
+    DeltaWriter().write(
+        onelake.table_uri("metadata", "quality_reports"),
+        [
+            {
+                **base,
+                "subscription_id": SUB_A,
+                "resource_id": "quality://sub-a",
+                "source_run_id": "run-a",
+                "passed": False,
+                "failed_records": 1,
+                "report_json": json.dumps(
+                    [
+                        {
+                            "table_name": "silver_allowed",
+                            "rule_counts": {
+                                "ownership_coverage": 1,
+                                "tag_coverage": 0,
+                                "orphan_relationships": 0,
+                            },
+                        }
+                    ]
+                ),
+            },
+            {
+                **base,
+                "subscription_id": SUB_B,
+                "resource_id": "quality://sub-b",
+                "source_run_id": "run-b",
+                "passed": False,
+                "failed_records": 99,
+                "report_json": json.dumps(
+                    [
+                        {
+                            "table_name": "silver_hidden",
+                            "rule_counts": {
+                                "ownership_coverage": 99,
+                                "tag_coverage": 99,
+                                "orphan_relationships": 99,
+                            },
+                        }
+                    ]
+                ),
+            },
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_quality_reports"),
+    )
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/fabric-medallion/governance",
+        headers=_auth(SCOPED_TOKEN),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ownership_gap_count"] == 1
+    assert [gap["table_name"] for gap in data["gaps"]] == ["silver_allowed"]
+
+
 class TestFabricMedallionRouterTask2:
     @pytest.fixture
     def fabric_medallion_capabilities_client(self, tmp_path, monkeypatch) -> TestClient:
@@ -1040,6 +1140,11 @@ class TestFabricMedallionRouterTask2:
         assert data["capacity"]["status"] == "healthy"
         assert data["data_access_roles"]["status"] == "available"
         assert data["data_access_roles"]["total_roles"] == 2
+        assert data["data_access_roles"]["roles"] == [
+            {"name": "Lakehouse.Reader", "permission_count": 0},
+            {"name": "Lakehouse.Contributor", "permission_count": 0},
+        ]
+        assert all("principal" not in role for role in data["data_access_roles"]["roles"])
         assert data["maintenance"]["status"] == "healthy"
         assert data["semantic_readiness"]["status"] == "deployment-blocked"
         assert data["data_agent_readiness"]["status"] == "available"

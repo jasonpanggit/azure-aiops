@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -158,6 +157,37 @@ def test_gold_unavailable_degrades_without_breaking_ontology_answer(monkeypatch)
     merged_context = call["context"]
     assert merged_context["findings"] == ontology_context["findings"]
     assert merged_context["gold_grounding_degraded"] == "mcp unavailable"
+
+
+def test_unparseable_gold_response_degrades_without_claiming_gold_success(monkeypatch) -> None:
+    def fake_query_gold_grounding(**_kwargs):
+        return {
+            "isError": False,
+            "content": [{"type": "text", "text": "No structured findings available."}],
+        }
+
+    monkeypatch.setattr(
+        "operations.gold_grounding_specialist.query_gold_grounding",
+        fake_query_gold_grounding,
+    )
+    agent = _Agent()
+    metrics = _Metrics()
+
+    asyncio.run(
+        answer_with_gold_grounding(
+            question="What changed?",
+            ontology_context={"findings": [{"summary": "ontology-still-present"}]},
+            scope=_Scope(),
+            agent=agent,
+            metrics=metrics,
+        )
+    )
+
+    merged_context = agent.calls[0]["context"]
+    assert merged_context["gold_grounding"] is None
+    assert merged_context["gold_grounding_degraded"] == "unparseable Gold evidence"
+    assert metrics.query_calls[0]["degraded"] is True
+    assert metrics.query_calls[0]["citation_count"] == 0
 
 
 def test_gold_citations_are_ranked_and_truncated_before_ontology_context(monkeypatch) -> None:

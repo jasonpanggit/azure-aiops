@@ -442,7 +442,7 @@ describe("Connections page Fabric medallion tab", () => {
     expect(unavailableBadge).not.toHaveTextContent("Healthy · Empty");
   });
 
-  it("shows retry only for failed ingestion rows and never for source-unavailable rows", async () => {
+  it("shows retry guidance only for failed ingestion rows and never renders inert retry buttons", async () => {
     fabricIngestionHistory.mockResolvedValue(envelope({
       runs: [
         { projection_name: "gold_operational_context", status: "failed", attempted_at: "2026-01-01T00:00:00Z", attempts: 3, retry_eligible: true, message: "warehouse timeout", source: "source-status" },
@@ -455,6 +455,7 @@ describe("Connections page Fabric medallion tab", () => {
 
     expect(await screen.findByText("Ingestion failed — 3 of 3 attempts exhausted · last error: warehouse timeout")).toBeInTheDocument();
     expect(screen.getByText("Source unavailable — Fabric capacity or workspace could not be reached")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Retry ingestion" })).toHaveLength(1);
+    expect(screen.getByText("Retry via subscription sync")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry ingestion/i })).not.toBeInTheDocument();
   });
 });

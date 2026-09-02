@@ -242,8 +242,22 @@ def _metadata_quality_report_rows(context: Context, scope: Scope) -> list[dict[s
             current.setdefault("subscription_connection", str(detail.get("connection_id") or ""))
             rows.append(current)
     if not rows:
-        rows.extend(_lakehouse_delta_rows("metadata_quality_reports"))
+        rows.extend(
+            row
+            for row in _lakehouse_delta_rows("metadata_quality_reports")
+            if _row_visible(scope, row)
+        )
     return rows
+
+
+def _role_summary(role: dict[str, Any]) -> dict[str, Any]:
+    permissions = role.get("permissions")
+    if not isinstance(permissions, list):
+        permissions = []
+    return {
+        "name": str(role.get("name") or role.get("role") or ""),
+        "permission_count": len(permissions),
+    }
 
 
 def _parse_quality_report(value: Any) -> list[dict[str, Any]]:
@@ -582,7 +596,11 @@ def medallion_capabilities(context: Context, scope: ReadScope) -> dict[str, Any]
     lakehouse_id = str(config.get("lakehouse_id") or "")
     try:
         roles = list_roles(workspace_id, lakehouse_id)
-        role_state = {"status": "available", "total_roles": len(roles), "roles": roles}
+        role_state = {
+            "status": "available",
+            "total_roles": len(roles),
+            "roles": [_role_summary(role) for role in roles if isinstance(role, dict)],
+        }
     except Exception:  # noqa: BLE001 - role summary is best-effort and read-only
         role_state = {"status": "unavailable", "total_roles": 0, "roles": []}
 
