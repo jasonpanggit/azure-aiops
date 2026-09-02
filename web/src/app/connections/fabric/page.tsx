@@ -133,7 +133,7 @@ function FabricMedallionPageContent() {
         </div>
       </section>
 
-      <FabricMedallionPanel asTabPanel={false} refreshKey={refreshKey} scope={fabricScope} connections={rows} />
+      <FabricMedallionPanel asTabPanel={false} refreshKey={refreshKey} scope={fabricScope} />
     </div>
   );
 }

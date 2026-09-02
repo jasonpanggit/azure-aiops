@@ -620,8 +620,8 @@ export default function ConnectionsPage() {
           </div>
         </div>
       )}
-      {actionMessage && <div className="callout callout-success"><strong>Complete</strong><span>{actionMessage}</span></div>}
-      {actionError && <div className="callout callout-critical"><strong>Action failed</strong><span>{actionError}</span></div>}
+      {tab === "subscriptions" && (actionMessage && <div className="callout callout-success"><strong>Complete</strong><span>{actionMessage}</span></div>)}
+      {tab === "subscriptions" && (actionError && <div className="callout callout-critical"><strong>Action failed</strong><span>{actionError}</span></div>)}
 
       {connections.error ? (
         <StatePanel title="Connection health is unavailable" message={connections.error.message} tone="error" />
@@ -696,13 +696,22 @@ export default function ConnectionsPage() {
       )}
       </section>
 
-      <FabricMedallionPanel 
-        hidden={tab !== "fabric-medallion"} 
-        refreshKey={fabricRefreshKey} 
-        scope={scope} 
-        connections={rows}
-        subscriptionId={selectedSubscriptionId}
-      />
+      {tab === "fabric-medallion" && !selectedSubscriptionId ? (
+        <section id="fabric-medallion-panel" role="tabpanel" aria-labelledby="fabric-medallion-tab" tabIndex={0}>
+          <StatePanel 
+            title="Select a subscription" 
+            message="Choose a subscription from the dropdown above to view its Fabric medallion data, including Bronze, Silver, and Gold layer health, lifecycle status, and governance gaps."
+            tone="empty"
+          />
+        </section>
+      ) : (
+        <FabricMedallionPanel 
+          hidden={tab !== "fabric-medallion"} 
+          refreshKey={fabricRefreshKey} 
+          scope={scope} 
+          subscriptionId={selectedSubscriptionId}
+        />
+      )}
     </div>
   );
 }

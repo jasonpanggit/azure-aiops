@@ -41,14 +41,12 @@ export function FabricMedallionPanel({
   hidden = false,
   refreshKey,
   scope,
-  connections,
   subscriptionId,
   asTabPanel = true,
 }: {
   hidden?: boolean;
   refreshKey: number;
   scope: ScopeSelection;
-  connections: SubscriptionConnection[];
   subscriptionId?: string;
   asTabPanel?: boolean;
 }) {
@@ -64,14 +62,6 @@ export function FabricMedallionPanel({
   const tableNames = useMemo(() => tableNamesByLayer(capabilities.data?.data), [capabilities.data]);
   const totalTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].total, 0);
   const healthyTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].healthy, 0);
-  const governanceSummary = governance.data?.data;
-  const lifecycleEntries = manifest.data?.data.entries ?? [];
-  const openGovernanceGaps =
-    (governanceSummary?.ownership_gap_count ?? 0) +
-    (governanceSummary?.tag_gap_count ?? 0) +
-    (governanceSummary?.referential_integrity_blockers ?? 0);
-  const activeLifecycleCount = lifecycleEntries.filter((entry) => entry.disposition === "active").length;
-  const inactiveLifecycleCount = lifecycleEntries.length - activeLifecycleCount;
 
   return (
     <section
@@ -103,14 +93,6 @@ export function FabricMedallionPanel({
       </div>
 
       <FabricCapabilityCallouts capabilities={capabilities.data?.data} error={capabilities.error} />
-      <FabricSubscriptionSummary
-        scope={subscriptionScope}
-        connections={connections}
-        counts={counts}
-        governanceGapCount={openGovernanceGaps}
-        activeLifecycleCount={activeLifecycleCount}
-        inactiveLifecycleCount={inactiveLifecycleCount}
-      />
 
       {FABRIC_LAYER_KEYS.map((layer) => (
         <FabricLayerSection
