@@ -862,7 +862,7 @@ def _build_vulnerability_service(
                     "assessment_id": str(row.get("resource_id") or ""),
                     "server_id": target,
                     "target_resource_id": target,
-                    "resource_type": str(row.get("target_resource_type") or ""),
+                    "resource_type": str(row.get("target_resource_type") or _resource_type_from_id(target)),
                     "status": str(row.get("status") or "Unknown"),
                     "severity": str(row.get("severity") or "Unknown"),
                     "recommendation": str(row.get("recommendation") or ""),
@@ -1166,6 +1166,23 @@ def _merge_vulnerability_finding_rows(
         )
         merged.append(combined)
     return merged
+
+
+def _resource_type_from_id(resource_id: str) -> str:
+    parts = [part for part in str(resource_id or "").split("/") if part]
+    lower_parts = [part.casefold() for part in parts]
+    if len(parts) == 2 and lower_parts[0] == "subscriptions":
+        return "microsoft.resources/subscriptions"
+    if len(parts) == 4 and lower_parts[0] == "subscriptions" and lower_parts[2] == "resourcegroups":
+        return "microsoft.resources/subscriptions/resourcegroups"
+    try:
+        index = lower_parts.index("providers")
+    except ValueError:
+        return ""
+    tail = parts[index + 1 :]
+    if len(tail) < 2:
+        return ""
+    return "/".join([tail[0], *tail[1::2]]).casefold()
 
 
 def _finding_evidence_sort_key(row: Mapping[str, Any]) -> tuple[int, str, str, str]:

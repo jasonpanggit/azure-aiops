@@ -51,7 +51,15 @@ export default function PatchPrioritiesPage() {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return patchRows;
     return patchRows.filter((p) =>
-      [p.kb_id, p.recommended_action, ...p.cve_ids].some((value) => value?.toLowerCase().includes(query))
+      [
+        p.priority_id,
+        p.kb_id,
+        p.source_label,
+        p.recommended_action,
+        ...p.cve_ids,
+        ...(p.software_observations ?? []),
+        ...(p.defender_recommendations ?? []),
+      ].some((value) => value?.toLowerCase().includes(query))
     );
   }, [patchRows, searchQuery]);
   const {
@@ -133,14 +141,14 @@ export default function PatchPrioritiesPage() {
           <section className="card queue-card">
             <div className="card-header">
               <div>
-                <h2>Patch inventory</h2>
-                <p>{filteredPatches.length} patches in remediation queue</p>
+                <h2>Patch and vulnerability priorities</h2>
+                <p>{filteredPatches.length} AUM patch or Defender CVE priorities in the remediation queue</p>
               </div>
             </div>
             <div className="card-body">
               <input
                 type="text"
-                placeholder="Search by KB ID, action, or CVE…"
+                placeholder="Search by KB ID, source, software, action, or CVE…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 style={{
@@ -169,8 +177,8 @@ export default function PatchPrioritiesPage() {
                     <thead>
                       <tr>
                         <th>Priority</th>
-                        <th>KB</th>
-                        <th>CVEs resolved</th>
+                        <th>Priority</th>
+                        <th>CVEs / software</th>
                         <th>Reachability</th>
                         <th>Business impact</th>
                         <th>Risk reduction</th>
@@ -178,17 +186,26 @@ export default function PatchPrioritiesPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {patchPaging.pageRows.map((patch, index) => (
-                        <tr key={patch.kb_id}>
+                      {patchPaging.pageRows.map((patch, index) => {
+                        const isKbPriority = patch.priority_type !== "defender_cve" && Boolean(patch.kb_id);
+                        const rowLabel = isKbPriority ? patch.kb_id : patch.cve_ids[0] ?? patch.priority_id;
+                        const detailHref = isKbPriority
+                          ? `/exposure/kbs/${encodeURIComponent(patch.kb_id)}`
+                          : `/exposure/cves/${encodeURIComponent(rowLabel)}`;
+                        return (
+                        <tr key={patch.priority_id || patch.kb_id}>
                           <td>
                             <span className="rank-number">
                               {String(patchPaging.page * patchPaging.pageSize + index + 1).padStart(2, "0")}
                             </span>
                           </td>
                           <td>
-                            <Link className="table-primary-link" href={`/exposure/kbs/${encodeURIComponent(patch.kb_id)}`}>
-                              {patch.kb_id}
+                            <Link className="table-primary-link" href={detailHref}>
+                              {rowLabel}
                             </Link>
+                            <div className="table-secondary">
+                              {isKbPriority ? "KB-backed patch" : "Defender CVE/software finding"} · {patch.source_label}
+                            </div>
                             <div className="table-secondary">{patch.recommended_action}</div>
                           </td>
                           <td>
@@ -207,6 +224,9 @@ export default function PatchPrioritiesPage() {
                                 "Advisory-only KB"
                               )}
                             </div>
+                            {patch.software_observations?.length ? (
+                              <div className="table-secondary">Software: {patch.software_observations.slice(0, 2).join(", ")}</div>
+                            ) : null}
                           </td>
                           <td>
                             <StatusBadge
@@ -230,21 +250,22 @@ export default function PatchPrioritiesPage() {
                           <td>
                             <Link
                               className="table-secondary"
-                              href={`/remediation?kb=${encodeURIComponent(patch.kb_id)}`}
+                              href={isKbPriority ? `/remediation?kb=${encodeURIComponent(patch.kb_id)}` : "/remediation"}
                               style={{ marginRight: "0.75rem" }}
                             >
                               Remediate
                             </Link>
                             <Link
                               className="table-open-link"
-                              href={`/exposure/kbs/${encodeURIComponent(patch.kb_id)}`}
-                              aria-label={`Open ${patch.kb_id}`}
+                              href={detailHref}
+                              aria-label={`Open ${rowLabel}`}
                             >
                               →
                             </Link>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

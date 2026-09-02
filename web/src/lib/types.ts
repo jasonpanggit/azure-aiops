@@ -957,8 +957,14 @@ export interface KbDetail {
 }
 
 export interface PatchPriority {
+  priority_id: string;
+  priority_type: string;
+  source_label: string;
+  source_names: string[];
   kb_id: string;
   cve_ids: string[];
+  software_observations: string[];
+  defender_recommendations: string[];
   affected_server_count: number;
   affected_application_count: number;
   affected_business_service_count: number;
