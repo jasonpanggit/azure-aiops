@@ -29,6 +29,7 @@ from onboarding.validation import (
     ArgConnectionProbe,
     ConnectionValidator,
 )
+from ontology.subscription_connection import SyncState
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 SUBSCRIPTION = "22222222-2222-2222-2222-222222222222"
@@ -853,6 +854,39 @@ def test_sync_async_persists_failure_from_background_job(tmp_path: Path) -> None
 
     detail = service.detail("prod-core")
     assert detail["sync_status"] == "failed"
+
+
+def test_orphaned_running_sync_is_reconciled_to_failed_on_startup(tmp_path: Path) -> None:
+    """A "running" sync_state left by a process that no longer exists (e.g. a
+    container restarted mid-sync) must not haunt the connection forever.
+
+    Sync runs on an in-process thread pool with no cross-process durability,
+    so a fresh service instance -- standing in for a new container/process --
+    can never have a live worker for a "running" state it inherits from disk.
+    Construction should reconcile it to "failed" so pollers stop seeing a
+    permanently-stuck "running"/"unknown" status.
+    """
+    service = build_service(tmp_path)
+    onboard(service)
+
+    stuck_state = SyncState(
+        status="running",
+        run_id="orphaned-run-id",
+        attempts=1,
+        stage="discovery",
+        stage_message="Discovering resources",
+        message="Discovering resources",
+    )
+    service._save_operation_state("prod-core", sync_state=stuck_state)
+    assert service.detail("prod-core")["sync_status"] == "running"
+
+    # Simulate a new process/container picking up the same on-disk registry.
+    restarted_service = build_service(tmp_path)
+    detail = restarted_service.detail("prod-core")
+    assert detail["sync_status"] == "failed"
+    reconciled = restarted_service.registry.get("prod-core").sync_state
+    assert reconciled.stage == "failed"
+    assert "restart" in reconciled.message.lower()
 
 
 def test_sync_async_rejects_disabled_connection_immediately(tmp_path: Path) -> None:
