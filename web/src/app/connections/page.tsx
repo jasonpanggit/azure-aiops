@@ -415,7 +415,7 @@ export default function ConnectionsPage() {
           tabIndex={tab === "fabric-medallion" ? 0 : -1}
           onClick={() => setTab("fabric-medallion")}
         >
-          Fabric medallion
+          Fabric Medallion
         </button>
       </div>
 
