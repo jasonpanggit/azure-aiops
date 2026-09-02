@@ -406,6 +406,10 @@ fabric:
     mode: managed_identity
   workspace_name: Operations
   lakehouse_name: Inventory
+  capacity:
+    subscription_id: sub-fabric
+    resource_group: rg-fabric
+    capacity_name: cap-aiops
   create_lakehouse_if_missing: true
   source_data_root: ./source
   local_onelake_root: ./mock-lakehouse
@@ -444,6 +448,9 @@ fabric:
 
     assert config.source_data_root == (tmp_path / "source").resolve()
     assert config.local_onelake_root == (tmp_path / "mock-lakehouse").resolve()
+    assert config.capacity.subscription_id == "sub-fabric"
+    assert config.capacity.resource_group == "rg-fabric"
+    assert config.capacity.capacity_name == "cap-aiops"
     assert config.create_lakehouse_if_missing
     assert config.patch_policies[0].name == "Production baseline"
     assert config.patch_policies[0].minimum_compliance_score == 90

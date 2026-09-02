@@ -50,9 +50,11 @@ class DatasetStore:
         if self.is_remote:
             from .fs import resolve_fs
 
+            self.uri_root = str(root).rstrip("/")
             self.fs, resolved_root = resolve_fs(str(root))
             self.root = resolved_root
             self.generations = f"{resolved_root}/generations"
+            self.uri_generations = f"{self.uri_root}/generations"
             # Not created here: constructing a store must stay a local
             # operation (callers build one before any network is reachable,
             # and tests swap `fs` in afterwards). Generation directories are
@@ -201,6 +203,16 @@ class DatasetStore:
             return None
         candidate = f"{self.generations}/{name}"
         return candidate if self.fs.exists(candidate) else None
+
+    def current_generation_uri(self) -> str | None:
+        """Return the active generation as a URI suitable for external callers."""
+        generation = self.current_generation()
+        if generation is None:
+            return None
+        if not self.is_remote:
+            return generation
+        name = str(generation).rsplit("/", 1)[-1]
+        return f"{self.uri_generations}/{name}"
 
     def _write_generation(
         self,

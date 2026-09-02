@@ -599,7 +599,7 @@ before re-opening this. Argue from the numbers.
 **Goal:** Deliver a reliable, governed Fabric medallion platform whose Bronze, Silver, and Gold products are observable, freshness-bounded, consumable through curated semantic contracts, and consistently surfaced through the API and web application.
 **Requirements**: MED-01, MED-02, MED-03, MED-04, MED-05, MED-06, MED-07, MED-08, MED-09, MED-10
 **Depends on:** Phase 9
-**Plans:** 14/15 plans executed
+**Plans:** 15/15 plans executed
 
 Plans:
 
@@ -617,7 +617,7 @@ Plans:
 - [x] 10-12-PLAN.md — Gold-grounding specialist wiring & evaluation dataset (MED-08)
 - [x] 10-13-PLAN.md — Fabric medallion health & capabilities API (MED-03/09/10)
 - [x] 10-14-PLAN.md — Web "Fabric medallion" tab on /connections (MED-03/09/10)
-- [ ] 10-15-PLAN.md — Live rollout validation & evaluation baseline (MED-02/08/10)
+- [x] 10-15-PLAN.md — Live rollout validation & evaluation baseline (MED-02/08/10)
 
 **Success Criteria** (what must be TRUE):
 

@@ -1950,8 +1950,13 @@ def _build_provider_runtime(
         )
     )
     bootstrap = _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT")
+    core_readiness_providers = {"semantic", "semantic_graph"}
     specs = {
-        name: ProviderSpec(loader=loader, configured=True, required=not bootstrap)
+        name: ProviderSpec(
+            loader=loader,
+            configured=True,
+            required=(name in core_readiness_providers and not bootstrap),
+        )
         for name, loader in loaders.items()
     }
     specs["copilot"] = ProviderSpec(

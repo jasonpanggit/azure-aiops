@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from deltalake import DeltaTable
+from topology_comparison_scenario import topology_comparison_scenario
 
 from fabric.data_quality import DataQualityValidator
 from fabric.dataset_mapper import InventoryDatasetMapper
@@ -16,10 +17,8 @@ from onboarding.config import ConnectorConfig
 from onboarding.graph_normalize import Normalizer
 from onboarding.ingestion_storage import DatasetStore
 from semantic.semantic_engine import SemanticEngine
-from storage.delta_writer import DeltaWriteMode
-from storage.delta_writer import DeltaWriter
+from storage.delta_writer import DeltaWriteMode, DeltaWriter
 from storage.onelake_writer import OneLakeWriter
-from topology_comparison_scenario import topology_comparison_scenario
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
 
@@ -78,6 +77,7 @@ def test_incremental_sync_writes_bronze_silver_ontology_and_state(tmp_path: Path
     resources = _delta_rows(lakehouse / "Tables/bronze_resources")
     costs = _delta_rows(lakehouse / "Tables/silver_cost_actuals")
     states = _delta_rows(lakehouse / "Tables/metadata_ingestion_state")
+    source_status = _delta_rows(lakehouse / "Tables/metadata_source_status")
     assert first.status == "completed"
     assert second.status == "completed"
     assert len(resources) == 3
@@ -95,6 +95,10 @@ def test_incremental_sync_writes_bronze_silver_ontology_and_state(tmp_path: Path
     assert costs[0]["cost"] == 42.5
     assert costs[0]["currency"] == "AUD"
     assert costs[0]["usage_date"] == "2026-08-17"
+    source_status_by_family = {row["source_family"]: row for row in source_status}
+    assert source_status_by_family["bronze_resources"]["row_count"] == 3
+    assert source_status_by_family["silver_vm_inventory"]["availability"] == "available"
+    assert source_status_by_family["ontology_entities"]["status"] == "succeeded"
     assert (lakehouse / "Tables/ontology_entities/_delta_log").is_dir()
     assert (lakehouse / "Files/ontology/metadata/catalog.json").is_file()
 
@@ -866,7 +870,11 @@ def test_mapper_reads_remote_snapshot_via_provided_filesystem(tmp_path: Path) ->
     store.publish(graph, payload, {"runId": "remote-run-1", "startedAt": "2026-08-17T00:00:00Z"})
 
     snapshot_dir = store.current_generation()
+    snapshot_uri = store.current_generation_uri()
     assert snapshot_dir is not None
+    assert snapshot_uri is not None
+    assert snapshot_uri.startswith(remote_root)
+    assert snapshot_uri.endswith(snapshot_dir.rsplit("/", 1)[-1])
 
     # Without passing `fs`, the mapper falls back to resolving the path
     # itself, which treats the bare `container/path` string as local and
@@ -877,6 +885,15 @@ def test_mapper_reads_remote_snapshot_via_provided_filesystem(tmp_path: Path) ->
     # Passing the store's own filesystem must load the real data.
     tables = InventoryDatasetMapper().load(snapshot_dir, "remote-run-1", fs=memory_fs)
     assert tables["bronze_resources"] != [] or tables["bronze_virtual_machines"] != []
+
+    direct = FabricSyncService(
+        source_root=snapshot_uri,
+        onelake=OneLakeWriter("workspace", "lakehouse", local_root=tmp_path / "direct-lakehouse"),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+    direct._source_fs = memory_fs
+    assert direct._resolve_snapshot("") == snapshot_dir
 
     class Delta:
         def __init__(self):

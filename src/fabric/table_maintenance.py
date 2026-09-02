@@ -6,12 +6,16 @@ from fabric.auth import build_credential
 from fabric.config import FabricRuntimeConfig
 from fabric.fabric_client import FabricClient
 
+AIOPS_FABRIC_CONFIG_ENV = "AIOPS_FABRIC_CONFIG"
 _SUCCEEDED = {"succeeded", "completed", "success"}
 _FAILED = {"failed", "cancelled", "canceled", "error"}
 
 
 def _default_fabric_client() -> FabricClient:
-    config = FabricRuntimeConfig.load("fabric.config.yaml")
+    import os
+
+    config_path = os.environ.get(AIOPS_FABRIC_CONFIG_ENV, "fabric.config.yaml").strip() or "fabric.config.yaml"
+    config = FabricRuntimeConfig.load(config_path)
     return FabricClient(build_credential(config.auth))
 
 

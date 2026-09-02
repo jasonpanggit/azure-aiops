@@ -20,6 +20,8 @@ from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
+from storage.delta_writer import DeltaWriteMode, DeltaWriter
+from storage.onelake_writer import OneLakeWriter
 
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
 READER_TOKEN = "reader-token-0123456789abcdef"
@@ -662,6 +664,143 @@ class TestFabricMedallionRouterTask1:
         assert hidden_detail.status_code == 404
 
 
+def test_fabric_medallion_reads_live_delta_metadata_when_json_snapshot_is_empty(
+    tmp_path, monkeypatch
+):
+    from fabric.schema_registry import schema_for
+
+    config_path = tmp_path / "fabric.config.yaml"
+    lakehouse_root = tmp_path / "onelake"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    config_path.write_text(
+        "\n".join(
+            [
+                "fabric:",
+                f"  source_data_root: {source_root}",
+                "  workspace_id: workspace-a",
+                "  lakehouse_id: lakehouse-a",
+                f"  local_onelake_root: {lakehouse_root}",
+                "",
+            ]
+        )
+    )
+    monkeypatch.setenv("AIOPS_FABRIC_CONFIG", str(config_path))
+    onelake = OneLakeWriter(
+        "workspace-a",
+        "lakehouse-a",
+        local_root=lakehouse_root,
+    )
+    delta = DeltaWriter()
+    observed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    base = {
+        "tenant_id": "tenant-a",
+        "subscription_id": SUB_A,
+        "timestamp": observed_at,
+        "change_version": "v1",
+        "ingestion_run_id": "run-a",
+    }
+    delta.write(
+        onelake.table_uri("metadata", "source_status"),
+        [
+            {
+                **base,
+                "resource_id": "source://gold_operational_context",
+                "source_family": "gold_operational_context",
+                "run_id": "run-a",
+                "status": "succeeded",
+                "observed_at": observed_at,
+                "ingested_at": observed_at,
+                "watermark": observed_at,
+                "query_version": "1.0.0",
+                "requested_scope_json": json.dumps({"subscription": [SUB_A]}),
+                "provider_status": "succeeded",
+                "freshness": "fresh",
+                "availability": "healthy",
+                "quality": "complete",
+                "row_count": 3,
+                "lineage_ref": "gold-entity",
+                "error": "",
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_source_status"),
+    )
+    delta.write(
+        onelake.table_uri("metadata", "publication_manifest"),
+        [
+            {
+                **base,
+                "resource_id": "publication-manifest://topology_entities",
+                "projection_name": "topology_entities",
+                "disposition": "active",
+                "compatibility_version": None,
+                "retired_reason": None,
+                "registered_at": observed_at,
+                "updated_at": observed_at,
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_publication_manifest"),
+    )
+    delta.write(
+        onelake.table_uri("metadata", "quality_reports"),
+        [
+            {
+                **base,
+                "resource_id": "quality://run-a",
+                "source_run_id": "run-a",
+                "passed": False,
+                "failed_records": 2,
+                "report_json": json.dumps(
+                    [
+                        {
+                            "table_name": "gold_operational_context",
+                            "rule_counts": {
+                                "ownership_coverage": 1,
+                                "tag_coverage": 1,
+                                "orphan_relationships": 0,
+                            },
+                        }
+                    ]
+                ),
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_quality_reports"),
+    )
+
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+    )
+    app = create_app(context)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    layers = client.get("/api/v1/fabric-medallion/layers", headers=_auth(ADMIN_TOKEN))
+    manifest = client.get("/api/v1/fabric-medallion/manifest", headers=_auth(ADMIN_TOKEN))
+    governance = client.get("/api/v1/fabric-medallion/governance", headers=_auth(ADMIN_TOKEN))
+
+    assert layers.status_code == 200
+    assert layers.json()["data"]["layers"]["gold"] == {"healthy": 1, "total": 1}
+    assert manifest.status_code == 200
+    assert manifest.json()["data"]["entries"] == [
+        {
+            "projection_name": "topology_entities",
+            "disposition": "active",
+            "compatibility_version": None,
+            "retired_reason": None,
+            "registered_at": observed_at,
+            "updated_at": observed_at,
+        }
+    ]
+    assert governance.status_code == 200
+    assert governance.json()["data"]["ownership_gap_count"] == 1
+    assert governance.json()["data"]["tag_gap_count"] == 1
+
+
 class TestFabricMedallionRouterTask2:
     @pytest.fixture
     def fabric_medallion_capabilities_client(self, tmp_path, monkeypatch) -> TestClient:
@@ -910,6 +1049,43 @@ class TestFabricMedallionRouterTask2:
             and row["lineage"]["upstream_count"] == 1
             for row in data["lineage"]["datasets"]
         )
+
+    def test_fabric_medallion_capacity_config_prefers_runtime_config(
+        self, tmp_path, monkeypatch
+    ):
+        from api.routers import fabric_medallion as fabric_medallion_router
+
+        config_path = tmp_path / "fabric.yaml"
+        config_path.write_text(
+            """
+fabric:
+  auth:
+    mode: managed_identity
+  workspace_id: workspace-config
+  lakehouse_id: lakehouse-config
+  capacity:
+    subscription_id: subscription-config
+    resource_group: rg-config
+    capacity_name: cap-config
+"""
+        )
+        monkeypatch.setenv("AIOPS_FABRIC_CONFIG", str(config_path))
+        monkeypatch.setenv("AIOPS_FABRIC_CAPACITY_SUBSCRIPTION_ID", "subscription-env")
+        monkeypatch.setenv("AIOPS_FABRIC_CAPACITY_RESOURCE_GROUP", "rg-env")
+        monkeypatch.setenv("AIOPS_FABRIC_CAPACITY_NAME", "cap-env")
+
+        config = fabric_medallion_router._capacity_config(
+            object(),
+            Scope.unrestricted(),
+        )
+
+        assert config == {
+            "subscription_id": "subscription-config",
+            "resource_group": "rg-config",
+            "capacity_name": "cap-config",
+            "workspace_id": "workspace-config",
+            "lakehouse_id": "lakehouse-config",
+        }
 
     def test_fabric_medallion_router_routes_are_get_only(self):
         from api.routers import fabric_medallion as fabric_medallion_router

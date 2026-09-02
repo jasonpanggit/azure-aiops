@@ -20,8 +20,7 @@ class _FakeClient:
 
     def iter_items(self, path: str, **kwargs):
         self.iter_items_calls += 1
-        for role in self.roles:
-            yield role
+        yield from self.roles
 
 
 def test_list_roles_returns_all_pages_via_fabric_iter_items(monkeypatch) -> None:
@@ -54,3 +53,30 @@ def test_non_lakehouse_item_type_raises_clear_error(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="Lakehouse"):
         data_access_roles.list_roles("ws-1", "item-1")
+
+
+def test_default_client_uses_fabric_config_env(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "fabric.yaml"
+    config_path.write_text(
+        """
+fabric:
+  auth:
+    mode: managed_identity
+  workspace_name: workspace
+  lakehouse_name: lakehouse
+"""
+    )
+    captured = {}
+
+    def fake_load(path):
+        captured["path"] = path
+        return type("Config", (), {"auth": object()})()
+
+    monkeypatch.setenv("AIOPS_FABRIC_CONFIG", str(config_path))
+    monkeypatch.setattr(data_access_roles.FabricRuntimeConfig, "load", fake_load)
+    monkeypatch.setattr(data_access_roles, "build_credential", lambda _auth: object())
+    monkeypatch.setattr(data_access_roles, "FabricClient", lambda _credential: object())
+
+    data_access_roles._default_fabric_client()
+
+    assert captured["path"] == str(config_path)

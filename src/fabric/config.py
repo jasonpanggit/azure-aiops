@@ -104,6 +104,13 @@ class RemediationRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class CapacityRuntimeConfig:
+    subscription_id: str = ""
+    resource_group: str = ""
+    capacity_name: str = ""
+
+
+@dataclass(frozen=True)
 class FabricRuntimeConfig:
     auth: FabricAuthConfig
     source_data_root: Path
@@ -111,6 +118,7 @@ class FabricRuntimeConfig:
     workspace_name: str = ""
     lakehouse_id: str = ""
     lakehouse_name: str = ""
+    capacity: CapacityRuntimeConfig = field(default_factory=CapacityRuntimeConfig)
     create_lakehouse_if_missing: bool = False
     local_onelake_root: Path | None = None
     shortcuts: tuple[ShortcutDefinition, ...] = field(default_factory=tuple)
@@ -201,6 +209,9 @@ class FabricRuntimeConfig:
         if not isinstance(raw_semantic_payload, dict):
             raise TypeError("fabric.semantic must be a mapping")
         raw_patch_policies = fabric.get("patch_policies") or []
+        raw_capacity_payload = fabric.get("capacity", {})
+        if not isinstance(raw_capacity_payload, dict):
+            raise TypeError("fabric.capacity must be a mapping")
         if not isinstance(raw_patch_policies, list) or any(
             not isinstance(item, dict) for item in raw_patch_policies
         ):
@@ -274,6 +285,11 @@ class FabricRuntimeConfig:
             workspace_name=str(fabric.get("workspace_name") or ""),
             lakehouse_id=str(fabric.get("lakehouse_id") or ""),
             lakehouse_name=str(fabric.get("lakehouse_name") or ""),
+            capacity=CapacityRuntimeConfig(
+                subscription_id=str(raw_capacity_payload.get("subscription_id") or ""),
+                resource_group=str(raw_capacity_payload.get("resource_group") or ""),
+                capacity_name=str(raw_capacity_payload.get("capacity_name") or ""),
+            ),
             create_lakehouse_if_missing=bool(fabric.get("create_lakehouse_if_missing", False)),
             local_onelake_root=local,
             shortcuts=shortcuts,

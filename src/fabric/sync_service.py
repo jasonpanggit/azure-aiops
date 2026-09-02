@@ -11,15 +11,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from fabric_pipelines import change_pipeline, incident_pipeline, predictive_pipeline
+from fabric_pipelines.topology_pipeline import derive_edges, to_topology_edge_row
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator
 from ontology.publication_manifest import PublicationManifestStore
 from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
 from storage.onelake_writer import OneLakeWriter
 from storage.partitioning import PartitioningPolicy
-
-from fabric_pipelines import change_pipeline, incident_pipeline, predictive_pipeline
-from fabric_pipelines.topology_pipeline import derive_edges, to_topology_edge_row
 
 from .data_quality import DataQualityValidator, QualityReport
 from .dataset_mapper import (
@@ -104,9 +103,14 @@ class FabricSyncService:
         # and ``RunLock`` already do.
         from storage.fs import is_onelake_uri, resolve_fs, resolve_root
 
-        self.source_root = resolve_root(str(source_root)) if is_onelake_uri(source_root) else Path(source_root).resolve()
         self._source_root_is_remote = is_onelake_uri(source_root)
-        self._source_fs = resolve_fs(str(self.source_root))[0] if self._source_root_is_remote else None
+        if self._source_root_is_remote:
+            self.source_root = resolve_root(str(source_root))
+            self._source_fs, self._resolved_source_root = resolve_fs(str(self.source_root))
+        else:
+            self.source_root = Path(source_root).resolve()
+            self._source_fs = None
+            self._resolved_source_root = str(self.source_root)
         self.onelake = onelake
         self.delta = delta_writer
         self.validator = validator
@@ -282,6 +286,26 @@ class FabricSyncService:
             reports = self._validate(datasets)
             failed_records = sum(report.failed_records for report in reports)
             self._write_quality_report(run_id, source_run_id, reports, started_at)
+            source_status_rows = _table_source_status_rows(
+                datasets,
+                run_id,
+                started_at,
+            )
+            if source_status_rows:
+                table_uri = self.onelake.table_uri("metadata", "source_status")
+                before_version = self.delta.version(table_uri)
+                result = self.delta.write(
+                    table_uri,
+                    source_status_rows,
+                    mode=DeltaWriteMode.MERGE,
+                    key_columns=("resource_id",),
+                    schema=schema_for("metadata_source_status"),
+                )
+                table_results["metadata_source_status"] = result
+                datasets["metadata_source_status"] = source_status_rows
+                if result.version != before_version:
+                    written_versions["metadata_source_status"] = (table_uri, before_version)
+                self.metrics.record_table("metadata_source_status", result)
             if failed_records:
                 failed = _state_row(
                     run_id,
@@ -1482,9 +1506,11 @@ class FabricSyncService:
         active generation directory under ``generations/``.
         """
         fs = self._source_fs
-        root = str(self.source_root)
+        root = str(self._resolved_source_root)
         if replay_source_run_id:
             candidate = f"{root}/generations/{replay_source_run_id}"
+        elif fs.exists(f"{root}/manifest.json"):
+            candidate = root
         else:
             pointer_path = f"{root}/current.json"
             if not fs.exists(pointer_path):
@@ -1852,6 +1878,49 @@ def _catalog_metadata(
             for table, rows in sorted(datasets.items())
         ],
     }
+
+
+def _table_source_status_rows(
+    datasets: dict[str, list[dict]],
+    run_id: str,
+    observed_at: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for table_name, table_rows in sorted(datasets.items()):
+        if table_name == "metadata_source_status":
+            continue
+        if "_" not in table_name:
+            continue
+        row_count = len(table_rows)
+        content = {
+            "source_family": table_name,
+            "run_id": run_id,
+            "status": "succeeded",
+            "observed_at": observed_at,
+            "ingested_at": observed_at,
+            "watermark": observed_at,
+            "query_version": "1.0.0",
+            "requested_scope_json": "{}",
+            "provider_status": "ok",
+            "freshness": "fresh",
+            "availability": "available",
+            "quality": "complete",
+            "error": "",
+            "row_count": row_count,
+            "lineage_ref": f"{table_name}-table",
+        }
+        rows.append(
+            {
+                "tenant_id": "system",
+                "subscription_id": "system",
+                "resource_id": f"source-status://{table_name}",
+                "timestamp": observed_at,
+                "change_version": _hash_json(content),
+                "ingestion_run_id": run_id,
+                **content,
+            }
+        )
+    return rows
 
 
 def _result(

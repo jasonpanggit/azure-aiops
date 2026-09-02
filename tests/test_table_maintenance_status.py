@@ -8,8 +8,7 @@ class _FakeClient:
         self.runs = runs or []
 
     def iter_items(self, path: str, **kwargs):
-        for run in self.runs:
-            yield run
+        yield from self.runs
 
 
 def test_last_maintenance_status_returns_latest_run_without_triggering(monkeypatch) -> None:
@@ -55,3 +54,30 @@ def test_no_runs_returns_no_runs_recorded() -> None:
 
     assert status["status"] == "no_runs_recorded"
     assert status["last_run_at"] == ""
+
+
+def test_default_client_uses_fabric_config_env(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "fabric.yaml"
+    config_path.write_text(
+        """
+fabric:
+  auth:
+    mode: managed_identity
+  workspace_name: workspace
+  lakehouse_name: lakehouse
+"""
+    )
+    captured = {}
+
+    def fake_load(path):
+        captured["path"] = path
+        return type("Config", (), {"auth": object()})()
+
+    monkeypatch.setenv("AIOPS_FABRIC_CONFIG", str(config_path))
+    monkeypatch.setattr(table_maintenance.FabricRuntimeConfig, "load", fake_load)
+    monkeypatch.setattr(table_maintenance, "build_credential", lambda _auth: object())
+    monkeypatch.setattr(table_maintenance, "FabricClient", lambda _credential: object())
+
+    table_maintenance._default_fabric_client()
+
+    assert captured["path"] == str(config_path)

@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from fabric.auth import build_credential, build_delta_storage_options
 from fabric.capacity_health import check_capacity_state
 from fabric.config import FabricRuntimeConfig
 from fabric.data_access_roles import list_roles
@@ -17,6 +18,8 @@ from fabric.table_maintenance import last_maintenance_status
 from ontology.publication_state import PublicationAttemptRecord
 from operations.gold_grounding_specialist import gold_grounding_configured
 from storage.datasets import DatasetStore
+from storage.delta_writer import DeltaWriter
+from storage.onelake_writer import OneLakeWriter
 
 from ..dependencies import Context, ReadScope
 from ..errors import not_found
@@ -34,6 +37,14 @@ GOVERNANCE_TABLE = "metadata_quality_reports"
 INGESTION_ENGINE = "onboarding.sync"
 INGESTION_TABLE = "metadata_ingestion_state"
 CAPABILITIES_ENGINE = "fabric.medallion_capabilities"
+
+
+def _runtime_config() -> FabricRuntimeConfig | None:
+    config_path = os.environ.get("AIOPS_FABRIC_CONFIG", "fabric.config.yaml").strip() or "fabric.config.yaml"
+    try:
+        return FabricRuntimeConfig.load(config_path)
+    except Exception:  # noqa: BLE001 - missing Fabric config degrades to JSON snapshot reads only
+        return None
 
 
 def _evidence(*, source_engine: str, source_table: str, timestamp: str = "") -> Evidence:
@@ -100,6 +111,40 @@ def _row_visible(scope: Scope, row: dict[str, Any]) -> bool:
     return bool(attributes) and scope.matches(attributes)
 
 
+def _lakehouse_delta_rows(table_name: str) -> list[dict[str, Any]]:
+    config = _runtime_config()
+    if config is None:
+        return []
+    layer, separator, logical_name = table_name.partition("_")
+    if not separator or not layer or not logical_name:
+        return []
+    workspace_id = config.workspace_id or config.workspace_name
+    lakehouse_id = config.lakehouse_id or config.lakehouse_name
+    if config.local_onelake_root is not None:
+        onelake = OneLakeWriter(
+            workspace_id,
+            lakehouse_id,
+            table_schema=config.table_schema,
+            local_root=config.local_onelake_root,
+        )
+        return DeltaWriter().read(onelake.table_uri(layer, logical_name))
+    if not workspace_id or not lakehouse_id:
+        return []
+    credential = build_credential(config.auth)
+    storage_options = build_delta_storage_options(credential)
+    onelake = OneLakeWriter(
+        workspace_id,
+        lakehouse_id,
+        table_schema=config.table_schema,
+        credential=credential,
+        storage_options=storage_options,
+    )
+    return DeltaWriter(
+        storage_options=storage_options,
+        storage_options_provider=lambda: build_delta_storage_options(credential),
+    ).read(onelake.table_uri(layer, logical_name))
+
+
 def _connection_rows(context: Context) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
     rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
     for summary in context.onboarding.list(include_disabled=False):
@@ -124,6 +169,8 @@ def _metadata_source_status_rows(context: Context) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for _detail, status_rows in _connection_rows(context):
         rows.extend(status_rows)
+    if not rows:
+        rows.extend(_lakehouse_delta_rows("metadata_source_status"))
     return rows
 
 
@@ -134,6 +181,17 @@ def _metadata_publication_manifest_rows(context: Context) -> list[dict[str, Any]
         if not dataset_root:
             continue
         for row in DatasetStore(dataset_root).read_dataset("metadata_publication_manifest"):
+            projection = str(row.get("projection_name") or "")
+            if not projection:
+                continue
+            previous = latest_by_projection.get(projection)
+            current = dict(row)
+            if previous is None or str(current.get("updated_at") or "") >= str(
+                previous.get("updated_at") or ""
+            ):
+                latest_by_projection[projection] = current
+    if not latest_by_projection:
+        for row in _lakehouse_delta_rows("metadata_publication_manifest"):
             projection = str(row.get("projection_name") or "")
             if not projection:
                 continue
@@ -183,6 +241,8 @@ def _metadata_quality_report_rows(context: Context, scope: Scope) -> list[dict[s
             current.setdefault("subscription_id", str(detail.get("subscription_id") or ""))
             current.setdefault("subscription_connection", str(detail.get("connection_id") or ""))
             rows.append(current)
+    if not rows:
+        rows.extend(_lakehouse_delta_rows("metadata_quality_reports"))
     return rows
 
 
@@ -245,19 +305,24 @@ def _publication_attempt_rows(context: Context, scope: Scope) -> list[dict[str, 
 
 
 def _capacity_config(context: Context, scope: Scope) -> dict[str, str]:
-    config_path = os.environ.get("AIOPS_FABRIC_CONFIG", "fabric.config.yaml").strip() or "fabric.config.yaml"
-    try:
-        config = FabricRuntimeConfig.load(config_path)
-    except Exception:  # noqa: BLE001 - missing config degrades to unknown capability state
-        config = None
+    config = _runtime_config()
     scope_subscriptions = scope.to_dict().get("subscription") or []
     subscription_id = str(scope_subscriptions[0] if scope_subscriptions else "")
     if not subscription_id:
-        subscription_id = os.environ.get("AIOPS_FABRIC_CAPACITY_SUBSCRIPTION_ID", "").strip()
+        subscription_id = str(
+            getattr(getattr(config, "capacity", None), "subscription_id", "")
+            or os.environ.get("AIOPS_FABRIC_CAPACITY_SUBSCRIPTION_ID", "")
+        ).strip()
     return {
         "subscription_id": subscription_id,
-        "resource_group": os.environ.get("AIOPS_FABRIC_CAPACITY_RESOURCE_GROUP", "").strip(),
-        "capacity_name": os.environ.get("AIOPS_FABRIC_CAPACITY_NAME", "").strip(),
+        "resource_group": str(
+            getattr(getattr(config, "capacity", None), "resource_group", "")
+            or os.environ.get("AIOPS_FABRIC_CAPACITY_RESOURCE_GROUP", "")
+        ).strip(),
+        "capacity_name": str(
+            getattr(getattr(config, "capacity", None), "capacity_name", "")
+            or os.environ.get("AIOPS_FABRIC_CAPACITY_NAME", "")
+        ).strip(),
         "workspace_id": str(getattr(config, "workspace_id", "") or os.environ.get("FABRIC_WORKSPACE_ID", "")).strip(),
         "lakehouse_id": str(getattr(config, "lakehouse_id", "")).strip(),
     }
