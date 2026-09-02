@@ -400,7 +400,7 @@ describe("Connections page Fabric medallion tab", () => {
     const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
     expect(fabricPanel).toHaveAttribute("id", "fabric-medallion-panel");
     expect(within(fabricPanel).getByText("Bronze tables")).toBeInTheDocument();
-    expect(within(fabricPanel).getByRole("heading", { name: "Subscription-level Fabric status" })).toBeInTheDocument();
+    expect(within(fabricPanel).getByRole("heading", { name: /Bronze layer/i })).toBeInTheDocument();
     const subscriptionSelect = screen.getByDisplayValue(/Production/);
     expect(subscriptionSelect).toBeInTheDocument();
     expect(document.querySelector("#subscriptions-panel")).toHaveAttribute("hidden");
@@ -416,7 +416,7 @@ describe("Connections page Fabric medallion tab", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
 
     const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
-    expect(within(fabricPanel).getByText("Subscription-level Fabric status")).toBeInTheDocument();
+    expect(within(fabricPanel).getByText("Bronze tables")).toBeInTheDocument();
     await waitFor(() => {
       expect(fabricLayers).toHaveBeenCalledWith({ subscription: [connection.subscription_id] });
       expect(fabricManifest).toHaveBeenCalledWith({ subscription: [connection.subscription_id] });
