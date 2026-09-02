@@ -7,6 +7,11 @@ import { vulnerabilityApi } from "@/lib/services";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { MetricCard } from "@/components/ui/MetricCard";
+import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
+import { TablePagination } from "@/components/ui/TablePagination";
+import { useColumnFilters } from "@/lib/table-column-filters";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import type {
   DefenderOverview,
   DefenderAlert,
@@ -45,6 +50,38 @@ export default function DefenderPosturePage() {
     [overview.error, alerts.error, attackPaths.error, controls.error, recommendations.error]
   );
 
+  const alertRows = useMemo(() => (alerts.data?.data as DefenderAlert[]) ?? [], [alerts.data]);
+  const {
+    filteredRows: filteredAlerts,
+    filters: alertFilters,
+    resetFilters: resetAlertFilters,
+  } = useColumnFilters(alertRows, [
+    { id: "severity", label: "Severity", getValues: (alert) => alert.severity },
+    { id: "status", label: "Status", getValues: (alert) => alert.status },
+  ]);
+  const alertPaging = useTablePagination(filteredAlerts);
+
+  const attackPathRows = useMemo(() => (attackPaths.data?.data as DefenderAttackPath[]) ?? [], [attackPaths.data]);
+  const attackPathPaging = useTablePagination(attackPathRows);
+
+  const controlRows = useMemo(() => (controls.data?.data as DefenderSecureScoreControl[]) ?? [], [controls.data]);
+  const controlPaging = useTablePagination(controlRows);
+
+  const recommendationRows = useMemo(
+    () => (recommendations.data?.data as DefenderPostureFinding[]) ?? [],
+    [recommendations.data]
+  );
+  const {
+    filteredRows: filteredRecommendations,
+    filters: recommendationFilters,
+    resetFilters: resetRecommendationFilters,
+  } = useColumnFilters(recommendationRows, [
+    { id: "severity", label: "Severity", getValues: (rec) => rec.severity },
+    { id: "status", label: "Status", getValues: (rec) => rec.status },
+    { id: "resource_type", label: "Resource type", getValues: (rec) => rec.resource_type },
+  ]);
+  const recommendationPaging = useTablePagination(filteredRecommendations);
+
   return (
     <div className="page-container">
       <PageHeader
@@ -73,15 +110,21 @@ export default function DefenderPosturePage() {
                   />
                   <MetricCard
                     label="Active alerts"
-                    value={alerts.data?.data ? (alerts.data.data as DefenderAlert[]).length : 0}
+                    value={alertRows.length}
                     detail="Current security incidents"
                     tone="warning"
                   />
                   <MetricCard
                     label="Attack paths"
-                    value={attackPaths.data?.data ? (attackPaths.data.data as DefenderAttackPath[]).length : 0}
+                    value={attackPathRows.length}
                     detail="Potential attack chains"
                     tone="critical"
+                  />
+                  <MetricCard
+                    label="Open recommendations"
+                    value={recommendationRows.length}
+                    detail="Unhealthy Defender assessments"
+                    tone="warning"
                   />
                 </div>
               </div>
@@ -89,125 +132,194 @@ export default function DefenderPosturePage() {
           )}
 
           {/* Security alerts */}
-          {alerts.data?.data && (alerts.data.data as DefenderAlert[]).length > 0 && (
-            <section className="card">
+          {alertRows.length > 0 && (
+            <section className="card queue-card">
               <div className="card-header">
                 <h2>Security alerts</h2>
               </div>
-              <div className="card-body">
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr style={{ borderBottom: "1px solid var(--border-color)" }}>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Alert</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Resources affected</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>First seen</th>
+              <TableColumnFilters
+                filters={alertFilters}
+                onReset={resetAlertFilters}
+                resultCount={filteredAlerts.length}
+                totalCount={alertRows.length}
+              />
+              <div className="table-scroll">
+                <table className="operations-table exposure-table">
+                  <thead>
+                    <tr>
+                      <th>Alert</th>
+                      <th>Severity</th>
+                      <th>Status</th>
+                      <th>Resources affected</th>
+                      <th>First seen</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {alertPaging.pageRows.map((alert) => (
+                      <tr key={alert.id}>
+                        <td>
+                          <strong>{alert.title}</strong>
+                          {alert.description && <div className="table-secondary">{alert.description}</div>}
+                        </td>
+                        <td>
+                          <StatusBadge label={alert.severity} tone={statusTone(alert.severity)} compact />
+                        </td>
+                        <td>
+                          <StatusBadge label={alert.status} tone={statusTone(alert.status)} compact />
+                        </td>
+                        <td>{alert.resourceIds?.length || 0}</td>
+                        <td className="table-secondary">
+                          {alert.timeGenerated ? new Date(alert.timeGenerated).toLocaleDateString() : "N/A"}
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {(alerts.data.data as DefenderAlert[]).map((alert) => (
-                        <tr key={alert.id} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                          <td style={{ padding: "0.5rem" }}>{alert.title}</td>
-                          <td style={{ padding: "0.5rem" }}>{alert.resourceIds?.length || 0}</td>
-                          <td style={{ padding: "0.5rem", fontSize: "0.875rem" }}>
-                            {alert.timeGenerated
-                              ? new Date(alert.timeGenerated).toLocaleDateString()
-                              : "N/A"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+              <TablePagination
+                total={alertPaging.total}
+                pageRows={alertPaging.pageRows.length}
+                page={alertPaging.page}
+                onPageChange={alertPaging.setPage}
+                pageSize={alertPaging.pageSize}
+                onPageSizeChange={alertPaging.setPageSize}
+                label="alerts"
+              />
             </section>
           )}
 
           {/* Attack paths */}
-          {attackPaths.data?.data && (attackPaths.data.data as DefenderAttackPath[]).length > 0 && (
-            <section className="card">
+          {attackPathRows.length > 0 && (
+            <section className="card queue-card">
               <div className="card-header">
                 <h2>Attack paths</h2>
               </div>
-              <div className="card-body">
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr style={{ borderBottom: "1px solid var(--border-color)" }}>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Path</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Impact</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Nodes</th>
+              <div className="table-scroll">
+                <table className="operations-table exposure-table">
+                  <thead>
+                    <tr>
+                      <th>Path</th>
+                      <th>Impact</th>
+                      <th>Nodes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {attackPathPaging.pageRows.map((path) => (
+                      <tr key={path.id}>
+                        <td>
+                          <strong>{path.title || "N/A"}</strong>
+                          {path.description && <div className="table-secondary">{path.description}</div>}
+                        </td>
+                        <td>{path.potentialImpact || "N/A"}</td>
+                        <td>{path.nodeCount || 0}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {(attackPaths.data.data as DefenderAttackPath[]).map((path) => (
-                        <tr key={path.id} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                          <td style={{ padding: "0.5rem" }}>{path.title || "N/A"}</td>
-                          <td style={{ padding: "0.5rem" }}>{path.potentialImpact || "N/A"}</td>
-                          <td style={{ padding: "0.5rem" }}>{path.nodeCount || 0}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+              <TablePagination
+                total={attackPathPaging.total}
+                pageRows={attackPathPaging.pageRows.length}
+                page={attackPathPaging.page}
+                onPageChange={attackPathPaging.setPage}
+                pageSize={attackPathPaging.pageSize}
+                onPageSizeChange={attackPathPaging.setPageSize}
+                label="attack paths"
+              />
             </section>
           )}
 
           {/* Security controls */}
-          {controls.data?.data && (controls.data.data as DefenderSecureScoreControl[]).length > 0 && (
-            <section className="card">
+          {controlRows.length > 0 && (
+            <section className="card queue-card">
               <div className="card-header">
                 <h2>Security controls</h2>
               </div>
-              <div className="card-body">
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr style={{ borderBottom: "1px solid var(--border-color)" }}>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Control</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Score</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Compliance</th>
+              <div className="table-scroll">
+                <table className="operations-table exposure-table">
+                  <thead>
+                    <tr>
+                      <th>Control</th>
+                      <th>Score</th>
+                      <th>Compliance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {controlPaging.pageRows.map((control) => (
+                      <tr key={control.id}>
+                        <td>{control.title || "N/A"}</td>
+                        <td>
+                          {control.currentScore}/{control.maxScore}
+                        </td>
+                        <td>{control.percentage ? `${control.percentage.toFixed(0)}%` : "N/A"}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {(controls.data.data as DefenderSecureScoreControl[]).map((control) => (
-                        <tr key={control.id} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                          <td style={{ padding: "0.5rem" }}>{control.title || "N/A"}</td>
-                          <td style={{ padding: "0.5rem" }}>
-                            {control.currentScore}/{control.maxScore}
-                          </td>
-                          <td style={{ padding: "0.5rem" }}>
-                            {control.percentage ? `${control.percentage.toFixed(0)}%` : "N/A"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+              <TablePagination
+                total={controlPaging.total}
+                pageRows={controlPaging.pageRows.length}
+                page={controlPaging.page}
+                onPageChange={controlPaging.setPage}
+                pageSize={controlPaging.pageSize}
+                onPageSizeChange={controlPaging.setPageSize}
+                label="controls"
+              />
             </section>
           )}
 
           {/* Security recommendations */}
-          {recommendations.data?.data && (recommendations.data.data as DefenderPostureFinding[]).length > 0 && (
-            <section className="card">
+          {recommendationRows.length > 0 && (
+            <section className="card queue-card">
               <div className="card-header">
                 <h2>Security recommendations</h2>
+                <p>Unhealthy Defender assessments across the discovered inventory.</p>
               </div>
+              <TableColumnFilters
+                filters={recommendationFilters}
+                onReset={resetRecommendationFilters}
+                resultCount={filteredRecommendations.length}
+                totalCount={recommendationRows.length}
+              />
               <div className="card-body">
-                {(recommendations.data.data as DefenderPostureFinding[]).map((rec) => (
-                  <details key={rec.assessment_id} style={{ marginBottom: "1rem", borderBottom: "1px solid var(--border-color)", paddingBottom: "1rem" }}>
-                    <summary style={{ cursor: "pointer", fontWeight: 500 }}>
+                {recommendationPaging.pageRows.map((rec) => (
+                  <details
+                    key={rec.assessment_id}
+                    style={{ marginBottom: "1rem", borderBottom: "1px solid var(--border-color)", paddingBottom: "1rem" }}
+                  >
+                    <summary style={{ cursor: "pointer", fontWeight: 500, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <StatusBadge label={rec.severity} tone={statusTone(rec.severity)} compact />
                       {rec.recommendation || "Unnamed recommendation"}
                     </summary>
                     <div style={{ marginTop: "0.5rem", fontSize: "0.875rem", lineHeight: 1.5 }}>
-                      <p><strong>Asset:</strong> {rec.asset_name}</p>
-                      <p><strong>Description:</strong> {rec.description || "No description available"}</p>
+                      <p>
+                        <strong>Asset:</strong> {rec.asset_name} ({rec.inventory_kind || rec.resource_type || "resource"})
+                      </p>
+                      <p>
+                        <strong>Status:</strong> <StatusBadge label={rec.status} tone={statusTone(rec.status)} compact />
+                      </p>
+                      <p>
+                        <strong>Description:</strong> {rec.description || "No description available"}
+                      </p>
+                      {rec.remediation && (
+                        <p>
+                          <strong>Remediation:</strong> {rec.remediation}
+                        </p>
+                      )}
                     </div>
                   </details>
                 ))}
               </div>
+              <TablePagination
+                total={recommendationPaging.total}
+                pageRows={recommendationPaging.pageRows.length}
+                page={recommendationPaging.page}
+                onPageChange={recommendationPaging.setPage}
+                pageSize={recommendationPaging.pageSize}
+                onPageSizeChange={recommendationPaging.setPageSize}
+                label="recommendations"
+              />
             </section>
           )}
         </>

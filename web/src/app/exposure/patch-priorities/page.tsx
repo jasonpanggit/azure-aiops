@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
@@ -7,6 +8,11 @@ import { vulnerabilityApi } from "@/lib/services";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { MetricCard } from "@/components/ui/MetricCard";
+import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
+import { TablePagination } from "@/components/ui/TablePagination";
+import { useColumnFilters } from "@/lib/table-column-filters";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import type { PatchPriority, RiskException, VulnerabilityExposure } from "@/lib/types";
 
 /** Focused page for patch remediation: SLA compliance, patch inventory, CVE exposure, risk exceptions. */
@@ -40,13 +46,34 @@ export default function PatchPrioritiesPage() {
     [patchPriorities.error, slaCompliance.error, exposures.error, riskExceptions.error]
   );
 
+  const patchRows = useMemo(() => (patchPriorities.data?.data as PatchPriority[]) ?? [], [patchPriorities.data]);
   const filteredPatches = useMemo(() => {
-    if (!patchPriorities.data?.data) return [];
-    const query = searchQuery.toLowerCase();
-    return (patchPriorities.data.data as PatchPriority[]).filter((p) =>
-      p.kb_id.toLowerCase().includes(query)
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return patchRows;
+    return patchRows.filter((p) =>
+      [p.kb_id, p.recommended_action, ...p.cve_ids].some((value) => value?.toLowerCase().includes(query))
     );
-  }, [patchPriorities.data, searchQuery]);
+  }, [patchRows, searchQuery]);
+  const {
+    filteredRows: columnFilteredPatches,
+    filters: patchFilters,
+    resetFilters: resetPatchFilters,
+  } = useColumnFilters(filteredPatches, [
+    { id: "overdue", label: "Overdue", getValues: (patch) => (patch.overdue_count > 0 ? "Overdue" : "On track") },
+  ]);
+  const patchPaging = useTablePagination(columnFilteredPatches);
+
+  const exposureRows = useMemo(() => (exposures.data?.data as VulnerabilityExposure[]) ?? [], [exposures.data]);
+  const {
+    filteredRows: columnFilteredExposures,
+    filters: exposureFilters,
+    resetFilters: resetExposureFilters,
+  } = useColumnFilters(exposureRows, [
+    { id: "severity", label: "Severity", getValues: (exposure) => exposure.severity },
+  ]);
+  const exposurePaging = useTablePagination(columnFilteredExposures);
+
+  const exceptionRows = useMemo(() => (riskExceptions.data?.data as RiskException[]) ?? [], [riskExceptions.data]);
 
   const revokeException = useCallback(
     async (exceptionId: string) => {
@@ -85,7 +112,6 @@ export default function PatchPrioritiesPage() {
 
       {!allLoading && !anyError && (
         <>
-          {/* SLA compliance metrics */}
           {slaCompliance.data?.data && (
             <section className="card">
               <div className="card-header">
@@ -104,98 +130,216 @@ export default function PatchPrioritiesPage() {
             </section>
           )}
 
-          {/* Patch inventory with search */}
-          {patchPriorities.data?.data && (patchPriorities.data.data as PatchPriority[]).length > 0 && (
-            <section className="card">
-              <div className="card-header">
+          <section className="card queue-card">
+            <div className="card-header">
+              <div>
                 <h2>Patch inventory</h2>
                 <p>{filteredPatches.length} patches in remediation queue</p>
               </div>
+            </div>
+            <div className="card-body">
+              <input
+                type="text"
+                placeholder="Search by KB ID, action, or CVE…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "0.5rem",
+                  marginBottom: "1rem",
+                  border: "1px solid var(--border-color)",
+                  borderRadius: "4px",
+                }}
+              />
+            </div>
+            {columnFilteredPatches.length === 0 ? (
               <div className="card-body">
-                <input
-                  type="text"
-                  placeholder="Search by KB ID…"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "0.5rem",
-                    marginBottom: "1rem",
-                    border: "1px solid var(--border-color)",
-                    borderRadius: "4px",
-                  }}
+                <p className="muted">No patches match the current filters.</p>
+              </div>
+            ) : (
+              <>
+                <TableColumnFilters
+                  filters={patchFilters}
+                  onReset={resetPatchFilters}
+                  resultCount={columnFilteredPatches.length}
+                  totalCount={filteredPatches.length}
                 />
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <div className="table-scroll">
+                  <table className="operations-table exposure-table">
                     <thead>
-                      <tr style={{ borderBottom: "1px solid var(--border-color)" }}>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>KB ID</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>CVE Count</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Affected Servers</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Priority Score</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Overdue</th>
+                      <tr>
+                        <th>Priority</th>
+                        <th>KB</th>
+                        <th>CVEs resolved</th>
+                        <th>Reachability</th>
+                        <th>Business impact</th>
+                        <th>Risk reduction</th>
+                        <th aria-label="Open" />
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredPatches.map((patch) => (
-                        <tr key={patch.kb_id} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                          <td style={{ padding: "0.5rem", fontSize: "0.875rem" }}>
-                            {patch.kb_id}
+                      {patchPaging.pageRows.map((patch, index) => (
+                        <tr key={patch.kb_id}>
+                          <td>
+                            <span className="rank-number">
+                              {String(patchPaging.page * patchPaging.pageSize + index + 1).padStart(2, "0")}
+                            </span>
                           </td>
-                          <td style={{ padding: "0.5rem" }}>{patch.cve_ids?.length || 0}</td>
-                          <td style={{ padding: "0.5rem" }}>{patch.affected_server_count}</td>
-                          <td style={{ padding: "0.5rem" }}>
-                            {patch.priority_score?.toFixed(2) || "N/A"}
+                          <td>
+                            <Link className="table-primary-link" href={`/exposure/kbs/${encodeURIComponent(patch.kb_id)}`}>
+                              {patch.kb_id}
+                            </Link>
+                            <div className="table-secondary">{patch.recommended_action}</div>
                           </td>
-                          <td style={{ padding: "0.5rem" }}>
-                            {patch.overdue_count > 0 ? (
-                              <span style={{ color: "var(--critical-color)" }}>{patch.overdue_count}</span>
+                          <td>
+                            <strong>{patch.cve_ids?.length || 0}</strong>
+                            <div className="table-secondary">
+                              {patch.cve_ids?.length ? (
+                                patch.cve_ids.slice(0, 3).map((cveId, i) => (
+                                  <span key={cveId}>
+                                    {i > 0 && ", "}
+                                    <Link className="table-primary-link" href={`/exposure/cves/${encodeURIComponent(cveId)}`}>
+                                      {cveId}
+                                    </Link>
+                                  </span>
+                                ))
+                              ) : (
+                                "Advisory-only KB"
+                              )}
+                            </div>
+                          </td>
+                          <td>
+                            <StatusBadge
+                              label={patch.reachable_server_count ? "Reachable" : "No path observed"}
+                              tone={patch.reachable_server_count ? "warning" : "neutral"}
+                            />
+                            <div className="table-secondary">{patch.reachable_server_count} reachable servers</div>
+                          </td>
+                          <td>
+                            <strong>{patch.affected_business_service_count} business services</strong>
+                            <div className="table-secondary">
+                              {patch.affected_application_count} apps · {patch.affected_server_count} servers
+                            </div>
+                          </td>
+                          <td>
+                            <strong>{Math.round(patch.expected_risk_reduction)}</strong>
+                            <div className="risk-bar">
+                              <span style={{ width: `${Math.min(100, Math.max(0, patch.expected_risk_reduction))}%` }} />
+                            </div>
+                          </td>
+                          <td>
+                            <Link
+                              className="table-secondary"
+                              href={`/remediation?kb=${encodeURIComponent(patch.kb_id)}`}
+                              style={{ marginRight: "0.75rem" }}
+                            >
+                              Remediate
+                            </Link>
+                            <Link
+                              className="table-open-link"
+                              href={`/exposure/kbs/${encodeURIComponent(patch.kb_id)}`}
+                              aria-label={`Open ${patch.kb_id}`}
+                            >
+                              →
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            <TablePagination
+              total={patchPaging.total}
+              pageRows={patchPaging.pageRows.length}
+              page={patchPaging.page}
+              onPageChange={patchPaging.setPage}
+              pageSize={patchPaging.pageSize}
+              onPageSizeChange={patchPaging.setPageSize}
+              label="KBs"
+            />
+          </section>
+
+          <section className="card queue-card">
+            <div className="card-header">
+              <div>
+                <h2>CVE exposure</h2>
+                <p>{exposureRows.length} CVEs mapped to open findings</p>
+              </div>
+            </div>
+            {columnFilteredExposures.length === 0 ? (
+              <div className="card-body">
+                <p className="muted">No CVEs match the current filters.</p>
+              </div>
+            ) : (
+              <>
+                <TableColumnFilters
+                  filters={exposureFilters}
+                  onReset={resetExposureFilters}
+                  resultCount={columnFilteredExposures.length}
+                  totalCount={exposureRows.length}
+                />
+                <div className="table-scroll">
+                  <table className="operations-table exposure-table">
+                    <thead>
+                      <tr>
+                        <th>CVE</th>
+                        <th>Severity</th>
+                        <th>Affected servers</th>
+                        <th>Patch KB</th>
+                        <th aria-label="Open" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {exposurePaging.pageRows.map((exposure) => (
+                        <tr key={exposure.cve_id}>
+                          <td>
+                            <Link className="table-primary-link" href={`/exposure/cves/${encodeURIComponent(exposure.cve_id)}`}>
+                              {exposure.cve_id}
+                            </Link>
+                          </td>
+                          <td>
+                            <StatusBadge label={exposure.severity} tone={statusTone(exposure.severity)} compact />
+                          </td>
+                          <td>{exposure.affected_server_count}</td>
+                          <td>
+                            {exposure.missing_kb ? (
+                              <Link className="table-primary-link" href={`/exposure/kbs/${encodeURIComponent(exposure.missing_kb)}`}>
+                                {exposure.missing_kb}
+                              </Link>
                             ) : (
-                              "0"
+                              <span>No KB mapped</span>
                             )}
                           </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </section>
-          )}
-
-          {/* CVE exposure */}
-          {exposures.data?.data && (exposures.data.data as VulnerabilityExposure[]).length > 0 && (
-            <section className="card">
-              <div className="card-header">
-                <h2>CVE exposure</h2>
-              </div>
-              <div className="card-body">
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr style={{ borderBottom: "1px solid var(--border-color)" }}>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>CVE ID</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Affected Servers</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(exposures.data.data as VulnerabilityExposure[]).map((exposure) => (
-                        <tr key={exposure.cve_id} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                          <td style={{ padding: "0.5rem", fontSize: "0.875rem" }}>
-                            {exposure.cve_id}
+                          <td>
+                            <Link
+                              className="table-open-link"
+                              href={`/exposure/cves/${encodeURIComponent(exposure.cve_id)}`}
+                              aria-label={`Open ${exposure.cve_id}`}
+                            >
+                              →
+                            </Link>
                           </td>
-                          <td style={{ padding: "0.5rem" }}>{exposure.affected_server_count}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-              </div>
-            </section>
-          )}
+              </>
+            )}
+            <TablePagination
+              total={exposurePaging.total}
+              pageRows={exposurePaging.pageRows.length}
+              page={exposurePaging.page}
+              onPageChange={exposurePaging.setPage}
+              pageSize={exposurePaging.pageSize}
+              onPageSizeChange={exposurePaging.setPageSize}
+              label="CVEs"
+            />
+          </section>
 
-          {/* Risk exceptions */}
-          {riskExceptions.data?.data && (riskExceptions.data.data as RiskException[]).length > 0 && (
+          {exceptionRows.length > 0 && (
             <section className="card">
               <div className="card-header">
                 <h2>Risk exceptions</h2>
@@ -230,21 +374,12 @@ export default function PatchPrioritiesPage() {
                             type="checkbox"
                             onChange={(e) => {
                               if (e.target.checked) {
-                                setSelectedExceptions(
-                                  new Set(
-                                    (riskExceptions.data?.data as RiskException[]).map(
-                                      (ex) => ex.exception_id
-                                    )
-                                  )
-                                );
+                                setSelectedExceptions(new Set(exceptionRows.map((ex) => ex.exception_id)));
                               } else {
                                 setSelectedExceptions(new Set());
                               }
                             }}
-                            checked={
-                              selectedExceptions.size ===
-                              (riskExceptions.data?.data as RiskException[]).length
-                            }
+                            checked={selectedExceptions.size === exceptionRows.length && exceptionRows.length > 0}
                           />
                         </th>
                         <th style={{ padding: "0.5rem", textAlign: "left" }}>Server</th>
@@ -252,7 +387,7 @@ export default function PatchPrioritiesPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(riskExceptions.data.data as RiskException[]).map((exception) => (
+                      {exceptionRows.map((exception) => (
                         <tr key={exception.exception_id} style={{ borderBottom: "1px solid var(--border-color)" }}>
                           <td style={{ padding: "0.5rem" }}>
                             <input
@@ -273,7 +408,9 @@ export default function PatchPrioritiesPage() {
                           </td>
                           <td style={{ padding: "0.5rem" }}>{exception.server_id || "N/A"}</td>
                           <td style={{ padding: "0.5rem", fontSize: "0.875rem" }}>
-                            {exception.cve_id}
+                            <Link className="table-primary-link" href={`/exposure/cves/${encodeURIComponent(exception.cve_id)}`}>
+                              {exception.cve_id}
+                            </Link>
                           </td>
                         </tr>
                       ))}
