@@ -12,6 +12,7 @@ import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
+import { formatDefenderAsset } from "./asset-labels";
 import type {
   DefenderOverview,
   DefenderAlert,
@@ -294,7 +295,7 @@ export default function DefenderPosturePage() {
                     </summary>
                     <div style={{ marginTop: "0.5rem", fontSize: "0.875rem", lineHeight: 1.5 }}>
                       <p>
-                        <strong>Asset:</strong> {rec.asset_name} ({rec.inventory_kind || rec.resource_type || "resource"})
+                        <strong>Asset:</strong> {formatDefenderAsset(rec)}
                       </p>
                       <p>
                         <strong>Status:</strong> <StatusBadge label={rec.status} tone={statusTone(rec.status)} compact />

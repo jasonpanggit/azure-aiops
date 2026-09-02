@@ -200,25 +200,37 @@ describe("ExposurePage Defender posture", () => {
     api.riskExceptions.mockResolvedValue(envelope([]));
   });
 
-  it("renders direct Defender CVEs without inventing a KB mapping", async () => {
+  it("summarizes Defender and patch signals and links to the detail sub-pages", async () => {
     render(
       <ScopeProvider>
         <ExposurePage />
       </ScopeProvider>
     );
 
-    expect(await screen.findByText("Defender for Cloud posture")).toBeInTheDocument();
-    expect(screen.getByText("Defender for Storage")).toBeInTheDocument();
-    expect(screen.getAllByText("CVE-2026-0001").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Remediate vulnerable software").length).toBeGreaterThan(0);
-    expect(screen.getByText(/Contoso Server 2.0/)).toBeInTheDocument();
-    expect(screen.getByText("No KB mapped")).toBeInTheDocument();
-    expect(screen.getByText("Active threats and attack paths")).toBeInTheDocument();
-    expect(screen.getByText("Cryptominer detected")).toBeInTheDocument();
-    expect(screen.getByText("Internet to storage")).toBeInTheDocument();
-    expect(screen.getByText("Secure-score improvement opportunities")).toBeInTheDocument();
-    expect(screen.getByText("2 subscriptions")).toBeInTheDocument();
-    expect(screen.getByText("sub-1: 50% · sub-2: 75%")).toBeInTheDocument();
+    // The landing page is a lean summary: detail tables live on the
+    // defender-posture and patch-priorities sub-pages.
+    expect(await screen.findByRole("heading", { name: "Defender posture →" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Patch priorities →" })).toBeInTheDocument();
+
+    expect(screen.getByRole("link", { name: /Defender posture/ })).toHaveAttribute("href", "/exposure/defender-posture");
+    expect(screen.getByRole("link", { name: /Patch priorities/ })).toHaveAttribute("href", "/exposure/patch-priorities");
+
+    expect(screen.getByText("Active alerts")).toBeInTheDocument();
+    expect(screen.getByText("Attack paths")).toBeInTheDocument();
+    expect(screen.getByText("Defender recommendations")).toBeInTheDocument();
+  });
+
+  it("renders SLA metrics as placeholders when compliance data is null", async () => {
+    render(
+      <ScopeProvider>
+        <ExposurePage />
+      </ScopeProvider>
+    );
+
+    // slaCompliance resolves to a null envelope in this suite; the summary
+    // must degrade to placeholders rather than throwing on a null payload.
+    expect(await screen.findByText("Overall compliance")).toBeInTheDocument();
+    expect(screen.getAllByText("SLA data unavailable").length).toBeGreaterThan(0);
   });
 
   it("retains the selected scope when requesting risk exceptions", async () => {
