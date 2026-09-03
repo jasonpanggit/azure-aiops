@@ -5,6 +5,7 @@ import logging
 import subprocess  # nosec B404
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
@@ -223,14 +224,18 @@ class AzureCostManagementClient:
         requester: HttpRequester | None = None,
         max_retries: int = 3,
         retry_sleep: Callable[[float], None] = time.sleep,
+        max_workers: int = 4,
     ) -> None:
         self.credential = credential
         self.timeout = timeout
         self.requester = requester or httpx.request
         if max_retries < 0:
             raise ValueError("Cost Management max_retries cannot be negative")
+        if max_workers < 1:
+            raise ValueError("Cost Management max_workers must be positive")
         self.max_retries = max_retries
         self.retry_sleep = retry_sleep
+        self.max_workers = max_workers
 
     def query_actual_costs(
         self,
@@ -253,33 +258,41 @@ class AzureCostManagementClient:
         start_date = end_date - lookback + timedelta(days=1)
         rows: list[dict[str, Any]] = []
         failures: list[str] = []
-        for subscription_id in subscription_ids:
-            # Cost Management throttles per-subscription. One throttled or
-            # unauthorized subscription must not discard the cost actuals
-            # already collected for every other subscription in the scope,
-            # so failures are isolated and only escalate if *every*
-            # subscription failed.
-            try:
-                rows.extend(
-                    self._query_subscription(
-                        str(subscription_id),
-                        access_token=access_token,
-                        start=start_date,
-                        end=end_date,
+        workers = max(1, min(self.max_workers, len(subscription_ids)))
+
+        def query(subscription_id: str) -> list[dict[str, Any]]:
+            return self._query_subscription(
+                subscription_id,
+                access_token=access_token,
+                start=start_date,
+                end=end_date,
+            )
+
+        # Cost Management throttles per subscription. Bounded concurrency
+        # reduces wall-clock time while preserving failure isolation.
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="cost-subscription"
+        ) as executor:
+            futures = {
+                executor.submit(query, str(subscription_id)): str(subscription_id)
+                for subscription_id in subscription_ids
+            }
+            for future in as_completed(futures):
+                subscription_id = futures[future]
+                try:
+                    rows.extend(future.result())
+                except (RuntimeError, TypeError) as exc:
+                    failures.append(subscription_id)
+                    logger.warning(
+                        "Cost Management query failed for subscription '%s'; "
+                        "continuing with remaining subscriptions: %s",
+                        subscription_id,
+                        exc,
                     )
-                )
-            except (RuntimeError, TypeError) as exc:
-                failures.append(str(subscription_id))
-                logger.warning(
-                    "Cost Management query failed for subscription '%s'; "
-                    "continuing with remaining subscriptions: %s",
-                    subscription_id,
-                    exc,
-                )
         if failures and len(failures) == len(subscription_ids):
             raise RuntimeError(
                 "Cost Management query failed for every subscription in scope: "
-                + ", ".join(failures)
+                + ", ".join(sorted(failures))
             )
         return rows
 

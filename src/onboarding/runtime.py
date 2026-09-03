@@ -192,6 +192,7 @@ def build_connection_cost_client(
     return AzureCostManagementClient(
         credential_resolver.build(connection.credential),
         timeout=config.command_timeout_seconds,
+        max_workers=config.max_query_workers,
     )
 
 

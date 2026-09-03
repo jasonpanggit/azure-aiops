@@ -8,7 +8,12 @@ package it replaced has been removed.
 from __future__ import annotations
 
 import dataclasses
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def run_inventory_refresh_all_connections(
@@ -39,21 +44,47 @@ def run_inventory_refresh_all_connections(
     resolver = CredentialResolver(provider=default_secret_provider())
     connection_output_dirs: dict[str, str] = {}
     connection_results: dict[str, Any] = {}
-    for connection in connections:
-        pipeline = build_connection_inventory_pipeline(config, connection, resolver)
-        connection_output_dirs[connection.connection_id] = str(pipeline.store.root)
+    max_workers = max(1, min(config.max_query_workers, len(connections)))
+    started = time.monotonic()
+
+    def refresh_connection(connection) -> tuple[str, str, dict[str, Any]]:
+        connection_started = time.monotonic()
         try:
+            pipeline = build_connection_inventory_pipeline(config, connection, resolver)
             result = pipeline.refresh()
         except Exception as exc:  # noqa: BLE001 - isolate one connection's failure
-            connection_results[connection.connection_id] = {
-                "status": "failed",
-                "error": str(exc),
-            }
-            continue
-        connection_results[connection.connection_id] = {
-            "status": "completed",
-            "manifest": result.manifest,
-        }
+            outcome = {"status": "failed", "error": str(exc)}
+            output_dir = ""
+        else:
+            outcome = {"status": "completed", "manifest": result.manifest}
+            output_dir = str(pipeline.store.root)
+        return (
+            connection.connection_id,
+            output_dir,
+            {**outcome, "_duration_seconds": round(time.monotonic() - connection_started, 3)},
+        )
+
+    # Acquisition is independently scoped per connection, so it can run in
+    # parallel. Merge and Fabric publication below remain single-writer steps.
+    with ThreadPoolExecutor(
+        max_workers=max_workers, thread_name_prefix="inventory-connection"
+    ) as executor:
+        futures = [executor.submit(refresh_connection, connection) for connection in connections]
+        for future in as_completed(futures):
+            connection_id, output_dir, outcome = future.result()
+            connection_output_dirs[connection_id] = output_dir
+            connection_results[connection_id] = outcome
+
+    for outcome in connection_results.values():
+        duration = outcome.pop("_duration_seconds", None)
+        if duration is not None:
+            logger.info("inventory_connection_refresh duration_seconds=%s", duration)
+    logger.info(
+        "inventory_connections_refresh duration_seconds=%s connections=%s workers=%s",
+        round(time.monotonic() - started, 3),
+        len(connections),
+        max_workers,
+    )
 
     succeeded = [
         connection_id

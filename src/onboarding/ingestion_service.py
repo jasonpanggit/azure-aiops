@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -87,13 +88,19 @@ class IngestionService:
         specs = QueryCatalog(self.config.change_overlap_minutes).build(
             since, include_management_groups=bool(self.config.management_groups)
         )
-        query_results = self.source.fetch(specs, subscriptions)
+        # Cost Management is independent of ARG discovery. Overlap both
+        # bounded acquisition paths; normalization and publication stay
+        # serialized below.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="ingestion") as executor:
+            query_future = executor.submit(self.source.fetch, specs, subscriptions)
+            cost_future = executor.submit(self._fetch_cost_actuals, subscriptions, started)
+            query_results = query_future.result()
+            cost_rows = cost_future.result()
         for spec in specs:
             for row in query_results.get(spec.name, []):
                 row.setdefault("query_version", spec.version)
                 row.setdefault("requested_scope", {"subscription": sorted(subscriptions)})
                 row.setdefault("provider_status", "ok")
-        cost_rows = self._fetch_cost_actuals(subscriptions, started)
         previous_changes = self.store.read_dataset("changes/resource_changes")
         normalization_payload = dict(query_results)
         if self.config.identity_source == "inventory":
