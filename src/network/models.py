@@ -58,6 +58,7 @@ PRIVATE_LINK_RESOURCE_TYPES: dict[str, str] = {
     "microsoft.eventhub/namespaces": "Event Hubs",
     "microsoft.web/sites": "App Service",
     "microsoft.cognitiveservices/accounts": "Azure AI Services",
+    "microsoft.fabric/capacities": "Microsoft Fabric",
 }
 
 

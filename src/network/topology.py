@@ -673,6 +673,8 @@ _WORKLOAD_ENTITY_TYPE_BY_PROVIDER = {
     "microsoft.containerregistry/registries": "ContainerRegistry",
     "microsoft.app/managedenvironments": "ContainerAppEnvironment",
     "microsoft.web/sites": "AppService",
+    "microsoft.cognitiveservices/accounts": "AIFoundryAccount",
+    "microsoft.fabric/capacities": "FabricCapacity",
 }
 
 

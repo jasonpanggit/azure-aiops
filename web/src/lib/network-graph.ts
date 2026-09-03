@@ -136,6 +136,8 @@ const WORKLOAD_ENTITY_TYPES = new Set([
   "StorageAccount",
   "VirtualMachine",
   "VirtualMachineScaleSet",
+  "AIFoundryAccount",
+  "FabricCapacity",
 ]);
 
 /** Resolves the icon path for a shared service kind, falling back to a VNet glyph. */
