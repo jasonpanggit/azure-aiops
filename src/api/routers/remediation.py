@@ -131,7 +131,7 @@ def preview_plan(
     plan_id: str,
     context: Context,
     scope: ReadScope,
-    patch_id: Annotated[list[str], Query()] = [],
+    patch_id: Annotated[list[str] | None, Query()] = None,
 ) -> dict[str, Any]:
     plan = _get_scoped_plan(context, scope, plan_id)
     action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
@@ -233,7 +233,7 @@ def plan_workflow(
     plan_id: str,
     context: Context,
     scope: ReadScope,
-    patch_id: Annotated[list[str], Query()] = [],
+    patch_id: Annotated[list[str] | None, Query()] = None,
 ) -> dict[str, Any]:
     """Project the complete scoped workflow without introducing a mutation path."""
     plan = _get_scoped_plan(context, scope, plan_id)
