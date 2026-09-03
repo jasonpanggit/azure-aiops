@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
 import { vulnerabilityApi } from "@/lib/services";
@@ -19,6 +20,7 @@ import type {
   DefenderAttackPath,
   DefenderSecureScoreControl,
   DefenderPostureFinding,
+  ContainerImageExposure,
 } from "@/lib/types";
 
 /** Focused page for Defender security monitoring: overview, alerts, attack paths, controls, recommendations. */
@@ -30,6 +32,7 @@ export default function DefenderPosturePage() {
   const attackPaths = useApi(() => vulnerabilityApi.defenderAttackPaths(scope), [scope]);
   const controls = useApi(() => vulnerabilityApi.defenderSecureScoreControls(scope), [scope]);
   const recommendations = useApi(() => vulnerabilityApi.defenderPosture(scope), [scope]);
+  const containerImages = useApi(() => vulnerabilityApi.containerImageExposures(scope), [scope]);
 
   const allLoading = useMemo(
     () =>
@@ -37,8 +40,9 @@ export default function DefenderPosturePage() {
       alerts.loading ||
       attackPaths.loading ||
       controls.loading ||
-      recommendations.loading,
-    [overview.loading, alerts.loading, attackPaths.loading, controls.loading, recommendations.loading]
+      recommendations.loading ||
+      containerImages.loading,
+    [overview.loading, alerts.loading, attackPaths.loading, controls.loading, recommendations.loading, containerImages.loading]
   );
 
   const anyError = useMemo(
@@ -47,8 +51,9 @@ export default function DefenderPosturePage() {
       alerts.error ||
       attackPaths.error ||
       controls.error ||
-      recommendations.error,
-    [overview.error, alerts.error, attackPaths.error, controls.error, recommendations.error]
+      recommendations.error ||
+      containerImages.error,
+    [overview.error, alerts.error, attackPaths.error, controls.error, recommendations.error, containerImages.error]
   );
 
   const alertRows = useMemo(() => (alerts.data?.data as DefenderAlert[]) ?? [], [alerts.data]);
@@ -82,6 +87,20 @@ export default function DefenderPosturePage() {
     { id: "resource_type", label: "Resource type", getValues: (rec) => rec.resource_type },
   ]);
   const recommendationPaging = useTablePagination(filteredRecommendations);
+
+  const containerImageRows = useMemo(
+    () => (containerImages.data?.data as ContainerImageExposure[]) ?? [],
+    [containerImages.data]
+  );
+  const {
+    filteredRows: filteredContainerImages,
+    filters: containerImageFilters,
+    resetFilters: resetContainerImageFilters,
+  } = useColumnFilters(containerImageRows, [
+    { id: "severity", label: "Severity", getValues: (img) => img.severity },
+    { id: "registry_host", label: "Registry", getValues: (img) => img.registry_host },
+  ]);
+  const containerImagePaging = useTablePagination(filteredContainerImages);
 
   return (
     <div className="page-container">
@@ -126,6 +145,12 @@ export default function DefenderPosturePage() {
                     value={recommendationRows.length}
                     detail="Unhealthy Defender assessments"
                     tone="warning"
+                  />
+                  <MetricCard
+                    label="Vulnerable container images"
+                    value={containerImageRows.length}
+                    detail={`${(overview.data.data as DefenderOverview).container_image_cve_count || 0} CVEs across ACR images`}
+                    tone="critical"
                   />
                 </div>
               </div>
@@ -320,6 +345,80 @@ export default function DefenderPosturePage() {
                 pageSize={recommendationPaging.pageSize}
                 onPageSizeChange={recommendationPaging.setPageSize}
                 label="recommendations"
+              />
+            </section>
+          )}
+
+          {/* Container image vulnerabilities */}
+          {containerImageRows.length > 0 && (
+            <section className="card queue-card">
+              <div className="card-header">
+                <h2>Container image vulnerabilities</h2>
+                <p>Vulnerable ACR-hosted container images rolled up from Defender per-package findings.</p>
+              </div>
+              <TableColumnFilters
+                filters={containerImageFilters}
+                onReset={resetContainerImageFilters}
+                resultCount={filteredContainerImages.length}
+                totalCount={containerImageRows.length}
+              />
+              <div className="card-body">
+                {containerImagePaging.pageRows.map((img) => (
+                  <details
+                    key={img.id}
+                    style={{ marginBottom: "1rem", borderBottom: "1px solid var(--border-color)", paddingBottom: "1rem" }}
+                  >
+                    <summary style={{ cursor: "pointer", fontWeight: 500, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <StatusBadge label={img.severity} tone={statusTone(img.severity)} compact />
+                      {img.repository}
+                      {img.image_tags?.length ? `:${img.image_tags[0]}` : ""}
+                    </summary>
+                    <div style={{ marginTop: "0.5rem", fontSize: "0.875rem", lineHeight: 1.5 }}>
+                      <p>
+                        <strong>Registry:</strong> {img.registry_host}
+                      </p>
+                      <p>
+                        <strong>Status:</strong> <StatusBadge label={img.status} tone={statusTone(img.status)} compact />
+                      </p>
+                      <p>
+                        <strong>Critical / High:</strong> {img.critical_count || 0} / {img.high_count || 0}
+                      </p>
+                      <p>
+                        <strong>Vulnerable packages:</strong> {img.vulnerable_package_count || 0}
+                        {img.vulnerable_packages?.length ? ` (${img.vulnerable_packages.slice(0, 3).join(", ")})` : ""}
+                      </p>
+                      <p>
+                        <strong>CVEs ({img.cve_count || 0}):</strong>{" "}
+                        {img.cve_ids?.length ? (
+                          img.cve_ids.slice(0, 8).map((cveId, i) => (
+                            <span key={cveId}>
+                              {i > 0 && ", "}
+                              <Link className="table-primary-link" href={`/exposure/cves/${encodeURIComponent(cveId)}`}>
+                                {cveId}
+                              </Link>
+                            </span>
+                          ))
+                        ) : (
+                          "No CVEs listed"
+                        )}
+                      </p>
+                      {img.recommendation && (
+                        <p>
+                          <strong>Recommendation:</strong> {img.recommendation}
+                        </p>
+                      )}
+                    </div>
+                  </details>
+                ))}
+              </div>
+              <TablePagination
+                total={containerImagePaging.total}
+                pageRows={containerImagePaging.pageRows.length}
+                page={containerImagePaging.page}
+                onPageChange={containerImagePaging.setPage}
+                pageSize={containerImagePaging.pageSize}
+                onPageSizeChange={containerImagePaging.setPageSize}
+                label="images"
               />
             </section>
           )}

@@ -14,7 +14,7 @@ import re
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ontology.subscription_connection import (
@@ -50,6 +50,9 @@ _GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 
 class OnboardingError(RuntimeError):
     """Raised when an onboarding operation cannot be completed."""
+
+
+ORPHAN_SYNC_GRACE_MINUTES = 15
 
 
 class SubscriptionOnboardingService:
@@ -110,6 +113,15 @@ class SubscriptionOnboardingService:
             state = connection.sync_state
             if state is None or state.status != "running":
                 continue
+            if state.started_at:
+                try:
+                    started_at = datetime.fromisoformat(state.started_at)
+                except ValueError:
+                    started_at = None
+                if started_at is not None and self.clock() - started_at < timedelta(
+                    minutes=ORPHAN_SYNC_GRACE_MINUTES
+                ):
+                    continue
             try:
                 failed_state = dataclasses.replace(
                     state,
@@ -422,6 +434,7 @@ class SubscriptionOnboardingService:
             )
 
         identifier = run_id or str(uuid.uuid4())
+        started = self.clock()
         previous = connection.sync_state or SyncState()
         running_state = SyncState(
             status="running",
@@ -429,6 +442,7 @@ class SubscriptionOnboardingService:
             last_successful_sync_at=previous.last_successful_sync_at,
             last_failed_at=previous.last_failed_at,
             run_id=identifier,
+            started_at=_iso(started),
             source_version=previous.source_version,
             record_count=previous.record_count,
             attempts=previous.attempts,

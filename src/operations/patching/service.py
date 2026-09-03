@@ -58,6 +58,34 @@ def _resource_group(resource_id: str) -> str:
     return ""
 
 
+def _canonical_inventory_kind(row: dict[str, Any]) -> str:
+    """Normalize source-specific compute labels before applying the action gate."""
+    raw = str(row.get("inventory_kind") or "").strip()
+    if raw in {TARGET_KIND_AZURE_VM, TARGET_KIND_ARC_SERVER, TARGET_KIND_AKS_NODE}:
+        return raw
+
+    resource_type = str(
+        row.get("resource_type")
+        or row.get("target_resource_type")
+        or row.get("type")
+        or row.get("asset_id")
+        or row.get("resource_id")
+        or ""
+    ).casefold()
+    identity = "".join(
+        character
+        for character in f"{raw} {resource_type}".casefold()
+        if character.isalnum()
+    )
+    if "hybridcompute" in identity or "arcserver" in identity:
+        return TARGET_KIND_ARC_SERVER
+    if "managedcluster" in identity or "containerservice" in identity or "aksnode" in identity:
+        return TARGET_KIND_AKS_NODE
+    if "virtualmachine" in identity or identity in {"vm", "azurevm"}:
+        return TARGET_KIND_AZURE_VM
+    return raw
+
+
 class PatchingService:
     """Projects patchable inventory and executes approved patch runs."""
 
@@ -69,6 +97,7 @@ class PatchingService:
         adapter: PatchExecutionAdapter | None = None,
         patch_assessments: Iterable[dict[str, Any]] | None = None,
         require_human_approval: Callable[[], bool] | bool = True,
+        allow_self_approval: Callable[[], bool] | bool = False,
     ) -> None:
         self._vulnerability = vulnerability_service
         self._store: PatchRunStore = store or InMemoryPatchRunStore()
@@ -80,6 +109,15 @@ class PatchingService:
             require_human_approval
             if callable(require_human_approval)
             else (lambda value=require_human_approval: bool(value))
+        )
+        # Separation of duties (approver != requester) stays on by default.
+        # Demo/single-operator environments may explicitly opt out via
+        # agent_policy.allow_self_approval; defaults to False so production
+        # deployments fail closed unless an administrator opts in.
+        self._allow_self_approval: Callable[[], bool] = (
+            allow_self_approval
+            if callable(allow_self_approval)
+            else (lambda value=allow_self_approval: bool(value))
         )
         # Optional Update Manager assessment rows, keyed by target id. When
         # present they are authoritative for what is installable; without them
@@ -112,7 +150,7 @@ class PatchingService:
         return [
             self._target_from_exposure(row)
             for row in rows
-            if row.get("inventory_kind") in supported_kinds
+            if _canonical_inventory_kind(row) in supported_kinds
         ]
 
     def target(self, target_id: str, scope: Any = None) -> PatchTarget | None:
@@ -124,7 +162,7 @@ class PatchingService:
 
     def _target_from_exposure(self, row: dict[str, Any]) -> PatchTarget:
         target_id = str(row.get("asset_id") or "")
-        inventory_kind = str(row.get("inventory_kind") or "")
+        inventory_kind = _canonical_inventory_kind(row)
         patches = self._available_patches(target_id, inventory_kind, row)
         is_node_image = operation_for_kind(inventory_kind) == OPERATION_NODE_IMAGE_UPGRADE
         patchable = bool(patches)
@@ -240,9 +278,12 @@ class PatchingService:
         - When ``agent_policy.require_human_approval`` is on (the default), a
           named approver is mandatory. Previously it defaulted to the
           requester, so the field could simply be omitted.
-        - The approver may never be the requester. Separation of duties is the
-          entire point of recording an approver; self-approval records an
-          audit trail that asserts something nobody actually did.
+        - The approver may never be the requester, unless an administrator has
+          explicitly set ``agent_policy.allow_self_approval`` (default off).
+          Separation of duties is the entire point of recording an approver;
+          self-approval records an audit trail that asserts something nobody
+          actually did. The opt-out exists only for single-operator/demo
+          environments where a second approver identity is not provisioned.
 
         ``dry_run`` is exempt: it validates and short-circuits before
         ``adapter.submit`` and changes nothing.
@@ -266,7 +307,7 @@ class PatchingService:
                     "setting": "agent_policy.require_human_approval",
                 },
             )
-        if approver.casefold() == requester.casefold():
+        if approver.casefold() == requester.casefold() and not self._allow_self_approval():
             raise PatchValidationError(
                 "The approver must be someone other than the requester",
                 details={"requested_by": requester, "approved_by": approver},

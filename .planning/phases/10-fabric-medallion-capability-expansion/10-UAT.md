@@ -3,7 +3,7 @@ status: complete
 phase: 10-fabric-medallion-capability-expansion
 source: 10-01-SUMMARY.md, 10-02-SUMMARY.md, 10-03-SUMMARY.md, 10-04-SUMMARY.md, 10-05-SUMMARY.md, 10-06-SUMMARY.md, 10-07-SUMMARY.md, 10-08-SUMMARY.md, 10-09-SUMMARY.md, 10-10-SUMMARY.md, 10-11-SUMMARY.md, 10-12-SUMMARY.md, 10-13-SUMMARY.md, 10-14-SUMMARY.md, 10-15-SUMMARY.md
 started: 2026-09-02T05:45:00Z
-updated: 2026-09-02T06:15:27Z
+updated: 2026-09-02T14:46:00Z
 ---
 
 ## Current Test
@@ -41,20 +41,25 @@ evidence: Dataset health now appears as scannable cards above the detailed filte
 
 ### 6. Authenticated live payload inspection
 expected: Live Fabric medallion API payloads can be inspected end-to-end against the deployed environment.
-result: blocked
-blocked_by: third-party
-reason: Direct unauthenticated calls correctly returned 401 bearer-token required; no authenticated browser/API token was available in this session.
-latest_validation: 2026-09-02T06:15:27Z - `/layers`, `/manifest`, `/governance`, `/ingestion-history`, and `/capabilities` all returned 401 without a bearer token, confirming route protection but preventing fresh Bronze/Silver/Gold payload inspection.
+result: pass
+evidence: Protected Fabric medallion API payload was inspected with an Azure CLI bearer token after deployment.
+latest_validation: 2026-09-02T14:45:00Z - `/api/v1/fabric-medallion/layers` returned HTTP 200.
+
+### 7. Retest deployed Fabric medallion rendering
+expected: The selected subscription shows the live Bronze/Silver/Gold layer counts documented by Phase 10, with explicit healthy-empty or unavailable states only where applicable.
+result: pass
+evidence: The deployed protected route returned Bronze `18/18`, Silver `21/21`, and Gold `0/0`, matching the Phase 10 expectation.
+latest_validation: 2026-09-02T14:45:00Z - API and web deployments served the new image tag; `/health`, `/ready`, and `/connections` returned HTTP 200, and the authenticated layers payload matched expected counts.
 
 ## Summary
 
-total: 6
-passed: 5
+total: 7
+passed: 7
 issues: 0
 pending: 0
 skipped: 0
-blocked: 1
+blocked: 0
 
 ## Gaps
 
-[]
+No unresolved gaps remain for this retest.

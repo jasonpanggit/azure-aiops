@@ -872,6 +872,7 @@ def test_orphaned_running_sync_is_reconciled_to_failed_on_startup(tmp_path: Path
     stuck_state = SyncState(
         status="running",
         run_id="orphaned-run-id",
+        started_at="2020-01-01T00:00:00Z",
         attempts=1,
         stage="discovery",
         stage_message="Discovering resources",

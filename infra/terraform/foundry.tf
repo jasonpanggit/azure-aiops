@@ -131,26 +131,26 @@ locals {
   # ---------------------------------------------------------------------------
   foundry_tool_registry = {
     # -- operations-mcp: governed relay tools (curated, business-context-joined) --
-    business_service_context  = { server = "operations-mcp", purpose = "Look up the business service(s) a resource or finding belongs to and their criticality." }
-    application_context       = { server = "operations-mcp", purpose = "Look up which application(s) own or depend on a resource." }
-    impact_context            = { server = "operations-mcp", purpose = "Assess business/technical blast radius of a resource, finding, or proposed change." }
-    fabric_iq_relationships   = { server = "operations-mcp", purpose = "Traverse Fabric IQ dependency/relationship graph for a resource or service." }
-    fabric_iq_topology        = { server = "operations-mcp", purpose = "Retrieve Fabric IQ's modeled topology for a resource, service, or scope." }
-    fabric_iq_policy_context  = { server = "operations-mcp", purpose = "Retrieve policy/governance context Fabric IQ has already joined to a resource." }
-    network_topology          = { server = "operations-mcp", purpose = "Map hub/spoke/peering network topology for the target scope." }
-    hub_dependents            = { server = "operations-mcp", purpose = "List resources/services that depend on a given hub." }
-    traffic_flow              = { server = "operations-mcp", purpose = "Given a specific source and destination, decide whether the configured NSG/firewall rules permit that flow, and name the deciding rules. This evaluates rule CONFIGURATION, not flow logs -- it answers what is permitted, never what was observed. A verdict of 'indeterminate' means an endpoint or higher-priority rule could not be resolved; it must not be read as 'allowed'." }
-    firewall_nsg_gaps         = { server = "operations-mcp", purpose = "Flag firewall/NSG rules that deviate from design policy or Azure best practice." }
-    cve_exposure              = { server = "operations-mcp", purpose = "List CVE exposure for a resource, asset, or scope." }
-    cve_detail                = { server = "operations-mcp", purpose = "Get full detail (severity, exploitability) for a specific CVE." }
-    cve_attack_path           = { server = "operations-mcp", purpose = "Trace a possible attack path a CVE enables through the environment." }
-    defender_alerts           = { server = "operations-mcp", purpose = "Read governed Defender alert evidence for the current scope; returns active alerts only and changes nothing." }
-    defender_attack_paths     = { server = "operations-mcp", purpose = "Read governed Defender attack-path evidence with resolved scoped nodes; changes nothing." }
-    defender_secure_score     = { server = "operations-mcp", purpose = "Read governed Defender secure-score overview and unhealthy controls for the current scope; changes nothing." }
-    incidents                 = { server = "operations-mcp", purpose = "Look up governed incident records and their timeline/status." }
-    remediation_plans         = { server = "operations-mcp", purpose = "Look up existing approved/proposed remediation plans." }
-    remediation_opportunities = { server = "operations-mcp", purpose = "Identify candidate remediation opportunities not yet planned." }
-    defender_remediation_cases = { server = "operations-mcp", purpose = "Read governed Defender-correlated remediation cases with citations, business context, and dispositions; changes nothing." }
+    business_service_context      = { server = "operations-mcp", purpose = "Look up the business service(s) a resource or finding belongs to and their criticality." }
+    application_context           = { server = "operations-mcp", purpose = "Look up which application(s) own or depend on a resource." }
+    impact_context                = { server = "operations-mcp", purpose = "Assess business/technical blast radius of a resource, finding, or proposed change." }
+    fabric_iq_relationships       = { server = "operations-mcp", purpose = "Traverse Fabric IQ dependency/relationship graph for a resource or service." }
+    fabric_iq_topology            = { server = "operations-mcp", purpose = "Retrieve Fabric IQ's modeled topology for a resource, service, or scope." }
+    fabric_iq_policy_context      = { server = "operations-mcp", purpose = "Retrieve policy/governance context Fabric IQ has already joined to a resource." }
+    network_topology              = { server = "operations-mcp", purpose = "Map hub/spoke/peering network topology for the target scope." }
+    hub_dependents                = { server = "operations-mcp", purpose = "List resources/services that depend on a given hub." }
+    traffic_flow                  = { server = "operations-mcp", purpose = "Given a specific source and destination, decide whether the configured NSG/firewall rules permit that flow, and name the deciding rules. This evaluates rule CONFIGURATION, not flow logs -- it answers what is permitted, never what was observed. A verdict of 'indeterminate' means an endpoint or higher-priority rule could not be resolved; it must not be read as 'allowed'." }
+    firewall_nsg_gaps             = { server = "operations-mcp", purpose = "Flag firewall/NSG rules that deviate from design policy or Azure best practice." }
+    cve_exposure                  = { server = "operations-mcp", purpose = "List CVE exposure for a resource, asset, or scope." }
+    cve_detail                    = { server = "operations-mcp", purpose = "Get full detail (severity, exploitability) for a specific CVE." }
+    cve_attack_path               = { server = "operations-mcp", purpose = "Trace a possible attack path a CVE enables through the environment." }
+    defender_alerts               = { server = "operations-mcp", purpose = "Read governed Defender alert evidence for the current scope; returns active alerts only and changes nothing." }
+    defender_attack_paths         = { server = "operations-mcp", purpose = "Read governed Defender attack-path evidence with resolved scoped nodes; changes nothing." }
+    defender_secure_score         = { server = "operations-mcp", purpose = "Read governed Defender secure-score overview and unhealthy controls for the current scope; changes nothing." }
+    incidents                     = { server = "operations-mcp", purpose = "Look up governed incident records and their timeline/status." }
+    remediation_plans             = { server = "operations-mcp", purpose = "Look up existing approved/proposed remediation plans." }
+    remediation_opportunities     = { server = "operations-mcp", purpose = "Identify candidate remediation opportunities not yet planned." }
+    defender_remediation_cases    = { server = "operations-mcp", purpose = "Read governed Defender-correlated remediation cases with citations, business context, and dispositions; changes nothing." }
     remediation_business_decision = { server = "operations-mcp", purpose = "Read governed business-decision detail for a remediation plan or correlated case, including costs, options, urgency, confidence, and review requirements; changes nothing." }
 
     # -- azure-mcp: Microsoft's official Azure MCP Server (live, raw Azure state) --

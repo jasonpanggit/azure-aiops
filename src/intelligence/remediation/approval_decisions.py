@@ -36,6 +36,10 @@ class ExecutionSnapshotError(RuntimeError):
 
 def execution_snapshot_hash(snapshot: dict[str, Any]) -> str:
     """Hash the canonical, executable fields of an approval snapshot."""
+    if snapshot.get("snapshot_kind") == "defender_configuration":
+        from operations.defender_configuration import configuration_snapshot_hash
+
+        return configuration_snapshot_hash(snapshot)
     canonical = {field: snapshot.get(field) for field in _SNAPSHOT_FIELDS}
     serialized = json.dumps(
         canonical,
@@ -47,9 +51,51 @@ def execution_snapshot_hash(snapshot: dict[str, Any]) -> str:
 
 
 def build_execution_snapshot(
-    plan: dict[str, Any], patching_service: Any, *, scope: Any = None
+    plan: dict[str, Any],
+    patching_service: Any = None,
+    *,
+    configuration_adapter: Any = None,
+    scope: Any = None,
 ) -> dict[str, Any]:
-    """Derive the exact patch action represented by the plan's current target."""
+    """Derive the exact server-owned action represented by the current plan."""
+    from operations.defender_configuration import (
+        DEFENDER_CONFIGURATION_ACTION_IDS,
+        DefenderConfigurationUnavailable,
+        build_defender_configuration_snapshot,
+    )
+
+    action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
+    if action_id in DEFENDER_CONFIGURATION_ACTION_IDS:
+        if configuration_adapter is None:
+            raise ExecutionSnapshotError(
+                "Defender configuration execution is not configured",
+                reason="configuration_execution_unavailable",
+                details={"plan_id": plan.get("plan_id"), "action_id": action_id},
+            )
+        try:
+            snapshot = build_defender_configuration_snapshot(
+                plan, configuration_adapter, scope=scope
+            )
+        except DefenderConfigurationUnavailable as exc:
+            raise ExecutionSnapshotError(
+                str(exc),
+                reason=exc.reason,
+                details={"plan_id": plan.get("plan_id"), "action_id": action_id},
+            ) from exc
+        snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
+        return snapshot
+    if action_id != CONTROLLED_PATCH_RECOVERY:
+        raise ExecutionSnapshotError(
+            "This recommendation has no supported direct execution action",
+            reason="action_not_executable",
+            details={"plan_id": plan.get("plan_id"), "action_id": action_id},
+        )
+    if patching_service is None:
+        raise ExecutionSnapshotError(
+            "Patch execution is not configured",
+            reason="patch_execution_unavailable",
+            details={"plan_id": plan.get("plan_id")},
+        )
     resource = plan.get("resource") or {}
     target_id = str(resource.get("id") or plan.get("resource_key") or "").strip()
     target = patching_service.target(target_id, scope)

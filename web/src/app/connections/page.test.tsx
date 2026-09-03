@@ -14,6 +14,7 @@ const {
   health,
   list,
   mapMetadata,
+  sync,
   updateConnection,
 } = vi.hoisted(() => ({
   create: vi.fn(),
@@ -27,6 +28,7 @@ const {
   health: vi.fn(),
   list: vi.fn(),
   mapMetadata: vi.fn(),
+  sync: vi.fn(),
   updateConnection: vi.fn(),
 }));
 
@@ -37,6 +39,7 @@ vi.mock("@/lib/services", () => ({
     health,
     list,
     mapMetadata,
+    sync,
     update: updateConnection,
     validate: vi.fn(),
   },
@@ -97,6 +100,7 @@ describe("Connections page onboarding", () => {
     health.mockReset();
     list.mockReset();
     mapMetadata.mockReset();
+    sync.mockReset();
     updateConnection.mockReset();
     fabricLayers.mockReset();
     fabricCapabilities.mockReset();
@@ -304,6 +308,31 @@ describe("Connections page onboarding", () => {
     expect(health).toHaveBeenCalledWith("prod");
     expect(screen.queryByRole("button", { name: "Validate" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sync" })).not.toBeInTheDocument();
+  });
+
+  it("shows manual sync progress and the final result", async () => {
+    list.mockResolvedValue({ ...emptyEnvelope, data: [connection] });
+    sync.mockResolvedValue({
+      ...emptyEnvelope,
+      data: { sync_state: { status: "running", stage: "queued", progress_pct: 0 } },
+    });
+    health.mockResolvedValue({
+      ...emptyEnvelope,
+      data: {
+        connections: [{
+          connection_id: connection.connection_id,
+          sync: { status: "succeeded", stage: "succeeded", progress_pct: 100, record_count: 42 },
+        }],
+      },
+    });
+
+    renderConnectionsPage();
+    await screen.findByText("Production");
+    fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Sync completed: succeeded (100%)");
+    expect(screen.getByText("Production is up to date (42 records synced).")).toBeInTheDocument();
+    expect(sync).toHaveBeenCalledWith("prod", "manual");
   });
 });
 

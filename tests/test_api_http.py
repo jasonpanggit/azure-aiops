@@ -19,6 +19,7 @@ from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
+from fabric.sync_service import _table_source_status_rows
 from onboarding.service import SubscriptionOnboardingService
 from storage.delta_writer import DeltaWriteMode, DeltaWriter
 from storage.onelake_writer import OneLakeWriter
@@ -622,7 +623,44 @@ class TestFabricMedallionRouterTask1:
         assert body["data"]["layers"]["bronze"] == {"healthy": 1, "total": 1}
         assert body["data"]["layers"]["silver"] == {"healthy": 1, "total": 1}
         assert body["data"]["layers"]["gold"] == {"healthy": 2, "total": 2}
+        assert body["data"]["tables"] == {
+            "bronze": ["bronze_resources"],
+            "silver": ["silver_incidents"],
+            "gold": ["gold_hidden", "gold_operational_context"],
+        }
         assert body["evidence"][0]["source_engine"] == "fabric.medallion_health"
+
+    def test_fabric_medallion_layers_keeps_sync_generated_scope(
+        self, fabric_medallion_client, monkeypatch
+    ):
+        from api.routers import fabric_medallion as fabric_medallion_router
+
+        generated_rows = _table_source_status_rows(
+            {
+                "bronze_resources": [{"subscription_id": SUB_A}],
+                "silver_empty": [],
+            },
+            "run-generated",
+            datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            requested_scope={"subscription": [SUB_A]},
+        )
+        monkeypatch.setattr(
+            fabric_medallion_router,
+            "_metadata_source_status_rows",
+            lambda _context: generated_rows,
+        )
+
+        response = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/layers?subscription={SUB_A}",
+            headers=_auth(SCOPED_ADMIN_TOKEN),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["layers"] == {
+            "bronze": {"healthy": 1, "total": 1},
+            "silver": {"healthy": 1, "total": 1},
+            "gold": {"healthy": 0, "total": 0},
+        }
 
     def test_fabric_medallion_dataset_detail_wraps_status_and_404s_unknown(
         self, fabric_medallion_client

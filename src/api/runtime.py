@@ -75,6 +75,10 @@ from onboarding.runtime import (
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
 from operations.autonomous_investigation import configure_ledger_store
+from operations.defender_configuration import (
+    AzureArmDefenderConfigurationAdapter,
+    UnconfiguredDefenderConfigurationAdapter,
+)
 from operations.foundry_agent import (
     SPECIALIST_IDS,
     FoundryPromptAgent,
@@ -132,6 +136,7 @@ ENV_APPROVED_SEARCH_API_ENDPOINT = "APPROVED_SEARCH_API_ENDPOINT"
 ENV_APPROVED_SEARCH_API_KEY = "APPROVED_SEARCH_API_KEY"
 # Opt-in switch for real Azure patch execution. Absent it, patch runs refuse.
 ENV_PATCH_EXECUTION = "AIOPS_PATCH_EXECUTION"
+ENV_DEFENDER_CONFIGURATION_EXECUTION = "AIOPS_DEFENDER_CONFIGURATION_EXECUTION"
 ENV_GATEWAY_ASSERTION = "AIOPS_GATEWAY_ASSERTION"
 
 AUTH_GATEWAY = "gateway"
@@ -336,6 +341,8 @@ _snapshot_tables_cache: dict[str, tuple[float, tuple[list[dict[str, list[dict]]]
 # subscription set, since rows fetched for one scope must never serve another.
 _HYBRID_NETWORK_CACHE_TTL_SECONDS = 30
 _hybrid_network_cache: dict[tuple[str, tuple[str, ...]], tuple[float, list[dict]]] = {}
+_HYBRID_VULNERABILITY_CACHE_TTL_SECONDS = 30
+_hybrid_vulnerability_cache: dict[tuple[str, tuple[str, ...]], tuple[float, Any]] = {}
 
 
 def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
@@ -778,6 +785,7 @@ def _build_vulnerability_service(
     *,
     semantic: SemanticEngine | None = None,
     network: NetworkIntelligenceService | None = None,
+    connection_context: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> VulnerabilityIntelligenceService | None:
     """Build vulnerability intelligence from one authoritative snapshot."""
     if not freshness:
@@ -785,6 +793,7 @@ def _build_vulnerability_service(
     pending: list[dict[str, Any]] = []
     defender_findings: list[dict[str, Any]] = []
     defender_assessments: list[dict[str, Any]] = []
+    container_image_exposures: list[dict[str, Any]] = []
     defender_signals: dict[str, list[dict[str, Any]]] = {
         name: []
         for name in (
@@ -812,6 +821,11 @@ def _build_vulnerability_service(
                 {
                     "finding_id": str(row.get("resource_id") or f"{target}|{kb_id}"),
                     "server_id": target,
+                    "subscription_id": str(
+                        row.get("subscription_id")
+                        or row.get("subscriptionId")
+                        or ""
+                    ),
                     "missing_kb": kb_id,
                     "severity": row.get("severity") or "Unknown",
                     "recommended_patch": row.get("update_name") or kb_id,
@@ -872,6 +886,35 @@ def _build_vulnerability_service(
                     "subscription_id": str(row.get("subscription_id") or ""),
                 }
             )
+        for row in table.get("silver_container_image_exposure") or []:
+            registry = str(row.get("registry_resource_id") or row.get("target_resource_id") or "")
+            if not registry:
+                continue
+            container_image_exposures.append(
+                {
+                    "id": str(row.get("resource_id") or ""),
+                    "server_id": registry,
+                    "target_resource_id": str(row.get("target_resource_id") or ""),
+                    "registry_resource_id": registry,
+                    "registry_host": str(row.get("registry_host") or ""),
+                    "repository": str(row.get("repository") or ""),
+                    "image_digest": str(row.get("image_digest") or ""),
+                    "image_tags": list(row.get("image_tags") or []),
+                    "image_uri": str(row.get("image_uri") or ""),
+                    "last_pushed_at": str(row.get("last_pushed_at") or ""),
+                    "status": str(row.get("status") or "Unhealthy"),
+                    "severity": str(row.get("severity") or "Unknown"),
+                    "critical_count": int(row.get("critical_count") or 0),
+                    "high_count": int(row.get("high_count") or 0),
+                    "vulnerable_package_count": int(row.get("vulnerable_package_count") or 0),
+                    "cve_count": int(row.get("cve_count") or 0),
+                    "cve_ids": list(row.get("cve_ids") or []),
+                    "vulnerable_packages": list(row.get("vulnerable_packages") or []),
+                    "recommendation": str(row.get("recommendation") or ""),
+                    "last_assessed_at": str(row.get("last_assessed_at") or ""),
+                    "subscription_id": str(row.get("subscription_id") or ""),
+                }
+            )
         for name, signal_rows in defender_signals.items():
             rows = table.get(f"silver_defender_{name}") or []
             if name == "source_status" and not rows:
@@ -916,6 +959,7 @@ def _build_vulnerability_service(
     findings = _merge_vulnerability_finding_rows(
         [*expanded_findings, *defender_findings]
     )
+    _attach_connection_business_context(findings, connection_context)
 
     all_cve_ids = tuple(
         sorted({item["cve_id"] for item in findings if item["cve_id"].upper().startswith("CVE-")})
@@ -931,6 +975,7 @@ def _build_vulnerability_service(
 
     _attach_business_context(findings, semantic)
     _attach_business_context(defender_assessments, semantic)
+    _attach_business_context(container_image_exposures, semantic)
     # CR-05: `alerts`/`attack_paths`/.../`secure_score_controls` are all
     # mapped by `InventoryDatasetMapper.load()` through the generic
     # `_entity_row()` helper (both the Fabric-backed silver tables and the
@@ -967,6 +1012,7 @@ def _build_vulnerability_service(
     service = VulnerabilityIntelligenceService.from_rows(
         findings=findings,
         defender_assessments=defender_assessments,
+        container_image_exposures=container_image_exposures,
         defender_alerts=defender_signals["alerts"],
         defender_attack_paths=defender_signals["attack_paths"],
         defender_attack_path_nodes=defender_signals["attack_path_nodes"],
@@ -1404,14 +1450,58 @@ def _attach_business_context(
         if not server_id or server_id not in entities:
             continue
         public = semantic.indexes.public(server_id)
-        item["application"] = public.get("application", "")
-        item["business_service"] = public.get("business_service", "")
-        item["owner"] = public.get("owner", "")
-        item["environment"] = public.get("environment", "")
-        item["criticality"] = public.get("criticality", "")
-        item["subscription_id"] = public.get("subscription_id", "")
-        item["subscription_connection"] = public.get("subscription_connection", "")
-        item["region"] = public.get("region", "")
+        for field in (
+            "application",
+            "business_service",
+            "owner",
+            "environment",
+            "criticality",
+            "subscription_id",
+            "subscription_connection",
+            "region",
+        ):
+            # A live provider may already have authoritative connection-level
+            # context.  An empty semantic field must not erase that fallback.
+            value = str(public.get(field) or "")
+            if value:
+                item[field] = value
+
+
+def _attach_connection_business_context(
+    findings: list[dict[str, Any]],
+    contexts: Mapping[str, Mapping[str, Any]] | None,
+) -> None:
+    """Fill missing live finding context from an active subscription mapping.
+
+    Subscription onboarding deliberately stores business metadata against the
+    connection/subscription scope.  This is a fallback for request-time
+    observations whose exact resource is not present in the semantic snapshot;
+    explicit resource metadata always wins.
+    """
+    if not contexts:
+        return
+    fields = (
+        "business_service",
+        "application",
+        "owner",
+        "environment",
+        "criticality",
+        "region",
+    )
+    for finding in findings:
+        subscription_id = str(finding.get("subscription_id") or "").strip()
+        context = contexts.get(subscription_id.casefold())
+        if not context:
+            continue
+        for field in fields:
+            if not str(finding.get(field) or "").strip():
+                value = str(context.get(field) or "").strip()
+                if value:
+                    finding[field] = value
+        if not str(finding.get("subscription_connection") or "").strip():
+            connection_id = str(context.get("subscription_connection") or "").strip()
+            if connection_id:
+                finding["subscription_connection"] = connection_id
 
 
 def _attach_defender_signal_context(
@@ -2087,6 +2177,7 @@ def _build_provider_runtime(
 # shared across provider rebuilds so a rebuild never loses run history.
 _patch_run_store = InMemoryPatchRunStore()
 _PATCH_EXECUTION_CREDENTIAL: Any = _UNSET
+_DEFENDER_CONFIGURATION_CREDENTIAL: Any = _UNSET
 
 
 def _azure_patch_credential() -> Any | None:
@@ -2130,9 +2221,38 @@ def _patch_execution_adapter() -> Any:
         return UnconfiguredPatchExecutionAdapter()
 
 
+def _azure_defender_configuration_credential() -> Any | None:
+    """Return the managed identity credential only after explicit opt-in."""
+    global _DEFENDER_CONFIGURATION_CREDENTIAL
+    mode = (
+        os.environ.get(ENV_DEFENDER_CONFIGURATION_EXECUTION) or ""
+    ).strip().casefold()
+    if mode not in {"azure", "arm", "azure-arm"}:
+        return None
+    if _DEFENDER_CONFIGURATION_CREDENTIAL is _UNSET:
+        try:
+            from azure.identity import DefaultAzureCredential
+
+            _DEFENDER_CONFIGURATION_CREDENTIAL = DefaultAzureCredential()
+        except Exception:  # noqa: BLE001 - unconfigured execution must refuse
+            _DEFENDER_CONFIGURATION_CREDENTIAL = None
+    return _DEFENDER_CONFIGURATION_CREDENTIAL
+
+
+def _defender_configuration_adapter() -> Any:
+    """Resolve the opt-in, bounded Defender configuration adapter."""
+    credential = _azure_defender_configuration_credential()
+    if credential is None:
+        return UnconfiguredDefenderConfigurationAdapter()
+    return AzureArmDefenderConfigurationAdapter(credential)
+
+
 def _execution_verifier() -> ExecutionVerifier | None:
     """Build the read-only verifier at the same ARM credential boundary."""
-    credential = _azure_patch_credential()
+    credential = (
+        _azure_patch_credential()
+        or _azure_defender_configuration_credential()
+    )
     return ExecutionVerifier(credential=credential) if credential is not None else None
 
 
@@ -2147,6 +2267,7 @@ def _load_patching_service(vulnerability_loader: Callable[[], Any]) -> Any | Non
         store=_patch_run_store,
         adapter=_patch_execution_adapter(),
         require_human_approval=_require_human_approval,
+        allow_self_approval=_allow_self_approval,
     )
 
 
@@ -2201,6 +2322,27 @@ def _require_human_approval() -> bool:
     if not isinstance(agent_policy, Mapping):
         return True
     return bool(agent_policy.get("require_human_approval", True))
+
+
+def _allow_self_approval() -> bool:
+    """Read ``agent_policy.allow_self_approval`` at the moment of use.
+
+    Fails closed: if the settings document is unreadable or the flag is
+    absent, separation of duties stays enforced (approver != requester).
+    This exists only for single-operator/demo environments that lack a
+    second approver identity; production deployments should leave it off.
+    """
+    try:
+        settings = _settings_store().read()
+    except Exception:
+        _LOGGER.warning(
+            "could not read enterprise settings; not allowing self-approval", exc_info=True
+        )
+        return False
+    agent_policy = settings.get("agent_policy")
+    if not isinstance(agent_policy, Mapping):
+        return False
+    return bool(agent_policy.get("allow_self_approval", False))
 
 
 def _settings_store() -> EnterpriseSettingsStore:
@@ -2422,6 +2564,27 @@ def build_context() -> ApiContext:
         max_rows=50_000,
     )
 
+    def live_connection_business_context() -> dict[str, dict[str, Any]]:
+        contexts: dict[str, dict[str, Any]] = {}
+        for connection in onboarding.registry.list(include_disabled=False):
+            subscription_id = str(getattr(connection, "subscription_id", "") or "").strip()
+            if not subscription_id:
+                continue
+            business = onboarding.registry.metadata_for(connection)
+            contexts[subscription_id.casefold()] = {
+                "business_service": business.business_service or "",
+                "application": business.application or "",
+                "environment": business.environment or "",
+                "owner": business.project_owner or "",
+                "support_team": business.support_team or "",
+                "criticality": business.criticality or "",
+                "region": business.region or "",
+                "subscription_connection": str(
+                    getattr(connection, "connection_id", "") or ""
+                ),
+            }
+        return contexts
+
     def hybrid_resource(resource_id: str, subscription_ids: list[str]) -> dict[str, Any]:
         return HybridQueryService(
             providers.get("semantic_graph"),
@@ -2518,18 +2681,35 @@ def build_context() -> ApiContext:
     def hybrid_vulnerability(
         subscription_ids: list[str],
     ) -> VulnerabilityIntelligenceService | None:
+        # Cached per (root, subscription set): a single remediation workflow
+        # request resolves this several times over (plan list, scoped plan
+        # lookup, preview snapshot, patch target lookup), and each miss is two
+        # live ARG round trips. The TTL matches the network cache above so
+        # freshness behaviour is consistent across hybrid providers.
+        cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
+        now = time.time()
+        cached = _hybrid_vulnerability_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS:
+            return cached[1]
         graph = providers.get("semantic_graph")
         try:
             network = hybrid_network(subscription_ids)
         except (RuntimeError, ValueError):
             network = None
-        return live_vulnerability_service(
+        service = live_vulnerability_service(
             live_resources,
             subscription_ids=subscription_ids,
             semantic=graph,
             network=network,
-            build_service=_build_vulnerability_service,
+            build_service=lambda tables, freshness, **kwargs: _build_vulnerability_service(
+                tables,
+                freshness,
+                **kwargs,
+                connection_context=live_connection_business_context(),
+            ),
         )
+        _hybrid_vulnerability_cache[cache_key] = (now, service)
+        return service
 
     def hybrid_incidents(subscription_ids: list[str]) -> Any:
         return live_incident_engine(live_resources, subscription_ids=subscription_ids)
@@ -2551,18 +2731,46 @@ def build_context() -> ApiContext:
             store=_patch_run_store,
             adapter=_patch_execution_adapter(),
             require_human_approval=_require_human_approval,
+            allow_self_approval=_allow_self_approval,
         )
 
     def _planner_for_scope(scope: Scope) -> Any:
         subscription_ids = list(scope.values("subscription"))
         if subscription_ids:
             return hybrid_remediation(subscription_ids)
+        if scope.is_unrestricted():
+            # Mirror operations.py::_require: an unrestricted read scope
+            # should see the live plan across every onboarded subscription
+            # (not the empty static snapshot), so eligibility lookups for
+            # plans surfaced by the "all subscriptions" view resolve
+            # against the same planner that generated them.
+            all_subscription_ids = list(
+                {
+                    str(connection.subscription_id)
+                    for connection in onboarding.registry.list(include_disabled=False)
+                }
+            )
+            if all_subscription_ids:
+                return hybrid_remediation(all_subscription_ids)
         return _attach_remediation_decisions(providers.get("remediation", optional=True))
 
     def _patching_for_scope(scope: Scope) -> Any:
         subscription_ids = list(scope.values("subscription"))
         if subscription_ids:
             return hybrid_patching(subscription_ids)
+        if scope.is_unrestricted():
+            # Keep preview and execution target resolution aligned with the
+            # unrestricted live remediation planner. Without this fallback the
+            # all-subscriptions view generates a live plan but tries to resolve
+            # its target through the static Fabric patching provider.
+            all_subscription_ids = list(
+                {
+                    str(connection.subscription_id)
+                    for connection in onboarding.registry.list(include_disabled=False)
+                }
+            )
+            if all_subscription_ids:
+                return hybrid_patching(all_subscription_ids)
         return providers.get("patching", optional=True)
 
     def _execution_service_for_scope(scope: Scope) -> RemediationExecutionService:
@@ -2572,6 +2780,7 @@ def build_context() -> ApiContext:
         return RemediationExecutionService(
             plan_repository=getattr(planner, "repository", None),
             patching_service=_patching_for_scope(scope),
+            defender_configuration_adapter=_defender_configuration_adapter(),
             execution_store=_remediation_execution_store(),
             execution_verifier=_execution_verifier(),
         )

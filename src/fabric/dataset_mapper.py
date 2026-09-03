@@ -470,6 +470,10 @@ class InventoryDatasetMapper:
                 _defender_assessment_row(row, ingestion_run_id)
                 for row in entities["DefenderAssessment"]
             ],
+            "silver_container_image_exposure": [
+                _container_image_exposure_row(row, ingestion_run_id)
+                for row in entities["ContainerImageExposure"]
+            ],
             **{
                 f"silver_defender_{dataset}": [
                     _entity_row(row, entity_type, ingestion_run_id)
@@ -836,6 +840,34 @@ def _defender_assessment_row(row: dict[str, Any], run_id: str) -> dict[str, Any]
             "last_assessed_at": str(
                 row.get("lastAssessedAt") or row.get("lastObservedTimestamp") or ""
             ),
+        }
+    )
+    return result
+
+
+def _container_image_exposure_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """Flatten a rolled-up container image exposure into the exposure-service contract."""
+    result = _entity_row(row, "ContainerImageExposure", run_id)
+    result.update(
+        {
+            "target_resource_id": str(row.get("targetResourceId") or "").casefold(),
+            "registry_resource_id": str(row.get("registryResourceId") or "").casefold(),
+            "registry_host": str(row.get("registryHost") or ""),
+            "repository": str(row.get("repository") or ""),
+            "image_digest": str(row.get("imageDigest") or ""),
+            "image_tags": list(row.get("imageTags") or []),
+            "image_uri": str(row.get("imageUri") or ""),
+            "last_pushed_at": str(row.get("lastPushedAt") or ""),
+            "status": str(row.get("status") or "Unhealthy"),
+            "severity": str(row.get("severity") or "Unknown"),
+            "critical_count": int(row.get("criticalCount") or 0),
+            "high_count": int(row.get("highCount") or 0),
+            "vulnerable_package_count": int(row.get("vulnerablePackageCount") or 0),
+            "cve_count": int(row.get("cveCount") or 0),
+            "cve_ids": list(row.get("cveIds") or []),
+            "vulnerable_packages": list(row.get("vulnerablePackages") or []),
+            "recommendation": str(row.get("recommendation") or ""),
+            "last_assessed_at": str(row.get("lastAssessedAt") or ""),
         }
     )
     return result

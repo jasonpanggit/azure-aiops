@@ -27,6 +27,10 @@ from intelligence.remediation.execution_service import RemediationExecutionServi
 from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.plan_repository import PlanRepository
 from onboarding.service import SubscriptionOnboardingService
+from operations.defender_configuration import (
+    ENABLE_DEFENDER_SERVERS_P1,
+    DefenderConfigurationResult,
+)
 from operations.patching.adapters import RecordingPatchExecutionAdapter
 from operations.patching.service import PatchingService
 from tests.test_api_http import FakeSecretWriter
@@ -63,7 +67,34 @@ def _future_expiry() -> str:
     return (datetime.now(UTC) + timedelta(days=30)).isoformat()
 
 
-def _client(tmp_path, *, planner=None, principals=None, adapter=None) -> TestClient:
+class _DefenderConfigurationAdapter:
+    def __init__(self) -> None:
+        self.submissions: list[dict] = []
+
+    def inspect(self, request):
+        return {"etag": '"v1"', "state_hash": "state-1", "properties": {}}
+
+    def submit(self, snapshot):
+        self.submissions.append(snapshot)
+        return DefenderConfigurationResult(
+            provider="recording",
+            provider_job_id=(
+                "https://management.azure.com"
+                f"{snapshot['request']['path']}?api-version=2024-01-01"
+            ),
+            state="submitted",
+            message="recorded",
+        )
+
+
+def _client(
+    tmp_path,
+    *,
+    planner=None,
+    principals=None,
+    adapter=None,
+    defender_adapter=None,
+) -> TestClient:
     decision_store = RemediationDecisionStore()
     resolved_planner = planner or remediation_planner(
         repository=PlanRepository(decision_store=decision_store)
@@ -126,6 +157,7 @@ def _client(tmp_path, *, planner=None, principals=None, adapter=None) -> TestCli
         execution_provider=lambda scope: RemediationExecutionService(
             plan_repository=resolved_planner.repository,
             patching_service=patching_service,
+            defender_configuration_adapter=defender_adapter,
             execution_store=execution_store,
         ),
     )
@@ -228,6 +260,99 @@ def test_execute_approved_plan_remains_running_and_is_pollable(tmp_path) -> None
     execution = poll.json()["data"]
     assert execution["status"] == "running"
     assert execution["plan_id"] == plan["plan_id"]
+
+
+def test_defender_configuration_preview_approval_and_execute_are_snapshot_bound(
+    tmp_path,
+) -> None:
+    planner = remediation_planner()
+    original_generate = planner.generate_plans
+
+    def generate_with_configuration_plan():
+        result = original_generate()
+        source = next(
+            row
+            for row in result["plans"]
+            if row["action_id"] == "controlled-patch-recovery"
+        )
+        configured = {
+            **source,
+            "action_id": ENABLE_DEFENDER_SERVERS_P1,
+            "resource_key": VM_PAYMENTS_ID,
+            "resource": {
+                **source["resource"],
+                "id": VM_PAYMENTS_ID,
+            },
+            "subscription_id": "sub-1",
+            "business_decision": {
+                "disposition": "schedule",
+                "business_impact": {"status": "known"},
+                "review_requirements": [],
+                "unknowns": [],
+                "urgency_rationale": {
+                    "evidence_citations": ["assessment:assessment-1"]
+                },
+            },
+        }
+        result["plans"] = [configured]
+        planner.repository.replace_generation(result["plans"])
+        return result
+
+    planner.generate_plans = generate_with_configuration_plan
+    defender_adapter = _DefenderConfigurationAdapter()
+    client, _, _ = _client(
+        tmp_path,
+        planner=planner,
+        defender_adapter=defender_adapter,
+    )
+    plan = _plans(client)[0]
+    preview_response = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/preview",
+        headers=_auth(),
+    )
+    assert preview_response.status_code == 200, preview_response.text
+    snapshot = preview_response.json()["data"]["execution_snapshot"]
+    assert snapshot["action_id"] == ENABLE_DEFENDER_SERVERS_P1
+    assert snapshot["request"]["body"] == {
+        "properties": {"pricingTier": "Standard", "subPlan": "P1"}
+    }
+
+    approval = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            "decision": "approved",
+            "reason": "Security owner approved the exact configuration",
+            "action_version": plan["action_version"],
+            "expires_at": _future_expiry(),
+            "preview_snapshot_hash": snapshot["snapshot_hash"],
+        },
+    )
+    assert approval.status_code == 201, approval.text
+    assert (
+        approval.json()["data"]["execution_snapshot"]["snapshot_hash"]
+        == snapshot["snapshot_hash"]
+    )
+    approved_workflow = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/workflow",
+        headers=_auth(),
+    ).json()["data"]
+    assert approved_workflow["approval"]["current"] is True
+    assert approved_workflow["recommended_step"] == "run"
+
+    execution = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute",
+        headers=_auth(),
+    )
+    assert execution.status_code == 202, execution.text
+    assert execution.json()["data"]["status"] == "running"
+    assert len(defender_adapter.submissions) == 1
+    running_workflow = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/workflow",
+        headers=_auth(),
+    ).json()["data"]
+    assert running_workflow["execution"]["status"] == "running"
+    assert running_workflow["recommended_step"] == "verify"
 
 
 def test_execute_out_of_scope_plan_is_404_not_409(tmp_path) -> None:
@@ -378,6 +503,7 @@ def test_execute_endpoints_are_mounted_in_the_running_app(tmp_path) -> None:
     paths = spec["paths"]
 
     assert "/api/v1/remediation/plans/{plan_id}/execute" in paths
+    assert "/api/v1/remediation/plans/{plan_id}/workflow" in paths
     assert "/api/v1/remediation/executions/{execution_id}" in paths
 
 

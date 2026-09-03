@@ -155,9 +155,15 @@ variable "api_min_replicas" {
 }
 
 variable "api_max_replicas" {
-  description = "Maximum API replicas."
+  description = "Maximum API replicas. Keep at 1 while connection sync jobs run in-process so autoscaling cannot orphan a live sync on another replica."
   type        = number
-  default     = 3
+  default     = 1
+}
+
+variable "enable_defender_configuration_execution" {
+  description = "Opt in to approval-gated direct Microsoft Defender for Cloud configuration actions and their narrow pricing-resource RBAC grant."
+  type        = bool
+  default     = false
 }
 
 variable "web_cpu" {

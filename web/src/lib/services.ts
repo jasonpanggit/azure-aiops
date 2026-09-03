@@ -35,6 +35,7 @@ import type {
   SearchResult,
   AssetExposure,
   DefenderPostureFinding,
+  ContainerImageExposure,
   DefenderAlert,
   DefenderAttackPath,
   DefenderOverview,
@@ -177,7 +178,10 @@ export const connectionsApi = {
 
 export const fabricMedallionApi = {
   layers: (scope: ScopeSelection = {}) =>
-    apiRequest<{ layers: Record<"bronze" | "silver" | "gold", FabricLayerCounts> }>("/fabric-medallion/layers", {
+    apiRequest<{
+      layers: Record<"bronze" | "silver" | "gold", FabricLayerCounts>;
+      tables?: Record<"bronze" | "silver" | "gold", string[]>;
+    }>("/fabric-medallion/layers", {
       query: scopeToSearchParams(scope),
     }),
 
@@ -563,12 +567,26 @@ export type RemediationExecutionStatus =
   | "cancelled";
 
 export interface RemediationExecutionSnapshot {
+  snapshot_kind?: "defender_configuration";
   target_id: string;
   patch_ids: string[];
   target_kind: string;
   operation: string;
+  action_id?: string;
   action_version: string;
   snapshot_hash: string;
+  request?: {
+    method: "PUT";
+    path: string;
+    api_version: string;
+    body: { properties: Record<string, unknown> };
+  };
+  precondition?: {
+    etag: string;
+    state_hash: string;
+  };
+  prior_properties?: Record<string, unknown>;
+  desired_properties?: Record<string, unknown>;
 }
 
 export interface RemediationEligibility {
@@ -576,8 +594,15 @@ export interface RemediationEligibility {
   ineligibility_reason: string;
 }
 
-export type RemediationPlanDetail = Omit<RemediationPlan, "resource"> &
+export type RemediationPlanDetail = Omit<
+  RemediationPlan,
+  "resource" | "plan_id" | "title" | "status" | "action_version"
+> &
   RemediationEligibility & {
+    plan_id: string;
+    title: string;
+    status: string;
+    action_version?: string;
     action_id?: string;
     opportunity_type?: string;
     resource?: Record<string, unknown> | string;
@@ -678,6 +703,45 @@ export interface RemediationExecutionList {
   executions: RemediationExecution[];
 }
 
+export type RemediationActionFamily =
+  | "patch"
+  | "defender"
+  | "policy"
+  | "configuration"
+  | "unsupported";
+
+export interface RemediationWorkflow {
+  plan: RemediationPlanDetail;
+  action: {
+    action_id: string;
+    family: RemediationActionFamily;
+    executable: boolean;
+    manual_review_reason: string;
+  };
+  preview: RemediationExecutionPreview | null;
+  preview_error: string;
+  business_decision: RemediationBusinessDecision;
+  approval: {
+    requirements: Array<Record<string, unknown>>;
+    decisions: RemediationApprovalDecision[];
+    latest: RemediationApprovalDecision | null;
+    current: boolean;
+  };
+  execution: RemediationExecution | null;
+  executions: RemediationExecution[];
+  steps: Array<{
+    id: "select" | "review" | "approve" | "run" | "verify";
+    label: string;
+    status: "complete" | "current" | "pending" | "blocked";
+  }>;
+  recommended_step: "review" | "approve" | "run" | "verify" | "manual_review";
+  evidence: Array<Record<string, unknown>>;
+  audit: {
+    decisions: RemediationApprovalDecision[];
+    executions: RemediationExecution[];
+  };
+}
+
 export const remediationApi = {
   plans: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);
@@ -687,6 +751,10 @@ export const remediationApi = {
   },
   plan: (planId: string, scope: ScopeSelection = {}) =>
     apiRequest<RemediationPlanDetail>(`/remediation/plans/${encodeURIComponent(planId)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+  workflow: (planId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationWorkflow>(`/remediation/plans/${encodeURIComponent(planId)}/workflow`, {
       query: scopeToSearchParams(scope),
     }),
   preview: (planId: string, scope: ScopeSelection = {}) =>
@@ -844,6 +912,11 @@ export const vulnerabilityApi = {
     const query = scopeToSearchParams(scope);
     if (q) query.set("q", q);
     return apiRequest<DefenderPostureFinding[]>("/vulnerabilities/defender-posture", { query });
+  },
+  containerImageExposures: (scope: ScopeSelection = {}, q?: string) => {
+    const query = scopeToSearchParams(scope);
+    if (q) query.set("q", q);
+    return apiRequest<ContainerImageExposure[]>("/vulnerabilities/container-image-exposures", { query });
   },
   defenderOverview: (scope: ScopeSelection = {}) =>
     apiRequest<DefenderOverview>("/defender/overview", { query: scopeToSearchParams(scope) }),

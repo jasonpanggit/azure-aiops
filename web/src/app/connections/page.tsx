@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
@@ -27,7 +26,10 @@ const SYNC_POLL_TIMEOUT_MS = 20 * 60 * 1000;
 export default function ConnectionsPage() {
   const { scope } = useScope();
   const [refreshKey, setRefreshKey] = useState(0);
+  const [actionError, setActionError] = useState("");
+  const [actionMessage, setActionMessage] = useState("");
   const [runningAction, setRunningAction] = useState("");
+  const [syncProgress, setSyncProgress] = useState<{ connectionId: string; state: SyncState } | null>(null);
   const [tab, setTab] = useState<"subscriptions" | "fabric-medallion">("subscriptions");
   const [fabricRefreshKey, setFabricRefreshKey] = useState(0);
   const [selectedSubscriptionId, setSelectedSubscriptionId] = useState<string>("");
@@ -57,6 +59,7 @@ export default function ConnectionsPage() {
       const summary = report.data.connections.find((entry) => entry.connection_id === connectionId);
       const state = summary?.sync;
       if (state) {
+        setSyncProgress({ connectionId, state });
         if (["succeeded", "failed"].includes(state.status.toLowerCase())) {
           return state;
         }
@@ -83,11 +86,21 @@ export default function ConnectionsPage() {
 
   /** Kicks off a manual sync for one connection and polls until it reaches a terminal stage. */
   async function syncConnection(connection: SubscriptionConnection) {
+    setActionError("");
+    setActionMessage("");
     setRunningAction(`sync:${connection.connection_id}`);
     try {
-      await connectionsApi.sync(connection.connection_id, "manual");
-      await pollSyncState(connection.connection_id);
+      const result = await connectionsApi.sync(connection.connection_id, "manual");
+      setSyncProgress({ connectionId: connection.connection_id, state: result.data.sync_state });
+      const finalState = await pollSyncState(connection.connection_id);
+      if (finalState.status.toLowerCase() === "failed") {
+        setActionError(finalState.message ?? finalState.stage_message ?? `Sync failed for ${connection.name}.`);
+      } else {
+        setActionMessage(`${connection.name} is up to date (${finalState.record_count ?? 0} records synced).`);
+      }
       setRefreshKey((value) => value + 1);
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : `Unable to sync ${connection.name}.`);
     } finally {
       setRunningAction("");
     }
@@ -97,8 +110,12 @@ export default function ConnectionsPage() {
     <div className="page-container">
       <PageHeader
         eyebrow="Data & integrations"
-        title="Subscription connections"
-        description="Operational coverage, freshness, credential health, and business context for every onboarded Azure subscription, plus Fabric medallion dataset health, governance gaps, ingestion history, and readiness signals."
+        title={tab === "subscriptions" ? "Subscription connections" : "Fabric Medallion"}
+        description={
+          tab === "subscriptions"
+            ? "Manage onboarded Azure subscription connections, credentials, health, sync status, and business context."
+            : "Monitor Bronze, Silver, and Gold Fabric layers, ingestion history, governance gaps, and readiness for the selected subscription."
+        }
         actions={
           tab === "fabric-medallion" ? (
             <div className="page-header-actions-group">
@@ -153,12 +170,25 @@ export default function ConnectionsPage() {
         </button>
       </div>
 
-      <section
+      {(actionError || actionMessage || syncProgress) && (
+        <div className={`callout ${actionError ? "callout-critical" : syncProgress?.state.status.toLowerCase() === "failed" ? "callout-critical" : "callout-info"}`} role="status">
+          {syncProgress && (
+            <strong>
+              Sync {syncProgress.state.status.toLowerCase() === "succeeded" ? "completed" : syncProgress.state.status.toLowerCase() === "failed" ? "failed" : "in progress"}
+              {syncProgress.state.stage ? `: ${syncProgress.state.stage}` : ""}
+              {syncProgress.state.progress_pct != null ? ` (${syncProgress.state.progress_pct}%)` : ""}
+            </strong>
+          )}
+          {actionMessage && <span>{actionMessage}</span>}
+          {actionError && <span>{actionError}</span>}
+        </div>
+      )}
+
+      {tab === "subscriptions" && <section
         id="subscriptions-panel"
         role="tabpanel"
         aria-labelledby="subscriptions-tab"
         tabIndex={0}
-        hidden={tab !== "subscriptions"}
       >
         {connections.error ? (
           <StatePanel title="Connection health is unavailable" message={connections.error.message} tone="error" />
@@ -197,13 +227,7 @@ export default function ConnectionsPage() {
                             onClick={() => syncConnection(connection)}
                           >
                             {runningAction === `sync:${connection.connection_id}` ? "Syncing…" : "Sync now"}
-                          </button>
-                          <Link
-                            className="button button-quiet"
-                            href={`/connections/fabric?subscription=${encodeURIComponent(connection.subscription_id)}`}
-                          >
-                            Fabric
-                          </Link>
+                          </button>                    
                           <button
                             type="button"
                             className="button button-quiet"
@@ -230,9 +254,9 @@ export default function ConnectionsPage() {
             />
           </div>
         )}
-      </section>
+      </section>}
 
-      {tab === "fabric-medallion" && !selectedSubscriptionId ? (
+      {tab === "fabric-medallion" && (!selectedSubscriptionId ? (
         <section id="fabric-medallion-panel" role="tabpanel" aria-labelledby="fabric-medallion-tab" tabIndex={0}>
           <StatePanel 
             title="Select a subscription" 
@@ -242,12 +266,11 @@ export default function ConnectionsPage() {
         </section>
       ) : (
         <FabricMedallionPanel 
-          hidden={tab !== "fabric-medallion"} 
           refreshKey={fabricRefreshKey} 
           scope={scope} 
           subscriptionId={selectedSubscriptionId}
         />
-      )}
+      ))}
     </div>
   );
 }

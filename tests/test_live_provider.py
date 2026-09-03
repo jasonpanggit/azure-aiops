@@ -82,6 +82,7 @@ def test_live_vulnerability_service_uses_request_time_patch_rows():
                 {
                     "id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm/providers/Microsoft.GuestConfiguration/patchAssessmentResults/latest/softwarePatches/KB5001",
                     "name": "KB5001",
+                    "subscriptionId": "sub-1",
                     "properties": {"kbId": "KB5001", "patchName": "Security update"},
                 }
             ],
@@ -108,6 +109,7 @@ def test_live_vulnerability_service_uses_request_time_patch_rows():
     ]
     assert captured["tables"][0]["silver_patch_findings"][0]["kb_id"] == "5001"
     assert captured["tables"][0]["silver_patch_findings"][0]["status"] == "missing"
+    assert captured["tables"][0]["silver_patch_findings"][0]["subscription_id"] == "sub-1"
     assert captured["freshness"]
 
 

@@ -137,6 +137,55 @@ def test_targets_expose_inventory_kind_and_operation(client: TestClient) -> None
     assert aks["operation"] == "node_image_upgrade"
 
 
+def test_targets_normalize_native_vm_kind_for_governed_install() -> None:
+    """Native inventory labels must not hide an otherwise eligible Azure VM."""
+    vulnerability = VulnerabilityIntelligenceService.from_rows(
+        security_updates=[{"kb": "KB600001"}],
+        findings=[
+            {
+                "id": "finding-native-vm",
+                "server_id": VM_ID,
+                "resource_type": "Microsoft.Compute/virtualMachines",
+                "resource_kind": "VirtualMachine",
+                "missing_kb": "KB600001",
+                "subscription_id": "sub-1",
+            }
+        ],
+    )
+
+    target = PatchingService(vulnerability).target(VM_ID)
+
+    assert target is not None
+    assert target.inventory_kind == "Azure VM"
+    assert target.available_patch_ids == {"KB600001"}
+
+
+def test_targets_infer_compute_kind_from_arm_id_when_metadata_is_missing() -> None:
+    """Live ARG findings may omit resource_type/resource_kind metadata."""
+    vulnerability = VulnerabilityIntelligenceService.from_rows(
+        security_updates=[{"kb": "KB600001"}],
+        findings=[
+            {
+                "id": "finding-arc",
+                "server_id": (
+                    "/subscriptions/sub-1/resourceGroups/rg/providers/"
+                    "Microsoft.HybridCompute/machines/arc-1"
+                ),
+                "missing_kb": "KB600001",
+                "subscription_id": "sub-1",
+            }
+        ],
+    )
+
+    target = PatchingService(vulnerability).target(
+        "/subscriptions/sub-1/resourceGroups/rg/providers/"
+        "Microsoft.HybridCompute/machines/arc-1"
+    )
+
+    assert target is not None
+    assert target.inventory_kind == "Arc-enabled server"
+
+
 def test_non_compute_defender_assets_never_become_patch_targets(client: TestClient) -> None:
     response = client.get("/api/v1/patching/targets", headers=_auth())
 

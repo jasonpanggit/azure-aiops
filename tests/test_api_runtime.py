@@ -18,6 +18,7 @@ from api.auth import (
 )
 from api.providers import STALE, ProviderRuntime, ProviderSpec
 from api.runtime import (
+    _defender_configuration_adapter,
     _execution_verifier,
     _load_fabric_iq_adapter,
     _patch_execution_adapter,
@@ -30,6 +31,7 @@ from intelligence.inventory.normalization import normalize_os_inventory
 from intelligence.remediation.execution_verifier import ExecutionVerifier
 from onboarding.credentials import KeyVaultSecretWriter
 from onboarding.local_seed import seed_local_environment
+from operations.defender_configuration import AzureArmDefenderConfigurationAdapter
 from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
 from storage.datasets import DatasetStore as NeutralDatasetStore
 
@@ -45,6 +47,8 @@ def _clean_env(monkeypatch, tmp_path):
         "AIOPS_CONNECTION_KEY_VAULT",
         "AIOPS_ENTRA_AUDIENCE",
         "AIOPS_ENTRA_TENANT_ID",
+        "AIOPS_DEFENDER_CONFIGURATION_EXECUTION",
+        "AIOPS_PATCH_EXECUTION",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "aiops"))
@@ -66,6 +70,25 @@ def test_azure_patch_runtime_shares_credential_with_execution_verifier(
     verifier = _execution_verifier()
 
     assert isinstance(adapter, AzureArmPatchExecutionAdapter)
+    assert isinstance(verifier, ExecutionVerifier)
+    assert adapter._credential is credential
+    assert verifier._credential is credential
+
+
+def test_azure_defender_configuration_runtime_shares_verifier_credential(
+    monkeypatch,
+) -> None:
+    credential = object()
+    monkeypatch.setenv("AIOPS_DEFENDER_CONFIGURATION_EXECUTION", "azure")
+    monkeypatch.setattr(
+        "api.runtime._azure_defender_configuration_credential",
+        lambda: credential,
+    )
+
+    adapter = _defender_configuration_adapter()
+    verifier = _execution_verifier()
+
+    assert isinstance(adapter, AzureArmDefenderConfigurationAdapter)
     assert isinstance(verifier, ExecutionVerifier)
     assert adapter._credential is credential
     assert verifier._credential is credential
@@ -364,3 +387,56 @@ def test_attach_live_defender_correlator_noop_without_service() -> None:
 
     assert result is planner
     assert getattr(planner, "defender_correlator", None) is None
+
+
+def test_live_planner_maps_patchable_defender_recommendation_to_governed_plan() -> None:
+    from intelligence.remediation.plan_repository import PlanRepository
+    from semantic.live_operations import LiveRemediationPlanner
+
+    class _Service:
+        freshness = "2026-01-01T00:00:00Z"
+
+        def asset_exposures(self, scope=None):
+            return [{
+                "asset_id": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm",
+                "name": "vm",
+                "missing_kbs": ["KB123"],
+                "defender_recommendations": ["Update vulnerable package"],
+                "defender_patchable": True,
+                "priority_score": 90,
+                "finding_count": 1,
+                "finding_ids": ["assessment-1"],
+            }]
+
+    planner = LiveRemediationPlanner(_Service(), repository=PlanRepository())
+    plan = planner.generate_plans()["plans"][0]
+
+    assert plan["defender_mapping"]["status"] == "mapped"
+    assert plan["defender_mapping"]["missing_kbs"] == ["KB123"]
+    assert plan["action_id"] == "controlled-patch-recovery"
+    assert plan["execution_authorized"] is False
+
+
+def test_live_planner_keeps_unmappable_defender_recommendation_manual_review() -> None:
+    from intelligence.remediation.plan_repository import PlanRepository
+    from semantic.live_operations import LiveRemediationPlanner
+
+    class _Service:
+        freshness = "2026-01-01T00:00:00Z"
+
+        def asset_exposures(self, scope=None):
+            return [{
+                "asset_id": "vm-1",
+                "name": "vm-1",
+                "missing_kbs": [],
+                "defender_recommendations": ["Review configuration"],
+                "defender_patchable": False,
+                "finding_count": 1,
+                "finding_ids": ["assessment-1"],
+            }]
+
+    planner = LiveRemediationPlanner(_Service(), repository=PlanRepository())
+    plan = planner.generate_plans()["plans"][0]
+
+    assert plan["defender_mapping"]["status"] == "manual_review"
+    assert plan["action_id"] == "defender-manual-review"

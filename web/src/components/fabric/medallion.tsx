@@ -62,7 +62,10 @@ export function FabricMedallionPanel({
   const ingestionHistory = useApi(() => fabricMedallionApi.ingestionHistory(subscriptionScope), [refreshKey, scopeKey]);
   const capabilities = useApi(() => fabricMedallionApi.capabilities(subscriptionScope), [refreshKey, scopeKey]);
   const counts = layerSummary.data?.data.layers ?? EMPTY_FABRIC_COUNTS;
-  const tableNames = useMemo(() => tableNamesByLayer(capabilities.data?.data), [capabilities.data]);
+  const tableNames = useMemo(
+    () => tableNamesByLayer(capabilities.data?.data, layerSummary.data?.data.tables),
+    [capabilities.data, layerSummary.data],
+  );
   const totalTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].total, 0);
   const healthyTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].healthy, 0);
 
@@ -410,11 +413,17 @@ async function loadLayerDatasets(tableNames: string[], scope: ScopeSelection): P
   return datasets;
 }
 
-export function tableNamesByLayer(capabilities?: FabricCapabilities): Record<FabricLayerKey, string[]> {
+export function tableNamesByLayer(
+  capabilities?: FabricCapabilities,
+  fallbackTables?: Record<FabricLayerKey, string[]>,
+): Record<FabricLayerKey, string[]> {
   const layers: Record<FabricLayerKey, string[]> = { bronze: [], silver: [], gold: [] };
   for (const dataset of capabilities?.lineage.datasets ?? []) {
     const layer = FABRIC_LAYER_KEYS.find((key) => dataset.table_name.startsWith(`${key}_`));
     if (layer) layers[layer].push(dataset.table_name);
+  }
+  for (const layer of FABRIC_LAYER_KEYS) {
+    if (layers[layer].length === 0) layers[layer] = fallbackTables?.[layer] ?? [];
   }
   return layers;
 }

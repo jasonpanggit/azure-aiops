@@ -170,6 +170,21 @@ resource "azurerm_container_app" "api" {
         value = "0"
       }
 
+      # Live patch execution is opt-in at the deployment boundary. The
+      # execution service still requires approval and revalidates the target
+      # and patch allowlist before issuing an ARM installPatches call.
+      env {
+        name  = "AIOPS_PATCH_EXECUTION"
+        value = "azure"
+      }
+
+      # Direct Defender writes remain a separate opt-in capability backed by
+      # an explicit code-authored action catalog and approval snapshot.
+      env {
+        name  = "AIOPS_DEFENDER_CONFIGURATION_EXECUTION"
+        value = var.enable_defender_configuration_execution ? "azure" : "disabled"
+      }
+
       env {
         name  = "AIOPS_ENABLE_FABRIC"
         value = tostring(var.enable_fabric)

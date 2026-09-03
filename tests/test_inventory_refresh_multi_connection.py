@@ -184,6 +184,7 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
         ),
     }
     calls: list[str] = []
+    scope_calls: list[dict[str, list[str]] | None] = []
 
     def fake_build(config: ConnectorConfig, connection, resolver=None):
         return pipelines[connection.connection_id]
@@ -193,8 +194,9 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
             self.source_root = source_root
             self.service = self
 
-        def sync(self):
+        def sync(self, *, requested_scope=None):
             calls.append(self.source_root)
+            scope_calls.append(requested_scope)
             return type(
                 "Publication",
                 (),
@@ -235,4 +237,5 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     expected_generation = Path(DatasetStore(tmp_path / "compat").current_generation() or "")
     assert result["fabric_publication"]["fabricTables"] == ["metadata_source_status"]
     assert calls == [str(expected_generation)]
+    assert scope_calls == [{"subscription": [SUB_A, SUB_B]}]
     assert (Path(calls[0]) / "manifest.json").is_file()

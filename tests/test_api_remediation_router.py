@@ -10,8 +10,10 @@ from api.rbac import Authorizer, Grant, Principal
 from api.runtime import _attach_live_defender_correlator
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
+from intelligence.remediation.execution_service import RemediationExecutionService
 from intelligence.remediation.plan_repository import PlanRepository
 from onboarding.service import SubscriptionOnboardingService
+from operations.defender_configuration import ENABLE_DEFENDER_SERVERS_P1
 from operations.patching.models import AvailablePatch, PatchTarget
 from semantic.live_operations import LiveRemediationPlanner
 from tests.test_api_http import FakeSecretWriter
@@ -174,6 +176,103 @@ def test_list_plans_returns_envelope_with_plans(tmp_path) -> None:
     assert isinstance(body["data"]["plans"], list)
     assert len(body["data"]["plans"]) > 0
     assert body["evidence"][0]["source_engine"] == "intelligence.RemediationPlanner"
+
+
+def test_workflow_projects_five_governed_steps_for_patch_plan(tmp_path) -> None:
+    client = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+
+    response = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/workflow",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200, response.text
+    workflow = response.json()["data"]
+    assert [step["label"] for step in workflow["steps"]] == [
+        "Select fix",
+        "Review impact",
+        "Approve",
+        "Run",
+        "Verify",
+    ]
+    assert workflow["action"] == {
+        "action_id": "controlled-patch-recovery",
+        "family": "patch",
+        "executable": True,
+        "manual_review_reason": "",
+    }
+    assert workflow["preview"]["execution_snapshot"]["patch_ids"]
+    assert workflow["recommended_step"] == "approve"
+    assert workflow["audit"] == {"decisions": [], "executions": []}
+
+
+def test_workflow_fails_closed_to_manual_review_for_non_allowlisted_handler(
+    tmp_path,
+) -> None:
+    client = _client(tmp_path)
+    plans = client.get(
+        "/api/v1/remediation/plans", headers=_auth()
+    ).json()["data"]["plans"]
+    plan = next(
+        row
+        for row in plans
+        if row["action_id"] == "configuration-baseline-recovery"
+    )
+
+    response = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/workflow",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200, response.text
+    workflow = response.json()["data"]
+    assert workflow["action"]["family"] == "configuration"
+    assert workflow["action"]["executable"] is False
+    assert workflow["recommended_step"] == "manual_review"
+    assert workflow["preview"]["execution_snapshot"] is None
+    assert {
+        step["status"]
+        for step in workflow["steps"]
+        if step["id"] in {"approve", "run", "verify"}
+    } == {"blocked"}
+
+
+def test_workflow_keeps_review_visible_when_executable_preview_is_unavailable(
+    tmp_path,
+) -> None:
+    planner = remediation_planner()
+    original_generate = planner.generate_plans
+
+    def generate_defender_plan():
+        result = original_generate()
+        plan = next(
+            row
+            for row in result["plans"]
+            if row["action_id"] == "controlled-patch-recovery"
+        )
+        plan["action_id"] = ENABLE_DEFENDER_SERVERS_P1
+        planner.repository.replace_generation([plan])
+        return {**result, "plans": [plan]}
+
+    planner.generate_plans = generate_defender_plan
+    client = _client(tmp_path, planner=planner)
+    plan = client.get(
+        "/api/v1/remediation/plans", headers=_auth()
+    ).json()["data"]["plans"][0]
+
+    response = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/workflow",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200, response.text
+    workflow = response.json()["data"]
+    assert workflow["preview"] is None
+    assert workflow["preview_error"] == "provider_unavailable"
+    assert workflow["recommended_step"] == "review"
+    approve = next(step for step in workflow["steps"] if step["id"] == "approve")
+    assert approve["status"] == "blocked"
 
 
 def test_list_plans_filters_by_nested_resource_key(tmp_path) -> None:
@@ -402,7 +501,10 @@ def test_live_planner_collapses_duplicate_asset_rows_for_same_patch_target() -> 
     assert len({plan["plan_id"] for plan in result["plans"]}) == 1
 
 
-def test_unrestricted_read_uses_snapshot_provider_without_explicit_subscription(tmp_path) -> None:
+def test_unrestricted_read_uses_live_provider_for_all_onboarded_subscriptions(tmp_path) -> None:
+    """No subscription picked in the operating-context selector should still
+    show live plans across every onboarded subscription, not an empty static
+    snapshot."""
     service = _LiveVulnerabilityService()
     captured_subscription_ids: list[str] = []
     onboarding = SubscriptionOnboardingService(
@@ -436,9 +538,151 @@ def test_unrestricted_read_uses_snapshot_provider_without_explicit_subscription(
     response = client.get("/api/v1/remediation/plans", headers=_auth())
 
     assert response.status_code == 200, response.text
+    assert captured_subscription_ids == [LIVE_SUBSCRIPTION_ID]
+    plans = response.json()["data"]["plans"]
+    assert any(plan["action_id"] == "controlled-patch-recovery" for plan in plans)
+
+
+def test_unrestricted_read_falls_back_to_snapshot_when_nothing_onboarded() -> None:
+    """With no onboarded subscriptions at all, fall back to the static
+    Fabric snapshot provider rather than calling the live provider with an
+    empty subscription list."""
+    captured_subscription_ids: list[str] = []
+
+    def live_planner(subscription_ids: list[str]) -> LiveRemediationPlanner:
+        captured_subscription_ids.extend(subscription_ids)
+        return LiveRemediationPlanner(_LiveVulnerabilityService(), repository=PlanRepository())
+
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(FakeSecretWriter()),
+        authenticator=StaticTokenAuthenticator(
+            {READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        remediation_provider=lambda: remediation_planner(repository=PlanRepository()),
+        hybrid_remediation_provider=live_planner,
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get("/api/v1/remediation/plans", headers=_auth())
+
+    assert response.status_code == 200, response.text
     assert captured_subscription_ids == []
     plans = response.json()["data"]["plans"]
     assert any(plan["action_id"] == "controlled-patch-recovery" for plan in plans)
+
+
+def test_unrestricted_read_projects_eligibility_from_live_execution_repository(
+    tmp_path,
+) -> None:
+    """An all-subscriptions plan list must not lose its live plan repository."""
+    service = _LiveVulnerabilityService()
+    onboarding = SubscriptionOnboardingService(
+        tmp_path / "aiops", secret_writer=FakeSecretWriter()
+    )
+    onboarding.add(
+        connection_id="prod-core",
+        name="Prod core",
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        subscription_id=LIVE_SUBSCRIPTION_ID,
+        client_id="22222222-2222-2222-2222-222222222222",
+        secret_ref="keyvault://example-kv/secrets/prod-core",
+    )
+
+    def live_planner(subscription_ids: list[str]) -> LiveRemediationPlanner:
+        return LiveRemediationPlanner(service, repository=PlanRepository())
+
+    def execution_service(scope: Scope) -> RemediationExecutionService:
+        planner = live_planner(
+            [
+                str(connection.subscription_id)
+                for connection in onboarding.registry.list(include_disabled=False)
+            ]
+            if scope.is_unrestricted()
+            else list(scope.values("subscription"))
+        )
+        planner.generate_plans()
+        return RemediationExecutionService(
+            plan_repository=planner.repository,
+            patching_service=None,
+        )
+
+    context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(
+            {READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        remediation_provider=lambda: None,
+        hybrid_remediation_provider=live_planner,
+        execution_provider=execution_service,
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get("/api/v1/remediation/plans", headers=_auth())
+
+    assert response.status_code == 200, response.text
+    plan = response.json()["data"]["plans"][0]
+    assert plan["executable"] is False
+    assert plan["ineligibility_reason"] == "not_approved"
+
+
+def test_unrestricted_workflow_uses_live_patching_provider_for_preview(tmp_path) -> None:
+    """Review must resolve targets from the same live estate as plan listing."""
+    service = _LiveVulnerabilityService()
+    patching_service = _PatchingService()
+    onboarding = SubscriptionOnboardingService(
+        tmp_path / "aiops", secret_writer=FakeSecretWriter()
+    )
+    onboarding.add(
+        connection_id="prod-core",
+        name="Prod core",
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        subscription_id=LIVE_SUBSCRIPTION_ID,
+        client_id="22222222-2222-2222-2222-222222222222",
+        secret_ref="keyvault://example-kv/secrets/prod-core",
+    )
+
+    def live_planner(subscription_ids: list[str]) -> LiveRemediationPlanner:
+        return LiveRemediationPlanner(service, repository=PlanRepository())
+
+    def execution_service(scope: Scope) -> RemediationExecutionService:
+        planner = live_planner(list(scope.values("subscription")) or [LIVE_SUBSCRIPTION_ID])
+        planner.generate_plans()
+        return RemediationExecutionService(
+            plan_repository=planner.repository,
+            patching_service=patching_service,
+        )
+
+    context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(
+            {READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        remediation_provider=lambda: None,
+        hybrid_remediation_provider=live_planner,
+        hybrid_patching_provider=lambda subscription_ids: patching_service,
+        execution_provider=execution_service,
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    plans = client.get("/api/v1/remediation/plans", headers=_auth()).json()["data"]["plans"]
+    plan_id = plans[0]["plan_id"]
+
+    response = client.get(
+        f"/api/v1/remediation/plans/{plan_id}/workflow", headers=_auth()
+    )
+
+    assert response.status_code == 200, response.text
+    workflow = response.json()["data"]
+    assert workflow["preview_error"] == ""
+    assert workflow["preview"]["execution_snapshot"]["patch_ids"] == [
+        "KB600001",
+        "KB600002",
+    ]
 
 
 def test_subscription_scoped_read_uses_live_remediation_provider(tmp_path) -> None:

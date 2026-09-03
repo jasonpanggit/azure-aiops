@@ -211,3 +211,86 @@ def test_assessment_severity_defaults_to_unknown_without_source() -> None:
 
     assert entity is not None
     assert entity["severity"] == "Unknown"
+
+
+def test_mapper_flattens_container_image_exposure_entity() -> None:
+    from fabric.dataset_mapper import _container_image_exposure_row
+
+    entity = {
+        "id": IMAGE,
+        "name": "repo/img@sha256:abcdef",
+        "entityType": "ContainerImageExposure",
+        "targetResourceId": REGISTRY,
+        "registryResourceId": REGISTRY,
+        "registryHost": "acr1.azurecr.io",
+        "repository": "repo/img",
+        "imageDigest": "sha256:abc123",
+        "imageTags": ["latest"],
+        "imageUri": "acr1.azurecr.io/repo/img:latest",
+        "lastPushedAt": "2026-08-01T00:00:00Z",
+        "status": "Unhealthy",
+        "severity": "Critical",
+        "criticalCount": 3,
+        "highCount": 2,
+        "vulnerablePackageCount": 5,
+        "cveCount": 8,
+        "cveIds": ["CVE-2024-0001"],
+        "vulnerablePackages": ["openssl"],
+        "recommendation": "Rebuild image",
+        "lastAssessedAt": OBSERVED,
+        "resourceType": "Microsoft.ContainerRegistry/registries/images",
+    }
+
+    row = _container_image_exposure_row(entity, "run-1")
+
+    assert row["entity_type"] == "ContainerImageExposure"
+    assert row["target_resource_id"] == REGISTRY.casefold()
+    assert row["registry_resource_id"] == REGISTRY.casefold()
+    assert row["registry_host"] == "acr1.azurecr.io"
+    assert row["repository"] == "repo/img"
+    assert row["critical_count"] == 3
+    assert row["cve_count"] == 8
+    assert row["cve_ids"] == ["CVE-2024-0001"]
+    assert row["vulnerable_packages"] == ["openssl"]
+
+
+def test_service_surfaces_container_image_exposures_and_overview_counts() -> None:
+    from api.scope import Scope
+    from intelligence.vulnerability.service import VulnerabilityIntelligenceService
+
+    rows = [
+        {
+            "id": "img1",
+            "server_id": REGISTRY,
+            "target_resource_id": REGISTRY,
+            "registry_resource_id": REGISTRY,
+            "registry_host": "acr1.azurecr.io",
+            "repository": "repo/img",
+            "image_digest": "sha256:abc123",
+            "image_tags": ["latest"],
+            "image_uri": "acr1.azurecr.io/repo/img:latest",
+            "last_pushed_at": "2026-08-01T00:00:00Z",
+            "status": "Unhealthy",
+            "severity": "Critical",
+            "critical_count": 3,
+            "high_count": 2,
+            "vulnerable_package_count": 5,
+            "cve_count": 8,
+            "cve_ids": ["CVE-2024-0001"],
+            "vulnerable_packages": ["openssl"],
+            "recommendation": "Rebuild image",
+            "last_assessed_at": OBSERVED,
+            "subscription_id": "sub1",
+        }
+    ]
+
+    service = VulnerabilityIntelligenceService.from_rows(container_image_exposures=rows)
+    scope = Scope()
+
+    exposures = service.container_image_exposures(scope)
+    assert len(exposures) == 1
+    assert exposures[0]["repository"] == "repo/img"
+
+    overview = service.defender_overview(scope)
+    assert overview["vulnerable_container_image_count"] == 1
+    assert overview["container_image_cve_count"] == 8

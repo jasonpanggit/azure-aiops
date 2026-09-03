@@ -14,11 +14,13 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from intelligence.remediation.action_catalog import governed_action
 from intelligence.remediation.approval_decisions import (
     ExecutionSnapshotError,
     build_execution_snapshot,
 )
 from intelligence.remediation.execution_service import RemediationExecutionError
+from operations.defender_configuration import DEFENDER_CONFIGURATION_ACTION_IDS
 from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.service import PatchValidationError
 
@@ -142,6 +144,18 @@ def preview_plan(plan_id: str, context: Context, scope: ReadScope) -> dict[str, 
                 {"reason": exc.reason, **exc.details},
             ) from exc
         operation = execution_snapshot["operation"]
+    elif action_id in DEFENDER_CONFIGURATION_ACTION_IDS:
+        try:
+            execution_snapshot = _execution_service(
+                context, scope
+            ).build_execution_snapshot(plan, scope=scope)
+        except ExecutionSnapshotError as exc:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                str(exc),
+                {"reason": exc.reason, **exc.details},
+            ) from exc
+        operation = execution_snapshot["operation"]
     else:
         operation = "not executable in this phase"
     rollback_plan = plan.get("rollback_plan") or {}
@@ -203,6 +217,157 @@ def plan_business_decision(
     )
 
 
+@router.get(
+    "/plans/{plan_id}/workflow",
+    summary="Get the governed Select, Review, Approve, Run, Verify workflow",
+)
+def plan_workflow(
+    plan_id: str, context: Context, scope: ReadScope
+) -> dict[str, Any]:
+    """Project the complete scoped workflow without introducing a mutation path."""
+    plan = _get_scoped_plan(context, scope, plan_id)
+    planner = _planner(context, scope)
+    action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
+    action = governed_action(action_id)
+    preview_error = ""
+    try:
+        preview = preview_plan(plan_id, context, scope)["data"]
+    except ApiError as exc:
+        preview = None
+        preview_error = str(
+            (exc.details or {}).get("reason") or exc.code
+        )
+    decisions = planner.repository.decisions.list(plan_id)
+    latest_decision = (
+        max(decisions, key=lambda row: str(row.get("decided_at") or ""))
+        if decisions
+        else None
+    )
+    service = _optional_execution_service(context, scope)
+    executions = service.list_executions(plan_id) if service is not None else []
+    latest_execution = executions[-1] if executions else None
+    if (
+        service is not None
+        and latest_execution is not None
+        and latest_execution.get("status") == "running"
+    ):
+        latest_execution = service.poll_verification(
+            str(latest_execution.get("execution_id") or "")
+        )
+        executions = [
+            latest_execution
+            if row.get("execution_id") == latest_execution.get("execution_id")
+            else row
+            for row in executions
+        ]
+    snapshot = preview.get("execution_snapshot") if preview else None
+    approved_snapshot = (
+        latest_decision.get("execution_snapshot")
+        if isinstance(latest_decision, dict)
+        else None
+    )
+    approval_current = bool(
+        latest_decision
+        and latest_decision.get("decision") == "approved"
+        and snapshot
+        and isinstance(approved_snapshot, dict)
+        and approved_snapshot.get("snapshot_hash") == snapshot.get("snapshot_hash")
+    )
+    terminal = str((latest_execution or {}).get("status") or "") in {
+        "succeeded",
+        "failed",
+        "cancelled",
+    }
+    if not action.executable:
+        recommended_step = "manual_review"
+    elif preview is None:
+        recommended_step = "review"
+    elif latest_execution is not None:
+        recommended_step = "verify"
+    elif approval_current:
+        recommended_step = "run"
+    else:
+        recommended_step = "approve"
+    steps = [
+        {"id": "select", "label": "Select fix", "status": "complete"},
+        {
+            "id": "review",
+            "label": "Review impact",
+            "status": "complete" if preview is not None else "blocked",
+        },
+        {
+            "id": "approve",
+            "label": "Approve",
+            "status": (
+                "blocked"
+                if not action.executable
+                else "blocked"
+                if preview is None
+                else "complete"
+                if approval_current
+                else "current"
+            ),
+        },
+        {
+            "id": "run",
+            "label": "Run",
+            "status": (
+                "blocked"
+                if not action.executable
+                else "complete"
+                if latest_execution is not None
+                else "current"
+                if approval_current
+                else "pending"
+            ),
+        },
+        {
+            "id": "verify",
+            "label": "Verify",
+            "status": (
+                "blocked"
+                if not action.executable
+                else "complete"
+                if terminal
+                else "current"
+                if latest_execution is not None
+                else "pending"
+            ),
+        },
+    ]
+    return envelope(
+        {
+            "plan": _plan_with_eligibility(context, scope, plan),
+            "action": {
+                "action_id": action.action_id,
+                "family": action.family,
+                "executable": action.executable,
+                "manual_review_reason": action.manual_review_reason,
+            },
+            "preview": preview,
+            "preview_error": preview_error,
+            "business_decision": plan.get("business_decision") or {},
+            "approval": {
+                "requirements": plan.get("approval_requirements") or [],
+                "decisions": decisions,
+                "latest": latest_decision,
+                "current": approval_current,
+            },
+            "execution": latest_execution,
+            "executions": executions,
+            "steps": steps,
+            "recommended_step": recommended_step,
+            "evidence": plan.get("evidence_citations") or [],
+            "audit": {
+                "decisions": decisions,
+                "executions": executions,
+            },
+        },
+        evidence=_evidence(plan_id, str(plan.get("action_version") or "")),
+        scope=scope.to_dict(),
+    )
+
+
 def _execution_service(context: Context, scope: Scope) -> Any:
     service = getattr(context, "execution_provider", None)
     resolved = service(scope) if callable(service) else None
@@ -255,7 +420,7 @@ def _execution_evidence(execution_id: str) -> Evidence:
 @router.post(
     "/plans/{plan_id}/execute",
     status_code=202,
-    summary="Execute an already-approved controlled-patch-recovery plan",
+    summary="Execute an already-approved bounded remediation plan",
 )
 def execute_plan(
     plan_id: str, context: Context, principal: OperatePrincipal

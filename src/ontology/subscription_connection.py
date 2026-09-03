@@ -85,6 +85,7 @@ class SyncState:
     last_successful_sync_at: str | None = None
     last_failed_at: str | None = None
     run_id: str | None = None
+    started_at: str | None = None
     source_version: str | None = None
     record_count: int = 0
     attempts: int = 0
@@ -140,6 +141,7 @@ class SyncState:
             last_successful_sync_at=value.get("last_successful_sync_at") or value.get("lastSuccessfulSyncAt"),
             last_failed_at=value.get("last_failed_at") or value.get("lastFailedAt"),
             run_id=value.get("run_id") or value.get("runId"),
+            started_at=value.get("started_at") or value.get("startedAt"),
             source_version=value.get("source_version") or value.get("sourceVersion"),
             record_count=int(value.get("record_count") or value.get("recordCount") or 0),
             attempts=int(value.get("attempts") or 0),
@@ -160,6 +162,7 @@ class SyncState:
             "last_successful_sync_at": self.last_successful_sync_at,
             "last_failed_at": self.last_failed_at,
             "run_id": self.run_id,
+            "started_at": self.started_at,
             "source_version": self.source_version,
             "record_count": self.record_count,
             "attempts": self.attempts,

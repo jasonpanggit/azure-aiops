@@ -3597,7 +3597,7 @@ body.topology-fullscreen-open {
 .remediation-center {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
 }
 
 .remediation-filter {
@@ -3612,13 +3612,17 @@ body.topology-fullscreen-open {
   align-items: start;
 }
 
+.remediation-layout > * {
+  min-width: 0;
+}
+
 .plan-list,
 .opportunity-list {
   display: grid;
 }
 
 .plan-row {
-  padding: 17px 19px;
+  padding: 16px 20px;
   border-bottom: 1px solid var(--color-border);
 }
 
@@ -3635,7 +3639,7 @@ body.topology-fullscreen-open {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
 }
 
 .plan-row-summary {
@@ -3647,7 +3651,7 @@ body.topology-fullscreen-open {
 .plan-row-badges {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 
 .plan-row-heading h3 {
@@ -3701,28 +3705,33 @@ body.topology-fullscreen-open {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 16px;
 }
 
 .remediation-plan-detail {
   display: grid;
   gap: 14px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .simulation-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+  min-width: 0;
 }
 
 .simulation-grid .metric-card {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .remediation-section {
   display: grid;
-  gap: 6px;
-  padding: 12px;
+  gap: 8px;
+  min-width: 0;
+  padding: 16px;
   background: var(--color-surface-subtle);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -3741,12 +3750,12 @@ body.topology-fullscreen-open {
 
 .remediation-form-grid {
   display: grid;
-  gap: 12px;
+  gap: 16px;
 }
 
 .remediation-form-grid label {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -3825,6 +3834,13 @@ body.topology-fullscreen-open {
   word-break: break-word;
   color: var(--color-text-secondary);
   font-size: 12px;
+}
+
+.compliance-row > .status-badge {
+  display: inline-flex;
+  width: max-content;
+  margin-top: 0;
+  justify-self: end;
 }
 
 .page-header-actions-group {
@@ -3922,6 +3938,13 @@ body.topology-fullscreen-open {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+}
+
+.fabric-dataset-card-head > .status-badge {
+  display: inline-flex;
+  width: max-content;
+  flex-shrink: 0;
+  margin-top: 0;
 }
 
 .fabric-dataset-card-summary {
@@ -6248,4 +6271,125 @@ body.topology-fullscreen-open {
 
 .inventory-page .inline-detail .table-footer {
   margin-top: 10px;
+}
+
+.remediation-handoff {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.remediation-workflow-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.remediation-workflow-steps button {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0 8px;
+  padding: 12px;
+  text-align: left;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.remediation-workflow-steps button > span {
+  grid-row: 1 / 3;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  background: var(--color-surface-subtle);
+  font-weight: 700;
+}
+
+.remediation-workflow-steps small {
+  color: var(--color-text-muted);
+}
+
+.remediation-workflow-steps .remediation-workflow-step-active {
+  border-color: var(--color-brand);
+  box-shadow: inset 0 0 0 1px var(--color-brand);
+}
+
+.remediation-workflow-layout {
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.7fr) minmax(0, 1.5fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.remediation-workflow-selection,
+.remediation-workflow-main {
+  min-width: 0;
+}
+
+.remediation-fix-option {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  text-align: left;
+  color: inherit;
+}
+
+.remediation-fix-option > span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.remediation-fix-option small {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.remediation-workflow-content {
+  display: grid;
+  gap: 16px;
+}
+
+.remediation-review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  min-width: 0;
+}
+
+.remediation-review-grid > div {
+  min-width: 0;
+}
+
+.remediation-review-grid code,
+.remediation-workflow-content code,
+.remediation-fix-option code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.remediation-approval-form {
+  display: grid;
+  gap: 12px;
+  max-width: 42rem;
+}
+
+.remediation-audit summary {
+  cursor: pointer;
+  padding: 16px;
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .remediation-workflow-steps,
+  .remediation-workflow-layout,
+  .remediation-review-grid {
+    grid-template-columns: 1fr;
+  }
 }

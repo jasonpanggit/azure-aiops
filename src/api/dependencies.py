@@ -73,7 +73,7 @@ class ApiContext:
     # projections so a fresh snapshot is picked up without a restart.
     patching_provider: Callable[[], Any] | None = None
     # The bounded, approval-gated execution path for one already-approved
-    # controlled-patch-recovery plan. Resolved per request (not pinned at
+    # patch or explicit Defender configuration plan. Resolved per request (not pinned at
     # startup) so a fresh RemediationExecutionService always sees the
     # scope-selected remediation planner/patching provider used by preview and
     # approval.

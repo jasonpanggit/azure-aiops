@@ -1,11 +1,9 @@
-"""Approval-gated execution of a single controlled-patch-recovery plan.
+"""Approval-gated execution of a single bounded remediation plan.
 
-This is the only place in Phase 3 where HOG changes Azure state. The gate
-here is the security boundary: an execute call must resolve exactly one
-already-approved ``controlled-patch-recovery`` plan, and every parameter
-handed to :class:`operations.patching.service.PatchingService` comes
-verbatim from the stored plan -- never from the caller. See the phase
-threat model (T-03-04, T-03-05) for the guarantees this enforces.
+The gate here is the security boundary: execution resolves exactly one
+already-approved patch action or explicit Defender configuration action, and
+every provider parameter comes from the server-owned snapshot, never the
+caller.
 """
 
 from __future__ import annotations
@@ -16,7 +14,14 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from intelligence.remediation.action_catalog import EXECUTABLE_ACTION_IDS
 from intelligence.remediation.approval_decisions import execution_snapshot_hash
+from operations.defender_configuration import (
+    DEFENDER_CONFIGURATION_ACTION_IDS,
+    DefenderConfigurationUnavailable,
+    UnconfiguredDefenderConfigurationAdapter,
+    build_defender_configuration_snapshot,
+)
 from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.models import PatchTarget
 from operations.patching.service import PatchingService, PatchValidationError
@@ -24,8 +29,8 @@ from operations.patching.service import PatchingService, PatchValidationError
 from .execution_store import ExecutionClaimConflict
 from .execution_verifier import ExecutionVerificationUnavailable, ExecutionVerifier
 
-# The only action_id this phase authorizes for execution. Every other
-# governed catalog action remains recommendation-only (EXEC-01).
+# Patch recovery and the small code-authored Defender configuration catalog
+# are the only execution families. All other recommendations remain review-only.
 CONTROLLED_PATCH_RECOVERY = "controlled-patch-recovery"
 
 # Bounded retry ceiling (T-03-11): a failing target cannot be retried
@@ -97,23 +102,24 @@ def validate_business_eligibility(plan: dict[str, Any]) -> None:
 
 
 class RemediationExecutionService:
-    """Thin, bounded adapter from an approved plan to ``PatchingService.trigger``.
-
-    Introduces no parallel ARM-calling code: everything past the approval
-    gate delegates to the existing, unmodified patching stack.
-    """
+    """Dispatch an approved snapshot to one typed, bounded provider adapter."""
 
     def __init__(
         self,
         *,
         plan_repository: Any,
-        patching_service: PatchingService,
+        patching_service: PatchingService | None,
+        defender_configuration_adapter: Any | None = None,
         execution_store: Any | None = None,
         execution_verifier: ExecutionVerifier | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._plans = plan_repository
         self._patching = patching_service
+        self._defender_configuration = (
+            defender_configuration_adapter
+            or UnconfiguredDefenderConfigurationAdapter()
+        )
         self._store = execution_store
         self._verifier = execution_verifier
         self._now = now
@@ -178,9 +184,9 @@ class RemediationExecutionService:
         """
         plan_id = str(plan.get("plan_id") or "")
         action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
-        if action_id != CONTROLLED_PATCH_RECOVERY:
+        if action_id not in EXECUTABLE_ACTION_IDS:
             raise RemediationExecutionError(
-                "Only a controlled-patch-recovery plan may be executed in this phase",
+                "This recommendation has no supported direct execution action",
                 reason="action_not_executable",
                 details={"plan_id": plan_id, "action_id": action_id},
             )
@@ -213,6 +219,19 @@ class RemediationExecutionService:
         self._validated_execution_snapshot(plan, decision)
         return decision
 
+    def build_execution_snapshot(
+        self, plan: dict[str, Any], *, scope: Any = None
+    ) -> dict[str, Any]:
+        """Build the exact current action for preview and approval."""
+        from intelligence.remediation.approval_decisions import build_execution_snapshot
+
+        return build_execution_snapshot(
+            plan,
+            self._patching,
+            configuration_adapter=self._defender_configuration,
+            scope=scope,
+        )
+
     def _submit_and_record(
         self,
         *,
@@ -222,16 +241,53 @@ class RemediationExecutionService:
         execution_id: str | None,
     ) -> dict[str, Any]:
         plan_id = str(plan.get("plan_id") or "")
-        target, patch_ids = self._resolve_target(plan, decision)
+        action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
         try:
-            run = self._patching.trigger(
-                target=target,
-                patch_ids=patch_ids,
-                requested_by=requested_by,
-                approved_by=str(decision.get("approver") or ""),
-                dry_run=False,
+            target, patch_ids = self._resolve_target(plan, decision)
+        except RemediationExecutionError as exc:
+            # Target and allowlist revalidation happens after the durable
+            # attempt claim. Persist that refusal as a terminal attempt rather
+            # than leaving an execution permanently "running" when inventory
+            # changes between approval and submission.
+            if execution_id is None:
+                raise
+            current = self._store.get(execution_id)
+            if current is None:
+                raise
+            self._store.transition(
+                execution_id,
+                expected_revision=int(current.get("revision") or 0),
+                expected_status={"running", "retrying"},
+                status="failed",
+                actor=requested_by,
+                message=str(exc),
+                failure_details=str(exc),
+                outcome="failed",
+                now=self._now(),
             )
-        except (PatchValidationError, PatchExecutionUnavailable) as exc:
+            return self.execution_view(self._store.get(execution_id))
+        try:
+            if action_id in DEFENDER_CONFIGURATION_ACTION_IDS:
+                run = self._defender_configuration.submit(
+                    self._validated_execution_snapshot(plan, decision)
+                )
+            else:
+                if self._patching is None:
+                    raise PatchExecutionUnavailable(
+                        "Patch execution is not configured for this deployment."
+                    )
+                run = self._patching.trigger(
+                    target=target,
+                    patch_ids=patch_ids,
+                    requested_by=requested_by,
+                    approved_by=str(decision.get("approver") or ""),
+                    dry_run=False,
+                )
+        except (
+            DefenderConfigurationUnavailable,
+            PatchValidationError,
+            PatchExecutionUnavailable,
+        ) as exc:
             message = str(exc)
             if execution_id is not None:
                 current = self._store.get(execution_id)
@@ -285,7 +341,7 @@ class RemediationExecutionService:
             "status": terminal_status,
             "provider_job_id": run.provider_job_id,
             "message": message,
-            "run_id": run.run_id,
+            "run_id": getattr(run, "run_id", ""),
         }
 
     def retry(self, execution_id: str) -> dict[str, Any]:
@@ -402,7 +458,11 @@ class RemediationExecutionService:
         if plan is None:
             return {"executable": False, "ineligibility_reason": "plan_not_found"}
         try:
-            self._check_approval_gate(plan)
+            decision = self._check_approval_gate(plan)
+            # Eligibility is a server projection, not a cached approval
+            # assertion. Re-resolve the approved target and allowlist so the
+            # UI cannot offer execution after inventory has drifted.
+            self._resolve_target(plan, decision)
         except RemediationExecutionError as exc:
             return {"executable": False, "ineligibility_reason": exc.reason}
         return {"executable": True, "ineligibility_reason": ""}
@@ -640,21 +700,40 @@ class RemediationExecutionService:
                 reason="execution_snapshot_missing",
                 details={"plan_id": plan_id},
             )
-        patch_ids = snapshot.get("patch_ids")
         target_id = str(snapshot.get("target_id") or "").strip()
         snapshot_version = str(snapshot.get("action_version") or "")
         expected_version = str(plan.get("action_version") or "")
         supplied_hash = str(snapshot.get("snapshot_hash") or "")
         expected_hash = execution_snapshot_hash(snapshot)
-        if (
+        base_invalid = (
             not target_id
-            or not isinstance(patch_ids, list)
-            or not patch_ids
-            or any(not isinstance(item, str) or not item.strip() for item in patch_ids)
             or snapshot_version != expected_version
             or snapshot_version != str(decision.get("action_version") or "")
             or not hmac.compare_digest(supplied_hash, expected_hash)
-        ):
+        )
+        if snapshot.get("snapshot_kind") == "defender_configuration":
+            invalid = (
+                base_invalid
+                or str(snapshot.get("action_id") or "")
+                != str(plan.get("action_id") or "")
+                or snapshot.get("action_id") not in DEFENDER_CONFIGURATION_ACTION_IDS
+                or snapshot.get("patch_ids") != []
+                or not isinstance(snapshot.get("request"), dict)
+                or not isinstance(snapshot.get("precondition"), dict)
+                or not isinstance(snapshot.get("prior_properties"), dict)
+            )
+        else:
+            patch_ids = snapshot.get("patch_ids")
+            invalid = (
+                base_invalid
+                or not isinstance(patch_ids, list)
+                or not patch_ids
+                or any(
+                    not isinstance(item, str) or not item.strip()
+                    for item in patch_ids
+                )
+            )
+        if invalid:
             raise RemediationExecutionError(
                 "The approved execution snapshot is invalid or has been altered",
                 reason="execution_snapshot_invalid",
@@ -664,8 +743,35 @@ class RemediationExecutionService:
 
     def _resolve_target(
         self, plan: dict[str, Any], decision: dict[str, Any]
-    ) -> tuple[PatchTarget, list[str]]:
+    ) -> tuple[PatchTarget | None, list[str]]:
         snapshot = self._validated_execution_snapshot(plan, decision)
+        if snapshot.get("snapshot_kind") == "defender_configuration":
+            try:
+                current = build_defender_configuration_snapshot(
+                    plan, self._defender_configuration
+                )
+            except DefenderConfigurationUnavailable as exc:
+                raise RemediationExecutionError(
+                    str(exc),
+                    reason=exc.reason,
+                    details={"plan_id": plan.get("plan_id")},
+                ) from exc
+            current["snapshot_hash"] = execution_snapshot_hash(current)
+            if not hmac.compare_digest(
+                str(current["snapshot_hash"]), str(snapshot.get("snapshot_hash") or "")
+            ):
+                raise RemediationExecutionError(
+                    "The approved Defender configuration snapshot no longer matches current state",
+                    reason="execution_snapshot_drift",
+                    details={"plan_id": plan.get("plan_id")},
+                )
+            return None, []
+        if self._patching is None:
+            raise RemediationExecutionError(
+                "Patch execution is not configured for this deployment",
+                reason="patch_execution_unavailable",
+                details={"plan_id": plan.get("plan_id")},
+            )
         target_id = str(snapshot["target_id"])
         target = self._patching.target(target_id)
         if target is None:
@@ -706,6 +812,7 @@ def _append_note(existing_message: Any, note: str) -> str:
 
 __all__ = [
     "CONTROLLED_PATCH_RECOVERY",
+    "EXECUTABLE_ACTION_IDS",
     "MAX_EXECUTION_ATTEMPTS",
     "RemediationExecutionError",
     "RemediationExecutionService",

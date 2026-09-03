@@ -156,10 +156,11 @@ def _connection_rows(context: Context) -> list[tuple[dict[str, Any], list[dict[s
         normalized = []
         for row in status_rows:
             current = dict(row)
-            current.setdefault("subscription_id", str(detail.get("subscription_id") or ""))
-            current.setdefault(
-                "subscription_connection", str(detail.get("connection_id") or "")
-            )
+            # The connection registry is authoritative for scope identity.
+            # Published rows can contain stale or missing identity fields after
+            # a connection is recreated, so always project the current values.
+            current["subscription_id"] = str(detail.get("subscription_id") or "")
+            current["subscription_connection"] = str(detail.get("connection_id") or "")
             normalized.append(current)
         rows.append((detail, normalized))
     return rows
@@ -445,16 +446,18 @@ def medallion_layers(context: Context, scope: ReadScope) -> dict[str, Any]:
         "silver": {"healthy": 0, "total": 0},
         "gold": {"healthy": 0, "total": 0},
     }
+    tables: dict[str, list[str]] = {"bronze": [], "silver": [], "gold": []}
     for table_name in _registered_tables(rows):
         layer = _layer_for_table(table_name)
         if not layer:
             continue
+        tables[layer].append(table_name)
         status = dataset_status(table_name, source_status=rows)
         layers[layer]["total"] += 1
         if str(status.get("availability") or "") in {"healthy", "healthy-empty"}:
             layers[layer]["healthy"] += 1
     return envelope(
-        {"layers": layers},
+        {"layers": layers, "tables": tables},
         evidence=_evidence(
             source_engine=SOURCE_ENGINE,
             source_table=SOURCE_TABLE,

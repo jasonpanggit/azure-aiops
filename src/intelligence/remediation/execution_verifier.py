@@ -90,6 +90,21 @@ class ExecutionVerifier:
         except ValueError:
             payload = {}
 
+        snapshot = execution_record.get("execution_snapshot") or {}
+        if snapshot.get("snapshot_kind") == "defender_configuration":
+            properties = payload.get("properties") if isinstance(payload, dict) else {}
+            desired = snapshot.get("desired_properties") or {}
+            matched = _contains(properties, desired)
+            return {
+                "verifiable": True,
+                "outcome": _OUTCOME_SUCCEEDED if matched else _OUTCOME_RUNNING,
+                "verified_state": (
+                    "configuration_matches_approved_snapshot"
+                    if matched
+                    else "configuration_pending"
+                ),
+            }
+
         raw_status = str(payload.get("status") or "")
         normalized = raw_status.casefold()
 
@@ -163,6 +178,20 @@ def _error_message(payload: dict[str, Any], response: httpx.Response) -> str:
     if payload:
         return str(payload)[:500]
     return response.text[:500]
+
+
+def _contains(actual: Any, expected: Any) -> bool:
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            key in actual and _contains(actual[key], value)
+            for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return isinstance(actual, list) and all(
+            any(_contains(item, expected_item) for item in actual)
+            for expected_item in expected
+        )
+    return actual == expected
 
 
 __all__ = [

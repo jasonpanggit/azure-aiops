@@ -39,6 +39,40 @@ replaced.
 
 ## Validation Proof
 
+- 2026-09-03: `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh
+  plan -refresh=false -lock=false` passed with no infrastructure changes.
+  `./infra/scripts/build-and-push.sh remediation-card-overflow-20260903-0029`
+  built and pushed the API and web deployment images (plus the required
+  supporting images) successfully.
+- 2026-09-03: Terraform apply completed with 0 additions, 6 changes, and
+  0 destructions. API revision `aiops-dev-api--0000197` and web revision
+  `aiops-dev-web--0000163` are healthy, running, and serving 100% traffic
+  for the new image tag. API `/health` and `/ready`, web `/`, `/api/config`,
+  and `/remediation` returned HTTP 200. Live RBAC verification confirmed the
+  shared identity's ACR, Key Vault, Foundry, Fabric, and VM roles.
+- 2026-09-02: `terraform -chdir=infra/terraform fmt -check` and targeted
+  onboarding/API tests passed after constraining `api_max_replicas` to 1;
+  `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+  -refresh=false -lock=false` showed 0 additions, 1 in-place update, and
+  0 destructions. The Next.js production build completed successfully.
+- 2026-09-02: Static Terraform RBAC review confirmed the existing `AcrPull`,
+  Key Vault, Fabric Reader, and Foundry roles remain unchanged.
+- 2026-09-02: `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+  -refresh=false -lock=false` passed with no infrastructure changes. The generic
+  validator's bare `terraform plan` was not applicable because this repository
+  supplies required secret-backed variables through `deploy.sh`.
+- 2026-09-02: `cd web && npm run build` passed; the `/remediation` route compiled
+  successfully.
+- 2026-09-02: Static Terraform RBAC review confirmed `AcrPull`, Key Vault access,
+  and Foundry runtime roles remain assigned without destructive changes.
+- 2026-09-02: Built and pushed API, web, MCP server, and Azure MCP images with
+  tag `remediation-handoff-20260902-1435`; Terraform applied 0 additions, 6
+  changes, and 0 destructions. All four Container Apps serve the new tag.
+- 2026-09-02: Live verification returned HTTP 200 for the deployed
+  `/remediation` page and API `/health`; the web revision reached `Running`
+  with 100% traffic. Live RBAC verification confirmed the shared identity's
+  ACR, Key Vault, and Foundry roles.
+
 - 2026-08-30: Diagnosed contextual agent failures from Log Analytics:
   Foundry tool enumeration received APIM HTTP 415 because the MCP policy
   required an exact `application/json` header and rejected compatible media
@@ -63,6 +97,10 @@ replaced.
   complete backend suite (1,655 tests), frontend lint, all 158 Vitest tests,
   the Next.js production build, Terraform format check, and Terraform
   validation.
+- 2026-09-02: Authenticated Terraform preflight passed subscription selection,
+  Azure authentication, init, fmt check, validate, plan, state, template
+  variable scan, and required variable validation. The Next.js production
+  build completed successfully.
 - 2026-08-30: Canonical `./infra/scripts/deploy.sh plan` for the Network
   response follow-up contains no APIM resource destruction or replacement.
   The only replacement is the non-resource `terraform_data.foundry_agent`
@@ -164,6 +202,27 @@ replaced.
   web `/` and `/api/config` returned HTTP 200.
 
 ## All validation checks pass
+
+- Terraform validation recipe:
+  - Terraform and Azure CLI are installed.
+  - Azure CLI is authenticated to the target subscription.
+  - Terraform is initialized.
+  - Terraform formatting check passes.
+  - Terraform configuration validates.
+  - Terraform plan completes without unapproved destructive changes.
+  - Terraform state is accessible.
+  - Go-style template variables are absent from Terraform JSON variables.
+  - `main.tfvars.json` JSON syntax is valid.
+
+- Terraform preflight sequence:
+  - Terraform installed
+  - Azure CLI installed and authenticated
+  - Terraform initialized
+  - Terraform formatting check passes
+  - Terraform configuration validates
+  - Terraform plan completes without unapproved destructive changes
+  - Terraform state and template-variable checks pass
+  - `main.tfvars.json` JSON syntax is valid
 
 - Terraform installed
 - Azure CLI installed and authenticated to the target subscription

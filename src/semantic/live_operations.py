@@ -80,6 +80,15 @@ def _patch_finding(row: dict[str, Any], *, installed: bool) -> dict[str, Any] | 
     return {
         "resource_id": _first(row.get("id"), f"{target}|{kb_id}"),
         "target_resource_id": target,
+        # Keep the ARG scope identity with the finding.  Optional semantic
+        # resource metadata may be unavailable for a live target, but the
+        # subscription is still the authoritative join key for onboarding
+        # metadata.
+        "subscription_id": _first(
+            row.get("subscriptionId"),
+            row.get("subscription_id"),
+            _subscription_id_from_resource_id(target),
+        ),
         "kb_id": kb_id,
         "status": "installed" if installed else "missing",
         "severity": _first(
@@ -97,6 +106,15 @@ def _patch_finding(row: dict[str, Any], *, installed: bool) -> dict[str, Any] | 
         ),
         "timestamp": _first(row.get("observed_at"), _now()),
     }
+
+
+def _subscription_id_from_resource_id(resource_id: str) -> str:
+    """Extract the subscription segment from a canonical ARM resource id."""
+    parts = [part for part in resource_id.strip("/").split("/") if part]
+    for index, part in enumerate(parts[:-1]):
+        if part.casefold() == "subscriptions":
+            return parts[index + 1]
+    return ""
 
 
 def live_vulnerability_service(
@@ -299,6 +317,10 @@ class LiveRemediationPlanner:
                 for opportunity in (self._opportunity(row),)
             }.values()
         )
+        opportunities.extend(
+            self._configuration_opportunity(row)
+            for row in self._configuration_assessments()
+        )
         return {
             "opportunities": opportunities,
             "collection_metadata": {
@@ -321,6 +343,10 @@ class LiveRemediationPlanner:
                 for row in self._patch_targets()
                 for plan in (self._plan(row),)
             }.values()
+        )
+        plans.extend(
+            self._configuration_plan(row)
+            for row in self._configuration_assessments()
         )
         self.repository.replace_generation(plans)
         return {
@@ -354,11 +380,187 @@ class LiveRemediationPlanner:
             return []
         return self.vulnerability_service.asset_exposures()
 
+    def _configuration_assessments(self) -> list[dict[str, Any]]:
+        if self.vulnerability_service is None:
+            return []
+        from operations.defender_configuration import (
+            is_defender_configuration_recommendation,
+        )
+
+        posture = getattr(self.vulnerability_service, "defender_posture", None)
+        if not callable(posture):
+            return []
+        return [
+            row
+            for row in posture()
+            if is_defender_configuration_recommendation(row.get("recommendation"))
+        ]
+
+    def _configuration_opportunity(self, row: dict[str, Any]) -> dict[str, Any]:
+        from operations.defender_configuration import (
+            supported_recommendation_action_id,
+        )
+
+        target_id = _text(row.get("asset_id"))
+        recommendation = _text(row.get("recommendation"))
+        action_id = (
+            supported_recommendation_action_id(recommendation, target_id)
+            or "defender-manual-review"
+        )
+        return {
+            "opportunity_id": (
+                f"live-defender-config-{_hash({'target': target_id, 'recommendation': recommendation})[:16]}"
+            ),
+            "opportunity_type": "Defender configuration",
+            "action_id": action_id,
+            "resource": {
+                "id": target_id,
+                "resource_key": target_id,
+                "name": _first(row.get("asset_name"), target_id),
+                "entity_type": _first(
+                    row.get("inventory_kind"), row.get("resource_type"), "Resource"
+                ),
+                "subscription_id": _text(row.get("subscription_id")),
+                "subscription_connection": _text(
+                    row.get("subscription_connection")
+                ),
+            },
+            "priority": _priority_from_score(
+                _severity_score(_text(row.get("severity")))
+            ),
+            "risk_score": _severity_score(_text(row.get("severity"))),
+            "recommended_action": recommendation,
+            "defender_mapping": {
+                "status": "mapped" if action_id != "defender-manual-review" else "manual_review",
+                "action_id": action_id if action_id != "defender-manual-review" else None,
+                "recommendations": [recommendation],
+                "reason": (
+                    "Mapped to an explicit code-authored Defender configuration action."
+                    if action_id != "defender-manual-review"
+                    else "No explicit supported Defender configuration action matches this recommendation."
+                ),
+            },
+            "read_only": True,
+        }
+
+    def _configuration_plan(self, row: dict[str, Any]) -> dict[str, Any]:
+        opportunity = self._configuration_opportunity(row)
+        resource = opportunity["resource"]
+        recommendation = opportunity["recommended_action"]
+        assessment_id = _text(row.get("assessment_id"))
+        business_service = _text(row.get("business_service"))
+        application = _text(row.get("application"))
+        mapped = opportunity["action_id"] != "defender-manual-review"
+        action_version = _hash(
+            {
+                "action_id": opportunity["action_id"],
+                "target": resource["id"],
+                "recommendation": recommendation,
+                "assessment_id": assessment_id,
+            }
+        )[:16]
+        return {
+            "plan_id": opportunity["opportunity_id"],
+            "action_version": action_version,
+            "action_id": opportunity["action_id"],
+            "title": recommendation or "Review Defender configuration",
+            "status": "Draft - Approval Required",
+            "opportunity_type": "Defender configuration",
+            "resource": resource,
+            "resource_key": resource["id"],
+            "application": application,
+            "business_service": business_service,
+            "environment": _text(row.get("environment")),
+            "owner": _text(row.get("owner")),
+            "subscription_id": _text(row.get("subscription_id")),
+            "subscription_connection": _text(row.get("subscription_connection")),
+            "priority": opportunity["priority"],
+            "priority_score": opportunity["risk_score"],
+            "recommended_action": recommendation,
+            "defender_mapping": opportunity["defender_mapping"],
+            "defender_recommendations": [recommendation],
+            "simulation_result": {
+                "risk_reduction_percent": min(int(opportunity["risk_score"]), 100),
+                "compliance_improvement_percent": 50 if mapped else 0,
+                "operational_debt_reduction_percent": 25 if mapped else 0,
+            },
+            "approval_requirements": [
+                {
+                    "role": "Security Response Owner",
+                    "reason": "Explicit approval is required before Defender configuration changes.",
+                }
+            ],
+            "rollback_plan": {
+                "reversible": False,
+                "rollback_actions": [
+                    "Manually restore the pre-action Microsoft.Security pricing configuration from the audit snapshot."
+                ],
+            },
+            "risk_assessment": {
+                "overall_risk": {
+                    "level": opportunity["priority"],
+                    "drivers": [f"Defender recommendation severity: {_text(row.get('severity')) or 'unknown'}"],
+                }
+            },
+            "execution_steps": [
+                {
+                    "step_number": 1,
+                    "description": (
+                        recommendation
+                        if mapped
+                        else opportunity["defender_mapping"]["reason"]
+                    ),
+                    "stage": "Planning",
+                    "requires_approval": True,
+                    "execution_status": "Not Executed",
+                }
+            ],
+            "business_decision": {
+                "disposition": "schedule" if mapped else "escalate",
+                "business_impact": {
+                    "status": "known" if business_service or application else "unknown"
+                },
+                "review_requirements": [] if mapped else ["Platform security review"],
+                "unknowns": (
+                    []
+                    if business_service or application
+                    else ["Business ownership is unknown for this target."]
+                ),
+                "urgency_rationale": {
+                    "evidence_citations": (
+                        [f"assessment:{assessment_id}"] if assessment_id else []
+                    )
+                },
+            },
+            "evidence": [recommendation],
+            "evidence_citations": [
+                {
+                    "source_type": "assessment",
+                    "source_id": assessment_id,
+                    "resource_id": resource["id"],
+                    "summary": recommendation,
+                    "observed_at": _text(row.get("last_assessed_at")),
+                    "freshness": "current",
+                }
+            ]
+            if assessment_id
+            else [],
+            "read_only": True,
+            "execution_authorized": False,
+            "execution_performed": False,
+        }
+
     def _opportunity(self, row: dict[str, Any]) -> dict[str, Any]:
         target_id = _first(row.get("asset_id"), row.get("server_id"))
         missing_kbs = _strings(
             row.get("missing_kbs")
             or ([row.get("missing_kb")] if row.get("missing_kb") else [])
+        )
+        defender_recommendations = _strings(row.get("defender_recommendations"))
+        defender_mapping = self._defender_mapping(
+            row,
+            missing_kbs=missing_kbs,
+            defender_recommendations=defender_recommendations,
         )
         patch_label = (
             ", ".join(missing_kbs)
@@ -390,11 +592,18 @@ class LiveRemediationPlanner:
             ),
             "risk_score": _numeric(row.get("priority_score", row.get("risk_score", 0))),
             "recommended_action": f"Install {patch_label}",
+            "defender_mapping": defender_mapping,
             "read_only": True,
         }
 
     def _plan(self, row: dict[str, Any]) -> dict[str, Any]:
         opportunity = self._opportunity(row)
+        defender_mapping = opportunity["defender_mapping"]
+        action_id = (
+            "controlled-patch-recovery"
+            if defender_mapping["status"] in {"mapped", "not_applicable"}
+            else "defender-manual-review"
+        )
         action_version = _hash(
             {
                 "action": opportunity["recommended_action"],
@@ -404,7 +613,7 @@ class LiveRemediationPlanner:
         return {
             "plan_id": opportunity["opportunity_id"],
             "action_version": action_version,
-            "action_id": "controlled-patch-recovery",
+            "action_id": action_id,
             "title": f"Patch {opportunity['resource']['name']}",
             "status": "Draft - Approval Required",
             "opportunity_type": opportunity["opportunity_type"],
@@ -420,6 +629,8 @@ class LiveRemediationPlanner:
             "priority": opportunity["priority"],
             "priority_score": opportunity["risk_score"],
             "recommended_action": opportunity["recommended_action"],
+            "defender_mapping": defender_mapping,
+            "defender_recommendations": defender_mapping["recommendations"],
             "simulation_result": {
                 "risk_reduction_percent": min(int(opportunity["risk_score"]), 100),
                 "operational_debt_reduction_percent": 25,
@@ -443,7 +654,11 @@ class LiveRemediationPlanner:
             "execution_steps": [
                 {
                     "step_number": 1,
-                    "description": opportunity["recommended_action"],
+                    "description": (
+                        opportunity["recommended_action"]
+                        if defender_mapping["status"] != "manual_review"
+                        else defender_mapping["reason"]
+                    ),
                     "stage": "Planning",
                     "requires_approval": True,
                     "execution_status": "Not Executed",
@@ -487,6 +702,43 @@ class LiveRemediationPlanner:
             "read_only": True,
             "execution_authorized": False,
             "execution_performed": False,
+        }
+
+    @staticmethod
+    def _defender_mapping(
+        row: dict[str, Any],
+        *,
+        missing_kbs: list[str],
+        defender_recommendations: list[str],
+    ) -> dict[str, Any]:
+        """Describe whether Defender evidence can safely map to a patch plan."""
+        if not defender_recommendations:
+            return {
+                "status": "not_applicable",
+                "recommendations": [],
+                "missing_kbs": missing_kbs,
+                "reason": "No Defender recommendation is associated with this exposure.",
+            }
+        if not missing_kbs:
+            return {
+                "status": "manual_review",
+                "recommendations": defender_recommendations,
+                "missing_kbs": [],
+                "reason": "Defender recommendation has no concrete missing KB to map.",
+            }
+        if not bool(row.get("defender_patchable")):
+            return {
+                "status": "manual_review",
+                "recommendations": defender_recommendations,
+                "missing_kbs": missing_kbs,
+                "reason": "Defender finding is not marked patchable.",
+            }
+        return {
+            "status": "mapped",
+            "action_id": "controlled-patch-recovery",
+            "recommendations": defender_recommendations,
+            "missing_kbs": missing_kbs,
+            "reason": "Patchable Defender recommendation mapped to the governed patch action.",
         }
 
 

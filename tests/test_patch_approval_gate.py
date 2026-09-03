@@ -23,7 +23,7 @@ from operations.patching.service import PatchValidationError
 
 
 def _service(
-    *, require_human_approval=True
+    *, require_human_approval=True, allow_self_approval=False
 ) -> tuple[PatchingService, RecordingPatchExecutionAdapter]:
     adapter = RecordingPatchExecutionAdapter()
     service = PatchingService(
@@ -31,6 +31,7 @@ def _service(
         store=InMemoryPatchRunStore(),
         adapter=adapter,
         require_human_approval=require_human_approval,
+        allow_self_approval=allow_self_approval,
     )
     return service, adapter
 
@@ -135,5 +136,57 @@ def test_service_built_without_the_policy_fails_closed() -> None:
 
     with pytest.raises(PatchValidationError):
         _trigger(service)
+
+    assert adapter.submissions == []
+
+
+def test_self_approval_allowed_when_explicitly_opted_in() -> None:
+    """Demo/single-operator environments may opt out of separation of duties."""
+    service, adapter = _service(allow_self_approval=True)
+
+    run = _trigger(service, approved_by="operator@example.com")
+
+    assert run.approved_by == "operator@example.com"
+    assert len(adapter.submissions) == 1
+
+
+def test_self_approval_opt_in_is_read_per_call_not_captured_at_construction() -> None:
+    """Same fresh-read guarantee as require_human_approval: no restart needed."""
+    allowed = {"value": False}
+    service, adapter = _service(allow_self_approval=lambda: allowed["value"])
+
+    with pytest.raises(PatchValidationError):
+        _trigger(service, approved_by="operator@example.com")
+    assert adapter.submissions == []
+
+    allowed["value"] = True
+    run = _trigger(service, approved_by="operator@example.com")
+    assert run.approved_by == "operator@example.com"
+    assert len(adapter.submissions) == 1
+
+
+def test_self_approval_opt_in_does_not_waive_missing_approver() -> None:
+    """Opting into self-approval must not also waive the named-approver rule."""
+    service, adapter = _service(allow_self_approval=True)
+
+    with pytest.raises(PatchValidationError) as excinfo:
+        _trigger(service)
+
+    assert "approver" in str(excinfo.value).casefold()
+    assert adapter.submissions == []
+
+
+def test_service_built_without_self_approval_flag_fails_closed() -> None:
+    """Omitting the new parameter must not silently allow self-approval."""
+    adapter = RecordingPatchExecutionAdapter()
+    service = PatchingService(
+        _vulnerability_service(),
+        store=InMemoryPatchRunStore(),
+        adapter=adapter,
+        require_human_approval=True,
+    )
+
+    with pytest.raises(PatchValidationError):
+        _trigger(service, approved_by="operator@example.com")
 
     assert adapter.submissions == []

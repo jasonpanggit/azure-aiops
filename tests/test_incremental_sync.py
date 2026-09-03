@@ -11,7 +11,7 @@ from topology_comparison_scenario import topology_comparison_scenario
 
 from fabric.data_quality import DataQualityValidator
 from fabric.dataset_mapper import InventoryDatasetMapper
-from fabric.sync_service import FabricSyncService
+from fabric.sync_service import FabricSyncService, _table_source_status_rows
 from intelligence.inventory.pipeline import InventoryPipeline
 from onboarding.config import ConnectorConfig
 from onboarding.graph_normalize import Normalizer
@@ -71,8 +71,8 @@ def test_incremental_sync_writes_bronze_silver_ontology_and_state(tmp_path: Path
         validator=DataQualityValidator(),
     )
 
-    first = service.sync()
-    second = service.sync()
+    first = service.sync(requested_scope={"subscription": ["sub-1"]})
+    second = service.sync(requested_scope={"subscription": ["sub-1"]})
 
     resources = _delta_rows(lakehouse / "Tables/bronze_resources")
     costs = _delta_rows(lakehouse / "Tables/silver_cost_actuals")
@@ -99,8 +99,42 @@ def test_incremental_sync_writes_bronze_silver_ontology_and_state(tmp_path: Path
     assert source_status_by_family["bronze_resources"]["row_count"] == 3
     assert source_status_by_family["silver_vm_inventory"]["availability"] == "available"
     assert source_status_by_family["ontology_entities"]["status"] == "succeeded"
+    assert source_status_by_family["bronze_resources"]["subscription_id"] == "sub-1"
+    assert json.loads(source_status_by_family["bronze_resources"]["requested_scope_json"]) == {
+        "subscription": ["sub-1"]
+    }
+    assert source_status_by_family["bronze_container_image_exposure"]["row_count"] == 0
+    assert (
+        source_status_by_family["bronze_container_image_exposure"]["subscription_id"]
+        == "sub-1"
+    )
     assert (lakehouse / "Tables/ontology_entities/_delta_log").is_dir()
     assert (lakehouse / "Files/ontology/metadata/catalog.json").is_file()
+
+
+def test_source_status_rows_preserve_each_subscription_for_empty_tables() -> None:
+    rows = _table_source_status_rows(
+        {
+            "bronze_resources": [
+                {"subscription_id": "sub-a"},
+                {"subscription_id": "sub-b"},
+            ],
+            "silver_empty": [],
+        },
+        "run-1",
+        "2026-08-17T00:00:00Z",
+        requested_scope={"subscription": ["sub-a", "sub-b"]},
+    )
+
+    by_key = {(row["source_family"], row["subscription_id"]): row for row in rows}
+    assert by_key["bronze_resources", "sub-a"]["row_count"] == 1
+    assert by_key["bronze_resources", "sub-b"]["row_count"] == 1
+    assert by_key["silver_empty", "sub-a"]["row_count"] == 0
+    assert by_key["silver_empty", "sub-b"]["row_count"] == 0
+    assert all(
+        json.loads(row["requested_scope_json"]) == {"subscription": [subscription_id]}
+        for (_, subscription_id), row in by_key.items()
+    )
 
 
 def test_sync_with_topology_flag_publishes_topology_tables(tmp_path: Path) -> None:

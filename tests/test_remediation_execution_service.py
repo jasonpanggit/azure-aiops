@@ -72,6 +72,13 @@ class _FakeVulnerabilityService:
         ]
 
 
+class _EmptyVulnerabilityService:
+    freshness = "2026-08-18T13:00:00Z"
+
+    def asset_exposures(self, scope=None) -> list[dict]:
+        return []
+
+
 class _FakePlanRepository:
     """Repository stub: only ``get`` is needed for Task 1."""
 
@@ -437,6 +444,30 @@ def test_patch_execution_unavailable_surfaces_as_failed_not_swallowed():
 
     assert result["status"] == "failed"
     assert "No execution identity configured" in result["message"]
+
+
+def test_target_revalidation_failure_is_persisted_as_failed_attempt():
+    plan = _plan()
+    service, store = _service_with_store(plan=plan)
+
+    # Approval was captured while the target existed. Simulate the target
+    # disappearing before the execution submission revalidation.
+    service._patching._vulnerability = _EmptyVulnerabilityService()
+
+    assert service.plan_eligibility(plan["plan_id"]) == {
+        "executable": False,
+        "ineligibility_reason": "target_not_found",
+    }
+
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    assert result["status"] == "failed"
+    assert result["outcome"] == "failed"
+    assert result["failure_details"] == "No patch target matches this plan's resource"
+    record = store.get(result["execution_id"])
+    assert record["status"] == "failed"
+    assert record["attempts"][0]["status"] == "failed"
+    assert record["attempts"][0]["transitions"][-1]["status"] == "failed"
 
 
 def _service_with_store(

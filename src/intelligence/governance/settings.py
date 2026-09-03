@@ -95,6 +95,7 @@ def default_settings() -> dict[str, Any]:
         "agent_policy": {
             "allow_autonomous_remediation": False,
             "require_human_approval": True,
+            "allow_self_approval": False,
             "max_concurrent_investigations": 3,
             "investigation_timeout_seconds": 900,
         },

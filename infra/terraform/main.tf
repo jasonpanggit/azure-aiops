@@ -167,3 +167,43 @@ resource "azurerm_role_assignment" "kv_apps" {
   principal_id                     = azurerm_user_assigned_identity.apps.principal_id
   skip_service_principal_aad_check = true
 }
+
+# Update Manager installPatches is an ARM action on the target VM. Keep this
+# grant at the application resource-group boundary so the governed execution
+# identity can patch the managed VM estate it serves.
+resource "azurerm_role_assignment" "apps_virtual_machine_contributor" {
+  scope                            = azurerm_resource_group.main.id
+  role_definition_name             = "Virtual Machine Contributor"
+  principal_id                     = azurerm_user_assigned_identity.apps.principal_id
+  skip_service_principal_aad_check = true
+}
+
+# The execution identity may only read and update Defender pricing resources.
+# It cannot issue arbitrary ARM writes or mutate protected workloads.
+resource "azurerm_role_definition" "apps_defender_configuration" {
+  count = var.enable_defender_configuration_execution ? 1 : 0
+
+  name  = "${local.base}-defender-configuration-operator"
+  scope = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
+
+  permissions {
+    actions = [
+      "Microsoft.Security/pricings/read",
+      "Microsoft.Security/pricings/write",
+    ]
+    not_actions = []
+  }
+
+  assignable_scopes = [
+    "/subscriptions/${data.azurerm_client_config.current.subscription_id}",
+  ]
+}
+
+resource "azurerm_role_assignment" "apps_defender_configuration" {
+  count = var.enable_defender_configuration_execution ? 1 : 0
+
+  scope                            = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
+  role_definition_id               = azurerm_role_definition.apps_defender_configuration[0].role_definition_resource_id
+  principal_id                     = azurerm_user_assigned_identity.apps.principal_id
+  skip_service_principal_aad_check = true
+}

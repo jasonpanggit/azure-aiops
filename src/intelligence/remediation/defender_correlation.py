@@ -33,6 +33,10 @@ from api.evidence import classify_freshness
 from api.scope import Scope, scope_attributes
 from intelligence.predictive.predictive_context_builder import PredictiveContextBuilder
 from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
+from operations.defender_configuration import (
+    DEFENDER_CONFIGURATION_ACTION_IDS,
+    supported_recommendation_action_id,
+)
 
 _SEVERITY_SCORE = {"critical": 100, "high": 75, "medium": 50, "low": 25}
 _DISPOSITIONS = frozenset({"act_now", "schedule", "defer", "not_applicable", "escalate"})
@@ -396,7 +400,10 @@ class DefenderRemediationCorrelator:
             key=lambda severity: _SEVERITY_SCORE.get(severity, 0),
             default="",
         )
-        catalog_match = self._catalog_match(group["weakness_source"])
+        catalog_action_id = self._catalog_action_id(
+            group["weakness_source"], resource_key=resource_key
+        )
+        catalog_match = bool(catalog_action_id)
         not_applicable_evidence = str(
             resource.get("confirmed_not_applicable_reason") or ""
         ).strip()[:1024]
@@ -485,6 +492,10 @@ class DefenderRemediationCorrelator:
             "confidence": confidence,
             "max_severity": max_severity,
             "catalog_match": catalog_match,
+            "catalog_action_id": catalog_action_id,
+            "direct_execution_supported": (
+                catalog_action_id in DEFENDER_CONFIGURATION_ACTION_IDS
+            ),
             "outcome": outcome,
             "outcome_reason": outcome_reason,
             "observed_facts": observed_facts,
@@ -513,8 +524,21 @@ class DefenderRemediationCorrelator:
 
 
     def _catalog_match(self, weakness_source: Mapping[str, Any]) -> bool:
+        return bool(self._catalog_action_id(weakness_source))
+
+    def _catalog_action_id(
+        self, weakness_source: Mapping[str, Any], *, resource_key: str = ""
+    ) -> str:
+        direct_action = supported_recommendation_action_id(
+            weakness_source.get("recommendation")
+            or weakness_source.get("title")
+            or weakness_source.get("displayName"),
+            resource_key,
+        )
+        if direct_action:
+            return direct_action
         if not self.action_catalog:
-            return False
+            return ""
         candidate_text = str(
             weakness_source.get("recommendation")
             or weakness_source.get("title")
@@ -528,8 +552,8 @@ class DefenderRemediationCorrelator:
                 if clause.get("field") != "defender_recommendation":
                     continue
                 if str(clause.get("equals") or "").casefold() == candidate_text:
-                    return True
-        return False
+                    return str(action.get("action_id") or "")
+        return ""
 
     @staticmethod
     def _confidence(

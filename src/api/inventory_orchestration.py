@@ -105,7 +105,16 @@ def run_inventory_refresh_all_connections(
             runtime.service._source_root_is_remote = True
             runtime.service._source_fs = combined_store.fs
             runtime.service._resolved_source_root = combined_generation
-        publication = runtime.service.sync()
+        requested_subscriptions = sorted(
+            {
+                str(connection.subscription_id)
+                for connection in connections
+                if connection.connection_id in succeeded and connection.subscription_id
+            }
+        )
+        publication = runtime.service.sync(
+            requested_scope={"subscription": requested_subscriptions}
+        )
         fabric_publication = {
             "runId": publication.run_id,
             "sourceRunId": publication.source_run_id,

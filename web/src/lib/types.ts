@@ -633,11 +633,43 @@ export interface DefenderSecureScoreControl {
   subscription_id: string;
 }
 
+export interface ContainerImageExposure {
+  id: string;
+  target_resource_id: string;
+  registry_resource_id: string;
+  registry_host: string;
+  repository: string;
+  image_digest: string;
+  image_tags: string[];
+  image_uri: string;
+  last_pushed_at: string;
+  status: string;
+  severity: string;
+  critical_count: number;
+  high_count: number;
+  vulnerable_package_count: number;
+  cve_count: number;
+  cve_ids: string[];
+  vulnerable_packages: string[];
+  recommendation: string;
+  last_assessed_at: string;
+  subscription_id: string;
+  subscription_connection?: string;
+  environment?: string;
+  business_service?: string;
+  application?: string;
+  owner?: string;
+  region?: string;
+  criticality?: string;
+}
+
 export interface DefenderOverview {
   active_alert_count: number;
   critical_alert_count: number;
   attack_path_count: number;
   unhealthy_recommendation_count: number;
+  vulnerable_container_image_count: number;
+  container_image_cve_count: number;
   secure_scores: DefenderSecureScore[];
   top_controls: DefenderSecureScoreControl[];
   coverage: Record<
@@ -1363,6 +1395,14 @@ export interface RemediationPlan {
   objective?: string;
   rollback_plan?: Record<string, unknown>;
   recommended_action?: Record<string, unknown>;
+  defender_mapping?: {
+    status: "mapped" | "manual_review" | "not_applicable";
+    action_id?: string;
+    recommendations?: string[];
+    missing_kbs?: string[];
+    reason?: string;
+  };
+  defender_recommendations?: string[];
   business_decision?: {
     disposition: "act_now" | "schedule" | "defer" | "not_applicable" | "escalate";
     urgency_rationale?: {
@@ -1448,6 +1488,8 @@ export interface DefenderRemediationCase {
   confidence?: number;
   max_severity?: string;
   catalog_match?: boolean;
+  catalog_action_id?: string;
+  direct_execution_supported?: boolean;
   outcome?: string;
   outcome_reason?: string;
   observed_facts?: string[];

@@ -19,6 +19,14 @@ from ..scope import Scope
 router = APIRouter(prefix="/api/v1", tags=["patching"])
 
 
+def _onboarded_subscription_ids(context: Context) -> list[str]:
+    connections = context.onboarding.registry.list(include_disabled=False)
+    seen: dict[str, None] = {}
+    for connection in connections:
+        seen.setdefault(str(connection.subscription_id), None)
+    return list(seen)
+
+
 def _service(context: Context, scope: Scope) -> Any:
     """Resolve the patching service for this scope.
 
@@ -27,6 +35,8 @@ def _service(context: Context, scope: Scope) -> Any:
     provider is used.
     """
     subscription_ids = list(scope.values("subscription"))
+    if not subscription_ids and scope.is_unrestricted():
+        subscription_ids = _onboarded_subscription_ids(context)
     hybrid = getattr(context, "hybrid_patching_provider", None)
     if callable(hybrid) and subscription_ids:
         return hybrid(subscription_ids)

@@ -20,6 +20,7 @@ from intelligence.remediation.approval_decisions import (
     ExecutionSnapshotError,
     build_execution_snapshot,
 )
+from operations.defender_configuration import DEFENDER_CONFIGURATION_ACTION_IDS
 
 from ..dependencies import Context, OperatePrincipal, Page, ReadScope
 from ..errors import ApiError, ErrorCode
@@ -49,6 +50,17 @@ def _require(context: Context, attribute: str, capability: str, scope: Scope) ->
             and context.hybrid_remediation_provider is not None
         ):
             return context.hybrid_remediation_provider(subscription_ids)
+    elif (
+        capability == "remediation"
+        and context.hybrid_remediation_provider is not None
+        and scope.is_unrestricted()
+    ):
+        # No subscription picked in the operating-context selector: fall back
+        # to every onboarded subscription instead of the static Fabric
+        # snapshot, so "all subscriptions" shows live plans rather than 0.
+        all_subscription_ids = _onboarded_subscription_ids(context)
+        if all_subscription_ids:
+            return context.hybrid_remediation_provider(all_subscription_ids)
     return context.resolve_provider(capability)
 
 
@@ -422,6 +434,41 @@ def record_remediation_decision(
             raise ApiError(
                 ErrorCode.CONFLICT,
                 "The executable patch target changed after preview",
+                {
+                    "reason": "stale_execution_preview",
+                    "plan_id": plan_id,
+                },
+            )
+        revalidation_checks.append("execution_snapshot_current")
+    elif (
+        request.decision == "approved"
+        and action_id in DEFENDER_CONFIGURATION_ACTION_IDS
+    ):
+        provider = getattr(context, "execution_provider", None)
+        service = provider(operate_scope) if callable(provider) else None
+        if service is None:
+            raise ApiError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "Defender configuration execution is not configured",
+                {"capability": "defender_configuration"},
+            )
+        try:
+            execution_snapshot = service.build_execution_snapshot(
+                plan, scope=operate_scope
+            )
+        except ExecutionSnapshotError as exc:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                str(exc),
+                {"reason": exc.reason, **exc.details},
+            ) from exc
+        if not hmac.compare_digest(
+            request.preview_snapshot_hash,
+            execution_snapshot["snapshot_hash"],
+        ):
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "The executable Defender configuration changed after preview",
                 {
                     "reason": "stale_execution_preview",
                     "plan_id": plan_id,

@@ -144,11 +144,13 @@ class FabricSyncService:
         *,
         replay_source_run_id: str = "",
         raise_on_quality_failure: bool = True,
+        requested_scope: dict[str, list[str]] | None = None,
     ) -> FabricSyncResult:
         with self.onelake.sync_lock():
             return self._sync_locked(
                 replay_source_run_id=replay_source_run_id,
                 raise_on_quality_failure=raise_on_quality_failure,
+                requested_scope=requested_scope,
             )
 
     def _sync_locked(
@@ -156,6 +158,7 @@ class FabricSyncService:
         *,
         replay_source_run_id: str = "",
         raise_on_quality_failure: bool = True,
+        requested_scope: dict[str, list[str]] | None = None,
     ) -> FabricSyncResult:
         started_clock = self.clock()
         run_id = str(uuid.uuid4())
@@ -290,6 +293,7 @@ class FabricSyncService:
                 datasets,
                 run_id,
                 started_at,
+                requested_scope=requested_scope,
             )
             if source_status_rows:
                 table_uri = self.onelake.table_uri("metadata", "source_status")
@@ -1884,43 +1888,98 @@ def _table_source_status_rows(
     datasets: dict[str, list[dict]],
     run_id: str,
     observed_at: str,
+    *,
+    requested_scope: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
+    """Build current status rows without dropping the source subscription scope.
+
+    A combined snapshot can contain empty tables, so their scope cannot be
+    inferred from table rows.  The orchestration layer supplies the requested
+    subscription set for those snapshots; direct syncs continue to infer scope
+    from populated rows and retain the system scope fallback for truly global
+    tables.
+    """
+    requested_subscriptions = _scope_subscriptions(requested_scope)
     rows: list[dict[str, Any]] = []
     for table_name, table_rows in sorted(datasets.items()):
         if table_name == "metadata_source_status":
             continue
         if "_" not in table_name:
             continue
-        row_count = len(table_rows)
-        content = {
-            "source_family": table_name,
-            "run_id": run_id,
-            "status": "succeeded",
-            "observed_at": observed_at,
-            "ingested_at": observed_at,
-            "watermark": observed_at,
-            "query_version": "1.0.0",
-            "requested_scope_json": "{}",
-            "provider_status": "ok",
-            "freshness": "fresh",
-            "availability": "available",
-            "quality": "complete",
-            "error": "",
-            "row_count": row_count,
-            "lineage_ref": f"{table_name}-table",
-        }
-        rows.append(
+        row_subscriptions = _row_subscriptions(table_rows)
+        subscriptions = requested_subscriptions or row_subscriptions or ("system",)
+        for index, subscription_id in enumerate(subscriptions):
+            scoped = subscription_id != "system"
+            if scoped and requested_subscriptions and not row_subscriptions:
+                row_count = len(table_rows)
+            elif scoped:
+                row_count = sum(
+                    1
+                    for row in table_rows
+                    if str(row.get("subscription_id") or "") == subscription_id
+                )
+            else:
+                row_count = len(table_rows)
+            scope = {"subscription": [subscription_id]} if scoped else {}
+            content = {
+                "source_family": table_name,
+                "run_id": run_id,
+                "status": "succeeded",
+                "observed_at": observed_at,
+                "ingested_at": observed_at,
+                "watermark": observed_at,
+                "query_version": "1.0.0",
+                "requested_scope_json": json.dumps(scope, sort_keys=True),
+                "provider_status": "ok",
+                "freshness": "fresh",
+                "availability": "available",
+                "quality": "complete",
+                "error": "",
+                "row_count": row_count,
+                "lineage_ref": f"{table_name}-table",
+            }
+            resource_id = f"source-status://{table_name}"
+            # Reuse the legacy key for the first scoped row so the first
+            # corrected refresh replaces the pre-scope system row instead of
+            # leaving a duplicate that would inflate unrestricted totals.
+            if scoped and index:
+                resource_id += f"/{subscription_id}"
+            rows.append(
+                {
+                    "tenant_id": "system",
+                    "subscription_id": subscription_id,
+                    "resource_id": resource_id,
+                    "timestamp": observed_at,
+                    "change_version": _hash_json(content),
+                    "ingestion_run_id": run_id,
+                    **content,
+                }
+            )
+    return rows
+
+
+def _scope_subscriptions(
+    requested_scope: dict[str, list[str]] | None,
+) -> tuple[str, ...]:
+    if not requested_scope:
+        return ()
+    values = requested_scope.get("subscription", [])
+    if isinstance(values, str):
+        values = [values]
+    return tuple(sorted({str(value) for value in values if str(value)}))
+
+
+def _row_subscriptions(table_rows: list[dict]) -> tuple[str, ...]:
+    ignored = {"", "system", "unknown", "not-applicable"}
+    return tuple(
+        sorted(
             {
-                "tenant_id": "system",
-                "subscription_id": "system",
-                "resource_id": f"source-status://{table_name}",
-                "timestamp": observed_at,
-                "change_version": _hash_json(content),
-                "ingestion_run_id": run_id,
-                **content,
+                str(row.get("subscription_id") or "")
+                for row in table_rows
+                if str(row.get("subscription_id") or "") not in ignored
             }
         )
-    return rows
+    )
 
 
 def _result(

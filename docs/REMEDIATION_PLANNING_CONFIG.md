@@ -130,6 +130,47 @@ declared `deployment_stages`. Each action's metadata marks whether it is a
 candidate for the Phase 3 low-risk allowlist; that marker is documentation
 only in this phase and enables no behavior.
 
+### Direct Defender configuration boundary
+
+Direct Defender configuration is limited to two code-authored action types:
+
+- `defender-enable-servers-plan-p1` enables resource-level Defender for
+  Servers Plan 1 for one Azure VM, VM scale set, or Arc-enabled server.
+- `defender-enable-storage-plan-v2` enables Defender for Storage V2 only when
+  the recommendation target is the subscription itself.
+
+Both use the pinned Microsoft.Security pricing API, require an exact
+server-generated preview hash and current approval, re-read the current
+configuration immediately before submission, and persist the pre-action state
+properties/hash/ETag. The caller cannot provide an ARM method, URL, body, plan name, or
+target override. Other Defender configuration recommendation titles produce
+`defender-manual-review` plans and cannot execute. Rollback remains manual
+guidance; terminal success is reported only after a follow-up Defender read
+matches the approved desired properties.
+
+Terraform keeps this capability off by default. Set
+`enable_defender_configuration_execution = true` only after reviewing the
+generated subscription-scoped custom role assignment.
+
+### Operator workflow
+
+The remediation center uses one scoped workflow read model:
+
+1. **Select fix** — choose a generated governed plan.
+2. **Review impact** — inspect business impact, evidence, rollback guidance,
+   and the exact server-owned provider operation.
+3. **Approve** — bind a human decision to the current action version and
+   preview hash.
+4. **Run** — submit the immutable approved snapshot once.
+5. **Verify** — poll the owning provider and retain decisions, attempts,
+   transitions, failures, and rollback guidance in the audit record.
+
+The governed family catalog recognizes patch, Defender, Azure Policy, and
+configuration actions. Only action IDs with a bounded provider handler are
+executable. Recognized families without a handler, and unknown action IDs,
+remain manual-review items and never receive an arbitrary ARM request path or
+body.
+
 ## Sources
 
 Resource posture is assembled internally using canonical IDs from:
