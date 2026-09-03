@@ -7,6 +7,7 @@ same object graph through :func:`build_onboarding_service`.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from typing import Any
 
 from onboarding.config import ConnectorConfig
@@ -299,7 +300,10 @@ class _InventoryRefreshRunner:
         self._service = service
         self._connection_id = connection_id
 
-    def run(self) -> dict[str, Any]:
+    def run(
+        self,
+        progress_callback: Callable[[Any], None] | None = None,
+    ) -> dict[str, Any]:
         from api.inventory_orchestration import (
             run_inventory_refresh_all_connections,
         )
@@ -325,7 +329,12 @@ class _InventoryRefreshRunner:
             [self._connection_id],
             fabric_config.source_data_root,
         )
-        publication = build_runtime(fabric_config).service.sync()
+        if progress_callback is None:
+            publication = build_runtime(fabric_config).service.sync()
+        else:
+            publication = build_runtime(fabric_config).service.sync(
+                progress_callback=progress_callback
+            )
         return {
             "inventory": inventory,
             "combined_snapshot": combined,

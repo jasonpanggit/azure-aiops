@@ -727,10 +727,18 @@ class FakePublisher:
         self.error = error
         self.calls = 0
 
-    def run(self):
+    def run(self, progress_callback=None):
         self.calls += 1
         if self.error:
             raise RuntimeError(self.error)
+        if progress_callback is not None:
+            progress_callback(
+                SimpleNamespace(
+                    completed_tables=3,
+                    total_tables=12,
+                    table_name="silver_resources",
+                )
+            )
         return {"status": "completed"}
 
 
@@ -761,10 +769,49 @@ def test_sync_coordinator_reports_progress_through_publish_stages(tmp_path: Path
         "merging",
         "publishing_ontology",
         "writing_fabric_tables",
+        "writing_fabric_tables",
         "succeeded",
     ]
-    assert [pct for _, pct in seen] == sorted(pct for _, pct in seen)
+    assert [pct for _, pct in seen] == [10, 45, 65, 85, 89, 100]
     assert state.stage == "succeeded"
+    assert state.progress_pct == 100
+    assert ("writing_fabric_tables", 89) in seen
+
+
+def test_sync_coordinator_keeps_fabric_progress_below_terminal_until_publish_finishes(
+    tmp_path: Path,
+) -> None:
+    class ProgressPublisher:
+        def run(self, progress_callback=None):
+            assert progress_callback is not None
+            progress_callback(
+                SimpleNamespace(completed_tables=1, total_tables=1, table_name="bronze_resources")
+            )
+            return {"status": "completed"}
+
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path,
+        ingestion_factory=lambda connection: FakeIngestion(),
+        publish_factory=lambda connection: ProgressPublisher(),
+    )
+    service = build_service(tmp_path)
+    onboard(service)
+    connection = service.registry.get("prod-core")
+    seen: list[tuple[str, str, int]] = []
+
+    result, state = coordinator.run(
+        connection,
+        mode="manual",
+        progress_callback=lambda stage, message, pct: seen.append((stage, message, pct)),
+    )
+
+    assert result.status == "succeeded"
+    fabric_updates = [entry for entry in seen if entry[0] == "writing_fabric_tables"]
+    assert fabric_updates[-1] == (
+        "writing_fabric_tables",
+        "Writing Fabric tables: 1/1 tables written (latest: bronze_resources)",
+        99,
+    )
     assert state.progress_pct == 100
 
 

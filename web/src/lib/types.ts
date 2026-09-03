@@ -1079,6 +1079,8 @@ export interface SyncState {
   stage?: string | null;
   stage_message?: string | null;
   progress_pct?: number | null;
+  completed_tables?: number | null;
+  total_tables?: number | null;
   record_count?: number;
 }
 

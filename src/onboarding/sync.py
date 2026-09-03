@@ -240,7 +240,24 @@ class ConnectionSyncCoordinator:
                     "Publishing ontology and inventory tables to Fabric",
                     85,
                 )
-                self._run_publish_with_timeout(connection)
+                def _on_fabric_progress(event: Any) -> None:
+                    total = max(int(event.total_tables), 0)
+                    completed = min(max(int(event.completed_tables), 0), total)
+                    pct = (
+                        85
+                        if total == 0
+                        else min(99, 85 + ((completed * 14 + total - 1) // total))
+                    )
+                    _report(
+                        "writing_fabric_tables",
+                        (
+                            f"Writing Fabric tables: {completed}/{total} tables written "
+                            f"(latest: {event.table_name})"
+                        ),
+                        pct,
+                    )
+
+                self._run_publish_with_timeout(connection, _on_fabric_progress)
             except Exception as exc:
                 logger.exception(
                     "Fabric publish failed for connection '%s' during %s sync",
@@ -311,7 +328,11 @@ class ConnectionSyncCoordinator:
             "stale_after_hours": self.stale_after_hours,
         }
 
-    def _run_publish_with_timeout(self, connection: SubscriptionConnection) -> None:
+    def _run_publish_with_timeout(
+        self,
+        connection: SubscriptionConnection,
+        progress_callback: Callable[[Any], None] | None = None,
+    ) -> None:
         """Run ``publish_factory(connection).run()`` with a bounded timeout.
 
         The Fabric publish step performs OneLake/Delta network I/O with no

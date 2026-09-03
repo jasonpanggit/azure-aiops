@@ -22,6 +22,13 @@ const SYNC_POLL_INTERVAL_MS = 1500;
 // timeout while the background sync is still healthy and progressing.
 const SYNC_POLL_TIMEOUT_MS = 20 * 60 * 1000;
 
+function readableSyncStage(stage: string | null | undefined): string {
+  if (!stage) return "Sync in progress";
+  return stage
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 /** Subscription connections and Fabric Medallion data-confidence operating view. */
 export default function ConnectionsPage() {
   const { scope } = useScope();
@@ -174,9 +181,11 @@ export default function ConnectionsPage() {
         <div className={`callout ${actionError ? "callout-critical" : syncProgress?.state.status.toLowerCase() === "failed" ? "callout-critical" : "callout-info"}`} role="status">
           {syncProgress && (
             <strong>
-              Sync {syncProgress.state.status.toLowerCase() === "succeeded" ? "completed" : syncProgress.state.status.toLowerCase() === "failed" ? "failed" : "in progress"}
-              {syncProgress.state.stage ? `: ${syncProgress.state.stage}` : ""}
-              {syncProgress.state.progress_pct != null ? ` (${syncProgress.state.progress_pct}%)` : ""}
+              {syncProgress.state.status.toLowerCase() === "succeeded"
+                ? "Sync completed"
+                : syncProgress.state.status.toLowerCase() === "failed"
+                  ? "Sync failed"
+                  : `Sync in progress: ${syncProgress.state.stage_message || readableSyncStage(syncProgress.state.stage)}${syncProgress.state.progress_pct != null ? ` (${syncProgress.state.progress_pct}%)` : ""}`}
             </strong>
           )}
           {actionMessage && <span>{actionMessage}</span>}

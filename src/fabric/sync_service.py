@@ -5,6 +5,7 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,6 +51,16 @@ class FabricSyncResult:
     failed_records: int
     tables: tuple[str, ...]
     duration_seconds: float
+
+
+@dataclass(frozen=True)
+class FabricTableWriteProgress:
+    """Best-effort notification emitted after a Fabric table write succeeds."""
+
+    completed_tables: int
+    total_tables: int
+    table_name: str
+    result: DeltaWriteResult
 
 
 class FabricSyncService:
@@ -145,12 +156,14 @@ class FabricSyncService:
         replay_source_run_id: str = "",
         raise_on_quality_failure: bool = True,
         requested_scope: dict[str, list[str]] | None = None,
+        progress_callback: Callable[[FabricTableWriteProgress], None] | None = None,
     ) -> FabricSyncResult:
         with self.onelake.sync_lock():
             return self._sync_locked(
                 replay_source_run_id=replay_source_run_id,
                 raise_on_quality_failure=raise_on_quality_failure,
                 requested_scope=requested_scope,
+                progress_callback=progress_callback,
             )
 
     def _sync_locked(
@@ -159,6 +172,7 @@ class FabricSyncService:
         replay_source_run_id: str = "",
         raise_on_quality_failure: bool = True,
         requested_scope: dict[str, list[str]] | None = None,
+        progress_callback: Callable[[FabricTableWriteProgress], None] | None = None,
     ) -> FabricSyncResult:
         started_clock = self.clock()
         run_id = str(uuid.uuid4())
@@ -180,6 +194,7 @@ class FabricSyncService:
 
         table_results: dict[str, DeltaWriteResult] = {}
         written_versions: dict[str, tuple[str, int | None]] = {}
+        completed_tables = 0
         failed_records = 0
         ontology_started = self.clock()
         ontology_health: dict[str, Any] = {}
@@ -368,9 +383,26 @@ class FabricSyncService:
                         write_error = write_error or exc
                         continue
                     table_results[table_name] = result
+                    completed_tables += 1
                     if result.version != before_version:
                         written_versions[table_name] = (table_uri, before_version)
                     self.metrics.record_table(table_name, result)
+                    if progress_callback is not None:
+                        try:
+                            progress_callback(
+                                FabricTableWriteProgress(
+                                    completed_tables=completed_tables,
+                                    total_tables=len(datasets),
+                                    table_name=table_name,
+                                    result=result,
+                                )
+                            )
+                        except Exception:
+                            _LOGGER.debug(
+                                "Fabric table progress callback failed for %s",
+                                table_name,
+                                exc_info=True,
+                            )
                 if write_error is not None:
                     raise write_error
 
