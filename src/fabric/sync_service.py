@@ -74,6 +74,17 @@ class FabricSyncService:
         "silver_predictive_history",
         "silver_cost_actuals",
     })
+    # Full-state (current-snapshot) tables keyed by resource_id: rows must
+    # disappear once the underlying resource is gone, which plain MERGE can't
+    # express, but a full OVERWRITE rewrites the whole table even when only a
+    # handful of rows changed. SNAPSHOT_MERGE upserts changed keys and
+    # deletes keys absent from this run, giving OVERWRITE's replace semantics
+    # at MERGE's cost for the largest, least-churny tables.
+    _SNAPSHOT_MERGE_WRITE_TABLES: frozenset[str] = frozenset({
+        "bronze_resources",
+        "silver_vm_inventory",
+        "silver_server_inventory",
+    })
 
     def __init__(
         self,
@@ -1600,6 +1611,8 @@ class FabricSyncService:
             return DeltaWriteMode.APPEND
         if table_name in self._MERGE_WRITE_TABLES:
             return DeltaWriteMode.MERGE
+        if table_name in self._SNAPSHOT_MERGE_WRITE_TABLES:
+            return DeltaWriteMode.SNAPSHOT_MERGE
         return DeltaWriteMode.OVERWRITE
 
     def _extend_with_topology_tables(
