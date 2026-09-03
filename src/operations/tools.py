@@ -24,6 +24,7 @@ underlying engine is implemented.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -182,6 +183,38 @@ def _fabric_iq_result(tool_context: ToolContext, kind: str, args: Mapping[str, A
     if not isinstance(adapter, FabricIQToolAdapter):
         return ToolResult(status=STATUS_UNAVAILABLE, warning="Fabric IQ provider is invalid")
     return adapter.run(kind, args, tool_context.scope)
+
+
+def _resolve_vnet_id(service: Any, subject: str) -> str:
+    """Resolve a free-text subject (name, partial name, or resource id) to a
+    VNet ``resource_id``.
+
+    Operators ask about VNets by friendly name ("demo vnet", "demo"), not by
+    ARM resource id, and the name is rarely capitalized. Tool args therefore
+    carry whatever text the question yielded; this resolves it against the
+    scoped topology's known VNets before falling back to the raw text so an
+    exact resource-id match still works unchanged.
+    """
+    needle = str(subject or "").strip().casefold()
+    if not needle:
+        return ""
+    vnets = getattr(service.snapshot, "vnets", ())
+    for vnet in vnets:
+        if str(vnet.resource_id).casefold() == needle:
+            return vnet.resource_id
+    # Strip a trailing "vnet"/"virtual network" qualifier so "demo vnet"
+    # matches a VNet literally named "demo".
+    stripped = re.sub(r"\s*(virtual network|vnet)s?\s*$", "", needle).strip()
+    for candidate in (needle, stripped):
+        if not candidate:
+            continue
+        exact = [vnet for vnet in vnets if str(vnet.name).casefold() == candidate]
+        if len(exact) == 1:
+            return exact[0].resource_id
+        partial = [vnet for vnet in vnets if candidate in str(vnet.name).casefold()]
+        if len(partial) == 1:
+            return partial[0].resource_id
+    return subject
 
 
 def _network_scope(scope: Scope) -> NetworkScope:
@@ -366,7 +399,8 @@ def _tool_hub_dependents(tool_context: ToolContext, args: Mapping[str, Any]) -> 
 
     def run(network: Any) -> ToolResult:
         service = network.scoped(_network_scope(tool_context.scope))
-        result = service.hub_dependents(vnet_id)
+        resolved_vnet_id = _resolve_vnet_id(service, vnet_id)
+        result = service.hub_dependents(resolved_vnet_id)
         if not result.get("hub_name") and not result.get("dependent_count"):
             return ToolResult(status=STATUS_EMPTY)
         return ToolResult(

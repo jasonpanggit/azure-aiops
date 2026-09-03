@@ -37,7 +37,7 @@ MAX_RETRIES = 1
 MAX_LEDGER_ENTRIES = 1_000
 MAX_CONTEXT_STEPS = 5
 MAX_CONTEXT_SPECIALISTS = 3
-MAX_CONTEXT_TOOL_CALLS = 8
+MAX_CONTEXT_TOOL_CALLS = 10
 
 
 def _now() -> str:
@@ -67,7 +67,7 @@ class AgentDefinition:
 
 
 AGENTS: tuple[AgentDefinition, ...] = (
-    AgentDefinition("network", "Network Agent", "Investigates topology, traffic paths, firewall/NSG gaps, and blast radius.", ("network_topology", "firewall_nsg_gaps"), ("network", "traffic", "firewall", "nsg", "route", "blast", "hub", "vnet", "subnet", "peering", "topology", "depend", "dependency", "dependencies")),
+    AgentDefinition("network", "Network Agent", "Investigates topology, traffic paths, firewall/NSG gaps, and blast radius.", ("network_topology", "hub_dependents", "impact_context", "firewall_nsg_gaps"), ("network", "traffic", "firewall", "nsg", "route", "blast", "hub", "vnet", "subnet", "peering", "topology", "depend", "dependency", "dependencies")),
     AgentDefinition("vulnerability", "Vulnerability Agent", "Investigates CVE exposure, reachability, exploitability, and affected services.", ("cve_exposure", "risk_context"), ("cve", "vulnerab", "exploit", "exposure", "risk")),
     AgentDefinition("patch", "Patch Agent", "Investigates patch priorities, KB remediation, and validation expectations.", ("cve_exposure", "remediation_plans"), ("patch", "kb", "update", "sla")),
     AgentDefinition("incident", "Incident Agent", "Investigates incident timeline, root-cause candidates, unknowns, and validation steps.", ("incidents",), ("incident", "outage", "alert", "root cause", "timeline")),
@@ -89,6 +89,12 @@ def agent_catalog() -> list[dict[str, Any]]:
     ]
 
 
+_SUBJECT_STOPWORDS = {
+    "what", "which", "how", "why", "who", "when", "where", "cve", "kb", "prod", "uat",
+    "does", "is", "are", "the", "on", "of", "a", "an", "to", "for", "in", "and", "or",
+}
+
+
 def _extract_subject(objective: str) -> str:
     import re
 
@@ -96,9 +102,27 @@ def _extract_subject(objective: str) -> str:
     if quoted:
         return quoted[0].strip()
     candidates = re.findall(r"\b([A-Z][A-Za-z0-9_-]*(?:\s+[A-Z][A-Za-z0-9_-]*)*)\b", objective)
-    stop = {"what", "which", "how", "why", "who", "when", "where", "cve", "kb", "prod", "uat"}
-    candidates = [item for item in candidates if item.casefold() not in stop and not any(part.casefold() in stop for part in item.split())]
-    return max(candidates, key=len) if candidates else ""
+    candidates = [
+        item for item in candidates
+        if item.casefold() not in _SUBJECT_STOPWORDS
+        and not any(part.casefold() in _SUBJECT_STOPWORDS for part in item.split())
+    ]
+    if candidates:
+        return max(candidates, key=len)
+    # No capitalized phrase (the common case: operators rarely capitalize
+    # resource names). Fall back to trailing content words after common
+    # question markers, e.g. "what depends on demo vnet" -> "demo vnet".
+    match = re.search(
+        r"\b(?:depends? on|dependent(?:s)? of|about|for|impact of|impacts?)\s+(.+)$",
+        objective,
+        flags=re.IGNORECASE,
+    )
+    tail = match.group(1) if match else objective
+    words = [
+        word for word in re.findall(r"[A-Za-z0-9_-]+", tail)
+        if word.casefold() not in _SUBJECT_STOPWORDS
+    ]
+    return " ".join(words).strip()
 
 
 def _select_agents(objective: str) -> list[AgentDefinition]:
@@ -156,6 +180,8 @@ def _tool_args(tool: str, objective: str, subject: str) -> dict[str, Any]:
         return {"name": subject} if subject else {}
     if tool in {"risk_context", "impact_context"}:
         return {"subject": subject} if subject else {}
+    if tool == "hub_dependents":
+        return {"vnet_id": subject} if subject else {}
     if tool == "cve_exposure":
         return {"business_service": subject} if subject else {}
     if tool == "search":
@@ -168,7 +194,7 @@ def _rows(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return [row for row in data if isinstance(row, dict)]
     if isinstance(data, dict):
-        for key in ("gaps", "rule_findings", "exposures", "incidents", "plans", "opportunities", "results", "items"):
+        for key in ("gaps", "rule_findings", "exposures", "incidents", "plans", "opportunities", "results", "items", "dependent_vnets", "relationships"):
             value = data.get(key)
             if isinstance(value, list):
                 rows = [row for row in value if isinstance(row, dict)]
