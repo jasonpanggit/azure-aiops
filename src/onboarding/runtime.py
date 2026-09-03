@@ -67,6 +67,7 @@ def build_onboarding_service(
         ingestion_factory=lambda connection: build_connection_ingestion(
             config, connection, credential_resolver
         ),
+        publish_timeout_seconds=config.publish_timeout_seconds,
     )
     service = SubscriptionOnboardingService(
         config.output_dir,

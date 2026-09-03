@@ -790,6 +790,49 @@ def test_sync_coordinator_surfaces_publish_failure_as_failed_sync(tmp_path: Path
     assert result.record_count == 7
 
 
+def test_sync_coordinator_times_out_a_hung_publish_instead_of_stalling_forever(
+    tmp_path: Path,
+) -> None:
+    """A publish step that never returns must not leave the sync "running"
+    forever (the bug this test guards against: the demo "inventory_read_port"
+    connection got stuck at stage=writing_fabric_tables indefinitely because
+    nothing bounded the Fabric/OneLake publish call). A short
+    ``publish_timeout_seconds`` should turn a hang into a normal, retryable
+    "failed" sync instead."""
+
+    class HangingPublisher:
+        def run(self):
+            # Block far longer than the configured timeout; the coordinator
+            # must give up waiting rather than hang the calling thread.
+            time.sleep(30)
+            return {"status": "completed"}
+
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path,
+        ingestion_factory=lambda connection: FakeIngestion(),
+        publish_factory=lambda connection: HangingPublisher(),
+        publish_timeout_seconds=1,
+    )
+    service = build_service(tmp_path)
+    service.sync_coordinator = coordinator
+    onboard(service)
+    connection = service.registry.get("prod-core")
+
+    started = time.monotonic()
+    result, state = coordinator.run(connection, mode="manual")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10, "coordinator.run() should return promptly, not wait for the hang"
+    assert result.status == "failed"
+    assert "exceeded publish_timeout_seconds" in result.message
+    assert state.stage == "failed"
+
+
+def test_sync_coordinator_rejects_a_non_positive_publish_timeout(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="publish_timeout_seconds must be positive"):
+        ConnectionSyncCoordinator(tmp_path, publish_timeout_seconds=0)
+
+
 def test_sync_coordinator_progress_callback_exceptions_do_not_break_sync(
     tmp_path: Path,
 ) -> None:
