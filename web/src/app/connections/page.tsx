@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
@@ -21,6 +21,15 @@ const SYNC_POLL_INTERVAL_MS = 1500;
 // window must comfortably exceed that so the UI doesn't report a false
 // timeout while the background sync is still healthy and progressing.
 const SYNC_POLL_TIMEOUT_MS = 20 * 60 * 1000;
+const ACTIVE_SYNC_STATUSES = new Set([
+  "queued",
+  "discovering",
+  "merging",
+  "publishing_ontology",
+  "writing_fabric_tables",
+  "running",
+  "in_progress",
+]);
 
 function readableSyncStage(stage: string | null | undefined): string {
   if (!stage) return "Sync in progress";
@@ -59,14 +68,20 @@ export default function ConnectionsPage() {
   }, [tab, selectedSubscriptionId, rows]);
 
   /** Polls connection health until the background sync reaches a terminal stage. */
-  async function pollSyncState(connectionId: string): Promise<SyncState> {
+  const pollSyncState = useCallback(async (
+    connectionId: string,
+    onState?: (state: SyncState) => void,
+  ): Promise<SyncState> => {
     const deadline = Date.now() + SYNC_POLL_TIMEOUT_MS;
     while (Date.now() < deadline) {
       const report = await connectionsApi.health(connectionId);
       const summary = report.data.connections.find((entry) => entry.connection_id === connectionId);
       const state = summary?.sync;
       if (state) {
-        setSyncProgress({ connectionId, state });
+        onState?.(state);
+        if (!onState) {
+          setSyncProgress({ connectionId, state });
+        }
         if (["succeeded", "failed"].includes(state.status.toLowerCase())) {
           return state;
         }
@@ -76,7 +91,29 @@ export default function ConnectionsPage() {
     throw new Error(
       "Still waiting for sync to reach a final state after 20 minutes. It may still be running in the background — check the connection's status and refresh shortly."
     );
-  }
+  }, []);
+
+  useEffect(() => {
+    const activeConnection = rows.find((connection) =>
+      ACTIVE_SYNC_STATUSES.has(connection.sync_status.toLowerCase()),
+    );
+    if (!activeConnection) return;
+
+    let cancelled = false;
+    void pollSyncState(activeConnection.connection_id, (state) => {
+      if (!cancelled) {
+        setSyncProgress({ connectionId: activeConnection.connection_id, state });
+      }
+    }).catch((reason) => {
+      if (!cancelled) {
+        setActionError(reason instanceof Error ? reason.message : "Unable to read sync progress.");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pollSyncState, rows]);
 
   async function deleteConnection(connection: SubscriptionConnection) {
     if (!window.confirm(`Delete subscription connection "${connection.name}"? This removes it from the registry.`)) {
