@@ -10,9 +10,9 @@ that the web UI already calls.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from intelligence.remediation.action_catalog import governed_action
 from intelligence.remediation.approval_decisions import (
@@ -127,7 +127,12 @@ def get_plan(plan_id: str, context: Context, scope: ReadScope) -> dict[str, Any]
 
 
 @router.get("/plans/{plan_id}/preview", summary="Preview a remediation plan's execution")
-def preview_plan(plan_id: str, context: Context, scope: ReadScope) -> dict[str, Any]:
+def preview_plan(
+    plan_id: str,
+    context: Context,
+    scope: ReadScope,
+    patch_id: Annotated[list[str], Query()] = [],
+) -> dict[str, Any]:
     plan = _get_scoped_plan(context, scope, plan_id)
     action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
     resource = plan.get("resource") or {}
@@ -135,7 +140,10 @@ def preview_plan(plan_id: str, context: Context, scope: ReadScope) -> dict[str, 
     if action_id == _CONTROLLED_PATCH_RECOVERY:
         try:
             execution_snapshot = build_execution_snapshot(
-                plan, _patching_service(context, scope), scope=scope
+                plan,
+                _patching_service(context, scope),
+                scope=scope,
+                selected_patch_ids=patch_id or None,
             )
         except ExecutionSnapshotError as exc:
             raise ApiError(
@@ -222,7 +230,10 @@ def plan_business_decision(
     summary="Get the governed Select, Review, Approve, Run, Verify workflow",
 )
 def plan_workflow(
-    plan_id: str, context: Context, scope: ReadScope
+    plan_id: str,
+    context: Context,
+    scope: ReadScope,
+    patch_id: Annotated[list[str], Query()] = [],
 ) -> dict[str, Any]:
     """Project the complete scoped workflow without introducing a mutation path."""
     plan = _get_scoped_plan(context, scope, plan_id)
@@ -231,7 +242,7 @@ def plan_workflow(
     action = governed_action(action_id)
     preview_error = ""
     try:
-        preview = preview_plan(plan_id, context, scope)["data"]
+        preview = preview_plan(plan_id, context, scope, patch_id)["data"]
     except ApiError as exc:
         preview = None
         preview_error = str(

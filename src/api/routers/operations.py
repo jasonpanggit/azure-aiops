@@ -420,6 +420,7 @@ def record_remediation_decision(
                 plan,
                 _patching_service(context, operate_scope),
                 scope=operate_scope,
+                selected_patch_ids=request.selected_patch_ids or None,
             )
         except ExecutionSnapshotError as exc:
             raise ApiError(

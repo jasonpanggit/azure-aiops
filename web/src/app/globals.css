@@ -6374,6 +6374,67 @@ body.topology-fullscreen-open {
   white-space: normal;
 }
 
+.remediation-evidence-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.remediation-evidence-item {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.remediation-evidence-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.remediation-evidence-meta {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.remediation-evidence-more {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.remediation-patch-picker {
+  margin: 8px 0;
+}
+
+.remediation-patch-list {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.remediation-patch-item {
+  padding: 6px 10px;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.remediation-patch-item label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  cursor: pointer;
+}
+
 .remediation-approval-form {
   display: grid;
   gap: 12px;

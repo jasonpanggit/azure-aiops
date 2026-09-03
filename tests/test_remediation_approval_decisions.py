@@ -62,9 +62,47 @@ def test_candidate_snapshot_is_server_derived_sorted_versioned_and_hashed() -> N
         "target_kind": "Azure VM",
         "operation": "install_patches",
         "action_version": "action-v1",
+        "available_patches": [
+            AvailablePatch(patch_id="KB600001").to_dict(),
+            AvailablePatch(patch_id="KB600002").to_dict(),
+        ],
         "snapshot_hash": execution_snapshot_hash(snapshot),
     }
     assert service.scopes == [scope]
+
+
+def test_selected_patch_ids_narrows_snapshot_to_operator_chosen_subset() -> None:
+    service = _PatchingService(_target("KB600002", "KB600001", "KB600003"))
+
+    snapshot = build_execution_snapshot(
+        _plan(), service, scope=object(), selected_patch_ids=["KB600002"]
+    )
+
+    assert snapshot["patch_ids"] == ["KB600002"]
+    # Selecting a subset changes what gets hashed/approved -- the approval
+    # binds to exactly the chosen patches, not the full available list.
+    assert snapshot["snapshot_hash"] != build_execution_snapshot(_plan(), service, scope=object())["snapshot_hash"]
+
+
+def test_selected_patch_ids_rejects_an_id_outside_the_observed_available_list() -> None:
+    service = _PatchingService(_target("KB600001"))
+
+    with pytest.raises(ExecutionSnapshotError) as excinfo:
+        build_execution_snapshot(
+            _plan(), service, scope=object(), selected_patch_ids=["KB999999"]
+        )
+
+    assert excinfo.value.reason == "patch_ids_not_available"
+    assert excinfo.value.details["unknown_patch_ids"] == ["KB999999"]
+
+
+def test_selected_patch_ids_rejects_an_empty_selection() -> None:
+    service = _PatchingService(_target("KB600001"))
+
+    with pytest.raises(ExecutionSnapshotError) as excinfo:
+        build_execution_snapshot(_plan(), service, scope=object(), selected_patch_ids=[])
+
+    assert excinfo.value.reason == "no_patches_selected"
 
 
 @pytest.mark.parametrize(

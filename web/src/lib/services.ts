@@ -566,10 +566,25 @@ export type RemediationExecutionStatus =
   | "failed"
   | "cancelled";
 
+export interface RemediationAvailablePatch {
+  patch_id: string;
+  title?: string;
+  classification?: string;
+  severity?: string;
+  cve_ids?: string[];
+  reboot_required?: boolean;
+  published_at?: string;
+  source?: string;
+  node_pool?: string;
+  current_version?: string;
+  target_version?: string;
+}
+
 export interface RemediationExecutionSnapshot {
   snapshot_kind?: "defender_configuration";
   target_id: string;
   patch_ids: string[];
+  available_patches?: RemediationAvailablePatch[];
   target_kind: string;
   operation: string;
   action_id?: string;
@@ -753,14 +768,16 @@ export const remediationApi = {
     apiRequest<RemediationPlanDetail>(`/remediation/plans/${encodeURIComponent(planId)}`, {
       query: scopeToSearchParams(scope),
     }),
-  workflow: (planId: string, scope: ScopeSelection = {}) =>
-    apiRequest<RemediationWorkflow>(`/remediation/plans/${encodeURIComponent(planId)}/workflow`, {
-      query: scopeToSearchParams(scope),
-    }),
-  preview: (planId: string, scope: ScopeSelection = {}) =>
-    apiRequest<RemediationExecutionPreview>(`/remediation/plans/${encodeURIComponent(planId)}/preview`, {
-      query: scopeToSearchParams(scope),
-    }),
+  workflow: (planId: string, scope: ScopeSelection = {}, patchIds: string[] = []) => {
+    const query = scopeToSearchParams(scope);
+    for (const id of patchIds) query.append("patch_id", id);
+    return apiRequest<RemediationWorkflow>(`/remediation/plans/${encodeURIComponent(planId)}/workflow`, { query });
+  },
+  preview: (planId: string, scope: ScopeSelection = {}, patchIds: string[] = []) => {
+    const query = scopeToSearchParams(scope);
+    for (const id of patchIds) query.append("patch_id", id);
+    return apiRequest<RemediationExecutionPreview>(`/remediation/plans/${encodeURIComponent(planId)}/preview`, { query });
+  },
   approvals: (planId: string, scope: ScopeSelection = {}) =>
     apiRequest<RemediationApprovalContext>(`/remediation/plans/${encodeURIComponent(planId)}/approvals`, {
       query: scopeToSearchParams(scope),
@@ -777,13 +794,19 @@ export const remediationApi = {
       action_version: string;
       expires_at?: string;
       preview_snapshot_hash?: string;
+      selected_patch_ids?: string[];
     },
     scope: ScopeSelection = {},
   ) =>
     apiRequest<RemediationApprovalDecision>(`/remediation-plans/${encodeURIComponent(planId)}/decisions`, {
       method: "POST",
       query: scopeToSearchParams(scope),
-      body: { ...payload, expires_at: payload.expires_at ?? "", preview_snapshot_hash: payload.preview_snapshot_hash ?? "" },
+      body: {
+        ...payload,
+        expires_at: payload.expires_at ?? "",
+        preview_snapshot_hash: payload.preview_snapshot_hash ?? "",
+        selected_patch_ids: payload.selected_patch_ids ?? [],
+      },
     }),
   execute: (planId: string, scope: ScopeSelection = {}) =>
     apiRequest<RemediationExecution>(`/remediation/plans/${encodeURIComponent(planId)}/execute`, {

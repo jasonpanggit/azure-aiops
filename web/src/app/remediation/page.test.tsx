@@ -116,6 +116,9 @@ function workflowFixture(overrides: Record<string, unknown> = {}) {
       execution_snapshot: {
         target_id: TARGET,
         patch_ids: ["KB600001"],
+        available_patches: overrides.availablePatches ?? [
+          { patch_id: "KB600001", title: "Critical security update", severity: "Critical" },
+        ],
         target_kind: "Azure VM",
         operation: "install_patches",
         action_version: "version-1",
@@ -251,6 +254,31 @@ describe("Governed remediation workflow", () => {
     await waitFor(() => expect(workflow).toHaveBeenCalledWith(
       "plan-1",
       { subscription: ["sub-1"] },
+      [],
+    ));
+  });
+
+  it("lets an operator narrow approval to a chosen subset of available patches", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      availablePatches: [
+        { patch_id: "KB600001", title: "Critical security update", severity: "Critical" },
+        { patch_id: "KB600002", title: "Optional feature update", severity: "Low" },
+      ],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes).toHaveLength(2);
+    // Both patches start selected (default is "install everything available").
+    expect(checkboxes.every((box) => (box as HTMLInputElement).checked)).toBe(true);
+
+    fireEvent.click(checkboxes[1]);
+    await waitFor(() => expect(workflow).toHaveBeenLastCalledWith(
+      "plan-1",
+      {},
+      ["KB600001"],
     ));
   });
 

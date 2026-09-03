@@ -51,6 +51,34 @@ function details(value: unknown, fallback = "Not specified"): string {
   return String(value ?? "").trim() || fallback;
 }
 
+function shortenId(value: string, keep = 2): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const segments = trimmed.split("/").filter(Boolean);
+  if (segments.length <= keep) return trimmed;
+  return `…/${segments.slice(-keep).join("/")}`;
+}
+
+function citationLabel(citation: unknown): { title: string; meta: string } {
+  if (!isRecord(citation)) return { title: details(citation), meta: "" };
+  const sourceId = String(citation.source_id ?? "");
+  const cveMatch = sourceId.match(/CVE-\d{4}-\d+/i);
+  const title =
+    String(citation.summary ?? "") ||
+    (cveMatch ? cveMatch[0] : "") ||
+    shortenId(sourceId, 1) ||
+    "Evidence item";
+  const meta = [
+    citation.source_type ? titleize(String(citation.source_type)) : "",
+    cveMatch && citation.summary ? cveMatch[0] : "",
+    citation.observed_at ? new Date(String(citation.observed_at)).toLocaleString() : "",
+    citation.freshness ? titleize(String(citation.freshness)) : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return { title, meta };
+}
+
 function resourceId(plan: RemediationPlan | RemediationWorkflow["plan"]): string {
   if (isRecord(plan.resource)) {
     return String(plan.resource.id ?? plan.resource.resource_key ?? plan.resource.name ?? "");
@@ -133,6 +161,7 @@ function RemediationContent() {
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState("");
   const [confirmRun, setConfirmRun] = useState(false);
+  const [selectedPatchIds, setSelectedPatchIds] = useState<string[]>([]);
   const requestId = useRef(0);
 
   const planRows = useMemo(
@@ -173,7 +202,7 @@ function RemediationContent() {
     const currentRequest = ++requestId.current;
     setWorkflowLoading(true);
     setWorkflowError("");
-    void remediationApi.workflow(selectedPlanId, effectiveScope)
+    void remediationApi.workflow(selectedPlanId, effectiveScope, selectedPatchIds)
       .then((response) => {
         if (requestId.current !== currentRequest) return;
         setWorkflow(response.data);
@@ -191,12 +220,13 @@ function RemediationContent() {
     };
     // scopeKey intentionally invalidates the request when any scope dimension changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeKey, selectedPlanId, workflowRefresh]);
+  }, [scopeKey, selectedPlanId, workflowRefresh, selectedPatchIds]);
 
   useEffect(() => {
     setActiveStep(selectedPlanId ? "review" : "select");
     setActionError("");
     setConfirmRun(false);
+    setSelectedPatchIds([]);
   }, [selectedPlanId]);
 
   useEffect(() => {
@@ -235,6 +265,7 @@ function RemediationContent() {
           preview_snapshot_hash: decision === "approved"
             ? workflow.preview?.execution_snapshot?.snapshot_hash
             : undefined,
+          selected_patch_ids: decision === "approved" ? selectedPatchIds : [],
         },
         effectiveScope,
       );
@@ -450,6 +481,42 @@ function RemediationContent() {
                               <p>Prior state: {details(workflow.preview.execution_snapshot.prior_properties)}</p>
                               <p>Approved state: {details(workflow.preview.execution_snapshot.desired_properties)}</p>
                             </>
+                          ) : workflow.preview?.execution_snapshot?.available_patches?.length ? (
+                            <div className="remediation-patch-picker">
+                              <p>Select which patches to install:</p>
+                              <ul className="remediation-patch-list">
+                                {workflow.preview.execution_snapshot.available_patches.map((patch) => {
+                                  const checked = selectedPatchIds.length === 0
+                                    || selectedPatchIds.includes(patch.patch_id);
+                                  return (
+                                    <li key={patch.patch_id} className="remediation-patch-item">
+                                      <label>
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={(event) => {
+                                            const all = workflow.preview!.execution_snapshot!.available_patches!.map((p) => p.patch_id);
+                                            const current = selectedPatchIds.length === 0 ? all : selectedPatchIds;
+                                            const next = event.target.checked
+                                              ? [...current, patch.patch_id]
+                                              : current.filter((id) => id !== patch.patch_id);
+                                            // Empty selection means "all" server-side; represent
+                                            // deselect-everything as an explicit non-empty list
+                                            // when it differs from the full set, otherwise clear
+                                            // back to the default (all) state.
+                                            setSelectedPatchIds(next.length === all.length ? [] : next);
+                                          }}
+                                        />
+                                        <strong> {patch.patch_id}</strong>
+                                        {patch.title ? ` — ${patch.title}` : ""}
+                                        {patch.severity ? ` (${patch.severity})` : ""}
+                                        {patch.reboot_required ? " · reboot required" : ""}
+                                      </label>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
                           ) : (
                             <p>Patch selection: {workflow.preview?.execution_snapshot?.patch_ids.join(", ") || "None"}</p>
                           )}
@@ -459,12 +526,23 @@ function RemediationContent() {
                       <section>
                         <h3>Evidence citations</h3>
                         {selectedEvidence.length ? (
-                          <ul>
-                            {selectedEvidence.map((citation, index) => (
-                              <li key={index}>{details(citation)}</li>
-                            ))}
+                          <ul className="remediation-evidence-list">
+                            {selectedEvidence.slice(0, 8).map((citation, index) => {
+                              const { title, meta } = citationLabel(citation);
+                              return (
+                                <li key={index} className="remediation-evidence-item">
+                                  <span className="remediation-evidence-title">{title}</span>
+                                  {meta && <span className="remediation-evidence-meta">{meta}</span>}
+                                </li>
+                              );
+                            })}
                           </ul>
                         ) : <p className="callout callout-warning">No cited evidence is available.</p>}
+                        {selectedEvidence.length > 8 && (
+                          <p className="remediation-evidence-more">
+                            +{selectedEvidence.length - 8} more evidence item{selectedEvidence.length - 8 === 1 ? "" : "s"} in the audit trail below.
+                          </p>
+                        )}
                       </section>
                       {workflow.action.executable && workflow.preview?.execution_snapshot ? (
                         <button type="button" className="button button-primary" onClick={() => setActiveStep("approve")}>Continue to approval</button>

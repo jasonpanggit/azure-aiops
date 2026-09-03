@@ -56,8 +56,16 @@ def build_execution_snapshot(
     *,
     configuration_adapter: Any = None,
     scope: Any = None,
+    selected_patch_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Derive the exact server-owned action represented by the current plan."""
+    """Derive the exact server-owned action represented by the current plan.
+
+    ``selected_patch_ids``, when given, narrows the snapshot to an operator
+    -chosen subset of the target's observed available patches -- every id
+    must already appear in ``target.available_patch_ids`` (an unknown id is
+    rejected rather than silently widening or narrowing the blast radius).
+    Omitting it keeps the prior all-available-patches behavior.
+    """
     from operations.defender_configuration import (
         DEFENDER_CONFIGURATION_ACTION_IDS,
         DefenderConfigurationUnavailable,
@@ -105,19 +113,45 @@ def build_execution_snapshot(
             reason="target_not_found",
             details={"plan_id": plan.get("plan_id"), "target_id": target_id},
         )
-    patch_ids = sorted(str(item) for item in target.available_patch_ids if str(item))
+    available_patch_ids = target.available_patch_ids
+    patch_ids = sorted(str(item) for item in available_patch_ids if str(item))
     if not patch_ids:
         raise ExecutionSnapshotError(
             "No patches are currently available for this remediation target",
             reason="no_patches_available",
             details={"plan_id": plan.get("plan_id"), "target_id": target_id},
         )
+    if selected_patch_ids is not None:
+        requested = sorted({str(item).strip() for item in selected_patch_ids if str(item).strip()})
+        unknown = [item for item in requested if item not in available_patch_ids]
+        if unknown:
+            raise ExecutionSnapshotError(
+                "Selected patch ids are not in this target's observed available list",
+                reason="patch_ids_not_available",
+                details={
+                    "plan_id": plan.get("plan_id"),
+                    "target_id": target_id,
+                    "unknown_patch_ids": unknown,
+                },
+            )
+        if not requested:
+            raise ExecutionSnapshotError(
+                "At least one patch must be selected",
+                reason="no_patches_selected",
+                details={"plan_id": plan.get("plan_id"), "target_id": target_id},
+            )
+        patch_ids = requested
+    available_patches = [
+        patch.to_dict()
+        for patch in sorted(target.available_patches, key=lambda item: item.patch_id)
+    ]
     snapshot = {
         "target_id": target.target_id,
         "patch_ids": patch_ids,
         "target_kind": target.inventory_kind,
         "operation": target.operation,
         "action_version": str(plan.get("action_version") or ""),
+        "available_patches": available_patches,
     }
     snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
     return snapshot

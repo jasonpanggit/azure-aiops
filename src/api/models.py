@@ -235,6 +235,16 @@ class RemediationDecisionRequest(ApiModel):
     action_version: str = Field(min_length=1, max_length=128)
     expires_at: str = Field("", max_length=128)
     preview_snapshot_hash: str = Field("", max_length=64)
+    selected_patch_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Operator-selected subset of the target's available patch ids. "
+            "Empty means every currently available patch, matching prior "
+            "behavior; a non-empty list must exactly match what the "
+            "approver reviewed in preview, or the snapshot hash mismatches "
+            "and the decision is rejected as stale."
+        ),
+    )
 
 
 # --------------------------------------------------------------------------
