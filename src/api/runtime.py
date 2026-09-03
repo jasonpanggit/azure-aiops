@@ -2180,19 +2180,64 @@ _PATCH_EXECUTION_CREDENTIAL: Any = _UNSET
 _DEFENDER_CONFIGURATION_CREDENTIAL: Any = _UNSET
 
 
+def _service_principal_patch_credential() -> Any | None:
+    """Build a service-principal credential for patch execution, if configured.
+
+    Some deployments provision a subscription-connection service principal
+    (``AZURE_SP_CLIENT_ID`` / ``AZURE_SP_CLIENT_SECRET`` / ``AZURE_TENANT_ID``)
+    with broader RBAC than the container app's managed identity — for
+    example when the identity was never granted the ARM action a specific
+    provider (e.g. ``Microsoft.HybridCompute/machines/installPatches``)
+    requires. When present, this SPN is preferred over the managed identity
+    for patch execution; any resolution failure returns ``None`` so callers
+    fall back to the managed identity path instead of failing outright.
+    """
+    tenant_id = (os.environ.get("AZURE_TENANT_ID") or os.environ.get("TENANT_ID") or "").strip()
+    client_id = (os.environ.get("AZURE_SP_CLIENT_ID") or "").strip()
+    client_secret = os.environ.get("AZURE_SP_CLIENT_SECRET") or ""
+    if not tenant_id or not client_id or not client_secret:
+        return None
+    try:
+        from azure.identity import ClientSecretCredential
+
+        return ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+    except Exception:  # noqa: BLE001 - callers safely fall back without this credential
+        _LOGGER.warning(
+            "AZURE_SP_CLIENT_ID/AZURE_SP_CLIENT_SECRET are set but the service "
+            "principal credential could not be built; falling back to the "
+            "managed identity for patch execution.",
+        )
+        return None
+
+
 def _azure_patch_credential() -> Any | None:
-    """Return one process credential shared by patch submit and verification."""
+    """Return one process credential shared by patch submit and verification.
+
+    Prefers a configured subscription-connection service principal (see
+    ``_service_principal_patch_credential``) over the container app's managed
+    identity, since the managed identity may lack RBAC grants (e.g. Arc
+    ``installPatches``) that the subscription's onboarding/discovery service
+    principal already has. Falls back to ``DefaultAzureCredential`` when no
+    service principal is configured.
+    """
     global _PATCH_EXECUTION_CREDENTIAL
     mode = (os.environ.get(ENV_PATCH_EXECUTION) or "").strip().casefold()
     if mode not in {"azure", "arm", "azure-arm"}:
         return None
     if _PATCH_EXECUTION_CREDENTIAL is _UNSET:
-        try:
-            from azure.identity import DefaultAzureCredential
+        credential = _service_principal_patch_credential()
+        if credential is None:
+            try:
+                from azure.identity import DefaultAzureCredential
 
-            _PATCH_EXECUTION_CREDENTIAL = DefaultAzureCredential()
-        except Exception:  # noqa: BLE001 - callers safely refuse without identity
-            _PATCH_EXECUTION_CREDENTIAL = None
+                credential = DefaultAzureCredential()
+            except Exception:  # noqa: BLE001 - callers safely refuse without identity
+                credential = None
+        _PATCH_EXECUTION_CREDENTIAL = credential
     return _PATCH_EXECUTION_CREDENTIAL
 
 

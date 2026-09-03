@@ -49,6 +49,10 @@ def _clean_env(monkeypatch, tmp_path):
         "AIOPS_ENTRA_TENANT_ID",
         "AIOPS_DEFENDER_CONFIGURATION_EXECUTION",
         "AIOPS_PATCH_EXECUTION",
+        "AZURE_TENANT_ID",
+        "AZURE_SP_CLIENT_ID",
+        "AZURE_SP_CLIENT_SECRET",
+        "TENANT_ID",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "aiops"))
@@ -73,6 +77,59 @@ def test_azure_patch_runtime_shares_credential_with_execution_verifier(
     assert isinstance(verifier, ExecutionVerifier)
     assert adapter._credential is credential
     assert verifier._credential is credential
+
+
+def test_azure_patch_credential_prefers_service_principal_over_managed_identity(
+    monkeypatch,
+) -> None:
+    """A configured subscription-connection SPN should win over DefaultAzureCredential.
+
+    The managed identity may lack RBAC grants (e.g. Arc ``installPatches``)
+    that the subscription's onboarding service principal already has, so
+    patch execution must prefer the SPN when both are available.
+    """
+    import api.runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_PATCH_EXECUTION_CREDENTIAL", runtime_module._UNSET)
+    monkeypatch.setenv("AIOPS_PATCH_EXECUTION", "azure")
+    monkeypatch.setenv("AZURE_TENANT_ID", "tenant-x")
+    monkeypatch.setenv("AZURE_SP_CLIENT_ID", "client-x")
+    monkeypatch.setenv("AZURE_SP_CLIENT_SECRET", "secret-x")
+
+    def _fail_default_credential():
+        raise AssertionError("DefaultAzureCredential should not be used when SPN is configured")
+
+    monkeypatch.setattr(
+        "azure.identity.DefaultAzureCredential",
+        _fail_default_credential,
+    )
+
+    credential = runtime_module._azure_patch_credential()
+
+    from azure.identity import ClientSecretCredential
+
+    assert isinstance(credential, ClientSecretCredential)
+
+
+def test_azure_patch_credential_falls_back_to_managed_identity_without_spn(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_PATCH_EXECUTION_CREDENTIAL", runtime_module._UNSET)
+    monkeypatch.setenv("AIOPS_PATCH_EXECUTION", "azure")
+    for name in ("AZURE_TENANT_ID", "AZURE_SP_CLIENT_ID", "AZURE_SP_CLIENT_SECRET", "TENANT_ID"):
+        monkeypatch.delenv(name, raising=False)
+
+    sentinel = object()
+    monkeypatch.setattr(
+        "azure.identity.DefaultAzureCredential",
+        lambda: sentinel,
+    )
+
+    credential = runtime_module._azure_patch_credential()
+
+    assert credential is sentinel
 
 
 def test_azure_defender_configuration_runtime_shares_verifier_credential(
