@@ -631,3 +631,33 @@ Plans:
 8. The Fabric Data Agent is grounded in curated Gold products and has reproducible offline and live evaluation coverage for groundedness, precision, freshness, and citation behavior.
 9. Generated ontology projections are governed by a publication manifest and lifecycle state so consumers do not need to discover or depend directly on hundreds of physical tables.
 10. Fabric-native and application-layer security, lineage, capacity health, and Delta maintenance controls are implemented, documented, observable, and verified in the deployed API and web experience.
+
+### Phase 11: Cross-Page Operations Copilot Orchestration and Specialist Parity
+
+**Goal:** Make Operations Copilot the single governed reasoning orchestrator across the web experience, with consistent page context, complete specialist/tool parity, cited cross-domain synthesis, and measurable behavior.
+**Requirements**: COP-01, COP-02, COP-03, COP-04, COP-05
+**Depends on:** Phase 10
+**Plans:** 12 plans
+
+Plans:
+
+- [ ] 11-01-PLAN.md — Prove the production `/inventory` unified-orchestration tracer
+- [ ] 11-02-PLAN.md — Complete canonical evidence snapshot identity, coverage, and citation semantics
+- [ ] 11-03-PLAN.md — Converge all API planners through deterministic policy and compatibility adapters
+- [ ] 11-04-PLAN.md — Establish the twelve-specialist manifest and backend tool parity
+- [ ] 11-05-PLAN.md — Project specialist parity through Terraform, packaging, and live validation
+- [ ] 11-06-PLAN.md — Add durable authorized continuity, conditional synthesis, and telemetry
+- [ ] 11-07-PLAN.md — Migrate existing drawer pages and remediation to typed adapters
+- [ ] 11-08-PLAN.md — Integrate Defender, patch, change, and predeploy pages
+- [ ] 11-09-PLAN.md — Integrate data health, governance, identity, FinOps, and resource health
+- [ ] 11-10-PLAN.md — Integrate situations, services, and twin and close the 28-route registry
+- [ ] 11-11-PLAN.md — Converge standalone, workspace, and multi-agent dedicated surfaces
+- [ ] 11-12-PLAN.md — Evaluate and stage compatibility, shadow, canary, promotion, and rollback
+
+**Success Criteria** (what must be TRUE):
+
+1. Standalone, drawer, investigation-workspace, and multi-agent requests share one orchestration contract; the planner may select specialists and tools only from a versioned allowlist, with scope enforcement, bounded budgets, and deterministic fallback.
+2. Every eligible operational page supplies typed page context with selected entities, filters, evidence, freshness, result coverage, and domain starter questions; utility and redirect routes have an explicit non-integration disposition.
+3. Specialist runtime definitions, Foundry prompt/tool grants, Terraform wiring, API catalog, and UI presentation cannot silently drift, and missing inventory/data-health, identity, FinOps, and resource-health capabilities are covered.
+4. Snapshot v2 preserves canonical identity and uncertainty, prioritizes and deduplicates evidence without implying full-dataset coverage from a visible page, and all synthesized claims cite authorized evidence.
+5. Cross-page investigations retain a bounded authorized thread, executive synthesis consumes cited specialist outputs, and automated evaluations prove routing correctness, groundedness, page coverage, degradation behavior, and latency budgets.
