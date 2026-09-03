@@ -400,7 +400,7 @@ function mockFabricHealth(tableNames: string[] = ["bronze_resources", "silver_in
   fabricDataset.mockImplementation((tableName: string) => Promise.resolve(envelope(dataset(tableName, "healthy", 12))));
 }
 
-describe("Connections page Fabric medallion tab", () => {
+describe("Connections page Fabric Medallion tab", () => {
   beforeEach(() => {
     create.mockReset();
     getConnection.mockReset();
@@ -418,21 +418,21 @@ describe("Connections page Fabric medallion tab", () => {
     mockFabricHealth();
   });
 
-  it("switches between Subscriptions and Fabric medallion panels without rewriting subscription content", async () => {
+  it("switches between Subscriptions and Fabric Medallion panels without rewriting subscription content", async () => {
     renderConnectionsPage();
 
     expect(await screen.findByText("Production")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Subscriptions" })).toHaveAttribute("aria-selected", "true");
 
-    fireEvent.click(screen.getByRole("tab", { name: "Fabric medallion" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Fabric Medallion" }));
 
-    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
     expect(fabricPanel).toHaveAttribute("id", "fabric-medallion-panel");
     expect(within(fabricPanel).getByText("Bronze tables")).toBeInTheDocument();
     expect(within(fabricPanel).getByRole("heading", { name: /Bronze layer/i })).toBeInTheDocument();
     const subscriptionSelect = screen.getByDisplayValue(/Production/);
     expect(subscriptionSelect).toBeInTheDocument();
-    expect(document.querySelector("#subscriptions-panel")).toHaveAttribute("hidden");
+    expect(document.querySelector("#subscriptions-panel")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Subscriptions" }));
 
@@ -440,11 +440,11 @@ describe("Connections page Fabric medallion tab", () => {
     expect(screen.getByRole("tabpanel", { name: "Subscriptions" })).not.toHaveAttribute("hidden");
   });
 
-  it("passes subscription scope to every Fabric medallion API call", async () => {
+  it("passes subscription scope to every Fabric Medallion API call", async () => {
     renderConnectionsPageWithScope(connection.subscription_id);
-    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
-    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
     expect(within(fabricPanel).getByText("Bronze tables")).toBeInTheDocument();
     await waitFor(() => {
       expect(fabricLayers).toHaveBeenCalledWith({ subscription: [connection.subscription_id] });
@@ -471,11 +471,11 @@ describe("Connections page Fabric medallion tab", () => {
     });
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
     expect(await screen.findByText("Bronze layer health is unavailable")).toBeInTheDocument();
     expect(screen.getByText("Silver layer health is unavailable")).toBeInTheDocument();
-    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
     expect(within(fabricPanel).getAllByText("gold_operational_context").length).toBeGreaterThan(0);
     expect(screen.getByText("Gold tables")).toBeInTheDocument();
     expect(within(fabricPanel).getAllByText("1/1").length).toBeGreaterThan(0);
@@ -489,9 +489,9 @@ describe("Connections page Fabric medallion tab", () => {
     });
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
-    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
     const healthyEmptyBadge = (await within(fabricPanel).findAllByText("Healthy · Empty"))[0];
     expect(healthyEmptyBadge).toHaveClass("status-success");
     expect((await within(fabricPanel).findAllByText(/0 rows \(expected\)/)).length).toBeGreaterThan(0);
@@ -509,7 +509,7 @@ describe("Connections page Fabric medallion tab", () => {
     }));
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
     expect(await screen.findByText("Ingestion failed — 3 of 3 attempts exhausted · last error: warehouse timeout")).toBeInTheDocument();
     expect(screen.getByText("Source unavailable — Fabric capacity or workspace could not be reached")).toBeInTheDocument();
@@ -517,12 +517,12 @@ describe("Connections page Fabric medallion tab", () => {
     expect(screen.queryByRole("button", { name: /retry ingestion/i })).not.toBeInTheDocument();
   });
 
-  it("links each subscription row to its own Fabric medallion page", async () => {
+  it("links each subscription row to its own Fabric Medallion page", async () => {
     renderConnectionsPage();
 
     expect(await screen.findByText("Production")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Fabric medallion" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Fabric Medallion" }));
     const subscriptionSelect = await screen.findByDisplayValue(
       new RegExp(`${connection.name}.*${connection.subscription_id}`)
     );
@@ -535,9 +535,9 @@ describe("Connections page Fabric medallion tab", () => {
     fabricDataset.mockResolvedValue(envelope({ ...dataset("bronze_resources", "healthy", 4), watermark: "" }));
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
-    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
     expect(await within(fabricPanel).findByText("Not yet published")).toBeInTheDocument();
     expect(within(fabricPanel).queryByText("watermark unknown")).not.toBeInTheDocument();
     expect(within(fabricPanel).getAllByText(/Watermark/).length).toBeGreaterThan(0);
@@ -548,9 +548,9 @@ describe("Connections page Fabric medallion tab", () => {
     fabricDataset.mockResolvedValue(envelope(dataset("bronze_resources", "healthy", 4)));
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
-    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
     expect(await within(fabricPanel).findByText(/Caught up to/)).toBeInTheDocument();
   });
 
@@ -563,9 +563,9 @@ describe("Connections page Fabric medallion tab", () => {
     }));
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Fabric medallion" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
-    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric medallion" });
+    const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
     expect(await within(fabricPanel).findByText("gold_blocked_one")).toBeInTheDocument();
     expect(within(fabricPanel).getByText("gold_active_one")).toBeInTheDocument();
     expect(within(fabricPanel).getByText(/semantic model not deployed/)).toBeInTheDocument();
