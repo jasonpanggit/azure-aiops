@@ -73,6 +73,8 @@ Phase 11 should be implemented as a compatibility migration around one new Pytho
 
 The safest tracer is `/inventory`: it is a required evidence-heavy route, currently has no drawer integration, and the governed Python registry already exposes the exact tool `"inventory_resources"` while Operations MCP does not expose it and no Inventory & Data Health specialist exists. This tracer therefore proves the canonical contract, model-candidate/deterministic-policy split, manifest parity, page adapter, snapshot v2, citations, and continuity without first inventing a new provider. [VERIFIED: .planning/phases/11-cross-page-operations-copilot-orchestration-and-specialist-p/11-REVIEW.md:18-37] The current tool is quoted verbatim as `"inventory_resources"` with handler `_tool_inventory_resources`. [VERIFIED: src/operations/tools.py:1024-1032]
 
+This revision fixes the release contract rather than deferring it to implementation: deterministic safety gates are zero-tolerance; model routing, groundedness, citation quality, p95 latency, and cost have measurable hold thresholds; thread expiry and cross-device behavior are fixed; v1/v2 and legacy-ledger reads have explicit compatibility behavior; live MCP parity has a promotion rule; and all 28 reviewed routes have a predetermined disposition. These are normative Phase 11 planning defaults, not claims about current runtime performance.
+
 Do not add another orchestration dependency. The repository already resolves `agent-framework` 1.15.0, Pydantic 2.13.4, FastAPI 0.138.0, OpenTelemetry API 1.43.0, Next.js 14.2.35, React 18.3.1, TypeScript 5.9.3, Vitest 2.1.9, and Zod 4.4.3. The focused Copilot backend suite passed 65 tests, the drawer suite passed 4 tests, and `terraform validate` succeeded during this research session. [VERIFIED: uv.lock:63-73] [VERIFIED: pyproject.toml:20-27] [VERIFIED: web/package.json:16-41] [VERIFIED: local test execution 2026-09-03]
 
 **Primary recommendation:** Build a canonical v2 orchestration service and manifest first, prove it end-to-end on `/inventory`, then convert all legacy endpoints and routes through adapters before removing any old planner.
@@ -243,7 +245,7 @@ The existing v1 limits are quoted as `MAX_SNAPSHOT_BYTES = 128 * 1024`, `MAX_SEL
 
 Place a client provider under `ScopeProvider` in the root layout. It keeps only the opaque server-issued thread ID in browser session storage and survives navigation. The server thread store uses one document per thread, records owner principal, effective-scope fingerprint, revision, bounded turns, snapshot hash/version, evidence references, observation times, and current/historical classification. On every turn, reload, verify identity and principal, intersect with current effective scope, and mark prior evidence historical until rechecked. Never use a client-supplied principal or `authorized` boolean as authority. [VERIFIED: web/src/app/layout.tsx:12-23] [VERIFIED: src/operations/investigation.py:383-454] [VERIFIED: src/operations/autonomous_investigation.py:1014-1154]
 
-The existing conversation defaults are quoted as `MAX_TURNS_PER_SESSION = 12`, `MAX_SESSIONS = 2_000`, and `SESSION_TTL_SECONDS = 60 * 60`. [VERIFIED: src/operations/investigation.py:52-61] Use them as initial compatibility defaults, but make product retention configurable.
+The existing conversation defaults are quoted as `MAX_TURNS_PER_SESSION = 12`, `MAX_SESSIONS = 2_000`, and `SESSION_TTL_SECONDS = 60 * 60`. [VERIFIED: src/operations/investigation.py:52-61] Phase 11 retains the 12-turn and one-hour idle limits, adds a 24-hour absolute thread lifetime, and makes all three limits server-configurable with those values as defaults. Cross-page continuity is same browser tab/window only; cross-device discovery or synchronization is not part of Phase 11.
 
 ### Pattern 7: Conditional, Citation-Closed Executive Synthesis
 
@@ -418,23 +420,97 @@ The current live baseline is quoted verbatim: `"routing_rate": 0.87`, `"grounded
 |---|---|---|---|
 | A1 | The proposed new file placement and class names are the best fit for the current package layout. | Project Structure / Code Examples | Planner may choose equivalent paths, but must preserve boundaries and one source of truth. |
 | A2 | `/inventory` is the best end-to-end tracer because its provider and governed tool already exist. | Summary / Migration | Another route could be chosen, but would likely require more provider work before proving orchestration. |
-| A3 | Proposed v2 enum labels and wire-field names are design proposals, not locked public values. | Architecture / Code Examples | They must be finalized in the first contract task before clients implement them. |
-| A4 | Existing 12-turn/one-hour conversation limits are acceptable initial compatibility defaults. | Continuity | Product retention expectations may require different configurable values. |
-| A5 | `/search` should be explicitly excluded unless a stable evidence snapshot is defined. | Migration | User may decide search results are evidence-heavy enough to integrate. |
+| A3 | Proposed v2 enum labels and wire-field names are implementation-level design proposals. The semantic behavior, compatibility rules, route dispositions, and release gates in the resolved defaults below are fixed for planning. | Architecture / Code Examples | Equivalent names are acceptable only if the fixed semantics and tests are preserved. |
 
 ## Open Questions
 
-1. **What are the release thresholds for model-dependent routing, groundedness, latency, and cost?**
-   - What we know: the live baseline is 0.87 routing, 0.283 mean groundedness, 1.0 tool correctness, and 1828.2 ms median latency. [VERIFIED: .planning/eval/gold-grounding-baseline.json:4-18]
-   - Recommendation: make deterministic gates 100% (scope isolation, mutation denial, route disposition, manifest parity, retained citation validity) and require explicit product approval for model-quality and cost thresholds.
-2. **What is the required thread retention and cross-device behavior?**
-   - What we know: existing conversation state retains 12 turns for one idle hour in process; durable ledgers are retained separately. [VERIFIED: src/operations/investigation.py:52-61] [VERIFIED: src/operations/autonomous_investigation.py:1040-1054]
-   - Recommendation: implement configurable bounded retention and same-browser navigation first; do not claim indefinite chat retention.
-3. **Do live Azure MCP tool names match every Terraform grant?**
-   - What we know: Terraform carries a reviewed list, but the local shell lacks the project endpoint needed for a live `tools/list` parity check. [VERIFIED: infra/terraform/foundry.tf:58-111]
-   - Recommendation: add a post-deploy parity check against live MCP catalogs before promoting specialist versions.
-4. **Should old ledgers be projected into the canonical result on read?**
-   - Recommendation: preserve immutable old documents and provide a version-aware read adapter; do not bulk rewrite audit records.
+**Unresolved questions: None.** The four prior questions and the related page/snapshot policy gaps are resolved below as implementation-ready Phase 11 defaults. A later product decision may tighten these limits, but implementation and promotion must not weaken them without an explicit reviewed change to this research contract.
+
+### Resolved 1: Release and Hold Thresholds
+
+The existing live baseline remains evidence, not a pass criterion: `"routing_rate": 0.87`, `"groundedness_mean": 0.283`, `"tool_correctness_mean": 1.0`, and `"latency_ms_median": 1828.2`. [VERIFIED: .planning/eval/gold-grounding-baseline.json:4-18]
+
+Evaluate the candidate release against the complete committed Phase 11 dataset, with at least five routing cases per specialist, at least one normal and one stale/partial/unavailable case per integrated page kind, and all required cross-page scenarios. Use the same candidate build and provider configuration for the whole run.
+
+| Gate | Predetermined pass threshold | Promotion decision |
+|---|---:|---|
+| Scope isolation, cross-principal denial, production-mutation denial, unknown specialist/tool denial | 100% pass; zero violations | Any violation holds all promotion. |
+| Route disposition, manifest projection, required tool-grant parity, snapshot schema, and retained-citation reference integrity | 100% pass; exact set equality where parity applies | Any mismatch holds the affected build; no waiver through model quality. |
+| Tool correctness | 100% on deterministic expected-tool cases | Any wrong or forbidden tool call holds promotion. Explicit `unavailable` for an optional provider is not a wrong tool call. |
+| Specialist routing | Exact expected specialist-set accuracy **>= 0.90 overall** and per-specialist recall **>= 0.80** | Either miss holds model-planned routing. The deterministic fallback remains releasable only if it independently passes the same safety and correctness suite. |
+| Groundedness | Mean groundedness **>= 0.75**, 10th percentile **>= 0.50**, and **zero unsupported high-severity, causal, or action-scope claims** | Any miss holds narrated-answer promotion; cited deterministic results may still ship with narration disabled. |
+| Citation quality | **100% citation validity** (every emitted reference resolves to retained, authorized evidence) and **>= 0.95 material-claim citation coverage** | Invalid citation holds all answer promotion. Coverage miss holds narration and executive synthesis. |
+| Single-domain end-to-end latency | **p95 <= 8,000 ms** | Miss holds model-planned single-domain mode; deterministic fallback may remain enabled. |
+| Cross-domain/executive end-to-end latency | **p95 <= 15,000 ms** | Miss disables executive synthesis or holds its promotion; direct specialist results remain available. |
+| Provider/runtime reliability | **>= 0.98 completed-turn rate**, excluding deliberately injected outage cases; **<= 0.01 timeout rate** | Miss holds the affected provider mode. |
+| Per-turn spend | **Every evaluated turn** has estimated model spend **<= USD 0.15 single-domain** and **<= USD 0.40 cross-domain/executive**, calculated from recorded input/output tokens and the deployed model price sheet | Any non-injected turn over its hard ceiling holds the affected mode until prompts/context/model choice are reduced. |
+
+Budget policy is enforced before execution and during fan-out:
+
+| Turn class | Specialists | Governed tool calls | Model calls | Aggregate model tokens |
+|---|---:|---:|---:|---:|
+| Single-domain | 1 | 4 | 2 (coordinator + domain narration) | 24k input / 6k output |
+| Cross-domain or explicit executive | 3 | 8 | 5 (coordinator + up to 3 domain narrations + synthesis) | 64k input / 12k output |
+
+The policy validator rejects a candidate that requests more than these limits. Runtime exhaustion stops further calls and returns cited partial results with an explicit budget-exhaustion outcome; it never silently exceeds the ceiling. Executive synthesis is skipped when its remaining latency, token, or dollar budget is unavailable.
+
+Promotion is therefore mechanical: **PROMOTE** only when every applicable row passes; **HOLD** the whole build for a deterministic safety/citation-integrity failure; **HOLD OR DISABLE THE AFFECTED OPTIONAL MODE** for model quality, provider parity, latency, reliability, or spend failure while preserving the governed deterministic fallback required by the locked safe-degradation decision.
+
+### Resolved 2: Thread Retention, Expiry, and Device Boundary
+
+The current process-local conversation limits are `MAX_TURNS_PER_SESSION = 12` and `SESSION_TTL_SECONDS = 60 * 60`. [VERIFIED: src/operations/investigation.py:52-61] The Phase 11 server thread defaults are:
+
+- **12 retained turns maximum**; append drops the oldest non-audit conversational turn after preserving any result/ledger references required by existing audit behavior.
+- **1 hour idle expiry**, renewed only by an authorized successful thread read/write.
+- **24 hour absolute expiry** from thread creation; activity cannot extend it.
+- The client stores only the opaque thread ID in `sessionStorage`, so continuity covers navigation/remounts in the same browser tab/window. Cross-tab, cross-browser, and cross-device discovery/synchronization are excluded from Phase 11.
+- Every read and write rechecks principal ownership and intersects stored scope with current effective scope. A mismatched, expired, deleted, or unknown thread uses not-found semantics and starts a new thread only after an explicit client reset; it never reveals whether another principal owns the ID.
+- Prior-page evidence becomes `historical` on navigation and cannot support a current-state or action claim until re-fetched/revalidated.
+- Expired thread documents are ineligible immediately and are removed by bounded cleanup. Existing immutable investigation ledgers and audit records keep their existing retention behavior; Phase 11 does not shorten or bulk-delete them.
+
+These values are configurable, but deployment defaults and tests use exactly 12 turns, one idle hour, and 24 absolute hours. Increasing them is a reviewed security/retention change, not an ordinary tuning change.
+
+### Resolved 3: Snapshot v1/v2 and Legacy Ledger Compatibility
+
+Use **write-v2/read-v1+v2** migration:
+
+1. The canonical endpoint and every newly migrated page emit snapshot version `"2"` only.
+2. Existing compatibility endpoints accept snapshot version `"1"` through one server-side converter; route components must not implement conversions.
+3. The converter maps available ARM identities and evidence into v2, marks absent total coverage as `unknown`, absent freshness as `unknown`, and generated legacy evidence IDs as legacy-derived. It must not infer non-Azure identity, completeness, freshness, confidence, or authorization.
+4. A v1-derived snapshot cannot support full-estate, current-state, or mutation-handoff claims unless the server independently refreshes the relevant evidence; otherwise return `insufficient_evidence`.
+5. Unknown snapshot versions fail with a typed unsupported-version response. They are never guessed or coerced.
+6. Keep the v1 reader through Phase 11 and at least the first production release containing all migrated clients. Removal requires telemetry showing zero v1 requests for 30 consecutive days and a separately reviewed deprecation change.
+7. Old ledger documents remain byte-for-byte immutable. A version-aware read adapter projects their supported fields into `InvestigationResultV2`, labels unavailable v2 fields as `unknown`/legacy, and retains a reference to the raw ledger. No bulk rewrite is allowed.
+
+This resolves the previous ledger question: **yes, old ledgers are projected on read; no, stored audit documents are not rewritten.**
+
+### Resolved 4: Live MCP Grant Parity and Provider Promotion
+
+Terraform contains the reviewed expected grants, but this research environment cannot perform the live `tools/list` check because the Foundry project endpoint is absent. [VERIFIED: infra/terraform/foundry.tf:58-111]
+
+The implementation default is a mandatory post-deploy parity job that, for every specialist:
+
+1. Loads the expected local governed tools, Operations MCP grants, and Azure MCP grants from the versioned manifest.
+2. Queries each configured live MCP catalog.
+3. Fails if any required manifest tool is missing live, any configured grant names a nonexistent live tool, any mutation-capable tool appears, or the effective per-specialist granted set differs from the reviewed manifest set.
+4. Records only controlled specialist/tool IDs and counts, never credentials or tool arguments.
+
+**Foundry specialist version promotion is held until this job is 100% green.** Core application promotion may proceed with an affected optional provider explicitly disabled only when all deterministic safety, routing, citation, and unavailable-state tests pass; the UI/result must report that provider as unavailable. A live mismatch may never fall back to a broader grant.
+
+### Resolved 5: Page Eligibility and Exclusion Policy
+
+Every one of the 28 reviewed route pages receives exactly one tested disposition:
+
+| Disposition | Routes |
+|---|---|
+| `integrated` | `/`, `/network`, `/compliance`, `/exposure`, `/exposure/cves/[id]`, `/exposure/defender-posture`, `/exposure/kbs/[id]`, `/exposure/patch-priorities`, `/situations`, `/situations/[id]`, `/changes`, `/changes/predeploy`, `/inventory`, `/connections`, `/connections/fabric`, `/governance`, `/identity`, `/finops`, `/remediation`, `/resource-health`, `/services`, `/services/[name]`, `/twin` |
+| `dedicated` | `/copilot`, `/investigate`, `/agents` |
+| `redirect` | `/vulnerabilities` → `/exposure` |
+| `excluded-with-reason` | `/search` — navigation/query aggregation only; it has no stable retained evidence snapshot contract in Phase 11 |
+
+This mapping implements the locked page policy and reviewed route inventory. [VERIFIED: .planning/phases/11-cross-page-operations-copilot-orchestration-and-specialist-p/11-CONTEXT.md:28-32] [VERIFIED: .planning/phases/11-cross-page-operations-copilot-orchestration-and-specialist-p/11-REVIEW.md:16-24]
+
+The registry test enumerates route files and requires exactly one disposition for each. A present or future route is eligible when it renders actionable domain evidence, detail, state, or governed handoff context with stable source identity; such a route must be `integrated` or `dedicated`. Exclusion is allowed only for a redirect or a pure navigation/search surface without a stable evidence contract, and requires a nonempty reason plus a test. Implementation effort, missing optional AI providers, or temporary adapter absence are not valid exclusion reasons. Adding a stable retained search-result snapshot later requires changing `/search` to `integrated`; until then, search results may navigate to an eligible detail page but are not carried as Copilot evidence.
 
 ## Environment Availability
 
@@ -484,7 +560,7 @@ Existing test locations and commands are declared in `pyproject.toml` and `web/p
 
 - **Per task commit:** focused test file(s) for the touched contract or adapter.
 - **Per wave merge:** focused backend Copilot suite, all web Copilot tests, and Terraform validation.
-- **Phase gate:** full backend/web suites, exact parity, route matrix, and saved live evaluation artifact green before `/gsd-verify-work`.
+- **Phase gate:** full backend/web suites, exact parity, route matrix, and a saved live evaluation artifact meeting every predetermined threshold in “Resolved 1: Release and Hold Thresholds” before `/gsd-verify-work`. Optional modes that miss a quality/provider/latency/cost threshold must be disabled explicitly; deterministic safety or citation-integrity misses hold the whole build.
 
 ### Wave 0 Gaps
 
