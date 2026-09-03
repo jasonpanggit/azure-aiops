@@ -1,8 +1,8 @@
 ---
-status: fixing
+status: awaiting_human_verify
 trigger: "Check the deployed /remediation experience end to end: select a fix, review impact, approve, run, and verify with Playwright; capture issues and errors, identify improvement gaps, troubleshoot root causes, fix them, and repeat until the E2E succeeds."
 created: "2026-09-03T09:28:07+08:00"
-updated: "2026-09-03T18:58:00+08:00"
+updated: "2026-09-03T19:25:00+08:00"
 ---
 
 # Debug Session: Remediation E2E
@@ -17,7 +17,7 @@ updated: "2026-09-03T18:58:00+08:00"
 
 ## Current Focus
 
-- hypothesis: "Active API revision 0000207 rejects self-approval because it was built before the runtime callback wiring that passes agent_policy.allow_self_approval into PatchingService; the settings route persists true, but the stale revision uses PatchingService's default false. Separately, the live ARG path does not query DefenderAssessment rows, so unhealthy Guest-Configuration recommendations cannot become live remediation plans even though the persisted Fabric path has a mapper."
+- hypothesis: "The stale-image cause is fixed by revision 0000208: self-approval now passes the governed callback and the provider is reached. The remaining failure is an independent provider authorization block: the API's Azure identity lacks Microsoft.HybridCompute/machines/installPatches/action on Arc vm1. Separately, the live ARG path does not query DefenderAssessment rows, so unhealthy Guest-Configuration recommendations cannot become live remediation plans even though the persisted Fabric path has a mapper."
 - bug_class: bohrbug
 - test: "Compare immutable revision/image timing and source history, inspect backend logs for RME-28E8C12074CE04D4, run focused local self-approval tests, and inspect the read-only Defender ingestion/normalization/planner chain. Deploy only the already-authored API wiring from checkpoint 785c0400, then repeat the same authorized UI flow."
 - expecting: "The active image predates the callback, the focused local tests pass, and the isolated new API revision allows the same-principal approved request to reach the configured provider guard. Defender tracing will show persisted assessment normalization and planner support, but no live query-to-planner path for Guest-Configuration/DefenderAssessment rows."
@@ -30,7 +30,7 @@ updated: "2026-09-03T18:58:00+08:00"
     - "data: durable execution is idempotent, so retries retain the original failed execution identity."
   and_gate: "no for the observed rejection: stale code alone is sufficient to reject requester=approver; the persisted true setting is required for the intended post-fix demo but is not a second cause. For Defender coverage, source support and live input availability are separate conditions."
 - checkpoint_state: "authorized_settings_patch_and_defender_coverage_investigation"
-- next_action: "Run read-only health and governance-settings GETs against the 100%-traffic API revision 0000208, then execute the existing bounded Playwright harness against /remediation; capture the new revision's backend logs and determine whether the authorized Retry reaches provider submission and Verify."
+- next_action: "Await an Azure administrator decision/action on the target-scope provider RBAC assignment. Do not retry the exhausted execution (remaining_attempts=0); if permission is granted, create a fresh approved snapshot/execution and repeat Verify. Otherwise retain the blocked evidence and report the live E2E as incomplete."
 
 ### Structured reasoning checkpoint
 
@@ -139,6 +139,21 @@ reasoning_checkpoint:
   checked: "Narrow API rollout from isolated checkpoint source"
   found: "Built one API image aiops-api:remediation-self-approval-20260903-1842 from checkpoint 785c0400 plus the two required Defender modules, with SOURCE_CACHE_BUST set, and updated only aiops-dev-api. New revision aiops-dev-api--0000208 became Healthy/RunningAtMaxScale with 100% latest traffic; the prior web app and other Container Apps were not changed."
   implication: "The stale-image hypothesis now has a controlled counterfactual. Read-only settings/health checks and the same authorized Playwright UI flow can test whether runtime callback wiring is now effective."
+
+- timestamp: 2026-09-03T19:05:00+08:00
+  checked: "Authorized Playwright run on API revision 000208"
+  found: "The existing UI drove Select → Review → Approve → Run → Verify and clicked Retry approved snapshot. Approval returned 201; execute returned 202; retry returned 202. Attempt 3 reached the provider and failed with HTTP 403: client 4318b70e-9626-4866-abfd-b10dfc0a9d66/object 2c367602-bb4f-4868-8dbb-7f4ca117a719 is not authorized for Microsoft.HybridCompute/machines/installPatches/action on the Arc vm1 scope. The Verify UI rendered Failed, Attempt 3, Provider state Awaiting verification, and the same exact 403. provider_job_id remained empty."
+  implication: "The self-approval guard is no longer the blocker: revision 000208 honored allow_self_approval=true and reached the Azure provider. The full E2E remains blocked by provider RBAC, not by UI, approval, snapshot, or identity spoofing. No further retry is safe/useful because the provider permission has not changed."
+
+- timestamp: 2026-09-03T19:18:00+08:00
+  checked: "Provider identity and target-scope role assignments"
+  found: "The API Container App uses user-assigned identity client 4318b70e-9626-4866-abfd-b10dfc0a9d66, principal 2c367602-bb4f-4868-8dbb-7f4ca117a719, exactly matching the 403. Visible assignments include Virtual Machine Contributor only at aiops-dev-rg, while vm1 is in aiops-demo-rg; no assignment was visible at the vm1 scope or its target resource group. Virtual Machine Contributor's actions also do not include Microsoft.HybridCompute/machines/installPatches/action."
+  implication: "The remaining provider failure is an environment/configuration RBAC gap with two concrete aspects: the existing role is scoped to the wrong resource group and the role's action set does not cover Arc installPatches. Granting or changing permissions is intentionally not performed by this debugger."
+
+- timestamp: 2026-09-03T19:20:00+08:00
+  checked: "Final read-only workflow and automated verification"
+  found: "Workflow reports Select, Review, Approve, Run, and Verify complete; execution RME-28E8C12074CE04D4 is failed at attempt 3, retryable=false, remaining_attempts=0, provider_job_id empty, and contains the exact Azure 403. Focused approval/runtime regression tests, ruff, and diff-check passed. The UI artifact records HTTP 201 approval, HTTP 202 execute/retry, final Verify 403, screenshots, console diagnostics, and request failures from the intentionally aborted synthetic MSAL probes."
+  implication: "The deployed code fix is verified to move the failure from the stale self-approval guard to the real provider boundary. End-to-end success and host state cannot be claimed while the target-scope Arc patch permission is absent."
 
 - timestamp: 2026-09-03T09:31:00+08:00
   checked: ".planning/STATE.md and prior debug session state"
@@ -382,12 +397,12 @@ reasoning_checkpoint:
 
 ## Resolution
 
-- root_cause: "The live execution used one authenticated service-principal identity for both approval and execution request. The repository's separation-of-duties guard correctly rejects that combination before the patch adapter is called. The earlier provider/scope/target/context defects were fixed and the deployed workflow now reaches this intentional governance boundary."
-- fix: "For unrestricted requests, resolve both remediation and patching through all active onboarded subscriptions; generate the live planner repository before constructing the execution service; make patching router resolution use the same fallback; infer supported compute kind from asset_id/resource_id when live type metadata is absent; retain subscription identity from live ARG rows and fill missing finding context from the matching active connection's explicit subscription mapping without overriding resource-level metadata."
+- root_cause: "Two contributing causes were confirmed for the failed live E2E: (1) API revision 0000207 was built before the authored runtime wiring that passed agent_policy.allow_self_approval into PatchingService, so it rejected the authorized same-principal approval despite the settings route returning true; (2) after revision 0000208 deployed that wiring and reached the provider, the API managed identity lacked Microsoft.HybridCompute/machines/installPatches/action on Arc vm1 in aiops-demo-rg. Its Virtual Machine Contributor assignment is on the unrelated aiops-dev-rg and does not include the Arc action."
+- fix: "Deployed only an isolated API image from checkpoint 785c0400 as revision 0000208, preserving the authorized settings, human-approval requirement, autonomous-remediation=false, identity claims, snapshot validation, provider guard, and Verify path. No RBAC permission was changed."
 - verification:
     target_test:
-      result: pass
-      evidence: "The agent-authored connection-context integration regression passed, the complete backend pytest suite passed, the deployed revision 000207 plan/workflow reproduced the repaired behavior, and the focused patch-approval suite passed all 8 tests including self-approval rejection and distinct-approver acceptance."
+      result: blocked
+      evidence: "The exact UI flow completed through Verify, but the provider returned a real 403 and no provider job ID was created. The stale-image defect is fixed; the requested host mutation is not verified."
     mutation_check:
       result: skipped
       reason_if_skipped: "No Python mutation-testing tool is configured for this repository; Stryker is JavaScript/TypeScript-specific."
@@ -410,13 +425,13 @@ reasoning_checkpoint:
       result: pass
       bug_returned_on_revert: true
       fixed_on_reapply: true
-      evidence: "Earlier deployed revisions reproduce the no-scope 500/preview failures; revision 000207 reproduces the live workflow through Run with known business impact."
+      evidence: "Revision 000207 reproduces the stale self-approval failure; revision 000208 passes the same-principal guard and reproduces the provider RBAC 403. Reapplying the runtime wiring is not enough to overcome missing target-scope permissions."
     guardrail_verdict: accepted
     live_target_validation:
-      result: selected_existing_arc_plan_but_blocked_by_identity
+      result: selected_existing_arc_plan_but_blocked_by_provider_rbac
       plan: "Patch vm1"
       target: "Microsoft.HybridCompute/machines/vm1 (Arc-enabled server)"
-      reason: "Per the checkpoint decision, the existing Arc plan was accepted as the live target because no Azure VM Defender fix exists. The deployed Playwright evidence shows the UI reached Select → Review → Approve → Run → Verify, but the only available bearer represented the requester and no second provisioned authorized approver was available."
+      reason: "Per the explicit demo authorization, the existing Arc plan was used with allow_self_approval=true. Revision 000208 reached the Azure provider, which rejected the API managed identity with HTTP 403 for Microsoft.HybridCompute/machines/installPatches/action on vm1. The execution is exhausted at attempt 3; no provider job ID or host mutation exists."
       playwright_evidence: ".planning/ui-reviews/remediation-e2e-live.json"
     prior_live_execution:
       result: blocked_by_separation_of_duties
@@ -432,8 +447,10 @@ reasoning_checkpoint:
       evidence: "8 passed; self-approval raised before adapter submission, while a distinct approver submitted exactly once."
     human_verification:
       result: blocked
-      required_action: "Provision or provide access to a genuinely distinct target-tenant principal with a configured AioPS API grant. Use it in Playwright to approve Patch vm1, then run and verify with the original requester. Until then, the live two-identity E2E cannot be claimed complete."
+      required_action: "An Azure administrator must grant the API managed identity a role/action containing Microsoft.HybridCompute/machines/installPatches/action at the vm1 scope or an appropriate parent scope. Then a fresh approved snapshot/execution must be created because RME-28E8C12074CE04D4 has no retries remaining. No code or guard bypass is appropriate."
 - files_changed:
+    - "src/api/runtime.py (deployed from checkpoint 785c0400)"
+    - "src/operations/patching/service.py (deployed from checkpoint 785c0400)"
     - "src/api/runtime.py"
     - "src/semantic/live_operations.py"
     - "tests/test_api_runtime_vulnerability_correlation.py"
