@@ -89,6 +89,30 @@ def test_inventory_manifest_is_strict_credential_free_and_read_only():
 
 
 @pytest.mark.parametrize(
+    "evidence_id",
+    [
+        "tool:0:0:inventory_data_health:inventory_resources:0",
+        "snapshot:coverage",
+    ],
+)
+def test_snapshot_rejects_server_generated_citation_namespaces(evidence_id):
+    with pytest.raises(ValueError, match="reserved citation namespace"):
+        SnapshotEvidence(
+            evidence_id=evidence_id,
+            source="caller-supplied-snapshot",
+        )
+
+
+def test_snapshot_accepts_normal_caller_evidence_id():
+    evidence = SnapshotEvidence(
+        evidence_id="inventory:visible",
+        source="inventory-page",
+    )
+
+    assert evidence.evidence_id == "inventory:visible"
+
+
+@pytest.mark.parametrize(
     ("mutate", "code"),
     [
         (

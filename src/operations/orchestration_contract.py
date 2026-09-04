@@ -47,6 +47,13 @@ class SnapshotEvidence(ContractModel):
     resource_id: str = Field(default="", max_length=512)
     data: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("evidence_id")
+    @classmethod
+    def reserve_generated_citation_namespaces(cls, value: str) -> str:
+        if value.casefold().startswith(("snapshot:", "tool:")):
+            raise ValueError("snapshot evidence ID uses a reserved citation namespace")
+        return value
+
 
 class EvidenceSnapshotV2(ContractModel):
     """Minimal v2 snapshot seam used by the Inventory tracer."""
