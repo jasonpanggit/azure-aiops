@@ -100,11 +100,97 @@ Plans:
 
 **UI hint:** yes
 
+### Phase 03.1: Exposure Reliability and Scale (INSERTED)
+
+**Goal:** Make Exposure authoritative, failure-tolerant, temporally correct, ontology-complete for container images, and operable at Defender-scale volumes before Phase 4 pilot validation.
+**Requirements:** PILOT-01, PILOT-02, PILOT-03, PILOT-04 (reliability prerequisites; final pilot completion remains downstream)
+**Depends on:** Phase 3
+**Plans:** 20 plans
+
+Plans:
+
+- [ ] 03.1-01-PLAN.md — Create Wave 0 Exposure fixtures, test scaffolds, benchmark, and Fabric SQL readiness probe
+- [ ] 03.1-02-PLAN.md — Human-verify the flagged pyodbc package before any install
+- [ ] 03.1-03-PLAN.md — Prove the governed tracer through persistence, API, vulnerabilityApi, and a real Exposure section
+- [ ] 03.1-04-PLAN.md — Productionize Fabric SQL/ODBC and managed Key Vault cursor-key rotation
+- [ ] 03.1-05-PLAN.md — Normalize typed AUM/Defender acquisition outcomes without failure rows
+- [ ] 03.1-06-PLAN.md — Acquire and persist exact Container Insights workload-to-digest evidence
+- [ ] 03.1-07-PLAN.md — Publish source checkpoints/LKG and per-family freshness/completeness
+- [ ] 03.1-08-PLAN.md — Persist immutable observations and replay deterministic current state
+- [ ] 03.1-09-PLAN.md — Serve temporal state with honest first-detection and SLA semantics
+- [ ] 03.1-10-PLAN.md — Persist granular image/digest/deployment evidence
+- [ ] 03.1-11-PLAN.md — Project costly container/temporal ontology identities and prove round-trip integrity
+- [ ] 03.1-12-PLAN.md — Materialize generation-pinned Gold and durable enrichment
+- [ ] 03.1-13-PLAN.md — Enforce scope-first Fabric SQL queries and managed signed cursors
+- [ ] 03.1-14-PLAN.md — Consolidate scoped API, catalog, Copilot, remediation, and audit handoff contracts
+- [ ] 03.1-15-PLAN.md — Build cursor-aware web service, query, and independent-section primitives
+- [ ] 03.1-16-PLAN.md — Deliver trustworthy Overview/Defender sections and explicit safe deep links
+- [ ] 03.1-17-PLAN.md — Deliver safe Patch/CVE/KB actions, context continuity, and responsive accessibility
+- [ ] 03.1-18-PLAN.md — Add complete low-cardinality Exposure telemetry, alerts, and shadow reconciliation
+- [ ] 03.1-19-PLAN.md — Benchmark, canary, rollback-test, live-validate, and produce the Phase 4 handoff
+- [ ] 03.1-20-PLAN.md — Human-approve authenticated Exposure behavior and Phase 4 evidence
+
+### Phase 03.2: Durable Remediation Identity and Audit Continuity (INSERTED)
+
+**Goal:** Give each remediation target/action a stable plan identity, preserve approval and execution audit continuity across evidence refreshes, and make execution reads independent of regenerated plan availability.
+**Requirements:** Derived from Phase 03 deep-review recommendation 1
+**Depends on:** Phase 3
+**Plans:** 2 plans
+
+Plans:
+
+- [ ] 03.2-01-PLAN.md — Stable plan identity end-to-end with scope-attribute-authorized execution reads, fail-closed repository guards, and orphaned-execution diagnostics
+- [ ] 03.2-02-PLAN.md — One planner/repository view per request via TTL-cached hybrid_remediation resolution
+
+### Phase 03.3: Recoverable Remediation Attempts and Supersession (INSERTED)
+
+**Goal:** Count only proven provider submissions against retry limits, classify refusal and provider failure causes, and provide an audited supersession path after external blockers are resolved.
+**Requirements:** Derived from Phase 03 deep-review recommendation 2
+**Depends on:** Phase 03.2
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.3 to break down)
+
+### Phase 03.4: Autonomous Remediation Verification and Evidence Reconciliation (INSERTED)
+
+**Goal:** Move verification to a bounded server-side lifecycle, interpret complete Azure patch results, and reconcile terminal outcomes against refreshed target evidence without requiring an open browser.
+**Requirements:** Derived from Phase 03 deep-review recommendation 3
+**Depends on:** Phase 03.2, Phase 03.3
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.4 to break down)
+
+### Phase 03.5: Unified Remediation Approval Governance (INSERTED)
+
+**Goal:** Enforce one evidence-sensitive approval policy across patch and Defender action families, with machine-checkable requirements, explicit demo self-approval, and distinct approve/operate authorization.
+**Requirements:** Derived from Phase 03 deep-review recommendation 4
+**Depends on:** Phase 03.2
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.5 to break down)
+
+### Phase 03.6: Remediation Workflow Safety and Operator Guidance (INSERTED)
+
+**Goal:** Expose server-derived blockers and degraded inputs, render lifecycle failures honestly, make patch selection fail-safe, and provide bounded, actionable operator recovery controls.
+**Requirements:** Derived from Phase 03 deep-review recommendation 5
+**Depends on:** Phase 03.2, Phase 03.3, Phase 03.4, Phase 03.5
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.6 to break down)
+
 ### Phase 4: Domain Coverage and Operational Twin
 
 **Goal:** SRE, platform, and security operators can validate the complete workflow across representative domains and replay the evidence and twin context behind decisions.
 **Mode:** mvp
-**Depends on:** Phase 3
+**Depends on:** Phase 3, Phase 03.1
 **Requirements:** PILOT-01, PILOT-02, PILOT-03
 **Success Criteria** (what must be TRUE):
 
@@ -631,3 +717,56 @@ Plans:
 8. The Fabric Data Agent is grounded in curated Gold products and has reproducible offline and live evaluation coverage for groundedness, precision, freshness, and citation behavior.
 9. Generated ontology projections are governed by a publication manifest and lifecycle state so consumers do not need to discover or depend directly on hundreds of physical tables.
 10. Fabric-native and application-layer security, lineage, capacity health, and Delta maintenance controls are implemented, documented, observable, and verified in the deployed API and web experience.
+
+### Phase 11: Cross-Page Operations Copilot Orchestration and Specialist Parity
+
+**Goal:** Make Operations Copilot the single governed reasoning orchestrator across the web experience, with consistent page context, complete specialist/tool parity, cited cross-domain synthesis, and measurable behavior.
+**Requirements**: COP-01, COP-02, COP-03, COP-04, COP-05
+**Depends on:** Phase 10
+**Plans:** 16 plans
+
+Plans:
+
+- [ ] 11-01-PLAN.md — Prove the production `/inventory` unified-orchestration tracer
+- [ ] 11-13-PLAN.md — Project the inventory tracer through the canonical API, adapter, and drawer
+- [ ] 11-02-PLAN.md — Complete canonical evidence snapshot identity, coverage, and citation semantics
+- [ ] 11-04-PLAN.md — Expand the tracer manifest to twelve specialists and backend tool parity
+- [ ] 11-05-PLAN.md — Project specialist parity through Terraform, packaging, and live validation
+- [ ] 11-03-PLAN.md — Converge canonical API paths while retaining explicit legacy rollback/shadow seams
+- [ ] 11-06-PLAN.md — Add durable authorized server continuity, conditional synthesis, and telemetry
+- [ ] 11-14-PLAN.md — Carry same-tab opaque-thread continuity through the root browser provider
+- [ ] 11-07-PLAN.md — Migrate the six existing drawer pages to typed adapters
+- [ ] 11-15-PLAN.md — Integrate remediation through read-only explanation and governed handoff
+- [ ] 11-08-PLAN.md — Integrate Defender, patch, change, and predeploy pages
+- [ ] 11-09-PLAN.md — Integrate data health, governance, identity, FinOps, and resource health
+- [ ] 11-10-PLAN.md — Integrate situation detail, services, and twin
+- [ ] 11-16-PLAN.md — Enforce all 28 route dispositions and exact manifest/API/UI mapping parity
+- [ ] 11-11-PLAN.md — Converge standalone, workspace, and multi-agent dedicated surfaces
+- [ ] 11-12-PLAN.md — Evaluate and stage compatibility, shadow, canary, promotion, and rollback
+
+**Success Criteria** (what must be TRUE):
+
+1. Standalone, drawer, investigation-workspace, and multi-agent requests share one orchestration contract; the planner may select specialists and tools only from a versioned allowlist, with scope enforcement, bounded budgets, and deterministic fallback.
+2. Every eligible operational page supplies typed page context with selected entities, filters, evidence, freshness, result coverage, and domain starter questions; utility and redirect routes have an explicit non-integration disposition.
+3. Specialist runtime definitions, Foundry prompt/tool grants, Terraform wiring, API catalog, and UI presentation cannot silently drift, and missing inventory/data-health, identity, FinOps, and resource-health capabilities are covered.
+4. Snapshot v2 preserves canonical identity and uncertainty, prioritizes and deduplicates evidence without implying full-dataset coverage from a visible page, and all synthesized claims cite authorized evidence.
+5. Cross-page investigations retain a 12-turn, 1-hour-idle, 24-hour-absolute authorized same-tab thread; executive synthesis consumes cited specialist outputs; and automated evaluations enforce the predetermined routing, groundedness, citation, latency, reliability, and cost thresholds.
+
+### Phase 12: Network Topology Integrity and Scale
+
+**Goal:** Deliver a scope-safe, complete, scalable, and diagnosable network topology experience whose nodes, relationships, findings, policy changes, freshness, and evidence coverage remain accurate from inventory ingestion through API, web, agents, MCP, and export.
+**Requirements**: TOPO-01, TOPO-02, TOPO-03, TOPO-04, TOPO-05
+**Depends on:** Phase 10
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 12 to break down)
+
+**Success Criteria** (what must be TRUE):
+
+1. Scoped topology, gaps, rule findings, agents, and MCP expose no out-of-scope resource or relationship, preserve in-scope semantic edges, and do not fabricate missing-private-endpoint findings through asymmetric filtering.
+2. Fabric capacities, Azure AI Foundry accounts, and all other in-scope private-link candidates appear exactly once and every open topology finding resolves to a visible or explicitly retrievable resource node.
+3. Findings expose truthful totals and truncation; summary topology stays within a verified enterprise node/payload budget; detail is loaded on demand without silently changing downstream agent, MCP, or export contracts.
+4. Enabling, disabling, creating, previewing, or deleting a design-policy rule refreshes derived gaps, findings, metrics, and badges without a reload, while invalid declarative rules fail visibly and are not persisted.
+5. Relationship drops, normalization gaps, snapshot freshness, DNS/subnet/private-endpoint integrity, and flow-log provenance are observable and covered by regression, integration, and representative scale tests.
