@@ -16,6 +16,7 @@ from intelligence.remediation.approval_decisions import RemediationDecisionStore
 from intelligence.remediation.plan_repository import PlanRepository
 from onboarding.service import SubscriptionOnboardingService
 from operations.patching.models import AvailablePatch, PatchTarget
+from semantic.live_operations import LiveRemediationPlanner
 from tests.test_api_http import FakeSecretWriter
 
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
@@ -25,6 +26,23 @@ SCOPED_OPERATOR_TOKEN = "scoped-operator-token-012345"
 VM_PAYMENTS_ID = (
     "/subscriptions/sub-1/resourcegroups/rg-prod/providers/"
     "microsoft.compute/virtualmachines/vm-payments"
+)
+# Every distinct organizational role text ``tests/fixtures/sample_remediation_planning.json``'s
+# own ``approval_policies`` (plus the universal "Stage Gate Approver" every
+# plan with deployment stages carries) can ever require, used only to keep
+# this module's decision-recording *mechanics* tests (snapshot binding,
+# preview-hash validation, revalidation, read-side projection) unaffected
+# by the Phase 03.5 CR-05 per-role authorization fix -- none of them
+# exercise per-role governance itself.
+_ALL_FIXTURE_ORG_ROLES = (
+    "Change Manager",
+    "Application Owner",
+    "Service Owner",
+    "Support Team",
+    "Business Service Owner",
+    "Operations Risk Owner",
+    "Change Advisory Board",
+    "Stage Gate Approver",
 )
 
 
@@ -71,11 +89,30 @@ def _client(tmp_path, *, planner=None, principals=None) -> TestClient:
             principals
             or {
                 ADMIN_TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),)),
-                OPERATOR_TOKEN: Principal(subject="operator@example.com", grants=(Grant("operator"),)),
+                OPERATOR_TOKEN: Principal(
+                    subject="operator@example.com",
+                    grants=(Grant("operator"), Grant("approver")),
+                    # Phase 03.5 CR-05 fix: this shared test principal
+                    # records decisions across many plans/resources in
+                    # this module, none of which are exercising per-role
+                    # approval *governance* (that is covered narrowly by
+                    # the dedicated new role-governance regression tests)
+                    # -- it is deliberately configured to literally hold
+                    # every organizational role this fixture's own policy
+                    # catalog declares, so `_approval_payload`'s always
+                    # -explicit `role_id` selection is always authorized
+                    # regardless of which specific plan/resource a given
+                    # mechanics test exercises.
+                    org_roles=_ALL_FIXTURE_ORG_ROLES,
+                ),
                 READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),)),
                 SCOPED_OPERATOR_TOKEN: Principal(
                     subject="scoped-operator@example.com",
-                    grants=(Grant("operator", Scope({"subscription": ["sub-1"]})),),
+                    grants=(
+                        Grant("operator", Scope({"subscription": ["sub-1"]})),
+                        Grant("approver", Scope({"subscription": ["sub-1"]})),
+                    ),
+                    org_roles=_ALL_FIXTURE_ORG_ROLES,
                 ),
             }
         ),
@@ -109,6 +146,23 @@ def _patch_recovery_plan(client: TestClient) -> dict:
     )
 
 
+def _first_role_id(plan: dict) -> str:
+    """First requirement row's role_id (or role, if legacy), else ''.
+
+    Phase 03.5 CR-05 fix: role_id must be explicit whenever more than one
+    unmet requirement row is eligible; several tests in this module build
+    their own decision payload directly (rather than through
+    ``_approval_payload``) and need the identical deterministic selection
+    so they keep recording a decision regardless of which specific
+    plan/resource they exercise -- none of them exercise per-role
+    approval governance itself.
+    """
+    requirements = plan.get("approval_requirements") or []
+    if not requirements:
+        return ""
+    return str(requirements[0].get("role_id") or requirements[0].get("role") or "")
+
+
 def _preview_hash(client: TestClient, plan: dict) -> str:
     response = client.get(
         f"/api/v1/remediation/plans/{plan['plan_id']}/preview",
@@ -127,6 +181,21 @@ def _approval_payload(plan: dict, preview_hash: str | None) -> dict:
     }
     if preview_hash is not None:
         payload["preview_snapshot_hash"] = preview_hash
+    # Phase 03.5 CR-05 fix: a decision attests exactly one required role,
+    # and role_id must be explicit whenever more than one unmet row is
+    # eligible. These tests exercise decision-recording *mechanics*
+    # (snapshot binding, preview-hash validation, revalidation, read-side
+    # projection), never per-role governance itself (that is covered
+    # narrowly by the dedicated new role-governance regression tests) --
+    # deterministically selecting this plan's own first requirement row
+    # (if it has any) keeps every one of them an explicit, unambiguous
+    # selection regardless of how many distinct roles the underlying
+    # fixture's policies declare.
+    requirements = plan.get("approval_requirements") or []
+    if requirements:
+        payload["role_id"] = str(
+            requirements[0].get("role_id") or requirements[0].get("role") or ""
+        )
     return payload
 
 
@@ -147,6 +216,63 @@ def test_patch_approval_persists_only_the_matching_server_snapshot(tmp_path) -> 
     assert snapshot["target_id"] == VM_PAYMENTS_ID
     assert snapshot["patch_ids"] == ["KB600001", "KB600002"]
     assert snapshot["action_version"] == plan["action_version"]
+
+
+def test_patch_approval_survives_request_to_request_cve_enrichment_drift(
+    tmp_path,
+) -> None:
+    """Derived CVE churn must not stale an unchanged target/patch decision."""
+
+    class _VolatileEnrichmentService:
+        freshness = "2026-09-05T00:00:00Z"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def asset_exposures(self, scope=None) -> list[dict]:
+            self.calls += 1
+            return [
+                {
+                    "asset_id": VM_PAYMENTS_ID,
+                    "name": "vm-payments",
+                    "inventory_kind": "Azure VM",
+                    "resource_type": "Microsoft.Compute/virtualMachines",
+                    "subscription_id": "sub-1",
+                    "business_service": "Checkout",
+                    "application": "Payments API",
+                    "missing_kbs": ["KB600001", "KB600002"],
+                    "finding_ids": [
+                        f"patch-assessment-001|CVE-2026-{self.calls:04d}"
+                    ],
+                    "finding_count": 1,
+                    "severities": ["Critical"],
+                    "cve_ids": [f"CVE-2026-{self.calls:04d}"],
+                }
+            ]
+
+        def defender_posture(self, scope=None) -> list[dict]:
+            return []
+
+    client = _client(
+        tmp_path,
+        planner=LiveRemediationPlanner(_VolatileEnrichmentService()),
+    )
+    plan = _patch_recovery_plan(client)
+    preview_hash = _preview_hash(client, plan)
+
+    response = client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            **_approval_payload(plan, preview_hash),
+            "selected_patch_ids": [],
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    decision = response.json()["data"]
+    assert decision["action_version"] == plan["action_version"]
+    assert decision["execution_snapshot"]["snapshot_hash"] == preview_hash
 
 
 @pytest.mark.parametrize("preview_hash", [None, "0" * 64])
@@ -253,6 +379,7 @@ def test_operator_records_approval_decision_without_execution(tmp_path) -> None:
             "reason": "CAB approved after evidence review",
             "action_version": plan["action_version"],
             "expires_at": _future_expiry(),
+            "role_id": _first_role_id(plan),
         },
     )
 
@@ -289,6 +416,7 @@ def test_remediation_decision_survives_provider_rebuild(tmp_path) -> None:
             "reason": "CAB approved after evidence review",
             "action_version": plan["action_version"],
             "expires_at": _future_expiry_datetime(),
+            "role_id": _first_role_id(plan),
         },
     )
 
@@ -396,6 +524,7 @@ def test_read_route_returns_recorded_decisions_with_metadata(tmp_path) -> None:
             "reason": "CAB approved after evidence review",
             "action_version": plan["action_version"],
             "expires_at": _future_expiry_datetime(),
+            "role_id": _first_role_id(plan),
         },
     )
     assert approval_response.status_code == 201
@@ -465,6 +594,7 @@ def test_plan_with_changed_defender_evidence_fails_freshness_check(tmp_path) -> 
             "reason": "Will test freshness",
             "action_version": plan["action_version"],
             "expires_at": _future_expiry_datetime(),
+            "role_id": _first_role_id(plan),
         },
     )
     
@@ -498,6 +628,7 @@ def test_plan_with_unchanged_defender_evidence_passes_freshness_check(tmp_path) 
             "reason": "Fresh evidence",
             "action_version": plan["action_version"],
             "expires_at": _future_expiry_datetime(),
+            "role_id": _first_role_id(plan),
         },
     )
 
@@ -581,6 +712,7 @@ def test_stale_evidence_surfaces_as_needing_revalidation(tmp_path) -> None:
             "reason": "Test approval",
             "action_version": plan["action_version"],
             "expires_at": _future_expiry_datetime(),
+            "role_id": _first_role_id(plan),
         },
     )
     assert approval_response.status_code == 201
@@ -614,6 +746,7 @@ def test_defender_correlated_plan_approval_roundtrip(tmp_path) -> None:
             "reason": "Defender-sourced approval",
             "action_version": plan["action_version"],
             "expires_at": _future_expiry_datetime(),
+            "role_id": _first_role_id(plan),
         },
     )
 
@@ -689,6 +822,7 @@ def test_approval_revocation_is_recorded_and_auditable(tmp_path) -> None:
             "reason": "Initial approval",
             "action_version": plan["action_version"],
             "expires_at": _future_expiry_datetime(),
+            "role_id": _first_role_id(plan),
         },
     )
     assert approval_response.status_code == 201
@@ -787,6 +921,7 @@ def test_unknown_business_mapping_carries_through_approval(tmp_path) -> None:
             "reason": "Approved with review requirements noted",
             "action_version": plan["action_version"],
             "expires_at": _future_expiry_datetime(),
+            "role_id": _first_role_id(plan),
         },
     )
 
