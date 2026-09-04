@@ -6,7 +6,11 @@ from dataclasses import dataclass
 
 from api.scope import Scope
 from operations.mcp_server import REVIEWED_TOOLS, validate_tool_arguments
-from operations.orchestration_contract import CandidatePlan, InvestigationRequest
+from operations.orchestration_contract import (
+    COVERAGE_CITATION_ID,
+    CandidatePlan,
+    InvestigationRequest,
+)
 from operations.specialist_manifest import (
     SpecialistManifest,
     load_specialist_manifest,
@@ -96,7 +100,10 @@ class OrchestrationPolicy:
         step_ids = [step.specialist_id for step in candidate.steps]
         if len(step_ids) != len(set(step_ids)):
             raise PolicyViolation("duplicate_specialist")
-        evidence_ids = {item.evidence_id for item in request.snapshot.evidence}
+        evidence_ids = {
+            COVERAGE_CITATION_ID,
+            *(item.evidence_id for item in request.snapshot.evidence),
+        }
 
         for step in candidate.steps:
             try:

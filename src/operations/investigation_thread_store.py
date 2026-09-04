@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,6 +39,14 @@ def _scope_fingerprint(scope: Scope) -> str:
 
 
 @dataclass
+class InvestigationThreadTurn:
+    """One retained result bound to the scope used when it was produced."""
+
+    scope: Scope
+    payload: dict[str, Any]
+
+
+@dataclass
 class InvestigationThread:
     """Internal continuity record; IDs are always issued by the server."""
 
@@ -45,7 +54,7 @@ class InvestigationThread:
     principal_subject: str
     scope: Scope
     scope_fingerprint: str
-    turns: list[dict[str, Any]] = field(default_factory=list)
+    turns: list[InvestigationThreadTurn] = field(default_factory=list)
     revision: int = 0
     created_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
@@ -140,7 +149,9 @@ class InvestigationThreadStore:
                 raise ThreadNotFound("investigation thread not found")
             record.scope = current_scope
             record.scope_fingerprint = _scope_fingerprint(current_scope)
-            record.turns.append(dict(turn))
+            record.turns.append(
+                InvestigationThreadTurn(scope=current_scope, payload=deepcopy(turn))
+            )
             record.turns = record.turns[-self._max_turns :]
             record.revision += 1
             record.last_seen = now
@@ -167,7 +178,22 @@ class InvestigationThreadStore:
                 raise ThreadNotFound("investigation thread not found")
             record.last_seen = now
             self._threads.move_to_end(thread_id)
-            return [dict(turn) for turn in record.turns]
+            history: list[dict[str, Any]] = []
+            for turn in record.turns:
+                if _scope_within(turn.scope, current_scope):
+                    history.append(deepcopy(turn.payload))
+                    continue
+                history.append(
+                    {
+                        "status": "historical_scope_restricted",
+                        "tool_results": [],
+                        "citations": [],
+                        "uncertainty": [
+                            "Historical evidence was withheld after scope narrowing."
+                        ],
+                    }
+                )
+            return history
 
 
 _THREAD_STORE = InvestigationThreadStore()

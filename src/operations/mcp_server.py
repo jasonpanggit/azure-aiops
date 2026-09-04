@@ -132,13 +132,17 @@ def _schema(name: str) -> dict[str, Any]:
 
 
 def tool_definitions() -> list[dict[str, Any]]:
+    return _tool_definitions_for_names(REVIEWED_TOOLS)
+
+
+def _tool_definitions_for_names(names: tuple[str, ...]) -> list[dict[str, Any]]:
     return [
         {
             "name": name,
             "description": f"Governed read-only Operations tool: {name}.",
             "inputSchema": _schema(name),
         }
-        for name in REVIEWED_TOOLS
+        for name in names
     ]
 
 
@@ -212,6 +216,7 @@ class MCPServer:
         principal: Any,
         scope: Any,
         correlation_id: str,
+        specialist_id: str | None = None,
     ) -> dict[str, Any]:
         request_id = payload.get("id")
         if not _safe_size(payload, MAX_MESSAGE_BYTES):
@@ -241,7 +246,16 @@ class MCPServer:
                 },
             }
         if request.method == "tools/list":
-            return {"jsonrpc": "2.0", "id": request.id, "result": {"tools": tool_definitions()}}
+            names = (
+                reviewed_tools_for_specialist(specialist_id)
+                if specialist_id
+                else _BASE_REVIEWED_TOOLS
+            )
+            return {
+                "jsonrpc": "2.0",
+                "id": request.id,
+                "result": {"tools": _tool_definitions_for_names(names)},
+            }
         if request.method != "tools/call":
             return _error(-32601, "Unsupported MCP method", request.id)
 
@@ -263,6 +277,11 @@ class MCPServer:
             }
 
         if name not in REVIEWED_TOOLS:
+            return _tool_error("Unknown or unauthorized tool")
+        if specialist_id:
+            if name not in reviewed_tools_for_specialist(specialist_id):
+                return _tool_error("Unknown or unauthorized tool")
+        elif name not in _BASE_REVIEWED_TOOLS:
             return _tool_error("Unknown or unauthorized tool")
         try:
             args, missing = validate_tool_arguments(

@@ -15,6 +15,7 @@ subscription B; the scope narrowing alone would let a reader mutate data.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -53,6 +54,7 @@ class Grant:
 
     role: str
     scope: Scope = field(default_factory=Scope.unrestricted)
+    mcp_specialist_id: str = ""
 
     def __post_init__(self) -> None:
         role = str(self.role or "").strip().casefold()
@@ -67,16 +69,24 @@ class Grant:
                 "Grants may only be scoped by "
                 f"{', '.join(GRANTABLE_DIMENSIONS)}; got {', '.join(sorted(unsupported))}"
             )
+        specialist_id = str(self.mcp_specialist_id or "").strip().casefold()
+        if specialist_id and not re.fullmatch(r"[a-z][a-z0-9_]{1,79}", specialist_id):
+            raise ValueError("MCP specialist ID is invalid")
+        object.__setattr__(self, "mcp_specialist_id", specialist_id)
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> Grant:
         return cls(
             role=str(payload.get("role") or ""),
             scope=Scope.from_mapping(payload.get("scope")),
+            mcp_specialist_id=str(payload.get("mcp_specialist_id") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"role": self.role, "scope": self.scope.to_dict()}
+        result: dict[str, Any] = {"role": self.role, "scope": self.scope.to_dict()}
+        if self.mcp_specialist_id:
+            result["mcp_specialist_id"] = self.mcp_specialist_id
+        return result
 
 
 @dataclass(frozen=True)
@@ -96,6 +106,13 @@ class Principal:
         if not all(isinstance(grant, Grant) for grant in self.grants):
             raise TypeError("Principal grants must be Grant instances")
         object.__setattr__(self, "grants", tuple(self.grants))
+        specialist_ids = {
+            grant.mcp_specialist_id
+            for grant in self.grants
+            if grant.mcp_specialist_id
+        }
+        if len(specialist_ids) > 1:
+            raise ValueError("Principal grants cannot bind multiple MCP specialists")
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> Principal:
@@ -113,6 +130,18 @@ class Principal:
     def grants_for(self, action: str) -> tuple[Grant, ...]:
         allowed = _ACTION_ROLES[action]
         return tuple(grant for grant in self.grants if grant.role in allowed)
+
+    def mcp_specialist_id(self) -> str | None:
+        """Return the specialist identity explicitly bound by trusted grants."""
+
+        return next(
+            (
+                grant.mcp_specialist_id
+                for grant in self.grants
+                if grant.mcp_specialist_id
+            ),
+            None,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {

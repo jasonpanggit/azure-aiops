@@ -10,6 +10,7 @@ from api.scope import Scope
 
 MAX_SNAPSHOT_EVIDENCE = 200
 MAX_SNAPSHOT_BYTES = 128 * 1024
+COVERAGE_CITATION_ID = "snapshot:coverage"
 
 
 class ContractModel(BaseModel):
@@ -140,6 +141,7 @@ class OrchestrationResult(ContractModel):
 
 
 __all__ = [
+    "COVERAGE_CITATION_ID",
     "CandidatePlan",
     "Citation",
     "EvidenceSnapshotV2",

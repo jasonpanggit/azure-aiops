@@ -4,6 +4,7 @@ import pytest
 
 from api.evidence import Evidence
 from api.scope import Scope
+from operations.foundry_agent import FoundryAgentError
 from operations.investigation_thread_store import (
     InvestigationThreadStore,
     ThreadNotFound,
@@ -19,7 +20,10 @@ from operations.orchestration_contract import (
     ToolCallCandidate,
 )
 from operations.orchestration_policy import PolicyViolation
-from operations.orchestration_service import OrchestrationService
+from operations.orchestration_service import (
+    OrchestrationService,
+    PlannerUnavailableError,
+)
 from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
 from operations.tools import STATUS_OK, ToolResult
 
@@ -124,7 +128,7 @@ def test_canonical_inventory_tracer_returns_citations_uncertainty_and_thread():
     assert "inventory freshness is stale" in result.uncertainty
     assert {item.citation_id for item in result.citations} >= {
         "inventory:visible",
-        "tool:inventory_resources:0",
+        "tool:0:0:inventory_data_health:inventory_resources:0",
     }
     assert result.thread_id.startswith("thr-")
     assert result.thread_revision == 1
@@ -179,6 +183,14 @@ def test_default_executor_uses_scoped_governed_inventory_read_port():
         (lambda request: (_ for _ in ()).throw(TimeoutError()), "planner_timeout"),
         (lambda request: (_ for _ in ()).throw(ValueError("bad JSON")), "planner_parse_error"),
         (lambda request: (_ for _ in ()).throw(ConnectionError()), "planner_unavailable"),
+        (
+            lambda request: (_ for _ in ()).throw(PlannerUnavailableError()),
+            "planner_unavailable",
+        ),
+        (
+            lambda request: (_ for _ in ()).throw(FoundryAgentError("offline")),
+            "planner_unavailable",
+        ),
         (None, "planner_unavailable"),
     ],
 )
@@ -268,6 +280,107 @@ def test_thread_history_rechecks_current_scope():
             "operator-a",
             Scope({"subscription": ["sub-b"]}),
         )
+
+
+def test_scope_narrowing_redacts_wider_historical_turns():
+    store = InvestigationThreadStore()
+    broad = Scope({"subscription": ["sub-a", "sub-b"]})
+    narrow = Scope({"subscription": ["sub-a"]})
+    thread = store.create("operator-a", broad)
+    store.append(
+        thread.thread_id,
+        "operator-a",
+        broad,
+        {
+            "status": "ok",
+            "tool_results": [{"data": {"subscription": "sub-b", "secret": "b-only"}}],
+            "citations": [{"resource_id": "/subscriptions/sub-b/resourceGroups/rg"}],
+        },
+    )
+    store.append(
+        thread.thread_id,
+        "operator-a",
+        narrow,
+        {"status": "ok", "tool_results": [{"data": {"subscription": "sub-a"}}]},
+    )
+
+    history = store.history(thread.thread_id, "operator-a", narrow)
+
+    assert history[0]["status"] == "historical_scope_restricted"
+    assert history[0]["tool_results"] == []
+    assert "b-only" not in str(history)
+    assert history[1]["tool_results"][0]["data"]["subscription"] == "sub-a"
+
+
+def test_empty_snapshot_fallback_uses_canonical_coverage_citation():
+    request = _request().model_copy(
+        update={
+            "snapshot": EvidenceSnapshotV2(
+                page_kind="inventory",
+                page_id="inventory",
+                coverage=SnapshotCoverage(
+                    visible_count=0,
+                    total_count=0,
+                    complete=True,
+                ),
+            )
+        }
+    )
+
+    result = OrchestrationService(executor=lambda *args, **kwargs: _result()).execute(
+        request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert result.policy_status == "fallback"
+    assert "snapshot:coverage" in {
+        citation.citation_id for citation in result.citations
+    }
+
+
+def test_repeated_tool_calls_retain_distinct_citations():
+    candidate = CandidatePlan(
+        steps=[
+            SpecialistStep(
+                specialist_id=INVENTORY_DATA_HEALTH_ID,
+                tool_calls=[
+                    ToolCallCandidate(
+                        tool="inventory_resources",
+                        arguments={},
+                        citation_ids=["inventory:visible"],
+                    ),
+                    ToolCallCandidate(
+                        tool="inventory_resources",
+                        arguments={"family": "paas"},
+                        citation_ids=["inventory:visible"],
+                    ),
+                ],
+            )
+        ],
+        estimated_tokens=500,
+        max_wall_seconds=5,
+    )
+    result = OrchestrationService(
+        planner=lambda request: candidate,
+        executor=lambda *args, **kwargs: _result(),
+    ).execute(
+        _request(),
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    tool_citations = [
+        citation.citation_id
+        for citation in result.citations
+        if citation.citation_id.startswith("tool:")
+    ]
+    assert tool_citations == [
+        "tool:0:0:inventory_data_health:inventory_resources:0",
+        "tool:0:1:inventory_data_health:inventory_resources:0",
+    ]
 
 
 def test_wall_clock_budget_stops_before_tool_io():

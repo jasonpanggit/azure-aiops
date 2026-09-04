@@ -33,12 +33,42 @@ def test_inventory_tool_is_an_exact_specialist_bound_reviewed_grant():
             "params": {"name": "inventory_resources", "arguments": {}},
         },
         context=Context(),
+        principal=type("P", (), {"subject": INVENTORY_DATA_HEALTH_ID})(),
+        scope=__import__("api.scope", fromlist=["Scope"]).Scope.unrestricted(),
+        correlation_id="corr",
+        specialist_id=INVENTORY_DATA_HEALTH_ID,
+    )
+    assert allowed["result"]["isError"] is False
+    assert allowed["result"]["structuredContent"]["status"] == "unavailable"
+
+    legacy_denied = MCPServer().handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "method": "tools/call",
+            "params": {"name": "inventory_resources", "arguments": {}},
+        },
+        context=Context(),
         principal=type("P", (), {"subject": "operator"})(),
         scope=__import__("api.scope", fromlist=["Scope"]).Scope.unrestricted(),
         correlation_id="corr",
     )
-    assert allowed["result"]["isError"] is False
-    assert allowed["result"]["structuredContent"]["status"] == "unavailable"
+    assert legacy_denied["result"]["isError"] is True
+
+    cross_specialist_denied = MCPServer().handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "method": "tools/call",
+            "params": {"name": "network_topology", "arguments": {}},
+        },
+        context=Context(),
+        principal=type("P", (), {"subject": INVENTORY_DATA_HEALTH_ID})(),
+        scope=__import__("api.scope", fromlist=["Scope"]).Scope.unrestricted(),
+        correlation_id="corr",
+        specialist_id=INVENTORY_DATA_HEALTH_ID,
+    )
+    assert cross_specialist_denied["result"]["isError"] is True
 
 
 def test_dispatch_preserves_tool_result_shape_and_status():

@@ -9,11 +9,13 @@ from typing import Any
 from pydantic import ValidationError
 
 from api.scope import Scope
+from operations.foundry_agent import FoundryAgentError
 from operations.investigation_thread_store import (
     InvestigationThreadStore,
     investigation_thread_store,
 )
 from operations.orchestration_contract import (
+    COVERAGE_CITATION_ID,
     CandidatePlan,
     Citation,
     InvestigationRequest,
@@ -36,6 +38,14 @@ Planner = Callable[[InvestigationRequest], CandidatePlan | Mapping[str, Any]]
 Executor = Callable[..., ToolResult]
 
 
+class PlannerUnavailableError(RuntimeError):
+    """The configured planner adapter cannot currently produce a proposal."""
+
+
+class PlannerTimeoutError(TimeoutError):
+    """The configured planner adapter exceeded its bounded response time."""
+
+
 def _default_executor(
     name: str,
     arguments: Mapping[str, Any],
@@ -47,6 +57,9 @@ def _default_executor(
 
 
 def _fallback_candidate(request: InvestigationRequest) -> CandidatePlan:
+    citation_ids = [item.evidence_id for item in request.snapshot.evidence]
+    if not citation_ids:
+        citation_ids = [COVERAGE_CITATION_ID]
     return CandidatePlan(
         steps=[
             SpecialistStep(
@@ -55,9 +68,7 @@ def _fallback_candidate(request: InvestigationRequest) -> CandidatePlan:
                     ToolCallCandidate(
                         tool="inventory_resources",
                         arguments={},
-                        citation_ids=[
-                            item.evidence_id for item in request.snapshot.evidence
-                        ],
+                        citation_ids=citation_ids,
                     )
                 ],
             )
@@ -121,9 +132,9 @@ class OrchestrationService:
         selected_tools: list[str] = []
         budget_exhausted = False
 
-        for step in candidate.steps:
+        for step_index, step in enumerate(candidate.steps):
             selected_specialists.append(step.specialist_id)
-            for call in step.tool_calls:
+            for call_index, call in enumerate(step.tool_calls):
                 if self.clock() >= deadline:
                     budget_exhausted = True
                     break
@@ -137,8 +148,12 @@ class OrchestrationService:
                 if not isinstance(result, ToolResult):
                     raise TypeError("orchestration executor must return ToolResult")
                 tool_statuses.append(result.status)
+                call_id = (
+                    f"{step_index}:{call_index}:{step.specialist_id}:{call.tool}"
+                )
                 tool_results.append(
                     {
+                        "call_id": call_id,
                         "specialist_id": step.specialist_id,
                         "tool": call.tool,
                         **result.to_dict(),
@@ -147,7 +162,7 @@ class OrchestrationService:
                 for index, evidence in enumerate(result.evidence):
                     citations.append(
                         Citation(
-                            citation_id=f"tool:{call.tool}:{index}",
+                            citation_id=f"tool:{call_id}:{index}",
                             source=(
                                 evidence.source_engine
                                 if not evidence.source_table
@@ -213,13 +228,13 @@ class OrchestrationService:
                 if isinstance(proposal, CandidatePlan)
                 else CandidatePlan.model_validate(proposal)
             )
-        except TimeoutError:
+        except (PlannerTimeoutError, TimeoutError):
             return self._validated_fallback(
                 request,
                 effective_scope,
                 "planner_timeout",
             )
-        except ConnectionError:
+        except (ConnectionError, FoundryAgentError, PlannerUnavailableError):
             return self._validated_fallback(
                 request,
                 effective_scope,
@@ -264,7 +279,21 @@ class OrchestrationService:
 
     @staticmethod
     def _snapshot_citations(request: InvestigationRequest) -> list[Citation]:
+        coverage = request.snapshot.coverage
+        coverage_status = (
+            STATUS_EMPTY
+            if coverage.complete and coverage.total_count == 0
+            else STATUS_OK
+            if coverage.complete
+            else "partial"
+        )
         return [
+            Citation(
+                citation_id=COVERAGE_CITATION_ID,
+                source=f"page_snapshot:{request.snapshot.page_kind}:coverage",
+                status=coverage_status,
+            ),
+            *[
             Citation(
                 citation_id=item.evidence_id,
                 source=item.source,
@@ -273,6 +302,7 @@ class OrchestrationService:
                 resource_id=item.resource_id,
             )
             for item in request.snapshot.evidence
+            ],
         ]
 
     @staticmethod
@@ -322,4 +352,8 @@ class OrchestrationService:
         return STATUS_OK
 
 
-__all__ = ["OrchestrationService"]
+__all__ = [
+    "OrchestrationService",
+    "PlannerTimeoutError",
+    "PlannerUnavailableError",
+]
