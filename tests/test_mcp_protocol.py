@@ -45,7 +45,7 @@ def test_initialize_and_exact_read_only_catalog(tmp_path):
         "cve_exposure", "cve_detail", "cve_attack_path",
         "defender_alerts", "defender_attack_paths", "defender_secure_score",
         "incidents", "defender_remediation_cases", "remediation_business_decision",
-        "remediation_plans", "remediation_opportunities",
+        "remediation_plans", "remediation_opportunities", "inventory_resources",
     ]
 
 

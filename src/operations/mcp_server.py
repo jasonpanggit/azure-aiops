@@ -15,6 +15,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from operations.specialist_manifest import (
+    INVENTORY_DATA_HEALTH_ID,
+    load_specialist_manifest,
+)
+
 LOGGER = logging.getLogger("aiops.mcp")
 MCP_VERSION = "2025-06-18"
 MAX_MESSAGE_BYTES = 128 * 1024
@@ -27,7 +32,7 @@ MAX_CALLS = 100_000  # Coarse per-process circuit breaker, not a per-caller
 # legitimate multi-tool-call agent turn can ever exhaust it.
 MAX_TOOL_NAME = 64
 
-REVIEWED_TOOLS = (
+_BASE_REVIEWED_TOOLS = (
     "network_topology",
     "hub_dependents",
     "traffic_flow",
@@ -50,6 +55,10 @@ REVIEWED_TOOLS = (
     "remediation_plans",
     "remediation_opportunities",
 )
+_TRACER_REVIEWED_TOOLS = load_specialist_manifest().require(
+    INVENTORY_DATA_HEALTH_ID
+).operations_mcp_tools
+REVIEWED_TOOLS = (*_BASE_REVIEWED_TOOLS, *_TRACER_REVIEWED_TOOLS)
 
 
 class MCPRequest(BaseModel):
@@ -79,6 +88,8 @@ class ToolArguments(BaseModel):
     business_service: str | None = Field(default=None, min_length=1, max_length=512)
     cve_id: str | None = Field(default=None, min_length=1, max_length=64)
     incident_id: str | None = Field(default=None, min_length=1, max_length=256)
+    resource_type: str | None = Field(default=None, min_length=1, max_length=256)
+    family: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 _REQUIRED: dict[str, tuple[str, ...]] = {
@@ -99,6 +110,7 @@ _REQUIRED: dict[str, tuple[str, ...]] = {
 _OPTIONAL: dict[str, tuple[str, ...]] = {
     "cve_exposure": ("business_service",),
     "incidents": ("incident_id",),
+    "inventory_resources": ("resource_type", "family"),
 }
 
 
@@ -128,6 +140,50 @@ def tool_definitions() -> list[dict[str, Any]]:
         }
         for name in REVIEWED_TOOLS
     ]
+
+
+def reviewed_tools_for_specialist(specialist_id: str) -> tuple[str, ...]:
+    """Return the exact reviewed Operations MCP grant for one specialist."""
+
+    try:
+        specialist = load_specialist_manifest().require(specialist_id)
+    except ValueError:
+        return ()
+    grants = specialist.operations_mcp_tools
+    if any(tool not in REVIEWED_TOOLS for tool in grants):
+        raise RuntimeError(
+            f"specialist {specialist_id!r} contains an unreviewed Operations MCP grant"
+        )
+    return grants
+
+
+def validate_tool_arguments(
+    name: str,
+    arguments: Mapping[str, Any],
+    *,
+    require_required: bool = True,
+) -> tuple[dict[str, Any], list[str]]:
+    """Validate bounded tool arguments without executing the tool."""
+
+    if not isinstance(arguments, Mapping) or not _safe_size(arguments, MAX_ARGUMENT_BYTES):
+        raise ValueError("invalid or oversized tool arguments")
+    cleaned_arguments = {
+        key: value
+        for key, value in arguments.items()
+        if not (isinstance(value, str) and value.strip() == "")
+    }
+    try:
+        validated = ToolArguments.model_validate(cleaned_arguments)
+    except ValidationError as exc:
+        raise ValueError("invalid tool arguments") from exc
+    args = validated.model_dump(exclude_none=True)
+    allowed_fields = set(_REQUIRED.get(name, ())) | set(_OPTIONAL.get(name, ()))
+    if set(args) - allowed_fields:
+        raise ValueError("arguments are not valid for this tool")
+    missing = [field for field in _REQUIRED.get(name, ()) if field not in args]
+    if require_required and missing:
+        raise ValueError(f"missing required arguments: {', '.join(missing)}")
+    return args, missing
 
 
 def _error(code: int, message: str, request_id: Any = None) -> dict[str, Any]:
@@ -208,21 +264,13 @@ class MCPServer:
 
         if name not in REVIEWED_TOOLS:
             return _tool_error("Unknown or unauthorized tool")
-        if not isinstance(arguments, Mapping) or not _safe_size(arguments, MAX_ARGUMENT_BYTES):
-            return _tool_error("Invalid or oversized tool arguments")
-        # LLM tool callers commonly send an empty string for an optional
-        # field to mean "no filter" rather than omitting the key entirely.
-        # Treat blank strings the same as an absent argument so a
-        # perfectly-reasonable model call isn't rejected as invalid.
-        cleaned_arguments = {
-            key: value for key, value in arguments.items()
-            if not (isinstance(value, str) and value.strip() == "")
-        }
         try:
-            validated = ToolArguments.model_validate(cleaned_arguments)
-            args = validated.model_dump(exclude_none=True)
-            missing = [field for field in _REQUIRED.get(name, ()) if field not in args]
-        except ValidationError:
+            args, missing = validate_tool_arguments(
+                name,
+                arguments,
+                require_required=False,
+            )
+        except ValueError:
             return _tool_error("Invalid tool arguments")
 
         if missing:
@@ -294,4 +342,11 @@ class MCPServer:
         }
 
 
-__all__ = ["MCP_VERSION", "REVIEWED_TOOLS", "MCPServer", "tool_definitions"]
+__all__ = [
+    "MCP_VERSION",
+    "REVIEWED_TOOLS",
+    "MCPServer",
+    "reviewed_tools_for_specialist",
+    "tool_definitions",
+    "validate_tool_arguments",
+]

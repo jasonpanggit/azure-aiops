@@ -1,0 +1,51 @@
+{
+  "version": "1",
+  "contract_version": "1.0",
+  "specialists": [
+    {
+      "id": "inventory_data_health",
+      "display_name": "Inventory & Data Health",
+      "purpose": "Inspect scoped Azure inventory and report data completeness and freshness without mutation.",
+      "intent_examples": [
+        "show inventory resources",
+        "is the inventory data current",
+        "which resources are visible"
+      ],
+      "dependencies": [],
+      "operations_mcp_tools": [
+        "inventory_resources"
+      ],
+      "azure_mcp_tools": [],
+      "knowledge_policy": {
+        "mode": "deterministic_first",
+        "optional_sources": []
+      },
+      "page_mappings": [
+        "inventory",
+        "connections",
+        "connections_fabric"
+      ],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": [
+          "ok",
+          "empty",
+          "partial",
+          "unavailable",
+          "denied"
+        ]
+      },
+      "ui_metadata": {
+        "label": "Inventory & Data Health",
+        "description": "Scoped resource inventory, coverage, freshness, and provider availability."
+      },
+      "foundry": {
+        "name": "inventory-data-health",
+        "model": "gpt-4.1",
+        "version": "1"
+      },
+      "read_only": true
+    }
+  ]
+}
