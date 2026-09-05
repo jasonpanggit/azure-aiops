@@ -644,6 +644,46 @@ def test_failed_workload_family_retains_stale_lkg_and_original_generation() -> N
     assert advanced["effective_generation"] == "generation-2"
 
 
+def test_failed_family_cannot_create_a_deployment_absent_from_lkg() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        activate_workload_partitions,
+    )
+
+    first_outcomes, first_generation, digest = _workload_outcomes(
+        generation="generation-1"
+    )
+    first = activate_workload_partitions(
+        outcomes=first_outcomes,
+        defender_rows=[],
+        attempted_generation=first_generation,
+        completed_at="2026-09-05T00:00:01Z",
+    )
+    assert first.deployments == ()
+    second_outcomes, second_generation, _ = _workload_outcomes(
+        generation="generation-2",
+        fail_family="container_image_inventory",
+        fail_workspace="workspace-a",
+    )
+
+    second = activate_workload_partitions(
+        outcomes=second_outcomes,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation=second_generation,
+        completed_at="2026-09-05T00:05:01Z",
+        previous_observations=first.observations,
+        previous_deployments=first.deployments,
+        previous_checkpoints=first.checkpoints,
+    )
+
+    assert not any(
+        row["workspace_id"] == "workspace-a" for row in second.deployments
+    )
+    assert "stale_without_deployment_lkg" in second.unknown_reasons
+    assert any(
+        row["workspace_id"] == "workspace-b" for row in second.deployments
+    )
+
+
 def test_failed_workload_workspace_without_lkg_is_unavailable_and_rowless() -> None:
     from intelligence.vulnerability.workload_inventory import (
         WORKLOAD_QUERY_FAMILIES,

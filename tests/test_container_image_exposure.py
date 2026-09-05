@@ -460,6 +460,54 @@ def test_unproved_workload_links_remain_typed_unknown() -> None:
         assert result.unknown_reasons == (reason,)
 
 
+def test_fresh_exact_image_wins_over_stale_duplicate_observation() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    stale = {**images[0], "TimeGenerated": "2026-09-01T00:00:00Z"}
+    result = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[_defender_image_row()],
+        kube_pod_rows=pods,
+        container_rows=containers,
+        image_rows=[stale, images[0]],
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+
+    assert len(result.deployments) == 1
+    assert result.unknown_reasons == ()
+
+
+def test_conflicting_runtime_controller_evidence_remains_unknown() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    conflicting = {
+        **pods[0],
+        "ControllerName": "different-controller",
+        "PodUid": "pod-conflict",
+    }
+    result = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[_defender_image_row()],
+        kube_pod_rows=[pods[0], conflicting],
+        container_rows=containers,
+        image_rows=images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+
+    assert result.deployments == ()
+    assert result.unknown_reasons == ("conflicting_runtime_evidence",)
+
+
 def test_workload_schemas_are_additive_and_preserve_approval_role_ids() -> None:
     from fabric.schema_registry import schema_for
 
