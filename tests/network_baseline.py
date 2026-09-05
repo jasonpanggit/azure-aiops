@@ -6,6 +6,7 @@ import argparse
 import json
 import platform
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +100,7 @@ def record_baseline(
     backend_pass_count: int,
     web_pass_count: int,
     canvas_interactivity: dict[str, Any],
+    recording_environment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Record the pinned G-4 fixture and its detached-worktree measurements."""
     if not _FULL_SHA.fullmatch(phase_base_commit):
@@ -120,6 +122,7 @@ def record_baseline(
     artifact = {
         "schema_version": 1,
         "phase_base_commit": phase_base_commit,
+        "recording_environment": dict(recording_environment or {"git_mode": "replay"}),
         "fixture": {
             "name": "g4_baseline_estate",
             "private_link_resource_count": len(snapshot.private_link_resources),
@@ -173,16 +176,42 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _detached_recording_environment(phase_base_commit: str) -> dict[str, Any]:
+    symbolic = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    actual = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if symbolic.returncode == 0 or actual != phase_base_commit:
+        raise BaselineArtifactInvalidError(
+            "baseline recording must run at the phase base commit in a detached worktree"
+        )
+    return {
+        "git_mode": "detached_worktree",
+        "head_commit": actual,
+        "platform": platform.platform(),
+    }
+
+
 def main() -> None:
     args = _parse_args()
     measurement = json.loads(args.canvas_measurement.read_text(encoding="utf-8"))
     measurement.setdefault("machine", platform.platform())
+    recording_environment = _detached_recording_environment(args.phase_base_commit)
     artifact = record_baseline(
         args.output,
         phase_base_commit=args.phase_base_commit,
         backend_pass_count=args.backend_pass_count,
         web_pass_count=args.web_pass_count,
         canvas_interactivity=measurement,
+        recording_environment=recording_environment,
     )
     print(
         json.dumps(

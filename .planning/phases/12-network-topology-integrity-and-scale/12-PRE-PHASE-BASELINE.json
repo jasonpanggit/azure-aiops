@@ -1,6 +1,11 @@
 {
   "schema_version": 1,
   "phase_base_commit": "d57f6137d747c344c56028d7e6211811927d0b43",
+  "recording_environment": {
+    "git_mode": "detached_worktree",
+    "head_commit": "d57f6137d747c344c56028d7e6211811927d0b43",
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O"
+  },
   "fixture": {
     "name": "g4_baseline_estate",
     "private_link_resource_count": 0,

@@ -38,6 +38,11 @@ def test_baseline_is_recorded_and_self_consistent(tmp_path: Path) -> None:
     )
     assert baseline["topology"]["collection_counts"]
     assert re.fullmatch(r"[0-9a-f]{40}", baseline["phase_base_commit"])
+    assert baseline["recording_environment"]["git_mode"] == "detached_worktree"
+    assert (
+        baseline["recording_environment"]["head_commit"]
+        == baseline["phase_base_commit"]
+    )
     assert isinstance(baseline["suite_pass_counts"]["backend"], int)
     assert isinstance(baseline["suite_pass_counts"]["web"], int)
     assert baseline["allowed_additive_nodes"] == []
