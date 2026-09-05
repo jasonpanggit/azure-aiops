@@ -16,6 +16,7 @@ from network.models import (
     FirewallPolicy,
     FirewallRule,
     FirewallRuleCollection,
+    NetworkInterface,
     NetworkSecurityGroup,
     NetworkSecurityRule,
     NetworkSnapshot,
@@ -88,6 +89,7 @@ def build_estate(
     route_subnets: list[list[str]] = [[] for _ in range(shape.vnets)]
     private_endpoints: list[PrivateEndpoint] = []
     private_link_resources: list[PrivateLinkResource] = []
+    nics: list[NetworkInterface] = []
     dns_zones: list[PrivateDnsZone] = []
 
     vnet_specs: list[tuple[str, str, str, list[str]]] = []
@@ -320,14 +322,17 @@ def build_estate(
         + firewall_count * 3
         + shape.vnets  # one attached-workload node per private endpoint target
     )
-    firewall_rule_count = shape.target_full_nodes - fixed_projected_nodes
-    if firewall_rule_count < firewall_count:
+    # Two rules per collection are sufficient to exercise policy projection.
+    # Fill the remainder with NICs, whose flat payload keeps the enterprise
+    # fixture practical while still creating real topology nodes and edges.
+    firewall_rule_count = firewall_count * 2
+    nic_count = shape.target_full_nodes - fixed_projected_nodes - firewall_rule_count
+    if nic_count < 0:
         raise ValueError("target_full_nodes is too small for the requested estate shape")
 
     firewalls: list[AzureFirewall] = []
     firewall_policies: list[FirewallPolicy] = []
     firewall_collections: list[FirewallRuleCollection] = []
-    remaining_rules = firewall_rule_count
     for firewall_index in range(firewall_count):
         subscription_id, resource_group, vnet_id, subnet_ids = vnet_specs[firewall_index]
         firewall_id = _arm(
@@ -349,8 +354,6 @@ def build_estate(
             index=firewall_index,
         )
         collection_id = f"{policy_id}/ruleCollectionGroups/default/ruleCollections/collection-{firewall_index:04d}"
-        count = remaining_rules // (firewall_count - firewall_index)
-        remaining_rules -= count
         rules = tuple(
             FirewallRule(
                 resource_id=f"{collection_id}/rules/rule-{rule_index:04d}",
@@ -364,7 +367,7 @@ def build_estate(
                 destination_addresses=("10.255.0.0/16",),
                 destination_ports=(str(2000 + (rule_index % 100)),),
             )
-            for rule_index in range(count)
+            for rule_index in range(2)
         )
         firewalls.append(
             AzureFirewall(
@@ -406,9 +409,34 @@ def build_estate(
             )
         )
 
+    for nic_index in range(nic_count):
+        subscription_id, resource_group, _, subnet_ids = vnet_specs[
+            nic_index % len(vnet_specs)
+        ]
+        nics.append(
+            NetworkInterface(
+                resource_id=_arm(
+                    subscription_id,
+                    resource_group,
+                    "Microsoft.Network",
+                    "networkInterfaces",
+                    f"nic-{nic_index:05d}",
+                    mixed_case=mixed_case_ids,
+                    index=nic_index,
+                ),
+                name=f"nic-{nic_index:05d}",
+                subscription_id=subscription_id,
+                resource_group=resource_group,
+                connection_id=f"conn-{subscription_id}",
+                subnet_id=subnet_ids[nic_index % len(subnet_ids)],
+                private_ips=(f"10.{nic_index % 250}.{(nic_index // 250) % 250}.10",),
+            )
+        )
+
     return NetworkSnapshot(
         vnets=tuple(vnets),
         subnets=tuple(subnets),
+        nics=tuple(nics),
         nsgs=tuple(nsgs),
         route_tables=tuple(route_tables),
         firewalls=tuple(firewalls),
