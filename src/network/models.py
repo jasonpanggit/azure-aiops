@@ -158,7 +158,11 @@ class Subnet(NetworkResource):
         object.__setattr__(self, "route_table_id", _lower(self.route_table_id))
         object.__setattr__(self, "nat_gateway_id", _lower(self.nat_gateway_id))
         object.__setattr__(self, "address_prefixes", _tuple(self.address_prefixes))
-        object.__setattr__(self, "private_endpoint_ids", _tuple(self.private_endpoint_ids))
+        object.__setattr__(
+            self,
+            "private_endpoint_ids",
+            tuple(_lower(item) for item in _tuple(self.private_endpoint_ids)),
+        )
         object.__setattr__(self, "service_endpoints", _tuple(self.service_endpoints))
         object.__setattr__(self, "delegations", _tuple(self.delegations))
 

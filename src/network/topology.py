@@ -184,18 +184,36 @@ class NetworkTopology:
         return ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        relationships, dropped_relationships = _topology_relationships(self)
+        counts: dict[str, Any] = {
+            **self.snapshot.counts(),
+            "dropped_relationships": dict(sorted(dropped_relationships.items())),
+        }
+        payload = {
             "hubs": [hub.to_dict() for hub in self.hubs],
             "spokes": [spoke.to_dict() for spoke in self.spokes],
             "isolated": [item.to_dict() for item in self.isolated],
             "links": [link.to_dict() for link in self.links],
             "shared_services": [service.to_dict() for service in self.shared_services],
             "resources": _topology_resources(self),
-            "relationships": _topology_relationships(self),
+            "relationships": relationships,
             "unresolved_peer_vnet_ids": list(self.unresolved_peer_vnet_ids),
             "connection_ids": list(self.connection_ids),
-            "counts": self.snapshot.counts(),
+            "counts": counts,
         }
+        if dropped_relationships:
+            total = sum(dropped_relationships.values())
+            breakdown = ", ".join(
+                f"{relationship_type}={count}"
+                for relationship_type, count in sorted(dropped_relationships.items())
+            )
+            payload["warnings"] = [
+                (
+                    f"{total} topology relationships dropped because an endpoint "
+                    f"was absent from this scope ({breakdown})"
+                )
+            ]
+        return payload
 
 
 class TopologyBuilder:
@@ -745,18 +763,37 @@ def _relationship(
 
 
 def _has_resource(resource_ids: set[str], resource_id: str) -> bool:
-    return bool(resource_id and resource_id in resource_ids)
+    return bool(resource_id and resource_id.casefold() in resource_ids)
 
 
-def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
+def _topology_relationships(
+    topology: NetworkTopology,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     snapshot = topology.snapshot
-    resource_ids = {node["id"] for node in _topology_resources(topology)}
+    resource_ids = {str(node["id"]).casefold() for node in _topology_resources(topology)}
     relationships: dict[str, dict[str, Any]] = {}
+    dropped_relationships: dict[str, int] = {}
 
     def add(source: str, target: str, relationship_type: str, *, label: str = "", details: dict[str, Any] | None = None) -> None:
-        if not (_has_resource(resource_ids, source) and _has_resource(resource_ids, target)):
+        source_id = str(source or "").casefold()
+        target_id = str(target or "").casefold()
+        if not source_id or not target_id:
             return
-        relationship = _relationship(source, target, relationship_type, label=label, details=details)
+        if not (
+            _has_resource(resource_ids, source_id)
+            and _has_resource(resource_ids, target_id)
+        ):
+            dropped_relationships[relationship_type] = (
+                dropped_relationships.get(relationship_type, 0) + 1
+            )
+            return
+        relationship = _relationship(
+            source_id,
+            target_id,
+            relationship_type,
+            label=label,
+            details=details,
+        )
         relationships[relationship["id"]] = relationship
 
     def add_hosted(resource: Any, label: str) -> None:
@@ -910,4 +947,14 @@ def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
         if item["relationship_type"] == "linked_to" and (item["source"], item["target"]) in served_pairs:
             del relationships[key]
 
-    return sorted(relationships.values(), key=lambda item: (item["relationship_type"], item["source"], item["target"]))
+    return (
+        sorted(
+            relationships.values(),
+            key=lambda item: (
+                item["relationship_type"],
+                item["source"],
+                item["target"],
+            ),
+        ),
+        dropped_relationships,
+    )

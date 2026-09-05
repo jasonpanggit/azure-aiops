@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from network_scale_fixtures import small_estate
+
 from fabric_pipelines.topology_pipeline import derive_edges, to_topology_edge_row
 from network import NetworkIntelligenceService
 from network.models import NetworkSnapshot, PrivateDnsZone
 from onboarding.graph_normalize import Normalizer
 from onboarding.query_catalog import NETWORK_RESOURCE_TYPES
-from network_scale_fixtures import small_estate
 
 OBSERVED = "2026-09-01T00:00:00Z"
 VNET_ID = "/subscriptions/Sub-A/resourceGroups/RG/providers/Microsoft.Network/virtualNetworks/VNet-A"

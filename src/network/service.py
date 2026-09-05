@@ -212,7 +212,14 @@ class NetworkIntelligenceService:
     ) -> None:
         self.snapshot = snapshot
         self.policy = policy if policy is not None else NetworkDesignPolicy()
-        self.semantic_relationships = tuple(dict(row) for row in semantic_relationships)
+        self.semantic_relationships = tuple(
+            {
+                **dict(row),
+                "subject_id": str(row.get("subject_id") or "").casefold(),
+                "object_id": str(row.get("object_id") or "").casefold(),
+            }
+            for row in semantic_relationships
+        )
         self._topology: NetworkTopology | None = None
         self._gaps: tuple[NetworkGap, ...] | None = None
         self._findings: tuple[RuleFinding, ...] | None = None
