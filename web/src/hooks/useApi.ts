@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/types";
 
 interface UseApiState<T> {
   data: T | null;
   error: ApiError | Error | null;
   loading: boolean;
+  refetch: () => void;
 }
+
+const REFETCH_DEBOUNCE_MS = 400;
 
 /**
  * Fetches data through a supplied loader whenever its dependency list
@@ -16,9 +19,34 @@ interface UseApiState<T> {
  * views can render honest empty/unavailable states instead of blank UI.
  */
 export function useApi<T>(loader: () => Promise<T>, deps: React.DependencyList): UseApiState<T> {
-  const [state, setState] = useState<UseApiState<T>>({ data: null, error: null, loading: true });
+  const [state, setState] = useState<Omit<UseApiState<T>, "refetch">>({
+    data: null,
+    error: null,
+    loading: true,
+  });
+  const [refetchNonce, setRefetchNonce] = useState(0);
   const loaderRef = useRef(loader);
+  const refetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   loaderRef.current = loader;
+
+  const refetch = useCallback(() => {
+    if (refetchTimerRef.current !== null) {
+      clearTimeout(refetchTimerRef.current);
+    }
+    refetchTimerRef.current = setTimeout(() => {
+      refetchTimerRef.current = null;
+      setRefetchNonce((value) => value + 1);
+    }, REFETCH_DEBOUNCE_MS);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (refetchTimerRef.current !== null) {
+        clearTimeout(refetchTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -41,9 +69,9 @@ export function useApi<T>(loader: () => Promise<T>, deps: React.DependencyList):
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+  }, [...deps, refetchNonce]);
 
-  return state;
+  return { ...state, refetch };
 }
 
 export { ApiError };

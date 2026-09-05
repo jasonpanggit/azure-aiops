@@ -22,12 +22,15 @@ from network_scenario import (
 from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
+from api.providers import ProviderRuntime, ProviderSpec
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from network.design import NetworkDesignPolicyStore
+from network.rule_engine import SUPPORTED_OPERATORS, SUPPORTED_TARGET_NAMES
 from network.service import NetworkIntelligenceService, build_service
 from onboarding.service import SubscriptionOnboardingService
+from storage.onelake_documents import OneLakeDocumentStore
 
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
 SCOPED_TOKEN = "scoped-token-0123456789abcdef"
@@ -54,6 +57,7 @@ def _client(
     with_network: bool = True,
     network_policy_store=None,
     network_service: NetworkIntelligenceService | None = None,
+    provider_runtime: ProviderRuntime | None = None,
 ) -> TestClient:
     service = network_service or (build_service(network_rows()) if with_network else None)
     context = ApiContext(
@@ -63,6 +67,7 @@ def _client(
         telemetry=ApiTelemetry(),
         network_provider=(lambda: service),
         network_policy_store=network_policy_store,
+        provider_runtime=provider_runtime,
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -275,6 +280,177 @@ class TestAuthentication:
 
 
 class TestPolicy:
+    def test_read_additively_publishes_the_rule_engine_contract(self, tmp_path):
+        client = _client(tmp_path, network_policy_store=NetworkDesignPolicyStore())
+        data = client.get("/api/v1/network/policy", headers=_auth()).json()["data"]
+        legacy_types = {
+            "name": str,
+            "description": str,
+            "is_declared": bool,
+            "source_path": str,
+            "hub_vnet_names": list,
+            "require_firewall_in_hub": bool,
+            "require_default_route_to_firewall": bool,
+            "require_nsg_on_every_subnet": bool,
+            "forbid_spoke_to_spoke_peering": bool,
+            "forbid_public_ip_on_spoke_nics": bool,
+            "require_private_endpoint_for_services": list,
+            "require_private_dns_zone_link": bool,
+            "require_bidirectional_peering": bool,
+            "approved_peerings": list,
+            "exempt_subnet_names": list,
+            "exempt_vnet_names": list,
+            "rules": list,
+            "rules_declared": bool,
+            "unevaluated_rule_ids": list,
+            "invalid_rule_ids": list,
+        }
+
+        assert all(
+            key in data and isinstance(data[key], expected_type)
+            for key, expected_type in legacy_types.items()
+        )
+        assert data["supported_targets"] == list(SUPPORTED_TARGET_NAMES)
+        assert data["supported_operators"] == list(SUPPORTED_OPERATORS)
+
+    def test_malformed_declarative_rule_is_rejected_without_persisting(self, tmp_path):
+        store = NetworkDesignPolicyStore()
+        client = _client(tmp_path, network_policy_store=store)
+        before_revision = store.revision
+
+        response = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={
+                "rules": [
+                    {
+                        "rule_id": "unsafe-expression",
+                        "name": "Unsafe expression",
+                        "parameters": {
+                            "target": "subnets",
+                            "assert": [{"field": "name", "eval": "resource.name"}],
+                        },
+                    }
+                ]
+            },
+        )
+
+        assert response.status_code == 400
+        assert "no supported operator" in response.json()["error"]["message"]
+        assert store.revision == before_revision
+        assert store.read().rule("unsafe-expression") is None
+
+    def test_valid_declarative_rule_previews_then_saves(self, tmp_path):
+        store = NetworkDesignPolicyStore()
+        client = _client(tmp_path, network_policy_store=store)
+        rule = {
+            "rule_id": "subnets-need-vnet",
+            "name": "Subnets require a VNet",
+            "category": "custom",
+            "severity": "medium",
+            "enabled": True,
+            "parameters": {
+                "target": "subnets",
+                "assert": [{"field": "vnet_id", "exists": True}],
+            },
+        }
+
+        preview = client.post(
+            "/api/v1/network/policy/preview",
+            headers=_auth(),
+            json={"rules": [rule]},
+        )
+        assert preview.status_code == 200
+        preview_rule = next(
+            item
+            for item in preview.json()["data"]["policy"]["rules"]
+            if item["rule_id"] == rule["rule_id"]
+        )
+        assert preview_rule["declarative"] is True
+        assert preview_rule["evaluated"] is True
+        assert store.revision == 0
+        assert store.read().rule(rule["rule_id"]) is None
+
+        saved = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={"rules": [rule]},
+        )
+        assert saved.status_code == 200
+        assert store.revision == 1
+        assert store.read().rule(rule["rule_id"]) is not None
+
+    @pytest.mark.parametrize("persistent", [False, True])
+    def test_store_revision_increments_and_rejects_stale_writes(
+        self, tmp_path, persistent
+    ):
+        documents = OneLakeDocumentStore(tmp_path / "documents") if persistent else None
+        store = NetworkDesignPolicyStore(documents)
+
+        assert store.revision == 0
+        store.update({"description": "first"}, expected_revision=0)
+        assert store.revision == 1
+        store.update({"description": "second"}, expected_revision=1)
+        assert store.revision == 2
+
+        with pytest.raises(RuntimeError, match="revision"):
+            store.update({"description": "stale"}, expected_revision=1)
+        assert store.revision == 2
+        assert store.read().description == "second"
+
+    def test_write_invalidates_cached_derived_analysis(self, tmp_path):
+        store = NetworkDesignPolicyStore()
+        load_count = 0
+
+        def load_network():
+            nonlocal load_count
+            load_count += 1
+            return NetworkIntelligenceService.from_rows(
+                network_rows(),
+                policy=store.read(),
+            )
+
+        runtime = ProviderRuntime(
+            {
+                "network": ProviderSpec(
+                    loader=load_network,
+                    cache_key=lambda: ("network-policy", store.revision),
+                )
+            },
+            refresh_interval_seconds=30,
+            monotonic=lambda: 0.0,
+        )
+        client = _client(
+            tmp_path,
+            network_policy_store=store,
+            provider_runtime=runtime,
+        )
+
+        before = client.get("/api/v1/network/gaps", headers=_auth())
+        unchanged = client.get("/api/v1/network/gaps", headers=_auth())
+        assert before.status_code == 200
+        assert unchanged.status_code == 200
+        assert load_count == 1
+        assert any(
+            gap["category"] == "dns_dependency_gap"
+            for gap in before.json()["data"]["gaps"]
+        )
+
+        patched = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={"require_private_dns_zone_link": False},
+        )
+        after = client.get("/api/v1/network/gaps", headers=_auth())
+
+        assert patched.status_code == 200
+        assert after.status_code == 200
+        assert load_count == 2
+        assert not any(
+            gap["category"] == "dns_dependency_gap"
+            for gap in after.json()["data"]["gaps"]
+        )
+
     def test_scoped_preview_matches_gaps_without_foreign_resources(
         self, tmp_path, monkeypatch
     ):

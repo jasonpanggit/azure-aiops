@@ -39,6 +39,7 @@ class ProviderSpec:
     loader: Callable[[], Any | ProviderValue]
     configured: bool = True
     required: bool = True
+    cache_key: Callable[[], Any] | None = None
 
 
 @dataclass
@@ -106,6 +107,7 @@ class ProviderRuntime:
     monotonic: Callable[[], float] = time.monotonic
     _instances: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _states: dict[str, ProviderState] = field(default_factory=dict, init=False, repr=False)
+    _cache_keys: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _metadata: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _last_refresh: float = field(default=float("-inf"), init=False, repr=False)
     # `_state_lock` only ever guards in-memory dict/attribute mutation, never
@@ -167,65 +169,7 @@ class ProviderRuntime:
         now_iso = _iso(now)
 
         for name, spec in self.specs.items():
-            state = self._states[name]
-            if not spec.configured:
-                with self._state_lock:
-                    state.state = DISABLED
-                continue
-            if not force and state.next_retry_at:
-                retry_at = _parse(state.next_retry_at)
-                if retry_at is not None and now < retry_at:
-                    continue
-            with self._state_lock:
-                state.last_attempt_at = now_iso
-            try:
-                raw = spec.loader()
-                value = raw if isinstance(raw, ProviderValue) else ProviderValue(raw)
-                if value.instance is None:
-                    with self._state_lock:
-                        state.retry_attempts += 1
-                        delay = min(2 ** min(state.retry_attempts, 8), 300)
-                        state.next_retry_at = _iso(now + timedelta(seconds=delay))
-                        state.loaded = name in self._instances
-                        state.state = DEGRADED if state.loaded else UNAVAILABLE
-                        state.degraded_reason = f"{name} has no published provider data"
-                    _LOGGER.warning(
-                        "provider_loader_returned_empty provider=%s "
-                        "(loader completed without raising but produced no instance; "
-                        "check upstream fabric()/with_fabric() short-circuit conditions)",
-                        name,
-                    )
-                    continue
-                freshness = value.freshness or _provider_freshness(value.instance)
-                lifecycle = value.state if value.state in {READY, PARTIAL, STALE} else READY
-                if lifecycle == READY and _is_stale(
-                    freshness, now=now, stale_after_hours=self.stale_after_hours
-                ):
-                    lifecycle = STALE
-                with self._state_lock:
-                    self._instances[name] = value.instance
-                    state.state = lifecycle
-                    state.loaded = True
-                    state.freshness = freshness
-                    state.ontology_version = (
-                        value.ontology_version or _provider_version(value.instance)
-                    )
-                    state.loaded_at = now_iso
-                    state.last_success_at = now_iso
-                    state.degraded_reason = value.degraded_reason
-                    state.retry_attempts = 0
-                    state.next_retry_at = ""
-            except Exception as exc:
-                with self._state_lock:
-                    state.retry_attempts += 1
-                    delay = min(2 ** min(state.retry_attempts, 8), 300)
-                    state.next_retry_at = _iso(now + timedelta(seconds=delay))
-                    state.loaded = name in self._instances
-                    state.state = DEGRADED if state.loaded else UNAVAILABLE
-                    state.degraded_reason = (
-                        f"{name} refresh failed ({exc.__class__.__name__})"
-                    )
-                _LOGGER.exception("provider_refresh_failed provider=%s", name)
+            self._refresh_provider(name, spec, now=now, now_iso=now_iso, force=force)
 
         if self.metadata_loader is not None:
             try:
@@ -242,6 +186,111 @@ class ProviderRuntime:
                     self._metadata = metadata
         return self.health(refresh=False)
 
+    def _refresh_provider(
+        self,
+        name: str,
+        spec: ProviderSpec,
+        *,
+        now: datetime,
+        now_iso: str,
+        force: bool,
+    ) -> None:
+        state = self._states[name]
+        if not spec.configured:
+            with self._state_lock:
+                state.state = DISABLED
+            return
+        if not force and state.next_retry_at:
+            retry_at = _parse(state.next_retry_at)
+            if retry_at is not None and now < retry_at:
+                return
+
+        cache_key_before = spec.cache_key() if spec.cache_key is not None else None
+        with self._state_lock:
+            state.last_attempt_at = now_iso
+        try:
+            raw = spec.loader()
+            value = raw if isinstance(raw, ProviderValue) else ProviderValue(raw)
+            if value.instance is None:
+                with self._state_lock:
+                    state.retry_attempts += 1
+                    delay = min(2 ** min(state.retry_attempts, 8), 300)
+                    state.next_retry_at = _iso(now + timedelta(seconds=delay))
+                    state.loaded = name in self._instances
+                    state.state = DEGRADED if state.loaded else UNAVAILABLE
+                    state.degraded_reason = f"{name} has no published provider data"
+                _LOGGER.warning(
+                    "provider_loader_returned_empty provider=%s "
+                    "(loader completed without raising but produced no instance; "
+                    "check upstream fabric()/with_fabric() short-circuit conditions)",
+                    name,
+                )
+                return
+            freshness = value.freshness or _provider_freshness(value.instance)
+            lifecycle = value.state if value.state in {READY, PARTIAL, STALE} else READY
+            if lifecycle == READY and _is_stale(
+                freshness, now=now, stale_after_hours=self.stale_after_hours
+            ):
+                lifecycle = STALE
+            cache_key_after = spec.cache_key() if spec.cache_key is not None else None
+            with self._state_lock:
+                self._instances[name] = value.instance
+                if spec.cache_key is not None:
+                    if cache_key_before == cache_key_after:
+                        self._cache_keys[name] = cache_key_after
+                    else:
+                        self._cache_keys.pop(name, None)
+                state.state = lifecycle
+                state.loaded = True
+                state.freshness = freshness
+                state.ontology_version = (
+                    value.ontology_version or _provider_version(value.instance)
+                )
+                state.loaded_at = now_iso
+                state.last_success_at = now_iso
+                state.degraded_reason = value.degraded_reason
+                state.retry_attempts = 0
+                state.next_retry_at = ""
+        except Exception as exc:
+            with self._state_lock:
+                state.retry_attempts += 1
+                delay = min(2 ** min(state.retry_attempts, 8), 300)
+                state.next_retry_at = _iso(now + timedelta(seconds=delay))
+                state.loaded = name in self._instances
+                state.state = DEGRADED if state.loaded else UNAVAILABLE
+                state.degraded_reason = (
+                    f"{name} refresh failed ({exc.__class__.__name__})"
+                )
+            _LOGGER.exception("provider_refresh_failed provider=%s", name)
+
+    def _refresh_changed_cache_key(self, name: str) -> None:
+        spec = self.specs.get(name)
+        if spec is None or spec.cache_key is None or not spec.configured:
+            return
+        current = spec.cache_key()
+        with self._state_lock:
+            loaded = name in self._instances
+            unchanged = loaded and self._cache_keys.get(name) == current
+        if not loaded or unchanged:
+            return
+
+        with self._refresh_lock:
+            current = spec.cache_key()
+            with self._state_lock:
+                if (
+                    name in self._instances
+                    and self._cache_keys.get(name) == current
+                ):
+                    return
+            now = self.clock().astimezone(UTC)
+            self._refresh_provider(
+                name,
+                spec,
+                now=now,
+                now_iso=_iso(now),
+                force=True,
+            )
+
     def get(self, name: str, *, optional: bool = False) -> Any:
         """Resolve the current provider instance from the last completed refresh.
 
@@ -254,10 +303,21 @@ class ProviderRuntime:
         full `refresh_interval_seconds` for the timer's next tick, then
         immediately serve whatever the last completed refresh published.
         """
+        self._refresh_changed_cache_key(name)
         self.refresh(blocking=False)
+        # A revision can advance while the ordinary refresh is loading. Check
+        # once more so this request never receives a provider labelled with a
+        # cache key older than the policy it is about to report against.
+        self._refresh_changed_cache_key(name)
         with self._state_lock:
             instance = self._instances.get(name)
-            if instance is not None:
+            spec = self.specs.get(name)
+            cache_key_matches = (
+                spec is None
+                or spec.cache_key is None
+                or self._cache_keys.get(name) == spec.cache_key()
+            )
+            if instance is not None and cache_key_matches:
                 return instance
             state = self._states.get(name)
             if optional or state is None or not state.configured:
