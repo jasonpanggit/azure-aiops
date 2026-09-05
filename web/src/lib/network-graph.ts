@@ -110,6 +110,7 @@ export const RESOURCE_ICONS: Record<string, string> = {
   // Workloads reached through the network. They are not network resources, but
   // a private endpoint is meaningless without the service on the other side.
   AppService: "app-service",
+  AIFoundryAccount: "ai-services",
   ContainerAppEnvironment: "container-app",
   ContainerRegistry: "container-registry",
   CosmosDb: "cosmos-db",
@@ -132,6 +133,7 @@ const WORKLOAD_ENTITY_TYPES = new Set([
   "CosmosDb",
   "KeyVault",
   "PostgreSqlServer",
+  "PrivateLinkResource",
   "SqlServer",
   "StorageAccount",
   "VirtualMachine",
@@ -397,7 +399,20 @@ export function buildTopologyGraph(topology: NetworkTopology): TopologyGraph {
 
 function buildResourceTopologyGraph(topology: NetworkTopology): TopologyGraph {
   const nodes = new Map<string, TopologyNodeData>();
-  for (const resource of topology.resources ?? []) nodes.set(resource.id, resourceNode(resource));
+  const resourceIdsByFoldedId = new Map<string, string>();
+  for (const resource of topology.resources ?? []) {
+    const foldedId = resource.id.toLowerCase();
+    const existingId = resourceIdsByFoldedId.get(foldedId);
+    if (existingId) {
+      const existing = nodes.get(existingId);
+      const existingIsCandidate = existing?.details?.private_link_candidate === true;
+      const incomingIsCandidate = resource.details?.private_link_candidate === true;
+      if (existingIsCandidate || !incomingIsCandidate) continue;
+      nodes.delete(existingId);
+    }
+    nodes.set(resource.id, resourceNode(resource));
+    resourceIdsByFoldedId.set(foldedId, resource.id);
+  }
 
   for (const id of topology.unresolved_peer_vnet_ids) {
     if (!nodes.has(id)) nodes.set(id, unresolvedNode(id));

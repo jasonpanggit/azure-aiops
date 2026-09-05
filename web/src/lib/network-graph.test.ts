@@ -337,6 +337,10 @@ describe("buildTopologyGraph", () => {
       "AIFoundryAccount",
       "FabricCapacity",
     ]);
+    expect(graph.nodes.find((node) => node.entityType === "AIFoundryAccount")?.icon).toBe(
+      "/azure-icons/ai-services.svg"
+    );
+    expect(graph.nodes.find((node) => node.entityType === "FabricCapacity")?.icon).toBe("");
   });
 
   it("uses the existing workload kind for Fabric and AI Foundry nodes", () => {
