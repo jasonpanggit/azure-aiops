@@ -1,7 +1,13 @@
 import cytoscape from "cytoscape";
 import { describe, expect, it } from "vitest";
 
-import { STYLESHEET, applyHoverFocus, clearHoverFocus, syncFindingBadge } from "./TopologyGraph";
+import {
+  STYLESHEET,
+  applyHoverFocus,
+  clearHoverFocus,
+  layoutForTransition,
+  syncFindingBadge,
+} from "./TopologyGraph";
 
 /**
  * Cytoscape validates stylesheet property values at instantiation and throws if
@@ -71,6 +77,21 @@ describe("topology stylesheet", () => {
 
     expect(node.style("background-image")).toBe("none");
   });
+
+  it("uses the role-aware title supplied by the badge map", () => {
+    const cy = mount([{ data: { id: "a", kind: "resource", icon: "" } }]);
+    const node = cy.getElementById("a");
+
+    syncFindingBadge(node, {
+      severity: "high",
+      count: 2,
+      title: "2 open findings affecting this resource (high)",
+    });
+
+    expect(node.data("badgeTitle")).toBe(
+      "2 open findings affecting this resource (high)",
+    );
+  });
 });
 
 /**
@@ -93,6 +114,7 @@ describe("topology hover highlight", () => {
         { data: { id: "ab", source: "a", target: "b" } },
       ],
     });
+
   }
 
   it("keeps a group's children in focus when the group itself is focused", () => {
@@ -139,5 +161,12 @@ describe("topology hover highlight", () => {
     clearHoverFocus(cy);
 
     expect(cy.elements(".cy-hover-fade, .cy-hover-focus")).toHaveLength(0);
+  });
+});
+
+describe("topology detail transitions", () => {
+  it("keeps existing positions on every payload transition", () => {
+    expect(layoutForTransition(40, true)).toMatchObject({ randomize: false });
+    expect(layoutForTransition(1_000, true)).toMatchObject({ randomize: false });
   });
 });

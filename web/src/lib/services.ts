@@ -926,10 +926,17 @@ export const remediationApi = {
 // ---------------------------------------------------------------------------
 
 export const networkApi = {
-  topology: (scope: ScopeSelection = {}) =>
-    apiRequest<{ topology: NetworkTopology; summary: NetworkSummary }>("/network/topology", {
-      query: scopeToSearchParams(scope),
-    }),
+  topology: (
+    scope: ScopeSelection = {},
+    options: { detail: "summary" | "full" } = { detail: "full" },
+  ) => {
+    const query = scopeToSearchParams(scope);
+    query.set("detail", options.detail);
+    return apiRequest<{ topology: NetworkTopology; summary: NetworkSummary }>(
+      "/network/topology",
+      { query },
+    );
+  },
 
   summary: (scope: ScopeSelection = {}) =>
     apiRequest<NetworkSummary>("/network/summary", { query: scopeToSearchParams(scope) }),

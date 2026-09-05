@@ -146,6 +146,56 @@ describe("buildTopologyGraph", () => {
     expect(graph.edges[0].kind).toBe("unresolved");
   });
 
+  it("deduplicates one unresolved peer referenced in two ARM casings", () => {
+    const differentlyCasedGhost = GHOST.toUpperCase();
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [resource({ id: HUB, entity_type: "VNet", role: "hub" })],
+        links: [
+          link({
+            local_vnet_id: HUB,
+            remote_vnet_id: GHOST,
+            remote_vnet_observed: false,
+          }),
+          link({
+            local_vnet_id: HUB.toUpperCase(),
+            remote_vnet_id: differentlyCasedGhost,
+            remote_vnet_observed: false,
+          }),
+        ],
+      }),
+    );
+
+    expect(
+      graph.nodes.filter((node) => node.id.toLowerCase() === GHOST.toLowerCase()),
+    ).toHaveLength(1);
+  });
+
+  it("maps peer resolution and gives legacy unresolved ids the unknown state", () => {
+    const outside = `${GHOST}-outside`;
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [resource({ id: HUB, entity_type: "VNet", role: "hub" })],
+        unresolved_peer_vnet_ids: [GHOST],
+        unresolved_peers: [
+          { vnet_id: outside, peer_resolution: "excluded_by_scope" },
+        ],
+      }),
+    );
+
+    expect(
+      graph.nodes.find((node) => node.id.toLowerCase() === GHOST.toLowerCase())
+        ?.peerResolution,
+    ).toBe("unknown");
+    expect(
+      graph.nodes.find((node) => node.id.toLowerCase() === outside.toLowerCase())
+        ?.peerResolution,
+    ).toBe("excluded_by_scope");
+    expect(graph.nodes.some((node) => node.peerResolution === "not_ingested")).toBe(
+      false,
+    );
+  });
+
   it("links shared services to each observed consumer VNet only", () => {
     const service: SharedServiceSummary = {
       resource_id: "/subscriptions/sub-a/providers/Microsoft.Network/azureFirewalls/fw/sharedservice",

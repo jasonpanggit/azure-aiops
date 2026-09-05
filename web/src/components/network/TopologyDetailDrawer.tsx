@@ -12,10 +12,19 @@ const KIND_LABEL: Record<string, string> = {
   hub: "Connectivity hub VNet",
   spoke: "Spoke VNet",
   isolated: "Isolated VNet",
-  unresolved: "Peer VNet — not onboarded",
   service: "Shared service",
   resource: "Network resource",
 };
+
+function unresolvedKindLabel(
+  resolution: TopologyNodeData["peerResolution"],
+): string {
+  if (resolution === "not_ingested") return "Peer VNet — not ingested";
+  if (resolution === "excluded_by_scope") {
+    return "Peer VNet — outside current scope";
+  }
+  return "Peer VNet — resolution not recorded";
+}
 
 function edgeTitle(edge: TopologyEdgeData): string {
   const arrow = edge.kind === "service" || edge.kind === "relationship" ? "→" : "↔";
@@ -57,7 +66,9 @@ export function TopologyDetailDrawer({ node, edge, onClose, findings }: Topology
         <div>
           <span>
             {node
-              ? (KIND_LABEL[node.kind] ?? "Network node")
+              ? node.kind === "unresolved"
+                ? unresolvedKindLabel(node.peerResolution)
+                : (KIND_LABEL[node.kind] ?? "Network node")
               : edge!.kind === "service"
                 ? "Shared service link"
                 : edge!.kind === "relationship"
@@ -82,9 +93,28 @@ function NodeDetail({ node, findings }: { node: TopologyNodeData; findings?: { g
   return (
     <>
       {!node.observed && (
-        <div className="callout callout-warning">
-          <strong>This peer was never ingested.</strong>
-          <span>Its subscription is not onboarded, so topology beyond this point is unknown.</span>
+        <div
+          className={`callout ${
+            node.peerResolution === "excluded_by_scope"
+              ? "callout-info"
+              : "callout-warning"
+          }`}
+          role="status"
+        >
+          <strong>
+            {node.peerResolution === "not_ingested"
+              ? "This peer was never ingested."
+              : node.peerResolution === "excluded_by_scope"
+                ? "This peer is outside the current scope."
+                : "Why this peer is missing is not recorded."}
+          </strong>
+          <span>
+            {node.peerResolution === "not_ingested"
+              ? "Its subscription is not connected, so topology beyond this point is unknown."
+              : node.peerResolution === "excluded_by_scope"
+                ? "It was ingested and is present in the estate, but the active scope selection excludes it. Widen the scope to see it."
+                : "This response did not say whether the VNet was never ingested or excluded by the current scope."}
+          </span>
         </div>
       )}
 
@@ -113,6 +143,28 @@ function NodeDetail({ node, findings }: { node: TopologyNodeData; findings?: { g
               <StatusBadge key={signal} label={titleize(signal)} tone="info" compact />
             ))}
           </div>
+        </section>
+      )}
+      {node.kind === "unresolved" && (
+        <section className="topology-detail-section">
+          <h3>Peer resolution</h3>
+          <StatusBadge
+            label={
+              node.peerResolution === "not_ingested"
+                ? "Not ingested"
+                : node.peerResolution === "excluded_by_scope"
+                  ? "Outside current scope"
+                  : "Peer resolution unknown"
+            }
+            tone={
+              node.peerResolution === "excluded_by_scope"
+                ? "info"
+                : node.peerResolution === "unknown" || !node.peerResolution
+                  ? "unknown"
+                  : "warning"
+            }
+            compact
+          />
         </section>
       )}
 
@@ -225,8 +277,8 @@ function HubDependents({ vnetId }: { vnetId: string }) {
                 {item.business_service || "Service not mapped"} · {item.environment || "Environment unknown"}
               </span>
               <StatusBadge
-                label={item.observed ? "Observed" : "Not onboarded"}
-                tone={item.observed ? "success" : "warning"}
+                label={item.observed ? "Observed" : "Resolution unknown"}
+                tone={item.observed ? "success" : "unknown"}
                 compact
               />
             </div>
@@ -274,7 +326,11 @@ function EdgeDetail({ edge }: { edge: TopologyEdgeData }) {
             edge.kind === "healthy"
               ? "Peering connected"
               : edge.kind === "unresolved"
-                ? "Remote VNet not onboarded"
+                ? edge.peerResolution === "not_ingested"
+                  ? "Remote VNet not ingested"
+                  : edge.peerResolution === "excluded_by_scope"
+                    ? "Remote VNet outside current scope"
+                    : "Remote VNet resolution not recorded"
                 : "Peering not connected"
           }
           tone={edge.kind === "healthy" ? "success" : edge.kind === "unresolved" ? "warning" : "critical"}
