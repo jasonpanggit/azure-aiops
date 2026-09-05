@@ -129,7 +129,7 @@ describe("TopologyWorkspace detail level", () => {
     );
     fireEvent.click(screen.getByRole("checkbox", { name: "Filter (hide non-matches)" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Shared services" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Gap / rule badges" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Finding badges" }));
     fireEvent.click(screen.getByRole("button", { name: "Full detail" }));
 
     expect(onDetailLevelChange).toHaveBeenCalledWith("full");
@@ -153,7 +153,7 @@ describe("TopologyWorkspace detail level", () => {
     ).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Shared services" })).not.toBeChecked();
     expect(
-      screen.getByRole("checkbox", { name: "Gap / rule badges" }),
+      screen.getByRole("checkbox", { name: "Finding badges" }),
     ).not.toBeChecked();
   });
 

@@ -1661,8 +1661,14 @@ export interface NetworkTopology {
   /** Peers referenced by an observed VNet but never ingested — i.e. a
    * subscription that has not been onboarded. Rendered as a known unknown. */
   unresolved_peer_vnet_ids: string[];
+  /** Additive reasoned peer projection. Older payloads omit this collection. */
+  unresolved_peers?: Array<{
+    vnet_id: string;
+    peer_resolution: "not_ingested" | "excluded_by_scope" | "observed";
+    subscription_id?: string | null;
+  }>;
   connection_ids: string[];
-  counts: Record<string, number>;
+  counts: Record<string, number | Record<string, number>>;
   coverage?: CollectionCoverage;
   /** Whether flow-log evidence exists and whether rule analysis consumed it. */
   flow_log_provenance?: FlowLogProvenance;

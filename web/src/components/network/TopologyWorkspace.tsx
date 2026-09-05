@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { TopologyDetailDrawer } from "@/components/network/TopologyDetailDrawer";
 import type { TopologyGraphHandle, TopologySelection } from "@/components/network/TopologyGraph";
+import { formatDateTime, relativeTime } from "@/lib/format";
+import { buildTopologyGraph } from "@/lib/network-graph";
 import type {
   CollectionCoverage,
   NetworkGap,
@@ -209,6 +211,7 @@ interface TopologyWorkspaceProps {
   ruleFindings?: RuleFinding[];
   loadGapsPage?: LoadGapPage;
   loadRuleFindingsPage?: LoadRuleFindingPage;
+  graphFreshness?: string;
 }
 
 /** Interactive topology workspace: Cytoscape canvas, filters, and a detail drawer. */
@@ -223,6 +226,7 @@ export function TopologyWorkspace({
   ruleFindings = EMPTY_RULE_FINDINGS,
   loadGapsPage,
   loadRuleFindingsPage,
+  graphFreshness,
 }: TopologyWorkspaceProps) {
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState(false);
@@ -231,6 +235,7 @@ export function TopologyWorkspace({
   const [expanded, setExpanded] = useState(false);
   const [fullDetailPending, setFullDetailPending] = useState(false);
   const [selection, setSelection] = useState<TopologySelection>(EMPTY_SELECTION);
+  const [selectionAnnouncement, setSelectionAnnouncement] = useState("");
   const graphHandleRef = useRef<TopologyGraphHandle | null>(null);
   const [badgeGaps, setBadgeGaps] = useState(gaps);
   const [badgeRuleFindings, setBadgeRuleFindings] = useState(ruleFindings);
@@ -255,20 +260,38 @@ export function TopologyWorkspace({
     Promise.all([
       fetchBadgeCollection(loadGapsPage, (data) => data.gaps),
       fetchBadgeCollection(loadRuleFindingsPage, (data) => data.findings),
-    ]).then(([gapResult, findingResult]) => {
-      if (cancelled) return;
-      setBadgeGaps(gapResult.items as NetworkGap[]);
-      setBadgeRuleFindings(findingResult.items as RuleFinding[]);
-      setBadgeCoverage({
-        mapped: gapResult.items.length + findingResult.items.length,
-        total: gapResult.total + findingResult.total,
-        truncated: gapResult.truncated || findingResult.truncated,
+    ])
+      .then(([gapResult, findingResult]) => {
+        if (cancelled) return;
+        setBadgeGaps(gapResult.items as NetworkGap[]);
+        setBadgeRuleFindings(findingResult.items as RuleFinding[]);
+        setBadgeCoverage({
+          mapped: gapResult.items.length + findingResult.items.length,
+          total: gapResult.total + findingResult.total,
+          truncated: gapResult.truncated || findingResult.truncated,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // The page-level loaders own unavailable-state disclosure. Retain their
+        // last successful rows here and compare them with summary totals rather
+        // than presenting a failed badge fetch as complete.
+        const mapped = gaps.length + ruleFindings.length;
+        const total =
+          (summary?.gap_count ?? gaps.length) +
+          (summary?.rule_finding_count ?? ruleFindings.length);
+        setBadgeGaps(gaps);
+        setBadgeRuleFindings(ruleFindings);
+        setBadgeCoverage({
+          mapped,
+          total,
+          truncated: mapped < total,
+        });
       });
-    });
     return () => {
       cancelled = true;
     };
-  }, [gaps, loadGapsPage, loadRuleFindingsPage, ruleFindings]);
+  }, [gaps, loadGapsPage, loadRuleFindingsPage, ruleFindings, summary]);
 
   const findingSeverityByResource = useMemo(
     () => buildFindingSeverityMap(badgeGaps, badgeRuleFindings),
@@ -278,12 +301,67 @@ export function TopologyWorkspace({
     () => buildFindingsByResource(badgeGaps, badgeRuleFindings),
     [badgeGaps, badgeRuleFindings]
   );
+  const renderedGraph = useMemo(
+    () => (topology ? buildTopologyGraph(topology) : null),
+    [topology],
+  );
+  const normalizedSearch = search.trim().toLowerCase();
+  const matchingNodeIds = useMemo(
+    () =>
+      new Set(
+        (renderedGraph?.nodes ?? [])
+          .filter(
+            (node) =>
+              !normalizedSearch ||
+              node.label.toLowerCase().includes(normalizedSearch),
+          )
+          .map((node) => node.id),
+      ),
+    [normalizedSearch, renderedGraph],
+  );
+  const filterHiddenCount =
+    filterMode && normalizedSearch
+      ? (renderedGraph?.nodes.length ?? 0) - matchingNodeIds.size
+      : 0;
 
   const handleGraphReady = useCallback((handle: TopologyGraphHandle | null) => {
     graphHandleRef.current = handle;
   }, []);
 
   const clearSelection = useCallback(() => setSelection(EMPTY_SELECTION), []);
+  const handleSelection = useCallback((next: TopologySelection) => {
+    setSelectionAnnouncement("");
+    setSelection(next);
+  }, []);
+
+  useEffect(() => {
+    if (!filterMode || !normalizedSearch || (!selection.node && !selection.edge)) {
+      return;
+    }
+    const selectedVisible = selection.node
+      ? matchingNodeIds.has(selection.node.id)
+      : Boolean(
+          renderedGraph?.edges.some(
+            (edge) =>
+              edge.id === selection.edge?.id &&
+              (matchingNodeIds.has(edge.source) ||
+                matchingNodeIds.has(edge.target)),
+          ),
+        );
+    if (!selectedVisible) {
+      setSelection(EMPTY_SELECTION);
+      setSelectionAnnouncement(
+        "Selection cleared — the selected resource is hidden by the current filter.",
+      );
+    }
+  }, [
+    filterMode,
+    matchingNodeIds,
+    normalizedSearch,
+    renderedGraph,
+    selection.edge,
+    selection.node,
+  ]);
 
   const projectedFullNodeCount = useMemo(
     () =>
@@ -324,18 +402,58 @@ export function TopologyWorkspace({
   }, [expanded]);
 
   const counts = useMemo(() => {
-    if (!topology) return null;
+    if (!topology || !renderedGraph) return null;
+    const droppedRelationships =
+      (topology.counts.dropped_relationships as
+        | Record<string, number>
+        | undefined) ?? {};
+    const droppedEntries = Object.entries(droppedRelationships).filter(
+      ([, count]) => count > 0,
+    );
+    const peerCounts = renderedGraph.nodes.reduce(
+      (result, node) => {
+        if (node.kind === "unresolved") {
+          const resolution = node.peerResolution ?? "unknown";
+          result[resolution] += 1;
+        }
+        return result;
+      },
+      {
+        not_ingested: 0,
+        excluded_by_scope: 0,
+        observed: 0,
+        unknown: 0,
+      },
+    );
     return {
       hubs: topology.hubs.length,
       spokes: topology.spokes.length,
       isolated: topology.isolated.length,
-      unresolved: topology.unresolved_peer_vnet_ids.length,
       services: topology.shared_services.length,
       links: topology.links.length,
       resources: topology.resources?.length ?? topology.hubs.length + topology.spokes.length + topology.isolated.length + topology.shared_services.length,
       relationships: topology.relationships?.length ?? topology.links.length + topology.shared_services.reduce((count, service) => count + service.consumer_vnet_ids.length, 0),
+      rendered: renderedGraph.nodes.length,
+      total: topology.coverage?.total ?? renderedGraph.nodes.length,
+      droppedEntries,
+      droppedTotal: droppedEntries.reduce((total, [, count]) => total + count, 0),
+      peerCounts,
+      findingsBearingNodes: renderedGraph.nodes.filter((node) =>
+        findingSeverityByResource.has(node.id.toLowerCase()),
+      ).length,
     };
-  }, [topology]);
+  }, [findingSeverityByResource, renderedGraph, topology]);
+
+  const freshnessSentence = useMemo(() => {
+    if (!graphFreshness) {
+      return "Snapshot age unknown — no observation timestamp was recorded.";
+    }
+    const milliseconds = new Date(graphFreshness).getTime();
+    if (Number.isNaN(milliseconds) || milliseconds <= 0) {
+      return "Snapshot age unknown — no observation timestamp was recorded.";
+    }
+    return `Snapshot observed ${relativeTime(graphFreshness)} (${formatDateTime(graphFreshness)}).`;
+  }, [graphFreshness]);
 
   if (loading) {
     return (
@@ -413,20 +531,23 @@ export function TopologyWorkspace({
           />
           <span>Shared services</span>
         </label>
-        <label className="topology-toggle">
+        <label
+          className="topology-toggle"
+          title="Visual only — the details drawer always lists open findings."
+        >
           <input
             type="checkbox"
             checked={showFindings}
             onChange={(event) => setShowFindings(event.target.checked)}
           />
-          <span>Gap / rule badges</span>
+          <span>Finding badges</span>
         </label>
         <div className="topology-legend" aria-label="Topology legend">
           <span className="topology-legend-hub">Hub</span>
           <span className="topology-legend-spoke">Spoke</span>
           <span className="topology-legend-resource">Resource</span>
           <span className="topology-legend-isolated">Isolated</span>
-          <span className="topology-legend-unresolved">Not onboarded</span>
+          <span className="topology-legend-unresolved">Peer VNet not shown</span>
           <span className="topology-legend-unhealthy">Peering not connected</span>
         </div>
         <button
@@ -484,13 +605,19 @@ export function TopologyWorkspace({
       )}
 
       <div className="topology-stage">
+        {filterMode && normalizedSearch && matchingNodeIds.size === 0 && (
+          <div className="callout callout-info" role="status">
+            No resources match &quot;{search.trim()}&quot;. Clear the filter to
+            see the {renderedGraph?.nodes.length ?? 0} resources in scope.
+          </div>
+        )}
         <TopologyGraph
           topology={topology}
           search={search}
           filterMode={filterMode}
           showServices={showServices}
           selectedId={selectedId}
-          onSelect={setSelection}
+          onSelect={handleSelection}
           onReady={handleGraphReady}
           findingSeverityByResource={showFindings ? findingSeverityByResource : undefined}
         />
@@ -506,8 +633,18 @@ export function TopologyWorkspace({
         />
       </div>
 
+      {selectionAnnouncement && (
+        <div role="status" aria-live="polite">
+          {selectionAnnouncement}
+        </div>
+      )}
+
       {counts && (
         <div className="topology-footnote">
+          <span>
+            Rendering {counts.rendered} of {counts.total} nodes at {detailLevel} detail.
+          </span>
+          <span>{filterHiddenCount} hidden by filter</span>
           <span>{counts.hubs} hubs</span>
           <span>{counts.spokes} spokes</span>
           <span>{counts.isolated} isolated</span>
@@ -515,10 +652,31 @@ export function TopologyWorkspace({
           <span>{counts.services} shared services</span>
           <span>{counts.resources} resources</span>
           <span>{counts.relationships} relationships</span>
-          <span>{counts.unresolved} peers not onboarded</span>
+          {counts.droppedTotal > 0 && (
+            <span>
+              {counts.droppedTotal} relationships dropped (
+              {counts.droppedEntries.map(([type]) => type).join(", ")}) —
+              endpoints were not present in this scope.
+            </span>
+          )}
+          {counts.peerCounts.not_ingested > 0 && (
+            <span>{counts.peerCounts.not_ingested} peers not ingested</span>
+          )}
+          {counts.peerCounts.excluded_by_scope > 0 && (
+            <span>
+              {counts.peerCounts.excluded_by_scope} peers outside current scope
+            </span>
+          )}
+          {counts.peerCounts.unknown > 0 && (
+            <span>
+              {counts.peerCounts.unknown} peers with unrecorded resolution
+            </span>
+          )}
+          <span>{counts.findingsBearingNodes} nodes with open findings</span>
           <span>
             Badges: {badgeCoverage.mapped} of {badgeCoverage.total} findings
           </span>
+          <span>{freshnessSentence}</span>
         </div>
       )}
     </section>

@@ -38,6 +38,7 @@ export interface TopologyNodeData {
   consumerCount?: number;
   /** True when the node was ingested; false for peers in un-onboarded subscriptions. */
   observed: boolean;
+  peerResolution?: "not_ingested" | "excluded_by_scope" | "observed" | "unknown";
 }
 
 export interface TopologyEdgeData {
@@ -55,6 +56,7 @@ export interface TopologyEdgeData {
   remoteState: string;
   relationshipType?: string;
   details?: Record<string, unknown>;
+  peerResolution?: "not_ingested" | "excluded_by_scope" | "observed" | "unknown";
 }
 
 export interface TopologyGroupData {
@@ -251,7 +253,10 @@ function serviceNode(service: SharedServiceSummary): TopologyNodeData {
   };
 }
 
-function unresolvedNode(vnetId: string): TopologyNodeData {
+function unresolvedNode(
+  vnetId: string,
+  peerResolution: TopologyNodeData["peerResolution"] = "unknown",
+): TopologyNodeData {
   const subscriptionId = subscriptionOf(vnetId);
   return {
     id: vnetId,
@@ -264,7 +269,19 @@ function unresolvedNode(vnetId: string): TopologyNodeData {
     score: 0,
     signals: [],
     observed: false,
+    peerResolution,
   };
+}
+
+function peerResolutionByFoldedId(
+  topology: NetworkTopology,
+): Map<string, NonNullable<TopologyNodeData["peerResolution"]>> {
+  return new Map(
+    (topology.unresolved_peers ?? []).map((peer) => [
+      peer.vnet_id.toLowerCase(),
+      peer.peer_resolution,
+    ]),
+  );
 }
 
 function edgeKind(link: PeeringLink): TopologyEdgeKind {
@@ -321,12 +338,20 @@ export function buildTopologyGraph(topology: NetworkTopology): TopologyGraph {
   if (topology.resources?.length) return buildResourceTopologyGraph(topology);
 
   const nodes = new Map<string, TopologyNodeData>();
+  const resolutions = peerResolutionByFoldedId(topology);
 
   for (const vnet of topology.hubs) nodes.set(vnet.vnet_id, vnetNode(vnet, "hub"));
   for (const vnet of topology.spokes) nodes.set(vnet.vnet_id, vnetNode(vnet, "spoke"));
   for (const vnet of topology.isolated) nodes.set(vnet.vnet_id, vnetNode(vnet, "isolated"));
-  for (const id of topology.unresolved_peer_vnet_ids) {
-    if (!nodes.has(id)) nodes.set(id, unresolvedNode(id));
+  const nodeIds = indexNodesByFoldedId(nodes);
+  const unresolvedIds = [
+    ...topology.unresolved_peer_vnet_ids,
+    ...(topology.unresolved_peers ?? []).map((peer) => peer.vnet_id),
+  ];
+  for (const id of unresolvedIds) {
+    if (resolveNodeId(nodeIds, id)) continue;
+    nodes.set(id, unresolvedNode(id, resolutions.get(id.toLowerCase()) ?? "unknown"));
+    nodeIds.set(id.toLowerCase(), id);
   }
   for (const service of topology.shared_services) {
     nodes.set(service.resource_id, serviceNode(service));
@@ -334,11 +359,21 @@ export function buildTopologyGraph(topology: NetworkTopology): TopologyGraph {
 
   const edges = new Map<string, TopologyEdgeData>();
   for (const link of topology.links) {
-    if (!nodes.has(link.local_vnet_id)) continue;
-    if (!nodes.has(link.remote_vnet_id)) {
-      nodes.set(link.remote_vnet_id, unresolvedNode(link.remote_vnet_id));
+    const localVnetId = resolveNodeId(nodeIds, link.local_vnet_id);
+    if (!localVnetId) continue;
+    let remoteVnetId = resolveNodeId(nodeIds, link.remote_vnet_id);
+    if (!remoteVnetId) {
+      remoteVnetId = link.remote_vnet_id;
+      nodes.set(
+        remoteVnetId,
+        unresolvedNode(
+          remoteVnetId,
+          resolutions.get(remoteVnetId.toLowerCase()) ?? "unknown",
+        ),
+      );
+      nodeIds.set(remoteVnetId.toLowerCase(), remoteVnetId);
     }
-    const pair = [link.local_vnet_id, link.remote_vnet_id].sort();
+    const pair = [localVnetId, remoteVnetId].sort();
     const id = `peering:${pair[0]}::${pair[1]}`;
     const existing = edges.get(id);
     // A pair observed from both directions is one link; keep the worse verdict.
@@ -356,6 +391,10 @@ export function buildTopologyGraph(topology: NetworkTopology): TopologyGraph {
       useRemoteGateways: link.use_remote_gateways,
       localState: link.local_state,
       remoteState: link.remote_state,
+      peerResolution:
+        nodes.get(remoteVnetId)?.kind === "unresolved"
+          ? nodes.get(remoteVnetId)?.peerResolution
+          : undefined,
     });
   }
 
@@ -414,12 +453,18 @@ function buildResourceTopologyGraph(topology: NetworkTopology): TopologyGraph {
     resourceIdsByFoldedId.set(foldedId, resource.id);
   }
 
-  for (const id of topology.unresolved_peer_vnet_ids) {
-    if (!nodes.has(id)) nodes.set(id, unresolvedNode(id));
-  }
-
   const edges = new Map<string, TopologyEdgeData>();
   const nodeIds = indexNodesByFoldedId(nodes);
+  const resolutions = peerResolutionByFoldedId(topology);
+  const unresolvedIds = [
+    ...topology.unresolved_peer_vnet_ids,
+    ...(topology.unresolved_peers ?? []).map((peer) => peer.vnet_id),
+  ];
+  for (const id of unresolvedIds) {
+    if (resolveNodeId(nodeIds, id)) continue;
+    nodes.set(id, unresolvedNode(id, resolutions.get(id.toLowerCase()) ?? "unknown"));
+    nodeIds.set(id.toLowerCase(), id);
+  }
   for (const relationship of topology.relationships ?? []) {
     const source = resolveNodeId(nodeIds, relationship.source);
     const target = resolveNodeId(nodeIds, relationship.target);
@@ -430,8 +475,18 @@ function buildResourceTopologyGraph(topology: NetworkTopology): TopologyGraph {
   for (const link of topology.links) {
     const localVnetId = resolveNodeId(nodeIds, link.local_vnet_id);
     if (!localVnetId) continue;
-    const remoteVnetId = resolveNodeId(nodeIds, link.remote_vnet_id) ?? link.remote_vnet_id;
-    if (!nodes.has(remoteVnetId)) nodes.set(remoteVnetId, unresolvedNode(remoteVnetId));
+    let remoteVnetId = resolveNodeId(nodeIds, link.remote_vnet_id);
+    if (!remoteVnetId) {
+      remoteVnetId = link.remote_vnet_id;
+      nodes.set(
+        remoteVnetId,
+        unresolvedNode(
+          remoteVnetId,
+          resolutions.get(remoteVnetId.toLowerCase()) ?? "unknown",
+        ),
+      );
+      nodeIds.set(remoteVnetId.toLowerCase(), remoteVnetId);
+    }
     const pair = [localVnetId, remoteVnetId].sort();
     const id = `peering:${pair[0]}::${pair[1]}`;
     edges.set(id, {
@@ -449,6 +504,10 @@ function buildResourceTopologyGraph(topology: NetworkTopology): TopologyGraph {
       remoteState: link.remote_state,
       relationshipType: "peered_with",
       details: { ...link },
+      peerResolution:
+        nodes.get(remoteVnetId)?.kind === "unresolved"
+          ? nodes.get(remoteVnetId)?.peerResolution
+          : undefined,
     });
   }
 

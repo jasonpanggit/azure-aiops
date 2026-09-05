@@ -254,6 +254,7 @@ export default function NetworkPage() {
               ruleFindings={findings.data?.data.findings ?? []}
               loadGapsPage={loadBadgeGapsPage}
               loadRuleFindingsPage={loadBadgeRuleFindingsPage}
+              graphFreshness={topology.data?.graph_freshness}
             />
           </section>
         )
