@@ -1762,6 +1762,8 @@ export interface RuleFinding {
   rule_name: string;
   control: string;
   control_id: string;
+  /** Resources whose posture is affected by this control-level finding. */
+  affected_resource_ids?: string[];
   title: string;
   detail: string;
   evidence: Record<string, unknown>;

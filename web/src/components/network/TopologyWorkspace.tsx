@@ -6,9 +6,11 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { TopologyDetailDrawer } from "@/components/network/TopologyDetailDrawer";
 import type { TopologyGraphHandle, TopologySelection } from "@/components/network/TopologyGraph";
 import type {
+  CollectionCoverage,
   NetworkGap,
   NetworkSummary,
   NetworkTopology,
+  Pagination,
   RuleFinding,
 } from "@/lib/types";
 
@@ -19,28 +21,114 @@ export type TopologyDetailLevel = "summary" | "full";
 // Plan 12-02 measured the largest interactive fCoSE canvas at 1,500 nodes
 // (224.298 ms against a 250 ms ceiling). Never raise this above the contract cap.
 export const FULL_DETAIL_GUARD_NODES = 1_500;
+export const BADGE_FETCH_PAGE_SIZE = 500;
+export const BADGE_FETCH_MAX_PAGES = 4;
+
+interface FindingBadge {
+  severity: string;
+  count: number;
+  title: string;
+}
+
+interface BadgePage<T> {
+  data: T;
+  pagination?: Pagination | null;
+}
+
+type LoadGapPage = (
+  offset: number,
+  limit: number,
+) => Promise<BadgePage<{ gaps: NetworkGap[] }>>;
+type LoadRuleFindingPage = (
+  offset: number,
+  limit: number,
+) => Promise<BadgePage<{ findings: RuleFinding[] }>>;
+
+interface BadgeCoverage {
+  mapped: number;
+  total: number;
+  truncated: boolean;
+}
+
+const EMPTY_GAPS: NetworkGap[] = [];
+const EMPTY_RULE_FINDINGS: RuleFinding[] = [];
+
+function pluralFindings(count: number): string {
+  return `${count} open finding${count === 1 ? "" : "s"}`;
+}
 
 /** Highest-severity finding per resource id, used to badge topology nodes with
  * open gaps/rule findings without a separate lookup step on the canvas. */
 function buildFindingSeverityMap(
   gaps: NetworkGap[],
   ruleFindings: RuleFinding[]
-): Map<string, { severity: string; count: number }> {
-  const map = new Map<string, { severity: string; count: number }>();
-  const bump = (resourceId: string, severity: string) => {
-    if (!resourceId) return;
-    const existing = map.get(resourceId);
-    if (!existing) {
-      map.set(resourceId, { severity, count: 1 });
-      return;
+): Map<string, FindingBadge> {
+  const aggregates = new Map<
+    string,
+    {
+      severity: string;
+      findingIds: Set<string>;
+      controlIds: Set<string>;
+      affectedIds: Set<string>;
     }
-    existing.count += 1;
-    if ((SEVERITY_RANK[severity] ?? 0) > (SEVERITY_RANK[existing.severity] ?? 0)) {
-      existing.severity = severity;
+  >();
+  const bump = (
+    resourceId: string,
+    severity: string,
+    findingId: string,
+    role: "direct" | "control" | "affected",
+  ) => {
+    if (!resourceId) return;
+    const foldedId = resourceId.toLowerCase();
+    const existing = aggregates.get(foldedId);
+    if (!existing) {
+      aggregates.set(foldedId, {
+        severity,
+        findingIds: new Set([findingId]),
+        controlIds: role === "control" ? new Set([findingId]) : new Set(),
+        affectedIds: role === "affected" ? new Set([findingId]) : new Set(),
+      });
+    } else {
+      existing.findingIds.add(findingId);
+      if (role === "control") existing.controlIds.add(findingId);
+      if (role === "affected") existing.affectedIds.add(findingId);
+      if (
+        (SEVERITY_RANK[severity] ?? 0) >
+        (SEVERITY_RANK[existing.severity] ?? 0)
+      ) {
+        existing.severity = severity;
+      }
     }
   };
-  for (const gap of gaps) bump(gap.resource_id, gap.severity);
-  for (const finding of ruleFindings) bump(finding.control_id, finding.severity);
+  for (const gap of gaps) {
+    bump(gap.resource_id, gap.severity, `gap:${gap.gap_id}`, "direct");
+  }
+  for (const finding of ruleFindings) {
+    const findingId = `rule:${finding.finding_id}`;
+    bump(finding.control_id, finding.severity, findingId, "control");
+    const affectedIds = new Set(
+      (finding.affected_resource_ids ?? [])
+        .filter(Boolean)
+        .map((resourceId) => resourceId.toLowerCase()),
+    );
+    for (const affectedId of Array.from(affectedIds)) {
+      bump(affectedId, finding.severity, findingId, "affected");
+    }
+  }
+
+  const map = new Map<string, FindingBadge>();
+  aggregates.forEach((value, resourceId) => {
+    const count = value.findingIds.size;
+    let title = `${pluralFindings(count)} (${value.severity})`;
+    if (value.controlIds.size > 0 && value.affectedIds.size > 0) {
+      title = `${pluralFindings(value.controlIds.size)} on this control and ${
+        value.affectedIds.size
+      } affecting this resource (${value.severity})`;
+    } else if (value.affectedIds.size > 0) {
+      title = `${pluralFindings(count)} affecting this resource (${value.severity})`;
+    }
+    map.set(resourceId, { severity: value.severity, count, title });
+  });
   return map;
 }
 
@@ -52,10 +140,11 @@ function buildFindingsByResource(
 ): Map<string, { gaps: NetworkGap[]; ruleFindings: RuleFinding[] }> {
   const map = new Map<string, { gaps: NetworkGap[]; ruleFindings: RuleFinding[] }>();
   const entry = (resourceId: string) => {
-    let value = map.get(resourceId);
+    const foldedId = resourceId.toLowerCase();
+    let value = map.get(foldedId);
     if (!value) {
       value = { gaps: [], ruleFindings: [] };
-      map.set(resourceId, value);
+      map.set(foldedId, value);
     }
     return value;
   };
@@ -65,9 +154,39 @@ function buildFindingsByResource(
   }
   for (const finding of ruleFindings) {
     if (!finding.control_id) continue;
-    entry(finding.control_id).ruleFindings.push(finding);
+    const resourceIds = new Set([
+      finding.control_id.toLowerCase(),
+      ...(finding.affected_resource_ids ?? []).map((id) => id.toLowerCase()),
+    ]);
+    for (const resourceId of Array.from(resourceIds)) {
+      entry(resourceId).ruleFindings.push(finding);
+    }
   }
   return map;
+}
+
+async function fetchBadgeCollection<T, TData>(
+  loadPage: (offset: number, limit: number) => Promise<BadgePage<TData>>,
+  selectItems: (data: TData) => T[],
+): Promise<{ items: T[]; total: number; truncated: boolean }> {
+  const items: T[] = [];
+  let total = 0;
+  let offset = 0;
+  for (let pageNumber = 0; pageNumber < BADGE_FETCH_MAX_PAGES; pageNumber += 1) {
+    const page = await loadPage(offset, BADGE_FETCH_PAGE_SIZE);
+    const pageItems = selectItems(page.data);
+    items.push(...pageItems);
+    const coverage = (page.data as { coverage?: CollectionCoverage }).coverage;
+    total =
+      coverage?.total ??
+      page.pagination?.total ??
+      Math.max(total, items.length);
+    if (items.length >= total || pageItems.length === 0) break;
+    offset =
+      page.pagination?.next_offset ??
+      offset + pageItems.length;
+  }
+  return { items, total, truncated: items.length < total };
 }
 
 // Cytoscape needs a DOM, and pulls in a sizeable layout engine, so it is loaded
@@ -88,6 +207,8 @@ interface TopologyWorkspaceProps {
   error: Error | null;
   gaps?: NetworkGap[];
   ruleFindings?: RuleFinding[];
+  loadGapsPage?: LoadGapPage;
+  loadRuleFindingsPage?: LoadRuleFindingPage;
 }
 
 /** Interactive topology workspace: Cytoscape canvas, filters, and a detail drawer. */
@@ -98,8 +219,10 @@ export function TopologyWorkspace({
   onDetailLevelChange,
   loading,
   error,
-  gaps = [],
-  ruleFindings = [],
+  gaps = EMPTY_GAPS,
+  ruleFindings = EMPTY_RULE_FINDINGS,
+  loadGapsPage,
+  loadRuleFindingsPage,
 }: TopologyWorkspaceProps) {
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState(false);
@@ -109,14 +232,51 @@ export function TopologyWorkspace({
   const [fullDetailPending, setFullDetailPending] = useState(false);
   const [selection, setSelection] = useState<TopologySelection>(EMPTY_SELECTION);
   const graphHandleRef = useRef<TopologyGraphHandle | null>(null);
+  const [badgeGaps, setBadgeGaps] = useState(gaps);
+  const [badgeRuleFindings, setBadgeRuleFindings] = useState(ruleFindings);
+  const [badgeCoverage, setBadgeCoverage] = useState<BadgeCoverage>({
+    mapped: gaps.length + ruleFindings.length,
+    total: gaps.length + ruleFindings.length,
+    truncated: false,
+  });
+
+  useEffect(() => {
+    if (!loadGapsPage || !loadRuleFindingsPage) {
+      setBadgeGaps(gaps);
+      setBadgeRuleFindings(ruleFindings);
+      setBadgeCoverage({
+        mapped: gaps.length + ruleFindings.length,
+        total: gaps.length + ruleFindings.length,
+        truncated: false,
+      });
+      return undefined;
+    }
+    let cancelled = false;
+    Promise.all([
+      fetchBadgeCollection(loadGapsPage, (data) => data.gaps),
+      fetchBadgeCollection(loadRuleFindingsPage, (data) => data.findings),
+    ]).then(([gapResult, findingResult]) => {
+      if (cancelled) return;
+      setBadgeGaps(gapResult.items as NetworkGap[]);
+      setBadgeRuleFindings(findingResult.items as RuleFinding[]);
+      setBadgeCoverage({
+        mapped: gapResult.items.length + findingResult.items.length,
+        total: gapResult.total + findingResult.total,
+        truncated: gapResult.truncated || findingResult.truncated,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [gaps, loadGapsPage, loadRuleFindingsPage, ruleFindings]);
 
   const findingSeverityByResource = useMemo(
-    () => buildFindingSeverityMap(gaps, ruleFindings),
-    [gaps, ruleFindings]
+    () => buildFindingSeverityMap(badgeGaps, badgeRuleFindings),
+    [badgeGaps, badgeRuleFindings]
   );
   const findingsByResource = useMemo(
-    () => buildFindingsByResource(gaps, ruleFindings),
-    [gaps, ruleFindings]
+    () => buildFindingsByResource(badgeGaps, badgeRuleFindings),
+    [badgeGaps, badgeRuleFindings]
   );
 
   const handleGraphReady = useCallback((handle: TopologyGraphHandle | null) => {
@@ -312,6 +472,17 @@ export function TopologyWorkspace({
         </div>
       )}
 
+      {badgeCoverage.truncated && (
+        <div className="callout callout-warning" role="status">
+          <strong>Badge coverage is partial.</strong>
+          <span>
+            {badgeCoverage.mapped} of {badgeCoverage.total} findings were loaded,
+            so some nodes may be missing a badge. Open a resource to see its
+            confirmed findings.
+          </span>
+        </div>
+      )}
+
       <div className="topology-stage">
         <TopologyGraph
           topology={topology}
@@ -327,7 +498,11 @@ export function TopologyWorkspace({
           node={selection.node}
           edge={selection.edge}
           onClose={clearSelection}
-          findings={selection.node ? findingsByResource.get(selection.node.id) : undefined}
+          findings={
+            selection.node
+              ? findingsByResource.get(selection.node.id.toLowerCase())
+              : undefined
+          }
         />
       </div>
 
@@ -341,6 +516,9 @@ export function TopologyWorkspace({
           <span>{counts.resources} resources</span>
           <span>{counts.relationships} relationships</span>
           <span>{counts.unresolved} peers not onboarded</span>
+          <span>
+            Badges: {badgeCoverage.mapped} of {badgeCoverage.total} findings
+          </span>
         </div>
       )}
     </section>

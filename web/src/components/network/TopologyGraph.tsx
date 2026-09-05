@@ -48,12 +48,16 @@ function severityBadgeUri(severity: string): string {
 /** Synchronizes one node's imperative Cytoscape badge data with its finding. */
 export function syncFindingBadge(
   node: cytoscape.NodeSingular,
-  finding: { severity: string; count: number } | undefined
+  finding: { severity: string; count: number; title?: string } | undefined
 ): void {
   if (finding) {
     const badge = severityBadgeUri(finding.severity);
     node.data("badge", badge);
-    node.data("badgeTitle", `${finding.count} open finding${finding.count === 1 ? "" : "s"} (${finding.severity})`);
+    node.data(
+      "badgeTitle",
+      finding.title ??
+        `${finding.count} open finding${finding.count === 1 ? "" : "s"} (${finding.severity})`,
+    );
     node.style("background-image", [node.data("icon") || "none", badge]);
   } else {
     node.removeData("badge");
@@ -312,7 +316,10 @@ interface TopologyGraphProps {
   onReady?: (handle: TopologyGraphHandle | null) => void;
   /** Highest-severity open gap/rule finding per resource id. When set, matching
    * nodes render a small corner badge sourced from `/gaps` and `/rule-findings`. */
-  findingSeverityByResource?: Map<string, { severity: string; count: number }>;
+  findingSeverityByResource?: Map<
+    string,
+    { severity: string; count: number; title?: string }
+  >;
 }
 
 /**
@@ -475,7 +482,7 @@ export default function TopologyGraph({
     if (!cy) return;
     cy.batch(() => {
       cy.nodes().forEach((node) => {
-        const finding = findingSeverityByResource?.get(node.id());
+        const finding = findingSeverityByResource?.get(node.id().toLowerCase());
         syncFindingBadge(node, finding);
       });
     });

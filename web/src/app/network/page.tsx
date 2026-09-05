@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -60,6 +60,15 @@ export default function NetworkPage() {
   const gapCoverage = gaps.data?.data.coverage;
   const findingCoverage = findings.data?.data.coverage;
   const flowLogProvenance = topology.data?.data.topology.flow_log_provenance;
+  const loadBadgeGapsPage = useCallback(
+    (offset: number, limit: number) => networkApi.gaps(scope, { offset, limit }),
+    [scope],
+  );
+  const loadBadgeRuleFindingsPage = useCallback(
+    (offset: number, limit: number) =>
+      networkApi.ruleFindings(scope, { offset, limit }),
+    [scope],
+  );
 
   function refreshDerivedAnalysis(options: { saved?: boolean; successMessage?: string } = {}) {
     setPolicyFeedback(null);
@@ -243,6 +252,8 @@ export default function NetworkPage() {
               error={topology.error}
               gaps={gaps.data?.data.gaps ?? []}
               ruleFindings={findings.data?.data.findings ?? []}
+              loadGapsPage={loadBadgeGapsPage}
+              loadRuleFindingsPage={loadBadgeRuleFindingsPage}
             />
           </section>
         )
