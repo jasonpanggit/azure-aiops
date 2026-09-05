@@ -335,6 +335,7 @@ def test_live_and_persisted_aum_share_canonical_normalization() -> None:
         "updateName": ARG_PATCH_ROW["properties"]["patchName"],
         "kbId": ARG_PATCH_ROW["properties"]["kbId"],
         "classifications": ["Critical", "security", "Critical"],
+        "sourceClassifications": ARG_PATCH_ROW["properties"]["classifications"],
         "msrcSeverity": ARG_PATCH_ROW["properties"]["msrcSeverity"],
         "publishedDateTime": ARG_PATCH_ROW["properties"]["publishedDateTime"],
         "lastModifiedDateTime": ARG_PATCH_ROW["properties"][

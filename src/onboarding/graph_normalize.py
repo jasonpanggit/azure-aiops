@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from intelligence.vulnerability.normalization import normalize_aum_row
 from ontology.confidence import compute_confidence
 
 from .defender_normalize import (
@@ -164,6 +165,8 @@ class Normalizer:
 
         for row in payload.get("patch_assessment_details", []):
             entity = _patch_assessment_detail(row, observed)
+            if entity is None:
+                continue
             entity_index["PatchAssessmentDetail"][entity["id"]] = entity
             target = entity.get("targetResourceId", "")
             if target:
@@ -179,6 +182,8 @@ class Normalizer:
 
         for row in payload.get("patch_installations", []):
             entity = _patch_installation(row, observed)
+            if entity is None:
+                continue
             entity_index["PatchInstallation"][entity["id"]] = entity
             target = entity.get("targetResourceId", "")
             if target:
@@ -861,59 +866,64 @@ def _patch_assessment(row: dict, observed: str) -> dict:
     return entity
 
 
-def _patch_assessment_detail(row: dict, observed: str) -> dict:
+def _patch_assessment_detail(row: dict, observed: str) -> dict | None:
     """Per-KB pending/missing patch detail (the ``/softwarepatches`` sub-type
     of ``patchassessmentresources``). This is the row shape that actually
     carries a KB id, MSRC severity, and classification per outstanding
     update -- the aggregate ``PatchAssessment`` entity only has counts."""
     entity = _base(row, observed, "arg:PatchAssessmentResources")
-    props = row.get("properties") or {}
-    classifications = props.get("classifications") or []
-    target = _lower(
-        props.get("resourceId")
-        or props.get("machineId")
-        or _target_from_assessment_id(row.get("id"))
+    normalized, _failure = normalize_aum_row(
+        row,
+        source_family="azure_update_manager_missing",
+        observed_at=observed,
     )
+    if normalized is None:
+        return None
+    props = row.get("properties") or {}
     entity.update(
         {
-            "targetResourceId": target,
-            "updateName": str(props.get("patchName") or row.get("name") or ""),
-            "kbId": str(props.get("kbId") or row.get("name") or ""),
-            "classifications": classifications
-            if isinstance(classifications, list)
-            else [str(classifications)],
-            "msrcSeverity": str(props.get("msrcSeverity") or ""),
+            "targetResourceId": normalized.target_id,
+            "updateName": normalized.title,
+            "kbId": normalized.weakness_id.removeprefix("KB-"),
+            "classifications": list(normalized.classifications),
+            "sourceClassifications": list(normalized.source_classifications),
+            "msrcSeverity": normalized.source_severity,
+            "severity": normalized.severity,
+            "sourceFamily": normalized.source_family,
+            "provenance": normalized.provenance,
             "rebootBehavior": str(props.get("rebootBehavior") or ""),
             "publishedDateTime": str(props.get("publishedDateTime") or ""),
-            "lastModifiedDateTime": str(props.get("lastModifiedDateTime") or ""),
+            "lastModifiedDateTime": normalized.observed_at,
             "properties": props,
         }
     )
     return entity
 
 
-def _patch_installation(row: dict, observed: str) -> dict:
+def _patch_installation(row: dict, observed: str) -> dict | None:
     entity = _base(row, observed, "arg:PatchInstallationResources")
-    props = row.get("properties") or {}
-    classifications = props.get("classifications") or []
-    target = _lower(
-        props.get("resourceId")
-        or props.get("machineId")
-        or _target_from_installation_id(row.get("id"))
+    normalized, _failure = normalize_aum_row(
+        row,
+        source_family="azure_update_manager_installation",
+        observed_at=observed,
     )
+    if normalized is None:
+        return None
+    props = row.get("properties") or {}
     entity.update(
         {
-            "targetResourceId": target,
-            "updateName": str(props.get("patchName") or row.get("name") or ""),
-            "kbId": str(props.get("kbId") or row.get("name") or ""),
-            "classifications": classifications
-            if isinstance(classifications, list)
-            else [str(classifications)],
-            "status": str(
-                props.get("installationState") or props.get("status") or "unknown"
-            ),
+            "targetResourceId": normalized.target_id,
+            "updateName": normalized.title,
+            "kbId": normalized.weakness_id.removeprefix("KB-"),
+            "classifications": list(normalized.classifications),
+            "sourceClassifications": list(normalized.source_classifications),
+            "msrcSeverity": normalized.source_severity,
+            "severity": normalized.severity,
+            "sourceFamily": normalized.source_family,
+            "provenance": normalized.provenance,
+            "status": normalized.status,
             "publishedDateTime": str(props.get("publishedDateTime") or ""),
-            "lastModifiedDateTime": str(props.get("lastModifiedDateTime") or ""),
+            "lastModifiedDateTime": normalized.observed_at,
             "errorDetails": props.get("errorDetails") or [],
             "properties": props,
         }

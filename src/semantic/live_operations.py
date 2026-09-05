@@ -11,6 +11,7 @@ from intelligence.remediation.action_catalog import PATCH_RECOVERY_ACTION_FAMILY
 from intelligence.remediation.action_version import action_version_for
 from intelligence.remediation.approval_engine import DEFAULT_ROLE_ID, ApprovalEngine
 from intelligence.remediation.plan_repository import PlanRepository
+from intelligence.vulnerability.normalization import normalize_aum_row
 from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 from onboarding.query_contract import QuerySpec
 
@@ -104,48 +105,18 @@ def _target_from_patch_row(row: dict[str, Any]) -> str:
 
 
 def _patch_finding(row: dict[str, Any], *, installed: bool) -> dict[str, Any] | None:
-    props = _properties(row)
-    kb_id = _kb(
-        _first(
-            props.get("kbId"),
-            props.get("kbID"),
-            props.get("kb_id"),
-            row.get("kbId"),
-            row.get("name"),
-        )
+    normalized, _failure = normalize_aum_row(
+        row,
+        source_family=(
+            "azure_update_manager_installation"
+            if installed
+            else "azure_update_manager_missing"
+        ),
+        observed_at=_first(row.get("observed_at"), _now()),
     )
-    target = _target_from_patch_row(row)
-    if not kb_id or not target:
+    if normalized is None:
         return None
-    return {
-        "resource_id": _first(row.get("id"), f"{target}|{kb_id}"),
-        "target_resource_id": target,
-        # Keep the ARG scope identity with the finding.  Optional semantic
-        # resource metadata may be unavailable for a live target, but the
-        # subscription is still the authoritative join key for onboarding
-        # metadata.
-        "subscription_id": _first(
-            row.get("subscriptionId"),
-            row.get("subscription_id"),
-            _subscription_id_from_resource_id(target),
-        ),
-        "kb_id": kb_id,
-        "status": "installed" if installed else "missing",
-        "severity": _first(
-            props.get("classification"),
-            props.get("classifications"),
-            props.get("severity"),
-            "Unknown",
-        ),
-        "update_name": _first(props.get("patchName"), props.get("title"), kb_id),
-        "published_at": _first(
-            props.get("publishedDateTime"),
-            props.get("published_at"),
-            props.get("lastModifiedDateTime"),
-            row.get("observed_at"),
-        ),
-        "timestamp": _first(row.get("observed_at"), _now()),
-    }
+    return normalized.to_patch_finding()
 
 
 def _subscription_id_from_resource_id(resource_id: str) -> str:
@@ -178,6 +149,7 @@ def live_vulnerability_service(
             "| where type endswith '/softwarepatches' "
             f"| {projection}",
             False,
+            source_family="azure_update_manager_missing",
         ),
         subscription_ids=subscription_ids,
     )
@@ -189,6 +161,7 @@ def live_vulnerability_service(
             "| where type endswith '/softwarepatches' "
             f"| {projection}",
             False,
+            source_family="azure_update_manager_installation",
         ),
         subscription_ids=subscription_ids,
     )
