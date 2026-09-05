@@ -875,16 +875,19 @@ def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
         for circuit_id in gateway.connected_circuit_ids:
             add(gateway.resource_id, circuit_id, "connects_to", label="connects to circuit")
 
-    if not topology.semantic_relationships:
-        for lb in snapshot.load_balancers:
-            add_hosted(lb, "hosts load balancer")
-            add(lb.resource_id, lb.subnet_id, "attached_to", label="attached to subnet")
-            for backend_id in lb.backend_resource_ids:
-                add(lb.resource_id, backend_id, "load_balances", label="load balances")
-            for backend_subnet_id in lb.backend_subnet_ids:
-                add(lb.resource_id, backend_subnet_id, "load_balances", label="load balances subnet")
-            if lb.managed_resource_id:
-                add(lb.managed_resource_id, lb.resource_id, "hosts", label="uses internal load balancer")
+    # Inventory-derived load-balancer edges are authoritative regardless of
+    # whether semantic provenance is also available. ``add`` keys every edge
+    # by relationship identity, so an equivalent semantic edge collapses
+    # without suppressing the inventory-only hosting and attachment edges.
+    for lb in snapshot.load_balancers:
+        add_hosted(lb, "hosts load balancer")
+        add(lb.resource_id, lb.subnet_id, "attached_to", label="attached to subnet")
+        for backend_id in lb.backend_resource_ids:
+            add(lb.resource_id, backend_id, "load_balances", label="load balances")
+        for backend_subnet_id in lb.backend_subnet_ids:
+            add(lb.resource_id, backend_subnet_id, "load_balances", label="load balances subnet")
+        if lb.managed_resource_id:
+            add(lb.managed_resource_id, lb.resource_id, "hosts", label="uses internal load balancer")
 
     for service in topology.shared_services:
         for consumer_id in service.consumer_vnet_ids:
