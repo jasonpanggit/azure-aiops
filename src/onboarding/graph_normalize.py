@@ -884,7 +884,7 @@ def _patch_assessment_detail(row: dict, observed: str) -> dict | None:
         {
             "targetResourceId": normalized.target_id,
             "updateName": normalized.title,
-            "kbId": normalized.weakness_id.removeprefix("KB-"),
+            "kbId": normalized.source_weakness_id,
             "classifications": list(normalized.classifications),
             "sourceClassifications": list(normalized.source_classifications),
             "msrcSeverity": normalized.source_severity,
@@ -914,14 +914,20 @@ def _patch_installation(row: dict, observed: str) -> dict | None:
         {
             "targetResourceId": normalized.target_id,
             "updateName": normalized.title,
-            "kbId": normalized.weakness_id.removeprefix("KB-"),
+            "kbId": normalized.source_weakness_id,
             "classifications": list(normalized.classifications),
             "sourceClassifications": list(normalized.source_classifications),
             "msrcSeverity": normalized.source_severity,
             "severity": normalized.severity,
             "sourceFamily": normalized.source_family,
             "provenance": normalized.provenance,
-            "status": normalized.status,
+            # Preserve the provider operation value for existing onboarding
+            # consumers while carrying the conservative canonical state
+            # separately for Exposure projection.
+            "status": str(
+                props.get("installationState") or props.get("status") or "unknown"
+            ),
+            "canonicalStatus": normalized.status,
             "publishedDateTime": str(props.get("publishedDateTime") or ""),
             "lastModifiedDateTime": normalized.observed_at,
             "errorDetails": props.get("errorDetails") or [],
