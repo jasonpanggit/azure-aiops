@@ -427,3 +427,356 @@ def test_tag_or_repository_match_without_digest_remains_unknown() -> None:
 
     assert result.matched is False
     assert result.reason == "no_exact_digest_observation"
+
+
+def _workload_outcomes(
+    *,
+    generation: str,
+    fail_family: str = "",
+    fail_workspace: str = "",
+):
+    from intelligence.vulnerability.workload_inventory import (
+        WORKLOAD_QUERY_FAMILIES,
+        WORKLOAD_QUERY_TABLES,
+        WORKLOAD_QUERY_VERSIONS,
+        WorkloadFailureCode,
+        WorkloadQueryFailure,
+        WorkloadQuerySuccess,
+    )
+
+    digest = f"sha256:{'a' * 64}"
+    rows_by_family = {
+        "kube_pod_inventory": (
+            {
+                "TimeGenerated": "2026-09-05T00:00:00Z",
+                "ClusterId": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.ContainerService/managedClusters/aks-a",
+                "Namespace": "prod",
+                "ControllerKind": "Deployment",
+                "ControllerName": "api",
+                "Name": "api-pod",
+                "PodUid": "pod-a",
+                "ContainerID": "containerd://container-a",
+                "ContainerName": "api",
+            },
+        ),
+        "container_inventory": (
+            {
+                "TimeGenerated": "2026-09-05T00:00:00Z",
+                "ContainerID": "containerd://container-a",
+                "Image": "acr.example/api:v1",
+                "ImageID": f"acr.example/api@{digest}",
+                "Repository": "acr.example/api",
+                "Name": "api",
+            },
+        ),
+        "container_image_inventory": (
+            {
+                "TimeGenerated": "2026-09-05T00:00:00Z",
+                "ImageID": f"acr.example/api@{digest}",
+                "Repository": "acr.example/api",
+                "Tag": "v1",
+            },
+        ),
+    }
+    outcomes = []
+    for workspace in ("workspace-a", "workspace-b"):
+        for family in WORKLOAD_QUERY_FAMILIES:
+            common = {
+                "connection_id": "connection-a",
+                "workspace_id": workspace,
+                "subscription_id": "sub-a",
+                "source_family": family,
+                "source_table": WORKLOAD_QUERY_TABLES[family],
+                "query_version": WORKLOAD_QUERY_VERSIONS[family],
+                "attempted_at": "2026-09-05T00:00:00Z",
+                "completed_at": "2026-09-05T00:00:01Z",
+            }
+            if family == fail_family and workspace == fail_workspace:
+                outcomes.append(
+                    WorkloadQueryFailure(
+                        **common,
+                        error_code=WorkloadFailureCode.PROVIDER_TIMEOUT,
+                        error_summary="Container Insights query timed out.",
+                    )
+                )
+            else:
+                outcomes.append(
+                    WorkloadQuerySuccess(
+                        **common,
+                        rows=rows_by_family[family],
+                    )
+                )
+    return tuple(outcomes), generation, digest
+
+
+def _defender_workload_row(digest: str) -> dict[str, Any]:
+    return {
+        "id": "defender-image-finding",
+        "tenantId": "tenant-a",
+        "subscriptionId": "sub-a",
+        "properties": {
+            "timeGenerated": "2026-09-05T00:00:00Z",
+            "additionalData": {"imageDigest": digest},
+        },
+    }
+
+
+def test_each_workspace_table_returns_an_isolated_sanitized_outcome() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        WorkloadQueryFailure,
+        WorkloadQuerySuccess,
+        acquire_workload_inventory,
+    )
+
+    class Logs:
+        def query_kube_pod_inventory(self, workspace_id):
+            return [{"Name": workspace_id}]
+
+        def query_container_inventory(self, workspace_id):
+            if workspace_id == "workspace-a":
+                raise TimeoutError("bearer super-secret timed out")
+            return [{"Name": workspace_id}]
+
+        def query_container_image_inventory(self, workspace_id):
+            return []
+
+    outcomes = acquire_workload_inventory(
+        logs_client=Logs(),
+        connection_id="connection-a",
+        discovered_workspaces=[
+            {"workspaceId": "workspace-a", "subscriptionId": "sub-a"},
+            {"workspaceId": "workspace-b", "subscriptionId": "sub-a"},
+        ],
+        clock=lambda: datetime(2026, 9, 5, tzinfo=UTC),
+    )
+
+    assert len(outcomes) == 6
+    failed = [row for row in outcomes if isinstance(row, WorkloadQueryFailure)]
+    succeeded = [row for row in outcomes if isinstance(row, WorkloadQuerySuccess)]
+    assert len(failed) == 1
+    assert len(succeeded) == 5
+    assert failed[0].workspace_id == "workspace-a"
+    assert failed[0].source_family == "container_inventory"
+    assert failed[0].error_code.value == "provider_timeout"
+    assert "super-secret" not in repr(failed[0])
+    assert any(
+        row.workspace_id == "workspace-b"
+        and row.source_family == "container_inventory"
+        for row in succeeded
+    )
+
+
+@pytest.mark.parametrize("forbidden", ["query", "kql", "cluster", "scope", "workspace"])
+def test_workload_acquisition_rejects_caller_authority_fields(forbidden: str) -> None:
+    from intelligence.vulnerability.workload_inventory import acquire_workload_inventory
+
+    with pytest.raises(ValueError, match="server-discovered"):
+        acquire_workload_inventory(
+            logs_client=object(),
+            connection_id="connection-a",
+            discovered_workspaces=[
+                {
+                    "workspaceId": "workspace-a",
+                    "subscriptionId": "sub-a",
+                    forbidden: "caller-controlled",
+                }
+            ],
+        )
+
+
+def test_failed_workload_family_retains_stale_lkg_and_original_generation() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        activate_workload_partitions,
+    )
+
+    first_outcomes, first_generation, digest = _workload_outcomes(
+        generation="generation-1"
+    )
+    first = activate_workload_partitions(
+        outcomes=first_outcomes,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation=first_generation,
+        completed_at="2026-09-05T00:00:01Z",
+    )
+    second_outcomes, second_generation, _ = _workload_outcomes(
+        generation="generation-2",
+        fail_family="container_image_inventory",
+        fail_workspace="workspace-a",
+    )
+
+    second = activate_workload_partitions(
+        outcomes=second_outcomes,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation=second_generation,
+        completed_at="2026-09-05T00:05:01Z",
+        previous_observations=first.observations,
+        previous_deployments=first.deployments,
+        previous_checkpoints=first.checkpoints,
+    )
+
+    failed_checkpoint = next(
+        row
+        for row in second.checkpoints
+        if row["workspace_id"] == "workspace-a"
+        and row["source_family"] == "container_image_inventory"
+    )
+    healthy_checkpoint = next(
+        row
+        for row in second.checkpoints
+        if row["workspace_id"] == "workspace-a"
+        and row["source_family"] == "container_inventory"
+    )
+    retained = next(
+        row for row in second.deployments if row["workspace_id"] == "workspace-a"
+    )
+    advanced = next(
+        row for row in second.deployments if row["workspace_id"] == "workspace-b"
+    )
+    assert failed_checkpoint["status"] == "stale"
+    assert failed_checkpoint["attempted_generation"] == "generation-2"
+    assert failed_checkpoint["effective_generation"] == "generation-1"
+    assert healthy_checkpoint["status"] == "complete"
+    assert healthy_checkpoint["effective_generation"] == "generation-2"
+    assert retained["carried_forward"] is True
+    assert retained["attempted_generation"] == "generation-2"
+    assert retained["effective_generation"] == "generation-1"
+    assert retained["lkg_source_generation"] == "generation-1"
+    assert advanced["effective_generation"] == "generation-2"
+
+
+def test_failed_workload_workspace_without_lkg_is_unavailable_and_rowless() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        WORKLOAD_QUERY_FAMILIES,
+        activate_workload_partitions,
+    )
+
+    outcomes, generation, digest = _workload_outcomes(
+        generation="generation-1",
+        fail_family="container_image_inventory",
+        fail_workspace="workspace-a",
+    )
+    # All three families are unavailable for workspace-a and have no prior LKG.
+    failed_a = tuple(
+        type(next(row for row in outcomes if row.workspace_id == "workspace-a" and row.source_family == "container_image_inventory"))(
+            connection_id="connection-a",
+            workspace_id="workspace-a",
+            subscription_id="sub-a",
+            source_family=family,
+            source_table=next(row for row in outcomes if row.source_family == family).source_table,
+            query_version=next(row for row in outcomes if row.source_family == family).query_version,
+            attempted_at="2026-09-05T00:00:00Z",
+            completed_at="2026-09-05T00:00:01Z",
+            error_code=next(row for row in outcomes if row.workspace_id == "workspace-a" and row.source_family == "container_image_inventory").error_code,
+            error_summary="Container Insights query timed out.",
+        )
+        for family in WORKLOAD_QUERY_FAMILIES
+    )
+    healthy_b = tuple(row for row in outcomes if row.workspace_id == "workspace-b")
+
+    projected = activate_workload_partitions(
+        outcomes=(*failed_a, *healthy_b),
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation=generation,
+        completed_at="2026-09-05T00:00:01Z",
+    )
+
+    assert all(
+        row["status"] == "unavailable"
+        for row in projected.checkpoints
+        if row["workspace_id"] == "workspace-a"
+    )
+    assert not any(
+        row["workspace_id"] == "workspace-a" for row in projected.observations
+    )
+    assert not any(
+        row["workspace_id"] == "workspace-a" for row in projected.deployments
+    )
+    assert any(
+        row["workspace_id"] == "workspace-b" for row in projected.deployments
+    )
+
+
+def test_fabric_sync_validates_workload_references_before_activation(tmp_path) -> None:
+    from deltalake import DeltaTable
+
+    from fabric.data_quality import DataQualityValidator
+    from fabric.sync_service import FabricSyncService
+    from intelligence.vulnerability.workload_inventory import (
+        activate_workload_partitions,
+    )
+    from storage.datasets import DatasetStore
+    from storage.delta_writer import DeltaWriteMode, DeltaWriter
+    from storage.onelake_writer import OneLakeWriter
+
+    outcomes, generation, digest = _workload_outcomes(
+        generation="generation-1"
+    )
+    projection = activate_workload_partitions(
+        outcomes=outcomes,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation=generation,
+        completed_at="2026-09-05T00:00:01Z",
+    )
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    store = DatasetStore(source)
+    store.publish(
+        {
+            "exposure/workload_observations": list(projection.observations),
+            "exposure/workload_deployments": list(projection.deployments),
+            "exposure/workload_source_checkpoints": list(projection.checkpoints),
+        },
+        {},
+        {
+            "runId": generation,
+            "startedAt": "2026-09-05T00:00:01Z",
+            "status": "completed",
+        },
+    )
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter(
+            "workspace",
+            "lakehouse",
+            local_root=lakehouse,
+        ),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+
+    result = service.sync()
+
+    assert result.status == "completed"
+    assert service._write_mode_for_table(
+        "silver_workload_observations"
+    ) is DeltaWriteMode.APPEND
+    assert service._write_mode_for_table(
+        "silver_workload_deployments"
+    ) is DeltaWriteMode.MERGE
+    assert service._write_mode_for_table(
+        "metadata_workload_source_checkpoints"
+    ) is DeltaWriteMode.MERGE
+    deployments_path = lakehouse / "Tables/silver_workload_deployments"
+    before = DeltaTable(str(deployments_path)).to_pyarrow_table().to_pylist()
+    assert len(before) == 2
+
+    invalid = [dict(row) for row in projection.deployments]
+    invalid[0]["checkpoint_key"] = "missing-checkpoint"
+    store.publish(
+        {
+            "exposure/workload_observations": list(projection.observations),
+            "exposure/workload_deployments": invalid,
+            "exposure/workload_source_checkpoints": list(projection.checkpoints),
+        },
+        {},
+        {
+            "runId": "generation-invalid",
+            "startedAt": "2026-09-05T00:05:01Z",
+            "status": "completed",
+        },
+    )
+
+    with pytest.raises(ValueError, match="checkpoint"):
+        service.sync()
+
+    assert DeltaTable(str(deployments_path)).to_pyarrow_table().to_pylist() == before
