@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from network_scenario import network_rows
+import json
+
+from network_scenario import (
+    PROD_SUB,
+    PROD_SUBNET,
+    PROD_VNET,
+    UAT_SUB,
+    UAT_SUBNET,
+    UAT_VNET,
+    network_rows,
+)
 
 from network import (
     NetworkDesignPolicy,
@@ -47,6 +57,111 @@ def _rule(**kwargs) -> NetworkSnapshot:
         tags={"owner": "team@example.com"},
     )
     return NetworkSnapshot(nsgs=(nsg,))
+
+
+def _private_link_row(
+    resource_id: str,
+    name: str,
+    subscription_id: str,
+    connection_id: str,
+    resource_type: str,
+) -> dict:
+    payload = {
+        "id": resource_id,
+        "name": name,
+        "entityType": "Resource",
+        "subscriptionId": subscription_id,
+        "connection_id": connection_id,
+        "resourceType": resource_type,
+        "publicNetworkAccess": "Enabled",
+    }
+    return {
+        "subscription_id": subscription_id,
+        "resource_id": resource_id,
+        "entity_type": "Resource",
+        "name": name,
+        "payload_json": json.dumps(payload),
+    }
+
+
+class TestScopeIsolation:
+    @staticmethod
+    def _service() -> NetworkIntelligenceService:
+        prod_storage = (
+            f"/subscriptions/{PROD_SUB}/resourcegroups/rg-prod/providers/"
+            "microsoft.storage/storageaccounts/stpayments"
+        )
+        foreign_vault = (
+            f"/subscriptions/{UAT_SUB}/resourcegroups/rg-uat/providers/"
+            "microsoft.keyvault/vaults/kv-foreign"
+        )
+        rows = [
+            *network_rows(),
+            _private_link_row(
+                prod_storage,
+                "stpayments",
+                PROD_SUB,
+                "conn-prod",
+                "Microsoft.Storage/storageAccounts",
+            ),
+            _private_link_row(
+                foreign_vault,
+                "kv-foreign",
+                UAT_SUB,
+                "conn-uat",
+                "Microsoft.KeyVault/vaults",
+            ),
+        ]
+        return NetworkIntelligenceService.from_rows(
+            rows,
+            semantic_relationships=(
+                {
+                    "subject_id": PROD_VNET,
+                    "object_id": PROD_SUBNET,
+                    "predicate": "hosts",
+                },
+                {
+                    "subject_id": UAT_VNET,
+                    "object_id": UAT_SUBNET,
+                    "predicate": "hosts",
+                },
+            ),
+        )
+
+    def test_scoped_gaps_never_include_another_subscription(self) -> None:
+        scoped = self._service().scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
+
+        assert all(gap.subscription_id == PROD_SUB for gap in scoped.gaps)
+        assert not any(gap.resource_name == "kv-foreign" for gap in scoped.gaps)
+
+    def test_scoped_private_link_resources_and_counts_are_filtered(self) -> None:
+        scoped = self._service().scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
+
+        assert {item.subscription_id for item in scoped.snapshot.private_link_resources} == {
+            PROD_SUB
+        }
+        assert scoped.snapshot.counts()["private_link_resources"] == 1
+
+    def test_scoped_semantic_relationships_keep_only_in_scope_endpoints(self) -> None:
+        scoped = self._service().scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
+
+        assert scoped.semantic_relationships == (
+            {
+                "subject_id": PROD_VNET,
+                "object_id": PROD_SUBNET,
+                "predicate": "hosts",
+            },
+        )
+
+    def test_in_scope_private_endpoint_still_protects_its_target(self) -> None:
+        scoped = self._service().scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
+
+        missing = [
+            gap
+            for gap in scoped.gaps
+            if gap.category == "missing_private_endpoint"
+        ]
+        assert not any(gap.resource_name == "stpayments" for gap in missing)
 
 
 class TestInternetExposure:
@@ -351,7 +466,7 @@ class TestPolicyRules:
 class TestScoping:
     def test_scope_narrows_results_to_one_connection(self) -> None:
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(connection_ids=("conn-uat",)))
+        scoped = service.scoped(NetworkScope(connection_ids=("conn-uat",))).analyze()
         assert scoped.topology.classifications
         for item in scoped.topology.classifications:
             assert item.connection_id == "conn-uat"
@@ -367,20 +482,20 @@ class TestScoping:
         snapshot unscoped would report estate-wide counts and connection IDs
         to a caller who may only see one connection."""
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(connection_ids=("conn-uat",)))
+        scoped = service.scoped(NetworkScope(connection_ids=("conn-uat",))).analyze()
         assert scoped.topology.connection_ids == ("conn-uat",)
         assert scoped.topology.snapshot.counts()["vnets"] == 1
         assert service.analyze().topology.snapshot.counts()["vnets"] == 3
 
     def test_scope_preserves_the_observation_stamp(self) -> None:
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(connection_ids=("conn-uat",)))
+        scoped = service.scoped(NetworkScope(connection_ids=("conn-uat",))).analyze()
         assert scoped.topology.snapshot.observed_at == service.snapshot.observed_at
         assert scoped.topology.snapshot.observed_at
 
     def test_environment_scope_filters_findings(self) -> None:
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(environments=("uat",)))
+        scoped = service.scoped(NetworkScope(environments=("uat",))).analyze()
         for finding in scoped.rule_findings:
             assert finding.environment in {"uat", ""}
 

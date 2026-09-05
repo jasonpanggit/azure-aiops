@@ -7,11 +7,14 @@ the "unavailable, not empty" contract are validated end to end.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from network_scenario import (
     HUB_VNET,
     PROD_SUB,
+    PROD_VNET,
     UAT_SUB,
     network_rows,
 )
@@ -23,11 +26,12 @@ from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from network.design import NetworkDesignPolicyStore
-from network.service import build_service
+from network.service import NetworkIntelligenceService, build_service
 from onboarding.service import SubscriptionOnboardingService
 
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
 SCOPED_TOKEN = "scoped-token-0123456789abcdef"
+SCOPED_ADMIN_TOKEN = "scoped-admin-token-0123456789abcdef"
 
 
 def _principals() -> dict[str, Principal]:
@@ -37,11 +41,21 @@ def _principals() -> dict[str, Principal]:
             subject="scoped@example.com",
             grants=(Grant("reader", Scope.from_mapping({"subscription": [PROD_SUB]})),),
         ),
+        SCOPED_ADMIN_TOKEN: Principal(
+            subject="scoped-admin@example.com",
+            grants=(Grant("admin", Scope.from_mapping({"subscription": [PROD_SUB]})),),
+        ),
     }
 
 
-def _client(tmp_path, *, with_network: bool = True, network_policy_store=None) -> TestClient:
-    service = build_service(network_rows()) if with_network else None
+def _client(
+    tmp_path,
+    *,
+    with_network: bool = True,
+    network_policy_store=None,
+    network_service: NetworkIntelligenceService | None = None,
+) -> TestClient:
+    service = network_service or (build_service(network_rows()) if with_network else None)
     context = ApiContext(
         onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
         authenticator=StaticTokenAuthenticator(_principals()),
@@ -60,6 +74,43 @@ def client(tmp_path) -> TestClient:
 
 def _auth(token: str = ADMIN_TOKEN) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _scope_leak_service() -> NetworkIntelligenceService:
+    rows = network_rows()
+    foreign_id = (
+        f"/subscriptions/{UAT_SUB}/resourcegroups/rg-uat/providers/"
+        "microsoft.keyvault/vaults/kv-foreign"
+    )
+    rows.append(
+        {
+            "subscription_id": UAT_SUB,
+            "resource_id": foreign_id,
+            "entity_type": "Resource",
+            "name": "kv-foreign",
+            "payload_json": json.dumps(
+                {
+                    "id": foreign_id,
+                    "name": "kv-foreign",
+                    "entityType": "Resource",
+                    "subscriptionId": UAT_SUB,
+                    "connection_id": "conn-uat",
+                    "resourceType": "Microsoft.KeyVault/vaults",
+                    "publicNetworkAccess": "Enabled",
+                }
+            ),
+        }
+    )
+    return NetworkIntelligenceService.from_rows(
+        rows,
+        semantic_relationships=(
+            {
+                "subject_id": PROD_VNET,
+                "object_id": f"{PROD_VNET}/subnets/snet-app",
+                "predicate": "hosts",
+            },
+        ),
+    )
 
 
 class TestTopology:
@@ -224,6 +275,82 @@ class TestAuthentication:
 
 
 class TestPolicy:
+    def test_scoped_preview_matches_gaps_without_foreign_resources(
+        self, tmp_path, monkeypatch
+    ):
+        import api.routers.network as network_router
+
+        captured_relationships = []
+        original_service = NetworkIntelligenceService
+
+        class RecordingService(original_service):
+            def __init__(self, *args, semantic_relationships=(), **kwargs):
+                captured_relationships.append(tuple(semantic_relationships))
+                super().__init__(
+                    *args,
+                    semantic_relationships=semantic_relationships,
+                    **kwargs,
+                )
+
+        monkeypatch.setattr(
+            network_router,
+            "NetworkIntelligenceService",
+            RecordingService,
+        )
+        client = _client(
+            tmp_path,
+            network_policy_store=NetworkDesignPolicyStore(),
+            network_service=_scope_leak_service(),
+        )
+
+        preview = client.post(
+            "/api/v1/network/policy/preview",
+            headers=_auth(SCOPED_ADMIN_TOKEN),
+            json={"rules": []},
+        )
+        gaps = client.get(
+            "/api/v1/network/gaps",
+            headers=_auth(SCOPED_ADMIN_TOKEN),
+        )
+
+        assert preview.status_code == 200
+        assert gaps.status_code == 200
+        preview_gaps = preview.json()["data"]["gaps"]
+        scoped_gaps = gaps.json()["data"]["gaps"]
+        assert {item["gap_id"] for item in preview_gaps} == {
+            item["gap_id"] for item in scoped_gaps
+        }
+        assert all(item["subscription_id"] in {"", PROD_SUB} for item in preview_gaps)
+        assert not any(item["resource_name"] == "kv-foreign" for item in preview_gaps)
+        assert captured_relationships[-1], "preview must retain scoped semantic edges"
+
+    @pytest.mark.parametrize(
+        ("path", "collection"),
+        (
+            ("/api/v1/network/topology", "resources"),
+            ("/api/v1/network/gaps", "gaps"),
+            ("/api/v1/network/rule-findings", "findings"),
+        ),
+    )
+    def test_scoped_network_routes_emit_no_foreign_subscription_ids(
+        self, tmp_path, path, collection
+    ):
+        client = _client(tmp_path, network_service=_scope_leak_service())
+
+        response = client.get(path, headers=_auth(SCOPED_TOKEN))
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        items = (
+            data["topology"][collection]
+            if path.endswith("/topology")
+            else data[collection]
+        )
+        assert all(item.get("subscription_id", "") in {"", PROD_SUB} for item in items)
+
+    def test_service_has_one_scope_enforcement_path(self):
+        assert not hasattr(NetworkIntelligenceService, "_scoped_topology")
+
     def test_read_reports_defaults_when_no_store_is_configured(self, tmp_path):
         client = _client(tmp_path, network_policy_store=None)
         response = client.get("/api/v1/network/policy", headers=_auth())

@@ -428,7 +428,11 @@ def preview_policy(
     except NetworkDesignPolicyValidationError as exc:
         raise ApiError(ErrorCode.INVALID_REQUEST, str(exc), {"section": sorted(changes)}) from exc
     service = _service(context, scope)
-    preview_service = NetworkIntelligenceService(service.snapshot, policy=policy)
+    preview_service = NetworkIntelligenceService(
+        service.snapshot,
+        policy=policy,
+        semantic_relationships=service.semantic_relationships,
+    )
     analysis = preview_service.analyze()
     payload = _policy_payload(policy)[0]
     invalid = payload.get("invalid_rule_ids") or []
