@@ -15,7 +15,7 @@ provides:
 affects: [11-03, 11-05, 11-06, 11-16]
 actuals:
   tasks: 2
-  commits: 1
+  commits: 2
 tech-stack:
   added: []
   patterns:
@@ -37,6 +37,7 @@ key-decisions:
   - "Executive Summary is aggregation-only and has no Operations or Azure MCP grants."
   - "Legacy MCP callers keep their prior catalog while specialist-bound calls receive exact manifest grants."
   - "The local Operations registry and reviewed MCP catalog must have exact tool-name equality."
+  - "Security-sensitive grant, dependency, page, citation, and read-only fields are checked against an independent locked policy digest."
 requirements-completed: [COP-03]
 coverage:
   - id: 11-04-01
@@ -75,11 +76,12 @@ status: complete
 ## Task Commit
 
 1. **Tasks 1-2: Twelve-specialist contract and runtime parity** - `e0efdf26` (`feat`)
+2. **Review hardening: argument schemas, fail-closed invocation, and locked policy parity** - `7bb6aa53` (`fix`)
 
 ## Validation
 
-- Plan-targeted suite: 54 passed.
-- Adjacent Copilot, MCP, Foundry, specialist-output, routing, and Plan 11-01 regressions: 220 passed.
+- Plan-targeted suite: 58 passed.
+- Adjacent Copilot, MCP, Foundry, specialist-output, routing, and Plan 11-01 regressions: 224 passed.
 - Ruff passed for every changed Python file.
 - `compileall` passed for every changed Python module.
 - `git diff --check` passed.
@@ -90,6 +92,10 @@ status: complete
 2. Existing `vulnerability`, `patch`, and `incident` snapshot page kinds retain their page-anchored specialist behavior.
 3. Azure MCP grants now fail closed against an exact reviewed read-only catalog; unknown or mutation-capable names are rejected.
 4. Context delegation reserves budget for every selected specialist and preserves the bounded post-delegation network enrichment pass.
+5. Parameterized tools now run only when bounded required arguments can be derived; skipped tools perform no I/O and consume no call budget.
+6. Remediation business-decision and Defender case tools now publish their exact required and optional MCP schemas.
+7. Security-sensitive per-specialist grants and citation requirements are locked independently of mutable manifest input.
+8. Credential markers embedded in manifest string values are rejected recursively, not only credential-shaped keys.
 
 ## Scope and Merge Notes
 
