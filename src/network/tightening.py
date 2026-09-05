@@ -17,7 +17,7 @@ Wiring those edges in would let this module distinguish the two.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .addressing import SENSITIVE_PORTS, AddressSpec
@@ -62,6 +62,7 @@ class RuleFinding:
     detail: str
     evidence: dict[str, Any]
     recommendation: str
+    affected_resource_ids: tuple[str, ...] = ()
     connection_id: str = ""
     subscription_id: str = ""
     environment: str = ""
@@ -79,6 +80,7 @@ class RuleFinding:
             "detail": self.detail,
             "evidence": dict(self.evidence),
             "recommendation": self.recommendation,
+            "affected_resource_ids": list(self.affected_resource_ids),
             "connection_id": self.connection_id,
             "subscription_id": self.subscription_id,
             "environment": self.environment,
@@ -887,9 +889,51 @@ def analyze_rules(
             observation_window_days=observation_window_days,
         ).analyze()
     )
+    affected_by_control: dict[str, tuple[str, ...]] = {
+        nsg.resource_id: tuple(sorted({*nsg.subnet_ids, *nsg.nic_ids}))
+        for nsg in snapshot.nsgs
+    }
+    for collection in snapshot.firewall_collections:
+        firewalls = [
+            firewall
+            for firewall in snapshot.firewalls
+            if (
+                collection.firewall_id
+                and firewall.resource_id == collection.firewall_id
+            )
+            or (
+                collection.policy_id
+                and firewall.policy_id == collection.policy_id
+            )
+        ]
+        affected_by_control[collection.resource_id] = tuple(
+            sorted(
+                {
+                    resource_id
+                    for firewall in firewalls
+                    for resource_id in (firewall.vnet_id, firewall.subnet_id)
+                    if resource_id
+                }
+            )
+        )
+
+    attributed = [
+        replace(
+            finding,
+            affected_resource_ids=affected_by_control.get(
+                finding.control_id,
+                (),
+            ),
+        )
+        for finding in findings
+    ]
     return tuple(
         sorted(
-            findings,
-            key=lambda item: (SEVERITY_ORDER.get(item.severity, 9), item.category, item.rule_id),
+            attributed,
+            key=lambda item: (
+                SEVERITY_ORDER.get(item.severity, 9),
+                item.category,
+                item.rule_id,
+            ),
         )
     )

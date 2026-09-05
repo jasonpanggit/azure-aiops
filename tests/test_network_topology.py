@@ -22,7 +22,7 @@ from network import (
     load_network_snapshot,
 )
 from network.models import PrivateEndpoint, PrivateLinkResource
-from network.tightening import RuleFinding, analyze_rules
+from network.tightening import RuleFinding
 from network.topology import HUB_SCORE_THRESHOLD, PEER_RESOLUTION_VALUES
 
 
@@ -46,6 +46,21 @@ class TestRuleFindingAffectedResources:
 
         assert finding.affected_resource_ids == tuple(
             sorted({*nsg.subnet_ids, *nsg.nic_ids})
+        )
+
+    def test_firewall_findings_name_the_network_the_collection_governs(self) -> None:
+        service = build_service(network_rows())
+        finding = next(
+            item
+            for item in service.rule_findings
+            if item.control == "azure_firewall"
+        )
+
+        assert finding.affected_resource_ids
+        assert any("/subnets/" in item for item in finding.affected_resource_ids)
+        assert any(
+            "/virtualnetworks/" in item and "/subnets/" not in item
+            for item in finding.affected_resource_ids
         )
 
     def test_legacy_finding_payload_uses_an_empty_optional_collection(self) -> None:
