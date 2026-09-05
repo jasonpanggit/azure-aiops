@@ -15,6 +15,7 @@ import { titleize } from "@/lib/format";
 import { presentVerdict } from "@/lib/flow-verdict";
 import { useScope } from "@/lib/scope-context";
 import { buildCopilotSnapshot, copilotEvidenceRows, networkApi } from "@/lib/services";
+import { ApiError } from "@/lib/types";
 import type { CopilotEvidenceRow, FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
 
 type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
@@ -818,14 +819,14 @@ function DesignPolicyWorkspace({
     }
   }, [policy.data, policy.loading]);
 
-  function parsedParameters(): unknown | null {
+  function parsedParameters(): { ok: true; value: unknown } | { ok: false } {
     try {
-      return JSON.parse(newRule.assertion);
+      return { ok: true, value: JSON.parse(newRule.assertion) };
     } catch (reason: unknown) {
       const detail = reason instanceof Error ? reason.message : "The assertion could not be parsed.";
       setSemanticError(`That is not valid JSON — ${detail}. Nothing has been sent to the server.`);
       setValidatedAssertion("");
-      return null;
+      return { ok: false };
     }
   }
 
@@ -901,12 +902,12 @@ function DesignPolicyWorkspace({
       return;
     }
     if (semanticError && validatedAssertion === newRule.assertion) return;
-    const parameters = parsedParameters();
-    if (parameters === null) return;
+    const parsed = parsedParameters();
+    if (!parsed.ok) return;
     setAddError("");
     setSemanticError("");
     setSavingId(rule_id);
-    const rule = authoredRule(parameters);
+    const rule = authoredRule(parsed.value);
     networkApi
       .updatePolicy({ rules: [rule] })
       .then(() => {
@@ -922,11 +923,15 @@ function DesignPolicyWorkspace({
         policy.refetch();
         onPolicyChanged({ saved: true });
       })
-      .catch((reason: unknown) =>
-        setAddError(
-          `The rule was not saved — ${reason instanceof Error ? reason.message : "Adding the rule failed"}. Nothing was persisted; your edits are still in the form.`,
-        ),
-      )
+      .catch((reason: unknown) => {
+        const detail = reason instanceof Error ? reason.message : "Adding the rule failed";
+        if (reason instanceof ApiError && reason.code === "invalid_request") {
+          setSemanticError(`This rule is not valid — ${detail}. Fix the assertion and preview again; nothing was saved.`);
+          setValidatedAssertion(newRule.assertion);
+          return;
+        }
+        setAddError(`The rule was not saved — ${detail}. Nothing was persisted; your edits are still in the form.`);
+      })
       .finally(() => setSavingId(null));
   }
 
@@ -953,15 +958,15 @@ function DesignPolicyWorkspace({
       setAddError("Provide a rule id and name before previewing. No policy change was made.");
       return;
     }
-    const parameters = parsedParameters();
-    if (parameters === null) return;
+    const parsed = parsedParameters();
+    if (!parsed.ok) return;
     setPreviewing(true);
     setAddError("");
     setSemanticError("");
     networkApi
       .previewPolicy(
         {
-          rules: [authoredRule(parameters)],
+          rules: [authoredRule(parsed.value)],
         },
         scope
       )
