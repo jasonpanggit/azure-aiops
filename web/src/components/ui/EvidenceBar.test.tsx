@@ -42,6 +42,6 @@ describe("EvidenceBar graph freshness", () => {
     );
 
     expect(screen.getByText("Graph").parentElement).toHaveTextContent("Graph 1 hour ago");
-    expect(screen.getByLabelText("Data trust and provenance")).toHaveClass("evidence-bar-success");
+    expect(screen.getByLabelText("Data trust and provenance")).toHaveClass("evidence-bar-high");
   });
 });

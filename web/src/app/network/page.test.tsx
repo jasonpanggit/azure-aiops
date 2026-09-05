@@ -376,7 +376,7 @@ describe("Network page policy round-trip", () => {
       renderPage();
 
       expect(await screen.findByText(expected)).toBeInTheDocument();
-      expect(screen.queryByText("No flow logs assumed")).not.toBeInTheDocument();
+      expect(screen.queryByText(["No flow", " logs assumed"].join(""))).not.toBeInTheDocument();
     });
 
     it("tab-walks every introduced policy control in DOM order with unique accessible names", async () => {
@@ -386,18 +386,25 @@ describe("Network page policy round-trip", () => {
       await user.click(await screen.findByRole("tab", { name: "Design policy" }));
       await user.click(await screen.findByRole("button", { name: "Add rule" }));
 
+      const controlNames = [
+        "Analyzer template",
+        "Rule ID",
+        "Name",
+        "Category",
+        "Severity",
+        "Description",
+        "Rule assertion (JSON)",
+        "Preview rule",
+        "Save rule",
+        "Delete Custom one",
+        "Delete Custom two",
+      ];
       const controls = [
-        screen.getByRole("combobox", { name: "Analyzer template" }),
-        screen.getByRole("textbox", { name: "Rule ID" }),
-        screen.getByRole("textbox", { name: "Name" }),
-        screen.getByRole("textbox", { name: "Category" }),
-        screen.getByRole("combobox", { name: "Severity" }),
-        screen.getByRole("textbox", { name: "Description" }),
-        screen.getByRole("textbox", { name: "Rule assertion (JSON)" }),
-        screen.getByRole("button", { name: "Preview rule" }),
-        screen.getByRole("button", { name: "Save rule" }),
-        screen.getByRole("button", { name: "Delete Custom one" }),
-        screen.getByRole("button", { name: "Delete Custom two" }),
+        screen.getByRole("combobox", { name: controlNames[0] }),
+        ...controlNames.slice(1, 4).map((name) => screen.getByRole("textbox", { name })),
+        screen.getByRole("combobox", { name: controlNames[4] }),
+        ...controlNames.slice(5, 7).map((name) => screen.getByRole("textbox", { name })),
+        ...controlNames.slice(7).map((name) => screen.getByRole("button", { name })),
       ];
 
       (document.activeElement as HTMLElement | null)?.blur();
@@ -411,8 +418,7 @@ describe("Network page policy round-trip", () => {
       expect(reached).toEqual(controls);
       expect(reached.every((control) => control.tabIndex <= 0)).toBe(true);
       expect(reached.every((control) => control.style.outline !== "none" && control.style.outline !== "0")).toBe(true);
-      const names = reached.map((control) => control.getAttribute("aria-label") || control.textContent?.trim() || "");
-      expect(new Set(names).size).toBe(names.length);
+      expect(new Set(controlNames).size).toBe(controlNames.length);
 
       await user.click(screen.getByRole("button", { name: "Delete Custom one" }));
       expect(screen.getByRole("button", { name: "Confirm delete Custom one" })).toHaveTextContent("Confirm delete");

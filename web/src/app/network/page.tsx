@@ -52,6 +52,7 @@ export default function NetworkPage() {
   const findingTotal = findings.data?.data.summary.rule_finding_count;
   const gapCoverage = gaps.data?.data.coverage;
   const findingCoverage = findings.data?.data.coverage;
+  const flowLogProvenance = topology.data?.data.topology.flow_log_provenance;
 
   function refreshDerivedAnalysis(options: { saved?: boolean; successMessage?: string } = {}) {
     setPolicyFeedback(null);
@@ -132,7 +133,7 @@ export default function NetworkPage() {
           <>
             <span>{summary ? summary.connection_count : "—"} subscription connections</span>
             <span>Configuration-derived analysis</span>
-            <span>No flow logs assumed</span>
+            <span>{flowLogProvenanceText(flowLogProvenance)}</span>
           </>
         }
       />
@@ -140,6 +141,7 @@ export default function NetworkPage() {
       <EvidenceBar
         evidence={evidence}
         knowledgeVersion={topology.data?.knowledge_version}
+        graphFreshness={topology.data?.graph_freshness}
         warnings={warnings}
       />
 
@@ -675,6 +677,16 @@ function RetryButton({ label, loading, onClick }: { label: string; loading: bool
   );
 }
 
+function flowLogProvenanceText(provenance?: import("@/lib/types").FlowLogProvenance): string {
+  if (provenance?.state === "analyzed") {
+    return `Flow logs: ${provenance.observed_flow_count} observed flows analyzed`;
+  }
+  if (provenance?.state === "ingested_not_analyzed") {
+    return "Flow logs: ingested, not yet analyzed — findings remain configuration-derived";
+  }
+  return "Flow logs: not ingested — findings are configuration-derived";
+}
+
 function ruleListItem(finding: RuleFinding): FindingListItem {
   return {
     id: finding.finding_id,
@@ -1201,6 +1213,7 @@ function DesignPolicyWorkspace({
                   disabled={savingId === rule.rule_id}
                   onClick={() => deleteRule(rule)}
                   onBlur={() => setDeleteConfirmation((current) => current === rule.rule_id ? null : current)}
+                  aria-label={deleteConfirmation === rule.rule_id ? `Confirm delete ${rule.name}` : `Delete ${rule.name}`}
                 >
                   {deleteConfirmation === rule.rule_id ? "Confirm delete" : "Delete"}
                 </button>

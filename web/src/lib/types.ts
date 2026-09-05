@@ -1643,6 +1643,11 @@ export interface NetworkTopologyRelationship {
   details: Record<string, unknown>;
 }
 
+export interface FlowLogProvenance {
+  state: "not_ingested" | "ingested_not_analyzed" | "analyzed";
+  observed_flow_count: number;
+}
+
 export interface NetworkTopology {
   hubs: HubClassification[];
   spokes: HubClassification[];
@@ -1659,6 +1664,8 @@ export interface NetworkTopology {
   connection_ids: string[];
   counts: Record<string, number>;
   coverage?: CollectionCoverage;
+  /** Whether flow-log evidence exists and whether rule analysis consumed it. */
+  flow_log_provenance?: FlowLogProvenance;
 }
 
 export interface NetworkSummary {
