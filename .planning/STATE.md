@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.6 complete (6/6 plans) - ready for next phase
 status: executing
-stopped_at: Completed 03.1-06-PLAN.md
-last_updated: "2026-09-05T17:01:51.442Z"
+stopped_at: Completed 03.1-07-PLAN.md
+last_updated: "2026-09-05T17:24:25.505Z"
 progress:
   total_phases: 17
   completed_phases: 9
   total_plans: 158
-  completed_plans: 93
+  completed_plans: 94
 current_phase_name: Remediation Workflow Safety and Operator Guidance
 ---
 
@@ -30,6 +30,7 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 - **03.1-04** COMPLETE — Pinned pyodbc/ODBC Driver 18 runtime, fail-closed Fabric SQL readiness, and managed dual-key cursor rotation
 - **03.1-05** COMPLETE — Frozen paged ARG outcomes, rowless sanitized failures, and shared live/persisted AUM normalization with distinct Defender provenance
 - **03.1-06** COMPLETE — Fixed bounded Container Insights acquisition, exact digest/time workload deployment evidence, and versioned connection/workspace/family LKG checkpoints
+- **03.1-07** COMPLETE — Atomic source-family LKG activation, isolated multi-connection completeness, and exact typed freshness thresholds
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
 - **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
 - **03.6-03** COMPLETE — Fail-safe `selectedPatchIds: string[] | null` patch-selection model (fixes CR-07 deselect-all-then-widens-to-all bug) and bounded/backoff client polling (`usePollingBackoff`, capped at 40 requests or 600000ms) with independently-testable ceilings
@@ -132,6 +133,7 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 | Phase 03.1 P04 | 3min | 3 tasks | 11 files |
 | Phase 03.1 P05 | 16min | 2 tasks | 12 files |
 | Phase 03.1 P06 | 15 min | 3 tasks | 8 files |
+| Phase 03.1 P07 | 18 min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -189,11 +191,14 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 - [Phase 03.1]: Accepted the additive versioned connection/workspace/family checkpoint key and exact immutable digest deployment identity; later identity changes require migration/backfill, dual-reader compatibility, and generation-pointer rollback. — Prevents retained workload evidence from being reinterpreted by code rollback alone.
 - [Phase 03.1]: Persist deployments only for exact Defender-authoritative sha256 and observation-time matches; repository/tag-only, malformed, stale, conflicting, or unavailable evidence remains typed unknown. — Prevents spoofed runtime impact and preserves the Phase 4 evidence gate.
 - [Phase 03.1]: A failed workload source family may carry only an already-proven deployment LKG with its original effective generation; stale component evidence cannot synthesize a new deployment. — Keeps connection/workspace/family failure isolation from manufacturing domain facts.
+- [Phase 03.1]: Key source partitions by normalized connection, semantic family, and authorized scope; activate only after staged row/status validation. — Prevents failed or invalid attempts from false-clearing another partition or changing the active generation.
+- [Phase 03.1]: Treat mixed live connections as partial with explicit represented/expected counts, reserving unavailable for zero usable connections. — Preserves authorized healthy results without overstating tenant completeness.
+- [Phase 03.1]: Use five canonical freshness families with inclusive exact thresholds and explicit applied-policy metadata. — Makes stale decisions deterministic and auditable per source family.
 
 ## Session
 
-**Last session:** 2026-09-05T17:01:45.083Z
-**Stopped at:** Completed 03.1-06-PLAN.md
+**Last session:** 2026-09-05T17:24:25.489Z
+**Stopped at:** Completed 03.1-07-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context
