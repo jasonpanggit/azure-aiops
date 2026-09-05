@@ -1260,9 +1260,13 @@ def test_offline_parity_validates_and_reports_the_model_contract():
 def test_terraform_carries_both_the_deployment_and_contract_model():
     foundry = _read("infra/terraform/foundry.tf")
 
-    assert re.search(r"^\s*model\s*=\s*var\.foundry_model_name\s*$", foundry, re.M)
     assert re.search(
-        r"^\s*contract_model\s*=\s*specialist\.foundry\.model\s*$", foundry, re.M
+        r"^\s*model\s*=\s*var\.foundry_model_name\s*$", foundry, re.MULTILINE
+    )
+    assert re.search(
+        r"^\s*contract_model\s*=\s*specialist\.foundry\.model\s*$",
+        foundry,
+        re.MULTILINE,
     )
 
 

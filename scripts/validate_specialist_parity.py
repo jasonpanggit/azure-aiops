@@ -635,12 +635,12 @@ def _candidate_agents(path: str) -> dict[str, dict[str, str]]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     agents = payload.get("agents")
     if not isinstance(agents, dict):
-        raise ValueError("candidate mapping has no agents map")
+        raise TypeError("candidate mapping has no agents map")
 
     result: dict[str, dict[str, str]] = {}
     for specialist_id, entry in agents.items():
         if not isinstance(specialist_id, str) or not isinstance(entry, dict):
-            raise ValueError("candidate mapping entry is malformed")
+            raise TypeError("candidate mapping entry is malformed")
         agent_name = entry.get("agent_name")
         provider_version_id = entry.get("provider_version_id")
         if not isinstance(agent_name, str) or not agent_name.strip():
