@@ -272,3 +272,187 @@ def test_legacy_eight_specialist_terraform_inputs_remain_accepted():
     # visible to the app so a rollback does not need a Terraform edit.
     assert "FOUNDRY_SPECIALISTS_LEGACY_JSON" in container_apps
     assert "jsonencode(var.foundry_specialists)" in container_apps
+
+
+# ---------------------------------------------------------------------------
+# Offline / live parity gate
+# ---------------------------------------------------------------------------
+
+
+def _parity_module():
+    spec = importlib.util.spec_from_file_location(
+        "validate_specialist_parity",
+        REPO_ROOT / "scripts" / "validate_specialist_parity.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _flatten(value) -> list[str]:
+    if isinstance(value, dict):
+        return [str(key) for key in value] + [
+            item for child in value.values() for item in _flatten(child)
+        ]
+    if isinstance(value, (list, tuple)):
+        return [item for child in value for item in _flatten(child)]
+    return [str(value)]
+
+
+def test_offline_parity_passes_and_reports_only_controlled_identifiers():
+    report = _parity_module().run_offline()
+
+    assert report["mode"] == "offline"
+    assert report["status"] == "pass"
+    assert report["specialist_count"] == 12
+    assert report["failures"] == []
+    assert sorted(report["specialists"]) == sorted(LOCKED_SPECIALIST_IDS)
+    assert all(check["status"] == "pass" for check in report["checks"])
+
+
+def test_parity_report_never_carries_credentials(monkeypatch):
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "super-secret-value")
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "")
+
+    module = _parity_module()
+    tokens = " ".join(
+        _flatten(module.run_offline()) + _flatten(module.run_live(env={}))
+    ).casefold()
+
+    assert "super-secret-value" not in tokens
+    for marker in ("client_secret=", "access_token", "authorization", "bearer "):
+        assert marker not in tokens
+
+
+def test_live_parity_without_configuration_is_blocked_not_passed():
+    module = _parity_module()
+
+    report = module.run_live(env={})
+
+    assert report["mode"] == "live"
+    assert report["status"] == "blocked"
+    assert report["reason"] == "live_parity_not_configured"
+    assert "FOUNDRY_PROJECT_ENDPOINT" in report["missing_configuration"]
+    assert module.exit_code(report) == module.EXIT_BLOCKED == 3
+    # A blocked gate must never be reported as a green promotion signal.
+    assert module.exit_code(report) != module.EXIT_PASS
+
+
+def test_live_catalog_comparison_rejects_extra_missing_and_mutation_grants():
+    module = _parity_module()
+
+    assert (
+        module.compare_grants(
+            specialist_id="network",
+            server="operations-mcp",
+            expected=("network_topology", "hub_dependents"),
+            granted=("network_topology", "hub_dependents"),
+            live_catalog=("network_topology", "hub_dependents", "unused_tool"),
+        )
+        == []
+    )
+
+    extra = module.compare_grants(
+        specialist_id="network",
+        server="operations-mcp",
+        expected=("network_topology",),
+        granted=("network_topology", "hub_dependents"),
+        live_catalog=("network_topology", "hub_dependents"),
+    )
+    missing = module.compare_grants(
+        specialist_id="network",
+        server="operations-mcp",
+        expected=("network_topology", "hub_dependents"),
+        granted=("network_topology",),
+        live_catalog=("network_topology", "hub_dependents"),
+    )
+    nonexistent = module.compare_grants(
+        specialist_id="network",
+        server="operations-mcp",
+        expected=("network_topology",),
+        granted=("network_topology",),
+        live_catalog=("hub_dependents",),
+    )
+    mutating = module.compare_grants(
+        specialist_id="network",
+        server="azure-mcp",
+        expected=("advisor_recommendation_apply",),
+        granted=("advisor_recommendation_apply",),
+        live_catalog=("advisor_recommendation_apply",),
+    )
+
+    assert [failure["kind"] for failure in extra] == ["extra_grant"]
+    assert [failure["kind"] for failure in missing] == ["missing_grant"]
+    assert [failure["kind"] for failure in nonexistent] == ["nonexistent_live_tool"]
+    assert "mutation_capable_grant" in {failure["kind"] for failure in mutating}
+    assert all(
+        set(failure) <= {"kind", "specialist", "server", "tools"}
+        for failure in extra + missing + nonexistent + mutating
+    )
+
+
+def test_parity_cli_offline_exits_zero_and_live_unconfigured_exits_blocked():
+    offline = subprocess.run(
+        [sys.executable, "scripts/validate_specialist_parity.py", "--offline"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    live = subprocess.run(
+        [sys.executable, "scripts/validate_specialist_parity.py", "--live"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT)},
+    )
+
+    assert offline.returncode == 0
+    assert json.loads(offline.stdout)["status"] == "pass"
+    assert live.returncode == 3
+    assert json.loads(live.stdout)["status"] == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# Additive rollout ordering
+# ---------------------------------------------------------------------------
+
+
+def test_rollout_creates_immutable_versions_before_any_metadata_switch():
+    script = _read("infra/scripts/create-foundry-agent.sh")
+
+    create_at = script.index("/versions?api-version=")
+    parity_at = script.index("validate_specialist_parity.py")
+    promote_at = script.index("FOUNDRY_PROMOTION_RECORD")
+
+    assert create_at < parity_at < promote_at
+    # Versions are additive: nothing in the rollout may delete or overwrite a
+    # published agent version, so the previous one stays selectable.
+    assert "-X DELETE" not in script
+    assert "rollback_target" in script
+    assert "previous_version" in script
+
+
+def test_runtime_e2e_gates_promotion_on_parity_and_prints_controlled_fields():
+    script = _read("infra/scripts/validate-runtime-e2e.sh")
+
+    parity_at = script.index("validate_specialist_parity.py")
+    promotion_at = script.index("promotion")
+
+    assert parity_at < promotion_at
+    assert "parity_status" in script
+    # Controlled output only: no token, secret, or tool-argument echo.
+    for marker in ("$API_TOKEN", "AZURE_CLIENT_SECRET", "echo \"$auth_header\""):
+        assert marker not in script
+
+
+def test_rollout_scripts_have_valid_shell_syntax():
+    for script in (
+        "infra/scripts/create-foundry-agent.sh",
+        "infra/scripts/validate-runtime-e2e.sh",
+    ):
+        subprocess.run(
+            ["bash", "-n", script], cwd=REPO_ROOT, check=True, capture_output=True
+        )
