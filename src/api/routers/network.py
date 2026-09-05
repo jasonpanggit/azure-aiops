@@ -292,6 +292,11 @@ def network_gaps(
         and (category is None or gap.category == category)
     ]
     visible = gaps[page.offset : page.offset + page.limit]
+    coverage = {
+        "total": len(gaps),
+        "returned": len(visible),
+        "truncated": len(visible) < len(gaps),
+    }
     return envelope(
         {
             "gaps": [gap.to_dict() for gap in visible],
@@ -299,10 +304,21 @@ def network_gaps(
             # means conformance gaps cannot be assessed, only structural ones.
             "intended_design_declared": analysis.policy.is_declared,
             "summary": analysis.summary(),
+            "coverage": coverage,
         },
         evidence=_evidence(service, confidence=CONFIDENCE_MEDIUM),
         scope=scope.to_dict(),
         pagination=page.to_dict(len(gaps)),
+        warnings=(
+            [
+                (
+                    f"Showing {len(visible)} of {len(gaps)} inspection gaps; "
+                    "use pagination for the complete result"
+                )
+            ]
+            if coverage["truncated"]
+            else []
+        ),
     )
 
 
@@ -325,16 +341,32 @@ def rule_findings(
         and (category is None or finding.category == category)
     ]
     visible = findings[page.offset : page.offset + page.limit]
+    coverage = {
+        "total": len(findings),
+        "returned": len(visible),
+        "truncated": len(visible) < len(findings),
+    }
     return envelope(
         {
             "findings": [finding.to_dict() for finding in visible],
             "summary": analysis.summary(),
+            "coverage": coverage,
         },
         # "Unused" and "shadowed" are inferred structurally; no flow logs are
         # ingested, and every finding states that in its own basis.
         evidence=_evidence(service, confidence=CONFIDENCE_MEDIUM),
         scope=scope.to_dict(),
         pagination=page.to_dict(len(findings)),
+        warnings=(
+            [
+                (
+                    f"Showing {len(visible)} of {len(findings)} rule findings; "
+                    "use pagination for the complete result"
+                )
+            ]
+            if coverage["truncated"]
+            else []
+        ),
     )
 
 
