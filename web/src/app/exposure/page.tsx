@@ -26,6 +26,10 @@ export default function ExposurePage() {
   const [copilotOpen, setCopilotOpen] = useState(false);
 
   const summary = useApi(() => vulnerabilityApi.summary(scope), [scope]);
+  const authoritativeExposures = useApi(
+    () => vulnerabilityApi.authoritativeExposures(scope),
+    [scope],
+  );
   const patches = useApi(() => vulnerabilityApi.patchPriorities(scope, {}), [scope]);
   const servers = useApi(() => vulnerabilityApi.assetExposures(scope, {}), [scope]);
   const defenderOverview = useApi(() => vulnerabilityApi.defenderOverview(scope), [scope]);
@@ -58,6 +62,7 @@ export default function ExposurePage() {
   // sections whose own data loaded successfully.
   const sourceErrors = [
     { label: "Summary", error: summary.error },
+    { label: "Authoritative exposure findings", error: authoritativeExposures.error },
     { label: "Patch priorities", error: patches.error },
     { label: "Asset exposures", error: servers.error },
     { label: "Defender secure score", error: defenderOverview.error },
@@ -88,6 +93,7 @@ export default function ExposurePage() {
       <EvidenceBar
         evidence={[
           ...(summary.data?.evidence ?? []),
+          ...(authoritativeExposures.data?.evidence ?? []),
           ...(patches.data?.evidence ?? []),
           ...(servers.data?.evidence ?? []),
           ...(defenderOverview.data?.evidence ?? []),
@@ -96,6 +102,7 @@ export default function ExposurePage() {
         knowledgeVersion={summary.data?.knowledge_version}
         warnings={[
           ...(summary.data?.warnings ?? []),
+          ...(authoritativeExposures.data?.warnings ?? []),
           ...(patches.data?.warnings ?? []),
           ...(servers.data?.warnings ?? []),
           ...(defenderOverview.data?.warnings ?? []),
@@ -174,6 +181,106 @@ export default function ExposurePage() {
                   { label: "Affected services", value: summary.data?.data.affected_business_service_count ?? 0, tone: "info" },
                 ]}
               />
+            </div>
+          </section>
+
+          <section className="card queue-card">
+            <div className="card-header">
+              <div>
+                <h2>Authoritative exposure findings</h2>
+                <p>
+                  Scoped identities from the persisted Exposure generation, with
+                  source coverage kept visible.
+                </p>
+              </div>
+            </div>
+            <div className="card-body">
+              {authoritativeExposures.loading ? (
+                <StatePanel
+                  title="Loading authoritative exposure findings"
+                  message="Reading the current governed Exposure generation."
+                  tone="loading"
+                />
+              ) : authoritativeExposures.error ? (
+                <StatePanel
+                  title="Authoritative exposure findings are unavailable"
+                  message={`${authoritativeExposures.error.message}. Other exposure sections remain usable.`}
+                  tone="error"
+                />
+              ) : authoritativeExposures.data ? (
+                <>
+                  <div className="detail-grid">
+                    <div>
+                      <span>Generation</span>
+                      <strong>
+                        Generation{" "}
+                        {authoritativeExposures.data.data.read_model_generation_id}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Coverage</span>
+                      <strong>
+                        {authoritativeExposures.data.data.completeness.state
+                          .slice(0, 1)
+                          .toUpperCase()}
+                        {authoritativeExposures.data.data.completeness.state.slice(1)}
+                        {" · "}
+                        {
+                          authoritativeExposures.data.data.completeness
+                            .represented_connections
+                        }{" "}
+                        of{" "}
+                        {
+                          authoritativeExposures.data.data.completeness
+                            .expected_connections
+                        }{" "}
+                        connections
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Loaded findings</span>
+                      <strong>
+                        {authoritativeExposures.data.data.returned_count} of{" "}
+                        {authoritativeExposures.data.data.total_count}
+                      </strong>
+                    </div>
+                  </div>
+                  <div className="chip-row" aria-label="Exposure source attribution">
+                    {authoritativeExposures.data.data.source_attribution.map(
+                      (source) => (
+                        <span
+                          className="chip"
+                          key={source.source_family}
+                        >
+                          {source.source_family === "aum" ? "AUM" : "Defender"}{" "}
+                          {source.finding_count} findings
+                        </span>
+                      ),
+                    )}
+                  </div>
+                  <ul className="evidence-list">
+                    {authoritativeExposures.data.data.findings.map((finding) => (
+                      <li key={finding.exposure_id}>
+                        <strong>{finding.exposure_id}</strong>
+                        <span>
+                          {finding.weakness_id} ·{" "}
+                          {finding.source_families
+                            .map((source) =>
+                              source === "aum" ? "AUM" : "Defender",
+                            )
+                            .join(" + ")}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <StatePanel
+                  title="No authoritative exposure findings"
+                  message="The current scoped generation contains no findings."
+                  tone="empty"
+                />
+              )}
             </div>
           </section>
 
@@ -294,9 +401,14 @@ export default function ExposurePage() {
           filters: {},
           evidence: copilotEvidenceRows("vulnerability", [
             ...(summary.data?.evidence ?? []),
+            ...(authoritativeExposures.data?.evidence ?? []),
             ...(patches.data?.evidence ?? []),
             ...(servers.data?.evidence ?? []),
-          ], [...(patches.data?.data ?? []), ...(servers.data?.data ?? [])]),
+          ], [
+            ...(authoritativeExposures.data?.data.findings ?? []),
+            ...(patches.data?.data ?? []),
+            ...(servers.data?.data ?? []),
+          ]),
         })}
         starterQuestions={[
           { label: "Which CVEs affect our highest-risk service?", tool: "cve_exposure", toolArguments: {} },

@@ -6,6 +6,7 @@ import { ScopeProvider, useScope } from "@/lib/scope-context";
 const api = vi.hoisted(() => ({
   summary: vi.fn(),
   exposures: vi.fn(),
+  authoritativeExposures: vi.fn(),
   patchPriorities: vi.fn(),
   assetExposures: vi.fn(),
   defenderPosture: vi.fn(),
@@ -87,6 +88,66 @@ describe("ExposurePage Defender posture", () => {
       defender_observed_server_count: 1,
       defender_recommendations: ["Remediate vulnerable software"],
     }]));
+    api.authoritativeExposures.mockResolvedValue(envelope({
+      findings: [
+        {
+          exposure_id: "exposure:aum-only:vm-a:cve-2026-1001",
+          target_id: "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-a",
+          target_kind: "server",
+          weakness_id: "CVE-2026-1001",
+          subscription_id: "sub-1",
+          connection_ids: ["connection-aum-east"],
+          source_families: ["aum"],
+          read_model_generation_id: "exposure-generation-0001",
+          completeness: "complete",
+        },
+        {
+          exposure_id: "exposure:defender-only:vm-b:cve-2026-1002",
+          target_id: "/subscriptions/sub-2/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-b",
+          target_kind: "server",
+          weakness_id: "CVE-2026-1002",
+          subscription_id: "sub-2",
+          connection_ids: ["connection-defender-west"],
+          source_families: ["defender"],
+          read_model_generation_id: "exposure-generation-0001",
+          completeness: "complete",
+        },
+        {
+          exposure_id: "exposure:merged:vm-shared:cve-2026-1003",
+          target_id: "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.HybridCompute/machines/vm-shared",
+          target_kind: "server",
+          weakness_id: "CVE-2026-1003",
+          subscription_id: "sub-1",
+          connection_ids: ["connection-aum-east", "connection-defender-west"],
+          source_families: ["aum", "defender"],
+          read_model_generation_id: "exposure-generation-0001",
+          completeness: "complete",
+        },
+        {
+          exposure_id: "exposure:image:platform-api:cve-2026-2001",
+          target_id: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          target_kind: "container_image",
+          weakness_id: "CVE-2026-2001",
+          subscription_id: "sub-2",
+          connection_ids: ["connection-defender-west"],
+          source_families: ["defender"],
+          read_model_generation_id: "exposure-generation-0001",
+          completeness: "complete",
+        },
+      ],
+      read_model_generation_id: "exposure-generation-0001",
+      returned_count: 4,
+      total_count: 4,
+      completeness: {
+        state: "partial",
+        represented_connections: 2,
+        expected_connections: 3,
+      },
+      source_attribution: [
+        { source_family: "aum", finding_count: 2 },
+        { source_family: "defender", finding_count: 3 },
+      ],
+    }));
     api.patchPriorities.mockResolvedValue(envelope([]));
     api.assetExposures.mockResolvedValue(envelope([{
       asset_id: "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
@@ -246,5 +307,33 @@ describe("ExposurePage Defender posture", () => {
         subscription: ["sub-1"],
       });
     });
+  });
+
+  it("renders the authoritative scoped identities, generation, and source coverage", async () => {
+    render(
+      <ScopeProvider>
+        <ExposurePage />
+      </ScopeProvider>
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Authoritative exposure findings" }),
+    ).toBeInTheDocument();
+    for (const exposureId of [
+      "exposure:aum-only:vm-a:cve-2026-1001",
+      "exposure:defender-only:vm-b:cve-2026-1002",
+      "exposure:merged:vm-shared:cve-2026-1003",
+      "exposure:image:platform-api:cve-2026-2001",
+    ]) {
+      expect(screen.getByText(exposureId)).toBeInTheDocument();
+    }
+    expect(
+      screen.queryByText("exposure:unauthorized:vm-hidden:cve-2026-1999"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Generation exposure-generation-0001")).toBeInTheDocument();
+    expect(screen.getByText("Partial · 2 of 3 connections")).toBeInTheDocument();
+    expect(screen.getByText("AUM 2 findings")).toBeInTheDocument();
+    expect(screen.getByText("Defender 3 findings")).toBeInTheDocument();
+    expect(api.authoritativeExposures).toHaveBeenCalledWith({});
   });
 });

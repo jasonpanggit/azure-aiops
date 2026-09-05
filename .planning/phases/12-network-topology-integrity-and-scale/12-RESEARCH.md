@@ -361,7 +361,7 @@ requirement and locked decision 3.
 | Gate | Target | Measured on | Basis |
 |---|---|---|---|
 | G-1 | `detail=summary` ≤ 200 nodes and ≤ 250 KB on the small fixture | new perf test | 130 nodes / 151.3 KB achieved with `details` stripping |
-| G-2 | `detail=summary` on the enterprise fixture emits `truncated: true` and a node cap; no response exceeds an explicit byte ceiling | new perf test | 2,600 nodes / 3.3 MB uncapped |
+| G-2 | `detail=summary` on the enterprise fixture emits `truncated: true`, caps nodes at **1,500** (`G2_NODE_CAP`), and stays under a byte ceiling of **2,000,000** (`G2_BYTE_CEILING`) | new perf test | 2,600 nodes / 3.3 MB uncapped; cap set to the C-2 canvas guard, ceiling derived from the measured 963 B/node post-`details`-strip (1,500 × 963 ≈ 1.44 MB, ~38 % headroom) |
 | G-3 | `/topology` p95 server build < 1 s at enterprise size | new perf test | 646 ms measured |
 | G-4 | `detail=full` remains byte-identical to today for a fixed fixture (compatibility) | contract test | locked decision 6 |
 | G-5 | Every capped collection carries `{total, returned, truncated}` and produces an envelope warning | contract test | AP-1/AP-2 |
@@ -661,7 +661,8 @@ Existing helpers to reuse: `tests/test_api_network.py` `_client` factory, `tests
 ### Sampling Rate
 
 - **Per task commit:** the targeted quick-run command for the file touched.
-- **Per wave merge:** `.venv/bin/python -m pytest -q` **and** `cd web && npx vitest run`.
+- **After Wave 1:** run the affected backend and web modules only; the two parallel plans share a working tree while the compatibility baseline is captured in a detached worktree, so a full-suite count would be timing-dependent.
+- **After Waves 2–9:** `.venv/bin/python -m pytest -q` **and** `cd web && npx vitest run`.
 - **Phase gate:** both full suites green, plus G-1..G-6, before `/gsd-verify-work`.
 
 ### Wave 0 Gaps
@@ -707,24 +708,42 @@ Config: `security_enforcement: true`, ASVS level 1, `block_on: high`. [VERIFIED:
 | A3 | Flipping the `/topology` default `detail` within one release would break agents and export. `[ASSUMED]` on the release-cadence side; the breakage itself is `[VERIFIED]`. | Compatibility | If consumers are updated in lockstep, the deprecation window is unnecessary overhead — but locked decision 6 already mandates the conservative path. |
 | A4 | Official Azure architecture icons exist for Microsoft Fabric and Azure AI Services in the V21 set referenced by the README. `[ASSUMED]` — not verified against the icon distribution. | TOPO-02 | If absent, the icon task needs an alternative that still respects the "official, unmodified" rule. |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All four questions were dispositioned during phase planning. Each names the plan or checkpoint that owns it.
 
 1. **Fabric private-link semantics (A1)**
    - What we know: the type map treats `microsoft.fabric/capacities` as a private-link resource and gaps fire on it.
    - What's unclear: whether per-resource private endpoints are the correct control for Fabric capacities.
    - Recommendation: `checkpoint:human-verify` in wave 3 before the projection makes these gaps prominent.
+   - **RESOLVED — owned by plan 12-05** (`12-05-PLAN.md`, wave 3), a blocking `checkpoint:decision` that records
+     the answer in `12-FABRIC-PRIVATE-LINK-DECISION.md` before plan 12-06 projects these resources. Plan 12-06
+     depends on 12-05, so the projection cannot land ahead of the answer.
 2. **Interactive node ceiling (A2)**
    - What we know: summary is 2,600 nodes / 3.3 MB at enterprise size; `LAYOUT_NODE_BUDGET = 100` only degrades layout quality, never element count.
    - What's unclear: the empirical frame-rate cliff.
    - Recommendation: measure in wave 0 against the enterprise fixture; set the cap from data, not intuition.
+   - **RESOLVED — owned by plan 12-02 Task 3** (wave 1), which measures the interactive ceiling against the
+     enterprise fixture and records it, with its threshold, method, and machine, in
+     `12-PRE-PHASE-BASELINE.json`. The recorded value is constrained to the lesser of the measurement and the
+     UI contract's 1,500 maximum. **Plan 12-09 Task 1** consumes that recorded value as its full-detail guard
+     threshold instead of the 1,500 literal, so evidence can lower the guard but never raise it.
 3. **Flow-observation wiring scope (D-22)**
    - What we know: `analyze_rules` never receives observations in production; `ObservedTrafficAnalyzer` requires `dataSource == "traffic_analytics"`.
    - What's unclear: whether wiring ontology `trafficObserved` edges is in scope here or belongs to a later phase.
    - Recommendation: minimum viable honesty in this phase (banner states observations are not analyzed) **plus** the service-level seam; full ingestion deferred per the out-of-scope list.
+   - **RESOLVED — split across plans 12-03 and 12-08** as recommended. Plan 12-03 derives flow-log provenance
+     from the snapshot and adds the `rule_findings(flow_observations=...)` seam; plan 12-08 Task 3 renders the
+     three-state provenance chip, including the mandatory "ingested but not analyzed" middle state. Full
+     ingestion stays deferred and out of scope for this phase.
 4. **Agent bound (`_MAX_ITEMS = 25`)**
    - What we know: agents see 0.03 % of enterprise findings with no warning.
    - What's unclear: whether the right fix is a larger bound, a summarized rollup, or disclosure only.
    - Recommendation: disclosure first (cheap, honest); bound tuning is a separate decision.
+   - **RESOLVED — disclosure only, owned by plan 12-07 Task 3**, which makes the bounded-list helper state its
+     bound and the true total when it truncates and stay silent when it does not. The bound itself is unchanged
+     and tuning it remains a separate future decision. The assertion lives in the new
+     `tests/test_operations_tools.py`, which **plan 12-11 Task 2** re-runs unchanged as gate G-6.
 
 ## Environment Availability
 

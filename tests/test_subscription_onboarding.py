@@ -876,8 +876,8 @@ def test_sync_coordinator_times_out_a_hung_publish_instead_of_stalling_forever(
 
 
 def test_sync_coordinator_rejects_a_non_positive_publish_timeout(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="publish_timeout_seconds must be positive"):
-        ConnectionSyncCoordinator(tmp_path, publish_timeout_seconds=0)
+    with pytest.raises(ValueError, match="publish_timeout_seconds must be zero or positive"):
+        ConnectionSyncCoordinator(tmp_path, publish_timeout_seconds=-1)
 
 
 def test_sync_coordinator_progress_callback_exceptions_do_not_break_sync(

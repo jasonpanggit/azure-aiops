@@ -24,7 +24,8 @@ def _service(tmp_path: Path) -> FabricSyncService:
 def test_sync_reports_successful_table_writes_in_completion_order(tmp_path: Path) -> None:
     events: list[FabricTableWriteProgress] = []
 
-    result = _service(tmp_path).sync(progress_callback=events.append)
+    service = _service(tmp_path)
+    result = service.sync(progress_callback=events.append)
 
     assert result.status == "completed"
     assert events
@@ -32,6 +33,9 @@ def test_sync_reports_successful_table_writes_in_completion_order(tmp_path: Path
     assert all(event.total_tables == len(events) for event in events)
     assert {event.table_name for event in events} == set(result.tables)
     assert all(event.result is not None for event in events)
+    assert not (
+        tmp_path / "lakehouse" / "Tables" / "bronze_container_image_exposure"
+    ).exists()
 
 
 def test_sync_ignores_progress_callback_errors(tmp_path: Path) -> None:

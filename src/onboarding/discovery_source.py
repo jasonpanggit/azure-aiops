@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -23,21 +24,25 @@ class AzureResourceGraphSource:
     def fetch(self, specs, subscription_ids: list[str]) -> dict[str, list[dict]]:
         workers = max(1, min(self.max_workers, len(specs)))
         results: dict[str, list[dict]] = {}
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="arg-query") as executor:
-            futures = {
-                executor.submit(
-                    self.arg.query,
-                    spec,
-                    (
-                        list(self.management_group_ids)
-                        if spec.scope == "management_groups"
-                        else subscription_ids
-                    ),
-                ): spec.name
-                for spec in specs
-                if spec.scope != "management_groups" or self.management_group_ids
-            }
-            for future in as_completed(futures):
+        executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="arg-query")
+        futures = {
+            executor.submit(
+                self.arg.query,
+                spec,
+                (
+                    list(self.management_group_ids)
+                    if spec.scope == "management_groups"
+                    else subscription_ids
+                ),
+            ): spec.name
+            for spec in specs
+            if spec.scope != "management_groups" or self.management_group_ids
+        }
+        try:
+            # Bound the whole discovery batch as well as each individual CLI
+            # invocation; a provider can otherwise leave a future unresolved.
+            discovery_timeout = 120
+            for future in as_completed(futures, timeout=discovery_timeout):
                 name = futures[future]
                 try:
                     results[name] = future.result()
@@ -49,6 +54,22 @@ class AzureResourceGraphSource:
                             "error": str(exc)[:2048],
                         }
                     ]
+        except FutureTimeoutError:
+            for future, name in futures.items():
+                if future.done():
+                    continue
+                future.cancel()
+                results[name] = [
+                    {
+                        "status": "failed",
+                        "provider_status": "failed",
+                        "error": "ARG discovery exceeded the bounded discovery timeout",
+                    }
+                ]
+        finally:
+            # A provider subprocess can outlive its caller despite its own
+            # timeout. Do not wait for that worker before returning the sync.
+            executor.shutdown(wait=False)
         return results
 
 

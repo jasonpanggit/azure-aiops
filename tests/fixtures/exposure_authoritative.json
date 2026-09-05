@@ -1,0 +1,349 @@
+{
+  "fixture_schema_version": "1.0.0",
+  "scenario_id": "phase-03.1-authoritative-exposure",
+  "seed": 31001,
+  "generated_at": "2026-09-03T00:00:00Z",
+  "read_model_generation_id": "exposure-generation-0001",
+  "fixture_fingerprint": "535fd33d45551c29974112c80e8efffab3d775a2635457a901cd1aac2836d1ae",
+  "scope": {
+    "tenant_id": "tenant-exposure-fixture",
+    "authorized_subscriptions": [
+      "00000000-0000-0000-0000-0000000000a1",
+      "00000000-0000-0000-0000-0000000000b2"
+    ],
+    "unauthorized_subscriptions": [
+      "00000000-0000-0000-0000-0000000000ff"
+    ],
+    "connections": [
+      {
+        "connection_id": "connection-aum-east",
+        "display_name": "AUM East",
+        "subscription_id": "00000000-0000-0000-0000-0000000000a1",
+        "authorized": true
+      },
+      {
+        "connection_id": "connection-defender-west",
+        "display_name": "Defender West",
+        "subscription_id": "00000000-0000-0000-0000-0000000000b2",
+        "authorized": true
+      },
+      {
+        "connection_id": "connection-out-of-scope",
+        "display_name": "Out of scope",
+        "subscription_id": "00000000-0000-0000-0000-0000000000ff",
+        "authorized": false
+      }
+    ]
+  },
+  "identity_cases": {
+    "aum_only": {
+      "exposure_id": "exposure:aum-only:vm-a:cve-2026-1001",
+      "target_id": "/subscriptions/00000000-0000-0000-0000-0000000000a1/resourceGroups/rg-exposure/providers/Microsoft.Compute/virtualMachines/vm-a",
+      "target_kind": "server",
+      "weakness_id": "CVE-2026-1001",
+      "source_families": [
+        "aum"
+      ]
+    },
+    "defender_only": {
+      "exposure_id": "exposure:defender-only:vm-b:cve-2026-1002",
+      "target_id": "/subscriptions/00000000-0000-0000-0000-0000000000b2/resourceGroups/rg-exposure/providers/Microsoft.Compute/virtualMachines/vm-b",
+      "target_kind": "server",
+      "weakness_id": "CVE-2026-1002",
+      "source_families": [
+        "defender"
+      ]
+    },
+    "merged": {
+      "exposure_id": "exposure:merged:vm-shared:cve-2026-1003",
+      "target_id": "/subscriptions/00000000-0000-0000-0000-0000000000a1/resourceGroups/rg-exposure/providers/Microsoft.HybridCompute/machines/vm-shared",
+      "target_kind": "server",
+      "weakness_id": "CVE-2026-1003",
+      "source_families": [
+        "aum",
+        "defender"
+      ]
+    },
+    "unauthorized": {
+      "exposure_id": "exposure:unauthorized:vm-hidden:cve-2026-1999",
+      "target_id": "/subscriptions/00000000-0000-0000-0000-0000000000ff/resourceGroups/rg-hidden/providers/Microsoft.Compute/virtualMachines/vm-hidden",
+      "target_kind": "server",
+      "weakness_id": "CVE-2026-1999",
+      "source_families": [
+        "aum",
+        "defender"
+      ]
+    }
+  },
+  "source_partitions": [
+    {
+      "connection_id": "connection-aum-east",
+      "source_family": "aum",
+      "attempted_generation_id": "exposure-generation-0001",
+      "effective_generation_id": "exposure-generation-0001",
+      "state": "complete",
+      "carried_forward": false,
+      "expected_connections": 2,
+      "represented_connections": 2,
+      "row_ids": [
+        "exposure:aum-only:vm-a:cve-2026-1001",
+        "exposure:merged:vm-shared:cve-2026-1003"
+      ]
+    },
+    {
+      "connection_id": "connection-defender-west",
+      "source_family": "defender",
+      "attempted_generation_id": "exposure-generation-0001",
+      "effective_generation_id": "exposure-generation-0001",
+      "state": "complete",
+      "carried_forward": false,
+      "expected_connections": 2,
+      "represented_connections": 2,
+      "row_ids": [
+        "exposure:defender-only:vm-b:cve-2026-1002",
+        "exposure:merged:vm-shared:cve-2026-1003"
+      ]
+    },
+    {
+      "connection_id": "connection-aum-east",
+      "source_family": "aum_installations",
+      "attempted_generation_id": "exposure-generation-0001",
+      "effective_generation_id": "exposure-generation-0001",
+      "state": "healthy-empty",
+      "carried_forward": false,
+      "expected_connections": 1,
+      "represented_connections": 1,
+      "row_ids": []
+    },
+    {
+      "connection_id": "connection-defender-west",
+      "source_family": "defender_posture",
+      "attempted_generation_id": "exposure-generation-0001",
+      "effective_generation_id": "exposure-generation-0000",
+      "state": "failed-with-lkg",
+      "carried_forward": true,
+      "safe_error_code": "provider_timeout",
+      "expected_connections": 1,
+      "represented_connections": 1,
+      "row_ids": [
+        "exposure:defender-only:vm-b:cve-2026-1002"
+      ]
+    },
+    {
+      "connection_id": "connection-aum-east",
+      "source_family": "container_workloads",
+      "attempted_generation_id": "exposure-generation-0001",
+      "effective_generation_id": null,
+      "state": "failed-without-lkg",
+      "carried_forward": false,
+      "safe_error_code": "workspace_unavailable",
+      "expected_connections": 1,
+      "represented_connections": 0,
+      "row_ids": []
+    }
+  ],
+  "temporal_cases": [
+    {
+      "case_id": "missing-installed-reintroduced",
+      "current_key": "vm-shared|kb-6000001",
+      "expected_state": "reintroduced",
+      "expected_reintroduction_count": 1,
+      "expected_first_detected_at": "2026-08-01T00:00:00Z",
+      "observations": [
+        {
+          "event_id": "event-missing-initial",
+          "event": "missing",
+          "event_time": "2026-08-01T00:00:00Z",
+          "operation_succeeded": true,
+          "source_sequence": 1,
+          "ingested_at": "2026-08-01T00:01:00Z"
+        },
+        {
+          "event_id": "event-installed-later",
+          "event": "installed",
+          "event_time": "2026-08-02T00:00:00Z",
+          "operation_succeeded": true,
+          "source_sequence": 2,
+          "ingested_at": "2026-08-02T00:01:00Z"
+        },
+        {
+          "event_id": "event-reintroduced",
+          "event": "reintroduced",
+          "event_time": "2026-08-03T00:00:00Z",
+          "operation_succeeded": true,
+          "source_sequence": 3,
+          "ingested_at": "2026-08-03T00:01:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "out-of-order-and-same-time-tie",
+      "current_key": "vm-a|kb-6000002",
+      "expected_state": "resolved",
+      "expected_reintroduction_count": 0,
+      "expected_first_detected_at": "2026-08-04T00:00:00Z",
+      "observations": [
+        {
+          "event_id": "event-arrived-first-but-newer",
+          "event": "resolved",
+          "event_time": "2026-08-05T00:00:00Z",
+          "operation_succeeded": true,
+          "source_sequence": 4,
+          "ingested_at": "2026-08-05T00:01:00Z"
+        },
+        {
+          "event_id": "event-arrived-late-but-older",
+          "event": "missing",
+          "event_time": "2026-08-04T00:00:00Z",
+          "operation_succeeded": true,
+          "source_sequence": 2,
+          "ingested_at": "2026-08-06T00:01:00Z"
+        },
+        {
+          "event_id": "event-tie-unsuccessful",
+          "event": "installed",
+          "event_time": "2026-08-05T00:00:00Z",
+          "operation_succeeded": false,
+          "source_sequence": 4,
+          "ingested_at": "2026-08-05T00:01:00Z"
+        },
+        {
+          "event_id": "event-tie-stable-id",
+          "event": "resolved",
+          "event_time": "2026-08-05T00:00:00Z",
+          "operation_succeeded": true,
+          "source_sequence": 4,
+          "ingested_at": "2026-08-05T00:01:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "unknown-first-detection",
+      "current_key": "vm-b|cve-2026-1002",
+      "expected_state": "missing",
+      "expected_reintroduction_count": 0,
+      "expected_first_detected_at": null,
+      "observations": [
+        {
+          "event_id": "event-unknown-provider-time",
+          "event": "missing",
+          "event_time": null,
+          "operation_succeeded": true,
+          "source_sequence": 1,
+          "ingested_at": "2026-08-06T00:01:00Z"
+        }
+      ]
+    }
+  ],
+  "container_cases": {
+    "registry_id": "/subscriptions/00000000-0000-0000-0000-0000000000b2/resourceGroups/rg-exposure/providers/Microsoft.ContainerRegistry/registries/acrfixture",
+    "repository": "platform/api",
+    "digests": [
+      {
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tags": [
+          "1.0.0",
+          "latest"
+        ],
+        "cve_ids": [
+          "CVE-2026-2001"
+        ],
+        "workload_state": "observed-exact-digest",
+        "workload": {
+          "cluster_id": "/subscriptions/00000000-0000-0000-0000-0000000000b2/resourceGroups/rg-exposure/providers/Microsoft.ContainerService/managedClusters/aks-fixture",
+          "namespace": "production",
+          "controller_kind": "Deployment",
+          "controller_name": "api",
+          "pod_uid": "11111111-1111-1111-1111-111111111111",
+          "application_id": "application:platform-api",
+          "business_service_id": "business-service:checkout"
+        }
+      },
+      {
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "tags": [
+          "latest"
+        ],
+        "cve_ids": [
+          "CVE-2026-2002"
+        ],
+        "workload_state": "unknown",
+        "unknown_reason": "no_exact_digest_observation"
+      }
+    ],
+    "tag_movement": {
+      "tag": "latest",
+      "from_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "to_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "moved_at": "2026-08-07T00:00:00Z"
+    }
+  },
+  "enrichment_cases": [
+    {
+      "identifier": "CVE-2026-1001",
+      "provider": "msrc",
+      "state": "complete",
+      "has_value": true
+    },
+    {
+      "identifier": "CVE-2026-1002",
+      "provider": "epss",
+      "state": "stale",
+      "has_value": true,
+      "carried_forward": true
+    },
+    {
+      "identifier": "CVE-2026-1003",
+      "provider": "kev",
+      "state": "unavailable",
+      "has_value": false,
+      "safe_error_code": "provider_unavailable"
+    }
+  ],
+  "cursor_case": {
+    "row_count": 101,
+    "page_size": 50,
+    "priority_score": 900,
+    "id_prefix": "tied-exposure",
+    "sort": [
+      {
+        "field": "priority_score",
+        "direction": "desc"
+      },
+      {
+        "field": "exposure_id",
+        "direction": "asc"
+      }
+    ]
+  },
+  "consumer_contract": {
+    "consumers": [
+      "api",
+      "web",
+      "copilot",
+      "remediation"
+    ],
+    "required_shared_fields": [
+      "exposure_id",
+      "read_model_generation_id",
+      "scope",
+      "source_families",
+      "completeness",
+      "freshness"
+    ]
+  },
+  "reconciliation_contract": {
+    "hard_failure_classes": [
+      "scope_widening",
+      "source_class_disappearance",
+      "false_healthy_empty",
+      "false_clear",
+      "missing_image_relationship",
+      "cursor_duplicate",
+      "cursor_omission"
+    ],
+    "expected_semantic_change_classes": [
+      "time_varying_enrichment_score"
+    ]
+  }
+}

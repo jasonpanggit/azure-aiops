@@ -7,9 +7,9 @@ ingestion run id, and updates that connection's :class:`SyncState` only.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -100,7 +100,7 @@ class ConnectionSyncCoordinator:
         publication_state_store: PublicationStateStore | None = None,
         ontology_name: str = DEFAULT_ONTOLOGY_NAME,
         metrics: Any | None = None,
-        publish_timeout_seconds: int = 600,
+        publish_timeout_seconds: int = 120,
     ) -> None:
         self.output_dir = resolve_root(str(output_dir))
         self.ingestion_factory = ingestion_factory
@@ -115,8 +115,8 @@ class ConnectionSyncCoordinator:
         # short of a full container restart. Bounding it here means a stuck
         # publish surfaces as a normal "failed" sync (retryable) instead of
         # a silent, permanent stall.
-        if publish_timeout_seconds < 1:
-            raise ValueError("publish_timeout_seconds must be positive")
+        if publish_timeout_seconds < 0:
+            raise ValueError("publish_timeout_seconds must be zero or positive")
         self.publish_timeout_seconds = publish_timeout_seconds
         if stale_after_hours < 1:
             raise ValueError("stale_after_hours must be positive")
@@ -345,28 +345,46 @@ class ConnectionSyncCoordinator:
         ``TimeoutError`` after ``publish_timeout_seconds`` and mark the sync
         "failed" (which the existing retry/backoff machinery then handles
         normally) instead of hanging the connection forever. The runaway
-        thread itself is deliberately abandoned (daemon, no join) since
+        thread itself is deliberately abandoned (daemon) since
         Python cannot forcibly cancel a blocked call; it will terminate on
         its own once (or if) the stuck network call eventually resolves.
         """
-        # Not a context manager: ``ThreadPoolExecutor.__exit__``/``shutdown``
-        # default to ``wait=True``, which would block on the very same stuck
-        # thread we're trying to time out on. ``shutdown(wait=False)`` lets
-        # this call return promptly while the (possibly still-hung) worker
-        # thread is abandoned to exit on its own whenever its blocking call
-        # eventually resolves.
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fabric-publish")
-        try:
-            future = executor.submit(self.publish_factory(connection).run)
+        # Use a daemon thread rather than ThreadPoolExecutor. Executor workers
+        # are non-daemon and can keep the process alive during shutdown after a
+        # timed-out network call has been abandoned.
+        error: list[BaseException] = []
+
+        def _publish() -> None:
             try:
-                future.result(timeout=self.publish_timeout_seconds)
-            except FutureTimeoutError as exc:
-                raise TimeoutError(
-                    f"Fabric publish for connection '{connection.connection_id}' "
-                    f"exceeded publish_timeout_seconds={self.publish_timeout_seconds}"
-                ) from exc
-        finally:
-            executor.shutdown(wait=False)
+                publisher = self.publish_factory(connection)
+                if progress_callback is None:
+                    publisher.run()
+                else:
+                    import inspect
+
+                    parameters = inspect.signature(publisher.run).parameters.values()
+                    accepts_callback = any(
+                        parameter.name == "progress_callback"
+                        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in parameters
+                    )
+                    if accepts_callback:
+                        publisher.run(progress_callback=progress_callback)
+                    else:
+                        publisher.run()
+            except BaseException as exc:  # noqa: BLE001 - propagate on caller thread
+                error.append(exc)
+
+        worker = threading.Thread(target=_publish, name="fabric-publish", daemon=True)
+        worker.start()
+        worker.join(timeout=self.publish_timeout_seconds or None)
+        if self.publish_timeout_seconds and worker.is_alive():
+            raise TimeoutError(
+                f"Fabric publish for connection '{connection.connection_id}' "
+                f"exceeded publish_timeout_seconds={self.publish_timeout_seconds}"
+            )
+        if error:
+            raise error[0]
 
     def _record_publication_attempt(self, exc: Exception | None) -> None:
         """Record this publish attempt's terminal state, durably and via telemetry.

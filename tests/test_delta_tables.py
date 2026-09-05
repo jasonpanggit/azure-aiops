@@ -6,7 +6,12 @@ import pytest
 from deltalake import DeltaTable
 
 from fabric.schema_registry import schema_for
-from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
+from storage.delta_writer import (
+    DeltaWriteMode,
+    DeltaWriter,
+    DeltaWriteResult,
+    _is_transient,
+)
 from storage.partitioning import PartitioningPolicy
 
 REQUIRED = {
@@ -190,6 +195,15 @@ def test_delta_writer_retries_transient_failures(tmp_path: Path, monkeypatch) ->
     assert result.rows_added == 1
     assert attempts == 2
     assert delays == [1]
+
+
+def test_delta_writer_retries_temporarily_missing_delta_log() -> None:
+    error = RuntimeError(
+        "Kernel error: File not found: Tables/metadata_ingestion_state/"
+        "_delta_log/00000000000000000130.json"
+    )
+
+    assert _is_transient(error)
 
 
 def test_delta_writer_refreshes_cloud_token_before_operation(tmp_path: Path, monkeypatch) -> None:

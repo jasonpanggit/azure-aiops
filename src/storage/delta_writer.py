@@ -275,6 +275,8 @@ def _is_transient(exc: Exception) -> bool:
     if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
         return True
     text = str(exc).lower()
+    if "delta_log" in text and "file not found" in text:
+        return True
     return any(
         marker in text
         for marker in ("429", "500", "502", "503", "504", "timeout", "temporarily", "conflict")

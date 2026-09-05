@@ -78,6 +78,32 @@ Requirements for the controlled Azure pilot.
 - [x] **MED-09**: Generated ontology projections are governed by a publication manifest, lifecycle status, and consumer-facing abstraction that prevents direct dependency on unstable physical tables.
 - [x] **MED-10**: Fabric data access, lineage, capacity health, and Delta maintenance controls are implemented with least privilege and are visible through scope-enforced API and web surfaces.
 
+### Operations Copilot Orchestration
+
+- [ ] **COP-01**: Operations Copilot uses one scope-enforced orchestration contract for standalone, contextual drawer, investigation workspace, and multi-agent requests, with model-planned specialist delegation validated against deterministic allowlists and a safe deterministic fallback.
+- [ ] **COP-02**: Every operator-facing page with actionable domain evidence exposes a consistent contextual Copilot entry point through a typed page-adapter registry that binds page kind, filters, selected entities, starter questions, freshness, pagination coverage, and evidence.
+- [ ] **COP-03**: Specialist definitions, prompts, tool grants, page mappings, deployment metadata, and UI catalog are generated or validated from one versioned contract; existing agent gaps are closed and inventory/data-health, identity, FinOps, and resource-health domains have bounded specialists.
+- [ ] **COP-04**: Context snapshot v2 deduplicates and prioritizes evidence, preserves canonical Azure and non-Azure entity identities, represents visible-versus-total result coverage, propagates freshness and uncertainty, and fails closed when evidence is insufficient.
+- [ ] **COP-05**: Operations Copilot preserves an authorized investigation thread across page transitions, invokes executive synthesis over cited specialist outputs, exposes delegation/evidence/latency telemetry, and passes representative per-page and cross-domain evaluation cases.
+
+### Network Topology Integrity and Scale
+
+- [ ] **TOPO-01**: Every topology, gap, and rule-finding response enforces the effective subscription/resource scope across all resource and relationship collections, including private-link resources and semantic relationships, without disclosing or fabricating out-of-scope findings.
+- [ ] **TOPO-02**: Every in-scope private-link candidate and every resource referenced by a topology finding is represented by a stable, de-duplicated topology node, including Microsoft Fabric capacities and Azure AI Foundry accounts.
+- [ ] **TOPO-03**: Topology and finding APIs expose honest totals, truncation, pagination, and level-of-detail contracts so enterprise estates remain usable and no badge, metric, drawer, agent, or export silently implies complete coverage from a bounded result.
+- [ ] **TOPO-04**: Design-policy mutations invalidate derived topology analysis, refresh gaps/findings/badges without a page reload, and allow operators to preview, validate, save, and diagnose declarative custom rules through the web UI.
+- [ ] **TOPO-05**: Relationship normalization and projection are case-stable and observable, with dropped-edge diagnostics, snapshot freshness, DNS/private-endpoint/subnet integrity, actual flow-log provenance, and direct regression coverage of the scoped topology seam.
+
+### Autonomous Ontology Discovery
+
+- [ ] **AUTO-ONT-01**: A durable, browser-independent scheduler discovers due connection work, prevents concurrent publication for the same scope, resumes safely after restart, and exposes bounded retry, timeout, cancellation, and run-now controls.
+- [ ] **AUTO-ONT-02**: Incremental discovery identifies added, changed, retired, unresolved, and stale ontology inputs from authoritative inventory and operational evidence, while scheduled full reconciliation detects drift.
+- [ ] **AUTO-ONT-03**: A versioned Microsoft Foundry ontology agent receives only scope-filtered read-only evidence and the approved ontology contract, and returns structured, cited relationship proposals without direct authoritative Fabric write access.
+- [ ] **AUTO-ONT-04**: Relationship proposals have deterministic identity, provenance, confidence, evidence, lifecycle, and review state; promotion enforces known endpoints, approved predicates and type pairs, scope, contradiction checks, and explicit human-review or allowlisted auto-accept policy.
+- [ ] **AUTO-ONT-05**: The ontology publisher uses a dedicated least-privilege identity, fenced single-writer/version preconditions, fail-closed validation, immutable generation lineage, and atomic promotion with rollback to a prior valid generation.
+- [ ] **AUTO-ONT-06**: Pending edges, run checkpoints, leases, proposal decisions, publication attempts, failures, and ontology quality metrics persist across restarts and remain visible through scope-enforced operational APIs and UI.
+- [ ] **AUTO-ONT-07**: Offline and deployed evaluations enforce tenant isolation, prompt-injection resistance, relationship precision and recall, citation and freshness requirements, idempotency, bounded cost and latency, failure recovery, and audit completeness.
+
 ## v2 Requirements
 
 Deferred until the core pilot loop is proven.
@@ -173,13 +199,20 @@ Traceability is populated during roadmap creation.
 | MED-08 | Phase 10 | Complete |
 | MED-09 | Phase 10 | Complete |
 | MED-10 | Phase 10 | Complete |
+| AUTO-ONT-01 | Phase 13 | Pending |
+| AUTO-ONT-02 | Phase 13 | Pending |
+| AUTO-ONT-03 | Phase 13 | Pending |
+| AUTO-ONT-04 | Phase 13 | Pending |
+| AUTO-ONT-05 | Phase 13 | Pending |
+| AUTO-ONT-06 | Phase 13 | Pending |
+| AUTO-ONT-07 | Phase 13 | Pending |
 
 **Coverage:**
 
-- v1 requirements: 44 total
-- Mapped to phases: 44
+- v1 requirements: 51 total
+- Mapped to phases: 51
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-08-23*
-*Last updated: 2026-08-23 after initial definition*
+*Last updated: 2026-09-04 for Phase 13 autonomous ontology discovery*

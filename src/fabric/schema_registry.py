@@ -366,7 +366,7 @@ SCHEMAS: dict[str, pa.Schema] = {
         [*_BASE, pa.field("action_id", pa.string(), nullable=False), pa.field("title", pa.string(), nullable=False), pa.field("opportunity_type", pa.string(), nullable=False), pa.field("trigger_json", pa.string(), nullable=False), pa.field("execution_steps_json", pa.string(), nullable=False), pa.field("preconditions_json", pa.string(), nullable=False), pa.field("rollback_actions_json", pa.string(), nullable=False), pa.field("success_criteria_json", pa.string(), nullable=False), pa.field("failure_criteria_json", pa.string(), nullable=False), pa.field("deployment_stages_json", pa.string(), nullable=False), pa.field("effectiveness_json", pa.string(), nullable=False)]
     ),
     "silver_remediation_approval_policies": pa.schema(
-        [*_BASE, pa.field("policy_id", pa.string(), nullable=False), pa.field("conditions_json", pa.string(), nullable=False), pa.field("roles_json", pa.string(), nullable=False)]
+        [*_BASE, pa.field("policy_id", pa.string(), nullable=False), pa.field("conditions_json", pa.string(), nullable=False), pa.field("roles_json", pa.string(), nullable=False), pa.field("role_ids_json", pa.string(), nullable=True)]
     ),
     "silver_resource_relationships": pa.schema(_RELATIONSHIP),
     "ontology_entities": pa.schema(_ONTOLOGY_ENTITY),

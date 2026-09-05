@@ -34,7 +34,7 @@ class ConnectorConfig:
     cost_management_enabled: bool = True
     cost_management_lookback_days: int = 30
     identity_source: str = "arg"
-    publish_timeout_seconds: int = 600
+    publish_timeout_seconds: int = 120
 
     def __post_init__(self) -> None:
         if is_onelake_uri(self.output_dir):
@@ -105,7 +105,7 @@ class ConnectorConfig:
             cost_management_enabled=bool(cost.get("enabled", True)),
             cost_management_lookback_days=int(cost.get("lookback_days") or 30),
             identity_source=str(azure.get("identity_source") or "arg"),
-            publish_timeout_seconds=int(azure.get("publish_timeout_seconds") or 600),
+            publish_timeout_seconds=int(azure.get("publish_timeout_seconds", 120)),
         )
 
     @property
