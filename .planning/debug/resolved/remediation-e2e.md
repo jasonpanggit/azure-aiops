@@ -577,7 +577,7 @@ reasoning_checkpoint:
     - "web/src/app/remediation/page.test.tsx"
     - ".planning/debug/resolved/remediation-e2e.md"
 - oracle_type: "derived"
-- commit: "pending; the user explicitly requested commit and push after live verification"
+- commit: "0a130904; merged with concurrent Phase 11 mainline work and pushed via cac63cc"
 
 ## 2026-09-05T00:58:00Z — Live E2E terminal verification
 
