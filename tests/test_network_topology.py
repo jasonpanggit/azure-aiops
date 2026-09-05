@@ -21,6 +21,7 @@ from network import (
     build_topology,
     load_network_snapshot,
 )
+from network.models import PrivateEndpoint, PrivateLinkResource
 from network.topology import HUB_SCORE_THRESHOLD, PEER_RESOLUTION_VALUES
 
 
@@ -269,6 +270,198 @@ class TestConnectionScope:
         assert firewall["details"]["rules"]
         assert nsg["details"]["rules"]
         assert route_table["details"]["routes"]
+
+
+class TestPrivateLinkProjection:
+    FABRIC_ID = (
+        "/subscriptions/sub-a/resourceGroups/rg-data/providers/"
+        "Microsoft.Fabric/capacities/fabric-capacity"
+    )
+    AI_ID = (
+        "/subscriptions/sub-a/resourceGroups/rg-ai/providers/"
+        "Microsoft.CognitiveServices/accounts/foundry-tools"
+    )
+
+    @classmethod
+    def _resource(
+        cls,
+        resource_id: str,
+        *,
+        name: str,
+        resource_type: str,
+        service_kind: str,
+        subscription_id: str = "sub-a",
+    ) -> PrivateLinkResource:
+        return PrivateLinkResource(
+            resource_id=resource_id,
+            name=name,
+            subscription_id=subscription_id,
+            resource_group="rg-private-link",
+            connection_id=f"conn-{subscription_id}",
+            service_kind=service_kind,
+            resource_type=resource_type,
+            public_network_access="Enabled",
+        )
+
+    def test_fabric_and_ai_resources_project_with_workload_types_and_details(self) -> None:
+        snapshot = NetworkSnapshot(
+            private_link_resources=(
+                self._resource(
+                    self.FABRIC_ID,
+                    name="fabric-capacity",
+                    resource_type="Microsoft.Fabric/capacities",
+                    service_kind="Microsoft Fabric",
+                ),
+                self._resource(
+                    self.AI_ID,
+                    name="foundry-tools",
+                    resource_type="Microsoft.CognitiveServices/accounts",
+                    service_kind="Azure AI Services",
+                ),
+            )
+        )
+
+        resources = build_topology(snapshot).to_dict()["resources"]
+        by_id = {resource["id"].casefold(): resource for resource in resources}
+
+        assert len(resources) == 2
+        assert by_id[self.FABRIC_ID.casefold()]["entity_type"] == "FabricCapacity"
+        assert by_id[self.AI_ID.casefold()]["entity_type"] == "AIFoundryAccount"
+        assert by_id[self.FABRIC_ID.casefold()]["details"] | {
+            "service_kind": "Microsoft Fabric",
+            "public_network_access": "Enabled",
+            "private_link_candidate": True,
+            "private_link_scope": "tenant_or_workspace",
+        } == by_id[self.FABRIC_ID.casefold()]["details"]
+        assert by_id[self.AI_ID.casefold()]["details"] | {
+            "service_kind": "Azure AI Services",
+            "public_network_access": "Enabled",
+            "private_link_candidate": True,
+        } == by_id[self.AI_ID.casefold()]["details"]
+
+    def test_missing_private_endpoint_gap_ids_resolve_to_projected_nodes(self) -> None:
+        service = NetworkIntelligenceService(
+            NetworkSnapshot(
+                private_link_resources=(
+                    self._resource(
+                        self.FABRIC_ID,
+                        name="fabric-capacity",
+                        resource_type="Microsoft.Fabric/capacities",
+                        service_kind="Microsoft Fabric",
+                    ),
+                    self._resource(
+                        self.AI_ID,
+                        name="foundry-tools",
+                        resource_type="Microsoft.CognitiveServices/accounts",
+                        service_kind="Azure AI Services",
+                    ),
+                )
+            )
+        )
+
+        node_ids = {
+            resource["id"].casefold()
+            for resource in service.topology.to_dict()["resources"]
+        }
+        gaps = [
+            gap
+            for gap in service.gaps
+            if gap.category == "missing_private_endpoint"
+        ]
+
+        assert [gap.resource_id for gap in gaps] == [self.AI_ID.casefold()]
+        assert all(gap.resource_id.casefold() in node_ids for gap in gaps)
+
+    def test_private_link_resource_already_projected_as_workload_is_not_duplicated(
+        self,
+    ) -> None:
+        target_id = self.AI_ID.swapcase()
+        snapshot = NetworkSnapshot(
+            private_endpoints=(
+                PrivateEndpoint(
+                    resource_id=(
+                        "/subscriptions/sub-a/resourceGroups/rg-network/providers/"
+                        "Microsoft.Network/privateEndpoints/ai-pe"
+                    ),
+                    name="ai-pe",
+                    subscription_id="sub-a",
+                    resource_group="rg-network",
+                    target_resource_id=target_id,
+                ),
+            ),
+            private_link_resources=(
+                self._resource(
+                    self.AI_ID,
+                    name="foundry-tools",
+                    resource_type="Microsoft.CognitiveServices/accounts",
+                    service_kind="Azure AI Services",
+                ),
+            ),
+        )
+
+        matches = [
+            resource
+            for resource in build_topology(snapshot).to_dict()["resources"]
+            if resource["id"].casefold() == self.AI_ID.casefold()
+        ]
+
+        assert len(matches) == 1
+        assert matches[0]["entity_type"] == "AIFoundryAccount"
+        assert matches[0]["details"]["private_link_candidate"] is True
+
+    def test_unrecognised_private_link_provider_uses_generic_type(self) -> None:
+        resource_id = (
+            "/subscriptions/sub-a/resourceGroups/rg/providers/"
+            "Contoso.Widgets/widgets/widget-1"
+        )
+        snapshot = NetworkSnapshot(
+            private_link_resources=(
+                self._resource(
+                    resource_id,
+                    name="widget-1",
+                    resource_type="Contoso.Widgets/widgets",
+                    service_kind="Contoso Widgets",
+                ),
+            )
+        )
+
+        resources = build_topology(snapshot).to_dict()["resources"]
+
+        assert len(resources) == 1
+        assert resources[0]["entity_type"] == "PrivateLinkResource"
+
+    def test_scoped_projection_excludes_out_of_scope_private_link_resources(
+        self,
+    ) -> None:
+        foreign_id = self.AI_ID.replace("sub-a", "sub-b")
+        service = NetworkIntelligenceService(
+            NetworkSnapshot(
+                private_link_resources=(
+                    self._resource(
+                        self.AI_ID,
+                        name="foundry-tools-a",
+                        resource_type="Microsoft.CognitiveServices/accounts",
+                        service_kind="Azure AI Services",
+                    ),
+                    self._resource(
+                        foreign_id,
+                        name="foundry-tools-b",
+                        resource_type="Microsoft.CognitiveServices/accounts",
+                        service_kind="Azure AI Services",
+                        subscription_id="sub-b",
+                    ),
+                )
+            )
+        )
+
+        resources = service.scoped(
+            NetworkScope(subscription_ids=("sub-a",))
+        ).topology.to_dict()["resources"]
+
+        assert [resource["id"] for resource in resources] == [self.AI_ID.casefold()]
+
+
+class TestResourceTopologyProjection:
 
     def test_shared_service_summaries_do_not_duplicate_provider_resource_nodes(self) -> None:
         payload = _topology().to_dict()

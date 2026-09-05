@@ -557,6 +557,44 @@ class TestRuleRegistry:
         assert "kv-payments" in flagged
         assert "stpayments" not in flagged
 
+    def test_fabric_capacity_gap_is_suppressed_but_cognitive_account_remains(
+        self,
+    ) -> None:
+        rows = network_rows()
+        rows.extend(
+            [
+                _private_link_row(
+                    (
+                        "/subscriptions/sub-prod/resourcegroups/rg-data/providers/"
+                        "Microsoft.Fabric/capacities/fabric-capacity"
+                    ),
+                    "fabric-capacity",
+                    "sub-prod",
+                    "conn-prod",
+                    "Microsoft.Fabric/capacities",
+                ),
+                _private_link_row(
+                    (
+                        "/subscriptions/sub-prod/resourcegroups/rg-ai/providers/"
+                        "Microsoft.CognitiveServices/accounts/foundry-tools"
+                    ),
+                    "foundry-tools",
+                    "sub-prod",
+                    "conn-prod",
+                    "Microsoft.CognitiveServices/accounts",
+                ),
+            ]
+        )
+
+        gaps = [
+            gap
+            for gap in NetworkIntelligenceService.from_rows(rows).gaps
+            if gap.category == "missing_private_endpoint"
+        ]
+
+        assert not any(gap.resource_name == "fabric-capacity" for gap in gaps)
+        assert any(gap.resource_name == "foundry-tools" for gap in gaps)
+
     def test_disabling_the_rule_suppresses_its_gaps(self) -> None:
         policy = NetworkDesignPolicy.from_mapping(
             {
