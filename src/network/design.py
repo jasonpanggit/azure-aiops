@@ -12,6 +12,7 @@ which is materially different from "the design is satisfied".
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -388,6 +389,18 @@ class NetworkDesignPolicyValidationError(ValueError):
     """Raised when a policy update would leave the policy unusable."""
 
 
+class NetworkDesignPolicyRevisionConflict(RuntimeError):
+    """Raised when a policy writer targets a superseded revision."""
+
+    def __init__(self, expected: int, current: int) -> None:
+        self.expected = expected
+        self.current = current
+        super().__init__(
+            f"Network design policy revision {current} does not match "
+            f"expected {expected}; reload and retry"
+        )
+
+
 def validate_policy_update(changes: dict[str, Any]) -> None:
     """Rejects a subset of malformed edits before they are ever persisted.
 
@@ -431,45 +444,79 @@ class NetworkDesignPolicyStore:
 
     def __init__(self, documents: Any = None) -> None:
         self._documents = documents
-        self._memory: dict[str, Any] | None = None
+        self._memory: dict[str, Any] = {}
+        self._lock = threading.RLock()
 
     def read(self) -> NetworkDesignPolicy:
-        if self._documents is None:
-            return NetworkDesignPolicy.from_mapping(self._memory or {})
-        payload = self._documents.read(POLICY_DOCUMENT)
+        with self._lock:
+            payload = self._read_document()
         stored = payload.get("policy")
         return NetworkDesignPolicy.from_mapping(stored if isinstance(stored, dict) else {})
 
-    def update(self, changes: dict[str, Any]) -> NetworkDesignPolicy:
+    @property
+    def revision(self) -> int:
+        """Return the current policy revision for derived-analysis cache keys."""
+        with self._lock:
+            return int(self._read_document().get("revision") or 0)
+
+    def update(
+        self,
+        changes: dict[str, Any],
+        *,
+        expected_revision: int | None = None,
+    ) -> NetworkDesignPolicy:
         """Applies a partial update and returns the full effective policy."""
         validate_policy_update(changes)
-        merged = self._merge_changes(changes)
-        if self._documents is None:
-            self._memory = merged
-            return NetworkDesignPolicy.from_mapping(merged)
-
-        payload = self._documents.read(POLICY_DOCUMENT)
-        revision = int(payload.get("revision") or 0)
-        self._documents.write(
-            POLICY_DOCUMENT,
-            {"policy": merged, "revision": revision + 1},
-            expected_revision=revision,
-        )
+        with self._lock:
+            payload = self._read_document()
+            revision = int(payload.get("revision") or 0)
+            if expected_revision is not None and expected_revision != revision:
+                raise NetworkDesignPolicyRevisionConflict(
+                    expected_revision,
+                    revision,
+                )
+            stored = payload.get("policy")
+            current = NetworkDesignPolicy.from_mapping(
+                stored if isinstance(stored, dict) else {}
+            )
+            merged = self._merge_changes(changes, current=current)
+            document = {"policy": merged, "revision": revision + 1}
+            if self._documents is None:
+                self._memory = document
+            else:
+                self._documents.write(
+                    POLICY_DOCUMENT,
+                    document,
+                    expected_revision=revision,
+                )
         return NetworkDesignPolicy.from_mapping(merged)
 
     def preview(self, changes: dict[str, Any]) -> NetworkDesignPolicy:
         """Returns the effective policy for changes without persisting them."""
         validate_policy_update(changes)
-        return NetworkDesignPolicy.from_mapping(self._merge_changes(changes))
+        with self._lock:
+            return NetworkDesignPolicy.from_mapping(self._merge_changes(changes))
 
-    def _merge_changes(self, changes: dict[str, Any]) -> dict[str, Any]:
-        current = self.read().to_dict()
-        merged = {**current, **changes}
+    def _read_document(self) -> dict[str, Any]:
+        if self._documents is None:
+            return self._memory
+        return self._documents.read(POLICY_DOCUMENT)
+
+    def _merge_changes(
+        self,
+        changes: dict[str, Any],
+        *,
+        current: NetworkDesignPolicy | None = None,
+    ) -> dict[str, Any]:
+        current_payload = (current or self.read()).to_dict()
+        merged = {**current_payload, **changes}
         # Rules replace by rule_id rather than requiring the whole list to be
         # resubmitted, so a UI toggling one rule's ``enabled`` flag does not
         # need to round-trip every other rule first.
         if "rules" in changes:
-            existing_rules = {item["rule_id"]: item for item in current.get("rules") or []}
+            existing_rules = {
+                item["rule_id"]: item for item in current_payload.get("rules") or []
+            }
             for item in changes["rules"]:
                 if isinstance(item, dict) and item.get("rule_id"):
                     existing_rules[str(item["rule_id"])] = item
