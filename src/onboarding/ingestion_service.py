@@ -12,6 +12,12 @@ from intelligence.vulnerability.acquisition import (
     AcquisitionSuccess,
     successful_rows_by_query,
 )
+from intelligence.vulnerability.workload_inventory import (
+    WorkloadProjection,
+    acquire_workload_inventory,
+    activate_workload_partitions,
+)
+from storage.datasets import DatasetStore as GenerationDatasetStore
 from storage.locking import RunLock
 
 from .azure_clients import AzureCliArgClient, AzureMcpClient
@@ -22,6 +28,7 @@ from .ingestion_state import StateStore
 from .ingestion_storage import DatasetStore
 from .inventory_read_adapter import InventoryReadAdapter
 from .monitor_logs import AzureMonitorLogsClient
+from .ontology_metadata import generate_ontology_metadata
 from .query_catalog import QueryCatalog
 
 logger = logging.getLogger(__name__)
@@ -90,9 +97,16 @@ class IngestionService:
         if not subscriptions:
             raise RuntimeError("No Azure subscriptions were returned by Azure MCP")
 
-        specs = QueryCatalog(self.config.change_overlap_minutes).build(
-            since, include_management_groups=bool(self.config.management_groups)
+        from intelligence.inventory.sources.arg import (
+            inventory_log_analytics_workspace_specs,
         )
+
+        specs = [
+            *QueryCatalog(self.config.change_overlap_minutes).build(
+                since, include_management_groups=bool(self.config.management_groups)
+            ),
+            *inventory_log_analytics_workspace_specs(),
+        ]
         # Cost Management is independent of ARG discovery. Overlap both
         # bounded acquisition paths; normalization and publication stay
         # serialized below.
@@ -121,6 +135,47 @@ class IngestionService:
         )
         normalization_payload["cost_actuals"] = cost_rows
         run_id = str(uuid.uuid4())
+        completed_at = _iso(started)
+        workload_outcomes = acquire_workload_inventory(
+            logs_client=self.logs_client,
+            connection_id=str(
+                self.config.connection_context.get("connection_id") or "default"
+            ),
+            discovered_workspaces=query_results.get(
+                "inventory_log_analytics_workspaces", []
+            ),
+            clock=self.clock,
+        )
+        workload = (
+            activate_workload_partitions(
+                outcomes=workload_outcomes,
+                defender_rows=query_results.get("defender_subassessments", []),
+                attempted_generation=run_id,
+                completed_at=completed_at,
+                previous_observations=self.store.read_dataset(
+                    "exposure/workload_observations"
+                ),
+                previous_deployments=self.store.read_dataset(
+                    "exposure/workload_deployments"
+                ),
+                previous_checkpoints=self.store.read_dataset(
+                    "exposure/workload_source_checkpoints"
+                ),
+            )
+            if workload_outcomes
+            else WorkloadProjection(
+                observations=tuple(
+                    self.store.read_dataset("exposure/workload_observations")
+                ),
+                deployments=tuple(
+                    self.store.read_dataset("exposure/workload_deployments")
+                ),
+                checkpoints=tuple(
+                    self.store.read_dataset("exposure/workload_source_checkpoints")
+                ),
+                unknown_reasons=("workspace_discovery_unavailable",),
+            )
+        )
         graph = Normalizer(self.config.connection_context).normalize(
             normalization_payload,
             started,
@@ -130,16 +185,17 @@ class IngestionService:
         _preserve_created_timestamps(graph, self.store)
         _preserve_source_watermarks(graph, self.store)
         change_watermark = _max_change_watermark(previous_watermark, graph.changes)
-        manifest = self.store.publish(
+        manifest = self._publish_generation(
             graph,
             query_results,
             {
                 "runId": run_id,
-                "startedAt": _iso(started),
+                "startedAt": completed_at,
                 "subscriptions": sorted(subscriptions),
                 "queryVersion": "1.0.0",
                 "status": "completed",
             },
+            workload=workload,
         )
         self.state.save(
             {
@@ -152,6 +208,45 @@ class IngestionService:
             }
         )
         return manifest
+
+    def _publish_generation(
+        self,
+        graph: Any,
+        query_results: dict[str, list[dict]],
+        run_metadata: dict[str, Any],
+        *,
+        workload: WorkloadProjection,
+    ) -> dict[str, Any]:
+        """Publish graph and workload products behind one generation pointer."""
+
+        datasets: dict[str, list[dict]] = {
+            **{
+                f"entities/{entity_type}": rows
+                for entity_type, rows in graph.entities.items()
+            },
+            "relationships/relationships": graph.relationships,
+            "changes/resource_changes": graph.changes,
+            "exposure/workload_observations": list(workload.observations),
+            "exposure/workload_deployments": list(workload.deployments),
+            "exposure/workload_source_checkpoints": list(workload.checkpoints),
+        }
+        for collection in (
+            "situations",
+            "evidence",
+            "links",
+            "audit_events",
+            "source_status",
+        ):
+            rows = getattr(graph, collection, None)
+            if rows is not None:
+                datasets[f"situations/{collection}"] = list(rows)
+        return GenerationDatasetStore.publish(
+            self.store,
+            datasets,
+            query_results,
+            run_metadata,
+            ontology=generate_ontology_metadata(graph.entities),
+        )
 
     def _identity_rows_from_inventory(self, subscriptions: list[str]) -> dict[str, list[dict]]:
         """Sources `resources`/`resource_containers` rows via the inventory

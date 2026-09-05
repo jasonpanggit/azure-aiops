@@ -7,7 +7,7 @@ from fabric_pipelines.topology_fabric_contracts import (
     TOPOLOGY_ENTITIES_CONTRACT,
 )
 
-SCHEMA_VERSION = "2.0.0"
+SCHEMA_VERSION = "2.1.0"
 
 _BASE = [
     pa.field("tenant_id", pa.string(), nullable=False),
@@ -266,6 +266,69 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("last_assessed_at", pa.string(), nullable=False),
         ]
     ),
+    "silver_workload_observations": pa.schema(
+        [
+            *_BASE,
+            pa.field("observation_id", pa.string(), nullable=False),
+            pa.field("checkpoint_key", pa.string(), nullable=False),
+            pa.field("checkpoint_key_version", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field("connection_id", pa.string(), nullable=False),
+            pa.field("workspace_id", pa.string(), nullable=False),
+            pa.field("source_family", pa.string(), nullable=False),
+            pa.field("source_table", pa.string(), nullable=False),
+            pa.field("query_version", pa.string(), nullable=False),
+            pa.field("attempted_generation", pa.string(), nullable=False),
+            pa.field("effective_generation", pa.string(), nullable=False),
+            pa.field("observed_at", pa.string(), nullable=False),
+            pa.field("cluster_id", pa.string(), nullable=False),
+            pa.field("namespace", pa.string(), nullable=False),
+            pa.field("controller_kind", pa.string(), nullable=False),
+            pa.field("controller_name", pa.string(), nullable=False),
+            pa.field("pod_name", pa.string(), nullable=False),
+            pa.field("pod_uid", pa.string(), nullable=False),
+            pa.field("container_id", pa.string(), nullable=False),
+            pa.field("container_name", pa.string(), nullable=False),
+            pa.field("image_digest", pa.string(), nullable=False),
+            pa.field("repository", pa.string(), nullable=False),
+            pa.field("tag", pa.string(), nullable=False),
+            pa.field("provider_row_hash", pa.string(), nullable=False),
+            pa.field("lkg_source_generation", pa.string(), nullable=False),
+            pa.field("carried_forward", pa.bool_(), nullable=False),
+            pa.field("provenance_json", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_workload_deployments": pa.schema(
+        [
+            *_BASE,
+            pa.field("deployment_id", pa.string(), nullable=False),
+            pa.field("checkpoint_key", pa.string(), nullable=False),
+            pa.field("checkpoint_key_version", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field("connection_id", pa.string(), nullable=False),
+            pa.field("workspace_id", pa.string(), nullable=False),
+            pa.field("defender_observation_id", pa.string(), nullable=False),
+            pa.field("image_digest", pa.string(), nullable=False),
+            pa.field("cluster_id", pa.string(), nullable=False),
+            pa.field("namespace", pa.string(), nullable=False),
+            pa.field("controller_kind", pa.string(), nullable=False),
+            pa.field("controller_name", pa.string(), nullable=False),
+            pa.field("pod_name", pa.string(), nullable=False),
+            pa.field("pod_uid", pa.string(), nullable=False),
+            pa.field("container_id", pa.string(), nullable=False),
+            pa.field("container_name", pa.string(), nullable=False),
+            pa.field("observed_at", pa.string(), nullable=False),
+            pa.field("defender_observed_at", pa.string(), nullable=False),
+            pa.field("repository", pa.string(), nullable=False),
+            pa.field("tag", pa.string(), nullable=False),
+            pa.field("attempted_generation", pa.string(), nullable=False),
+            pa.field("effective_generation", pa.string(), nullable=False),
+            pa.field("lkg_source_generation", pa.string(), nullable=False),
+            pa.field("carried_forward", pa.bool_(), nullable=False),
+            pa.field("unknown_reason", pa.string(), nullable=False),
+            pa.field("provenance_json", pa.string(), nullable=False),
+        ]
+    ),
     "silver_defender_alerts": pa.schema(_ENTITY),
     "silver_defender_attack_paths": pa.schema(_ENTITY),
     "silver_defender_attack_path_nodes": pa.schema(_ENTITY),
@@ -509,6 +572,32 @@ SCHEMAS: dict[str, pa.Schema] = {
             # this table rather than creating a second status table.
             pa.field("row_count", pa.int64(), nullable=True),
             pa.field("lineage_ref", pa.string(), nullable=True),
+        ]
+    ),
+    "metadata_workload_source_checkpoints": pa.schema(
+        [
+            *_BASE,
+            pa.field("checkpoint_key", pa.string(), nullable=False),
+            pa.field("checkpoint_key_version", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field("connection_id", pa.string(), nullable=False),
+            pa.field("workspace_id", pa.string(), nullable=False),
+            pa.field("source_family", pa.string(), nullable=False),
+            pa.field("source_table", pa.string(), nullable=False),
+            pa.field("query_version", pa.string(), nullable=False),
+            pa.field("status", pa.string(), nullable=False),
+            pa.field("attempted_generation", pa.string(), nullable=False),
+            pa.field("effective_generation", pa.string(), nullable=False),
+            pa.field("attempted_at", pa.string(), nullable=False),
+            pa.field("completed_at", pa.string(), nullable=False),
+            pa.field("last_success_at", pa.string(), nullable=False),
+            pa.field("row_count", pa.int64(), nullable=False),
+            pa.field("carried_forward", pa.bool_(), nullable=False),
+            pa.field("lkg_source_generation", pa.string(), nullable=False),
+            pa.field("completeness", pa.string(), nullable=False),
+            pa.field("safe_error_code", pa.string(), nullable=False),
+            pa.field("safe_error_summary", pa.string(), nullable=False),
+            pa.field("unknown_reason_counts_json", pa.string(), nullable=False),
         ]
     ),
     # MED-09: publication manifest -- the lifecycle-disposition

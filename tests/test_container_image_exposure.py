@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 from onboarding.defender_normalize import (
     is_container_image_assessment,
@@ -406,7 +407,19 @@ def test_exact_digest_and_observation_time_produce_one_deployment() -> None:
     assert deployment["repository"] == "acr1.azurecr.io/api"
     assert deployment["tag"] == "v1"
     assert DIGEST_A in deployment["deployment_id"]
-    assert "v1" not in deployment["deployment_id"]
+    moved_tag_images = [{**images[0], "Tag": "v2"}]
+    moved_tag = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[_defender_image_row()],
+        kube_pod_rows=pods,
+        container_rows=containers,
+        image_rows=moved_tag_images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+    assert moved_tag.deployments[0]["deployment_id"] == deployment["deployment_id"]
+    assert moved_tag.deployments[0]["tag"] == "v2"
 
 
 def test_unproved_workload_links_remain_typed_unknown() -> None:
