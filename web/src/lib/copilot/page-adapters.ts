@@ -195,7 +195,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     .filter((item): item is CopilotSnapshotFreshness => item !== null)
     .sort((left, right) => left.source.localeCompare(right.source));
   const totalCount = Math.max(input.totalCount, evidence.length);
-  const complete = evidence.length === totalCount && freshness.every((item) => item.status === "fresh");
+  const complete = evidence.length === totalCount;
 
   return {
     disposition: "integrated",

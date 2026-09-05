@@ -76,4 +76,26 @@ describe("inventory Copilot page adapter", () => {
     const nonAzure = first.snapshot.evidence.find((item) => item.source === "inventory/os_observations");
     expect(nonAzure?.resource_id).toContain("Windows%20Server%7C2019");
   });
+
+  it("keeps complete coverage independent from stale source freshness", () => {
+    const context = buildInventoryCopilotContext({
+      scope: {},
+      tab: "os",
+      filters: {},
+      records,
+      totalCount: records.length,
+      sourceStatuses: [{
+        source: "arc",
+        observedAt: "2026-08-25T09:00:00Z",
+        status: "stale",
+      }],
+    });
+
+    expect(context.snapshot.coverage.complete).toBe(true);
+    expect(context.snapshot.freshness).toEqual([{
+      source: "arc",
+      observed_at: "2026-08-25T09:00:00Z",
+      status: "stale",
+    }]);
+  });
 });

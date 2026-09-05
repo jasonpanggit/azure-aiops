@@ -16,6 +16,7 @@ import {
   type CopilotEvidenceSnapshotV2,
 } from "@/lib/copilot/page-adapters";
 import type { ScopeSelection } from "@/lib/scope";
+import { ApiError } from "@/lib/types";
 import type { CopilotContextFinding, EvidenceItem } from "@/lib/types";
 
 interface ChatTurn {
@@ -107,6 +108,11 @@ function readStoredThread(pageKind: string | undefined): string | null {
 function storeThread(pageKind: string, threadId: string): void {
   if (typeof window === "undefined" || !OPAQUE_THREAD_PATTERN.test(threadId)) return;
   window.sessionStorage.setItem(`${THREAD_STORAGE_PREFIX}${pageKind}`, threadId);
+}
+
+function clearStoredThread(pageKind: string): void {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.removeItem(`${THREAD_STORAGE_PREFIX}${pageKind}`);
 }
 
 export function CopilotDrawer({
@@ -270,6 +276,16 @@ export function CopilotDrawer({
       ]);
       setStage(synthesisMode === "deterministic" ? "fallback" : result.findings?.some((finding) => finding.status !== "verified") ? "partial" : "idle");
     } catch (reason) {
+      if (
+        canonicalSnapshot
+        && reason instanceof ApiError
+        && reason.status === 404
+        && reason.code === "not_found"
+        && reason.details?.field === "thread_id"
+      ) {
+        canonicalThreadId.current = null;
+        clearStoredThread(canonicalSnapshot.page_kind);
+      }
       setTurns((current) => [
         ...current,
         { question: nextQuestion, error: reason instanceof Error ? reason.message : "Copilot could not answer this request." },

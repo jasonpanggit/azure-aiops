@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
+import { ApiError } from "@/lib/types";
 import { CopilotDrawer } from "./CopilotDrawer";
 
 const { investigateContext } = vi.hoisted(() => ({ investigateContext: vi.fn() }));
@@ -260,5 +261,67 @@ describe("CopilotDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
     await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
     expect(investigateCanonical.mock.calls[1][0]).toMatchObject({ thread_id: threadId });
+  });
+
+  it("clears an expired opaque thread so retry starts a new server thread", async () => {
+    investigateCanonical.mockClear();
+    const expiredThread = "thr-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const replacementThread = "thr-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    window.sessionStorage.setItem("aiops.copilot.thread.inventory", expiredThread);
+    investigateCanonical
+      .mockRejectedValueOnce(new ApiError(
+        404,
+        "not_found",
+        "Investigation thread not found",
+        { field: "thread_id" },
+      ))
+      .mockResolvedValueOnce({
+        data: {
+          contract_version: "1",
+          status: "empty",
+          policy_status: "fallback",
+          fallback_reason: "planner_unavailable",
+          selected_specialists: ["inventory_data_health"],
+          selected_tools: ["inventory_resources"],
+          tool_results: [],
+          uncertainty: [],
+          coverage: { visible_count: 0, total_count: 0, complete: true },
+          citations: [],
+          thread_id: replacementThread,
+          thread_revision: 1,
+          mutation_authorized: false,
+        },
+        evidence: [],
+        warnings: [],
+      });
+    const inventorySnapshot = {
+      version: "2" as const,
+      page_kind: "inventory" as const,
+      page_id: "inventory" as const,
+      coverage: { visible_count: 0, total_count: 0, complete: true },
+      freshness: [],
+      evidence: [],
+    };
+
+    render(
+      <ScopeProvider>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Inventory"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={inventorySnapshot}
+          starterQuestions={[{ label: "Review inventory health" }]}
+        />
+      </ScopeProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
+    expect(await screen.findByText("Investigation thread not found")).toBeInTheDocument();
+    expect(window.sessionStorage.getItem("aiops.copilot.thread.inventory")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
+    expect(investigateCanonical.mock.calls[1][0]).not.toHaveProperty("thread_id");
+    expect(window.sessionStorage.getItem("aiops.copilot.thread.inventory")).toBe(replacementThread);
   });
 });
