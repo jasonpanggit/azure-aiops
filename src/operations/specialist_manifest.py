@@ -48,7 +48,7 @@ _MUTATION_MARKERS = (
     "write",
 )
 _READ_ONLY_EXECUTE_TOOLS = {"arm_execute_query"}
-_LOCKED_POLICY_DIGEST = "260d06347879bcfe62a1af8416d1d36ffc63926299bf35a45ecde6b514adfc16"
+_LOCKED_POLICY_DIGEST = "38f307f26927ac43919d0a8bd71fee8dc2fcffdae3d49796bb8321ec96edd8bf"
 _READ_ONLY_AZURE_MCP_TOOLS = frozenset(
     {
         "advisor_recommendation_list",
@@ -366,25 +366,11 @@ def _reject_credentials(value: Any, *, path: str = "manifest") -> None:
 
 
 def _policy_digest(manifest: SpecialistManifest) -> str:
-    locked = {
-        "version": manifest.version,
-        "contract_version": manifest.contract_version,
-        "runtime_contract_version": manifest.runtime_contract_version,
-        "legacy_operations_mcp_tools": manifest.legacy_operations_mcp_tools,
-        "specialists": [
-            {
-                "id": specialist.id,
-                "dependencies": specialist.dependencies,
-                "operations_mcp_tools": specialist.operations_mcp_tools,
-                "azure_mcp_tools": specialist.azure_mcp_tools,
-                "page_mappings": specialist.page_mappings,
-                "requires_citations": specialist.output_contract.requires_citations,
-                "read_only": specialist.read_only,
-            }
-            for specialist in manifest.specialists
-        ],
-    }
-    serialized = json.dumps(locked, sort_keys=True, separators=(",", ":"))
+    serialized = json.dumps(
+        manifest.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 

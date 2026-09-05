@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from operations.autonomous_investigation import (
     _agent_run,
     _tool_args,
     agent_catalog,
+    run_context_investigation,
 )
 from operations.foundry_agent import (
     SPECIALIST_IDS,
@@ -25,6 +27,7 @@ from operations.mcp_server import (
     reviewed_tools_for_specialist,
     tool_definitions,
 )
+from operations.page_context import PageSnapshot
 from operations.specialist_manifest import (
     LOCKED_SPECIALIST_IDS,
     load_specialist_manifest,
@@ -167,6 +170,14 @@ def test_catalog_page_mapping_prompt_and_output_projections_are_exact(monkeypatc
     assert manifest.page_mapping_projection()["resource_health"] == (
         "resource_health_observability",
     )
+    assert manifest.page_mapping_projection()["resource"] == (
+        "governance",
+        "resource_health_observability",
+    )
+    assert manifest.page_mapping_projection()["remediation"] == (
+        "governance",
+        "remediation",
+    )
 
     for specialist in manifest.specialists:
         assert _agent_contract(specialist.id) == {
@@ -223,6 +234,16 @@ def test_parameterized_tool_arguments_are_bounded_and_missing_inputs_skip_io(
         "Review plan RMP-123",
         "RMP-123",
     ) == {"name": "RMP-123"}
+    assert _tool_args(
+        "defender_remediation_cases",
+        "Show defender remediation cases",
+        "Show",
+    ) == {}
+    assert _tool_args(
+        "defender_remediation_cases",
+        "Show defender remediation cases for business service Retail Banking",
+        "Show",
+    ) == {"business_service": "Retail Banking"}
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -246,6 +267,42 @@ def test_parameterized_tool_arguments_are_bounded_and_missing_inputs_skip_io(
 
     assert calls == []
     assert run["tool_calls"] == []
+
+
+def test_empty_network_snapshot_skips_fabric_iq_enrichment_io(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "deterministic")
+    monkeypatch.setattr(
+        "operations.autonomous_investigation._agent_run",
+        lambda agent, objective, **kwargs: {
+            "agent_id": agent.id,
+            "agent_name": agent.name,
+            "status": "empty",
+            "tool_calls": [],
+            "findings": [],
+            "evidence": [],
+        },
+    )
+    monkeypatch.setattr(
+        "operations.autonomous_investigation.call_tool",
+        lambda name, args, **kwargs: calls.append((name, args)),
+    )
+
+    ledger = run_context_investigation(
+        PageSnapshot(
+            page_kind="network",
+            page_id="topology",
+            question="Summarize network health",
+        ),
+        context=SimpleNamespace(),
+        scope=Scope.unrestricted(),
+        principal_subject="operator@example.com",
+    )
+
+    assert calls == []
+    assert all(
+        call["operation"] != "enrichment" for call in ledger["tool_calls"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -323,6 +380,36 @@ def test_parameterized_tool_arguments_are_bounded_and_missing_inputs_skip_io(
                 "output_contract"
             ].update({"requires_citations": False}),
             "requires_citations",
+        ),
+        (
+            lambda payload: payload["specialists"][0]["output_contract"][
+                "required_fields"
+            ].remove("summary"),
+            "locked specialist contract",
+        ),
+        (
+            lambda payload: payload["specialists"][0]["intent_examples"].append(
+                "routing drift"
+            ),
+            "locked specialist contract",
+        ),
+        (
+            lambda payload: payload["specialists"][0]["page_mappings"].__setitem__(
+                1, "overview"
+            ),
+            "locked specialist contract",
+        ),
+        (
+            lambda payload: payload["specialists"][0]["knowledge_policy"][
+                "optional_sources"
+            ].remove("fabric_iq"),
+            "locked specialist contract",
+        ),
+        (
+            lambda payload: payload["specialists"][0]["foundry"].update(
+                {"model": "gpt-4.2"}
+            ),
+            "locked specialist contract",
         ),
     ],
 )

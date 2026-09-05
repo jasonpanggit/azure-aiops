@@ -118,7 +118,7 @@
       "operations_mcp_tools": ["business_service_context", "application_context", "risk_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
       "azure_mcp_tools": ["subscription_list", "group_list", "policy_assignment_list", "role_assignment_list", "arm_execute_query", "wellarchitectedframework_serviceguide_get"],
       "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
-      "page_mappings": ["compliance", "governance"],
+      "page_mappings": ["compliance", "governance", "resource", "remediation"],
       "output_contract": {
         "schema_version": "1",
         "requires_citations": true,

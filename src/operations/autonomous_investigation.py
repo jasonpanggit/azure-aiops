@@ -214,7 +214,13 @@ def _tool_args(tool: str, objective: str, subject: str) -> dict[str, Any]:
     if tool == "remediation_business_decision":
         return {"name": subject} if subject else {}
     if tool == "defender_remediation_cases":
-        return {"business_service": subject} if subject else {}
+        match = re.search(
+            r"\b(?:for|about)\s+(?:the\s+)?business\s+service"
+            r"\s+(?:named\s+)?[\"“]?([^\"”?,.;]+)",
+            objective,
+            flags=re.IGNORECASE,
+        )
+        return {"business_service": match.group(1).strip()} if match else {}
     if tool == "search":
         return {"query": objective}
     return {}
@@ -868,12 +874,19 @@ def run_context_investigation(
         for iq_tool in _NETWORK_ENRICHMENT_TOOLS[:remaining_tools]:
             if time.monotonic() - started >= timeout_seconds:
                 break
+            try:
+                args, _ = validate_tool_arguments(
+                    iq_tool,
+                    {"subject": subject} if subject else {},
+                )
+            except ValueError:
+                continue
             result = call_tool(
-                iq_tool, {"subject": subject}, context=context, scope=scope
+                iq_tool, args, context=context, scope=scope
             )
             tool_calls.append({
                 "tool": iq_tool,
-                "arguments": {"subject": subject},
+                "arguments": args,
                 "status": result.status,
                 "warning": result.warning,
                 "attempts": 1,
