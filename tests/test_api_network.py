@@ -8,6 +8,7 @@ the "unavailable, not empty" contract are validated end to end.
 from __future__ import annotations
 
 import json
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -119,6 +120,32 @@ def _scope_leak_service() -> NetworkIntelligenceService:
 
 
 class TestTopology:
+    def test_detail_contract_is_additive_and_defaults_to_full(self, client):
+        default = client.get("/api/v1/network/topology", headers=_auth())
+        full = client.get(
+            "/api/v1/network/topology",
+            params={"detail": "full"},
+            headers=_auth(),
+        )
+        summary = client.get(
+            "/api/v1/network/topology",
+            params={"detail": "summary"},
+            headers=_auth(),
+        )
+
+        assert default.status_code == full.status_code == summary.status_code == 200
+        assert default.content == full.content
+        assert summary.json()["data"]["topology"]["coverage"]["truncated"] is False
+
+    def test_rejects_an_unknown_detail_level(self, client):
+        response = client.get(
+            "/api/v1/network/topology",
+            params={"detail": "everything"},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 400
+
     def test_returns_stitched_hub_spoke_topology(self, client):
         response = client.get("/api/v1/network/topology", headers=_auth())
         assert response.status_code == 200
@@ -163,6 +190,57 @@ class TestTopology:
         ).json()["data"]["topology"]
         remotes = {link["remote_vnet_id"] for link in topology["links"]}
         assert any(UAT_SUB in remote for remote in remotes)
+
+    def test_withheld_nsg_rules_are_paginated_through_drill_down(self, tmp_path):
+        service = build_service(network_rows())
+        nsg = next(item for item in service.snapshot.nsgs if len(item.ordered_rules()) > 1)
+        client = _client(tmp_path, network_service=service)
+
+        response = client.get(
+            "/api/v1/network/topology/resources/"
+            f"{quote(nsg.resource_id.lstrip('/'), safe='/')}/details",
+            params={"offset": 1, "limit": 1},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["resource_id"] == nsg.resource_id
+        assert body["data"]["detail_type"] == "rules"
+        assert len(body["data"]["items"]) == 1
+        assert body["data"]["coverage"] == {
+            "total": len(nsg.ordered_rules()),
+            "returned": 1,
+            "truncated": True,
+        }
+        assert body["pagination"] == {
+            "offset": 1,
+            "limit": 1,
+            "total": len(nsg.ordered_rules()),
+            "next_offset": 2,
+        }
+        assert body["warnings"]
+
+    def test_drill_down_returns_no_data_for_an_out_of_scope_resource(self, tmp_path):
+        service = build_service(network_rows())
+        foreign_nsg = next(
+            item for item in service.snapshot.nsgs if item.subscription_id == UAT_SUB
+        )
+        client = _client(tmp_path, network_service=service)
+
+        response = client.get(
+            "/api/v1/network/topology/resources/"
+            f"{quote(foreign_nsg.resource_id.lstrip('/'), safe='/')}/details",
+            headers=_auth(SCOPED_TOKEN),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"] == {
+            "resource_id": foreign_nsg.resource_id,
+            "detail_type": "",
+            "items": [],
+            "coverage": {"total": 0, "returned": 0, "truncated": False},
+        }
 
 
 class TestHubDependents:

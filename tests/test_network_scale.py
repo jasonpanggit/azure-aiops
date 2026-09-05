@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,10 +10,12 @@ from time import perf_counter
 
 import pytest
 
+import network.topology as topology_module
 from network.models import NetworkSnapshot
 from network.topology import build_topology
 from tests.network_scale_fixtures import (
     enterprise_estate,
+    g4_baseline_estate,
     mid_estate,
     small_estate,
 )
@@ -38,8 +41,12 @@ class PayloadMeasurement:
     serialized_bytes: int
 
 
-def _measure_payload(snapshot: NetworkSnapshot) -> PayloadMeasurement:
-    payload = build_topology(snapshot).to_dict()
+def _measure_payload(
+    snapshot: NetworkSnapshot,
+    *,
+    detail: str = "full",
+) -> PayloadMeasurement:
+    payload = build_topology(snapshot).to_dict(detail=detail)
     return PayloadMeasurement(
         nodes=len(payload["resources"]),
         edges=len(payload["relationships"]),
@@ -124,15 +131,78 @@ def test_g2_budgets_are_declared() -> None:
     assert G2_BYTE_CEILING == 2_000_000
 
 
-@pytest.mark.skip(
-    reason="Plan 12-07 adds detail=summary; enable against G1_NODE_CAP and G1_BYTE_CEILING"
-)
+def test_g4_default_detail_is_byte_identical_to_the_pre_change_contract() -> None:
+    """Gate G-4 runs before the summary gates and locks the additive default."""
+    topology = build_topology(g4_baseline_estate())
+    default_payload = topology.to_dict()
+    explicit_full_payload = topology.to_dict(detail="full")
+    canonical = json.dumps(
+        default_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+    assert default_payload == explicit_full_payload
+    assert len(canonical) == 111_155
+    assert hashlib.sha256(canonical).hexdigest() == (
+        "86d8d899a856e64b9aca1974471e6cf8eee4d4abc2dbad02b26930a6a0091440"
+    )
+
+
 def test_g1_small_summary_payload_budget() -> None:
-    """Gate G-1 is activated by plan 12-07."""
+    """Gate G-1 asserts both visible node count and serialized byte cost."""
+    payload = build_topology(small_estate()).to_dict(detail="summary")
+    resource_types = {item["entity_type"] for item in payload["resources"]}
+    controls = {
+        item["entity_type"]: item
+        for item in payload["resources"]
+        if item["entity_type"]
+        in {
+            "NetworkSecurityGroup",
+            "RouteTable",
+            "AzureFirewall",
+            "FirewallPolicy",
+            "FirewallRuleCollection",
+        }
+    }
+
+    assert len(payload["resources"]) <= G1_NODE_CAP
+    assert len(json.dumps(payload)) <= G1_BYTE_CEILING
+    assert resource_types.isdisjoint(
+        {"NetworkSecurityRule", "Route", "FirewallRule"}
+    )
+    assert "rules" not in controls["NetworkSecurityGroup"]["details"]
+    assert "routes" not in controls["RouteTable"]["details"]
+    assert "rules" not in controls["AzureFirewall"]["details"]
+    assert "rule_collections" not in controls["FirewallPolicy"]["details"]
+    assert "rules" not in controls["FirewallRuleCollection"]["details"]
 
 
-@pytest.mark.skip(
-    reason="Plan 12-07 adds enterprise summary truncation; enable against G2_NODE_CAP and G2_BYTE_CEILING"
-)
 def test_g2_enterprise_summary_payload_budget() -> None:
-    """Gate G-2 is activated by plan 12-07."""
+    """Gate G-2 proves the enterprise response is bounded and honest."""
+    payload = build_topology(enterprise_estate()).to_dict(detail="summary")
+
+    assert len(payload["resources"]) <= G2_NODE_CAP
+    assert len(json.dumps(payload)) <= G2_BYTE_CEILING
+    assert payload["coverage"] == {
+        "total": 2_600,
+        "returned": len(payload["resources"]),
+        "truncated": True,
+    }
+
+
+def test_topology_projection_is_computed_once_per_response(monkeypatch) -> None:
+    topology = build_topology(small_estate())
+    calls = 0
+    original = topology_module._topology_resources
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(topology_module, "_topology_resources", counted)
+
+    topology.to_dict(detail="summary")
+
+    assert calls == 1
