@@ -7,6 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
+from intelligence.vulnerability.acquisition import (
+    AcquisitionFailure,
+    AcquisitionSuccess,
+    successful_rows_by_query,
+)
 from storage.locking import RunLock
 
 from .azure_clients import AzureCliArgClient, AzureMcpClient
@@ -96,6 +101,11 @@ class IngestionService:
             cost_future = executor.submit(self._fetch_cost_actuals, subscriptions, started)
             query_results = query_future.result()
             cost_rows = cost_future.result()
+        if query_results and all(
+            isinstance(value, (AcquisitionSuccess, AcquisitionFailure))
+            for value in query_results.values()
+        ):
+            query_results = successful_rows_by_query(query_results)
         for spec in specs:
             for row in query_results.get(spec.name, []):
                 row.setdefault("query_version", spec.version)

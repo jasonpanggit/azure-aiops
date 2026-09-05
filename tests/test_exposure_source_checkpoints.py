@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
-import json
 from typing import Any
 
 import pytest
@@ -15,7 +15,6 @@ from tests.exposure_scenario import (
     scenario_fingerprint,
     stable_identity,
 )
-
 
 ARG_PATCH_ROW = {
     "id": (
