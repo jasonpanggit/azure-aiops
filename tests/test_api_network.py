@@ -314,6 +314,55 @@ class TestGaps:
         assert len(body["data"]["gaps"]) <= 1
         assert body["pagination"]["limit"] == 1
 
+    def test_coverage_and_pagination_are_additive_and_honest(self, client):
+        complete = client.get(
+            "/api/v1/network/gaps",
+            params={"limit": 500},
+            headers=_auth(),
+        ).json()
+        total = len(complete["data"]["gaps"])
+        expected_legacy_types = {
+            "gaps": list,
+            "intended_design_declared": bool,
+            "summary": dict,
+        }
+
+        assert total > 1
+        assert all(
+            key in complete["data"]
+            and isinstance(complete["data"][key], expected_type)
+            for key, expected_type in expected_legacy_types.items()
+        )
+        assert complete["data"]["coverage"] == {
+            "total": total,
+            "returned": total,
+            "truncated": False,
+        }
+        assert "warnings" not in complete
+
+        first = client.get(
+            "/api/v1/network/gaps",
+            params={"limit": 1, "offset": 0},
+            headers=_auth(),
+        ).json()
+        second = client.get(
+            "/api/v1/network/gaps",
+            params={"limit": 1, "offset": 1},
+            headers=_auth(),
+        ).json()
+
+        assert first["data"]["coverage"] == {
+            "total": total,
+            "returned": 1,
+            "truncated": True,
+        }
+        assert second["data"]["gaps"] == complete["data"]["gaps"][1:2]
+        assert second["pagination"]["next_offset"] == 2
+        assert any(
+            f"Showing 1 of {total} inspection gaps" in warning
+            for warning in first["warnings"]
+        )
+
 
 class TestRuleFindings:
     def test_reports_overly_broad_rules(self, client):
@@ -323,6 +372,51 @@ class TestRuleFindings:
     def test_findings_are_medium_confidence_because_no_flow_logs_exist(self, client):
         body = client.get("/api/v1/network/rule-findings", headers=_auth()).json()
         assert body["evidence"][0]["confidence"] == "medium"
+
+    def test_coverage_and_pagination_are_additive_and_honest(self, client):
+        complete = client.get(
+            "/api/v1/network/rule-findings",
+            params={"limit": 500},
+            headers=_auth(),
+        ).json()
+        total = len(complete["data"]["findings"])
+        expected_legacy_types = {"findings": list, "summary": dict}
+
+        assert total > 1
+        assert all(
+            key in complete["data"]
+            and isinstance(complete["data"][key], expected_type)
+            for key, expected_type in expected_legacy_types.items()
+        )
+        assert complete["data"]["coverage"] == {
+            "total": total,
+            "returned": total,
+            "truncated": False,
+        }
+        assert "warnings" not in complete
+
+        first = client.get(
+            "/api/v1/network/rule-findings",
+            params={"limit": 1, "offset": 0},
+            headers=_auth(),
+        ).json()
+        second = client.get(
+            "/api/v1/network/rule-findings",
+            params={"limit": 1, "offset": 1},
+            headers=_auth(),
+        ).json()
+
+        assert first["data"]["coverage"] == {
+            "total": total,
+            "returned": 1,
+            "truncated": True,
+        }
+        assert second["data"]["findings"] == complete["data"]["findings"][1:2]
+        assert second["pagination"]["next_offset"] == 2
+        assert any(
+            f"Showing 1 of {total} rule findings" in warning
+            for warning in first["warnings"]
+        )
 
 
 class TestFirewallBypass:
