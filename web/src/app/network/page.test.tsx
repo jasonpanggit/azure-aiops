@@ -332,6 +332,127 @@ describe("Network page policy round-trip", () => {
     });
   });
 
+  describe("Network page provenance and keyboard contracts", () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+      primeSuccessfulLoaders();
+      mocks.policy.mockResolvedValue(
+        policyEnvelope({
+          rules: [
+            { ...declarativeRule, rule_id: "custom-one", name: "Custom one" },
+            { ...declarativeRule, rule_id: "custom-two", name: "Custom two" },
+          ],
+        }),
+      );
+      mocks.updatePolicy.mockResolvedValue(policyEnvelope());
+      mocks.previewPolicy.mockResolvedValue({
+        ...policyEnvelope(),
+        data: {
+          policy: policyEnvelope({ rules: [declarativeRule] }).data,
+          gaps: [],
+          summary: buildNetworkSummary(),
+        },
+      });
+    });
+
+    it.each([
+      [
+        { state: "not_ingested", observed_flow_count: 0 },
+        "Flow logs: not ingested — findings are configuration-derived",
+      ],
+      [
+        { state: "ingested_not_analyzed", observed_flow_count: 8 },
+        "Flow logs: ingested, not yet analyzed — findings remain configuration-derived",
+      ],
+      [
+        { state: "analyzed", observed_flow_count: 42 },
+        "Flow logs: 42 observed flows analyzed",
+      ],
+    ])("renders the server-derived flow provenance state %#", async (provenance, expected) => {
+      const topology = buildTopologyEnvelope();
+      Object.assign(topology.data.topology, { flow_log_provenance: provenance });
+      mocks.topology.mockResolvedValue(topology);
+
+      renderPage();
+
+      expect(await screen.findByText(expected)).toBeInTheDocument();
+      expect(screen.queryByText("No flow logs assumed")).not.toBeInTheDocument();
+    });
+
+    it("tab-walks every introduced policy control in DOM order with unique accessible names", async () => {
+      const user = userEvent.setup();
+      renderPage();
+
+      await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+      await user.click(await screen.findByRole("button", { name: "Add rule" }));
+
+      const controls = [
+        screen.getByRole("combobox", { name: "Analyzer template" }),
+        screen.getByRole("textbox", { name: "Rule ID" }),
+        screen.getByRole("textbox", { name: "Name" }),
+        screen.getByRole("textbox", { name: "Category" }),
+        screen.getByRole("combobox", { name: "Severity" }),
+        screen.getByRole("textbox", { name: "Description" }),
+        screen.getByRole("textbox", { name: "Rule assertion (JSON)" }),
+        screen.getByRole("button", { name: "Preview rule" }),
+        screen.getByRole("button", { name: "Save rule" }),
+        screen.getByRole("button", { name: "Delete Custom one" }),
+        screen.getByRole("button", { name: "Delete Custom two" }),
+      ];
+
+      (document.activeElement as HTMLElement | null)?.blur();
+      const reached: HTMLElement[] = [];
+      for (let step = 0; step < 40 && reached.length < controls.length; step += 1) {
+        await user.tab();
+        const active = document.activeElement as HTMLElement;
+        if (controls.includes(active) && !reached.includes(active)) reached.push(active);
+      }
+
+      expect(reached).toEqual(controls);
+      expect(reached.every((control) => control.tabIndex <= 0)).toBe(true);
+      expect(reached.every((control) => control.style.outline !== "none" && control.style.outline !== "0")).toBe(true);
+      const names = reached.map((control) => control.getAttribute("aria-label") || control.textContent?.trim() || "");
+      expect(new Set(names).size).toBe(names.length);
+
+      await user.click(screen.getByRole("button", { name: "Delete Custom one" }));
+      expect(screen.getByRole("button", { name: "Confirm delete Custom one" })).toHaveTextContent("Confirm delete");
+      expect(screen.getByText(/Deleting Custom one stops it from producing findings/)).toHaveAttribute("aria-live", "polite");
+    });
+
+    it("tab-walks the server pagers and preserves distinct labels in each rendered view", async () => {
+      const user = userEvent.setup();
+      renderPage();
+
+      await user.click(await screen.findByRole("tab", { name: "Inspection gaps" }));
+      await user.click(screen.getByRole("button", { name: "Next page" }));
+      await screen.findByText("Showing 101–200 of 340 inspection gaps");
+      const gapPager = [
+        screen.getByRole("combobox", { name: "Rows per page for inspection gaps" }),
+        screen.getByRole("button", { name: "Previous page" }),
+        screen.getByRole("button", { name: "Next page" }),
+      ];
+      for (const control of gapPager) {
+        for (let step = 0; document.activeElement !== control && step < 30; step += 1) await user.tab();
+        expect(control).toHaveFocus();
+        expect(control.tabIndex).toBeLessThanOrEqual(0);
+      }
+
+      await user.click(screen.getByRole("tab", { name: "Rule findings" }));
+      await user.click(screen.getByRole("button", { name: "Next page" }));
+      await screen.findByText("Showing 101–200 of 620 rule findings");
+      const findingPager = [
+        screen.getByRole("combobox", { name: "Rows per page for rule findings" }),
+        screen.getByRole("button", { name: "Previous page" }),
+        screen.getByRole("button", { name: "Next page" }),
+      ];
+      for (const control of findingPager) {
+        for (let step = 0; document.activeElement !== control && step < 30; step += 1) await user.tab();
+        expect(control).toHaveFocus();
+        expect(control.tabIndex).toBeLessThanOrEqual(0);
+      }
+    });
+  });
+
   it("coalesces rapid successful mutations and refreshes every derived loader without reloading the page", async () => {
     const user = userEvent.setup();
     const refreshedFindings = buildRuleFindingsEnvelope(619);
