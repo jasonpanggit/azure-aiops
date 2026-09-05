@@ -22,6 +22,7 @@ from api.scope import Scope
 from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
 from operations.maf_orchestrator import maf_mode_enabled, select_specialists_for_turn
 from operations.page_context import PageSnapshot, deterministic_network_findings
+from operations.specialist_manifest import load_specialist_manifest
 from operations.tools import (
     STATUS_DENIED,
     STATUS_EMPTY,
@@ -38,6 +39,11 @@ MAX_LEDGER_ENTRIES = 1_000
 MAX_CONTEXT_STEPS = 5
 MAX_CONTEXT_SPECIALISTS = 3
 MAX_CONTEXT_TOOL_CALLS = 10
+_NETWORK_ENRICHMENT_TOOLS = (
+    "fabric_iq_relationships",
+    "fabric_iq_topology",
+    "fabric_iq_policy_context",
+)
 
 
 def _now() -> str:
@@ -66,23 +72,30 @@ class AgentDefinition:
         }
 
 
-AGENTS: tuple[AgentDefinition, ...] = (
-    AgentDefinition("network", "Network Agent", "Investigates topology, traffic paths, firewall/NSG gaps, and blast radius.", ("network_topology", "hub_dependents", "impact_context", "firewall_nsg_gaps"), ("network", "traffic", "firewall", "nsg", "route", "blast", "hub", "vnet", "subnet", "peering", "topology", "depend", "dependency", "dependencies")),
-    AgentDefinition("vulnerability", "Vulnerability Agent", "Investigates CVE exposure, reachability, exploitability, and affected services.", ("cve_exposure", "risk_context"), ("cve", "vulnerab", "exploit", "exposure", "risk")),
-    AgentDefinition("patch", "Patch Agent", "Investigates patch priorities, KB remediation, and validation expectations.", ("cve_exposure", "remediation_plans"), ("patch", "kb", "update", "sla")),
-    AgentDefinition("incident", "Incident Agent", "Investigates incident timeline, root-cause candidates, unknowns, and validation steps.", ("incidents",), ("incident", "outage", "alert", "root cause", "timeline")),
-    AgentDefinition("change", "Change Agent", "Investigates recent changes and correlates them to operational symptoms.", ("incidents", "search"), ("change", "changed", "deployment", "configuration")),
-    AgentDefinition("governance", "Governance Agent", "Investigates owners, scope, approvals, exceptions, and policy/accountability context.", ("business_service_context", "application_context", "risk_context"), ("owner", "owned", "approval", "approver", "governance", "policy", "scope", "exception")),
-    AgentDefinition("remediation", "Remediation Agent", "Investigates safe remediation options, rollback, validation, and governed handoff.", ("remediation_opportunities", "remediation_plans"), ("remediat", "fix", "mitigat", "rollback", "plan")),
-    AgentDefinition("executive_summary", "Executive Summary Agent", "Synthesizes grounded findings into business impact, decisions, and recommended plan.", (), ("executive", "summary", "decision"), ("network", "vulnerability", "patch", "incident", "change", "governance", "remediation")),
+_SPECIALIST_MANIFEST = load_specialist_manifest()
+AGENTS: tuple[AgentDefinition, ...] = tuple(
+    AgentDefinition(
+        id=definition["id"],
+        name=definition["name"],
+        role=definition["role"],
+        tools=tuple(definition["tools"]),
+        keywords=tuple(definition["keywords"]),
+        depends_on=tuple(definition["depends_on"]),
+        contract_version=definition["contract_version"],
+    )
+    for definition in _SPECIALIST_MANIFEST.runtime_projection()
 )
 
 
 def agent_catalog() -> list[dict[str, Any]]:
     configured = {item["id"]: item for item in specialist_catalog()}
+    manifest_metadata = {
+        item["id"]: item for item in _SPECIALIST_MANIFEST.catalog_projection()
+    }
     return [
         {
             **agent.to_dict(),
+            **manifest_metadata[agent.id],
             "foundry": configured.get(agent.id, {"status": "unavailable"}),
         }
         for agent in AGENTS
@@ -741,26 +754,13 @@ def run_context_investigation(
     # Model output still never chooses; matching is deterministic keyword
     # matching over the same catalog, and every specialist remains bounded by
     # MAX_CONTEXT_SPECIALISTS and scope-filtered tool access.
-    page_specialists = {
-        # Direct page_kind → specialist mappings (preferred for Phase 09-09 expansion)
-        "network_page": ("network",),
-        "vulnerability_page": ("vulnerability",),
-        "patch_page": ("patch",),
-        "incident_page": ("incident",),
-        "change_page": ("change",),
-        "governance_page": ("governance",),
-        "remediation_page": ("remediation",),
-        "executive_summary_page": ("executive_summary",),
-        # Legacy mappings (preserved for backward compatibility)
-        "network": ("network",),
-        "vulnerability": ("vulnerability", "patch"),
-        "compliance": ("governance", "remediation"),
-        "remediation": ("remediation", "governance"),
-        "patch": ("patch",),
-        "incident": ("incident", "change"),
-        "governance": ("governance",),
-        "resource": ("governance",),
-    }
+    page_specialists = _SPECIALIST_MANIFEST.page_mapping_projection()
+    page_specialists.update(
+        {
+            f"{page_kind}_page": specialists
+            for page_kind, specialists in tuple(page_specialists.items())
+        }
+    )
     selected_ids = _select_context_specialists(
         page_kind=snapshot.page_kind,
         question=snapshot.question,
@@ -786,15 +786,36 @@ def run_context_investigation(
     selected.sort(key=lambda agent: selected_ids.index(agent.id))
     stages.append("delegate")
     remaining_tools = MAX_CONTEXT_TOOL_CALLS
+    enrichment_reserve = (
+        min(len(_NETWORK_ENRICHMENT_TOOLS), remaining_tools)
+        if "network" in selected_ids
+        else 0
+    )
+    delegation_remaining = remaining_tools - enrichment_reserve
     delegated_agent_ids: list[str] = []
-    for agent in selected:
+    for index, agent in enumerate(selected):
         if time.monotonic() - started >= timeout_seconds:
             stop_reason = "wall_clock_timeout"
             warnings.append("context investigation wall-clock budget exhausted")
             break
-        allowed = tuple(tool for tool in agent.tools if remaining_tools)
+        remaining_agents = len(selected) - index
+        tool_budget = (
+            max(1, delegation_remaining // remaining_agents)
+            if delegation_remaining
+            else 0
+        )
+        candidates = (
+            tuple(
+                tool
+                for tool in agent.tools
+                if tool not in _NETWORK_ENRICHMENT_TOOLS
+            )
+            if agent.id == "network"
+            else agent.tools
+        )
+        allowed = candidates[:tool_budget]
         bounded_agent = AgentDefinition(
-            agent.id, agent.name, agent.role, allowed[:remaining_tools],
+            agent.id, agent.name, agent.role, allowed,
             agent.keywords, agent.depends_on,
         )
         run = _agent_run(bounded_agent, snapshot.question, context=context, scope=scope)
@@ -808,6 +829,7 @@ def run_context_investigation(
         agent_runs.append(run)
         tool_calls.extend({**call, "specialist": agent.id, "operation": "delegate"} for call in run["tool_calls"])
         remaining_tools -= len(run["tool_calls"])
+        delegation_remaining -= len(run["tool_calls"])
         delegated_agent_ids.append(agent.id)
 
     if (
@@ -821,11 +843,7 @@ def run_context_investigation(
         subject = next(
             (resource.resource_id for resource in snapshot.selected_resources), ""
         )
-        for iq_tool in (
-            "fabric_iq_relationships",
-            "fabric_iq_topology",
-            "fabric_iq_policy_context",
-        )[:remaining_tools]:
+        for iq_tool in _NETWORK_ENRICHMENT_TOOLS[:remaining_tools]:
             if time.monotonic() - started >= timeout_seconds:
                 break
             result = call_tool(

@@ -1,50 +1,259 @@
 {
   "version": "1",
   "contract_version": "1.0",
+  "runtime_contract_version": "network-finding.v1",
+  "legacy_operations_mcp_tools": ["network_topology", "hub_dependents", "traffic_flow", "firewall_nsg_gaps", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context", "cve_exposure", "cve_detail", "cve_attack_path", "defender_alerts", "defender_attack_paths", "defender_secure_score", "incidents", "defender_remediation_cases", "remediation_business_decision", "remediation_plans", "remediation_opportunities"],
   "specialists": [
+    {
+      "id": "network",
+      "display_name": "Network",
+      "purpose": "Investigate scoped topology, traffic paths, firewall and NSG gaps, and blast radius.",
+      "intent_examples": ["network", "traffic", "firewall", "nsg", "route", "blast", "hub", "vnet", "subnet", "peering", "topology", "dependency"],
+      "dependencies": [],
+      "operations_mcp_tools": ["network_topology", "hub_dependents", "traffic_flow", "firewall_nsg_gaps", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "resourcehealth_availability-status_get", "monitor_activitylog_list", "arm_execute_query", "wellarchitectedframework_serviceguide_get"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "page_mappings": ["network", "twin"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "resource_ids", "check_id", "policy_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["topology_gaps", "firewall_rules", "traffic_paths", "blast_radius"]
+      },
+      "ui_metadata": {"label": "Network", "description": "Scoped topology, traffic, firewall, NSG, and dependency analysis."},
+      "foundry": {"name": "network", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
+    {
+      "id": "vulnerability",
+      "display_name": "Vulnerability",
+      "purpose": "Investigate scoped CVE exposure, reachability, exploitability, Defender posture, and affected services.",
+      "intent_examples": ["cve", "vulnerability", "exploit", "exposure", "defender", "secure score", "attack path", "risk"],
+      "dependencies": [],
+      "operations_mcp_tools": ["cve_exposure", "cve_detail", "cve_attack_path", "defender_alerts", "defender_attack_paths", "defender_secure_score", "risk_context", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "advisor_recommendation_list", "advisor_recommendation_summary"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "page_mappings": ["vulnerability", "exposure", "cve_detail", "defender_posture"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "resource_ids", "cve_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["affected_services", "exploitability_score", "reachability", "remediation_impact"]
+      },
+      "ui_metadata": {"label": "Vulnerability", "description": "Scoped CVE, Defender, exploitability, and attack-path analysis."},
+      "foundry": {"name": "vulnerability", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
+    {
+      "id": "patch",
+      "display_name": "Patch",
+      "purpose": "Investigate scoped patch priorities, KB exposure, remediation context, validation, and rollback expectations.",
+      "intent_examples": ["patch", "kb", "update", "sla", "rollback", "maintenance"],
+      "dependencies": [],
+      "operations_mcp_tools": ["cve_exposure", "cve_detail", "remediation_plans", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "compute_vm_get", "appservice_webapp_get", "functionapp_get", "arm_execute_query"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "page_mappings": ["patch", "vulnerability", "kb_detail", "patch_priorities"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "resource_ids", "kb_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["patch_priority", "validation_steps", "rollback_plan", "sla_impact"]
+      },
+      "ui_metadata": {"label": "Patch", "description": "Patch and KB priority, validation, rollback, and SLA analysis."},
+      "foundry": {"name": "patch", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
+    {
+      "id": "incident",
+      "display_name": "Incident",
+      "purpose": "Investigate scoped incident timelines, root-cause candidates, unknowns, and validation steps.",
+      "intent_examples": ["incident", "outage", "alert", "root cause", "timeline", "situation"],
+      "dependencies": [],
+      "operations_mcp_tools": ["incidents", "defender_alerts", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "monitor_activitylog_list", "monitor_resource_log_query", "resourcehealth_health-events_list"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "page_mappings": ["incident", "situations", "situation_detail", "investigate"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "incident_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["timeline", "root_causes", "unknowns", "validation_steps"]
+      },
+      "ui_metadata": {"label": "Incident", "description": "Incident timeline, root-cause, unknown, and validation analysis."},
+      "foundry": {"name": "incident", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
+    {
+      "id": "change",
+      "display_name": "Change",
+      "purpose": "Investigate scoped changes and correlate deployments or configuration drift with operational symptoms.",
+      "intent_examples": ["change", "changed", "deployment", "configuration", "predeploy", "drift"],
+      "dependencies": [],
+      "operations_mcp_tools": ["incidents", "search", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "arm_get_deployment_status", "monitor_activitylog_list", "arm_execute_query"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "page_mappings": ["incident", "changes", "changes_predeploy"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "resource_ids", "change_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["deployment_date", "affected_services", "correlation_confidence", "rollback_available"]
+      },
+      "ui_metadata": {"label": "Change", "description": "Change, deployment, configuration-drift, and incident-correlation analysis."},
+      "foundry": {"name": "change", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
+    {
+      "id": "governance",
+      "display_name": "Governance",
+      "purpose": "Investigate scoped ownership, approvals, policy risk, exceptions, and accountability.",
+      "intent_examples": ["owner", "owned", "approval", "approver", "governance", "policy", "scope", "exception", "compliance"],
+      "dependencies": [],
+      "operations_mcp_tools": ["business_service_context", "application_context", "risk_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "policy_assignment_list", "role_assignment_list", "arm_execute_query", "wellarchitectedframework_serviceguide_get"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "page_mappings": ["compliance", "governance"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "resource_ids", "owner_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["approval_required", "policy_violations", "exceptions", "accountability"]
+      },
+      "ui_metadata": {"label": "Governance", "description": "Ownership, policy, approval, exception, and accountability analysis."},
+      "foundry": {"name": "governance", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
+    {
+      "id": "remediation",
+      "display_name": "Remediation",
+      "purpose": "Investigate governed remediation options, business decisions, rollback, validation, and handoff context without execution.",
+      "intent_examples": ["remediation", "fix", "mitigation", "rollback", "plan", "business decision"],
+      "dependencies": [],
+      "operations_mcp_tools": ["remediation_plans", "remediation_opportunities", "defender_alerts", "defender_attack_paths", "defender_secure_score", "defender_remediation_cases", "remediation_business_decision", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "advisor_recommendation_list"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "page_mappings": ["compliance", "remediation"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "resource_ids", "remediation_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary", "pros", "cons", "urgency_reasoning"],
+        "domain_fields": ["remediation_options", "rollback_plan", "validation_steps", "risk_assessment", "approval_required", "pros", "cons", "urgency_reasoning"]
+      },
+      "ui_metadata": {"label": "Remediation", "description": "Governed remediation, rollback, validation, and approval-handoff analysis."},
+      "foundry": {"name": "remediation", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
+    {
+      "id": "executive_summary",
+      "display_name": "Executive Summary",
+      "purpose": "Aggregate cited specialist findings into business impact, priorities, and recommended governed decisions.",
+      "intent_examples": ["executive", "summary", "leadership", "decision", "business impact"],
+      "dependencies": ["network", "vulnerability", "patch", "incident", "change", "governance", "remediation", "inventory_data_health", "identity_access", "finops", "resource_health_observability"],
+      "operations_mcp_tools": [],
+      "azure_mcp_tools": [],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry"]},
+      "page_mappings": ["overview", "copilot", "agents"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["business_impact", "priority", "recommended_actions", "affected_domains"]
+      },
+      "ui_metadata": {"label": "Executive Summary", "description": "Conditional aggregation of cited cross-domain findings for leadership decisions."},
+      "foundry": {"name": "executive-summary", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
     {
       "id": "inventory_data_health",
       "display_name": "Inventory & Data Health",
       "purpose": "Inspect scoped Azure inventory and report data completeness and freshness without mutation.",
-      "intent_examples": [
-        "show inventory resources",
-        "is the inventory data current",
-        "which resources are visible"
-      ],
+      "intent_examples": ["inventory", "resource inventory", "data health", "data freshness", "connections", "fabric medallion"],
       "dependencies": [],
-      "operations_mcp_tools": [
-        "inventory_resources"
-      ],
-      "azure_mcp_tools": [],
-      "knowledge_policy": {
-        "mode": "deterministic_first",
-        "optional_sources": []
-      },
-      "page_mappings": [
-        "inventory",
-        "connections",
-        "connections_fabric"
-      ],
+      "operations_mcp_tools": ["inventory_resources"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "arm_execute_query"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["azure_mcp"]},
+      "page_mappings": ["inventory", "connections", "connections_fabric"],
       "output_contract": {
         "schema_version": "1",
         "requires_citations": true,
-        "statuses": [
-          "ok",
-          "empty",
-          "partial",
-          "unavailable",
-          "denied"
-        ]
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "resource_ids", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["coverage", "completeness", "provider_status", "data_freshness"]
       },
-      "ui_metadata": {
-        "label": "Inventory & Data Health",
-        "description": "Scoped resource inventory, coverage, freshness, and provider availability."
+      "ui_metadata": {"label": "Inventory & Data Health", "description": "Scoped resource inventory, coverage, freshness, and provider availability."},
+      "foundry": {"name": "inventory-data-health", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
+    {
+      "id": "identity_access",
+      "display_name": "Identity & Access",
+      "purpose": "Investigate scoped identities, role assignments, stale privilege, ownership, and access risk without changing access.",
+      "intent_examples": ["identity", "access", "rbac", "role assignment", "privilege", "service principal"],
+      "dependencies": [],
+      "operations_mcp_tools": ["business_service_context", "application_context", "risk_context", "search"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "role_assignment_list", "arm_execute_query"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "azure_mcp"]},
+      "page_mappings": ["identity"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "resource_ids", "principal_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["role_assignments", "stale_privileges", "ownership", "access_risk"]
       },
-      "foundry": {
-        "name": "inventory-data-health",
-        "model": "gpt-4.1",
-        "version": "1"
+      "ui_metadata": {"label": "Identity & Access", "description": "Scoped identity, RBAC, privilege, and ownership-risk analysis."},
+      "foundry": {"name": "identity-access", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
+    {
+      "id": "finops",
+      "display_name": "FinOps",
+      "purpose": "Investigate scoped cost, waste, Advisor economics, and business tradeoffs without changing resources.",
+      "intent_examples": ["finops", "cost", "spend", "waste", "savings", "advisor economics"],
+      "dependencies": [],
+      "operations_mcp_tools": ["business_service_context", "application_context", "risk_context", "search"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "arm_query_costs", "advisor_recommendation_list", "advisor_recommendation_summary"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "azure_mcp"]},
+      "page_mappings": ["finops"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "resource_ids", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["cost_drivers", "waste_signals", "savings_options", "business_tradeoffs"]
       },
+      "ui_metadata": {"label": "FinOps", "description": "Scoped cost, waste, savings, Advisor, and tradeoff analysis."},
+      "foundry": {"name": "finops", "model": "gpt-4.1", "version": "1"},
+      "read_only": true
+    },
+    {
+      "id": "resource_health_observability",
+      "display_name": "Resource Health & Observability",
+      "purpose": "Investigate scoped availability, metrics, activity, resource health, and telemetry without operational mutation.",
+      "intent_examples": ["resource health", "observability", "availability", "metric", "telemetry", "monitor", "degraded"],
+      "dependencies": [],
+      "operations_mcp_tools": ["incidents", "impact_context", "search"],
+      "azure_mcp_tools": ["subscription_list", "group_list", "resourcehealth_availability-status_get", "resourcehealth_health-events_list", "monitor_activitylog_list", "monitor_resource_log_query"],
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "azure_mcp"]},
+      "page_mappings": ["resource_health", "resource", "services", "service_detail"],
+      "output_contract": {
+        "schema_version": "1",
+        "requires_citations": true,
+        "statuses": ["ok", "empty", "partial", "unavailable", "denied"],
+        "required_fields": ["finding_id", "resource_ids", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"],
+        "domain_fields": ["availability", "health_events", "metrics", "telemetry"]
+      },
+      "ui_metadata": {"label": "Resource Health & Observability", "description": "Scoped availability, health-event, metric, and telemetry analysis."},
+      "foundry": {"name": "resource-health-observability", "model": "gpt-4.1", "version": "1"},
       "read_only": true
     }
   ]

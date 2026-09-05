@@ -15,6 +15,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Query, Request
 
 from onboarding.service import SubscriptionOnboardingService
+from operations.specialist_manifest import LOCKED_SPECIALIST_IDS
 from semantic.semantic_engine import SemanticEngine
 
 from .auth import Authenticator
@@ -172,16 +173,7 @@ class ApiContext:
         generic Copilot narration or retrieval-only responses.
         """
         agent_id = (agent_id or "").strip().lower()
-        if agent_id in (
-            "network",
-            "vulnerability",
-            "patch",
-            "incident",
-            "change",
-            "governance",
-            "remediation",
-            "executive_summary",
-        ):
+        if agent_id in LOCKED_SPECIALIST_IDS:
             return self.resolve_provider(f"{agent_id}_agent", optional=True)
         return None
 
