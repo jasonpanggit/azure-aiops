@@ -22,12 +22,14 @@ from network_scenario import (
 from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
+from api.providers import ProviderRuntime, ProviderSpec
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from network.design import NetworkDesignPolicyStore
 from network.service import NetworkIntelligenceService, build_service
 from onboarding.service import SubscriptionOnboardingService
+from storage.onelake_documents import OneLakeDocumentStore
 
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
 SCOPED_TOKEN = "scoped-token-0123456789abcdef"
@@ -54,6 +56,7 @@ def _client(
     with_network: bool = True,
     network_policy_store=None,
     network_service: NetworkIntelligenceService | None = None,
+    provider_runtime: ProviderRuntime | None = None,
 ) -> TestClient:
     service = network_service or (build_service(network_rows()) if with_network else None)
     context = ApiContext(
@@ -63,6 +66,7 @@ def _client(
         telemetry=ApiTelemetry(),
         network_provider=(lambda: service),
         network_policy_store=network_policy_store,
+        provider_runtime=provider_runtime,
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -275,6 +279,77 @@ class TestAuthentication:
 
 
 class TestPolicy:
+    @pytest.mark.parametrize("persistent", [False, True])
+    def test_store_revision_increments_and_rejects_stale_writes(
+        self, tmp_path, persistent
+    ):
+        documents = OneLakeDocumentStore(tmp_path / "documents") if persistent else None
+        store = NetworkDesignPolicyStore(documents)
+
+        assert store.revision == 0
+        store.update({"description": "first"}, expected_revision=0)
+        assert store.revision == 1
+        store.update({"description": "second"}, expected_revision=1)
+        assert store.revision == 2
+
+        with pytest.raises(RuntimeError, match="revision"):
+            store.update({"description": "stale"}, expected_revision=1)
+        assert store.revision == 2
+        assert store.read().description == "second"
+
+    def test_write_invalidates_cached_derived_analysis(self, tmp_path):
+        store = NetworkDesignPolicyStore()
+        load_count = 0
+
+        def load_network():
+            nonlocal load_count
+            load_count += 1
+            return NetworkIntelligenceService.from_rows(
+                network_rows(),
+                policy=store.read(),
+            )
+
+        runtime = ProviderRuntime(
+            {
+                "network": ProviderSpec(
+                    loader=load_network,
+                    cache_key=lambda: ("network-policy", store.revision),
+                )
+            },
+            refresh_interval_seconds=30,
+            monotonic=lambda: 0.0,
+        )
+        client = _client(
+            tmp_path,
+            network_policy_store=store,
+            provider_runtime=runtime,
+        )
+
+        before = client.get("/api/v1/network/gaps", headers=_auth())
+        unchanged = client.get("/api/v1/network/gaps", headers=_auth())
+        assert before.status_code == 200
+        assert unchanged.status_code == 200
+        assert load_count == 1
+        assert any(
+            gap["category"] == "dns_dependency_gap"
+            for gap in before.json()["data"]["gaps"]
+        )
+
+        patched = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={"require_private_dns_zone_link": False},
+        )
+        after = client.get("/api/v1/network/gaps", headers=_auth())
+
+        assert patched.status_code == 200
+        assert after.status_code == 200
+        assert load_count == 2
+        assert not any(
+            gap["category"] == "dns_dependency_gap"
+            for gap in after.json()["data"]["gaps"]
+        )
+
     def test_scoped_preview_matches_gaps_without_foreign_resources(
         self, tmp_path, monkeypatch
     ):
