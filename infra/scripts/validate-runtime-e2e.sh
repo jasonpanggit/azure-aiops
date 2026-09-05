@@ -1,4 +1,17 @@
 #!/bin/sh
+#
+# Deployed-runtime end-to-end gate.
+#
+# Specialist parity runs FIRST and gates the promotion decision this script
+# prints. Offline parity must pass. Live parity is read-only and may report
+# BLOCKED when the Foundry project or the two MCP servers are not configured
+# for this environment -- a blocked gate holds promotion, it never counts as a
+# pass. Only controlled identifiers, statuses, and counts are printed: no
+# token, secret, or tool argument is ever echoed.
+#
+# Optional:
+#   PARITY_PYTHON     interpreter used for the parity validator (default python3)
+#   PARITY_VALIDATOR  path to scripts/validate_specialist_parity.py
 set -eu
 
 : "${API_URL:?Set API_URL to the deployed Operations API URL}"
@@ -17,6 +30,37 @@ fi
 AIOPS_CLI="${AIOPS_CLI:-.venv/bin/aiops-inventory}"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
+
+# ---------------------------------------------------------------------------
+# Specialist parity gate -- runs before anything that could be read as a
+# promotion signal.
+# ---------------------------------------------------------------------------
+PARITY_PYTHON="${PARITY_PYTHON:-python3}"
+PARITY_VALIDATOR="${PARITY_VALIDATOR:-scripts/validate_specialist_parity.py}"
+
+if [ ! -f "$PARITY_VALIDATOR" ]; then
+  echo "Specialist parity validator not found at $PARITY_VALIDATOR" >&2
+  exit 2
+fi
+
+if ! "$PARITY_PYTHON" "$PARITY_VALIDATOR" --offline >"$tmp_dir/parity-offline.json"; then
+  echo "Offline specialist parity failed; promotion held" >&2
+  exit 2
+fi
+
+set +e
+"$PARITY_PYTHON" "$PARITY_VALIDATOR" --live >"$tmp_dir/parity-live.json"
+parity_live_status=$?
+set -e
+
+case "$parity_live_status" in
+  0) parity_status="pass" ;;
+  3) parity_status="blocked" ;;
+  *)
+    echo "Live specialist parity failed; promotion held" >&2
+    exit 2
+    ;;
+esac
 
 "$AIOPS_CLI" activate \
   --config "$AIOPS_ARG_CONFIG" \
@@ -45,7 +89,7 @@ curl -fsS -H "$auth_header" \
   "$API_URL/api/v1/remediation-plans" >"$tmp_dir/remediation.json"
 curl -fsS "$WEB_URL" >/dev/null
 
-python3 - "$tmp_dir" "$HUB_CONNECTION_ID" "$SPOKE_CONNECTION_ID" <<'PY'
+python3 - "$tmp_dir" "$HUB_CONNECTION_ID" "$SPOKE_CONNECTION_ID" "$parity_status" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -53,6 +97,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 hub = sys.argv[2]
 spoke = sys.argv[3]
+parity_status = sys.argv[4]
 
 activation = json.loads((root / "activation.json").read_text())
 ready = json.loads((root / "ready.json").read_text())
@@ -100,10 +145,20 @@ for connection_id, payload in ((hub, hub_payload), (spoke, spoke_payload)):
         ],
     }
 
+parity = json.loads((root / "parity-offline.json").read_text())
+assert parity["status"] == "pass", parity["failures"]
+
+# Live parity is a promotion prerequisite, not an assumption: a blocked gate
+# holds promotion with an explicit reason instead of reporting a pass.
+promotion = "promote" if parity_status == "pass" else "hold"
+
 print(
     json.dumps(
         {
             "status": "passed",
+            "promotion": promotion,
+            "parity_status": parity_status,
+            "specialist_count": parity["specialist_count"],
             "ontology_version": ready["ontology_version"],
             "hub_count": summary["hub_count"],
             "spoke_count": summary["spoke_count"],

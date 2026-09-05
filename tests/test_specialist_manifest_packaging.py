@@ -423,11 +423,16 @@ def test_parity_cli_offline_exits_zero_and_live_unconfigured_exits_blocked():
 def test_rollout_creates_immutable_versions_before_any_metadata_switch():
     script = _read("infra/scripts/create-foundry-agent.sh")
 
-    create_at = script.index("/versions?api-version=")
-    parity_at = script.index("validate_specialist_parity.py")
-    promote_at = script.index("FOUNDRY_PROMOTION_RECORD")
+    # Textual order inside the catalog branch is the execution order: the
+    # recursive per-specialist invocation publishes every new immutable
+    # version, then the parity gate runs, then -- and only then -- the
+    # promotion record is written.
+    create_at = script.index('FOUNDRY_SPECIALISTS_JSON=""')
+    parity_at = script.index('"${parity_validator}" --offline')
+    promote_at = script.index('-n "${FOUNDRY_PROMOTION_RECORD:-}"')
 
     assert create_at < parity_at < promote_at
+    assert 'agents/${FOUNDRY_AGENT_NAME}/versions?api-version=' in script
     # Versions are additive: nothing in the rollout may delete or overwrite a
     # published agent version, so the previous one stays selectable.
     assert "-X DELETE" not in script
@@ -438,14 +443,31 @@ def test_rollout_creates_immutable_versions_before_any_metadata_switch():
 def test_runtime_e2e_gates_promotion_on_parity_and_prints_controlled_fields():
     script = _read("infra/scripts/validate-runtime-e2e.sh")
 
-    parity_at = script.index("validate_specialist_parity.py")
-    promotion_at = script.index("promotion")
+    parity_at = script.index('"$PARITY_VALIDATOR" --offline')
+    promotion_at = script.index('"promotion": promotion')
 
     assert parity_at < promotion_at
     assert "parity_status" in script
-    # Controlled output only: no token, secret, or tool-argument echo.
-    for marker in ("$API_TOKEN", "AZURE_CLIENT_SECRET", "echo \"$auth_header\""):
-        assert marker not in script
+
+    # Controlled output only: the final report carries an allowlist of IDs,
+    # statuses, and counts, and no line ever echoes a token or secret.
+    report = script[script.index("json.dumps(") : script.rindex("indent=2")]
+    printed = set(re.findall(r'"([a-z_]+)":', report))
+    assert printed <= {
+        "status",
+        "promotion",
+        "parity_status",
+        "specialist_count",
+        "ontology_version",
+        "hub_count",
+        "spoke_count",
+        "providers",
+    }
+    assert not re.search(
+        r"^\s*(echo|printf).*(API_TOKEN|auth_header|CLIENT_SECRET|access_token)",
+        script,
+        flags=re.MULTILINE,
+    )
 
 
 def test_rollout_scripts_have_valid_shell_syntax():

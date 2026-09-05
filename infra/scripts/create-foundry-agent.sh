@@ -19,8 +19,33 @@
 #   FOUNDRY_AGENT_TOOLS_JSON_B64 base64 JSON array of MCP tool definitions for
 #                                this single agent (only set on the recursive
 #                                per-specialist invocation)
+#   FOUNDRY_AGENT_VERSION_RECORD tab-separated file the per-agent invocation
+#                                appends "<name>\t<contract version>" to
+#   FOUNDRY_PROMOTION_RECORD     JSON file recording which specialist version
+#                                set is promoted, and the previous one as the
+#                                rollback target (default: no record written)
+#   FOUNDRY_PARITY_VALIDATOR     path to scripts/validate_specialist_parity.py
+#   FOUNDRY_PARITY_PYTHON        interpreter used to run the validator
+#   FOUNDRY_REQUIRE_LIVE_PARITY  "1" to treat a BLOCKED live gate as fatal
+#                                (default "0": the version set is created but
+#                                promotion is held)
+#
+# Rollout order is create -> validate -> switch:
+#
+#   1. Every specialist gets a NEW, immutable agent version. Nothing here ever
+#      deletes or rewrites a published version, so the previously promoted
+#      version -- and with it the legacy planners and the deterministic
+#      orchestration mode -- stays selectable for rollback.
+#   2. The parity gate runs. Offline parity must pass. Live parity is
+#      read-only and reports pass / fail / BLOCKED (not configured).
+#   3. Only then is the promotion record written. A parity failure switches
+#      nothing; a blocked live gate holds the switch rather than claiming a
+#      verification that did not happen.
 
 set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 for var in FOUNDRY_PROJECT_ENDPOINT FOUNDRY_AGENT_NAME FOUNDRY_AGENT_MODEL \
            FOUNDRY_AGENT_PROMPT AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
@@ -34,6 +59,9 @@ done
 # Reuse this idempotent single-agent path for each entry so old callers that
 # provide only FOUNDRY_AGENT_NAME remain fully compatible.
 if [[ -n "${FOUNDRY_SPECIALISTS_JSON:-}" ]]; then
+  version_record="$(mktemp)"
+  trap 'rm -f "${version_record}"' EXIT
+
   while IFS=$'\t' read -r specialist_name specialist_version specialist_model specialist_prompt_b64 specialist_tools_b64; do
     [[ -z "${specialist_name}" ]] && continue
     specialist_prompt=$(printf '%s' "${specialist_prompt_b64}" | python3 -c \
@@ -43,6 +71,7 @@ if [[ -n "${FOUNDRY_SPECIALISTS_JSON:-}" ]]; then
     FOUNDRY_AGENT_MODEL="${specialist_model:-$FOUNDRY_AGENT_MODEL}" \
     FOUNDRY_AGENT_PROMPT="${specialist_prompt:-$FOUNDRY_AGENT_PROMPT}" \
     FOUNDRY_AGENT_TOOLS_JSON_B64="${specialist_tools_b64}" \
+    FOUNDRY_AGENT_VERSION_RECORD="${version_record}" \
     FOUNDRY_SPECIALISTS_JSON="" \
     "$0"
   done < <(FOUNDRY_SPECIALISTS_JSON="$FOUNDRY_SPECIALISTS_JSON" python3 -c '
@@ -56,6 +85,107 @@ for v in d.values():
     tools_b64 = base64.b64encode(json.dumps(v.get("tools", [])).encode()).decode()
     print(f"{name}\t{version}\t{model}\t{prompt_b64}\t{tools_b64}")
 ')
+
+  # ---------------------------------------------------------------------------
+  # Step 2: parity gate. Read-only, and it runs only after every immutable
+  # version above already exists -- so a hold leaves the new definitions
+  # published but unpromoted, never half-switched.
+  # ---------------------------------------------------------------------------
+  parity_validator="${FOUNDRY_PARITY_VALIDATOR:-${repo_root}/scripts/validate_specialist_parity.py}"
+  parity_python="${FOUNDRY_PARITY_PYTHON:-python3}"
+  parity_offline="unavailable"
+  parity_live="skipped"
+
+  if [[ -f "${parity_validator}" ]]; then
+    if "${parity_python}" "${parity_validator}" --offline >/dev/null; then
+      parity_offline="pass"
+    else
+      echo "create-foundry-agent: offline specialist parity failed; promotion held" >&2
+      echo "create-foundry-agent: re-run the validator with --offline for the controlled report" >&2
+      exit 1
+    fi
+
+    set +e
+    "${parity_python}" "${parity_validator}" --live >/dev/null
+    live_status=$?
+    set -e
+    case "${live_status}" in
+      0) parity_live="pass" ;;
+      3) parity_live="blocked" ;;
+      *) parity_live="fail" ;;
+    esac
+  else
+    echo "create-foundry-agent: parity validator not found; promotion held" >&2
+  fi
+
+  if [[ "${parity_live}" == "fail" ]]; then
+    echo "create-foundry-agent: live specialist parity failed; promotion held" >&2
+    exit 1
+  fi
+
+  if [[ "${parity_live}" == "blocked" && "${FOUNDRY_REQUIRE_LIVE_PARITY:-0}" == "1" ]]; then
+    echo "create-foundry-agent: live specialist parity is BLOCKED and required; promotion held" >&2
+    exit 1
+  fi
+
+  # ---------------------------------------------------------------------------
+  # Step 3: the metadata switch. Writing this record is the only promotion
+  # signal; the previously promoted version set is retained verbatim as the
+  # rollback target.
+  # ---------------------------------------------------------------------------
+  promotion="promoted"
+  if [[ "${parity_offline}" != "pass" || "${parity_live}" == "blocked" ]]; then
+    promotion="held"
+  fi
+
+  if [[ -n "${FOUNDRY_PROMOTION_RECORD:-}" ]]; then
+    PROMOTION_STATUS="${promotion}" \
+    PARITY_OFFLINE="${parity_offline}" \
+    PARITY_LIVE="${parity_live}" \
+    VERSION_RECORD="${version_record}" \
+    RECORD_PATH="${FOUNDRY_PROMOTION_RECORD}" \
+    python3 -c '
+import json, os, pathlib
+
+record_path = pathlib.Path(os.environ["RECORD_PATH"])
+previous = {}
+if record_path.exists():
+    try:
+        previous = json.loads(record_path.read_text(encoding="utf-8"))
+    except ValueError:
+        previous = {}
+
+agents = []
+for line in pathlib.Path(os.environ["VERSION_RECORD"]).read_text(encoding="utf-8").splitlines():
+    if not line.strip():
+        continue
+    name, _, version = line.partition("\t")
+    agents.append({"name": name, "version": version})
+agents.sort(key=lambda entry: entry["name"])
+
+# Never overwrite a good rollback target with a held rollout: the previously
+# promoted set stays the thing to fall back to.
+if previous.get("status") == "promoted":
+    rollback = previous.get("agents", [])
+else:
+    rollback = previous.get("rollback_target", [])
+
+record = {
+    "status": os.environ["PROMOTION_STATUS"],
+    "parity": {
+        "offline": os.environ["PARITY_OFFLINE"],
+        "live": os.environ["PARITY_LIVE"],
+    },
+    "agents": agents,
+    "agent_count": len(agents),
+    "previous_version": previous.get("agents", []),
+    "rollback_target": rollback,
+}
+record_path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+'
+  fi
+
+  echo "create-foundry-agent: rollout ${promotion} (offline parity ${parity_offline}, live parity ${parity_live})"
   exit 0
 fi
 
@@ -153,6 +283,13 @@ while true; do
     -d "${body}") || http_status=000
 
   if [[ "${http_status}" == 2* ]]; then
+    # Additive and immutable: the create path publishes the first version, the
+    # version path publishes the next one. Neither replaces a published
+    # definition, so the prior version stays selectable for rollback.
+    if [[ -n "${FOUNDRY_AGENT_VERSION_RECORD:-}" ]]; then
+      printf '%s\t%s\n' "${FOUNDRY_AGENT_NAME}" "${FOUNDRY_AGENT_VERSION:-}" \
+        >>"${FOUNDRY_AGENT_VERSION_RECORD}"
+    fi
     echo "create-foundry-agent: done (HTTP ${http_status}, ${mode})"
     exit 0
   fi
