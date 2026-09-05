@@ -15,7 +15,7 @@ provides:
 affects: [11-03, 11-05, 11-06, 11-16]
 actuals:
   tasks: 2
-  commits: 3
+  commits: 4
 tech-stack:
   added: []
   patterns:
@@ -78,11 +78,12 @@ status: complete
 1. **Tasks 1-2: Twelve-specialist contract and runtime parity** - `e0efdf26` (`feat`)
 2. **Review hardening: argument schemas, fail-closed invocation, and locked policy parity** - `7bb6aa53` (`fix`)
 3. **Final review hardening: complete manifest lock, bounded enrichment, and legacy routing** - `954e8106` (`fix`)
+4. **Narrator priority: preserve Remediation-first neutral page behavior** - `1025bda3` (`fix`)
 
 ## Validation
 
-- Plan-targeted suite: 64 passed.
-- Adjacent Copilot, MCP, Foundry, specialist-output, routing, and Plan 11-01 regressions: 230 passed.
+- Plan-targeted suite: 65 passed.
+- Adjacent Copilot, MCP, Foundry, specialist-output, routing, and Plan 11-01 regressions: 231 passed.
 - Ruff passed for every changed Python file.
 - `compileall` passed for every changed Python module.
 - `git diff --check` passed.
@@ -101,6 +102,7 @@ status: complete
 10. Post-delegation Fabric IQ enrichment validates required arguments and performs no provider I/O for an empty network subject.
 11. Defender remediation cases omit the optional business-service filter unless the question names a service explicitly.
 12. Legacy `resource` and `remediation` routes retain Governance alongside their added domain specialists.
+13. Page projections prioritize a same-named specialist, preserving Remediation-first neutral narration while Resource remains Governance-first.
 
 ## Scope and Merge Notes
 
