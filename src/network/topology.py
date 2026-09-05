@@ -44,6 +44,10 @@ HUB_SCORE_THRESHOLD = 3.0
 #: Peerings above this count count as "many".
 MANY_PEERINGS_THRESHOLD = 2
 
+PEER_RESOLUTION_VALUES = frozenset(
+    {"not_ingested", "excluded_by_scope", "observed"}
+)
+
 SHARED_SERVICE_KINDS: dict[str, str] = {
     "AzureFirewall": "firewall",
     "VpnGateway": "vpn",
@@ -140,6 +144,7 @@ class NetworkTopology:
     links: tuple[PeeringLink, ...] = ()
     shared_services: tuple[SharedService, ...] = ()
     unresolved_peer_vnet_ids: tuple[str, ...] = ()
+    unresolved_peers: tuple[dict[str, Any], ...] = ()
     connection_ids: tuple[str, ...] = ()
     snapshot: NetworkSnapshot = field(default_factory=NetworkSnapshot)
     semantic_relationships: tuple[dict[str, Any], ...] = ()
@@ -205,6 +210,7 @@ class NetworkTopology:
             "resources": _topology_resources(self),
             "relationships": relationships,
             "unresolved_peer_vnet_ids": list(self.unresolved_peer_vnet_ids),
+            "unresolved_peers": [dict(item) for item in self.unresolved_peers],
             "connection_ids": list(self.connection_ids),
             "counts": counts,
             "flow_log_provenance": dict(self.flow_log_provenance),
@@ -242,6 +248,7 @@ class TopologyBuilder:
         semantic_relationships: tuple[dict[str, Any], ...] = (),
         *,
         flow_log_provenance: dict[str, Any] | None = None,
+        peer_resolutions: Mapping[str, str] | None = None,
     ) -> NetworkTopology:
         vnets = {vnet.resource_id: vnet for vnet in snapshot.vnets}
         links = self._stitch_peerings(snapshot, vnets)
@@ -256,6 +263,11 @@ class TopologyBuilder:
                 if not link.remote_vnet_observed and link.remote_vnet_id
             }
         )
+        unresolved_peers = self._unresolved_peers(
+            unresolved,
+            snapshot,
+            peer_resolutions,
+        )
         shared_services = self._attach_consumers(shared_services, classifications, links)
 
         return NetworkTopology(
@@ -263,12 +275,43 @@ class TopologyBuilder:
             links=tuple(links),
             shared_services=tuple(shared_services),
             unresolved_peer_vnet_ids=tuple(unresolved),
+            unresolved_peers=tuple(unresolved_peers),
             connection_ids=snapshot.connection_ids(),
             snapshot=snapshot,
             semantic_relationships=semantic_relationships,
             flow_log_provenance=flow_log_provenance
             or _flow_log_provenance(semantic_relationships),
         )
+
+    @staticmethod
+    def _unresolved_peers(
+        unresolved_ids: list[str],
+        snapshot: NetworkSnapshot,
+        peer_resolutions: Mapping[str, str] | None,
+    ) -> list[dict[str, Any]]:
+        """Describe missing peers without inferring facts unavailable here."""
+        if peer_resolutions is None:
+            observed_vnet_ids = {vnet.resource_id for vnet in snapshot.vnets}
+            resolutions = {
+                peer_id: "not_ingested"
+                for peer_id in unresolved_ids
+                if peer_id not in observed_vnet_ids
+            }
+        else:
+            resolutions = {
+                str(peer_id or "").casefold(): str(resolution or "")
+                for peer_id, resolution in peer_resolutions.items()
+            }
+
+        return [
+            {
+                "vnet_id": peer_id,
+                "peer_resolution": resolutions[peer_id],
+            }
+            for peer_id in unresolved_ids
+            if resolutions.get(peer_id) in PEER_RESOLUTION_VALUES
+            and resolutions[peer_id] != "observed"
+        ]
 
     def _stitch_peerings(
         self, snapshot: NetworkSnapshot, vnets: dict[str, VNet]

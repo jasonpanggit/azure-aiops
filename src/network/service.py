@@ -210,6 +210,7 @@ class NetworkIntelligenceService:
         policy: NetworkDesignPolicy | None = None,
         semantic_relationships: Iterable[Mapping[str, Any]] = (),
         flow_observations: Iterable[Mapping[str, Any]] | None = None,
+        peer_resolutions: Mapping[str, str] | None = None,
     ) -> None:
         self.snapshot = snapshot
         self.policy = policy if policy is not None else NetworkDesignPolicy()
@@ -225,6 +226,14 @@ class NetworkIntelligenceService:
             None
             if flow_observations is None
             else tuple(dict(row) for row in flow_observations)
+        )
+        self.peer_resolutions = (
+            None
+            if peer_resolutions is None
+            else {
+                str(peer_id or "").casefold(): str(resolution or "")
+                for peer_id, resolution in peer_resolutions.items()
+            }
         )
         self._topology: NetworkTopology | None = None
         self._gaps: tuple[NetworkGap, ...] | None = None
@@ -314,6 +323,7 @@ class NetworkIntelligenceService:
                 self.snapshot,
                 self.semantic_relationships,
                 flow_log_provenance=self.flow_log_provenance,
+                peer_resolutions=self.peer_resolutions,
             )
         return self._topology
 
@@ -370,6 +380,19 @@ class NetworkIntelligenceService:
         if scope.is_empty:
             return self
         snapshot = scope.filter_snapshot(self.snapshot)
+        unscoped_vnet_ids = {vnet.resource_id for vnet in self.snapshot.vnets}
+        scoped_vnet_ids = {vnet.resource_id for vnet in snapshot.vnets}
+        peer_resolutions: dict[str, str] = {}
+        for peering in snapshot.peerings:
+            peer_id = peering.remote_vnet_id
+            if not peer_id:
+                continue
+            if peer_id in scoped_vnet_ids:
+                peer_resolutions[peer_id] = "observed"
+            elif peer_id in unscoped_vnet_ids:
+                peer_resolutions[peer_id] = "excluded_by_scope"
+            else:
+                peer_resolutions[peer_id] = "not_ingested"
         return NetworkIntelligenceService(
             snapshot,
             policy=self.policy,
@@ -378,6 +401,7 @@ class NetworkIntelligenceService:
                 snapshot,
             ),
             flow_observations=self.flow_observations,
+            peer_resolutions=peer_resolutions,
         )
 
     def validate_flow(self, query: FlowQuery) -> FlowResult:
