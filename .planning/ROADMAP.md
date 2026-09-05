@@ -777,7 +777,7 @@ Plans:
 **Goal:** Deliver a scope-safe, complete, scalable, and diagnosable network topology experience whose nodes, relationships, findings, policy changes, freshness, and evidence coverage remain accurate from inventory ingestion through API, web, agents, MCP, and export.
 **Requirements**: TOPO-01, TOPO-02, TOPO-03, TOPO-04, TOPO-05
 **Depends on:** Phase 10
-**Plans:** 7/11 plans executed
+**Plans:** 8/11 plans executed
 
 Plans:
 
@@ -788,7 +788,7 @@ Plans:
 - [x] 12-05-PLAN.md — Checkpoint: resolve Fabric and AI Services private-endpoint semantics before surfacing gaps
 - [x] 12-06-PLAN.md — Private-link projection, provider type mapping, de-duplication, and official icons
 - [x] 12-07-PLAN.md — Level of detail, lean payload, pagination, coverage disclosure, and drill-down route
-- [ ] 12-08-PLAN.md — Page-level honest totals, policy round-trip, and data-derived provenance
+- [x] 12-08-PLAN.md — Page-level honest totals, policy round-trip, and data-derived provenance
 - [ ] 12-09-PLAN.md — Canvas detail control, badge fan-out, live fold index, and disclosing footnote
 - [ ] 12-10-PLAN.md — Drawer states, on-demand drill-down, private-link facts, and self-describing export
 - [ ] 12-11-PLAN.md — Downstream compatibility contracts and representative scale validation
