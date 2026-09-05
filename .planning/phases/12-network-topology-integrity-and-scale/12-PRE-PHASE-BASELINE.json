@@ -120,7 +120,36 @@
     "web": 73
   },
   "allowed_additive_nodes": [],
-  "allowed_additive_keys": [],
+  "allowed_additive_keys": [
+    {
+      "endpoint": "topology",
+      "path": [
+        "data",
+        "topology",
+        "counts",
+        "dropped_relationships"
+      ],
+      "introduced_by": "12-03"
+    },
+    {
+      "endpoint": "topology",
+      "path": [
+        "data",
+        "topology",
+        "flow_log_provenance"
+      ],
+      "introduced_by": "12-03"
+    },
+    {
+      "endpoint": "topology",
+      "path": [
+        "data",
+        "topology",
+        "unresolved_peers"
+      ],
+      "introduced_by": "12-03"
+    }
+  ],
   "canvas_interactivity": {
     "measured_ceiling_nodes": 1500,
     "threshold_ms": 250,

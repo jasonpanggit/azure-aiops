@@ -7,6 +7,7 @@ import json
 import platform
 import re
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,39 @@ def capture_default_responses(snapshot: NetworkSnapshot) -> dict[str, dict[str, 
         endpoint: _response_record(endpoint, body)
         for endpoint, body in bodies.items()
     }
+
+
+def without_allowed_additive_keys(
+    endpoint: str,
+    body: dict[str, Any],
+    allowed_additive_keys: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Remove explicitly registered additive fields for baseline comparison."""
+    normalized = deepcopy(body)
+    for addition in allowed_additive_keys:
+        if addition.get("endpoint") != endpoint:
+            continue
+        path = addition.get("path")
+        if not isinstance(path, list) or not path or not all(
+            isinstance(segment, str) and segment for segment in path
+        ):
+            raise BaselineArtifactInvalidError(
+                "allowed_additive_keys entries require a non-empty string path"
+            )
+        parent: Any = normalized
+        for segment in path[:-1]:
+            if not isinstance(parent, dict) or segment not in parent:
+                raise BaselineArtifactInvalidError(
+                    f"registered additive key path is absent: {'.'.join(path)}"
+                )
+            parent = parent[segment]
+        leaf = path[-1]
+        if not isinstance(parent, dict) or leaf not in parent:
+            raise BaselineArtifactInvalidError(
+                f"registered additive key path is absent: {'.'.join(path)}"
+            )
+        del parent[leaf]
+    return normalized
 
 
 def record_baseline(

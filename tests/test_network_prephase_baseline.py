@@ -14,6 +14,7 @@ from tests.network_baseline import (
     capture_default_responses,
     load_baseline,
     record_baseline,
+    without_allowed_additive_keys,
 )
 from tests.network_scale_fixtures import g4_baseline_estate
 
@@ -21,14 +22,28 @@ from tests.network_scale_fixtures import g4_baseline_estate
 def test_baseline_is_recorded_and_self_consistent(tmp_path: Path) -> None:
     baseline = load_baseline()
     replay = capture_default_responses(g4_baseline_estate())
+    allowed_additive_keys = baseline["allowed_additive_keys"]
 
     assert set(baseline["endpoints"]) == {"topology", "gaps", "rule_findings"}
     for endpoint, current in replay.items():
         recorded = baseline["endpoints"][endpoint]
-        assert current["body"] == recorded["body"]
-        assert current["byte_length"] == recorded["byte_length"]
-        assert current["top_level_keys"] == recorded["top_level_keys"]
-        assert current["representative_item_keys"] == recorded["representative_item_keys"]
+        normalized = without_allowed_additive_keys(
+            endpoint,
+            json.loads(current["body"]),
+            allowed_additive_keys,
+        )
+        serialized = json.dumps(
+            normalized,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        assert serialized == recorded["body"]
+        assert len(serialized.encode("utf-8")) == recorded["byte_length"]
+        assert sorted(normalized) == recorded["top_level_keys"]
+        assert (
+            current["representative_item_keys"]
+            == recorded["representative_item_keys"]
+        )
 
     assert baseline["topology"]["node_count"] == len(
         json.loads(baseline["endpoints"]["topology"]["body"])["data"]["topology"]["resources"]
@@ -46,7 +61,23 @@ def test_baseline_is_recorded_and_self_consistent(tmp_path: Path) -> None:
     assert isinstance(baseline["suite_pass_counts"]["backend"], int)
     assert isinstance(baseline["suite_pass_counts"]["web"], int)
     assert baseline["allowed_additive_nodes"] == []
-    assert baseline["allowed_additive_keys"] == []
+    assert baseline["allowed_additive_keys"] == [
+        {
+            "endpoint": "topology",
+            "path": ["data", "topology", "counts", "dropped_relationships"],
+            "introduced_by": "12-03",
+        },
+        {
+            "endpoint": "topology",
+            "path": ["data", "topology", "flow_log_provenance"],
+            "introduced_by": "12-03",
+        },
+        {
+            "endpoint": "topology",
+            "path": ["data", "topology", "unresolved_peers"],
+            "introduced_by": "12-03",
+        },
+    ]
 
     copied = tmp_path / "baseline.json"
     reproduced = record_baseline(
@@ -56,7 +87,16 @@ def test_baseline_is_recorded_and_self_consistent(tmp_path: Path) -> None:
         web_pass_count=baseline["suite_pass_counts"]["web"],
         canvas_interactivity=baseline["canvas_interactivity"],
     )
-    assert reproduced["endpoints"] == baseline["endpoints"]
+    for endpoint, current in reproduced["endpoints"].items():
+        normalized = without_allowed_additive_keys(
+            endpoint,
+            json.loads(current["body"]),
+            allowed_additive_keys,
+        )
+        assert (
+            json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+            == baseline["endpoints"][endpoint]["body"]
+        )
     assert json.loads(copied.read_text()) == reproduced
 
 

@@ -152,7 +152,9 @@ def build_estate(
                     address_prefixes=(f"10.{vnet_index % 250}.{subnet_offset}.0/24",),
                     nsg_id=nsg_id,
                     route_table_id=route_id,
-                    private_endpoint_ids=(endpoint_id,) if subnet_offset == 0 else (),
+                    private_endpoint_ids=(endpoint_id,)
+                    if mixed_case_ids and subnet_offset == 0
+                    else (),
                 )
             )
         vnet_specs.append((subscription_id, resource_group, vnet_id, subnet_ids))
