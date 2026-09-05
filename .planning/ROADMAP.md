@@ -777,15 +777,15 @@ Plans:
 **Goal:** Deliver a scope-safe, complete, scalable, and diagnosable network topology experience whose nodes, relationships, findings, policy changes, freshness, and evidence coverage remain accurate from inventory ingestion through API, web, agents, MCP, and export.
 **Requirements**: TOPO-01, TOPO-02, TOPO-03, TOPO-04, TOPO-05
 **Depends on:** Phase 10
-**Plans:** 3/11 plans executed
+**Plans:** 5/11 plans executed
 
 Plans:
 
 - [x] 12-01-PLAN.md — Scope-isolation tracer and security gate across web/API/service/agents/MCP and policy preview
 - [x] 12-02-PLAN.md — Test harness, scale fixtures, and measured baseline gates
 - [x] 12-03-PLAN.md — Identifier correctness, relationship retention, freshness threading, and peer resolution
-- [ ] 12-04-PLAN.md — Policy revision invalidation, declarative rule targets, and the client refetch primitive
-- [ ] 12-05-PLAN.md — Checkpoint: resolve Fabric and AI Services private-endpoint semantics before surfacing gaps
+- [x] 12-04-PLAN.md — Policy revision invalidation, declarative rule targets, and the client refetch primitive
+- [x] 12-05-PLAN.md — Checkpoint: resolve Fabric and AI Services private-endpoint semantics before surfacing gaps
 - [ ] 12-06-PLAN.md — Private-link projection, provider type mapping, de-duplication, and official icons
 - [ ] 12-07-PLAN.md — Level of detail, lean payload, pagination, coverage disclosure, and drill-down route
 - [ ] 12-08-PLAN.md — Page-level honest totals, policy round-trip, and data-derived provenance
