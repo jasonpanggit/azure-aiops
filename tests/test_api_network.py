@@ -369,6 +369,24 @@ class TestRuleFindings:
         body = client.get("/api/v1/network/rule-findings", headers=_auth()).json()
         assert body["data"]["findings"]
 
+    def test_findings_name_the_affected_resources_additively(self, client):
+        body = client.get(
+            "/api/v1/network/rule-findings",
+            params={"limit": 500},
+            headers=_auth(),
+        ).json()
+        finding = next(
+            item
+            for item in body["data"]["findings"]
+            if item["control"] == "nsg" and item["affected_resource_ids"]
+        )
+
+        assert isinstance(finding["affected_resource_ids"], list)
+        assert all(
+            resource_id.startswith("/subscriptions/")
+            for resource_id in finding["affected_resource_ids"]
+        )
+
     def test_findings_are_medium_confidence_because_no_flow_logs_exist(self, client):
         body = client.get("/api/v1/network/rule-findings", headers=_auth()).json()
         assert body["evidence"][0]["confidence"] == "medium"
