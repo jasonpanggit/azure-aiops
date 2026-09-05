@@ -586,6 +586,8 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("completeness", pa.string(), nullable=True),
             pa.field("safe_error_code", pa.string(), nullable=True),
             pa.field("safe_error_summary", pa.string(), nullable=True),
+            pa.field("freshness_threshold_seconds", pa.int64(), nullable=True),
+            pa.field("freshness_source_family", pa.string(), nullable=True),
         ]
     ),
     "metadata_workload_source_checkpoints": pa.schema(

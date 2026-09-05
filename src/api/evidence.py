@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from fabric.config import SourceFreshnessThresholds, freshness_source_family
+
 # Confidence bands. Deliberately coarse: the platform derives facts from
 # heterogeneous sources and a false sense of numeric precision would mislead.
 CONFIDENCE_HIGH = "high"
@@ -38,9 +40,18 @@ _STALE_AFTER_HOURS = 24.0
 
 
 def classify_freshness(
-    observed_at: str | None, *, now: datetime | None = None
+    observed_at: str | None,
+    *,
+    now: datetime | None = None,
+    threshold_seconds: int | None = None,
 ) -> str:
     """Band a timestamp into fresh/aging/stale."""
+    if threshold_seconds is not None and (
+        isinstance(threshold_seconds, bool)
+        or not isinstance(threshold_seconds, int)
+        or threshold_seconds < 1
+    ):
+        raise ValueError("Freshness threshold_seconds must be a positive integer")
     if not observed_at:
         return FRESHNESS_UNKNOWN
     try:
@@ -50,15 +61,43 @@ def classify_freshness(
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     reference = now or datetime.now(UTC)
-    age_hours = (reference - parsed).total_seconds() / 3600.0
-    if age_hours < 0:
+    age_seconds = (reference - parsed).total_seconds()
+    if age_seconds < 0:
         # A future timestamp is not evidence of freshness, it is a clock fault.
         return FRESHNESS_UNKNOWN
+    if threshold_seconds is not None:
+        return (
+            FRESHNESS_FRESH
+            if age_seconds <= threshold_seconds
+            else FRESHNESS_STALE
+        )
+    age_hours = age_seconds / 3600.0
     if age_hours <= _AGING_AFTER_HOURS:
         return FRESHNESS_FRESH
     if age_hours <= _STALE_AFTER_HOURS:
         return FRESHNESS_AGING
     return FRESHNESS_STALE
+
+
+def qualify_source_freshness(
+    observed_at: str | None,
+    *,
+    source_family: str,
+    now: datetime | None = None,
+    thresholds: SourceFreshnessThresholds | None = None,
+) -> dict[str, str | int]:
+    policy = thresholds or SourceFreshnessThresholds()
+    family = freshness_source_family(source_family)
+    threshold = policy.threshold_for(family)
+    return {
+        "freshness": classify_freshness(
+            observed_at,
+            now=now,
+            threshold_seconds=threshold,
+        ),
+        "freshness_threshold_seconds": threshold,
+        "freshness_source_family": family,
+    }
 
 
 @dataclass(frozen=True)
@@ -72,6 +111,8 @@ class Evidence:
     resource_id: str = ""
     confidence: str = CONFIDENCE_UNKNOWN
     freshness: str = FRESHNESS_UNKNOWN
+    freshness_threshold_seconds: int | None = None
+    freshness_source_family: str = ""
 
     def __post_init__(self) -> None:
         engine = str(self.source_engine or "").strip()
@@ -84,9 +125,32 @@ class Evidence:
         if confidence not in CONFIDENCE_LEVELS:
             raise ValueError(f"Unknown evidence confidence {self.confidence!r}")
         object.__setattr__(self, "confidence", confidence)
+        family = str(self.freshness_source_family or "").strip()
+        threshold = self.freshness_threshold_seconds
+        if family:
+            family = freshness_source_family(family)
+            if threshold is None:
+                threshold = SourceFreshnessThresholds().threshold_for(family)
+        if threshold is not None and (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, int)
+            or threshold < 1
+        ):
+            raise ValueError(
+                "Evidence freshness_threshold_seconds must be a positive integer"
+            )
+        if threshold is not None and not family:
+            raise ValueError(
+                "Evidence freshness_source_family is required with a threshold"
+            )
+        object.__setattr__(self, "freshness_source_family", family)
+        object.__setattr__(self, "freshness_threshold_seconds", threshold)
         freshness = str(self.freshness or FRESHNESS_UNKNOWN).strip().casefold()
         if freshness == FRESHNESS_UNKNOWN and self.timestamp:
-            freshness = classify_freshness(self.timestamp)
+            freshness = classify_freshness(
+                self.timestamp,
+                threshold_seconds=threshold,
+            )
         object.__setattr__(self, "freshness", freshness)
 
     @classmethod
@@ -108,9 +172,17 @@ class Evidence:
             subscription_connection=subscription_connection,
             resource_id=resource_id,
             confidence=confidence,
+            freshness_threshold_seconds=(
+                int(context["freshness_threshold_seconds"])
+                if context.get("freshness_threshold_seconds") is not None
+                else None
+            ),
+            freshness_source_family=str(
+                context.get("freshness_source_family") or ""
+            ),
         )
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "source_engine": self.source_engine,
             "source_table": self.source_table,
@@ -119,6 +191,8 @@ class Evidence:
             "resource_id": self.resource_id,
             "confidence": self.confidence,
             "freshness": self.freshness,
+            "freshness_threshold_seconds": self.freshness_threshold_seconds,
+            "freshness_source_family": self.freshness_source_family,
         }
 
 

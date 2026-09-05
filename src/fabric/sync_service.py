@@ -2223,6 +2223,8 @@ def _with_source_partition_defaults(
         "completeness",
         "safe_error_code",
         "safe_error_summary",
+        "freshness_threshold_seconds",
+        "freshness_source_family",
     ):
         result.setdefault(field, None)
     return result
@@ -2274,6 +2276,12 @@ def _source_partition_status_row(
         "completeness": str(row.get("completeness") or "unavailable"),
         "safe_error_code": str(row.get("safe_error_code") or ""),
         "safe_error_summary": str(row.get("safe_error_summary") or ""),
+        "freshness_threshold_seconds": int(
+            row.get("freshness_threshold_seconds") or 0
+        ),
+        "freshness_source_family": str(
+            row.get("freshness_source_family") or ""
+        ),
     }
     return {
         "tenant_id": "system",

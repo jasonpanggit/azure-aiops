@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from fabric.config import SourceFreshnessThresholds, freshness_source_family
 from intelligence.vulnerability.acquisition import (
     AcquisitionFailure,
     AcquisitionOutcome,
@@ -275,6 +276,15 @@ def _source_partition_status(
         }
     )
     available = completeness != "unavailable"
+    freshness_family = freshness_source_family(first.source_family)
+    freshness_threshold = SourceFreshnessThresholds().threshold_for(
+        freshness_family
+    )
+    freshness = _source_freshness(
+        last_success_at or watermark,
+        completed_at,
+        freshness_threshold,
+    )
     return {
         "partition_key": partition_key,
         "connection_id": first.connection_id or "default",
@@ -293,7 +303,7 @@ def _source_partition_status(
         "query_version": ",".join(versions),
         "requested_scope": {"subscription": scope},
         "provider_status": "failed" if failure is not None else "ok",
-        "freshness": "stale" if completeness == "stale" else "fresh" if available else "unknown",
+        "freshness": freshness,
         "availability": "degraded" if completeness == "stale" else "available" if available else "unavailable",
         "quality": "incomplete" if failure is not None else "complete",
         "error": failure.error_summary if failure is not None else "",
@@ -308,6 +318,8 @@ def _source_partition_status(
         "completeness": completeness,
         "safe_error_code": failure.error_code.value if failure is not None else "",
         "safe_error_summary": failure.error_summary if failure is not None else "",
+        "freshness_threshold_seconds": freshness_threshold,
+        "freshness_source_family": freshness_family,
     }
 
 
@@ -317,6 +329,21 @@ def _age_seconds(earlier: str, later: str) -> int:
     if previous is None or current is None:
         return 0
     return max(0, int((current - previous).total_seconds()))
+
+
+def _source_freshness(
+    observed_at: str,
+    reference_at: str,
+    threshold_seconds: int,
+) -> str:
+    observed = _parse_time(observed_at)
+    reference = _parse_time(reference_at)
+    if observed is None or reference is None:
+        return "unknown"
+    age_seconds = (reference - observed).total_seconds()
+    if age_seconds < 0:
+        return "unknown"
+    return "fresh" if age_seconds <= threshold_seconds else "stale"
 
 
 class IngestionService:

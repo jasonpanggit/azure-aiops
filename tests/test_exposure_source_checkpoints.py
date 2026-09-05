@@ -805,13 +805,33 @@ def test_fabric_source_freshness_defaults_and_positive_overrides(tmp_path) -> No
     override_path = tmp_path / "override.yaml"
     override_path.write_text(json.dumps(base))
     overridden = FabricRuntimeConfig.load(override_path)
-    assert overridden.exposure.freshness_threshold_seconds.to_dict() == {
+    overrides = overridden.exposure.freshness_threshold_seconds
+    assert overrides.to_dict() == {
         "aum": 181,
         "defender": 182,
         "images": 183,
         "workloads": 184,
         "enrichment": 185,
     }
+    from api.evidence import qualify_source_freshness
+
+    now = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
+    for family, threshold in overrides.to_dict().items():
+        exact = qualify_source_freshness(
+            (now - timedelta(seconds=threshold)).isoformat(),
+            source_family=family,
+            now=now,
+            thresholds=overrides,
+        )
+        plus_one = qualify_source_freshness(
+            (now - timedelta(seconds=threshold + 1)).isoformat(),
+            source_family=family,
+            now=now,
+            thresholds=overrides,
+        )
+        assert exact["freshness"] == "fresh"
+        assert exact["freshness_threshold_seconds"] == threshold
+        assert plus_one["freshness"] == "stale"
 
 
 @pytest.mark.parametrize("invalid", [0, -1, True, "1800"])
