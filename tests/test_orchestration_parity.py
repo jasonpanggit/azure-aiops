@@ -12,6 +12,8 @@ from operations.autonomous_investigation import (
     AGENTS,
     AgentDefinition,
     _agent_run,
+    _resolve_context_narrator,
+    _select_context_specialists,
     _tool_args,
     agent_catalog,
     run_context_investigation,
@@ -175,8 +177,8 @@ def test_catalog_page_mapping_prompt_and_output_projections_are_exact(monkeypatc
         "resource_health_observability",
     )
     assert manifest.page_mapping_projection()["remediation"] == (
-        "governance",
         "remediation",
+        "governance",
     )
 
     for specialist in manifest.specialists:
@@ -196,6 +198,33 @@ def test_catalog_page_mapping_prompt_and_output_projections_are_exact(monkeypatc
         assert f"Purpose: {specialist.purpose}" in prompt
         assert f"Governed Operations MCP tools: {expected_tools}." in prompt
         assert "report it as unavailable" in prompt
+
+
+def test_neutral_remediation_question_preserves_remediation_narrator_priority():
+    page_specialists = load_specialist_manifest().page_mapping_projection()
+    selected = _select_context_specialists(
+        page_kind="remediation",
+        question="Summarize what I am looking at",
+        page_specialists=page_specialists,
+    )
+    remediation_agent = object()
+    governance_agent = object()
+    context = SimpleNamespace(
+        specialist_agent=lambda specialist_id: {
+            "remediation": remediation_agent,
+            "governance": governance_agent,
+        }.get(specialist_id)
+    )
+
+    narrator, narrator_id = _resolve_context_narrator(
+        context,
+        selected,
+        prefer_copilot=False,
+    )
+
+    assert selected == ["remediation", "governance"]
+    assert narrator is remediation_agent
+    assert narrator_id == "remediation"
 
 
 def test_all_manifest_specialists_resolve_through_provider_runtime():

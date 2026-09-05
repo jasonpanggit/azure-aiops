@@ -287,7 +287,10 @@ class SpecialistManifest(ManifestModel):
         for specialist in self.specialists:
             for page in specialist.page_mappings:
                 pages.setdefault(page, []).append(specialist.id)
-        return {page: tuple(ids) for page, ids in pages.items()}
+        return {
+            page: tuple(sorted(ids, key=lambda specialist_id: specialist_id != page))
+            for page, ids in pages.items()
+        }
 
     def runtime_projection(self) -> tuple[dict[str, Any], ...]:
         """Project manifest entries into the existing AgentDefinition shape."""
