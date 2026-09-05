@@ -15,7 +15,7 @@ provides:
 affects: [11-03, 11-05, 11-06, 11-16]
 actuals:
   tasks: 2
-  commits: 2
+  commits: 3
 tech-stack:
   added: []
   patterns:
@@ -77,11 +77,12 @@ status: complete
 
 1. **Tasks 1-2: Twelve-specialist contract and runtime parity** - `e0efdf26` (`feat`)
 2. **Review hardening: argument schemas, fail-closed invocation, and locked policy parity** - `7bb6aa53` (`fix`)
+3. **Final review hardening: complete manifest lock, bounded enrichment, and legacy routing** - `954e8106` (`fix`)
 
 ## Validation
 
-- Plan-targeted suite: 58 passed.
-- Adjacent Copilot, MCP, Foundry, specialist-output, routing, and Plan 11-01 regressions: 224 passed.
+- Plan-targeted suite: 64 passed.
+- Adjacent Copilot, MCP, Foundry, specialist-output, routing, and Plan 11-01 regressions: 230 passed.
 - Ruff passed for every changed Python file.
 - `compileall` passed for every changed Python module.
 - `git diff --check` passed.
@@ -96,6 +97,10 @@ status: complete
 6. Remediation business-decision and Defender case tools now publish their exact required and optional MCP schemas.
 7. Security-sensitive per-specialist grants and citation requirements are locked independently of mutable manifest input.
 8. Credential markers embedded in manifest string values are rejected recursively, not only credential-shaped keys.
+9. The policy digest now covers the complete normalized manifest, including output fields and statuses, routing intents, knowledge policy, and Foundry deployment metadata.
+10. Post-delegation Fabric IQ enrichment validates required arguments and performs no provider I/O for an empty network subject.
+11. Defender remediation cases omit the optional business-service filter unless the question names a service explicitly.
+12. Legacy `resource` and `remediation` routes retain Governance alongside their added domain specialists.
 
 ## Scope and Merge Notes
 
