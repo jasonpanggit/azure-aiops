@@ -105,14 +105,14 @@ Plans:
 **Goal:** Make Exposure authoritative, failure-tolerant, temporally correct, ontology-complete for container images, and operable at Defender-scale volumes before Phase 4 pilot validation.
 **Requirements:** PILOT-01, PILOT-02, PILOT-03, PILOT-04 (reliability prerequisites; final pilot completion remains downstream)
 **Depends on:** Phase 3
-**Plans:** 3/25 plans executed
+**Plans:** 4/25 plans executed
 
 Plans:
 
 - [x] 03.1-01-PLAN.md — Create Wave 0 Exposure fixtures, test scaffolds, benchmark, and Fabric SQL readiness probe
 - [x] 03.1-02-PLAN.md — Human-verify the flagged pyodbc package before any install
 - [x] 03.1-03-PLAN.md — Prove the governed tracer through persistence, API, vulnerabilityApi, and a real Exposure section
-- [ ] 03.1-21-PLAN.md — Gate permanent typed-image ontology identities, then complete the production tracer through ontology, remediation review handoff, and Copilot parity
+- [x] 03.1-21-PLAN.md — Gate permanent typed-image ontology identities, then complete the production tracer through ontology, remediation review handoff, and Copilot parity
 - [ ] 03.1-04-PLAN.md — Productionize Fabric SQL/ODBC and managed Key Vault cursor-key rotation
 - [ ] 03.1-05-PLAN.md — Normalize typed AUM/Defender acquisition outcomes without failure rows
 - [ ] 03.1-06-PLAN.md — Acquire and persist exact Container Insights workload-to-digest evidence
