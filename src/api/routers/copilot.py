@@ -395,6 +395,25 @@ def investigate_canonical(
     request = CanonicalInvestigationRequest.model_validate(
         payload.model_dump(exclude={"hint"})
     )
+    browser_snapshot = request.snapshot
+    request = request.model_copy(
+        update={
+            "snapshot": browser_snapshot.model_copy(
+                update={
+                    "coverage": browser_snapshot.coverage.model_copy(
+                        update={"complete": False}
+                    ),
+                    "freshness": [
+                        item.model_copy(update={"status": "unavailable"})
+                        for item in browser_snapshot.freshness
+                    ],
+                    # Browser rows select relevant governed tools but are never
+                    # promoted into server citations or persisted as authority.
+                    "evidence": [],
+                }
+            )
+        }
+    )
     planner = None
     if payload.hint is not None:
         citation_ids = [item.evidence_id for item in request.snapshot.evidence]

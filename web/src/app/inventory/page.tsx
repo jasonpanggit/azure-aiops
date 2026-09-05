@@ -168,6 +168,19 @@ function uniqueOptions(values: string[]): Array<{ value: string; label: string }
     .map((value) => ({ value, label: value }));
 }
 
+function scopesMatch(
+  left: Record<string, string[] | undefined>,
+  right: Record<string, string[] | undefined>,
+): boolean {
+  const dimensions = new Set([...Object.keys(left), ...Object.keys(right)]);
+  return Array.from(dimensions).every((dimension) => {
+    const leftValues = [...(left[dimension] ?? [])].sort();
+    const rightValues = [...(right[dimension] ?? [])].sort();
+    return leftValues.length === rightValues.length
+      && leftValues.every((value, index) => value === rightValues[index]);
+  });
+}
+
 function optionLabel(value: string, label: string): { value: string; label: string } {
   return { value, label };
 }
@@ -586,6 +599,22 @@ export default function InventoryPage() {
     subscriptionFilter,
     tab,
   ]);
+  const activeCopilotState = tab === "software"
+    ? softwareInventory
+    : tab === "azure"
+      ? azureInventory
+      : inventory;
+  const activeCopilotScope = activeCopilotState.data?.data.requested_scope;
+  const copilotReady = Boolean(
+    activeCopilotScope
+    && !activeCopilotState.loading
+    && !activeCopilotState.error
+    && scopesMatch(effectiveScope, activeCopilotScope),
+  );
+
+  useEffect(() => {
+    if (!copilotReady) setCopilotOpen(false);
+  }, [copilotReady]);
 
   const loadOsGroup = useCallback(async (key: string, page: number) => {
     setDetailError(null);
@@ -908,7 +937,9 @@ export default function InventoryPage() {
         eyebrow="Inventory"
         title="Inventory"
         description="Find authorized operating-system, installed-software, and Azure resource coverage across native Azure VMs, Arc-enabled servers, and platform services."
-        actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about inventory" />}
+        actions={copilotReady
+          ? <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about inventory" />
+          : undefined}
         metadata={
           inventory.data && (
             <EvidenceBar
@@ -1813,7 +1844,7 @@ export default function InventoryPage() {
         </section>
       )}
       <CopilotDrawer
-        open={copilotOpen}
+        open={copilotOpen && copilotReady}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Inventory and data health"
         requestedScope={copilotContext.requestedScope}

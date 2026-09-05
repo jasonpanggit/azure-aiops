@@ -373,6 +373,33 @@ describe("Inventory OS tracer", () => {
     });
   });
 
+  it("does not expose Copilot while inventory for a new scope is unresolved", async () => {
+    investigateCanonical.mockClear();
+    const scopedInventory = new Promise<never>(() => undefined);
+    os
+      .mockResolvedValueOnce(envelope({
+        ...collection,
+        requested_scope: { subscription: ["sub-a", "sub-b"] },
+      }))
+      .mockReturnValueOnce(scopedInventory);
+
+    render(
+      <ScopeProvider initialScope={{ subscription: ["sub-a", "sub-b"] }}>
+        <InventoryPage />
+      </ScopeProvider>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Ask Copilot about inventory" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Subscription"), {
+      target: { value: "sub-b" },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Ask Copilot about inventory" })).not.toBeInTheDocument();
+    });
+    expect(investigateCanonical).not.toHaveBeenCalled();
+  });
+
   it("renders canonical installed software and exact linked details", async () => {
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
     fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));

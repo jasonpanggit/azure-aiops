@@ -513,7 +513,9 @@ def test_authenticated_canonical_route_preserves_governed_result(tmp_path):
     assert "visible subset is incomplete" in data["uncertainty"]
     assert {citation["citation_id"] for citation in data["citations"]} >= {
         "snapshot:coverage",
-        "inventory:os:stable",
+    }
+    assert "inventory:os:stable" not in {
+        citation["citation_id"] for citation in data["citations"]
     }
     assert data["thread_id"].startswith("thr-")
     assert data["mutation_authorized"] is False
@@ -576,3 +578,45 @@ def test_canonical_route_rejects_browser_authority_assertions(tmp_path):
     )
 
     assert response.status_code == 400
+
+
+def test_canonical_route_never_promotes_browser_observations_to_authority(
+    tmp_path,
+):
+    class InventoryPort:
+        def list_resources(self, scope, *, family, resource_type, limit):
+            return {"resources": [], "total": 0}
+
+    context = _context(tmp_path, None)
+    context.inventory_read_port_provider = lambda: InventoryPort()
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    body = _canonical_body()
+    body["snapshot"]["coverage"] = {
+        "visible_count": 1,
+        "total_count": 1,
+        "complete": True,
+    }
+    body["snapshot"]["freshness"][0]["status"] = "fresh"
+    body["snapshot"]["evidence"][0]["resource_id"] = (
+        "/subscriptions/sub-b/resourceGroups/rg/providers/"
+        "Microsoft.Compute/virtualMachines/untrusted"
+    )
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["coverage"] == {
+        "visible_count": 1,
+        "total_count": 1,
+        "complete": False,
+    }
+    assert "visible subset is incomplete" in data["uncertainty"]
+    assert "inventory freshness is unavailable" in data["uncertainty"]
+    assert "inventory:os:stable" not in {
+        citation["citation_id"] for citation in data["citations"]
+    }
