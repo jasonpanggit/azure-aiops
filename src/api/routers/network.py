@@ -18,7 +18,12 @@ from fastapi import APIRouter, Body, Query
 from network.design import NetworkDesignPolicy, NetworkDesignPolicyValidationError
 from network.flow import FlowQuery
 from network.gaps import NetworkGapAnalyzer
-from network.rule_engine import RuleValidationError, validate_rule_parameters
+from network.rule_engine import (
+    SUPPORTED_OPERATORS,
+    SUPPORTED_TARGET_NAMES,
+    RuleValidationError,
+    validate_rule_parameters,
+)
 from network.service import NetworkIntelligenceService, NetworkScope
 
 from ..dependencies import Context, Page, ReadScope, WritePrincipal
@@ -288,6 +293,8 @@ def _policy_payload(policy: NetworkDesignPolicy) -> tuple[dict[str, Any], list[s
     payload["invalid_rule_ids"] = [
         rule["rule_id"] for rule in annotated if rule.get("invalid_reason")
     ]
+    payload["supported_targets"] = list(SUPPORTED_TARGET_NAMES)
+    payload["supported_operators"] = list(SUPPORTED_OPERATORS)
     return payload, unevaluated
 
 

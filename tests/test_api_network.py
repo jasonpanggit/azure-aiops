@@ -27,7 +27,7 @@ from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from network.design import NetworkDesignPolicyStore
-from network.rule_engine import SUPPORTED_OPERATORS, SUPPORTED_TARGETS
+from network.rule_engine import SUPPORTED_OPERATORS, SUPPORTED_TARGET_NAMES
 from network.service import NetworkIntelligenceService, build_service
 from onboarding.service import SubscriptionOnboardingService
 from storage.onelake_documents import OneLakeDocumentStore
@@ -310,7 +310,7 @@ class TestPolicy:
             key in data and isinstance(data[key], expected_type)
             for key, expected_type in legacy_types.items()
         )
-        assert data["supported_targets"] == sorted(SUPPORTED_TARGETS)
+        assert data["supported_targets"] == list(SUPPORTED_TARGET_NAMES)
         assert data["supported_operators"] == list(SUPPORTED_OPERATORS)
 
     def test_malformed_declarative_rule_is_rejected_without_persisting(self, tmp_path):
