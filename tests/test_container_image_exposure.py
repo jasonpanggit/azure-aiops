@@ -11,6 +11,8 @@ from onboarding.defender_normalize import (
 from onboarding.graph_normalize import Normalizer
 
 OBSERVED = "2026-09-02T00:00:00Z"
+DIGEST_A = f"sha256:{'a' * 64}"
+DIGEST_B = f"sha256:{'b' * 64}"
 REGISTRY = (
     "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.ContainerRegistry"
     "/registries/acr1"
@@ -294,3 +296,183 @@ def test_service_surfaces_container_image_exposures_and_overview_counts() -> Non
     overview = service.defender_overview(scope)
     assert overview["vulnerable_container_image_count"] == 1
     assert overview["container_image_cve_count"] == 8
+
+
+def _defender_image_row(
+    *,
+    digest: str = DIGEST_A,
+    observed_at: str = OBSERVED,
+) -> dict[str, Any]:
+    return {
+        "id": "defender-subassessment-1",
+        "tenantId": "tenant1",
+        "subscriptionId": "sub1",
+        "properties": {
+            "timeGenerated": observed_at,
+            "additionalData": {
+                "imageDigest": digest,
+                "repository": "acr1.azurecr.io/api",
+                "tag": "v1",
+            },
+        },
+    }
+
+
+def _workload_rows(
+    *,
+    digest: str = DIGEST_A,
+    observed_at: str = OBSERVED,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    pods = [
+        {
+            "TimeGenerated": observed_at,
+            "ClusterId": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.ContainerService/managedClusters/aks1",
+            "Namespace": "payments",
+            "ControllerKind": "Deployment",
+            "ControllerName": "api",
+            "Name": "api-7d9f",
+            "PodUid": "pod-1",
+            "ContainerID": "containerd://container-1",
+            "ContainerName": "api",
+        }
+    ]
+    containers = [
+        {
+            "TimeGenerated": observed_at,
+            "ContainerID": "containerd://container-1",
+            "Image": "acr1.azurecr.io/api:v1",
+            "ImageID": f"docker-pullable://acr1.azurecr.io/api@{digest}",
+            "Repository": "acr1.azurecr.io/api",
+            "Name": "api",
+        }
+    ]
+    images = [
+        {
+            "TimeGenerated": observed_at,
+            "ImageID": f"acr1.azurecr.io/api@{digest}",
+            "Repository": "acr1.azurecr.io/api",
+            "Tag": "v1",
+        }
+    ]
+    return pods, containers, images
+
+
+def test_container_insights_queries_are_fixed_minimal_and_bounded() -> None:
+    from onboarding.monitor_logs import CONTAINER_INSIGHTS_QUERIES
+
+    assert set(CONTAINER_INSIGHTS_QUERIES) == {
+        "kube_pod_inventory",
+        "container_inventory",
+        "container_image_inventory",
+    }
+    expected_tables = {
+        "kube_pod_inventory": "KubePodInventory",
+        "container_inventory": "ContainerInventory",
+        "container_image_inventory": "ContainerImageInventory",
+    }
+    for family, query in CONTAINER_INSIGHTS_QUERIES.items():
+        assert query.splitlines()[0] == expected_tables[family]
+        assert "| where TimeGenerated > ago(15m)" in query
+        assert "| project " in query
+        assert "| take 25000" in query
+        assert "*" not in query
+
+
+def test_exact_digest_and_observation_time_produce_one_deployment() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    result = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[_defender_image_row()],
+        kube_pod_rows=pods,
+        container_rows=containers,
+        image_rows=images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+
+    assert len(result.deployments) == 1
+    deployment = result.deployments[0]
+    assert deployment["image_digest"] == DIGEST_A
+    assert deployment["cluster_id"].endswith("/managedClusters/aks1")
+    assert deployment["namespace"] == "payments"
+    assert deployment["controller_kind"] == "Deployment"
+    assert deployment["controller_name"] == "api"
+    assert deployment["effective_generation"] == "generation-2"
+    assert deployment["repository"] == "acr1.azurecr.io/api"
+    assert deployment["tag"] == "v1"
+    assert DIGEST_A in deployment["deployment_id"]
+    assert "v1" not in deployment["deployment_id"]
+
+
+def test_unproved_workload_links_remain_typed_unknown() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    cases = [
+        (
+            _defender_image_row(digest="sha256:not-a-digest"),
+            _workload_rows(),
+            "malformed_defender_digest",
+        ),
+        (
+            _defender_image_row(),
+            _workload_rows(digest=DIGEST_B),
+            "no_exact_digest_observation",
+        ),
+        (
+            _defender_image_row(),
+            _workload_rows(observed_at="2026-09-02T01:00:00Z"),
+            "stale_digest_observation",
+        ),
+    ]
+
+    for defender, (pods, containers, images), reason in cases:
+        result = normalize_workload_evidence(
+            connection_id="connection-1",
+            workspace_id="workspace-1",
+            defender_rows=[defender],
+            kube_pod_rows=pods,
+            container_rows=containers,
+            image_rows=images,
+            attempted_generation="generation-2",
+            completed_at=OBSERVED,
+        )
+        assert result.deployments == ()
+        assert result.unknown_reasons == (reason,)
+
+
+def test_workload_schemas_are_additive_and_preserve_approval_role_ids() -> None:
+    from fabric.schema_registry import schema_for
+
+    assert {
+        "observation_id",
+        "checkpoint_key",
+        "checkpoint_key_version",
+        "attempted_generation",
+        "effective_generation",
+    } <= set(schema_for("silver_workload_observations").names)
+    assert {
+        "deployment_id",
+        "image_digest",
+        "unknown_reason",
+        "lkg_source_generation",
+    } <= set(schema_for("silver_workload_deployments").names)
+    assert {
+        "checkpoint_key",
+        "connection_id",
+        "workspace_id",
+        "source_family",
+        "attempted_generation",
+        "effective_generation",
+        "unknown_reason_counts_json",
+    } <= set(schema_for("metadata_workload_source_checkpoints").names)
+    approval_field = schema_for("silver_remediation_approval_policies").field(
+        "role_ids_json"
+    )
+    assert approval_field.nullable is True

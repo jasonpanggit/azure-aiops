@@ -399,15 +399,31 @@ def test_each_source_family_is_fresh_at_threshold_and_stale_at_plus_one_second()
     assert classify_freshness is not None
 
 
-@pytest.mark.skip(reason="Pending implementation: Plan 03.1-06")
 def test_workload_impact_requires_exact_container_insights_digest_evidence() -> None:
     from intelligence.vulnerability.workload_inventory import match_workload_digest
 
-    assert match_workload_digest is not None
+    digest = f"sha256:{'a' * 64}"
+    matched = match_workload_digest(
+        defender_digest=digest.upper(),
+        observed_digest=f"docker-pullable://acr.example/api@{digest}",
+        defender_observed_at="2026-09-05T00:00:00Z",
+        workload_observed_at="2026-09-05T00:08:00Z",
+    )
+
+    assert matched.matched is True
+    assert matched.digest == digest
+    assert matched.reason == ""
 
 
-@pytest.mark.skip(reason="Pending implementation: Plan 03.1-06")
 def test_tag_or_repository_match_without_digest_remains_unknown() -> None:
     from intelligence.vulnerability.workload_inventory import match_workload_digest
 
-    assert match_workload_digest is not None
+    result = match_workload_digest(
+        defender_digest=f"sha256:{'a' * 64}",
+        observed_digest="acr.example/api:v1",
+        defender_observed_at="2026-09-05T00:00:00Z",
+        workload_observed_at="2026-09-05T00:01:00Z",
+    )
+
+    assert result.matched is False
+    assert result.reason == "no_exact_digest_observation"
