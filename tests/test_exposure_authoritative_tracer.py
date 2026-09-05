@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ def _finding_rows(scenario: dict[str, Any]) -> list[dict[str, Any]]:
     rows = [
         {
             **identity,
+            "tenant_id": scenario["scope"]["tenant_id"],
             "subscription_id": identity["target_id"].split("/")[2],
             "connection_ids": [
                 connections[identity["target_id"].split("/")[2]]
@@ -48,10 +50,22 @@ def _finding_rows(scenario: dict[str, Any]) -> list[dict[str, Any]]:
             "target_kind": "container_image",
             "weakness_id": image["cve_ids"][0],
             "source_families": ["defender"],
+            "tenant_id": scenario["scope"]["tenant_id"],
             "subscription_id": scenario["scope"]["authorized_subscriptions"][1],
             "connection_ids": ["connection-defender-west"],
             "read_model_generation_id": scenario["read_model_generation_id"],
             "completeness": "complete",
+            "registry_id": scenario["container_cases"]["registry_id"],
+            "image_repository": scenario["container_cases"]["repository"],
+            "image_tags": image["tags"],
+            "workload_state": image["workload_state"],
+            "workload_cluster_id": image["workload"]["cluster_id"],
+            "workload_namespace": image["workload"]["namespace"],
+            "workload_controller_kind": image["workload"]["controller_kind"],
+            "workload_controller_name": image["workload"]["controller_name"],
+            "workload_pod_uid": image["workload"]["pod_uid"],
+            "application_id": image["workload"]["application_id"],
+            "business_service_id": image["workload"]["business_service_id"],
         }
     )
     return rows
@@ -198,3 +212,86 @@ def test_invalid_publication_never_replaces_active_generation(tmp_path: Path) ->
         )
     )
     assert result["read_model_generation_id"] == scenario["read_model_generation_id"]
+
+
+def test_persisted_tracer_projects_through_production_ontology_path(
+    tmp_path: Path,
+) -> None:
+    from fabric.dataset_mapper import ExposureOntologyMapper
+    from ontology.ontology_sync import TYPED_IMAGE_ONTOLOGY_VERSION
+
+    store = DatasetStore(tmp_path / "exposure")
+    scenario, _ = _publish_fixture(store)
+    scope = Scope.from_mapping(
+        {"subscription": scenario["scope"]["authorized_subscriptions"]}
+    )
+
+    graph = ExposureOntologyMapper(ExposureReadPort(store)).project(
+        scope,
+        tenant_id=scenario["scope"]["tenant_id"],
+    )
+    repeated = ExposureOntologyMapper(ExposureReadPort(store)).project(
+        scope,
+        tenant_id=scenario["scope"]["tenant_id"],
+    )
+
+    active_entities = [
+        row for row in graph.entities if row["lifecycle_status"] == "active"
+    ]
+    active_relationships = [
+        row for row in graph.relationships if row["lifecycle_status"] == "active"
+    ]
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for row in active_entities:
+        by_type.setdefault(row["entity_type"], []).append(row)
+
+    assert graph == repeated
+    assert graph.quality_report["passed"] is True
+    assert len(by_type["VulnerabilityObservation"]) == 4
+    assert len(by_type["ImageDigest"]) == 1
+    assert len(by_type["LogicalImage"]) == 1
+    assert len(by_type["WorkloadDeployment"]) == 1
+    assert {
+        json.loads(row["payload_json"])["exposure_id"]
+        for row in by_type["VulnerabilityObservation"]
+    } == {
+        scenario["identity_cases"]["aum_only"]["exposure_id"],
+        scenario["identity_cases"]["defender_only"]["exposure_id"],
+        scenario["identity_cases"]["merged"]["exposure_id"],
+        IMAGE_EXPOSURE_ID,
+    }
+    assert {
+        tuple(json.loads(row["payload_json"])["source_families"])
+        for row in by_type["VulnerabilityObservation"]
+    } == {("aum",), ("defender",), ("aum", "defender")}
+    assert {
+        row["ingestion_run_id"] for row in by_type["VulnerabilityObservation"]
+    } == {scenario["read_model_generation_id"]}
+    assert {
+        row["ontology_version"] for row in active_entities
+    } == {TYPED_IMAGE_ONTOLOGY_VERSION}
+    assert {
+        row["ontology_version"] for row in active_relationships
+    } == {TYPED_IMAGE_ONTOLOGY_VERSION}
+
+    triples = {
+        (row["subject_type"], row["predicate"], row["object_type"])
+        for row in active_relationships
+    }
+    assert ("VulnerabilityObservation", "identifies", "CVE") in triples
+    assert ("VulnerabilityObservation", "affects", "ImageDigest") in triples
+    assert ("LogicalImage", "hasDigest", "ImageDigest") in triples
+    assert ("ImageDigest", "deployedAs", "WorkloadDeployment") in triples
+    assert ("WorkloadDeployment", "runsApplication", "Application") in triples
+    assert ("BusinessService", "contains", "Application") in triples
+    assert all(
+        row["entity_type"] not in {"Resource", "VirtualMachine", "ArcServer"}
+        for row in by_type["ImageDigest"]
+    )
+
+    unauthorized_subscription = scenario["scope"]["unauthorized_subscriptions"][0]
+    serialized_graph = json.dumps(
+        {"entities": active_entities, "relationships": active_relationships},
+        sort_keys=True,
+    )
+    assert unauthorized_subscription not in serialized_graph
