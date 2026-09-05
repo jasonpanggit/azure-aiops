@@ -86,6 +86,21 @@ def _terraform_tool_registry_keys() -> set[str]:
     )
 
 
+def _local_block(source: str, name: str) -> str:
+    """Return one top-level ``locals`` assignment, whatever its shape.
+
+    Slices from ``  <name> =`` up to the next sibling assignment at the same
+    indentation or the end of the ``locals`` block, so it works for maps,
+    ternaries, and single-expression locals alike.
+    """
+
+    start = re.search(rf"^  {re.escape(name)}\s*=", source, flags=re.MULTILINE)
+    assert start, f"local {name} not found"
+    tail = source[start.end() :]
+    end = re.search(r"^(  [a-z_][a-z0-9_]*\s*=|\}|resource )", tail, flags=re.MULTILINE)
+    return source[start.start() : start.end() + (end.start() if end else len(tail))]
+
+
 # ---------------------------------------------------------------------------
 # Wheel packaging
 # ---------------------------------------------------------------------------
@@ -246,7 +261,10 @@ def test_terraform_agent_name_projection_reproduces_the_deployed_names():
 def test_container_apps_env_is_manifest_derived_for_all_twelve_specialists():
     container_apps = _read("infra/terraform/container_apps.tf")
 
-    assert "local.foundry_specialist_deployment" in container_apps
+    # The active revision reads the *promoted* mapping, never the candidate
+    # deployment projection this plan would publish.
+    assert "local.foundry_specialist_activation" in container_apps
+    assert "local.foundry_specialist_deployment" not in container_apps
     assert "AIOPS_SPECIALIST_MANIFEST_DIGEST" in container_apps
     # The per-specialist name/version env pairs the API runtime reads must be
     # generated, not hand-listed for eight of twelve specialists.
@@ -423,15 +441,17 @@ def test_parity_cli_offline_exits_zero_and_live_unconfigured_exits_blocked():
 def test_rollout_creates_immutable_versions_before_any_metadata_switch():
     script = _read("infra/scripts/create-foundry-agent.sh")
 
-    # Textual order inside the catalog branch is the execution order: the
-    # recursive per-specialist invocation publishes every new immutable
-    # version, then the parity gate runs, then -- and only then -- the
-    # promotion record is written.
+    # Textual order inside the catalog branch is the execution order: offline
+    # parity gates the run before anything is published, the recursive
+    # per-specialist invocation then publishes every new immutable version,
+    # the *live* gate validates those exact published versions, and only then
+    # is the promotion record written.
+    offline_at = script.index('"${parity_validator}" --offline')
     create_at = script.index('FOUNDRY_SPECIALISTS_JSON=""')
-    parity_at = script.index('"${parity_validator}" --offline')
-    promote_at = script.index('-n "${FOUNDRY_PROMOTION_RECORD:-}"')
+    live_at = script.index('"${parity_validator}" --live')
+    promote_at = script.index("promotion_record_path")
 
-    assert create_at < parity_at < promote_at
+    assert offline_at < create_at < live_at < promote_at
     assert 'agents/${FOUNDRY_AGENT_NAME}/versions?api-version=' in script
     # Versions are additive: nothing in the rollout may delete or overwrite a
     # published agent version, so the previous one stays selectable.
@@ -478,3 +498,771 @@ def test_rollout_scripts_have_valid_shell_syntax():
         subprocess.run(
             ["bash", "-n", script], cwd=REPO_ROOT, check=True, capture_output=True
         )
+
+
+# ---------------------------------------------------------------------------
+# Promotion boundary: create -> validate -> promote
+#
+# A candidate version published by *this* apply must not be able to activate
+# in the same unvalidated step. The active Container Apps revision may only
+# consume a previously validated, persisted provider-ID mapping; without one
+# it must fall back to the legacy eight-agent set.
+# ---------------------------------------------------------------------------
+
+PROMOTION_GATE_RESOURCE = 'resource "terraform_data" "foundry_specialist_promotion_gate"'
+
+
+def test_terraform_declares_a_reviewed_validated_promotion_artifact_input():
+    variables = _read("infra/terraform/variables.tf")
+
+    assert 'variable "foundry_specialist_promotion_artifact"' in variables
+    block = _hcl_block(variables, 'variable "foundry_specialist_promotion_artifact"')
+    # Absent by default: a fresh environment must not activate anything the
+    # current apply just created.
+    assert re.search(r'default\s*=\s*""', block)
+
+
+def test_promotion_gate_requires_exact_twelve_provider_id_mapping():
+    foundry = _read("infra/terraform/foundry.tf")
+
+    assert PROMOTION_GATE_RESOURCE in foundry
+    gate = foundry[foundry.index(PROMOTION_GATE_RESOURCE) :]
+
+    # The gate is a real Terraform validation resource, not a comment.
+    assert "precondition" in gate
+    for local_name in (
+        "foundry_promotion_status_ok",
+        "foundry_promotion_digest_ok",
+        "foundry_promotion_ids_ok",
+        "foundry_promotion_ids_complete",
+        "foundry_promotion_no_candidate_ids",
+    ):
+        assert f"  {local_name} = " in foundry
+        assert f"local.{local_name}" in gate
+
+    # Exact mapping: the promoted key set must equal the manifest's specialist
+    # IDs, and every entry must carry a non-empty provider version ID.
+    assert "keys(local.specialists_by_id)" in foundry
+    assert "provider_version_id" in foundry
+    # The digest ties the validated mapping to the exact reviewed manifest.
+    assert "local.specialist_manifest_digest" in foundry
+
+
+def test_activation_never_uses_a_candidate_synthetic_version():
+    foundry = _read("infra/terraform/foundry.tf")
+
+    activation = _local_block(foundry, "foundry_specialist_activation")
+    # Synthetic manifest-derived stamps are candidates only; the activated
+    # version must be an actual provider version ID.
+    assert "foundry_specialist_agent_versions" not in activation
+    assert "provider_version_id" in activation
+    # ... and a crafted artifact restating a candidate stamp is rejected.
+    no_candidate = _local_block(foundry, "foundry_promotion_no_candidate_ids")
+    assert "values(local.foundry_specialist_agent_versions)" in no_candidate
+
+
+def test_activation_falls_back_to_legacy_eight_without_a_validated_artifact():
+    foundry = _read("infra/terraform/foundry.tf")
+
+    activation = _local_block(foundry, "foundry_specialist_activation")
+    assert "local.foundry_promotion_validated" in activation
+    assert "var.foundry_specialists" in activation
+    assert "legacy_rollback" in activation
+
+
+def test_container_app_revision_depends_on_the_promotion_gate():
+    container_apps = _read("infra/terraform/container_apps.tf")
+
+    api = container_apps[container_apps.index('resource "azurerm_container_app" "api"') :]
+    depends_on = api[api.index("depends_on = [") : api.index("]", api.index("depends_on = ["))]
+
+    assert "terraform_data.foundry_specialist_promotion_gate" in depends_on
+    # The activation source is observable on the running revision.
+    assert "AIOPS_SPECIALIST_ACTIVATION_SOURCE" in container_apps
+    assert "local.foundry_specialist_activation_source" in container_apps
+
+
+# ---------------------------------------------------------------------------
+# Actual immutable provider IDs captured from create/version responses
+# ---------------------------------------------------------------------------
+
+CREATE_AGENT_SCRIPT = REPO_ROOT / "infra" / "scripts" / "create-foundry-agent.sh"
+
+_CURL_STUB = """#!/usr/bin/env bash
+set -eu
+for arg in "$@"; do
+  case "$arg" in
+    *login.microsoftonline.com*)
+      printf '%s' '{"access_token": "stub-token"}'
+      exit 0
+      ;;
+  esac
+done
+printf 'create\\n' >>"$STUB_CREATE_LOG"
+n=$(wc -l <"$STUB_CREATE_LOG" | tr -d ' ')
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$arg"; fi
+  prev="$arg"
+done
+if [ -n "$out" ]; then
+  sed "s/__N__/${n}/g" "$STUB_RESPONSE_FILE" >"$out"
+fi
+printf '%s' "${STUB_HTTP_STATUS:-201}"
+"""
+
+_VALIDATOR_STUB = """import json, os, sys
+
+mode = sys.argv[1] if len(sys.argv) > 1 else "--offline"
+if mode == "--selftest":
+    sys.exit(int(os.environ.get("STUB_SELFTEST_EXIT", "0")))
+if mode == "--offline":
+    sys.exit(int(os.environ.get("STUB_OFFLINE_EXIT", "0")))
+log = os.environ.get("STUB_LIVE_LOG")
+if log:
+    mapping_path = os.environ.get("FOUNDRY_CANDIDATE_MAPPING", "")
+    payload = {"argv": sys.argv[1:], "mapping_path": mapping_path}
+    if mapping_path and os.path.exists(mapping_path):
+        payload["mapping"] = json.load(open(mapping_path, encoding="utf-8"))
+    with open(log, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+sys.exit(int(os.environ.get("STUB_LIVE_EXIT", "0")))
+"""
+
+
+def _rollout_fixture(tmp_path, *, response: dict, specialists: dict | None = None):
+    """Build a stubbed environment for infra/scripts/create-foundry-agent.sh."""
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(_CURL_STUB, encoding="utf-8")
+    curl.chmod(0o755)
+
+    response_file = tmp_path / "response.json"
+    response_file.write_text(json.dumps(response), encoding="utf-8")
+
+    validator = tmp_path / "stub_validator.py"
+    validator.write_text(_VALIDATOR_STUB, encoding="utf-8")
+
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
+        "HOME": str(tmp_path),
+        "FOUNDRY_PROJECT_ENDPOINT": "https://example.services.ai.azure.com/api/projects/ops",
+        "FOUNDRY_AGENT_NAME": "operations-copilot",
+        "FOUNDRY_AGENT_MODEL": "gpt-5-4-mini",
+        "FOUNDRY_AGENT_PROMPT": "prompt",
+        "AZURE_TENANT_ID": "tenant",
+        "AZURE_CLIENT_ID": "client",
+        "AZURE_CLIENT_SECRET": "secret",
+        "STUB_CREATE_LOG": str(tmp_path / "create.log"),
+        "STUB_RESPONSE_FILE": str(response_file),
+        "STUB_LIVE_LOG": str(tmp_path / "live.json"),
+        "FOUNDRY_PARITY_VALIDATOR": str(validator),
+        "FOUNDRY_PARITY_PYTHON": sys.executable,
+        "FOUNDRY_SPECIALIST_MANIFEST_DIGEST": "digest-abc",
+        "FOUNDRY_SPECIALIST_RELEASE": "2026.09",
+    }
+    (tmp_path / "create.log").write_text("", encoding="utf-8")
+
+    if specialists is not None:
+        env["FOUNDRY_SPECIALISTS_JSON"] = json.dumps(specialists)
+    return env
+
+
+def _run_rollout(env, tmp_path):
+    return subprocess.run(
+        [str(CREATE_AGENT_SCRIPT)],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _twelve_specialists():
+    manifest = load_specialist_manifest()
+    return {
+        specialist.id: {
+            "name": f"aiops-{specialist.foundry.name}-agent",
+            "version": f"2026.09.{specialist.foundry.version}",
+            "model": "gpt-5-4-mini",
+            "prompt": "role prompt",
+            "tools": [],
+        }
+        for specialist in manifest.specialists
+    }
+
+
+def test_create_agent_records_the_actual_provider_version_id(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={
+            "name": "aiops-network-agent",
+            "version": "prov-__N__",
+            "id": "/agents/aiops-network-agent/versions/prov-__N__",
+        },
+    )
+    record = tmp_path / "versions.tsv"
+    env.update(
+        {
+            "FOUNDRY_AGENT_NAME": "aiops-network-agent",
+            "FOUNDRY_AGENT_SPECIALIST_ID": "network",
+            "FOUNDRY_AGENT_VERSION": "2026.09.1",
+            "FOUNDRY_AGENT_VERSION_RECORD": str(record),
+        }
+    )
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    row = record.read_text(encoding="utf-8").strip().split("\t")
+    # id/name/actual provider version id/candidate contract stamp
+    assert row[0] == "network"
+    assert row[1] == "aiops-network-agent"
+    assert row[2] == "prov-1"
+    assert row[3] == "2026.09.1"
+    # The synthetic manifest stamp is never stored as the provider ID.
+    assert row[2] != row[3]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"name": "aiops-network-agent"},
+        {"name": "aiops-network-agent", "version": ""},
+        {"name": "aiops-network-agent", "version": {"nested": "no"}},
+        {"name": "aiops-network-agent", "version": "has space"},
+    ],
+)
+def test_create_agent_fails_closed_without_a_usable_provider_version_id(
+    tmp_path, response
+):
+    env = _rollout_fixture(tmp_path, response=response)
+    record = tmp_path / "versions.tsv"
+    env.update(
+        {
+            "FOUNDRY_AGENT_NAME": "aiops-network-agent",
+            "FOUNDRY_AGENT_SPECIALIST_ID": "network",
+            "FOUNDRY_AGENT_VERSION": "2026.09.1",
+            "FOUNDRY_AGENT_VERSION_RECORD": str(record),
+        }
+    )
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert "provider version id" in result.stderr.casefold()
+    assert not record.exists() or record.read_text(encoding="utf-8").strip() == ""
+
+
+def test_rollout_validates_and_promotes_only_actual_provider_ids(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    promotion = tmp_path / "promotion.json"
+    previous = {
+        specialist_id: {
+            "agent_name": f"aiops-{specialist_id}-agent",
+            "provider_version_id": f"old-{specialist_id}",
+        }
+        for specialist_id in LEGACY_SPECIALIST_IDS
+    }
+    promotion.write_text(
+        json.dumps(
+            {
+                "status": "validated",
+                "promotion": "promoted",
+                "manifest_digest": "digest-old",
+                "agents": previous,
+            }
+        ),
+        encoding="utf-8",
+    )
+    env["FOUNDRY_PROMOTION_RECORD"] = str(promotion)
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+
+    # The live gate validated the exact captured provider IDs, not "latest".
+    live = json.loads((tmp_path / "live.json").read_text(encoding="utf-8"))
+    assert live["mapping_path"]
+    mapping = live["mapping"]["agents"]
+    assert sorted(mapping) == sorted(LOCKED_SPECIALIST_IDS)
+    assert all(
+        entry["provider_version_id"].startswith("prov-") for entry in mapping.values()
+    )
+    assert len({entry["provider_version_id"] for entry in mapping.values()}) == 12
+
+    record = json.loads(promotion.read_text(encoding="utf-8"))
+    assert record["status"] == "validated"
+    assert record["promotion"] == "promoted"
+    assert record["manifest_digest"] == "digest-abc"
+    assert sorted(record["agents"]) == sorted(LOCKED_SPECIALIST_IDS)
+    assert all(
+        entry["provider_version_id"].startswith("prov-")
+        for entry in record["agents"].values()
+    )
+    # No synthetic release label is ever promoted as a provider ID.
+    assert all(
+        not entry["provider_version_id"].startswith("2026.")
+        for entry in record["agents"].values()
+    )
+    # The previously promoted mapping is retained as the rollback target.
+    assert record["rollback_target"] == previous
+
+
+def test_blocked_live_parity_holds_promotion_and_preserves_the_validated_mapping(
+    tmp_path,
+):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    env["STUB_LIVE_EXIT"] = "3"
+    promotion = tmp_path / "promotion.json"
+    previous = {
+        specialist_id: {
+            "agent_name": f"aiops-{specialist_id}-agent",
+            "provider_version_id": f"old-{specialist_id}",
+        }
+        for specialist_id in LEGACY_SPECIALIST_IDS
+    }
+    promotion.write_text(
+        json.dumps(
+            {
+                "status": "validated",
+                "promotion": "promoted",
+                "manifest_digest": "digest-old",
+                "agents": previous,
+            }
+        ),
+        encoding="utf-8",
+    )
+    env["FOUNDRY_PROMOTION_RECORD"] = str(promotion)
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    record = json.loads(promotion.read_text(encoding="utf-8"))
+
+    assert record["promotion"] == "held"
+    # A held rollout never moves candidates into the activated position and
+    # never destroys the mapping the running revision depends on.
+    assert record["agents"] == previous
+    assert record["manifest_digest"] == "digest-old"
+    assert record["candidate"]["promotion"] == "held"
+    assert record["candidate"]["reason"] == "live_parity_blocked"
+    assert sorted(record["candidate"]["agents"]) == sorted(LOCKED_SPECIALIST_IDS)
+
+
+def test_failed_live_parity_fails_the_rollout(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    env["STUB_LIVE_EXIT"] = "1"
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 1
+    assert "live specialist parity failed" in result.stderr.casefold()
+
+
+# ---------------------------------------------------------------------------
+# Deploy interpreter and validator availability
+# ---------------------------------------------------------------------------
+
+
+def test_parity_interpreter_defaults_to_the_repo_venv_with_an_override():
+    script = _read("infra/scripts/create-foundry-agent.sh")
+
+    assert '${repo_root}/.venv/bin/python' in script
+    assert "FOUNDRY_PARITY_PYTHON" in script
+    # The override must win over the default when supplied.
+    default_at = script.index('${repo_root}/.venv/bin/python')
+    override_at = script.index('-n "${FOUNDRY_PARITY_PYTHON:-}"')
+    assert override_at < default_at
+
+
+def test_unavailable_validator_holds_promotion_without_claiming_a_mismatch(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    # Interpreter/import failure, not a parity mismatch.
+    env["STUB_SELFTEST_EXIT"] = "9"
+    candidate = tmp_path / "promotion.json.candidate"
+    env["FOUNDRY_CANDIDATE_RECORD"] = str(candidate)
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    stderr = result.stderr.casefold()
+    assert "validator_unavailable" in stderr or "validator unavailable" in stderr
+    assert "parity failed" not in stderr
+    assert "mismatch" not in stderr
+    assert "held" in result.stdout.casefold()
+
+
+def test_unavailable_validator_does_not_republish_versions_on_re_run(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    env["STUB_SELFTEST_EXIT"] = "9"
+    env["FOUNDRY_CANDIDATE_RECORD"] = str(tmp_path / "promotion.json.candidate")
+
+    first = _run_rollout(env, tmp_path)
+    creates_after_first = len(
+        (tmp_path / "create.log").read_text(encoding="utf-8").split()
+    )
+    second = _run_rollout(env, tmp_path)
+    creates_after_second = len(
+        (tmp_path / "create.log").read_text(encoding="utf-8").split()
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert creates_after_first == 12
+    # No publication churn: the same unvalidated candidate set is not
+    # republished while the validator stays unavailable.
+    assert creates_after_second == creates_after_first
+
+
+# ---------------------------------------------------------------------------
+# Token audiences, URL safety, and failure classification
+# ---------------------------------------------------------------------------
+
+
+def _live_env(**overrides) -> dict[str, str]:
+    env = {
+        "FOUNDRY_PROJECT_ENDPOINT": "https://example.services.ai.azure.com/api/projects/ops",
+        "AZURE_TENANT_ID": "tenant",
+        "AZURE_CLIENT_ID": "client",
+        "AZURE_CLIENT_SECRET": "secret",
+        "OPERATIONS_MCP_SERVER_URL": "https://apim.example.net/operations-mcp",
+        "AZURE_MCP_SERVER_URL": "https://apim.example.net/azure-mcp",
+        "MCP_APIM_AUDIENCE": "api://aiops-apim",
+        "FOUNDRY_CANDIDATE_MAPPING": "",
+    }
+    env.update(overrides)
+    return env
+
+
+def _candidate_mapping_file(tmp_path, provider_id="prov-1") -> str:
+    manifest = load_specialist_manifest()
+    path = tmp_path / "candidate.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    specialist.id: {
+                        "agent_name": f"aiops-{specialist.foundry.name}-agent",
+                        "provider_version_id": provider_id,
+                    }
+                    for specialist in manifest.specialists
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def test_apim_audience_is_required_configuration_for_live_parity():
+    module = _parity_module()
+
+    report = module.run_live(env=_live_env(MCP_APIM_AUDIENCE=""))
+
+    assert report["status"] == "blocked"
+    assert report["reason"] == "live_parity_not_configured"
+    assert "MCP_APIM_AUDIENCE" in report["missing_configuration"]
+
+
+def test_live_parity_uses_separate_foundry_and_apim_tokens(tmp_path, monkeypatch):
+    module = _parity_module()
+    scopes: list[str] = []
+    authorizations: dict[str, str] = {}
+
+    def fake_token(env, *, scope):
+        scopes.append(scope)
+        return f"token-for-{scope}"
+
+    def fake_post(url, payload, headers):
+        authorizations[url] = headers["Authorization"]
+        return {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
+
+    def fake_get(url, headers):
+        authorizations[url] = headers["Authorization"]
+        return {"value": []}
+
+    monkeypatch.setattr(module, "_access_token", fake_token)
+    monkeypatch.setattr(module, "_post_json", fake_post)
+    monkeypatch.setattr(module, "_get_json", fake_get)
+
+    env = _live_env(FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path))
+    module.run_live(env=env)
+
+    assert len(scopes) == 2
+    assert len(set(scopes)) == 2
+    assert "https://ai.azure.com/.default" in scopes
+    assert "api://aiops-apim/.default" in scopes
+
+    apim_token = "token-for-api://aiops-apim/.default"
+    foundry_token = "token-for-https://ai.azure.com/.default"
+    for url, header in authorizations.items():
+        expected = apim_token if "apim.example.net" in url else foundry_token
+        assert header.endswith(expected), url
+    # The Foundry token must never be presented to the APIM MCP endpoints.
+    assert not any(
+        foundry_token in header
+        for url, header in authorizations.items()
+        if "apim.example.net" in url
+    )
+
+
+@pytest.mark.parametrize(
+    "variable",
+    ["OPERATIONS_MCP_SERVER_URL", "AZURE_MCP_SERVER_URL", "FOUNDRY_PROJECT_ENDPOINT"],
+)
+def test_live_parity_refuses_to_send_credentials_over_plain_http(
+    tmp_path, monkeypatch, variable
+):
+    module = _parity_module()
+    called: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_access_token",
+        lambda env, *, scope: called.append(scope) or "token",
+    )
+
+    env = _live_env(
+        FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path),
+        **{variable: "http://insecure.example.net/mcp"},
+    )
+    report = module.run_live(env=env)
+
+    assert report["status"] == "fail"
+    assert module.exit_code(report) == module.EXIT_FAIL
+    assert {failure["kind"] for failure in report["failures"]} == {
+        "insecure_service_url"
+    }
+    # No token may be acquired, let alone sent, before the URL is proven safe.
+    assert called == []
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_live_auth_and_service_failures_are_fail_not_blocked(
+    tmp_path, monkeypatch, status
+):
+    module = _parity_module()
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+
+    def raise_http(url, payload, headers):
+        raise module.urllib.error.HTTPError(url, status, "denied", {}, None)
+
+    monkeypatch.setattr(module, "_post_json", raise_http)
+
+    env = _live_env(FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path))
+    report = module.run_live(env=env)
+
+    assert report["status"] == "fail"
+    assert report["status"] != "blocked"
+    assert module.exit_code(report) == module.EXIT_FAIL
+    kinds = {failure["kind"] for failure in report["failures"]}
+    expected = "live_auth_rejected" if status in (401, 403) else "live_service_error"
+    assert kinds == {expected}
+    assert all(failure["status"] == status for failure in report["failures"])
+    # Controlled fields only -- no token, header, or URL is reported.
+    assert all(
+        set(failure) <= {"kind", "service", "status", "error_type"}
+        for failure in report["failures"]
+    )
+    reported = " ".join(_flatten(report)).casefold()
+    assert "token" not in reported
+    assert "authorization" not in reported
+
+
+# ---------------------------------------------------------------------------
+# Pinned provider version validation
+# ---------------------------------------------------------------------------
+
+
+def _live_module_with_versions(monkeypatch, module, entries):
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(
+        module,
+        "_post_json",
+        lambda url, payload, headers: {
+            "result": {"tools": [{"name": name} for name in module.TOOL_REGISTRY]}
+        },
+    )
+    monkeypatch.setattr(module, "_get_json", lambda url, headers: {"value": entries})
+
+
+def test_live_parity_validates_the_pinned_version_not_the_last_entry(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    manifest = load_specialist_manifest()
+    network = next(s for s in manifest.specialists if s.id == "network")
+
+    pinned_definition = {
+        "tools": [
+            {
+                "type": "mcp",
+                "server_label": "operations-mcp",
+                "allowed_tools": list(network.operations_mcp_tools),
+            },
+            {
+                "type": "mcp",
+                "server_label": "azure-mcp",
+                "allowed_tools": list(network.azure_mcp_tools),
+            },
+        ]
+    }
+    # entries[-1] is a *newer, unvalidated* version with a widened grant. If
+    # the validator looked at the last entry it would fail; pinning must make
+    # it look only at prov-1.
+    entries = [
+        {"version": "prov-1", "definition": pinned_definition},
+        {
+            "version": "prov-99",
+            "definition": {
+                "tools": [
+                    {
+                        "type": "mcp",
+                        "server_label": "operations-mcp",
+                        "allowed_tools": list(network.operations_mcp_tools)
+                        + ["defender_alerts"],
+                    }
+                ]
+            },
+        },
+    ]
+    _live_module_with_versions(monkeypatch, module, entries)
+
+    env = _live_env(
+        FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+    )
+    report = module.run_live(env=env)
+
+    network_failures = [
+        failure
+        for failure in report["failures"]
+        if failure.get("specialist") == "network"
+    ]
+    assert network_failures == []
+    assert all(
+        observation["provider_version_id"] == "prov-1"
+        for observation in report["observed"]
+    )
+
+
+def test_live_parity_fails_when_the_pinned_version_is_absent(tmp_path, monkeypatch):
+    module = _parity_module()
+    _live_module_with_versions(
+        monkeypatch, module, [{"version": "some-other-id", "definition": {}}]
+    )
+
+    env = _live_env(
+        FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+    )
+    report = module.run_live(env=env)
+
+    assert report["status"] == "fail"
+    kinds = {failure["kind"] for failure in report["failures"]}
+    assert "pinned_version_missing" in kinds
+    missing = next(
+        failure for failure in report["failures"] if failure["kind"] == "pinned_version_missing"
+    )
+    assert missing["provider_version_id"] == "prov-1"
+
+
+def test_live_parity_fails_when_a_specialist_is_absent_from_the_mapping(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    _live_module_with_versions(monkeypatch, module, [])
+
+    path = tmp_path / "partial.json"
+    path.write_text(json.dumps({"agents": {"network": {
+        "agent_name": "aiops-network-agent",
+        "provider_version_id": "prov-1",
+    }}}), encoding="utf-8")
+
+    report = module.run_live(env=_live_env(FOUNDRY_CANDIDATE_MAPPING=str(path)))
+
+    assert report["status"] == "fail"
+    unpinned = {
+        failure["specialist"]
+        for failure in report["failures"]
+        if failure["kind"] == "pinned_version_absent"
+    }
+    assert unpinned == set(LOCKED_SPECIALIST_IDS) - {"network"}
+
+
+# ---------------------------------------------------------------------------
+# Model contract
+# ---------------------------------------------------------------------------
+
+
+def test_offline_parity_validates_and_reports_the_model_contract():
+    module = _parity_module()
+    report = module.run_offline()
+    manifest = load_specialist_manifest()
+
+    names = [check["name"] for check in report["checks"]]
+    assert "model_contract" in names
+    check = next(check for check in report["checks"] if check["name"] == "model_contract")
+    assert check["status"] == "pass"
+
+    contract = report["model_contract"]
+    assert contract["contract_model"] == manifest.specialists[0].foundry.model
+    assert contract["deployment_model_source"] == "var.foundry_model_name"
+    # The divergence is an acknowledged, reported distinction -- not dead data
+    # described as checked.
+    assert contract["divergence"] == "acknowledged_deployment_name_distinct_from_contract_model"
+
+
+def test_terraform_carries_both_the_deployment_and_contract_model():
+    foundry = _read("infra/terraform/foundry.tf")
+
+    assert re.search(r"^\s*model\s*=\s*var\.foundry_model_name\s*$", foundry, re.M)
+    assert re.search(
+        r"^\s*contract_model\s*=\s*specialist\.foundry\.model\s*$", foundry, re.M
+    )
+
+
+def test_live_parity_verifies_the_deployed_model_deployment_name(tmp_path, monkeypatch):
+    module = _parity_module()
+    _live_module_with_versions(
+        monkeypatch,
+        module,
+        [{"version": "prov-1", "definition": {"model": "wrong-deployment", "tools": []}}],
+    )
+
+    env = _live_env(
+        FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1"),
+        FOUNDRY_MODEL_DEPLOYMENT_NAME="gpt-5-4-mini",
+    )
+    report = module.run_live(env=env)
+
+    assert report["status"] == "fail"
+    mismatch = [
+        failure
+        for failure in report["failures"]
+        if failure["kind"] == "deployed_model_mismatch"
+    ]
+    assert mismatch
+    assert report["deployment_model_verified"] is True
