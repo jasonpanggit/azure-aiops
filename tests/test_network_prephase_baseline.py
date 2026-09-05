@@ -71,6 +71,8 @@ def test_canvas_interactivity_ceiling_is_measured() -> None:
     assert "vitest" in measurement["method"].casefold()
     assert "jsdom" in measurement["method"].casefold()
     assert measurement["machine"]
+    assert measurement["enterprise_fixture_total_nodes"] == 34_600
+    assert measurement["measured_sample_max_nodes"] == 1_500
 
 
 def test_default_baseline_path_is_the_phase_artifact() -> None:
