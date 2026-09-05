@@ -298,11 +298,69 @@ def test_query_catalog_declares_semantic_families_independently_of_tables() -> N
     )
 
 
-@pytest.mark.skip(reason="Pending implementation: Plan 03.1-05")
 def test_live_and_persisted_aum_share_canonical_normalization() -> None:
-    from intelligence.vulnerability.normalization import normalize_exposure
+    from intelligence.vulnerability.acquisition import (
+        AcquisitionSuccess,
+        PagingProof,
+    )
+    from intelligence.vulnerability.normalization import (
+        canonical_exposure_bytes,
+        normalize_exposure,
+    )
 
-    assert normalize_exposure is not None
+    attempted = datetime(2026, 9, 5, 0, 0, tzinfo=UTC)
+    common = {
+        "connection_id": "connection-aum-east",
+        "query_name": "patch_assessment_details",
+        "source_family": "azure_update_manager_missing",
+        "scope": ("00000000-0000-0000-0000-0000000000a1",),
+        "attempted_at": attempted,
+        "completed_at": attempted + timedelta(seconds=1),
+        "watermark": "2026-08-02T00:00:00Z",
+        "sequence": "1.0.0:1:1",
+    }
+    live = AcquisitionSuccess(
+        **common,
+        paging=PagingProof(1, 1000, 1000, 1, True),
+        rows=(ARG_PATCH_ROW,),
+    )
+    persisted_row = {
+        "id": ARG_PATCH_ROW["id"].casefold(),
+        "sourceId": ARG_PATCH_ROW["id"],
+        "tenantId": ARG_PATCH_ROW["tenantId"],
+        "subscriptionId": ARG_PATCH_ROW["subscriptionId"],
+        "targetResourceId": ARG_PATCH_ROW["id"].split(
+            "/patchAssessmentResults/", 1
+        )[0],
+        "updateName": ARG_PATCH_ROW["properties"]["patchName"],
+        "kbId": ARG_PATCH_ROW["properties"]["kbId"],
+        "classifications": ["Critical", "security", "Critical"],
+        "msrcSeverity": ARG_PATCH_ROW["properties"]["msrcSeverity"],
+        "publishedDateTime": ARG_PATCH_ROW["properties"]["publishedDateTime"],
+        "lastModifiedDateTime": ARG_PATCH_ROW["properties"][
+            "lastModifiedDateTime"
+        ],
+    }
+    persisted = AcquisitionSuccess(
+        **common,
+        paging=PagingProof(1, 1000, 1000, 1, True),
+        rows=(persisted_row,),
+    )
+
+    live_result = normalize_exposure(live)
+    persisted_result = normalize_exposure(persisted)
+
+    assert live_result.quality_failures == ()
+    assert persisted_result.quality_failures == ()
+    assert canonical_exposure_bytes(live_result) == canonical_exposure_bytes(
+        persisted_result
+    )
+    row = live_result.rows[0]
+    assert row.classifications == ("Critical", "Security")
+    assert row.source_classifications == ("Security", "Critical")
+    assert row.severity == "Critical"
+    assert row.source_severity == "Critical"
+    assert row.source_family == "azure_update_manager_missing"
 
 
 @pytest.mark.skip(reason="Pending implementation: Plan 03.1-07")
