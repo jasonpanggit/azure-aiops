@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from fabric_pipelines.topology_pipeline import derive_edges, to_topology_edge_row
 from network import NetworkIntelligenceService
 from network.models import NetworkSnapshot, PrivateDnsZone
 from onboarding.graph_normalize import Normalizer
 from onboarding.query_catalog import NETWORK_RESOURCE_TYPES
+from network_scale_fixtures import small_estate
 
 OBSERVED = "2026-09-01T00:00:00Z"
 VNET_ID = "/subscriptions/Sub-A/resourceGroups/RG/providers/Microsoft.Network/virtualNetworks/VNet-A"
@@ -270,6 +273,93 @@ def test_linked_private_dns_zone_has_no_zone_level_gap() -> None:
         for gap in service.gaps
         if gap.category == "dns_dependency_gap"
     ]
+
+
+def test_mixed_case_estate_preserves_subnet_containment_edges() -> None:
+    snapshot = small_estate(mixed_case_ids=True)
+    payload = NetworkIntelligenceService(snapshot).topology.to_dict()
+    relationships = {
+        (item["source"], item["relationship_type"], item["target"])
+        for item in payload["relationships"]
+    }
+
+    assert all(
+        (subnet.vnet_id, "contains", subnet.resource_id) in relationships
+        for subnet in snapshot.subnets
+    )
+
+
+def test_mixed_case_subnet_endpoint_reference_is_authoritative() -> None:
+    snapshot = small_estate(mixed_case_ids=True)
+    endpoint = snapshot.private_endpoints[0]
+    snapshot = replace(
+        snapshot,
+        private_endpoints=(replace(endpoint, subnet_id=""),),
+    )
+    payload = NetworkIntelligenceService(snapshot).topology.to_dict()
+    relationships = {
+        (item["source"], item["relationship_type"], item["target"])
+        for item in payload["relationships"]
+    }
+
+    assert (
+        snapshot.subnets[0].resource_id,
+        "hosts",
+        endpoint.resource_id,
+    ) in relationships
+
+
+def test_mixed_case_semantic_relationship_endpoints_are_normalized() -> None:
+    snapshot = small_estate()
+    source = snapshot.vnets[0].resource_id
+    target = snapshot.subnets[0].resource_id
+    service = NetworkIntelligenceService(
+        snapshot,
+        semantic_relationships=(
+            {
+                "subject_id": source.upper(),
+                "object_id": target.upper(),
+                "predicate": "hosts",
+            },
+        ),
+    )
+
+    assert service.semantic_relationships[0]["subject_id"] == source
+    assert service.semantic_relationships[0]["object_id"] == target
+    assert any(
+        item["source"] == source
+        and item["target"] == target
+        and item["relationship_type"] == "hosts"
+        for item in service.topology.to_dict()["relationships"]
+    )
+
+
+def test_consistent_topology_reports_no_dropped_relationships() -> None:
+    payload = NetworkIntelligenceService(small_estate()).topology.to_dict()
+
+    assert payload["counts"]["dropped_relationships"] == {}
+    assert payload.get("warnings", []) == []
+
+
+def test_dangling_relationship_is_counted_without_disclosing_endpoint_ids() -> None:
+    snapshot = small_estate()
+    missing_endpoint_id = (
+        "/subscriptions/SECRET/resourceGroups/PRIVATE/providers/"
+        "Microsoft.Network/privateEndpoints/Missing"
+    )
+    subnet = replace(
+        snapshot.subnets[0],
+        private_endpoint_ids=(missing_endpoint_id,),
+    )
+    snapshot = replace(snapshot, subnets=(subnet, *snapshot.subnets[1:]))
+
+    payload = NetworkIntelligenceService(snapshot).topology.to_dict()
+
+    assert payload["counts"]["dropped_relationships"]["hosts"] == 1
+    assert payload["warnings"]
+    warning_text = " ".join(payload["warnings"])
+    assert "hosts" in warning_text
+    assert missing_endpoint_id.casefold() not in warning_text.casefold()
 
 
 def _observed_datetime():

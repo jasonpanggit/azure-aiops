@@ -105,6 +105,15 @@ def build_estate(
             mixed_case=mixed_case_ids,
             index=vnet_index,
         )
+        endpoint_id = _arm(
+            subscription_id,
+            resource_group,
+            "Microsoft.Network",
+            "privateEndpoints",
+            f"pe-{vnet_index:04d}",
+            mixed_case=mixed_case_ids,
+            index=vnet_index,
+        )
         subnet_ids: list[str] = []
         for subnet_offset in range(shape.subnets_per_vnet):
             subnet_index = vnet_index * shape.subnets_per_vnet + subnet_offset
@@ -143,6 +152,7 @@ def build_estate(
                     address_prefixes=(f"10.{vnet_index % 250}.{subnet_offset}.0/24",),
                     nsg_id=nsg_id,
                     route_table_id=route_id,
+                    private_endpoint_ids=(endpoint_id,) if subnet_offset == 0 else (),
                 )
             )
         vnet_specs.append((subscription_id, resource_group, vnet_id, subnet_ids))
