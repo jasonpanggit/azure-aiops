@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
@@ -46,6 +48,7 @@ _MUTATION_MARKERS = (
     "write",
 )
 _READ_ONLY_EXECUTE_TOOLS = {"arm_execute_query"}
+_LOCKED_POLICY_DIGEST = "260d06347879bcfe62a1af8416d1d36ffc63926299bf35a45ecde6b514adfc16"
 _READ_ONLY_AZURE_MCP_TOOLS = frozenset(
     {
         "advisor_recommendation_list",
@@ -115,7 +118,7 @@ class KnowledgePolicy(ManifestModel):
 
 class OutputContract(ManifestModel):
     schema_version: Literal["1"]
-    requires_citations: bool = True
+    requires_citations: Literal[True] = True
     statuses: tuple[
         Literal["ok", "empty", "partial", "unavailable", "denied"], ...
     ]
@@ -351,6 +354,38 @@ def _reject_credentials(value: Any, *, path: str = "manifest") -> None:
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _reject_credentials(child, path=f"{path}[{index}]")
+    elif isinstance(value, str):
+        normalized = value.casefold()
+        if any(
+            re.search(rf"\b{re.escape(marker)}\s*[:=]", normalized)
+            for marker in _CREDENTIAL_MARKERS
+        ):
+            raise ValueError(
+                f"credentials are forbidden in specialist manifests: {path}"
+            )
+
+
+def _policy_digest(manifest: SpecialistManifest) -> str:
+    locked = {
+        "version": manifest.version,
+        "contract_version": manifest.contract_version,
+        "runtime_contract_version": manifest.runtime_contract_version,
+        "legacy_operations_mcp_tools": manifest.legacy_operations_mcp_tools,
+        "specialists": [
+            {
+                "id": specialist.id,
+                "dependencies": specialist.dependencies,
+                "operations_mcp_tools": specialist.operations_mcp_tools,
+                "azure_mcp_tools": specialist.azure_mcp_tools,
+                "page_mappings": specialist.page_mappings,
+                "requires_citations": specialist.output_contract.requires_citations,
+                "read_only": specialist.read_only,
+            }
+            for specialist in manifest.specialists
+        ],
+    }
+    serialized = json.dumps(locked, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def load_specialist_manifest(
@@ -382,6 +417,8 @@ def load_specialist_manifest(
         manifest.operations_tool_names()
     ):
         raise ValueError("legacy Operations MCP tools must be reviewed grants")
+    if _policy_digest(manifest) != _LOCKED_POLICY_DIGEST:
+        raise ValueError("manifest does not match the locked specialist contract")
     return manifest
 
 

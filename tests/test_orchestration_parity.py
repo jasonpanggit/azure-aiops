@@ -6,7 +6,14 @@ from copy import deepcopy
 import pytest
 
 from api.dependencies import ApiContext
-from operations.autonomous_investigation import AGENTS, agent_catalog
+from api.scope import Scope
+from operations.autonomous_investigation import (
+    AGENTS,
+    AgentDefinition,
+    _agent_run,
+    _tool_args,
+    agent_catalog,
+)
 from operations.foundry_agent import (
     SPECIALIST_IDS,
     _agent_contract,
@@ -101,6 +108,8 @@ def test_operations_mcp_and_registry_grants_are_exact_and_read_only():
     schemas = {item["name"]: item["inputSchema"] for item in tool_definitions()}
     assert schemas["risk_context"]["required"] == ["subject"]
     assert schemas["search"]["required"] == ["query"]
+    assert schemas["remediation_business_decision"]["required"] == ["name"]
+    assert "business_service" in schemas["defender_remediation_cases"]["properties"]
 
 
 def test_azure_mcp_projection_is_exact_and_contains_no_mutation_grants():
@@ -196,6 +205,49 @@ def test_all_manifest_specialists_resolve_through_provider_runtime():
     )
 
 
+def test_parameterized_tool_arguments_are_bounded_and_missing_inputs_skip_io(
+    monkeypatch,
+):
+    assert _tool_args(
+        "cve_detail",
+        "Investigate CVE-2026-12345",
+        "CVE-2026-12345",
+    ) == {"cve_id": "CVE-2026-12345"}
+    assert _tool_args(
+        "traffic_flow",
+        "Can traffic flow from web-subnet to data-subnet?",
+        "",
+    ) == {"source": "web-subnet", "destination": "data-subnet"}
+    assert _tool_args(
+        "remediation_business_decision",
+        "Review plan RMP-123",
+        "RMP-123",
+    ) == {"name": "RMP-123"}
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "operations.autonomous_investigation.call_tool",
+        lambda name, args, **kwargs: calls.append(name),
+    )
+    agent = AgentDefinition(
+        id="network",
+        name="Network Agent",
+        role="Network",
+        tools=("traffic_flow",),
+        keywords=("network",),
+    )
+
+    run = _agent_run(
+        agent,
+        "Summarize network health",
+        context=object(),
+        scope=Scope.unrestricted(),
+    )
+
+    assert calls == []
+    assert run["tool_calls"] == []
+
+
 @pytest.mark.parametrize(
     ("mutate", "error"),
     [
@@ -253,6 +305,24 @@ def test_all_manifest_specialists_resolve_through_provider_runtime():
                 {"client_secret": "forbidden"}
             ),
             "credentials are forbidden",
+        ),
+        (
+            lambda payload: payload["specialists"][0].update(
+                {"purpose": "Use client_secret=real-secret"}
+            ),
+            "credentials are forbidden",
+        ),
+        (
+            lambda payload: payload["specialists"][8][
+                "operations_mcp_tools"
+            ].append("cve_detail"),
+            "locked specialist contract",
+        ),
+        (
+            lambda payload: payload["specialists"][0][
+                "output_contract"
+            ].update({"requires_citations": False}),
+            "requires_citations",
         ),
     ],
 )

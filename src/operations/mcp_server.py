@@ -78,6 +78,7 @@ _REQUIRED: dict[str, tuple[str, ...]] = {
     "fabric_iq_policy_context": ("subject",),
     "cve_detail": ("cve_id",),
     "cve_attack_path": ("cve_id",),
+    "remediation_business_decision": ("name",),
     "search": ("query",),
 }
 
@@ -85,6 +86,7 @@ _REQUIRED: dict[str, tuple[str, ...]] = {
 # a tool can accept a field without forcing the caller to supply it.
 _OPTIONAL: dict[str, tuple[str, ...]] = {
     "cve_exposure": ("business_service",),
+    "defender_remediation_cases": ("business_service",),
     "incidents": ("incident_id",),
     "inventory_resources": ("resource_type", "family"),
 }

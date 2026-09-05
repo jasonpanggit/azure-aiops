@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import re
 import time
 import uuid
 from collections import OrderedDict
@@ -21,6 +22,7 @@ from typing import Any, Protocol
 from api.scope import Scope
 from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
 from operations.maf_orchestrator import maf_mode_enabled, select_specialists_for_turn
+from operations.mcp_server import validate_tool_arguments
 from operations.page_context import PageSnapshot, deterministic_network_findings
 from operations.specialist_manifest import load_specialist_manifest
 from operations.tools import (
@@ -109,8 +111,6 @@ _SUBJECT_STOPWORDS = {
 
 
 def _extract_subject(objective: str) -> str:
-    import re
-
     quoted = re.findall(r"[\"“]([^\"”]{2,100})[\"”]", objective)
     if quoted:
         return quoted[0].strip()
@@ -196,6 +196,24 @@ def _tool_args(tool: str, objective: str, subject: str) -> dict[str, Any]:
     if tool == "hub_dependents":
         return {"vnet_id": subject} if subject else {}
     if tool == "cve_exposure":
+        return {"business_service": subject} if subject else {}
+    if tool in {"cve_detail", "cve_attack_path"}:
+        match = re.search(r"\bCVE-\d{4}-\d{4,}\b", objective, flags=re.IGNORECASE)
+        return {"cve_id": match.group(0).upper()} if match else {}
+    if tool == "traffic_flow":
+        match = re.search(
+            r"\bfrom\s+([A-Za-z0-9_.:/-]+)\s+to\s+([A-Za-z0-9_.:/-]+)",
+            objective,
+            flags=re.IGNORECASE,
+        )
+        return (
+            {"source": match.group(1), "destination": match.group(2)}
+            if match
+            else {}
+        )
+    if tool == "remediation_business_decision":
+        return {"name": subject} if subject else {}
+    if tool == "defender_remediation_cases":
         return {"business_service": subject} if subject else {}
     if tool == "search":
         return {"query": objective}
@@ -352,6 +370,10 @@ def _agent_run(agent: AgentDefinition, objective: str, *, context: Any, scope: S
 
     for tool in agent.tools:
         args = _tool_args(tool, objective, subject)
+        try:
+            args, _ = validate_tool_arguments(tool, args)
+        except ValueError:
+            continue
         result = call_tool(tool, args, context=context, scope=scope)
         attempts = 1
         if result.status == STATUS_UNAVAILABLE:
