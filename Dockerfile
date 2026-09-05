@@ -24,7 +24,7 @@ COPY pyproject.toml uv.lock ./
 # BuildKit enabled, so a cache mount fails the build outright there. This
 # layer is still cached normally by Docker's layer cache between builds.
 RUN uv venv /app/.venv \
-    && uv sync --frozen --no-install-project --extra api
+    && uv sync --frozen --no-install-project --extra api --extra fabric-sql
 
 
 FROM python:3.12-slim AS runtime
@@ -43,9 +43,17 @@ ENV PYTHONUNBUFFERED=1 \
 
 # `az` is a hard runtime dependency of the ARG extraction path, and the
 # Resource Graph extension must be baked in: a scheduled sync must never
-# depend on an extension install at first use.
+# depend on an extension install at first use. Fabric SQL additionally
+# requires Microsoft's signed package repository and ODBC Driver 18.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
+    && . /etc/os-release \
+    && curl -fsSLo /tmp/packages-microsoft-prod.deb \
+        "https://packages.microsoft.com/config/debian/${VERSION_ID}/packages-microsoft-prod.deb" \
+    && dpkg -i /tmp/packages-microsoft-prod.deb \
+    && rm -f /tmp/packages-microsoft-prod.deb \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
     && curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
     && az extension add --name resource-graph --only-show-errors \
     && apt-get purge -y curl \
