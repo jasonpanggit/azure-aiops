@@ -1,0 +1,11 @@
+{
+  "clientWidth": 375,
+  "blockerPanel": {
+    "width": 339,
+    "fitsViewport": true
+  },
+  "recoveryControls": {
+    "width": 299,
+    "fitsViewport": true
+  }
+}

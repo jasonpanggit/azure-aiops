@@ -727,10 +727,18 @@ class FakePublisher:
         self.error = error
         self.calls = 0
 
-    def run(self):
+    def run(self, progress_callback=None):
         self.calls += 1
         if self.error:
             raise RuntimeError(self.error)
+        if progress_callback is not None:
+            progress_callback(
+                SimpleNamespace(
+                    completed_tables=3,
+                    total_tables=12,
+                    table_name="silver_resources",
+                )
+            )
         return {"status": "completed"}
 
 
@@ -761,10 +769,49 @@ def test_sync_coordinator_reports_progress_through_publish_stages(tmp_path: Path
         "merging",
         "publishing_ontology",
         "writing_fabric_tables",
+        "writing_fabric_tables",
         "succeeded",
     ]
-    assert [pct for _, pct in seen] == sorted(pct for _, pct in seen)
+    assert [pct for _, pct in seen] == [10, 45, 65, 85, 89, 100]
     assert state.stage == "succeeded"
+    assert state.progress_pct == 100
+    assert ("writing_fabric_tables", 89) in seen
+
+
+def test_sync_coordinator_keeps_fabric_progress_below_terminal_until_publish_finishes(
+    tmp_path: Path,
+) -> None:
+    class ProgressPublisher:
+        def run(self, progress_callback=None):
+            assert progress_callback is not None
+            progress_callback(
+                SimpleNamespace(completed_tables=1, total_tables=1, table_name="bronze_resources")
+            )
+            return {"status": "completed"}
+
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path,
+        ingestion_factory=lambda connection: FakeIngestion(),
+        publish_factory=lambda connection: ProgressPublisher(),
+    )
+    service = build_service(tmp_path)
+    onboard(service)
+    connection = service.registry.get("prod-core")
+    seen: list[tuple[str, str, int]] = []
+
+    result, state = coordinator.run(
+        connection,
+        mode="manual",
+        progress_callback=lambda stage, message, pct: seen.append((stage, message, pct)),
+    )
+
+    assert result.status == "succeeded"
+    fabric_updates = [entry for entry in seen if entry[0] == "writing_fabric_tables"]
+    assert fabric_updates[-1] == (
+        "writing_fabric_tables",
+        "Writing Fabric tables: 1/1 tables written (latest: bronze_resources)",
+        99,
+    )
     assert state.progress_pct == 100
 
 
@@ -788,6 +835,49 @@ def test_sync_coordinator_surfaces_publish_failure_as_failed_sync(tmp_path: Path
     # Ingestion itself succeeded, so the sync's own record count/version are
     # still captured even though the downstream Fabric publish failed.
     assert result.record_count == 7
+
+
+def test_sync_coordinator_times_out_a_hung_publish_instead_of_stalling_forever(
+    tmp_path: Path,
+) -> None:
+    """A publish step that never returns must not leave the sync "running"
+    forever (the bug this test guards against: the demo "inventory_read_port"
+    connection got stuck at stage=writing_fabric_tables indefinitely because
+    nothing bounded the Fabric/OneLake publish call). A short
+    ``publish_timeout_seconds`` should turn a hang into a normal, retryable
+    "failed" sync instead."""
+
+    class HangingPublisher:
+        def run(self):
+            # Block far longer than the configured timeout; the coordinator
+            # must give up waiting rather than hang the calling thread.
+            time.sleep(30)
+            return {"status": "completed"}
+
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path,
+        ingestion_factory=lambda connection: FakeIngestion(),
+        publish_factory=lambda connection: HangingPublisher(),
+        publish_timeout_seconds=1,
+    )
+    service = build_service(tmp_path)
+    service.sync_coordinator = coordinator
+    onboard(service)
+    connection = service.registry.get("prod-core")
+
+    started = time.monotonic()
+    result, state = coordinator.run(connection, mode="manual")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10, "coordinator.run() should return promptly, not wait for the hang"
+    assert result.status == "failed"
+    assert "exceeded publish_timeout_seconds" in result.message
+    assert state.stage == "failed"
+
+
+def test_sync_coordinator_rejects_a_non_positive_publish_timeout(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="publish_timeout_seconds must be positive"):
+        ConnectionSyncCoordinator(tmp_path, publish_timeout_seconds=0)
 
 
 def test_sync_coordinator_progress_callback_exceptions_do_not_break_sync(
@@ -879,15 +969,102 @@ def test_orphaned_running_sync_is_reconciled_to_failed_on_startup(tmp_path: Path
         message="Discovering resources",
     )
     service._save_operation_state("prod-core", sync_state=stuck_state)
-    assert service.detail("prod-core")["sync_status"] == "running"
+    # Reactive reconciliation (see test below) already catches this on the very
+    # next poll from *this* process, since "orphaned-run-id" was never
+    # registered as a live run here either -- so this must already read
+    # "failed", not "running".
+    assert service.detail("prod-core")["sync_status"] == "failed"
 
-    # Simulate a new process/container picking up the same on-disk registry.
+    # Simulate a new process/container picking up the same on-disk registry,
+    # re-orphaning it first so startup-time reconciliation has something to do.
+    stuck_state = SyncState(
+        status="running",
+        run_id="orphaned-run-id-2",
+        started_at="2020-01-01T00:00:00Z",
+        attempts=1,
+        stage="discovery",
+        stage_message="Discovering resources",
+        message="Discovering resources",
+    )
+    service._save_operation_state("prod-core", sync_state=stuck_state)
     restarted_service = build_service(tmp_path)
     detail = restarted_service.detail("prod-core")
     assert detail["sync_status"] == "failed"
     reconciled = restarted_service.registry.get("prod-core").sync_state
     assert reconciled.stage == "failed"
     assert "restart" in reconciled.message.lower()
+
+
+def test_orphaned_running_sync_is_reconciled_reactively_on_poll(tmp_path: Path) -> None:
+    """A "running" sync_state with no live worker on *this* process should be
+    reconciled to "failed" the moment it's polled (via ``detail`` or
+    ``health_report``), not only at the next process restart.
+
+    This is what lets a stuck sync UI recover within seconds of the owning
+    process being killed mid-sync (e.g. by a rolling deploy), instead of
+    requiring an operator to notice and manually restart the container.
+    """
+    service = build_service(tmp_path)
+    onboard(service)
+
+    stuck_state = SyncState(
+        status="running",
+        run_id="orphaned-run-id",
+        started_at=(service.clock() - timedelta(minutes=1)).isoformat(),
+        attempts=1,
+        stage="writing_fabric_tables",
+        stage_message="Writing Fabric tables: 51/60 tables written",
+        message="Writing Fabric tables: 51/60 tables written",
+    )
+    service._save_operation_state("prod-core", sync_state=stuck_state)
+
+    detail = service.detail("prod-core")
+    assert detail["sync_status"] == "failed"
+    reconciled = service.registry.get("prod-core").sync_state
+    assert reconciled.stage == "failed"
+    assert "restart" in reconciled.message.lower()
+    assert reconciled.attempts == 2
+
+
+def test_reactive_reconciliation_does_not_fail_a_genuinely_live_sync(tmp_path: Path) -> None:
+    """The reactive check must never fail a sync that this process is
+    actually still executing -- only ones whose run_id it has no record of.
+    """
+    release = threading.Event()
+
+    class BlockingIngestion:
+        def run(self):
+            release.wait(timeout=5)
+            return {"queryVersion": "1.0.0", "datasets": {"entities/resource": {"rowCount": 3}}}
+
+    service = build_service(tmp_path, ingestion=BlockingIngestion())
+    onboard(service)
+
+    try:
+        result = service.sync_async("prod-core", mode="manual")
+        run_id = result["run_id"]
+        # Backdate started_at well past the reactive grace window to prove
+        # the liveness check (not the grace window) is what protects it.
+        current = service.registry.get("prod-core").sync_state
+        import dataclasses as _dc
+
+        backdated = _dc.replace(
+            current, started_at=(service.clock() - timedelta(minutes=1)).isoformat()
+        )
+        service._save_operation_state("prod-core", sync_state=backdated)
+
+        detail = service.detail("prod-core")
+        assert detail["sync_status"] == "running"
+        assert service.registry.get("prod-core").sync_state.run_id == run_id
+    finally:
+        release.set()
+
+    for _ in range(50):
+        detail = service.detail("prod-core")
+        if detail["sync_status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.05)
+    assert service.detail("prod-core")["sync_status"] == "succeeded"
 
 
 def test_sync_async_rejects_disabled_connection_immediately(tmp_path: Path) -> None:

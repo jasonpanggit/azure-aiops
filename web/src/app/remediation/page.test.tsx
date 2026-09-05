@@ -1,14 +1,17 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { approve, execute, remediationPlans, retry, searchParams, workflow } = vi.hoisted(() => ({
+const { approve, cancel, execute, execution, remediationPlans, retry, searchParams, supersede, workflow } = vi.hoisted(() => ({
   approve: vi.fn(),
+  cancel: vi.fn(),
   execute: vi.fn(),
+  execution: vi.fn(),
   remediationPlans: vi.fn(),
   retry: vi.fn(),
   searchParams: { current: new URLSearchParams() },
+  supersede: vi.fn(),
   workflow: vi.fn(),
 }));
 
@@ -18,10 +21,12 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/lib/services", () => ({
   operationsApi: { remediationPlans },
-  remediationApi: { approve, execute, retry, workflow },
+  remediationApi: { approve, cancel, execute, execution, retry, supersede, workflow },
 }));
 
 import RemediationPage from "./page";
+import { usePollingBackoff } from "./polling";
+import { ApiError } from "@/lib/types";
 
 const TARGET = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll";
 const OTHER_TARGET = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-other";
@@ -106,6 +111,7 @@ function workflowFixture(overrides: Record<string, unknown> = {}) {
       family: "patch",
       executable: true,
       manual_review_reason: "",
+      can_operate: overrides.canOperate ?? true,
     },
     preview: {
       target: { resource: { id: TARGET }, resource_key: TARGET },
@@ -138,10 +144,23 @@ function workflowFixture(overrides: Record<string, unknown> = {}) {
       urgency_rationale: { evidence_citations: ["assessment:assessment-1"] },
     },
     approval: {
-      requirements: [{ role: "Change Manager" }],
-      decisions: overrides.approvalCurrent ? [{ decision: "approved", approver: "approver@example.com", execution_snapshot: { snapshot_hash: "snapshot-hash-1" } }] : [],
-      latest: overrides.approvalCurrent ? { decision: "approved", approver: "approver@example.com", execution_snapshot: { snapshot_hash: "snapshot-hash-1" } } : null,
+      requirements: overrides.approvalRequirements ?? [
+        {
+          policy_id: "change-control",
+          role: "Change Manager",
+          stage: "Planning",
+          satisfied: Boolean(overrides.approvalCurrent),
+          unmet_reason: overrides.approvalCurrent ? undefined : "pending",
+          approval_evidence_required: ["Plan evidence reviewed"],
+        },
+      ],
+      decisions: overrides.approvalCurrent ? [{ decision: "approved", approver: "approver@example.com", decided_at: "2026-09-03T00:00:00Z", execution_snapshot: { snapshot_hash: "snapshot-hash-1" }, self_approved: false }] : [],
+      latest: overrides.approvalCurrent ? { decision: "approved", approver: "approver@example.com", decided_at: "2026-09-03T00:00:00Z", execution_snapshot: { snapshot_hash: "snapshot-hash-1" }, self_approved: false } : null,
       current: Boolean(overrides.approvalCurrent),
+      status: overrides.approvalStatus ?? (overrides.approvalCurrent ? "current" : "none"),
+      stale_reasons: overrides.staleReasons ?? [],
+      can_approve: overrides.canApprove ?? true,
+      allow_self_approval: overrides.allowSelfApproval ?? false,
     },
     execution,
     executions: execution ? [execution] : [],
@@ -153,6 +172,8 @@ function workflowFixture(overrides: Record<string, unknown> = {}) {
       { id: "verify", label: "Verify", status: execution ? "current" : "pending" },
     ],
     recommended_step: execution ? "verify" : overrides.approvalCurrent ? "run" : "approve",
+    blockers: overrides.blockers ?? [],
+    degradation: overrides.degradation ?? [],
     evidence: [{ source_type: "assessment", source_id: "assessment-1", summary: "Missing critical update" }],
     audit: {
       decisions: overrides.approvalCurrent ? [{ decision: "approved", approver: "approver@example.com" }] : [],
@@ -223,7 +244,10 @@ describe("Governed remediation workflow", () => {
     )));
     approve.mockResolvedValue(envelope({ decision_id: "RMD-1", decision: "approved" }));
     execute.mockResolvedValue(envelope(executionRecord()));
+    execution.mockResolvedValue(envelope(executionRecord()));
     retry.mockResolvedValue(envelope(executionRecord({ status: "running" })));
+    cancel.mockResolvedValue(envelope(executionRecord({ status: "cancelled" })));
+    supersede.mockResolvedValue(envelope(executionRecord({ status: "queued" })));
   });
 
   it("shows the simplified five-step workflow and generated fixes only", async () => {
@@ -282,6 +306,99 @@ describe("Governed remediation workflow", () => {
     ));
   });
 
+  it("refuses to deselect the last remaining checked patch (CR-07)", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      availablePatches: [
+        { patch_id: "KB600001", title: "Critical security update", severity: "Critical" },
+        { patch_id: "KB600002", title: "Optional feature update", severity: "Low" },
+      ],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    // Uncheck KB600002 first, leaving KB600001 as the sole checked patch.
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    await waitFor(() => expect(workflow).toHaveBeenLastCalledWith("plan-1", {}, ["KB600001"]));
+    await screen.findAllByText(/KB600001/);
+
+    // Attempt to uncheck the last remaining checked patch (KB600001) --
+    // this click must have no effect on selection.
+    fireEvent.click(screen.getAllByRole("checkbox")[0]);
+
+    const refreshedCheckboxes = screen.getAllByRole("checkbox");
+    expect((refreshedCheckboxes[0] as HTMLInputElement).checked).toBe(true);
+    expect((refreshedCheckboxes[1] as HTMLInputElement).checked).toBe(false);
+    expect(
+      screen.getByText(
+        "At least one patch must remain selected for this plan to be approved. Select a patch below, or use the mode line above to restore all eligible patches.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("narrows an explicit selection to the intersection when evidence refresh shrinks availability, and refuses (never falls back to all) when the intersection is empty", async () => {
+    workflow.mockResolvedValueOnce(envelope(workflowFixture({
+      availablePatches: [
+        { patch_id: "KB600001", title: "Critical security update", severity: "Critical" },
+        { patch_id: "KB600002", title: "Optional feature update", severity: "Low" },
+      ],
+    })));
+    // Second fetch (triggered by narrowing the explicit selection below)
+    // simulates an evidence refresh where KB600001 is no longer available
+    // -- the operator's remaining explicit selection is now KB600002 only,
+    // which IS still available, so this should narrow (removal-only), not
+    // refuse, on this step.
+    workflow.mockResolvedValueOnce(envelope(workflowFixture({
+      availablePatches: [
+        { patch_id: "KB600002", title: "Optional feature update", severity: "Low" },
+      ],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    // Narrow the explicit selection to just KB600002 (uncheck KB600001).
+    fireEvent.click(screen.getAllByRole("checkbox")[0]);
+    await waitFor(() => expect(workflow).toHaveBeenLastCalledWith("plan-1", {}, ["KB600002"]));
+
+    // The second response's available_patches (KB600002 only) still
+    // contains the explicit selection -- no refusal expected here, mode
+    // line still reflects the explicit selection.
+    await screen.findByText("1 of 1 patches explicitly selected.");
+  });
+
+  it("refuses (never falls back to all) when an evidence refresh narrows the available set to exclude every explicitly selected patch", async () => {
+    workflow.mockResolvedValueOnce(envelope(workflowFixture({
+      availablePatches: [
+        { patch_id: "KB600001", title: "Critical security update", severity: "Critical" },
+        { patch_id: "KB600002", title: "Optional feature update", severity: "Low" },
+      ],
+    })));
+    // Second fetch (triggered by narrowing the explicit selection below)
+    // drops KB600001 entirely from availability -- the operator's
+    // remaining explicit selection (["KB600001"]) has an empty
+    // intersection with the new available set. Must refuse, never widen
+    // back to "all".
+    workflow.mockResolvedValueOnce(envelope(workflowFixture({
+      availablePatches: [
+        { patch_id: "KB600003", title: "Unrelated update", severity: "Low" },
+      ],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    // Narrow the explicit selection to just KB600001 (uncheck KB600002).
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    await waitFor(() => expect(workflow).toHaveBeenLastCalledWith("plan-1", {}, ["KB600001"]));
+
+    await waitFor(() => expect(
+      screen.getByText(
+        "Your previously selected patches are no longer available. Choose at least one currently available patch.",
+      ),
+    ).toBeInTheDocument());
+  });
+
   it("reviews exact operation, impact, rollback, and evidence together", async () => {
     searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
     renderPage();
@@ -322,6 +439,8 @@ describe("Governed remediation workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm run" }));
 
     await waitFor(() => expect(execute).toHaveBeenCalledWith("plan-1", {}));
+    expect(screen.getByText("Provider verification")).toBeInTheDocument();
+    expect(screen.getAllByText("RME-1")).not.toHaveLength(0);
   });
 
   it("keeps unsupported configuration actions in manual review", async () => {
@@ -329,9 +448,8 @@ describe("Governed remediation workflow", () => {
     await screen.findByText("Patch payroll database");
     fireEvent.click(screen.getByRole("button", { name: /Review configuration baseline/ }));
 
-    expect(await screen.findByText(/Manual review required:/)).toHaveTextContent(
-      "No bounded provider handler is allowlisted",
-    );
+    await screen.findByText("Impact summary");
+    expect(screen.getByText("Exact operation")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
     expect(screen.getByText("Manual review only")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Record decision" })).not.toBeInTheDocument();
@@ -345,6 +463,7 @@ describe("Governed remediation workflow", () => {
         outcome: "failed",
         verified_state: "Failed",
         failure_details: "Provider rejected the update",
+        provider_submitted: true,
         retryable: true,
       }),
     })));
@@ -353,9 +472,842 @@ describe("Governed remediation workflow", () => {
     await screen.findAllByText(/KB600001/);
     fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
 
-    expect(screen.getAllByText("Provider rejected the update").length).toBeGreaterThan(0);
+    expect(screen.getAllByText((_, element) => Boolean(element?.textContent?.includes("Provider rejected the update"))).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Attempt 1").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Provider accepted the operation/).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Retry approved snapshot" })).toBeEnabled();
+  });
+});
+
+describe("Phase 03.5: approval requirement satisfaction and authorization", () => {
+  it("renders 0 of 0 requirements satisfied with no rows for a zero-requirement plan", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({ approvalRequirements: [] })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    expect(screen.getByText("0 of 0 requirements satisfied")).toBeInTheDocument();
+    expect(screen.queryByText("Satisfied")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unmet")).not.toBeInTheDocument();
+  });
+
+  it("renders exactly one satisfied and one unmet row for a two-role SoD fixture", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      approvalRequirements: [
+        {
+          policy_id: "change-control",
+          role: "Change Manager",
+          stage: "Planning",
+          satisfied: false,
+          unmet_reason: "wrong_role_decision",
+          approval_evidence_required: ["Plan evidence reviewed"],
+        },
+        {
+          policy_id: "security-review",
+          role: "Security Response Owner",
+          stage: "Planning",
+          satisfied: true,
+          approval_evidence_required: ["Risk assessment accepted"],
+        },
+      ],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    expect(screen.getByText("1 of 2 requirements satisfied")).toBeInTheDocument();
+    expect(screen.getAllByText("Satisfied")).toHaveLength(1);
+    expect(screen.getAllByText("Unmet")).toHaveLength(1);
+    expect(
+      screen.getByText(/A decision exists, but not from the required Change Manager\. This requirement remains unmet\./),
+    ).toBeInTheDocument();
+  });
+
+  it("joins a single stale reason without a trailing conjunction", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      approvalCurrent: true,
+      approvalStatus: "stale",
+      staleReasons: ["stale_action_version"],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    expect(
+      screen.getByText(/but the plan's action version changed since\. A new decision is required before running\./),
+    ).toBeInTheDocument();
+  });
+
+  it("joins two stale reasons with 'and'", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      approvalCurrent: true,
+      approvalStatus: "stale",
+      staleReasons: ["stale_action_version", "stale_policy_version"],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    expect(
+      screen.getByText(/the plan's action version changed and the approval policy was updated/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the self-approval policy banner only when the policy flag is true", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({ allowSelfApproval: true })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    expect(screen.getByText(/Demo policy exception: self-approval is enabled/)).toBeInTheDocument();
+  });
+
+  it("renders no self-approval banner at all when the policy flag is false", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({ allowSelfApproval: false })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    expect(screen.queryByText(/Demo policy exception/)).not.toBeInTheDocument();
+  });
+
+  it("shows the self-approved audit badge only for a decision recorded self_approved:true", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      approvalCurrent: true,
+      execution: executionRecord(),
+      approval: {
+        requirements: [],
+        decisions: [
+          { decision_id: "RMD-1", decision: "approved", approver: "self@example.com", decided_at: "2026-09-03T00:00:00Z", self_approved: true, self_approval_policy_id: "demo-self-approval" },
+          { decision_id: "RMD-2", decision: "approved", approver: "other@example.com", decided_at: "2026-09-02T00:00:00Z", self_approved: false },
+        ],
+        latest: { decision: "approved", approver: "self@example.com", decided_at: "2026-09-03T00:00:00Z" },
+        current: true,
+        status: "current",
+        stale_reasons: [],
+        can_approve: true,
+        allow_self_approval: true,
+      },
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getAllByText("Self-approved (demo exception)")).toHaveLength(1);
+  });
+
+  it("disables Record decision with its exact reason when can_approve is false", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({ canApprove: false })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    expect(screen.getByRole("button", { name: "Record decision" })).toBeDisabled();
+    expect(
+      screen.getByText("You can review this approval but cannot record a decision. Ask an approver to record it."),
+    ).toBeInTheDocument();
+  });
+
+  it("disables Review and run/Confirm run with its exact reason when can_operate is false, independent of can_approve", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({ approvalCurrent: true, canOperate: false })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Run/ }));
+
+    expect(screen.getByRole("button", { name: "Review and run" })).toBeDisabled();
+    expect(
+      screen.getByText("You can approve work but cannot run it. Ask an operator to run this approved snapshot."),
+    ).toBeInTheDocument();
+    // can_approve is independently true in this fixture -- Record decision
+    // (a different step) is unaffected by can_operate being false.
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+    expect(screen.getByRole("button", { name: "Record decision" })).toBeEnabled();
+  });
+});
+
+describe("Phase 03.5 CR-05: stable per-role attestation in the approval UI", () => {
+  it("requires an explicit role selection and disables Record decision until one is chosen when multiple unmet roles remain", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      approvalRequirements: [
+        {
+          policy_id: "change-control",
+          role: "Change Manager",
+          role_id: "change-control:change-manager",
+          stage: "Planning",
+          satisfied: false,
+          unmet_reason: "pending",
+          approval_evidence_required: ["Plan evidence reviewed"],
+        },
+        {
+          policy_id: "security-review",
+          role: "Security Response Owner",
+          role_id: "security-review:security-response-owner",
+          stage: "Planning",
+          satisfied: false,
+          unmet_reason: "pending",
+          approval_evidence_required: ["Risk assessment accepted"],
+        },
+      ],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    // Both unmet roles are offered, and the decision cannot be recorded
+    // until one is explicitly selected (Phase 03.5 CR-05 fix: a decision
+    // attests exactly one required role).
+    expect(screen.getByRole("button", { name: "Record decision" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Rationale"), { target: { value: "CAB approved" } });
+    fireEvent.change(screen.getByLabelText("Expires"), { target: { value: "2026-12-31" } });
+    expect(screen.getByRole("button", { name: "Record decision" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/Required role this decision is for/), {
+      target: { value: "security-review:security-response-owner" },
+    });
+    expect(screen.getByRole("button", { name: "Record decision" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Record decision" }));
+
+    await waitFor(() => expect(approve).toHaveBeenCalledWith(
+      "plan-1",
+      expect.objectContaining({
+        decision: "approved",
+        role_id: "security-review:security-response-owner",
+      }),
+      {},
+    ));
+    expect(screen.getByRole("button", { name: "Record decision" })).toBeInTheDocument();
+    expect(screen.queryByText("Approved operation")).not.toBeInTheDocument();
+  });
+
+  it("auto-selects the single unmet role without requiring an explicit choice", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture()));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+    fireEvent.change(screen.getByLabelText("Rationale"), { target: { value: "CAB approved" } });
+    fireEvent.change(screen.getByLabelText("Expires"), { target: { value: "2026-12-31" } });
+
+    // Exactly one unmet role (the default single-row fixture) -- no
+    // selection is required, and Record decision is immediately enabled.
+    expect(screen.getByRole("button", { name: "Record decision" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Record decision" }));
+
+    await waitFor(() => expect(approve).toHaveBeenCalledWith(
+      "plan-1",
+      expect.objectContaining({ decision: "approved", role_id: "Change Manager" }),
+      {},
+    ));
+    expect(screen.getByText("Approved operation")).toBeInTheDocument();
+  });
+
+  it("discloses which decision and approver satisfied each requirement row", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      approvalRequirements: [
+        {
+          policy_id: "change-control",
+          role: "Change Manager",
+          role_id: "change-control:change-manager",
+          stage: "Planning",
+          satisfied: true,
+          approver: "change-manager@example.com",
+          decision_id: "RMD-AAAA1111",
+          approval_evidence_required: ["Plan evidence reviewed"],
+        },
+        {
+          policy_id: "security-review",
+          role: "Security Response Owner",
+          role_id: "security-review:security-response-owner",
+          stage: "Planning",
+          satisfied: true,
+          approver: "security-owner@example.com",
+          decision_id: "RMD-BBBB2222",
+          approval_evidence_required: ["Risk assessment accepted"],
+        },
+      ],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    // Two distinct rows, satisfied by two distinct decisions/approvers --
+    // an operator must never be able to mistake one person's sign-off for
+    // two-stakeholder governance (Phase 03.5 CR-05 fix).
+    expect(screen.getByText(/change-manager@example.com/)).toBeInTheDocument();
+    expect(screen.getByText(/RMD-AAAA1111/)).toBeInTheDocument();
+    expect(screen.getByText(/security-owner@example.com/)).toBeInTheDocument();
+    expect(screen.getByText(/RMD-BBBB2222/)).toBeInTheDocument();
+  });
+});
+
+describe("Phase 03.6 Plan 04: Blocker Contract, Degradation Contract, and Verify-step honesty", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    searchParams.current = new URLSearchParams();
+    remediationPlans.mockResolvedValue(envelope({
+      plans: [
+        {
+          plan_id: "plan-1",
+          action_version: "version-1",
+          action_id: "controlled-patch-recovery",
+          title: "Patch payroll database",
+          status: "Draft",
+          resource: { id: TARGET, name: "vm-payroll" },
+          business_service: "Payroll",
+        },
+      ],
+    }));
+    approve.mockResolvedValue(envelope({ decision_id: "RMD-1", decision: "approved" }));
+    execute.mockResolvedValue(envelope(executionRecord()));
+    execution.mockResolvedValue(envelope(executionRecord()));
+    retry.mockResolvedValue(envelope(executionRecord({ status: "running" })));
+    cancel.mockResolvedValue(envelope(executionRecord({ status: "cancelled" })));
+    supersede.mockResolvedValue(envelope(executionRecord({ status: "queued" })));
+  });
+
+  it("renders a recognized blocker code in the cross-step summary panel using client fallback copy", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      blockers: [{ code: "not_approved", step: "approve" }],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    expect(screen.getByText("Workflow blockers")).toBeInTheDocument();
+    expect(screen.getByText("Blocked")).toBeInTheDocument();
+    expect(screen.getAllByText("Approve").length).toBeGreaterThan(0);
+    expect(screen.getByText("No decision has been recorded yet.")).toBeInTheDocument();
+    expect(screen.getByText(/Record an approval decision for every required role\./)).toBeInTheDocument();
+  });
+
+  it("renders the unrecognized-code fallback and logs telemetry exactly once even across re-renders", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      blockers: [{ code: "totally_novel_code", step: "review" }],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    expect(screen.getByText("An unrecognized workflow condition (totally_novel_code) is blocking this step.")).toBeInTheDocument();
+    expect(warnSpy).toHaveBeenCalledWith("remediation.blocker.unknown_code", { code: "totally_novel_code" });
+    const callsAfterFirstRender = warnSpy.mock.calls.length;
+
+    // Trigger a re-render (switching steps) -- must not log again for the
+    // same unrecognized code.
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Review impact/ }));
+
+    expect(warnSpy).toHaveBeenCalledTimes(callsAfterFirstRender);
+    warnSpy.mockRestore();
+  });
+
+  it("never renders already_succeeded as a blocker row and never triggers unrecognized-code telemetry for it", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      blockers: [{ code: "already_succeeded", step: "verify" }],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    expect(screen.queryByText("Workflow blockers")).not.toBeInTheDocument();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("renders a degradation row above the Approve control with source, reason, counts, and freshness", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      degradation: [
+        {
+          source: "AUM patch inventory",
+          availability: "degraded",
+          reason: "AUM patch inventory evidence is degraded.",
+          dropped_count: 3,
+          unmatched_count: 2,
+          freshness: "2026-09-01T00:00:00Z",
+        },
+      ],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    expect(screen.getByText("Degraded inputs")).toBeInTheDocument();
+    expect(screen.getByText("Degraded")).toBeInTheDocument();
+    expect(screen.getByText("AUM patch inventory")).toBeInTheDocument();
+    expect(screen.getByText("AUM patch inventory evidence is degraded.")).toBeInTheDocument();
+    expect(screen.getByText("3 evidence row(s) dropped, 2 unmatched for this scope.")).toBeInTheDocument();
+    expect(screen.getByText("Last known good: 2026-09-01T00:00:00Z")).toBeInTheDocument();
+  });
+
+  it("renders no degradation section at all when the array is empty", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({ degradation: [] })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    expect(screen.queryByText("Degraded inputs")).not.toBeInTheDocument();
+  });
+
+  it("omits the counts clause entirely when both dropped_count and unmatched_count are zero/absent", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      degradation: [
+        {
+          source: "Vulnerability evidence (AUM/Defender)",
+          availability: "unavailable",
+          reason: "Vulnerability evidence is unavailable.",
+        },
+      ],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+
+    expect(screen.getByText("Vulnerability evidence is unavailable.")).toBeInTheDocument();
+    expect(screen.queryByText(/evidence row\(s\) dropped/)).not.toBeInTheDocument();
+    expect(screen.getByText("Freshness: unknown")).toBeInTheDocument();
+  });
+
+  it("renders the pre-submission honesty sentence when provider_submitted is false and failure_details is populated", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "failed",
+        outcome: "failed",
+        failure_details: "No execution identity configured",
+        provider_submitted: false,
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getByText(
+      "Blocked before submission: No execution identity configured. No change was sent to the provider.",
+    )).toBeInTheDocument();
+  });
+
+  it("renders the post-submission honesty sentence when provider_submitted is true and failure_details is populated", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "failed",
+        outcome: "failed",
+        failure_details: "Provider rejected the update",
+        provider_submitted: true,
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getByText("Submitted; provider reported: Provider rejected the update.")).toBeInTheDocument();
+  });
+
+  it("renders the closed pre-submission fallback sentence when failure_details is empty, never dangling punctuation", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "failed",
+        outcome: "failed",
+        failure_details: "",
+        provider_submitted: false,
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getByText(
+      "Blocked before submission: no failure detail was recorded for this attempt. No change was sent to the provider.",
+    )).toBeInTheDocument();
+  });
+
+  it("renders the closed post-submission fallback sentence when failure_details is empty", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "failed",
+        outcome: "failed",
+        failure_details: "",
+        provider_submitted: true,
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getByText(
+      "Submitted; the provider did not return failure detail for this attempt.",
+    )).toBeInTheDocument();
+  });
+});
+
+describe("Phase 03.6 Plan 05: Recovery Controls, Reconciliation Summary, and Lineage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    searchParams.current = new URLSearchParams();
+    remediationPlans.mockResolvedValue(envelope({
+      plans: [
+        {
+          plan_id: "plan-1",
+          action_version: "version-1",
+          action_id: "controlled-patch-recovery",
+          title: "Patch payroll database",
+          status: "Draft",
+          resource: { id: TARGET, name: "vm-payroll" },
+          business_service: "Payroll",
+        },
+      ],
+    }));
+    approve.mockResolvedValue(envelope({ decision_id: "RMD-1", decision: "approved" }));
+    execute.mockResolvedValue(envelope(executionRecord()));
+    execution.mockResolvedValue(envelope(executionRecord()));
+    retry.mockResolvedValue(envelope(executionRecord({ status: "running" })));
+    cancel.mockResolvedValue(envelope(executionRecord({ status: "cancelled" })));
+    supersede.mockResolvedValue(envelope(executionRecord({ status: "queued" })));
+  });
+
+  it("renders only Cancel when cancellable is true and retryable/supersedable are false, and completes the confirm flow", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({ status: "queued", cancellable: true, retryable: false, supersedable: false }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getByRole("button", { name: "Cancel queued execution" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry approved snapshot" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Supersede this execution" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel queued execution" }));
+    expect(screen.getByRole("alertdialog", { name: "Confirm cancel" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
+
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith("RME-1", {}));
+  });
+
+  it("renders only Supersede when supersedable is true, with a required reason before Confirm supersede is enabled", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({ status: "failed", cancellable: false, retryable: false, supersedable: true }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getByRole("button", { name: "Supersede this execution" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel queued execution" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Supersede this execution" }));
+    const confirmButton = screen.getByRole("button", { name: "Confirm supersede" });
+    expect(confirmButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Root cause fixed; superseding" } });
+    expect(confirmButton).toBeEnabled();
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => expect(supersede).toHaveBeenCalledWith("RME-1", "Root cause fixed; superseding", {}));
+  });
+
+  it("renders no recovery-control button when all three are false and the execution is non-terminal", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({ status: "running", cancellable: false, retryable: false, supersedable: false }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.queryByRole("button", { name: "Cancel queued execution" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry approved snapshot" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Supersede this execution" })).not.toBeInTheDocument();
+  });
+
+  it("renders the shared blocker vocabulary explanation when a supersede click is refused server-side by a race", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({ status: "failed", cancellable: false, retryable: false, supersedable: true }),
+    })));
+    const raceError = new ApiError(409, "conflict", "execution_active", { reason: "execution_active" });
+    supersede.mockRejectedValueOnce(raceError);
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Supersede this execution" }));
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Attempting supersede" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm supersede" }));
+
+    await waitFor(() => expect(screen.getByText(
+      "This execution is still active and cannot be superseded until it reaches a terminal failed or cancelled state.",
+    )).toBeInTheDocument());
+  });
+
+  it("logs unknown-code telemetry (WR-02) when a supersede race refusal returns a reason RecoveryControls has never seen via workflow.blockers[]", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({ status: "failed", cancellable: false, retryable: false, supersedable: true }),
+    })));
+    // This reason is deliberately absent from workflow.blockers[] and from
+    // BLOCKER_VOCABULARY -- RecoveryControls's ineligibility callout is the
+    // *only* call site that ever sees it, so a telemetry event here proves
+    // WR-02's centralization actually reaches this call site independently
+    // of WorkflowBlockers/stepBlockerEcho.
+    const raceError = new ApiError(409, "conflict", "supersede_race_novel_reason", { reason: "supersede_race_novel_reason" });
+    supersede.mockRejectedValueOnce(raceError);
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Supersede this execution" }));
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Attempting supersede" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm supersede" }));
+
+    await waitFor(() => expect(screen.getByText(
+      "An unrecognized workflow condition (supersede_race_novel_reason) is blocking this step.",
+    )).toBeInTheDocument());
+    expect(warnSpy).toHaveBeenCalledWith("remediation.blocker.unknown_code", { code: "supersede_race_novel_reason" });
+    warnSpy.mockRestore();
+  });
+
+  it("renders remaining/submitted attempts, verification deadline, and next check regardless of which recovery controls are visible", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "running",
+        cancellable: false,
+        retryable: false,
+        supersedable: false,
+        remaining_attempts: 2,
+        submitted_attempt_count: 1,
+        verification_deadline_at: "2026-09-05T00:00:00Z",
+        next_verification_at: "2026-09-04T00:05:00Z",
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getByText("Remaining attempts: 2")).toBeInTheDocument();
+    expect(screen.getByText("Submitted attempts: 1")).toBeInTheDocument();
+    expect(screen.getByText(/Verification deadline:/)).toBeInTheDocument();
+    expect(screen.getByText(/Next automatic check:/)).toBeInTheDocument();
+  });
+
+  it("renders the reconciled_incomplete sentence with KB count and code-formatted list, plus a Confirmed cleared line when kbs_cleared is non-empty", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "succeeded",
+        outcome: "succeeded",
+        cancellable: false,
+        retryable: false,
+        supersedable: false,
+        evidence_reconciliation: {
+          status: "reconciled_incomplete",
+          kbs_cleared: ["KB600001"],
+          kbs_remaining: ["KB600002"],
+          assessed_at: "2026-09-04T00:00:00Z",
+        },
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getByText("Provider reported success, but 1 patch(es) remain present: KB600002.")).toBeInTheDocument();
+    expect(screen.getByText("Confirmed cleared: KB600001.")).toBeInTheDocument();
+  });
+
+  it("renders nothing from the Reconciliation section when evidence_reconciliation is absent or status is empty", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({ status: "succeeded", outcome: "succeeded" }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.queryByText(/Reconciliation/)).not.toBeInTheDocument();
+  });
+
+  it("renders lineage text for supersedes and superseded_by as plain monospace text, not a link", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        supersedes: "RME-0",
+        superseded_by: "RME-2",
+        superseded_reason: "Retry budget exhausted",
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getByText(/Supersedes execution/)).toBeInTheDocument();
+    expect(screen.getAllByText("RME-0").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Superseded by execution/)).toBeInTheDocument();
+    expect(screen.getAllByText("RME-2").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("link", { name: /RME-0|RME-2/ })).not.toBeInTheDocument();
+  });
+
+  it("wires a Check reconciliation manual button beside the pending row that performs a one-off fetch without resuming automatic polling", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "succeeded",
+        outcome: "succeeded",
+        cancellable: false,
+        retryable: false,
+        supersedable: false,
+        evidence_reconciliation: {
+          status: "pending",
+          kbs_cleared: [],
+          kbs_remaining: [],
+          assessed_at: "",
+        },
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    const initialCalls = execution.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Check reconciliation" }));
+
+    await waitFor(() => expect(execution.mock.calls.length).toBe(initialCalls + 1));
+    expect(execution).toHaveBeenLastCalledWith("RME-1", {});
+  });
+});
+
+describe("usePollingBackoff (Bounded Polling Contract)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stops after exactly 40 requests when elapsed time under the stub never approaches the 600000ms ceiling", () => {
+    let clock = 0;
+    const now = () => {
+      clock += 1;
+      return clock;
+    };
+    const onPoll = vi.fn();
+    const { result } = renderHook(() =>
+      usePollingBackoff({ active: true, resetKey: "exec-request-ceiling", onPoll, now }));
+
+    for (let i = 0; i < 40; i += 1) {
+      act(() => {
+        vi.runOnlyPendingTimers();
+      });
+    }
+
+    expect(onPoll).toHaveBeenCalledTimes(40);
+    expect(result.current.paused).toBe(true);
+    expect(result.current.requestCount).toBe(40);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops immediately once 600000ms has elapsed under the stub, independent of request count", () => {
+    const start = 1_000_000;
+    let jumped = false;
+    const now = vi.fn(() => (jumped ? start + 600_000 : start));
+    const onPoll = vi.fn();
+    const { result } = renderHook(() =>
+      usePollingBackoff({ active: true, resetKey: "exec-elapsed-ceiling", onPoll, now }));
+
+    // First scheduled poll (1500ms delay) fires normally.
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(onPoll).toHaveBeenCalledTimes(1);
+
+    // The clock stub now reports 600000ms elapsed since the first poll.
+    // The already-scheduled 2nd poll still fires (timers are driven by
+    // the fixed backoff sequence, not by `now()`), but the ceiling check
+    // that runs immediately afterward must stop any further poll from
+    // ever being scheduled -- proving the elapsed-time ceiling fires on
+    // its own, independent of request count (well under the 40-request
+    // ceiling).
+    jumped = true;
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    expect(result.current.paused).toBe(true);
+    expect(onPoll).toHaveBeenCalledTimes(2);
+    expect(onPoll.mock.calls.length).toBeLessThan(40);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops automatically on terminal status transition with no ceiling message", () => {
+    const onPoll = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ active }: { active: boolean }) =>
+        usePollingBackoff({ active, resetKey: "exec-terminal", onPoll }),
+      { initialProps: { active: true } },
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(onPoll).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      rerender({ active: false });
+    });
+    act(() => {
+      vi.advanceTimersByTime(100_000);
+    });
+
+    expect(onPoll).toHaveBeenCalledTimes(1);
+    expect(result.current.paused).toBe(false);
+  });
+
+  it("resets the poll counter and elapsed clock when resetKey changes (a fresh execution gets its own full budget)", () => {
+    let clock = 0;
+    const now = () => {
+      clock += 1;
+      return clock;
+    };
+    const onPoll = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ resetKey }: { resetKey: string }) =>
+        usePollingBackoff({ active: true, resetKey, onPoll, now }),
+      { initialProps: { resetKey: "exec-reset-a" } },
+    );
+
+    for (let i = 0; i < 40; i += 1) {
+      act(() => {
+        vi.runOnlyPendingTimers();
+      });
+    }
+    expect(result.current.paused).toBe(true);
+    expect(result.current.requestCount).toBe(40);
+
+    act(() => {
+      rerender({ resetKey: "exec-reset-b" });
+    });
+
+    expect(result.current.paused).toBe(false);
+    expect(result.current.requestCount).toBe(0);
   });
 });

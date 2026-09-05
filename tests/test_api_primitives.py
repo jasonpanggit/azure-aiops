@@ -158,6 +158,41 @@ class TestRbac:
         with pytest.raises(ApiError):
             authorizer.require(operator, "write")
 
+    def test_approver_may_approve_but_not_operate_or_write(self):
+        authorizer = Authorizer()
+        approver = self._principal("approver")
+        authorizer.require(approver, "read")
+        authorizer.require(approver, "approve")
+        for action in ("operate", "write"):
+            with pytest.raises(ApiError) as excinfo:
+                authorizer.require(approver, action)
+            assert excinfo.value.status_code == 403
+
+    def test_operator_may_operate_but_not_approve(self):
+        authorizer = Authorizer()
+        operator = self._principal("operator")
+        authorizer.require(operator, "operate")
+        with pytest.raises(ApiError) as excinfo:
+            authorizer.require(operator, "approve")
+        assert excinfo.value.status_code == 403
+
+    def test_admin_may_approve_and_operate(self):
+        authorizer = Authorizer()
+        admin = self._principal("admin")
+        for action in ("read", "operate", "approve", "write"):
+            authorizer.require(admin, action)
+
+    def test_grant_accepts_approver_role(self):
+        Grant("approver")
+        with pytest.raises(ValueError):
+            Grant("something-else")
+
+    def test_effective_scope_narrows_approve_to_granted_subscription(self):
+        authorizer = Authorizer()
+        principal = self._principal("approver", subscription=["s1"])
+        effective = authorizer.effective_scope(principal, "approve", Scope.unrestricted())
+        assert effective.values("subscription") == frozenset({"s1"})
+
     def test_admin_may_do_everything(self):
         authorizer = Authorizer()
         admin = self._principal("admin")

@@ -31,6 +31,18 @@ export interface RemediationDecision {
   execution_authorized: boolean;
   execution_performed: boolean;
   read_only: boolean;
+  approver_roles: string[];
+  approval_policy_version: string;
+  /** Which single approval_requirements row (by role_id) this decision
+   * attests (Phase 03.5 CR-05 fix) -- "" for legacy pre-fix decisions and
+   * for rejected/expired decisions, which carry no role attestation. */
+  approval_role_id: string;
+  /** True when this decision's role attestation was an explicit admin
+   * override rather than a literal organizational role claim (Phase 03.5
+   * CR-05 fix) -- always recorded truthfully, never silently implied. */
+  admin_override: boolean;
+  self_approved: boolean;
+  self_approval_policy_id?: string;
 }
 
 export interface Pagination {
@@ -493,6 +505,45 @@ export interface VulnerabilityExposure {
   defender_recommendations: string[];
   affected_asset_count: number;
   defender_observed_asset_count: number;
+}
+
+export type ExposureSourceFamily = "aum" | "defender";
+export type ExposureTargetKind = "server" | "container_image";
+export type ExposureCompletenessState =
+  | "complete"
+  | "partial"
+  | "stale"
+  | "unavailable"
+  | "unknown";
+
+export interface ExposureFinding {
+  exposure_id: string;
+  target_id: string;
+  target_kind: ExposureTargetKind;
+  weakness_id: string;
+  subscription_id: string;
+  connection_ids: string[];
+  source_families: ExposureSourceFamily[];
+  read_model_generation_id: string;
+  completeness: ExposureCompletenessState;
+}
+
+export interface ExposureSourceAttribution {
+  source_family: ExposureSourceFamily;
+  finding_count: number;
+}
+
+export interface ExposureCollection {
+  findings: ExposureFinding[];
+  read_model_generation_id: string;
+  returned_count: number;
+  total_count: number;
+  completeness: {
+    state: ExposureCompletenessState;
+    represented_connections: number;
+    expected_connections: number;
+  };
+  source_attribution: ExposureSourceAttribution[];
 }
 
 export interface VulnerabilitySummary {
@@ -1079,6 +1130,8 @@ export interface SyncState {
   stage?: string | null;
   stage_message?: string | null;
   progress_pct?: number | null;
+  completed_tables?: number | null;
+  total_tables?: number | null;
   record_count?: number;
 }
 

@@ -101,6 +101,13 @@ def _policy_rows(policies: list[dict], base: dict) -> list[dict]:
                 "policy_id": str(policy["policy_id"]),
                 "conditions_json": json.dumps(policy["conditions"]),
                 "roles_json": json.dumps(policy["roles"]),
+                # Optional (Phase 03.5 CR-05 fix): a policy may declare an
+                # explicit stable id per role; absent entirely (the common
+                # case), ApprovalEngine derives a deterministic distinct
+                # id per role on its own -- this column is never fabricated
+                # by a UI layer, only ever sourced from governed policy
+                # data or computed deterministically from it.
+                "role_ids_json": json.dumps(policy.get("role_ids") or {}),
             }
         )
     return rows

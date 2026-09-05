@@ -18,6 +18,12 @@ class DeltaWriteMode(StrEnum):
     OVERWRITE = "overwrite"
     APPEND = "append"
     MERGE = "merge"
+    # Upsert matched keys and delete target rows absent from this run's
+    # source, i.e. a full-snapshot semantics like OVERWRITE but expressed as
+    # a merge so unchanged rows are never rewritten. Use for full-state
+    # tables (e.g. current resource/VM/server inventory) where OVERWRITE was
+    # previously used only because plain MERGE cannot express deletions.
+    SNAPSHOT_MERGE = "snapshot_merge"
 
 
 @dataclass(frozen=True)
@@ -175,14 +181,14 @@ class DeltaWriter:
                 version=table.version(),
             )
         source = pa.Table.from_pylist(rows, schema=schema)
-        if mode is DeltaWriteMode.MERGE and exists:
+        if mode in (DeltaWriteMode.MERGE, DeltaWriteMode.SNAPSHOT_MERGE) and exists:
             if not key_columns:
                 raise ValueError("merge mode requires key_columns")
             predicate = " AND ".join(
                 f"target.{column} = source.{column}" for column in key_columns
             )
             table = DeltaTable(uri, storage_options=self.storage_options)
-            metrics = (
+            builder = (
                 table.merge(
                     source,
                     predicate=predicate,
@@ -194,8 +200,15 @@ class DeltaWriter:
                     predicate="target.change_version <> source.change_version"
                 )
                 .when_not_matched_insert_all()
-                .execute()
             )
+            if mode is DeltaWriteMode.SNAPSHOT_MERGE:
+                # Unlike plain MERGE (append-only history), a snapshot table
+                # must not accumulate rows for resources no longer present in
+                # this run's source -- delete anything the target has that
+                # this write didn't touch, matching OVERWRITE's full-replace
+                # semantics without rewriting rows that did not change.
+                builder = builder.when_not_matched_by_source_delete()
+            metrics = builder.execute()
             added = int(metrics.get("num_target_rows_inserted", 0))
             changed = int(metrics.get("num_target_rows_updated", 0))
             removed = int(metrics.get("num_target_rows_deleted", 0))
@@ -208,7 +221,11 @@ class DeltaWriter:
                 version=table.version(),
             )
 
-        actual_mode = "overwrite" if mode in {DeltaWriteMode.OVERWRITE, DeltaWriteMode.MERGE} else "append"
+        actual_mode = (
+            "overwrite"
+            if mode in {DeltaWriteMode.OVERWRITE, DeltaWriteMode.MERGE, DeltaWriteMode.SNAPSHOT_MERGE}
+            else "append"
+        )
         previous_count = 0
         if exists and actual_mode == "overwrite":
             previous_count = DeltaTable(uri, storage_options=self.storage_options).count()

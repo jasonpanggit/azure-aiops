@@ -20,12 +20,17 @@ from intelligence.remediation.approval_decisions import (
     ExecutionSnapshotError,
     build_execution_snapshot,
 )
+from intelligence.remediation.approval_gate import (
+    authorize_role_attestation,
+    requirement_satisfaction,
+)
 from operations.defender_configuration import DEFENDER_CONFIGURATION_ACTION_IDS
 
-from ..dependencies import Context, OperatePrincipal, Page, ReadScope
+from ..dependencies import ApprovePrincipal, Context, Page, ReadScope
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
 from ..models import RemediationDecisionRequest
+from ..rbac import ROLE_ADMIN, ROLE_APPROVER
 from ..scope import Scope, scope_attributes
 from .patching import _service as _patching_service
 
@@ -348,6 +353,102 @@ def read_remediation_decisions(
     )
 
 
+def _resolve_approval_role_selection(
+    *,
+    plan_id: str,
+    requirements: list[dict[str, Any]],
+    existing_decisions: list[dict[str, Any]],
+    current_version: str,
+    current_snapshot_hash: str,
+    policy_version: str,
+    requested_role_id: str,
+    principal: Any,
+) -> tuple[str, bool]:
+    """Resolve exactly which requirement row this decision attests.
+
+    Phase 03.5 CR-05 fix: a decision satisfies at most one
+    ``approval_requirements`` row. Returns ``(role_id, admin_override)`` --
+    ``role_id`` is ``""`` when this plan has no requirements at all (a
+    vacuous plan; no role concept applies) or when every requirement row
+    is already satisfied (nothing left to attest; the decision is still
+    recorded, e.g. a redundant re-approval, but attests no specific role).
+
+    Raises ``ApiError`` (400 ``role_id`` not found on this plan; 400 role
+    selection required when more than one unmet row is eligible for this
+    principal; 403 when the principal is authorized for none of the unmet
+    rows) rather than ever silently guessing.
+    """
+    if not requirements:
+        return "", False
+
+    def _row_role_id(row: dict[str, Any]) -> str:
+        return str(row.get("role_id") or row.get("role") or "").strip()
+
+    satisfaction = requirement_satisfaction(
+        requirements,
+        existing_decisions,
+        current_action_version=current_version,
+        current_snapshot_hash=current_snapshot_hash,
+        policy_version=policy_version,
+        now=datetime.now(UTC),
+    )
+    unmet = [row for row in satisfaction if not row.get("satisfied")]
+
+    if requested_role_id:
+        by_role_id = {_row_role_id(row).casefold(): row for row in satisfaction}
+        row = by_role_id.get(requested_role_id.strip().casefold())
+        if row is None:
+            raise ApiError(
+                ErrorCode.INVALID_REQUEST,
+                "role_id does not match any approval requirement on this plan",
+                details={"plan_id": plan_id, "role_id": requested_role_id},
+            )
+    elif not unmet:
+        return "", False
+    else:
+        eligible_by_role_id: dict[str, dict[str, Any]] = {}
+        for candidate in unmet:
+            authorized, _ = authorize_role_attestation(
+                role_id=_row_role_id(candidate),
+                role_text=str(candidate.get("role") or ""),
+                org_roles=principal.org_roles,
+                rbac_roles=principal.roles(),
+            )
+            if authorized:
+                eligible_by_role_id[_row_role_id(candidate).casefold()] = candidate
+        if not eligible_by_role_id:
+            raise ApiError(
+                ErrorCode.FORBIDDEN,
+                "Principal is not authorized for any unmet approval requirement on this plan",
+                details={"plan_id": plan_id},
+            )
+        if len(eligible_by_role_id) > 1:
+            raise ApiError(
+                ErrorCode.INVALID_REQUEST,
+                "Multiple unmet approval requirements are eligible for this principal; role_id must be specified",
+                details={
+                    "plan_id": plan_id,
+                    "eligible_role_ids": sorted(eligible_by_role_id),
+                },
+            )
+        row = next(iter(eligible_by_role_id.values()))
+
+    role_id = _row_role_id(row)
+    authorized, admin_override = authorize_role_attestation(
+        role_id=role_id,
+        role_text=str(row.get("role") or ""),
+        org_roles=principal.org_roles,
+        rbac_roles=principal.roles(),
+    )
+    if not authorized:
+        raise ApiError(
+            ErrorCode.FORBIDDEN,
+            "Principal is not authorized to attest this approval requirement's role",
+            details={"plan_id": plan_id, "role_id": role_id},
+        )
+    return role_id, admin_override
+
+
 @router.post(
     "/remediation-plans/{plan_id}/decisions",
     summary="Record a remediation recommendation decision",
@@ -358,10 +459,10 @@ def record_remediation_decision(
     request: RemediationDecisionRequest,
     context: Context,
     scope: ReadScope,
-    principal: OperatePrincipal,
+    principal: ApprovePrincipal,
 ) -> dict[str, Any]:
-    operate_scope = context.authorizer.effective_scope(principal, "operate", scope)
-    planner = _require(context, "remediation_provider", "remediation", operate_scope)
+    approve_scope = context.authorizer.effective_scope(principal, "approve", scope)
+    planner = _require(context, "remediation_provider", "remediation", approve_scope)
     plans = planner.generate_plans()
     plan = planner.repository.get(plan_id)
     if plan is None:
@@ -370,7 +471,7 @@ def record_remediation_decision(
             "Remediation plan not found",
             details={"plan_id": plan_id},
         )
-    scoped_plan = _filter_scoped(plan, operate_scope)
+    scoped_plan = _filter_scoped(plan, approve_scope)
     if scoped_plan is _HIDDEN:
         raise ApiError(
             ErrorCode.NOT_FOUND,
@@ -418,8 +519,8 @@ def record_remediation_decision(
         try:
             execution_snapshot = build_execution_snapshot(
                 plan,
-                _patching_service(context, operate_scope),
-                scope=operate_scope,
+                _patching_service(context, approve_scope),
+                scope=approve_scope,
                 selected_patch_ids=request.selected_patch_ids or None,
             )
         except ExecutionSnapshotError as exc:
@@ -446,7 +547,7 @@ def record_remediation_decision(
         and action_id in DEFENDER_CONFIGURATION_ACTION_IDS
     ):
         provider = getattr(context, "execution_provider", None)
-        service = provider(operate_scope) if callable(provider) else None
+        service = provider(approve_scope) if callable(provider) else None
         if service is None:
             raise ApiError(
                 ErrorCode.PROVIDER_UNAVAILABLE,
@@ -455,7 +556,7 @@ def record_remediation_decision(
             )
         try:
             execution_snapshot = service.build_execution_snapshot(
-                plan, scope=operate_scope
+                plan, scope=approve_scope
             )
         except ExecutionSnapshotError as exc:
             raise ApiError(
@@ -477,16 +578,70 @@ def record_remediation_decision(
             )
         revalidation_checks.append("execution_snapshot_current")
 
+    # Server-derived, never client-supplied (Phase 03.5, D-01/D-02;
+    # T-03.5-14; CR-01 fix). approver_roles is retained only as a legacy
+    # read-compatibility projection (RemediationDecisionStore.append()'s
+    # own docstring) -- ``requirement_satisfaction()`` no longer keys
+    # satisfaction on it for a decision recorded through this route
+    # (CR-05 fix: see ``approval_role_id`` below instead).
+    approver_roles = sorted(
+        {
+            ROLE_APPROVER,
+            *(
+                grant.role
+                for grant in principal.grants
+                if grant.role in {ROLE_APPROVER, ROLE_ADMIN}
+            ),
+        }
+    )
+    approval_policy_version = ""
+    generator = getattr(planner, "generator", None)
+    engine = getattr(generator, "approvals", None)
+    if engine is not None:
+        approval_policy_version = str(getattr(engine, "policy_version", "") or "")
+
+    # CR-05 fix: one decision attests exactly one required role. For an
+    # approved decision on a plan that carries real ``approval_requirements``,
+    # resolve exactly which row this decision satisfies -- explicitly, via
+    # ``request.role_id``, when the caller selected one; automatically, when
+    # at most one currently-unmet row is eligible for this principal to
+    # attest; refused (400/403) when the selection is ambiguous or this
+    # principal holds no literal claim/override for any unmet row. Never
+    # applies to 'rejected'/'expired' decisions (WR-04 precedent: role
+    # attestation is only ever meaningful on an approved decision).
+    approval_role_id = ""
+    admin_override = False
+    if request.decision == "approved":
+        current_snapshot_hash = (
+            str(execution_snapshot.get("snapshot_hash") or "")
+            if execution_snapshot is not None
+            else ""
+        )
+        approval_role_id, admin_override = _resolve_approval_role_selection(
+            plan_id=plan_id,
+            requirements=plan.get("approval_requirements") or [],
+            existing_decisions=planner.repository.decisions.list(plan_id),
+            current_version=current_version,
+            current_snapshot_hash=current_snapshot_hash,
+            policy_version=approval_policy_version,
+            requested_role_id=str(request.role_id or "").strip(),
+            principal=principal,
+        )
+
     decision = planner.repository.decisions.append(
         plan=plan,
         decision=request.decision,
         approver=principal.subject,
         reason=request.reason,
-        scope=operate_scope.to_dict(),
+        scope=approve_scope.to_dict(),
         action_version=current_version,
         expires_at=expires_at,
         revalidation_checks=revalidation_checks,
         execution_snapshot=execution_snapshot,
+        approver_roles=approver_roles,
+        approval_policy_version=approval_policy_version,
+        approval_role_id=approval_role_id,
+        admin_override=admin_override,
     )
     return envelope(
         decision,
@@ -497,5 +652,5 @@ def record_remediation_decision(
             resource_id=plan_id,
             confidence=CONFIDENCE_MEDIUM,
         ),
-        scope=operate_scope.to_dict(),
+        scope=approve_scope.to_dict(),
     )

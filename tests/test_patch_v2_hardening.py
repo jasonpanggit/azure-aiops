@@ -121,7 +121,7 @@ def test_semantic_sections_and_members_fail_closed_on_malformed_types():
             )
 
 
-def test_semantic_patch_evidence_requires_matching_canonical_target():
+def test_semantic_patch_evidence_skips_unmatched_canonical_target():
     class Semantic:
         freshness = "2026-08-18T00:00:00Z"
 
@@ -131,20 +131,28 @@ def test_semantic_patch_evidence_requires_matching_canonical_target():
         def get_impact_context(self, *_args, **_kwargs):
             return {}
 
-    with pytest.raises(ValueError, match="canonical target"):
-        PatchIntelligence.from_semantic_engine(
-            Semantic(),
-            inventory=[{"resource_id": "resource-1", "name": "server"}],
-            assessments=[
-                {
-                    "assessed_resource_id": "resource-missing",
-                    "last_modified": "2026-08-17T00:00:00Z",
-                }
-            ],
-            installations=[],
-            history=[],
-            policies=[],
-        )
+    # Evidence rows referencing a resource absent from inventory (e.g. stale
+    # or partially-synced data) are coverage gaps, not fatal errors -- they
+    # must be skipped rather than aborting construction for every consumer.
+    intelligence = PatchIntelligence.from_semantic_engine(
+        Semantic(),
+        inventory=[{"resource_id": "resource-1", "name": "server"}],
+        assessments=[
+            {
+                "assessed_resource_id": "resource-missing",
+                "last_modified": "2026-08-17T00:00:00Z",
+            },
+            {
+                "assessed_resource_id": "resource-1",
+                "last_modified": "2026-08-17T00:00:00Z",
+            },
+        ],
+        installations=[],
+        history=[],
+        policies=[],
+    )
+    assert len(intelligence.assessments) == 1
+    assert intelligence.assessments[0]["resource_key"] == "resource-1"
 
 
 def test_semantic_enrichment_collections_are_bounded_before_analysis():

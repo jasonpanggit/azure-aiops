@@ -23,8 +23,23 @@ OPERATION_URL = (
 
 
 class _FakeCredential:
+    """Configurable fake credential.
+
+    Defaults preserve every existing call site's behavior (a fixed
+    ``"fake-token"``). ``token``/``error`` let CR-04-style regression tests
+    exercise the acquisition-failure and empty-token paths without ever
+    letting a real value near a log line -- the token used here is a fake,
+    test-only literal, never a real secret.
+    """
+
+    def __init__(self, *, token: str | None = "fake-token", error: Exception | None = None) -> None:
+        self._token = token
+        self._error = error
+
     def get_token(self, *scopes, **kwargs):
-        return type("Token", (), {"token": "fake-token"})()
+        if self._error is not None:
+            raise self._error
+        return type("Token", (), {"token": self._token})()
 
 
 class _FakeTransport(httpx.BaseTransport):
@@ -47,6 +62,23 @@ def _client_returning(status_code: int, json_body: dict | None = None, *, text: 
 def _client_raising_transport_error() -> httpx.Client:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
+
+    return httpx.Client(transport=_FakeTransport(handler))
+
+
+def _client_capturing_headers(
+    recorder: list[httpx.Request], status_code: int = 200, json_body: dict | None = None
+) -> httpx.Client:
+    """Return a client whose fake transport records every request it sees.
+
+    Used by the CR-04 regression tests to inspect the *actual* outgoing
+    ``Authorization`` header rather than merely ignoring header content, the
+    way every pre-existing test in this file does.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorder.append(request)
+        return httpx.Response(status_code, json=json_body if json_body is not None else {"status": "Succeeded"}, request=request)
 
     return httpx.Client(transport=_FakeTransport(handler))
 
@@ -375,3 +407,233 @@ def test_poll_verification_persists_arm_cancellation():
     assert polled["status"] == "cancelled"
     assert polled["verified_state"] == "Cancelled"
     assert store.get(result["execution_id"])["attempts"][0]["outcome"] == "cancelled"
+
+
+# --- Task 1: nested Azure result parsing (verifier-only, thinnest path) ---
+
+
+def test_verify_nested_completed_with_warnings_and_failed_count_is_never_clean_success():
+    client = _client_returning(
+        200,
+        {
+            "status": "Succeeded",
+            "properties": {
+                "status": "CompletedWithWarnings",
+                "failedPatchCount": 2,
+                "installedPatchCount": 3,
+            },
+        },
+    )
+    verifier = ExecutionVerifier(credential=_FakeCredential(), client=client)
+
+    result = verifier.verify(_record())
+
+    assert result["verifiable"] is True
+    assert result["outcome"] == "failed"
+    evidence = result["verification_evidence"]
+    assert evidence["detail_status"] == "CompletedWithWarnings"
+    assert evidence["installed_count"] == 3
+    assert evidence["failed_count"] == 2
+    assert evidence["pending_count"] == 0
+    assert evidence["not_selected_count"] == 0
+    assert isinstance(evidence["provider_errors"], list)
+
+
+# --- Task 2: exhaustive nested-result parsing coverage ---------------------
+
+
+def test_verify_nested_succeeded_with_zero_failed_count_is_clean_success():
+    client = _client_returning(
+        200,
+        {
+            "status": "Succeeded",
+            "properties": {
+                "status": "Succeeded",
+                "failedPatchCount": 0,
+                "installedPatchCount": 5,
+            },
+        },
+    )
+    verifier = ExecutionVerifier(credential=_FakeCredential(), client=client)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == "succeeded"
+    assert result["verification_evidence"]["failed_count"] == 0
+
+
+def test_verify_top_level_update_center_result_preserves_patch_counts():
+    client = _client_returning(
+        200,
+        {
+            "status": "Succeeded",
+            "installedPatchCount": 1,
+            "failedPatchCount": 0,
+            "pendingPatchCount": 0,
+            "notSelectedPatchCount": 0,
+        },
+    )
+    verifier = ExecutionVerifier(credential=_FakeCredential(), client=client)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == "succeeded"
+    assert result["verification_evidence"] == {
+        "detail_status": "Succeeded",
+        "installed_count": 1,
+        "failed_count": 0,
+        "pending_count": 0,
+        "not_selected_count": 0,
+        "provider_errors": [],
+    }
+
+
+def test_verify_in_progress_with_no_properties_body_never_raises():
+    client = _client_returning(200, {"status": "InProgress"})
+    verifier = ExecutionVerifier(credential=_FakeCredential(), client=client)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == "running"
+    assert result["verification_evidence"] == {
+        "detail_status": "",
+        "installed_count": 0,
+        "failed_count": 0,
+        "pending_count": 0,
+        "not_selected_count": 0,
+        "provider_errors": [],
+    }
+
+
+def test_verify_envelope_failed_with_properties_error_surfaces_provider_errors():
+    client = _client_returning(
+        200,
+        {
+            "status": "Failed",
+            "properties": {
+                "error": {"code": "OperationFailed", "message": "Reboot required but suppressed"},
+            },
+        },
+    )
+    verifier = ExecutionVerifier(credential=_FakeCredential(), client=client)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == "failed"
+    assert "Reboot required but suppressed" in result["failure_details"]
+    assert result["verification_evidence"]["provider_errors"] == [
+        "Reboot required but suppressed"
+    ]
+
+
+def test_verify_succeeded_with_error_details_but_no_failure_signal_stays_clean():
+    client = _client_returning(
+        200,
+        {
+            "status": "Succeeded",
+            "properties": {
+                "status": "Succeeded",
+                "failedPatchCount": 0,
+                "errorDetails": [
+                    {"code": "InfoOne", "message": "Informational note one"},
+                    {"code": "InfoTwo", "message": "Informational note two"},
+                ],
+            },
+        },
+    )
+    verifier = ExecutionVerifier(credential=_FakeCredential(), client=client)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == "succeeded"
+    assert result["verification_evidence"]["provider_errors"] == [
+        "Informational note one",
+        "Informational note two",
+    ]
+
+
+def test_verify_defender_configuration_path_omits_verification_evidence():
+    client = _client_returning(200, {"properties": {"enabled": True}})
+    verifier = ExecutionVerifier(credential=_FakeCredential(), client=client)
+    record = _record()
+    record["execution_snapshot"] = {
+        "snapshot_kind": "defender_configuration",
+        "desired_properties": {"enabled": True},
+    }
+
+    result = verifier.verify(record)
+
+    assert result["outcome"] == "succeeded"
+    assert "verification_evidence" not in result
+
+
+def test_verify_non_dict_response_body_resolves_to_safe_running_outcome():
+    client = _client_returning(200, [1, 2, 3])
+    verifier = ExecutionVerifier(credential=_FakeCredential(), client=client)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == "running"
+    assert result["verification_evidence"]["failed_count"] == 0
+    assert result["verification_evidence"]["provider_errors"] == []
+
+
+# -- CR-04 regression: the poll must send the real bearer token, never a --
+# -- literal placeholder, and must never touch the network if the token --
+# -- cannot be acquired.                                                --
+
+
+def test_poll_sends_the_real_bearer_token_from_the_credential():
+    """The verifier's poll must send ``Bearer <token>`` using the actual
+    value ``_token()`` acquires from the credential, not a hardcoded
+    placeholder string. Captured via a fake transport that records the
+    real ``httpx.Request`` object the class builds, not a test that
+    merely ignores header content.
+    """
+    calls: list[httpx.Request] = []
+    client = _client_capturing_headers(calls, 200, {"status": "Succeeded"})
+    verifier = ExecutionVerifier(credential=_FakeCredential(token="fake-verifier-token"), client=client)
+
+    verifier.verify(_record())
+
+    assert len(calls) == 1
+    auth_header = calls[0].headers["authorization"]
+    assert auth_header == "Bearer fake-verifier-token"
+    assert auth_header.startswith("Bearer ")
+    # The literal placeholder this class must never emit again (CR-04).
+    assert "*" * 6 not in auth_header
+
+
+def test_poll_never_invokes_http_when_token_acquisition_fails():
+    """A credential that cannot mint a token must fail closed *before* any
+    request is attempted -- token acquisition is a pre-submission refusal,
+    never a network call.
+    """
+    calls: list[httpx.Request] = []
+    client = _client_capturing_headers(calls)
+    verifier = ExecutionVerifier(
+        credential=_FakeCredential(error=RuntimeError("no identity")),
+        client=client,
+    )
+
+    with pytest.raises(ExecutionVerificationUnavailable, match="management token") as excinfo:
+        verifier.verify(_record())
+
+    assert calls == []
+    assert excinfo.value.capability == "azure_arm_token"
+
+
+def test_poll_never_invokes_http_when_credential_returns_an_empty_token():
+    """An empty token string is just as unusable as a raised error, and must
+    be refused before any request is made -- never sent as a blank/partial
+    Authorization header.
+    """
+    calls: list[httpx.Request] = []
+    client = _client_capturing_headers(calls)
+    verifier = ExecutionVerifier(credential=_FakeCredential(token=""), client=client)
+
+    with pytest.raises(ExecutionVerificationUnavailable, match="empty management token") as excinfo:
+        verifier.verify(_record())
+
+    assert calls == []
+    assert excinfo.value.capability == "azure_arm_token"

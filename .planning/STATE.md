@@ -2,28 +2,51 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 10-15-PLAN.md
-status: complete
-stopped_at: Completed Phase 10 live rollout validation
-last_updated: "2026-09-02T03:30:21Z"
+current_plan: 03.6 complete (6/6 plans) - ready for next phase
+status: executing
+stopped_at: Completed Phase 03.6 (03.6-01..03.6-06) — remediation workflow safety and operator guidance
+last_updated: "2026-09-05T00:58:00Z"
 progress:
-  total_phases: 10
-  completed_phases: 6
-  total_plans: 85
-  completed_plans: 77
+  total_phases: 17
+  completed_phases: 9
+  total_plans: 158
+  completed_plans: 87
+current_phase_name: Remediation Workflow Safety and Operator Guidance
 ---
 
 # Phase 10: Fabric Medallion Capability Expansion
 
 ## Current Status
 
-**Active Phase:** Phase 10 (Fabric Medallion Capability Expansion)<br>
-**Wave:** 9<br>
-**Current Plan:** 10-15-PLAN.md<br>
-**Status:** Complete (15/15 plans complete; live API/web validation approved)
+**Active Phase:** Phase 03.6 (Remediation Workflow Safety and Operator Guidance)
+**Wave:** 12<br>
+**Current Plan:** 03.6 complete (6/6 plans) - ready for next phase
+**Status:** executing (03.6-01..03.6-06 all executed and verified this session; no plans currently in progress)
 
 ## Completed Plans (This Session)
 
+- **03.1-01** COMPLETE — Wave 0 deterministic Exposure fixture, explicit backend/web pending gates, 100k correctness harness, and exhaustive fail-closed Fabric SQL readiness probe
+- **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
+- **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
+- **03.6-03** COMPLETE — Fail-safe `selectedPatchIds: string[] | null` patch-selection model (fixes CR-07 deselect-all-then-widens-to-all bug) and bounded/backoff client polling (`usePollingBackoff`, capped at 40 requests or 600000ms) with independently-testable ceilings
+- **03.6-04** COMPLETE — `WorkflowBlockers`/`WorkflowDegradation` components render the full locked blocker vocabulary (with safe fallback + one-time telemetry for unrecognized codes) and degradation panel; Verify-step failure sentences read `execution.failure_details` through the locked pre-/post-submission templates with closed empty-value fallbacks
+- **03.6-05** COMPLETE — `RecoveryControls` (Cancel/Retry/Supersede, each independently gated by its own server boolean), `ReconciliationSummary`, and Lineage rendering wired into `ExecutionAudit`; always-visible remaining/submitted attempts, verification deadline, and next-check facts
+- **03.6-06** COMPLETE — Playwright 1.58.2 E2E infrastructure (`playwright.config.ts`, `web/e2e/remediation-workflow-safety.spec.ts`, 4 passing real-Chromium tests against a mocked backend) and the three UI-SPEC-required Manual QA backstop items genuinely performed and recorded (`03.6-MANUAL-QA.md` + evidence screenshots/ARIA snapshots)
+- **03.5-01** COMPLETE — Shared evidence-sensitive `action_version_for()` helper, `ApprovalEngine.policy_version`, and durable decision-store `approver_roles`/`self_approved`/`self_approval_policy_id` facts with safe legacy defaults
+- **03.5-02** COMPLETE — Distinct `approve` RBAC action/role/dependency, deliberately excluded from `operate` and vice versa
+- **03.5-03** COMPLETE — Shared `requirement_satisfaction()`/`latest_decision_status()` evaluation engine (single staleness predicate) used by both the execution gate and read routes
+- **03.5-04** COMPLETE — Live patch/Defender planners emit `action_version_for()`-derived versions and `ApprovalEngine.requirements()`-shaped `approval_requirements`
+- **03.5-05** COMPLETE — `_check_approval_gate` enforces per-role requirement satisfaction and cross-family self-approval SoD for both patch and Defender configuration, with `PatchingService`'s own check preserved as defense in depth
+- **03.5-06** COMPLETE — `record_remediation_decision` requires `approve`; `plan_workflow`/`plan_approvals` project the shared satisfaction/staleness functions plus RBAC-derived `can_approve`/`can_operate`
+- **03.5-07** COMPLETE — Web Approve/Run/Verify steps render requirement satisfaction, demo self-approval disclosure, approve/operate gating, and stale-approval state
+- **03.4-01** COMPLETE — Durable verification scheduling/deadline fields on the execution store, plus deep nested Azure patch-result parsing in the verifier
+- **03.4-02** COMPLETE — Deadline-enforced poll_verification, selected-KB evidence reconciliation, and submission-ambiguous reconciliation, safe under concurrent callers
+- **03.4-03** COMPLETE — Bounded background verification coordinator wired into API startup/shutdown, backed by the live vulnerability evidence path, with restart-recovery and browser-independence tests
+- **03.3-01** COMPLETE — Provider failure classification (provider_submitted/failure_class) at the Azure patch and Defender-configuration adapter boundary
+- **03.3-02** COMPLETE — Submitted-attempt counting: only proven provider submissions consume the retry budget, with conservative legacy-compatible defaults
+- **03.3-03** COMPLETE — Audited POST supersede endpoint with bidirectional lineage and API/web contract projections
+- **03.2-01** COMPLETE — Stable plan identity end-to-end with scope-attribute-authorized execution reads, fail-closed repository guards, and orphaned-execution diagnostics
+- **03.2-02** COMPLETE — One planner/repository view per request via TTL-cached hybrid_remediation resolution
 - **10-09** COMPLETE — Gold/Silver restoration, staged rollout, and disposition classification
 - **10-10** COMPLETE — Direct Lake semantic model manager
 - **10-11** COMPLETE — Gold-grounding Data Agent client, contract, and guardrails
@@ -34,6 +57,20 @@ progress:
 
 ## Work Completed This Session
 
+- Completed the live Phase 03.6 remediation E2E against Hybrid Compute `vm1`:
+  equivalent plans approved without false staleness, the disconnected first
+  attempt failed truthfully, the connected retry completed in Azure Update
+  Manager with one patch installed and zero failed/pending patches, and the
+  deployed API now projects successful retry state without leaking the earlier
+  failure. Release `remediation-final-20260905-0035` is healthy on all four
+  Container Apps; Terraform applied four in-place image updates with no
+  additions or destructions.
+- Closed Phase 03 deep-review Recommendation 5 (CR-07, WR-01–04, WR-11) — the final Phase 03 remediation-hardening recommendation. All six Phase 03.6 plans executed: (1) `execution.failure_details` made authoritative on every terminal-failure transition in `execution_service.py` (both `verification_timed_out` branches in `poll_verification`, plus `reconcile_ambiguous_submission`'s `submission_unconfirmed` branch), closing the last gap the Verify-step honesty sentences depend on, with a new exhaustive parametrized regression test (`tests/test_remediation_failure_details_authoritative.py`). (2) `plan_workflow` (`src/api/routers/remediation.py`) gained server-computed `blockers[]` (via `_collect_blockers`/`BLOCKER_STEP_BY_CODE`, synthesizing the `workflow.preview_error` row per the locked synthesis rule, excluding `already_succeeded`) and `degradation[]` (via `_collect_degradation`, reading `business_decision.source_family_status` and, defensively, `context.provider_runtime.health(refresh=False)`) arrays, plus an honest `verify` step status computed from `execution.status`/`evidence_reconciliation.status`/`remaining_attempts` (never `"complete"` for a failed/cancelled/unreconciled-succeeded/exhausted execution); `src/semantic/live_operations.py`'s two hardcoded `"freshness": "current"` literals replaced with real `classify_freshness()` computation. (3) The web patch-selection state model was retyped `string[] | null` (fixing CR-07's deselect-all-then-silently-reselects-all bug) with a locked refusal/mode-line/evidence-refresh-reconciliation interaction, and the unbounded 1500ms polling loop replaced with a bounded, deterministic backoff hook (`usePollingBackoff` in a new `web/src/app/remediation/polling.ts`) capped at 40 requests or 600000ms elapsed, both ceilings independently provable via an injectable clock. (4) New `WorkflowBlockers`/`WorkflowDegradation` components (backed by a new `web/src/app/remediation/blockers.ts` holding the locked Blocker Vocabulary table and `blockerCopy()` resolver, extracted there because a Next.js page route file cannot export arbitrary named exports) render every blocker/degradation row with safe fallback copy and one-time telemetry for unrecognized codes; the Verify step's failure sentence now reads `execution.failure_details` through the locked pre-/post-submission templates with closed empty-value fallbacks (never dangling punctuation). (5) `RecoveryControls` (Cancel/Retry/Supersede, each independently rendered from its own server boolean, never shown-disabled), `ReconciliationSummary`, and Lineage rendering wired into `ExecutionAudit`, plus always-visible remaining/submitted-attempts, verification-deadline, and next-check facts; a race-refused Supersede reuses the same shared `blockerCopy` vocabulary lookup. (6) Playwright 1.58.2 (Microsoft's official package, matching the version already trusted-installed in this environment) added as a `web` devDependency with `playwright.config.ts` and `web/e2e/remediation-workflow-safety.spec.ts` (4 tests, real Chromium, fully mocked backend via `page.route()`); the three UI-SPEC-required Manual QA backstop items (KB-list overflow, 375px responsive layout, screen-reader reading order) were genuinely performed via automated browser capture and recorded in a new `03.6-MANUAL-QA.md` with screenshot/ARIA-snapshot evidence — one honest caveat recorded: a pre-existing, out-of-phase-scope Fluent UI dev-mode banner doesn't wrap at 375px, but the Phase 03.6 blocker/degradation/recovery-control elements themselves do stack correctly (isolated element-width measurements confirm this). 6 plans, ~20 files touched across backend/frontend (4 new: `blockers.ts`, `polling.ts`, `playwright.config.ts`, `test_remediation_failure_details_authoritative.py`, plus the new `web/e2e/` directory and `03.6-MANUAL-QA.md`); full Python suite (~2500+ tests) passed cleanly; full web suite (34 files, 235 tests) passed cleanly; 4/4 Playwright E2E tests passed against real Chromium; `ruff check`, `tsc --noEmit`, and `eslint` all clean. No commits made (working-tree-only, per this session's explicit no-commit instruction).
+- Closed Phase 03 deep-review Recommendation 4 (CR-04, CR-05): one evidence-sensitive approval policy now governs both patch and Defender configuration action families end-to-end. A single `action_version_for()` helper (`src/intelligence/remediation/action_version.py`) replaces three previously-divergent inline hash formulas (Fabric/catalog generator, live patch planner, live Defender-configuration planner) with one deterministic, wall-clock-blind, evidence-content-sensitive digest. `ApprovalEngine.policy_version` and `RemediationDecisionStore` schema 1.1.0 add durable `approver_roles`/`approval_policy_version` (written by `append()`) and `self_approved`/`self_approval_policy_id` (written only by the new CAS-guarded `record_self_approval()`), with safe legacy defaults for pre-existing decisions. A new `src/api/rbac.py` `approve` action/`ROLE_APPROVER` is deliberately excluded from `operate` and vice versa, closing the "approving and executing are the same permission" gap. `src/intelligence/remediation/approval_gate.py` provides one shared, pure `requirement_satisfaction()`/`latest_decision_status()` pair (single internal staleness predicate) so a two-role plan can never execute on one wrong-role decision, and the execution gate and read-side workflow route can never disagree about staleness. `RemediationExecutionService._check_approval_gate` now evaluates per-role `approval_requirements` satisfaction and enforces requester-vs-approver self-approval for BOTH families identically (previously Defender configuration had zero SoD protection at all) — `PatchingService`'s own pre-existing self-approval check remains as a working defense-in-depth backstop, sharing the same `is_self_approval()` definition. `record_remediation_decision` now requires `approve` (not `operate`) and records server-derived `approver_roles`/`approval_policy_version`; `plan_workflow`/`plan_approvals` project the shared satisfaction/staleness functions plus RBAC-derived `can_approve`/`can_operate` fields, closing a real pre-existing bug where the read-side staleness definition (snapshot-hash-only) never checked `action_version` at all. The web `/remediation` Approve/Run/Verify steps render per-row satisfied/unmet requirement badges, the locked demo self-approval disclosure (policy banner + audit badge), independent approve/operate disabled-reason text, and the five-status stale-approval line — replacing the prior raw JSON-dump paragraph. 7 plans, ~35 files touched (11 new: `action_version.py`, `approval_gate.py`, plus 9 new/extended test files), ~140 new/adjusted tests; full repo suite (2501 tests) passed cleanly; full web suite (34 files, 206 tests) passed cleanly; `ruff check` and `tsc --noEmit` both clean. No commits made (working-tree-only, per this session's explicit no-commit instruction).
+- Closed Phase 03 deep-review Recommendation 3 (CR-03, WR-11): remediation verification is now a bounded, autonomous server-side lifecycle that does not depend on an open browser. `RemediationExecutionStore` gained durable `verification_deadline_at`/`next_verification_at`/`verification_attempts`/`verification_evidence`/`evidence_reconciliation` fields (schema 2.2.0, safe legacy defaults) and a `list_due_for_verification` query answering "what needs a pass right now" from disk alone. `ExecutionVerifier` now parses ARM's nested `properties.status`/patch counts/error details, so a `CompletedWithWarnings` or partial-failure result is never misread as a clean envelope-level success. `RemediationExecutionService.poll_verification` checks the deadline before ever touching the verifier — an execution can no longer stay "running" forever — and gained `reconcile_evidence` (compares a verified-succeeded patch execution's immutable selected KBs against freshly refreshed live target evidence, never reporting "clean" while KBs remain, while still preserving Azure's own provider-level success separately) and `reconcile_ambiguous_submission` (the first honest exit from a previously-permanent `submission_ambiguous` dead end: proven success, or a bounded reclassification to an ordinary retryable failure). A new `RemediationVerificationCoordinator` — plain, FastAPI/HTTP-free, dispatching purely by record shape with per-record error isolation — is wired into `src/api/app.py`'s startup/shutdown lifecycle exactly like the existing provider-refresh thread, backed by a live `hybrid_vulnerability`-sourced evidence refresher in `src/api/runtime.py`. 40 new tests added across 4 files (1 new: `tests/test_remediation_verification_scheduling.py`, `tests/test_remediation_evidence_reconciliation.py`, `tests/test_remediation_verification_coordinator.py`, plus additions to 3 existing files); targeted suite across all three plans 134 passed; full repo suite (~2425 tests) completed cleanly with zero failure markers; `ruff check` and `tsc --noEmit` both clean. No commits made (working-tree-only, per this session's explicit no-commit instruction).
+- Closed Phase 03 deep-review Recommendation 2 (CR-02, WR-05): `PatchExecutionUnavailable`/`DefenderConfigurationUnavailable` now carry `provider_submitted`/`failure_class` classified at every raise site in both real Azure-calling adapters, using a single shared `classify_azure_response_failure(status_code)` helper; `RemediationExecutionStore`/`RemediationExecutionService` now count only proven-or-ambiguous provider submissions (`submitted_attempt_count`) against `MAX_EXECUTION_ATTEMPTS`, with `claim_retry`'s own CAS gate using the same function as the read-side `execution_view` projection; pre-existing execution records without the new fields read back with a conservative legacy default (provider_job_id present, or an ambiguity marker in failure text, proves submission); a new `POST /api/v1/remediation/executions/{execution_id}/supersede` route lets an operator close out an exhausted-but-non-ambiguous execution with a freshly-approved, freshly-identified replacement execution, atomically recording bidirectional `supersedes`/`superseded_by` lineage without ever mutating the old execution's audit trail; `web/src/lib/services.ts` projects every new field with no UI wiring (deferred to Phase 03.6). The exact live-evidence regression scenario (repeated submitted failures exhaust the budget → retry refused → external blocker fixed → supersede → new execution succeeds → old history provably untouched → bidirectional lineage) passes as a single automated test. 34 new/adjusted tests added across 5 files; targeted suite 180 passed, remediation-wide suite 331 passed, full repo suite completed cleanly (~2383 tests, up from 2351), `ruff check` and `tsc --noEmit` both clean. No commits made (working-tree-only, per this session's explicit no-commit instruction).
+- Closed Phase 03 deep-review Recommendation 1 (CR-01, CR-06, WR-07 request-consistency half): live remediation plan identity is now derived from canonical target + subscription + governed action family only, never from mutable `missing_kbs` evidence; execution reads/retries/cancels authorize from the execution record's own immutable scope attributes instead of the originating plan's continued existence; `execute`/`retry`/`plan_eligibility` fail closed with a typed `plan_repository_unavailable` reason instead of raising `AttributeError`; a new `GET /api/v1/remediation/diagnostics/executions` route reports orphaned/legacy execution records; `hybrid_remediation` now resolves one `LiveRemediationPlanner`/`PlanRepository` per `(root, subscription-set)` key within the existing 30s TTL window shared with `hybrid_vulnerability`/`hybrid_network`.
+- Fixed all 5 Critical/Warning findings from Phase 03.2's own deep code review (`03.2-REVIEW.md`): the new diagnostics route now narrows to the caller's effective operate scope instead of unconditionally serving system-wide orphaned-execution data (CR-01); `PlanRepository` gained a `threading.RLock()` around `replace_generation()`/`list()`/`get()` so the now-TTL-shared repository instance no longer races across concurrent requests (WR-01); the new runtime test isolates `AIOPS_HOME` to a unique `tmp_path` so it can no longer pollute the shared hybrid_remediation cache across tests (WR-02); the stable-identity hash now casefolds `subscription_id` so differently-cased upstream GUIDs can't mint a new `plan_id` (WR-03); the `controlled-patch-recovery` action-family literal is now a single shared `PATCH_RECOVERY_ACTION_FAMILY` constant in `action_catalog.py` referenced by all four call sites (WR-04). 3 new/adjusted tests added; targeted suite 114 passed, full repo suite 2351 passed, `ruff check` clean on all touched files. No commits made (working-tree-only fix pass).
 - Live Fabric lakehouse reconciliation confirmed 444 tables present, 0 present-unknown tables, 13 code-declared missing tables, and 0 undispositioned expected-missing tables.
 - Runtime Fabric capacity metadata and Reader access were added so `/api/v1/fabric-medallion/capabilities` reports the real `aiopsdevcapg6ludc` capacity as healthy.
 - Medallion API fallback reads now use live Delta metadata tables when connection-generation JSON metadata is empty.
@@ -51,11 +88,22 @@ progress:
 - **Evaluation baseline:** The baseline intentionally records degraded narration/Data Agent behavior rather than fabricating a pass.
 - **Operational recovery:** Long synchronous inventory refresh can still exceed HTTP stream timeouts; the Phase 10 fix ensures medallion source-status rows publish early and API readiness remains routable.
 - **Scope preservation:** Existing unrelated Phase 3/remediation working-tree changes were preserved and not reverted.
+- **Remediation schema:** `RemediationExecutionStore._SCHEMA_VERSION` is now `2.2.0` (verification scheduling/deadline/evidence-reconciliation fields); `RemediationDecisionStore._SCHEMA_VERSION` is now `1.1.0` (approver_roles/approval_policy_version/self_approved/self_approval_policy_id); legacy pre-bump records are read back with conservative defaults, never migrated in place.
+- **Autonomous verification:** A background `RemediationVerificationCoordinator` thread now runs alongside the provider-refresh thread inside the API process, driving every due execution to a terminal outcome independent of any browser session.
+- **Approval governance:** `_check_approval_gate`'s per-role/self-approval checks use a documented interim simplification for `current_snapshot_hash`/`policy_version` (empty/decision-sourced respectively, since the gate cannot yet independently reach a fresh preview snapshot or the originating `ApprovalEngine.policy_version` without new plumbing) — a named follow-up for a future phase to thread the real values through.
+- **Role vocabulary:** `approval_requirements` rows carry organizational-policy role names (e.g. "Change Manager", "Stage Gate Approver") from `ApprovalEngine` policies, while `approver_roles` recorded via the API route are RBAC capacity names (`approver`/`admin`). A decision only satisfies a requirement row when its `approver_roles` literally contains that row's role (casefolded) — for deployments whose `ApprovalEngine` policies use RBAC-shaped role names this matches directly; for richer organizational role catalogs, satisfying a requirement currently requires a decision explicitly recorded with matching role strings (as the live-planner default single-policy engines do). Documented as a known limitation for a future phase to potentially bridge with a directory-backed role-claim model.
 
 ## Next Steps
 
-1. Resume milestone sequencing from the next planned GSD phase or run a milestone-level audit before shipping.
+1. Phase 03.6 is complete — this was the final remediation-hardening phase (per 03.6-CONTEXT.md's "Deferred Ideas: None"). Plan and execute the next roadmap phase (Phase 11: Cross-Page Operations Copilot Orchestration, or Phase 12: Network Topology Integrity and Scale — both already researched/planned this session per commits above).
 2. Configure Fabric Gold-grounding Data Agent credentials if full narrated Gold grounding is required.
+3. Optional follow-up (noted, not blocking): the pre-existing Fluent UI "Development mode" `MessageBarBody` banner does not wrap at narrow (375px) viewports, causing whole-page horizontal overflow unrelated to any Phase 03.6 component — see `03.6-MANUAL-QA.md` item 2's caveat.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260903-rkn | Add detailed sync progress reporting for Fabric table writes, including written count out of total and useful in-progress status when a sync remains active | 2026-09-03 | ca708add | [260903-rkn-add-detailed-sync-progress-reporting-for](./quick/260903-rkn-add-detailed-sync-progress-reporting-for/) |
 
 ## Performance Metrics
 
@@ -68,6 +116,13 @@ progress:
 | Phase 10 P13 | 9min | 3 tasks | 3 files |
 | Phase 10 P14 | 12min | 3 tasks | 6 files |
 | Phase 10 P15 | live validation | 3 tasks | 10+ files |
+| Phase 03.3 P01 | ~35min | 3 tasks | 5 files |
+| Phase 03.3 P02 | ~25min | 3 tasks | 4 files |
+| Phase 03.3 P03 | ~40min | 3 tasks | 7 files |
+| Phase 03.4 P01 | ~30min | 3 tasks | 4 files |
+| Phase 03.4 P02 | ~50min | 3 tasks | 4 files |
+| Phase 03.4 P03 | ~35min | 3 tasks | 5 files |
+| Phase 03.1 P01 | 9min | 3 tasks | 10 files |
 
 ## Decisions
 
@@ -80,6 +135,10 @@ progress:
 - [Phase 03]: The browser treats server-projected execution, retry, and cancellation eligibility as authoritative.
 - [Phase 03]: Approval is bound to the current preview hash and stale previews require explicit review.
 - [Phase 03]: Patch inventory is read-only and hands context into governed remediation.
+- [Phase 03.4]: A verification deadline produces an explicit terminal unknown/verification_timed_out outcome, never indefinite running, before the verifier is ever consulted.
+- [Phase 03.4]: Evidence reconciliation never overwrites Azure's own provider-level success; it records a separate reconciled_clean/reconciled_incomplete/unreconciled fact alongside it.
+- [Phase 03.4]: A submission-ambiguous failure is retry/supersede-refused only until proven success or its own bounded reconciliation deadline passes, never permanently.
+- [Phase 03.4]: The background verification coordinator's own execution service is constructed with no plan repository or patching service, so it can structurally only observe/reconcile durable records, never execute/retry/supersede a plan.
 - [Phase 10]: Treat LeaseAlreadyPresent as stale ingestion lock and auto-break/reacquire once in OneLake sync lock to unblock staged MED-02 rollouts safely.
 - [Phase 10]: Backfill MED-02 expected-missing table dispositions in publication manifest as dormant so validator distinguishes explicit lifecycle gaps from unknown omissions.
 - [Phase 10]: MED-05 semantic model deployment now uses deterministic code-authored definitions and explicit deployment-blocked reason mapping for documented Fabric semantic-model errors.
@@ -96,9 +155,42 @@ progress:
 - [Phase 10]: Live medallion API falls back to Delta metadata tables when JSON generation metadata is empty.
 - [Phase 10]: Source-status rows publish early from actual table datasets so medallion layer health remains observable during long refreshes.
 - [Phase 10]: Container Apps readiness is gated on core semantic providers only; optional provider failures are surfaced in health without blocking routing.
+- [Phase 03.3]: Provider work only ever consumes the Azure submission retry budget when it is proven (or ambiguously) submitted; validation/authorization/target-precondition refusals never consume it.
+- [Phase 03.3]: Failure classification uses a closed, machine-readable six-value vocabulary (provider_authorization, target_precondition, provider_transient, provider_rejected, submission_ambiguous, internal_validation), keyed identically across the patch and Defender-configuration adapters via one shared classifier.
+- [Phase 03.3]: A transport failure during the mutating call always fails closed as submission-ambiguous, since the request may already have crossed the mutation boundary before the transport failed.
+- [Phase 03.3]: Pre-existing execution records without the new fields read back with a conservative legacy default (provider_job_id present, or an ambiguity marker in stored failure text, proves submission; otherwise pre-submission).
+- [Phase 03.3]: Supersession is explicit, authorized, and audited; it never mutates or deletes the old execution's history, requires a fresh currently-approved plan snapshot and re-run eligibility, and records bidirectional immutable lineage plus an operator-supplied bounded reason.
+- [Phase 03.3]: Supersede is refused for active executions or submission-ambiguous attempts that could still be running against the provider.
+- [Phase 03.5]: One shared `action_version_for()` helper is used by the Fabric/catalog, live patch, and live Defender-configuration planners; it never reads wall-clock time and is sensitive to evidence citation content and action-family scope only.
+- [Phase 03.5]: `approve` and `operate` are distinct RBAC actions; `ROLE_OPERATOR` does not satisfy `approve` and `ROLE_APPROVER` does not satisfy `operate` (only `admin` satisfies both).
+- [Phase 03.5]: A plan's `approval_requirements` rows are independently evaluated per role; one decision can never satisfy two distinct required roles.
+- [Phase 03.5]: Requester-vs-approver self-approval is refused by the shared execution gate for both patch and Defender-configuration families identically, unless `allow_self_approval()` is explicitly enabled; `PatchingService`'s own pre-existing check remains as a working defense-in-depth backstop sharing the same `is_self_approval()` definition.
+- [Phase 03.5]: An allowed self-approval is durably recorded on the decision (`self_approved`/`self_approval_policy_id`) exactly once via a CAS-guarded `record_self_approval()`, never inferred at read time.
+- [Phase 03.5]: `requirement_satisfaction()`/`latest_decision_status()` share one internal staleness predicate so the execution gate and the read-side workflow route can never compute a different stale/current answer for the same inputs.
+- [Phase 03.5]: `can_approve`/`can_operate` are computed server-side from RBAC and rendered as informational, non-authoritative signals; the real enforcement stays in the route-level RBAC dependency and the execution-service gate.
+- [Phase 03.5]: `approval_requirements` role names are organizational-policy strings (e.g. "Change Manager") while API-recorded `approver_roles` are RBAC capacity names (`approver`/`admin`); a decision satisfies a requirement row only on literal (casefolded) match — documented as a known limitation for richer organizational-role catalogs pending a future directory-backed role-claim model.
 
 ## Session
 
-**Last session:** 2026-09-02T03:30:21Z<br>
-**Stopped at:** Completed Phase 10 live rollout validation<br>
+**Last session:** 2026-09-04T13:30:00Z<br>
+**Stopped at:** Completed Phase 03.5 (03.5-01..03.5-07) — unified remediation approval governance<br>
 **Resume file:** None
+
+## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 13 added: Autonomous Ontology Discovery and Fabric Synchronization
+- Phase 12 added: Network Topology Integrity and Scale
+- Phase 11 added: Cross-Page Operations Copilot Orchestration and Specialist Parity
+- Phase 03.1 inserted after Phase 3: Exposure Reliability and Scale (URGENT)
+- Phase 03.2 inserted after Phase 3: Durable Remediation Identity and Audit Continuity (URGENT)
+- Phase 03.3 inserted after Phase 3: Recoverable Remediation Attempts and Supersession (URGENT)
+- Phase 03.4 inserted after Phase 3: Autonomous Remediation Verification and Evidence Reconciliation (URGENT)
+- Phase 03.5 inserted after Phase 3: Unified Remediation Approval Governance (URGENT)
+- Phase 03.6 inserted after Phase 3: Remediation Workflow Safety and Operator Guidance (URGENT)
+
+### Blockers
+
+- Phase 03.1 Plan 02 requires explicit human verification of pyodbc provenance before any package or image change; blocking-human gate cannot be auto-approved.
+- Phase 03.1 Plan 21 requires explicit approval of the permanent versioned typed-image ontology contract before first ontology publication; one-way decision gate cannot be auto-selected while the user is unavailable.

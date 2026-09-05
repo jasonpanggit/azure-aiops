@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,10 +19,13 @@ from api.auth import (
 )
 from api.providers import STALE, ProviderRuntime, ProviderSpec
 from api.runtime import (
+    _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS,
     _defender_configuration_adapter,
     _execution_verifier,
+    _hybrid_remediation_cache,
     _load_fabric_iq_adapter,
     _patch_execution_adapter,
+    _ttl_cached_value,
     aiops_home,
     build_authenticator,
     build_context,
@@ -30,7 +34,7 @@ from api.scope import Scope
 from intelligence.inventory.normalization import normalize_os_inventory
 from intelligence.remediation.execution_verifier import ExecutionVerifier
 from onboarding.credentials import KeyVaultSecretWriter
-from onboarding.local_seed import seed_local_environment
+from onboarding.local_seed import DEFAULT_LOCAL_SUBSCRIPTION_ID, seed_local_environment
 from operations.defender_configuration import AzureArmDefenderConfigurationAdapter
 from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
 from storage.datasets import DatasetStore as NeutralDatasetStore
@@ -291,6 +295,318 @@ def test_context_loads_local_seeded_snapshot(monkeypatch, tmp_path):
     assert context.semantic_provider() is not None
     assert context.network_provider is not None
     assert context.network_provider() is not None
+
+
+def test_ttl_cached_value_reuses_within_ttl_and_rebuilds_after_expiry():
+    cache: dict[tuple[str, tuple[str, ...]], tuple[float, object]] = {}
+    key = ("root", ("sub-1",))
+    build_calls = {"count": 0}
+
+    def build() -> object:
+        build_calls["count"] += 1
+        return object()
+
+    first = _ttl_cached_value(cache, key, ttl_seconds=30, now=1_000.0, build=build)
+    second = _ttl_cached_value(cache, key, ttl_seconds=30, now=1_010.0, build=build)
+
+    assert first is second
+    assert build_calls["count"] == 1
+
+    third = _ttl_cached_value(cache, key, ttl_seconds=30, now=1_031.0, build=build)
+
+    assert third is not first
+    assert build_calls["count"] == 2
+
+
+def test_ttl_cached_value_starts_ttl_after_slow_build_completes():
+    cache: dict[tuple[str, tuple[str, ...]], tuple[float, object]] = {}
+    key = ("root", ("sub-1",))
+    build_calls = {"count": 0}
+
+    def build() -> object:
+        build_calls["count"] += 1
+        return object()
+
+    first = _ttl_cached_value(
+        cache,
+        key,
+        ttl_seconds=30,
+        now=1_000.0,
+        build=build,
+        completion_clock=lambda: 1_045.0,
+    )
+    second = _ttl_cached_value(
+        cache,
+        key,
+        ttl_seconds=30,
+        now=1_050.0,
+        build=build,
+    )
+
+    assert first is second
+    assert build_calls["count"] == 1
+    assert cache[key][0] == 1_045.0
+
+
+def test_ttl_cached_value_serializes_concurrent_builds_for_same_key():
+    """WR-05 regression: `_ttl_cached_value` had no locking at all, so two
+    genuinely concurrent callers racing the same cache key (exactly how
+    Starlette's worker thread pool dispatches two in-flight requests for
+    `hybrid_remediation`) could each miss the cache, each build their own
+    value, and each overwrite the other's write -- so a caller later in the
+    *same* request could observe a different object than an earlier caller
+    in that request resolved moments before. This proves same-key concurrent
+    callers now serialize on one build and all observe the identical cached
+    object, deterministically -- via an Event gate, not a sleep/timing race.
+    """
+    cache: dict[tuple[str, tuple[str, ...]], tuple[float, object]] = {}
+    key = ("root", ("sub-1",))
+    build_calls = {"count": 0}
+    build_entered = threading.Event()
+    release_build = threading.Event()
+
+    def build() -> object:
+        build_calls["count"] += 1
+        # Signal that this call is genuinely inside the critical section
+        # (holding the per-key lock) before the second caller is started,
+        # then hold the lock open until the test explicitly releases it --
+        # giving a broken (unlocked) implementation every opportunity to
+        # let the second caller build its own competing value concurrently.
+        build_entered.set()
+        assert release_build.wait(timeout=5), "build() was never released"
+        return object()
+
+    def call() -> object:
+        return _ttl_cached_value(cache, key, ttl_seconds=30, now=1_000.0, build=build)
+
+    first_result: list[object] = []
+    first_thread = threading.Thread(target=lambda: first_result.append(call()))
+    first_thread.start()
+
+    assert build_entered.wait(timeout=5), "first caller never entered build()"
+
+    second_result: list[object] = []
+    second_thread = threading.Thread(target=lambda: second_result.append(call()))
+    second_thread.start()
+
+    # The second caller must block behind the first caller's in-flight
+    # build rather than starting a competing build of its own -- proving
+    # the two calls serialize on the same per-key lock instead of racing.
+    second_thread.join(timeout=0.2)
+    assert second_thread.is_alive(), (
+        "second caller did not block behind the in-flight build for the same key"
+    )
+
+    release_build.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+
+    # Exactly one build happened for the racing key, and every concurrent
+    # caller -- plus the cache entry itself -- observed that identical
+    # object, not two competing values with one silently clobbering the
+    # other.
+    assert build_calls["count"] == 1
+    assert first_result and second_result
+    assert first_result[0] is second_result[0]
+    assert cache[key][1] is first_result[0]
+
+
+def test_ttl_cached_value_does_not_serialize_unrelated_keys():
+    """WR-05 design guard: locking must be scoped per `(cache, key)`, not a
+    single module-wide lock, so a slow build in flight for one key (e.g. one
+    subscription scope) never blocks a concurrent caller resolving a
+    *different* key (a different subscription scope, or a different
+    TTL-cache family dict entirely) that has nothing to do with it."""
+    cache: dict[tuple[str, tuple[str, ...]], tuple[float, object]] = {}
+    key_a = ("root", ("sub-a",))
+    key_b = ("root", ("sub-b",))
+
+    entered_a = threading.Event()
+    entered_b = threading.Event()
+    release = threading.Event()
+
+    def build_a() -> object:
+        entered_a.set()
+        assert release.wait(timeout=5), "build_a() was never released"
+        return object()
+
+    def build_b() -> object:
+        entered_b.set()
+        assert release.wait(timeout=5), "build_b() was never released"
+        return object()
+
+    thread_a = threading.Thread(
+        target=lambda: _ttl_cached_value(
+            cache, key_a, ttl_seconds=30, now=1_000.0, build=build_a
+        )
+    )
+    thread_b = threading.Thread(
+        target=lambda: _ttl_cached_value(
+            cache, key_b, ttl_seconds=30, now=1_000.0, build=build_b
+        )
+    )
+    thread_a.start()
+    thread_b.start()
+
+    # If both keys serialized on one shared lock, the second thread would
+    # never reach its own build() until the first released -- which would
+    # deadlock this assertion (and, in production, would mean one slow
+    # subscription scope's cache miss stalls every unrelated scope's
+    # request). Both entering proves the two keys did not contend.
+    assert entered_a.wait(timeout=5), "build_a() never entered while build_b() was pending"
+    assert entered_b.wait(timeout=5), "build_b() never entered while build_a() was pending"
+
+    release.set()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+
+
+def test_hybrid_remediation_provider_resolves_one_generation_per_request_window(
+    monkeypatch, tmp_path,
+):
+    """D-03/WR-07: scope validation and execution construction both resolve
+    ``hybrid_remediation`` -- caching it here is sufficient for both paths
+    (operations.py::_require's remediation branch and
+    runtime.py::_execution_service_for_scope's _planner_for_scope) to observe
+    the same LiveRemediationPlanner/PlanRepository generation."""
+    # WR-02: isolate AIOPS_HOME like every other build_context()-based test in
+    # this file (e.g. test_context_loads_local_seeded_snapshot above). The
+    # module-level _hybrid_remediation_cache is a process-wide singleton keyed
+    # on (str(aiops_home()), subscription_ids) that outlives this test; without
+    # a unique root, this test's fake, empty-exposure planner would be written
+    # into the shared cache under the real default root key and could leak
+    # into any other test resolving hybrid_remediation for the same default
+    # root within the shared 30s TTL window.
+    monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "aiops"))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+
+    # No live ARG round trip: the object identity under test is the planner
+    # hybrid_remediation resolves and caches, not the vulnerability data it
+    # wraps, so the vulnerability builder is faked out entirely.
+    class _FakeVulnerabilityService:
+        freshness = "2026-01-01T00:00:00Z"
+
+        def asset_exposures(self, scope=None):
+            return []
+
+    monkeypatch.setattr(
+        "api.runtime.live_vulnerability_service",
+        lambda *args, **kwargs: _FakeVulnerabilityService(),
+    )
+
+    context = build_context()
+    assert context.hybrid_remediation_provider is not None
+
+    subscription_ids = [DEFAULT_LOCAL_SUBSCRIPTION_ID]
+    first = context.hybrid_remediation_provider(subscription_ids)
+    second = context.hybrid_remediation_provider(subscription_ids)
+
+    assert first is second
+
+    # Rewrite the cached timestamp to simulate the TTL having elapsed --
+    # equivalent to monkeypatching time.time() but touches only this one
+    # cache entry rather than every other TTL-cached provider in the module.
+    cache_key = (str(aiops_home()), tuple(subscription_ids))
+    cached_at, cached_value = _hybrid_remediation_cache[cache_key]
+    _hybrid_remediation_cache[cache_key] = (
+        cached_at - _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS - 1,
+        cached_value,
+    )
+
+    third = context.hybrid_remediation_provider(subscription_ids)
+
+    assert third is not first
+
+
+def test_hybrid_remediation_provider_serializes_concurrent_callers_for_same_key(
+    monkeypatch, tmp_path,
+):
+    """WR-05, exercised at the production integration point the review cited
+    ("two threads racing hybrid_remediation on the same key"): two
+    genuinely concurrent callers -- exactly how Starlette's worker thread
+    pool would dispatch operations.py::_require's remediation branch and
+    runtime.py::_execution_service_for_scope's _planner_for_scope for two
+    in-flight requests -- must resolve to the exact same
+    LiveRemediationPlanner object for the same (root, subscription-set) key,
+    with the underlying vulnerability builder invoked exactly once, not
+    twice with one silently clobbering the other's cache write.
+    """
+    monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "aiops"))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+
+    build_calls = {"count": 0}
+    build_entered = threading.Event()
+    release_build = threading.Event()
+
+    class _FakeVulnerabilityService:
+        freshness = "2026-01-01T00:00:00Z"
+
+        def asset_exposures(self, scope=None):
+            return []
+
+    def _fake_live_vulnerability_service(*args, **kwargs):
+        build_calls["count"] += 1
+        # Signal (and then hold open) the in-flight build window so the
+        # second concurrent caller is started while the first is still
+        # inside the build -- deterministically forcing the overlap a
+        # broken (unlocked) implementation would mishandle, rather than
+        # hoping a timing race exposes it.
+        build_entered.set()
+        assert release_build.wait(timeout=5), "vulnerability builder was never released"
+        return _FakeVulnerabilityService()
+
+    monkeypatch.setattr(
+        "api.runtime.live_vulnerability_service",
+        _fake_live_vulnerability_service,
+    )
+
+    context = build_context()
+    subscription_ids = [DEFAULT_LOCAL_SUBSCRIPTION_ID]
+
+    first_result: list[object] = []
+    first_thread = threading.Thread(
+        target=lambda: first_result.append(
+            context.hybrid_remediation_provider(subscription_ids)
+        )
+    )
+    first_thread.start()
+    assert build_entered.wait(timeout=5), "first caller never entered the builder"
+
+    second_result: list[object] = []
+    second_thread = threading.Thread(
+        target=lambda: second_result.append(
+            context.hybrid_remediation_provider(subscription_ids)
+        )
+    )
+    second_thread.start()
+
+    # The second concurrent caller must block behind the first caller's
+    # in-flight build instead of resolving its own competing
+    # LiveRemediationPlanner -- proving the two same-key callers serialize
+    # on the fix's per-key lock rather than racing the shared cache dict.
+    second_thread.join(timeout=0.2)
+    assert second_thread.is_alive(), (
+        "second concurrent hybrid_remediation caller did not block behind "
+        "the in-flight build for the same key"
+    )
+
+    release_build.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+
+    # Exactly one build happened for the racing key, and both concurrent
+    # callers resolved the identical LiveRemediationPlanner object.
+    assert build_calls["count"] == 1
+    assert first_result and second_result
+    assert first_result[0] is second_result[0]
 
 
 def test_configured_fabric_iq_loader_returns_governed_adapter(monkeypatch):

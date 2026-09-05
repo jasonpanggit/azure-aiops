@@ -25,9 +25,17 @@ class GovernedRemediationAction:
 
 _MANUAL = "No bounded provider handler is allowlisted for this action."
 
+# Single source of truth for the controlled-patch-recovery action family
+# string (WR-04). ``semantic.live_operations`` bakes this into both the
+# stable plan-identity hash and the emitted ``action_id``, and
+# ``api.routers.remediation`` gates execution eligibility on it; all three
+# sites import this constant instead of repeating the literal so a future
+# rename cannot silently desynchronize ``plan_id`` from ``action_id``.
+PATCH_RECOVERY_ACTION_FAMILY = "controlled-patch-recovery"
+
 GOVERNED_REMEDIATION_ACTIONS: dict[str, GovernedRemediationAction] = {
-    "controlled-patch-recovery": GovernedRemediationAction(
-        "controlled-patch-recovery", "patch", True
+    PATCH_RECOVERY_ACTION_FAMILY: GovernedRemediationAction(
+        PATCH_RECOVERY_ACTION_FAMILY, "patch", True
     ),
     ENABLE_DEFENDER_SERVERS_P1: GovernedRemediationAction(
         ENABLE_DEFENDER_SERVERS_P1, "defender", True
@@ -85,6 +93,7 @@ def governed_action(action_id: object) -> GovernedRemediationAction:
 __all__ = [
     "EXECUTABLE_ACTION_IDS",
     "GOVERNED_REMEDIATION_ACTIONS",
+    "PATCH_RECOVERY_ACTION_FAMILY",
     "ActionFamily",
     "GovernedRemediationAction",
     "governed_action",

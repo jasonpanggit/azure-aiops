@@ -13,6 +13,8 @@ from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from intelligence.remediation.approval_gate import is_self_approval
+
 from .adapters import (
     PatchExecutionAdapter,
     PatchExecutionUnavailable,
@@ -307,7 +309,7 @@ class PatchingService:
                     "setting": "agent_policy.require_human_approval",
                 },
             )
-        if approver.casefold() == requester.casefold() and not self._allow_self_approval():
+        if is_self_approval(requester, approver) and not self._allow_self_approval():
             raise PatchValidationError(
                 "The approver must be someone other than the requester",
                 details={"requested_by": requester, "approved_by": approver},

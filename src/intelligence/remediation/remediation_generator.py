@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from typing import Any
 
+from .action_version import action_version_for
 from .approval_engine import ApprovalEngine
 from .business_decision import BusinessDecisionEngine
 from .dependency_analyzer import DependencyAnalyzer
@@ -45,13 +45,6 @@ class RemediationGenerator:
         self.defender_correlator = defender_correlator
         self.business_decisions = business_decision_engine or BusinessDecisionEngine()
 
-    @staticmethod
-    def _stable_serialize(obj: Any) -> str:
-        """Serialize lists/dicts to stable JSON for hash determinism across Python versions."""
-        if isinstance(obj, (list, dict)):
-            return json.dumps(obj, sort_keys=True, separators=(',', ':'))
-        return str(obj)
-
     def generate(self, opportunity: dict[str, Any]) -> dict[str, Any]:
         resource = opportunity["_resource"]
         action = opportunity["_action"]
@@ -91,14 +84,18 @@ class RemediationGenerator:
         plan_id = "RMP-" + hashlib.sha256(
             f"{opportunity['_resource_key']}|{action['action_id']}".encode()
         ).hexdigest()[:16].upper()
-        
-        # Compute stable evidence digest from citations
-        evidence_digest = self._stable_evidence_digest(evidence_citations)
-        
-        # Ensure stable serialization of structured fields
-        action_version = hashlib.sha256(
-            f"{action['action_id']}|{action.get('title')}|{self._stable_serialize(action.get('execution_steps'))}|{self._stable_serialize(action.get('rollback_actions'))}|{evidence_digest}".encode()
-        ).hexdigest()[:16]
+
+        # Shared, evidence-sensitive action_version (Phase 03.5, D-04) --
+        # the same helper used by the live patch/Defender planners.
+        action_version = action_version_for(
+            action_id=action["action_id"],
+            target_id=str(opportunity["_resource_key"]),
+            scope={
+                "execution_steps": action.get("execution_steps"),
+                "rollback_actions": action.get("rollback_actions"),
+            },
+            evidence_citations=evidence_citations,
+        )
         steps = [
             {
                 "step_number": index,
@@ -221,29 +218,3 @@ class RemediationGenerator:
             "detail": f"Estimated +{points} secure score point(s) from resolving {len(citations)} control gap(s).",
             "evidence_citations": [f"secure_score_control:{cid}" for cid in citation_ids],
         }
-
-    @staticmethod
-    def _stable_evidence_digest(citations: list[dict[str, Any]]) -> str:
-        """Compute a stable digest of the evidence citations.
-        
-        Returns a hex string that changes when citations change but is stable
-        across regenerations when citations are unchanged. Used in action_version
-        to make approval freshness detectable.
-        
-        Empty citation list produces a distinct digest (not empty string) so that
-        absence of evidence is detectable as a change.
-        """
-        if not citations:
-            # Use a stable sentinel for "no evidence" so empty→nonempty is detectable
-            return hashlib.sha256(b"__no_evidence__").hexdigest()[:16]
-        
-        # Sort by source_type and source_id to ensure stable ordering
-        sorted_citations = sorted(
-            [
-                f"{c.get('source_type', '')}:{c.get('source_id', '')}:{c.get('observed_at', '')}"
-                for c in citations
-                if c.get("source_id")
-            ]
-        )
-        digest_input = "|".join(sorted_citations)
-        return hashlib.sha256(digest_input.encode()).hexdigest()[:16] if digest_input else hashlib.sha256(b"__no_evidence__").hexdigest()[:16]

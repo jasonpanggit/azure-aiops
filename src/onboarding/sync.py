@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -99,11 +100,24 @@ class ConnectionSyncCoordinator:
         publication_state_store: PublicationStateStore | None = None,
         ontology_name: str = DEFAULT_ONTOLOGY_NAME,
         metrics: Any | None = None,
+        publish_timeout_seconds: int = 600,
     ) -> None:
         self.output_dir = resolve_root(str(output_dir))
         self.ingestion_factory = ingestion_factory
         self.publish_factory = publish_factory
         self.clock = clock or (lambda: datetime.now(UTC))
+        # The Fabric publish step (OneLake/Delta table writes) makes network
+        # calls with no caller-supplied timeout anywhere in that path (ARG
+        # discovery is bounded by ``command_timeout_seconds``, but the
+        # publish step is not). A hang there -- e.g. an orphaned OneLake
+        # write lease, a stalled MSAL/IMDS token refresh -- previously left
+        # ``sync_status`` at "running" indefinitely with no way to recover
+        # short of a full container restart. Bounding it here means a stuck
+        # publish surfaces as a normal "failed" sync (retryable) instead of
+        # a silent, permanent stall.
+        if publish_timeout_seconds < 1:
+            raise ValueError("publish_timeout_seconds must be positive")
+        self.publish_timeout_seconds = publish_timeout_seconds
         if stale_after_hours < 1:
             raise ValueError("stale_after_hours must be positive")
         self.stale_after_hours = stale_after_hours
@@ -226,7 +240,24 @@ class ConnectionSyncCoordinator:
                     "Publishing ontology and inventory tables to Fabric",
                     85,
                 )
-                self.publish_factory(connection).run()
+                def _on_fabric_progress(event: Any) -> None:
+                    total = max(int(event.total_tables), 0)
+                    completed = min(max(int(event.completed_tables), 0), total)
+                    pct = (
+                        85
+                        if total == 0
+                        else min(99, 85 + ((completed * 14 + total - 1) // total))
+                    )
+                    _report(
+                        "writing_fabric_tables",
+                        (
+                            f"Writing Fabric tables: {completed}/{total} tables written "
+                            f"(latest: {event.table_name})"
+                        ),
+                        pct,
+                    )
+
+                self._run_publish_with_timeout(connection, _on_fabric_progress)
             except Exception as exc:
                 logger.exception(
                     "Fabric publish failed for connection '%s' during %s sync",
@@ -296,6 +327,46 @@ class ConnectionSyncCoordinator:
             "last_successful_sync_at": current.last_successful_sync_at,
             "stale_after_hours": self.stale_after_hours,
         }
+
+    def _run_publish_with_timeout(
+        self,
+        connection: SubscriptionConnection,
+        progress_callback: Callable[[Any], None] | None = None,
+    ) -> None:
+        """Run ``publish_factory(connection).run()`` with a bounded timeout.
+
+        The Fabric publish step performs OneLake/Delta network I/O with no
+        internal timeout of its own (unlike ARG discovery, which is bounded
+        by ``command_timeout_seconds``). A hang anywhere in that path -- an
+        orphaned OneLake write lease, a stalled credential/token refresh --
+        previously left the calling sync thread blocked forever, so
+        ``sync_status`` stayed "running" indefinitely with no automatic
+        recovery. Running it on a short-lived helper thread lets us raise a
+        ``TimeoutError`` after ``publish_timeout_seconds`` and mark the sync
+        "failed" (which the existing retry/backoff machinery then handles
+        normally) instead of hanging the connection forever. The runaway
+        thread itself is deliberately abandoned (daemon, no join) since
+        Python cannot forcibly cancel a blocked call; it will terminate on
+        its own once (or if) the stuck network call eventually resolves.
+        """
+        # Not a context manager: ``ThreadPoolExecutor.__exit__``/``shutdown``
+        # default to ``wait=True``, which would block on the very same stuck
+        # thread we're trying to time out on. ``shutdown(wait=False)`` lets
+        # this call return promptly while the (possibly still-hung) worker
+        # thread is abandoned to exit on its own whenever its blocking call
+        # eventually resolves.
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fabric-publish")
+        try:
+            future = executor.submit(self.publish_factory(connection).run)
+            try:
+                future.result(timeout=self.publish_timeout_seconds)
+            except FutureTimeoutError as exc:
+                raise TimeoutError(
+                    f"Fabric publish for connection '{connection.connection_id}' "
+                    f"exceeded publish_timeout_seconds={self.publish_timeout_seconds}"
+                ) from exc
+        finally:
+            executor.shutdown(wait=False)
 
     def _record_publication_attempt(self, exc: Exception | None) -> None:
         """Record this publish attempt's terminal state, durably and via telemetry.

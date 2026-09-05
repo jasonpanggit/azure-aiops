@@ -168,7 +168,12 @@ class RevisionedDocumentStore(Protocol):
 class RemediationDecisionStore:
     """Append-only durable store for recommendation approval decisions."""
 
-    _SCHEMA_VERSION = "1.0.0"
+    # 1.2.0 (Phase 03.5 CR-05 fix): adds approval_role_id/admin_override
+    # (written only by append(), only on approved decisions -- same WR-04
+    # precedent as approver_roles). Legacy 1.1.0/1.0.0 documents read back
+    # with both fields defaulted, never rewritten in place -- same
+    # precedent as RemediationExecutionStore's 2.2.0 bump in Phase 03.4.
+    _SCHEMA_VERSION = "1.2.0"
 
     def __init__(
         self,
@@ -203,6 +208,10 @@ class RemediationDecisionStore:
         expires_at: str = "",
         revalidation_checks: list[str] | None = None,
         execution_snapshot: dict[str, Any] | None = None,
+        approver_roles: list[str] = (),
+        approval_policy_version: str = "",
+        approval_role_id: str = "",
+        admin_override: bool = False,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         timestamp = (now or datetime.now(UTC)).isoformat()
@@ -212,6 +221,31 @@ class RemediationDecisionStore:
             "action_version_current",
             "execution_boundary_read_only",
         ]
+        # WR-04: approver_roles is only ever meaningful on an approved
+        # decision -- requirement_satisfaction() filters to
+        # decision.get("decision") == "approved" before ever consulting it
+        # (approval_gate.py). Storing it for rejected/expired decisions too
+        # is dead data that could mislead a future direct-storage reader
+        # (e.g. an audit report) into assuming it is significant there;
+        # omit it for non-approved decisions instead. approval_role_id/
+        # admin_override (CR-05 fix) follow the identical rule.
+        normalized_roles = (
+            sorted(
+                {
+                    str(role).strip().casefold()
+                    for role in (approver_roles or ())
+                    if str(role).strip()
+                }
+            )
+            if decision == "approved"
+            else []
+        )
+        normalized_role_id = (
+            str(approval_role_id or "").strip().casefold()
+            if decision == "approved"
+            else ""
+        )
+        recorded_admin_override = bool(admin_override) if decision == "approved" else False
         with self._lock:
             for _ in range(3):
                 state = self._read_state()
@@ -244,6 +278,12 @@ class RemediationDecisionStore:
                         if decision == "approved" and execution_snapshot is not None
                         else None
                     ),
+                    "approver_roles": normalized_roles,
+                    "approval_policy_version": str(approval_policy_version or ""),
+                    "approval_role_id": normalized_role_id,
+                    "admin_override": recorded_admin_override,
+                    "self_approved": False,
+                    "self_approval_policy_id": "",
                 }
                 decisions.append(copy.deepcopy(record))
                 state["revision"] += 1
@@ -253,6 +293,46 @@ class RemediationDecisionStore:
                 except DocumentConflictError:
                     continue
                 return copy.deepcopy(record)
+        raise DocumentConflictError("Remediation decision store changed during update")
+
+    def record_self_approval(
+        self, decision_id: str, *, policy_id: str, now: datetime | None = None
+    ) -> dict[str, Any]:
+        """Durably mark exactly one decision as a recorded self-approval exception.
+
+        This is the sole write path for ``self_approved``/
+        ``self_approval_policy_id`` (Phase 03.5, D-02) -- ``append()`` never
+        accepts either field. CAS-guarded (same read/mutate/write/retry-3x
+        shape as ``append()``); idempotent -- calling this twice with the
+        same ``policy_id`` on an already-``self_approved=True`` record is a
+        no-op that returns the existing record without bumping the
+        revision a second time. Raises ``ValueError`` if ``decision_id`` is
+        not found.
+        """
+        with self._lock:
+            for _ in range(3):
+                state = self._read_state()
+                decisions = state["decisions"]
+                match = None
+                for candidate in decisions:
+                    if candidate["decision_id"] == decision_id:
+                        match = candidate
+                        break
+                if match is None:
+                    raise ValueError(f"Remediation decision {decision_id!r} was not found")
+                if match.get("self_approved") is True and match.get(
+                    "self_approval_policy_id"
+                ) == str(policy_id):
+                    return copy.deepcopy(match)
+                match["self_approved"] = True
+                match["self_approval_policy_id"] = str(policy_id)
+                state["revision"] += 1
+                state["updated_at"] = (now or datetime.now(UTC)).isoformat()
+                try:
+                    self._write_state(state, expected_revision=state["revision"] - 1)
+                except DocumentConflictError:
+                    continue
+                return copy.deepcopy(match)
         raise DocumentConflictError("Remediation decision store changed during update")
 
     def list(self, plan_id: str | None = None) -> list[dict[str, Any]]:
@@ -287,7 +367,7 @@ class RemediationDecisionStore:
             raise TypeError("Remediation decision decisions must be a list of objects")
         return {
             "revision": _nonnegative_int(payload.get("revision", 0)),
-            "decisions": [dict(item) for item in decisions],
+            "decisions": [_with_v1_2_defaults(item) for item in decisions],
             "updated_at": str(payload.get("updated_at") or ""),
         }
 
@@ -324,6 +404,27 @@ class RemediationDecisionStore:
 
 def _initial_state() -> dict[str, Any]:
     return {"revision": 0, "decisions": [], "updated_at": ""}
+
+
+def _with_v1_2_defaults(item: dict[str, Any]) -> dict[str, Any]:
+    """Backfill the six Phase 03.5 fields on a possibly-legacy decision.
+
+    A pre-existing decision document (schema 1.0.0/1.1.0, missing the
+    newer keys) reads back with safe defaults instead of raising -- never
+    a KeyError for any caller of ``list()``. ``approval_role_id``/
+    ``admin_override`` (CR-05 fix) default to ``""``/``False``, which
+    ``approval_gate._decision_matches_role`` treats as "this is a legacy
+    decision -- fall back to unambiguous ``approver_roles`` membership
+    matching only", never as an implicit wildcard match.
+    """
+    record = dict(item)
+    record.setdefault("approver_roles", [])
+    record.setdefault("approval_policy_version", "")
+    record.setdefault("approval_role_id", "")
+    record.setdefault("admin_override", False)
+    record.setdefault("self_approved", False)
+    record.setdefault("self_approval_policy_id", "")
+    return record
 
 
 def _nonnegative_int(value: Any) -> int:

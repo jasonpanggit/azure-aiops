@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -9,6 +10,8 @@ from enum import StrEnum
 from typing import Any, ClassVar
 
 from opentelemetry import metrics
+
+_LOGGER = logging.getLogger(__name__)
 
 from intelligence.incident.incident_intelligence import IncidentIntelligence
 from intelligence.lifecycle.lifecycle_context_builder import canonical_resource_key
@@ -375,19 +378,41 @@ class PatchIntelligence:
             for row in inventory
             if row.get("resource_id") and row.get("name")
         }
-        for rows, fields in (
-            (assessments, ("assessed_resource_id", "target_resource_id")),
-            (installations, ("target_resource_id",)),
-            (history, ("assessed_resource_id", "target_resource_id")),
+        # Evidence rows (assessments/installations/history) can legitimately
+        # reference resources that have since been decommissioned, renamed,
+        # or are simply not yet present in the current inventory snapshot
+        # (e.g. inventory sync lagging behind evidence collection, or a
+        # partial/failed publish). Treat unmatched evidence as a coverage
+        # gap to skip -- mirroring the inventory-vs-ontology handling above
+        # -- rather than failing every Fabric-backed provider that depends
+        # on patch intelligence for the entire subscription.
+        filtered_assessments: list[dict[str, Any]] = []
+        filtered_installations: list[dict[str, Any]] = []
+        filtered_history: list[dict[str, Any]] = []
+        unmatched_evidence_count = 0
+        for rows, fields, destination in (
+            (assessments, ("assessed_resource_id", "target_resource_id"), filtered_assessments),
+            (installations, ("target_resource_id",), filtered_installations),
+            (history, ("assessed_resource_id", "target_resource_id"), filtered_history),
         ):
             for evidence in rows:
                 target = canonical_resource_key(
                     next((evidence.get(field) for field in fields if evidence.get(field)), None)
                 )
                 if not target or target not in names_by_id:
-                    raise ValueError(
-                        "Patch Semantic evidence requires a matching canonical target"
-                    )
+                    unmatched_evidence_count += 1
+                    continue
+                destination.append(evidence)
+        if unmatched_evidence_count:
+            _LOGGER.warning(
+                "patch_semantic_evidence_unmatched_canonical_target count=%d "
+                "(evidence rows reference resources absent from inventory; "
+                "skipped as coverage gaps)",
+                unmatched_evidence_count,
+            )
+        assessments = filtered_assessments
+        installations = filtered_installations
+        history = filtered_history
         resources: list[dict[str, Any]] = []
         security_findings: list[dict[str, Any]] = []
         advisor_recommendations: list[dict[str, Any]] = []
