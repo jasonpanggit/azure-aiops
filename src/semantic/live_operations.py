@@ -5,7 +5,13 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
+from api.evidence import classify_freshness
+from intelligence.lifecycle.lifecycle_context_builder import canonical_resource_key
+from intelligence.remediation.action_catalog import PATCH_RECOVERY_ACTION_FAMILY
+from intelligence.remediation.action_version import action_version_for
+from intelligence.remediation.approval_engine import DEFAULT_ROLE_ID, ApprovalEngine
 from intelligence.remediation.plan_repository import PlanRepository
+from intelligence.vulnerability.normalization import normalize_aum_row
 from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 from onboarding.query_contract import QuerySpec
 
@@ -26,6 +32,20 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _identity_subscription(row: dict[str, Any]) -> str:
+    """Casefold-normalize ``subscription_id`` for stable identity hashing.
+
+    ``canonical_resource_key`` already casefolds the target segment of the
+    identity hash; the subscription segment must be normalized the same way
+    (WR-03), because ARG/vulnerability-service rows are external data whose
+    GUID casing this codebase does not control. Without this, the same asset
+    reported with a differently-cased subscription GUID between two polls
+    would silently mint a new ``plan_id``, reproducing the CR-01/WR-07
+    audit-orphaning failure mode this phase exists to close.
+    """
+    return _text(row.get("subscription_id")).casefold()
+
+
 def _properties(row: dict[str, Any]) -> dict[str, Any]:
     value = row.get("properties")
     return dict(value) if isinstance(value, dict) else {}
@@ -42,6 +62,27 @@ def _first(*values: Any) -> str:
 def _kb(value: Any) -> str:
     text = _text(value)
     return text[2:] if text.upper().startswith("KB") else text
+
+
+def _patch_evidence_source_ids(values: Any) -> list[str]:
+    """Return stable source-owned patch finding ids before applying the UI cap.
+
+    ``_build_vulnerability_service`` expands one ARG patch-assessment row into
+    one finding per resolved CVE by appending ``|CVE-*`` (or a ``|KB-*`` proxy)
+    to the source row id. Those optional enrichment suffixes are not part of
+    the governed patch action and can differ across independent provider
+    generations. Strip only those known synthetic suffixes, normalize the
+    case-insensitive ARM identity, deduplicate, and sort before limiting.
+    """
+    source_ids: set[str] = set()
+    for value in values or ():
+        source_id = _text(value)
+        stem, separator, derived_id = source_id.rpartition("|")
+        if separator and derived_id.casefold().startswith(("cve-", "kb-")):
+            source_id = stem
+        if source_id:
+            source_ids.add(source_id.casefold())
+    return sorted(source_ids)[:10]
 
 
 def _target_from_patch_row(row: dict[str, Any]) -> str:
@@ -64,48 +105,18 @@ def _target_from_patch_row(row: dict[str, Any]) -> str:
 
 
 def _patch_finding(row: dict[str, Any], *, installed: bool) -> dict[str, Any] | None:
-    props = _properties(row)
-    kb_id = _kb(
-        _first(
-            props.get("kbId"),
-            props.get("kbID"),
-            props.get("kb_id"),
-            row.get("kbId"),
-            row.get("name"),
-        )
+    normalized, _failure = normalize_aum_row(
+        row,
+        source_family=(
+            "azure_update_manager_installation"
+            if installed
+            else "azure_update_manager_missing"
+        ),
+        observed_at=_first(row.get("observed_at"), _now()),
     )
-    target = _target_from_patch_row(row)
-    if not kb_id or not target:
+    if normalized is None:
         return None
-    return {
-        "resource_id": _first(row.get("id"), f"{target}|{kb_id}"),
-        "target_resource_id": target,
-        # Keep the ARG scope identity with the finding.  Optional semantic
-        # resource metadata may be unavailable for a live target, but the
-        # subscription is still the authoritative join key for onboarding
-        # metadata.
-        "subscription_id": _first(
-            row.get("subscriptionId"),
-            row.get("subscription_id"),
-            _subscription_id_from_resource_id(target),
-        ),
-        "kb_id": kb_id,
-        "status": "installed" if installed else "missing",
-        "severity": _first(
-            props.get("classification"),
-            props.get("classifications"),
-            props.get("severity"),
-            "Unknown",
-        ),
-        "update_name": _first(props.get("patchName"), props.get("title"), kb_id),
-        "published_at": _first(
-            props.get("publishedDateTime"),
-            props.get("published_at"),
-            props.get("lastModifiedDateTime"),
-            row.get("observed_at"),
-        ),
-        "timestamp": _first(row.get("observed_at"), _now()),
-    }
+    return normalized.to_patch_finding()
 
 
 def _subscription_id_from_resource_id(resource_id: str) -> str:
@@ -138,6 +149,7 @@ def live_vulnerability_service(
             "| where type endswith '/softwarepatches' "
             f"| {projection}",
             False,
+            source_family="azure_update_manager_missing",
         ),
         subscription_ids=subscription_ids,
     )
@@ -149,6 +161,7 @@ def live_vulnerability_service(
             "| where type endswith '/softwarepatches' "
             f"| {projection}",
             False,
+            source_family="azure_update_manager_installation",
         ),
         subscription_ids=subscription_ids,
     )
@@ -296,6 +309,37 @@ def live_incident_engine(
     return LiveIncidentEngine(observation.rows, observation.observed_at)
 
 
+# These two shipped, single-role live policies explicitly opt their one
+# role into the RBAC-capacity-compatible ``DEFAULT_ROLE_ID`` ("approver")
+# via ``role_ids`` (Phase 03.5 CR-05 fix) -- deliberately, for backward
+# compatibility with every deployment that has not configured a directory
+# -backed per-role identity: any principal who reaches
+# ``record_remediation_decision`` already holds the RBAC ``approve``
+# capacity, so a single-role live policy remains satisfiable out of the
+# box exactly as before. This is a narrow, explicit exception -- it does
+# NOT apply to the multi-role Fabric/catalog production policy catalog
+# (``remediation_approval_policies`` Silver table), whose distinct
+# organizational roles must remain distinct (unmapped roles there fall
+# through to ``ApprovalEngine``'s deterministic per-policy/role identity
+# instead).
+_DEFAULT_PATCH_APPROVAL_POLICIES: list[dict[str, Any]] = [
+    {
+        "policy_id": "live-patch-change-approval",
+        "roles": ["Change approver"],
+        "role_ids": {"Change approver": DEFAULT_ROLE_ID},
+        "conditions": {},
+    }
+]
+_DEFAULT_CONFIGURATION_APPROVAL_POLICIES: list[dict[str, Any]] = [
+    {
+        "policy_id": "live-defender-configuration-approval",
+        "roles": ["Security Response Owner"],
+        "role_ids": {"Security Response Owner": DEFAULT_ROLE_ID},
+        "conditions": {},
+    }
+]
+
+
 class LiveRemediationPlanner:
     """Read-only remediation proposals derived from live vulnerability exposure."""
 
@@ -304,10 +348,24 @@ class LiveRemediationPlanner:
         vulnerability_service: VulnerabilityIntelligenceService | None,
         *,
         repository: PlanRepository | None = None,
+        patch_approval_engine: ApprovalEngine | None = None,
+        configuration_approval_engine: ApprovalEngine | None = None,
     ) -> None:
         self.vulnerability_service = vulnerability_service
         self.freshness = getattr(vulnerability_service, "freshness", "") or _now()
         self.repository = repository or PlanRepository()
+        # Two separate single-policy engines (rather than one shared
+        # multi-policy engine with unconditional conditions on both
+        # policies) so a patch plan can never pick up the Defender
+        # configuration policy's role or vice versa (Phase 03.5, D-01;
+        # avoids cross-family policy bleed since ApprovalEngine has no
+        # action-id filter of its own).
+        self._patch_approvals = patch_approval_engine or ApprovalEngine(
+            _DEFAULT_PATCH_APPROVAL_POLICIES
+        )
+        self._configuration_approvals = configuration_approval_engine or ApprovalEngine(
+            _DEFAULT_CONFIGURATION_APPROVAL_POLICIES
+        )
 
     def identify_opportunities(self) -> dict[str, Any]:
         opportunities = list(
@@ -407,10 +465,23 @@ class LiveRemediationPlanner:
             supported_recommendation_action_id(recommendation, target_id)
             or "defender-manual-review"
         )
-        return {
-            "opportunity_id": (
+        if action_id != "defender-manual-review":
+            # A concrete governed action is mapped: identity is stable facts
+            # only (target + subscription + action family), so a successful
+            # run's audit trail survives evidence refresh (D-01). Manual
+            # review has no governed action to key on, so it keeps the
+            # recommendation-sensitive hash below -- those plans are never
+            # executed, so audit continuity does not apply to them.
+            opportunity_id = (
+                "live-defender-config-"
+                f"{_hash({'target': canonical_resource_key(target_id), 'subscription': _identity_subscription(row), 'action': action_id})[:16]}"
+            )
+        else:
+            opportunity_id = (
                 f"live-defender-config-{_hash({'target': target_id, 'recommendation': recommendation})[:16]}"
-            ),
+            )
+        return {
+            "opportunity_id": opportunity_id,
             "opportunity_type": "Defender configuration",
             "action_id": action_id,
             "resource": {
@@ -451,14 +522,31 @@ class LiveRemediationPlanner:
         business_service = _text(row.get("business_service"))
         application = _text(row.get("application"))
         mapped = opportunity["action_id"] != "defender-manual-review"
-        action_version = _hash(
-            {
-                "action_id": opportunity["action_id"],
-                "target": resource["id"],
-                "recommendation": recommendation,
-                "assessment_id": assessment_id,
-            }
-        )[:16]
+        evidence_citations = (
+            [
+                {
+                    "source_type": "assessment",
+                    "source_id": assessment_id,
+                    "resource_id": resource["id"],
+                    "summary": recommendation,
+                    "observed_at": _text(row.get("last_assessed_at")),
+                    "freshness": classify_freshness(_text(row.get("last_assessed_at"))),
+                }
+            ]
+            if assessment_id
+            else []
+        )
+        action_version = action_version_for(
+            action_id=opportunity["action_id"],
+            target_id=resource["id"],
+            scope=recommendation,
+            evidence_citations=evidence_citations,
+        )
+        approval_requirements = self._configuration_approvals.requirements(
+            {**resource, "business_criticality": resource.get("criticality", "")},
+            {"deployment_stages": ["Planning"]},
+            {"execution_risk": {"score": int(opportunity["risk_score"])}},
+        )
         return {
             "plan_id": opportunity["opportunity_id"],
             "action_version": action_version,
@@ -484,12 +572,7 @@ class LiveRemediationPlanner:
                 "compliance_improvement_percent": 50 if mapped else 0,
                 "operational_debt_reduction_percent": 25 if mapped else 0,
             },
-            "approval_requirements": [
-                {
-                    "role": "Security Response Owner",
-                    "reason": "Explicit approval is required before Defender configuration changes.",
-                }
-            ],
+            "approval_requirements": approval_requirements,
             "rollback_plan": {
                 "reversible": False,
                 "rollback_actions": [
@@ -533,18 +616,7 @@ class LiveRemediationPlanner:
                 },
             },
             "evidence": [recommendation],
-            "evidence_citations": [
-                {
-                    "source_type": "assessment",
-                    "source_id": assessment_id,
-                    "resource_id": resource["id"],
-                    "summary": recommendation,
-                    "observed_at": _text(row.get("last_assessed_at")),
-                    "freshness": "current",
-                }
-            ]
-            if assessment_id
-            else [],
+            "evidence_citations": evidence_citations,
             "read_only": True,
             "execution_authorized": False,
             "execution_performed": False,
@@ -584,7 +656,16 @@ class LiveRemediationPlanner:
             "criticality": _text(row.get("criticality")),
         }
         return {
-            "opportunity_id": f"live-patch-{_hash({'target': target_id, 'patches': sorted(missing_kbs)})[:16]}",
+            # Stable identity: canonical target + subscription + the governed
+            # action family only (D-01). Every row this method sees belongs
+            # to the patch-recovery opportunity family regardless of which
+            # concrete missing_kbs set is currently observed, so a
+            # successful run's audit trail survives evidence refresh instead
+            # of being orphaned by a hash-of-evidence identity (CR-01).
+            "opportunity_id": (
+                "live-patch-"
+                f"{_hash({'target': canonical_resource_key(target_id), 'subscription': _identity_subscription(row), 'action': PATCH_RECOVERY_ACTION_FAMILY})[:16]}"
+            ),
             "opportunity_type": "Patch and vulnerability debt",
             "resource": resource,
             "priority": _priority_from_score(
@@ -600,16 +681,48 @@ class LiveRemediationPlanner:
         opportunity = self._opportunity(row)
         defender_mapping = opportunity["defender_mapping"]
         action_id = (
-            "controlled-patch-recovery"
+            PATCH_RECOVERY_ACTION_FAMILY
             if defender_mapping["status"] in {"mapped", "not_applicable"}
             else "defender-manual-review"
         )
-        action_version = _hash(
+        target_id = opportunity["resource"].get("id", "")
+        missing_kbs = _strings(
+            row.get("missing_kbs")
+            or ([row.get("missing_kb")] if row.get("missing_kb") else [])
+        )
+        evidence_observed_at = _text(row.get("evidence_observed_at"))
+        evidence_citations = [
             {
-                "action": opportunity["recommended_action"],
-                "rollback": ["Uninstall patch if rollback is required"],
+                "source_type": "assessment",
+                "source_id": str(finding_id),
+                "resource_id": opportunity["resource"].get("id", ""),
+                "summary": "Open patch finding from live vulnerability exposure",
+                # The live provider's freshness is the ARG collection time, not
+                # a source-owned evidence timestamp. Including it in the action
+                # version invalidates an unchanged plan on every cache refresh.
+                "observed_at": evidence_observed_at,
+                "freshness": classify_freshness(self.freshness),
             }
-        )[:16]
+            for finding_id in _patch_evidence_source_ids(row.get("finding_ids"))
+        ]
+        action_version = action_version_for(
+            action_id=action_id,
+            target_id=canonical_resource_key(target_id),
+            scope=sorted(missing_kbs),
+            # ARG softwarePatches row ids are presentation/audit evidence, not
+            # governed action identity: their ordinal/path can change across
+            # equivalent provider generations. Patch execution semantics are
+            # fully captured by action + canonical target + missing-KB scope.
+            evidence_citations=[],
+        )
+        approval_requirements = self._patch_approvals.requirements(
+            {
+                **opportunity["resource"],
+                "business_criticality": opportunity["resource"].get("criticality", ""),
+            },
+            {"deployment_stages": ["Planning"]},
+            {"execution_risk": {"score": int(opportunity["risk_score"])}},
+        )
         return {
             "plan_id": opportunity["opportunity_id"],
             "action_version": action_version,
@@ -635,12 +748,7 @@ class LiveRemediationPlanner:
                 "risk_reduction_percent": min(int(opportunity["risk_score"]), 100),
                 "operational_debt_reduction_percent": 25,
             },
-            "approval_requirements": [
-                {
-                    "role": "Change approver",
-                    "reason": "Change approval required before execution",
-                }
-            ],
+            "approval_requirements": approval_requirements,
             "rollback_plan": {"reversible": True, "steps": ["Uninstall patch if rollback is required"]},
             "risk_assessment": {
                 "overall_risk": {
@@ -688,17 +796,7 @@ class LiveRemediationPlanner:
                 f"{row.get('finding_count', 0)} unresolved patch finding(s)",
                 f"Missing updates: {', '.join(_strings(row.get('missing_kbs')))}",
             ],
-            "evidence_citations": [
-                {
-                    "source_type": "assessment",
-                    "source_id": str(finding_id),
-                    "resource_id": opportunity["resource"].get("id", ""),
-                    "summary": "Open patch finding from live vulnerability exposure",
-                    "observed_at": self.freshness,
-                    "freshness": "current",
-                }
-                for finding_id in row.get("finding_ids", [])[:10]
-            ],
+            "evidence_citations": evidence_citations,
             "read_only": True,
             "execution_authorized": False,
             "execution_performed": False,
@@ -735,7 +833,7 @@ class LiveRemediationPlanner:
             }
         return {
             "status": "mapped",
-            "action_id": "controlled-patch-recovery",
+            "action_id": PATCH_RECOVERY_ACTION_FAMILY,
             "recommendations": defender_recommendations,
             "missing_kbs": missing_kbs,
             "reason": "Patchable Defender recommendation mapped to the governed patch action.",

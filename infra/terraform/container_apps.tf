@@ -89,6 +89,21 @@ resource "azurerm_container_app" "api" {
     }
   }
 
+  # Versionless references let Key Vault rotation publish a new active or
+  # previous version without placing key material in Terraform configuration
+  # or state. The existing user-assigned app identity resolves both values.
+  secret {
+    name                = "cursor-active"
+    identity            = azurerm_user_assigned_identity.apps.id
+    key_vault_secret_id = "${azurerm_key_vault.main.vault_uri}secrets/exposure-cursor-active"
+  }
+
+  secret {
+    name                = "cursor-previous"
+    identity            = azurerm_user_assigned_identity.apps.id
+    key_vault_secret_id = "${azurerm_key_vault.main.vault_uri}secrets/exposure-cursor-previous"
+  }
+
   ingress {
     external_enabled = var.api_external_ingress
     target_port      = 8080
@@ -372,6 +387,28 @@ resource "azurerm_container_app" "api" {
           name        = "AIOPS_REFRESH_TRIGGER_SECRET"
           secret_name = "refresh-trigger-secret"
         }
+      }
+
+      env {
+        name        = "EXPOSURE_CURSOR_ACTIVE_KEY"
+        secret_name = "cursor-active"
+      }
+
+      env {
+        name        = "EXPOSURE_CURSOR_PREVIOUS_KEY"
+        secret_name = "cursor-previous"
+      }
+
+      # Key identifiers are routing metadata, not key material. The rotation
+      # script updates these values when it creates a new revision.
+      env {
+        name  = "EXPOSURE_CURSOR_ACTIVE_KID"
+        value = "unprovisioned"
+      }
+
+      env {
+        name  = "EXPOSURE_CURSOR_PREVIOUS_KID"
+        value = "unprovisioned"
       }
 
       env {

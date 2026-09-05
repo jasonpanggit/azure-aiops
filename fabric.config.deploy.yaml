@@ -46,9 +46,18 @@ fabric:
     enabled: true
     ontology_id: ""
     ontology_name: "Operational_Context_Ontology_v2"
+  exposure:
+    enabled: true
+    adapter: fabric_sql
+    rollback_mode: false
 
   source_data_root: "/data/inventory-source"
   registration_attempts: 20
+  # Most of the ~60 published tables are OVERWRITE-mode and independent of
+  # each other, so raising worker count directly cuts wall-clock publish
+  # time; 4 workers left the sync serialized into 15+ batches against
+  # publish_timeout_seconds=120 (see arg.config.deploy.yaml).
+  write_workers: 12
   patch_policies:
     - name: "Production baseline"
       environment: "Production"

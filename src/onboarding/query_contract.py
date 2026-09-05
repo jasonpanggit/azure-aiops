@@ -15,3 +15,5 @@ class QuerySpec:
     incremental: bool
     scope: str = "subscriptions"
     version: str = "1.0.0"
+    source_family: str = ""
+    semantic_families: tuple[str, ...] = ()

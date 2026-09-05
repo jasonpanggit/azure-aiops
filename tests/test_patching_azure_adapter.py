@@ -10,6 +10,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from intelligence.remediation.execution_store import _AMBIGUITY_MARKERS
 from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.azure_adapter import (
     CONTAINER_SERVICE_API_VERSION,
@@ -133,9 +134,11 @@ def test_arc_servers_route_to_hybrid_compute() -> None:
 def test_empty_selection_is_refused_rather_than_installing_everything() -> None:
     calls: list[httpx.Request] = []
     adapter = _adapter(calls, _accepted())
-    with pytest.raises(PatchExecutionUnavailable, match="installs everything"):
+    with pytest.raises(PatchExecutionUnavailable, match="installs everything") as excinfo:
         adapter.submit(_run(patch_ids=()), _target())
     assert calls == []
+    assert excinfo.value.provider_submitted is False
+    assert excinfo.value.failure_class == "internal_validation"
 
 
 def test_node_image_upgrade_targets_the_selected_pool() -> None:
@@ -181,7 +184,7 @@ def test_node_image_upgrade_accepts_a_pool_named_on_the_run() -> None:
 def test_node_image_upgrade_refuses_when_the_pool_is_unknown() -> None:
     calls: list[httpx.Request] = []
     adapter = _adapter(calls, _accepted())
-    with pytest.raises(PatchExecutionUnavailable, match="node pool"):
+    with pytest.raises(PatchExecutionUnavailable, match="node pool") as excinfo:
         adapter.submit(
             _run(target_id=AKS_ID, inventory_kind="AKS node", operation="node_image_upgrade", patch_ids=("latest",)),
             _target(
@@ -191,14 +194,49 @@ def test_node_image_upgrade_refuses_when_the_pool_is_unknown() -> None:
             ),
         )
     assert calls == []
+    assert excinfo.value.provider_submitted is False
+    assert excinfo.value.failure_class == "target_precondition"
 
 
 def test_non_resource_id_targets_are_refused() -> None:
     calls: list[httpx.Request] = []
     adapter = _adapter(calls, _accepted())
-    with pytest.raises(PatchExecutionUnavailable, match="not an Azure resource id"):
+    with pytest.raises(PatchExecutionUnavailable, match="not an Azure resource id") as excinfo:
         adapter.submit(_run(target_id="server-1"), _target(target_id="server-1"))
     assert calls == []
+    assert excinfo.value.provider_submitted is False
+    assert excinfo.value.failure_class == "target_precondition"
+
+
+def test_node_image_upgrade_refuses_unsupported_inventory_kind() -> None:
+    calls: list[httpx.Request] = []
+    adapter = _adapter(calls, _accepted())
+    with pytest.raises(PatchExecutionUnavailable, match="not valid for inventory kind") as excinfo:
+        adapter.submit(
+            _run(
+                target_id=AKS_ID,
+                inventory_kind="Azure VM",
+                operation="node_image_upgrade",
+                patch_ids=("latest",),
+            ),
+            _target(target_id=AKS_ID, inventory_kind="Azure VM"),
+        )
+    assert calls == []
+    assert excinfo.value.provider_submitted is False
+    assert excinfo.value.failure_class == "target_precondition"
+
+
+def test_install_patches_refuses_unsupported_inventory_kind() -> None:
+    calls: list[httpx.Request] = []
+    adapter = _adapter(calls, _accepted())
+    with pytest.raises(PatchExecutionUnavailable, match="No install-patches route") as excinfo:
+        adapter.submit(
+            _run(target_id=AKS_ID, inventory_kind="AKS node"),
+            _target(target_id=AKS_ID, inventory_kind="AKS node"),
+        )
+    assert calls == []
+    assert excinfo.value.provider_submitted is False
+    assert excinfo.value.failure_class == "target_precondition"
 
 
 def test_arm_error_is_surfaced_with_the_azure_message() -> None:
@@ -208,16 +246,85 @@ def test_arm_error_is_surfaced_with_the_azure_message() -> None:
         json={"error": {"code": "AuthorizationFailed", "message": "does not have permission"}},
     )
     adapter = _adapter(calls, response)
-    with pytest.raises(PatchExecutionUnavailable, match="does not have permission"):
+    with pytest.raises(PatchExecutionUnavailable, match="does not have permission") as excinfo:
         adapter.submit(_run(), _target())
+    assert excinfo.value.provider_submitted is True
+    assert excinfo.value.failure_class == "provider_authorization"
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 503])
+def test_transient_arm_status_codes_classify_as_provider_transient(status_code: int) -> None:
+    calls: list[httpx.Request] = []
+    response = httpx.Response(status_code, json={"error": {"message": "try again"}})
+    adapter = _adapter(calls, response)
+    with pytest.raises(PatchExecutionUnavailable) as excinfo:
+        adapter.submit(_run(), _target())
+    assert excinfo.value.provider_submitted is True
+    assert excinfo.value.failure_class == "provider_transient"
+
+
+@pytest.mark.parametrize("status_code", [404, 409])
+def test_other_error_status_codes_classify_as_provider_rejected(status_code: int) -> None:
+    calls: list[httpx.Request] = []
+    response = httpx.Response(status_code, json={"error": {"message": "conflict"}})
+    adapter = _adapter(calls, response)
+    with pytest.raises(PatchExecutionUnavailable) as excinfo:
+        adapter.submit(_run(), _target())
+    assert excinfo.value.provider_submitted is True
+    assert excinfo.value.failure_class == "provider_rejected"
 
 
 def test_token_failure_is_a_typed_refusal_not_a_crash() -> None:
     calls: list[httpx.Request] = []
     adapter = _adapter(calls, _accepted(), credential=FakeCredential(error=RuntimeError("no identity")))
-    with pytest.raises(PatchExecutionUnavailable, match="management token"):
+    with pytest.raises(PatchExecutionUnavailable, match="management token") as excinfo:
         adapter.submit(_run(), _target())
     assert calls == []
+    assert excinfo.value.provider_submitted is False
+    assert excinfo.value.failure_class == "provider_authorization"
+
+
+# -- CR-04 regression: the mutating POST must send the real bearer token, --
+# -- never a literal placeholder, and must never touch the network if the --
+# -- token cannot be acquired.                                            --
+
+
+def test_submit_sends_the_real_bearer_token_captured_from_headers() -> None:
+    """Capture the actual outgoing ``Authorization`` header (not merely
+    ignore its content, the way most other tests in this module do) and
+    assert it is the real, dynamic ``Bearer <token>`` value the fake
+    credential returns -- a fake test-only literal, never a real secret.
+    """
+    calls: list[httpx.Request] = []
+    result = _adapter(
+        calls,
+        _accepted(),
+        credential=FakeCredential(token=type("T", (), {"token": "fake-submission-token"})()),
+    ).submit(_run(), _target())
+
+    assert len(calls) == 1
+    auth_header = calls[0].headers["Authorization"]
+    assert auth_header == "Bearer fake-submission-token"
+    assert auth_header.startswith("Bearer ")
+    # The literal placeholder this adapter must never emit again (CR-04).
+    assert "*" * 6 not in auth_header
+    assert result.state == "submitted"
+
+
+def test_empty_token_is_refused_before_any_request_is_made() -> None:
+    """An empty token string is just as unusable as a raised credential
+    error, and must be refused before the mutating POST is ever attempted.
+    """
+    calls: list[httpx.Request] = []
+    empty_token = type("T", (), {"token": ""})()
+    adapter = _adapter(calls, _accepted(), credential=FakeCredential(token=empty_token))
+
+    with pytest.raises(PatchExecutionUnavailable, match="empty management token") as excinfo:
+        adapter.submit(_run(), _target())
+
+    assert calls == []
+    assert excinfo.value.provider_submitted is False
+    assert excinfo.value.failure_class == "provider_authorization"
 
 
 def test_unreachable_arm_is_a_typed_refusal() -> None:
@@ -226,5 +333,14 @@ def test_unreachable_arm_is_a_typed_refusal() -> None:
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     adapter = AzureArmPatchExecutionAdapter(FakeCredential(), client=client)
-    with pytest.raises(PatchExecutionUnavailable, match="unreachable"):
+    with pytest.raises(PatchExecutionUnavailable, match="unreachable") as excinfo:
         adapter.submit(_run(), _target())
+    assert excinfo.value.provider_submitted is True
+    assert excinfo.value.failure_class == "submission_ambiguous"
+    # IN-01: the legacy backfill heuristic (`_legacy_provider_submitted`)
+    # only recognizes a pre-migration ambiguous attempt via a marker in
+    # `_AMBIGUITY_MARKERS`. Assert the coupling directly against this real
+    # raise site's actual message so a future wording change here fails CI
+    # instead of silently degrading legacy-record accuracy.
+    haystack = str(excinfo.value).casefold()
+    assert any(marker in haystack for marker in _AMBIGUITY_MARKERS)

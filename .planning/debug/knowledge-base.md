@@ -23,3 +23,13 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Why not caught:** No gate existed for Foundry portal model/tool compatibility; runtime Search success could not detect a combination that works on the data plane but is explicitly unsupported by the portal contract.
 - **Recurrence guard:** The config-default change in `infra/terraform/variables.tf` selects `gpt-5.4-mini` `2026-03-17`, whose current official matrix row supports both Azure AI Search and MCP; this KB pattern records that runtime success is not a substitute for compatibility-matrix validation.
 ---
+
+## remediation-e2e — Unchanged live remediation action became stale between GET and approval
+- **Date:** 2026-09-05
+- **Error patterns:** HTTP 409, Remediation plan action version is stale, stale_action_version, action_version, CVE enrichment, citation order
+- **Root cause(s):** Independent GET and decision-POST plan generations could vary optional KB-to-CVE enrichment or finding order, while live patch action-version construction hashed those derived suffixes and selected the first 10 citations before canonicalizing the complete evidence set.
+- **Fix:** Normalize live patch citation IDs to their case-insensitive source-owned identities, strip only runtime-appended CVE/KB suffixes, deduplicate and sort before applying the 10-citation bound, and cover the request-to-request approval flow.
+- **Files changed:** src/semantic/live_operations.py, tests/test_remediation_identity_and_audit_continuity.py, tests/test_api_remediation_approvals.py, .planning/debug/resolved/remediation-e2e.md
+- **Why not caught:** Existing stability tests reused one unchanged in-memory planner and did not vary derived enrichment identities, source-id casing, or evidence ordering across the 10-citation boundary.
+- **Recurrence guard:** `tests/test_remediation_identity_and_audit_continuity.py::test_live_patch_action_version_ignores_derived_cve_enrichment`, `::test_live_patch_action_version_canonicalizes_citations_before_limiting`, and `tests/test_api_remediation_approvals.py::test_patch_approval_survives_request_to_request_cve_enrichment_drift`.
+---

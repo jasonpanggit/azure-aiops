@@ -112,6 +112,51 @@ def test_incremental_sync_writes_bronze_silver_ontology_and_state(tmp_path: Path
     assert (lakehouse / "Files/ontology/metadata/catalog.json").is_file()
 
 
+def test_incremental_sync_removes_decommissioned_resources_from_snapshot_tables(
+    tmp_path: Path,
+) -> None:
+    """A resource dropped from the source must disappear from bronze_resources.
+
+    bronze_resources/silver_vm_inventory/silver_server_inventory are
+    SNAPSHOT_MERGE tables (see FabricSyncService._SNAPSHOT_MERGE_WRITE_TABLES):
+    upsert semantics alone would leave a decommissioned resource's stale row
+    behind forever, since MERGE never deletes. This guards the
+    when_not_matched_by_source_delete wiring in DeltaWriter.
+    """
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    _source_snapshot(source)
+    onelake = OneLakeWriter("workspace", "lakehouse", local_root=lakehouse)
+    service = FabricSyncService(
+        source_root=source,
+        onelake=onelake,
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+    service.sync(requested_scope={"subscription": ["sub-1"]})
+    resources_before = _delta_rows(lakehouse / "Tables/bronze_resources")
+    assert len(resources_before) == 3
+    removed_id = resources_before[0]["resource_id"]
+
+    payload = json.loads(FIXTURE.read_text())
+    payload["resources"] = [
+        row for row in payload["resources"] if row["id"].lower() != removed_id.lower()
+    ]
+    graph = Normalizer().normalize(payload, datetime(2026, 8, 17, tzinfo=UTC))
+    DatasetStore(source).publish(
+        graph,
+        payload,
+        {"runId": "source-run-2", "startedAt": "2026-08-17T01:00:00Z", "status": "completed"},
+    )
+
+    second = service.sync(requested_scope={"subscription": ["sub-1"]})
+
+    resources_after = _delta_rows(lakehouse / "Tables/bronze_resources")
+    assert second.status == "completed"
+    assert len(resources_after) == 2
+    assert removed_id not in {row["resource_id"] for row in resources_after}
+
+
 def test_source_status_rows_preserve_each_subscription_for_empty_tables() -> None:
     rows = _table_source_status_rows(
         {

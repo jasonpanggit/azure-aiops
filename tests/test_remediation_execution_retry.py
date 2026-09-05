@@ -84,7 +84,16 @@ class _RecordingOperationUrlAdapter:
     def submit(self, run, target) -> PatchExecutionResult:
         self.submissions.append((run, target))
         if self._fail:
-            raise PatchExecutionUnavailable("Azure rejected the request")
+            # A genuine, non-ambiguous provider rejection (not a transport
+            # failure) -- these tests exercise retry's CAS/concurrency
+            # mechanics, not the submission-ambiguity guard (CR-01), so the
+            # fake adapter must not use the fail-closed "submission_ambiguous"
+            # default that a bare `PatchExecutionUnavailable(...)` carries.
+            raise PatchExecutionUnavailable(
+                "Azure rejected the request",
+                provider_submitted=True,
+                failure_class="provider_rejected",
+            )
         return PatchExecutionResult(
             provider=self.name,
             provider_job_id=OPERATION_URL,
@@ -332,11 +341,52 @@ def test_retry_appends_attempt_history_without_overwriting_first_failure() -> No
     assert record["attempts"][0]["outcome"] == "failed"
     assert "Azure rejected" in record["attempts"][0]["failure_details"]
     assert record["attempts"][1]["provider_job_id"] == OPERATION_URL
+    assert record["outcome"] == ""
+    assert record["failure_details"] == ""
+    assert record["failure_class"] == ""
+    assert record["attempts"][1]["transitions"][0]["message"] == ""
+    assert record["attempts"][1]["transitions"][0]["failure_details"] == ""
     assert [event["status"] for event in record["history"]][:3] == [
         "queued",
         "running",
         "failed",
     ]
+
+
+def test_execution_view_projects_the_latest_attempt_over_stale_record_fields() -> None:
+    record = {
+        "status": "succeeded",
+        "outcome": "succeeded",
+        "failure_details": "Failure from an earlier attempt",
+        "failure_class": "provider_rejected",
+        "provider_submitted": True,
+        "attempts": [
+            {
+                "status": "failed",
+                "outcome": "failed",
+                "failure_details": "Failure from an earlier attempt",
+                "failure_class": "provider_rejected",
+                "provider_submitted": True,
+            },
+            {
+                "status": "succeeded",
+                "outcome": "succeeded",
+                "failure_details": "",
+                "failure_class": "",
+                "provider_submitted": True,
+                "verified_state": "Succeeded",
+                "verification_evidence": {"installed_count": 1},
+            },
+        ],
+    }
+
+    view = RemediationExecutionService.execution_view(record)
+
+    assert view["status"] == "succeeded"
+    assert view["failure_details"] == ""
+    assert view["failure_class"] == ""
+    assert view["verified_state"] == "Succeeded"
+    assert view["verification_evidence"] == {"installed_count": 1}
 
 
 def test_cancel_and_retry_compare_and_set_claims_have_one_winner() -> None:

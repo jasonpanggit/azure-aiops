@@ -19,7 +19,10 @@ from intelligence.remediation.execution_service import (
     RemediationExecutionError,
     RemediationExecutionService,
 )
-from intelligence.remediation.execution_store import RemediationExecutionStore
+from intelligence.remediation.execution_store import (
+    _AMBIGUITY_MARKERS,
+    RemediationExecutionStore,
+)
 from intelligence.remediation.execution_verifier import ExecutionVerifier
 from intelligence.remediation.plan_repository import PlanRepository
 from operations.defender_configuration import (
@@ -242,6 +245,104 @@ def test_azure_adapter_refuses_tampered_or_stale_snapshot() -> None:
             ),
         ).submit(snapshot)
     assert excinfo.value.reason == "execution_snapshot_invalid"
+    assert excinfo.value.provider_submitted is False
+    assert excinfo.value.failure_class == "internal_validation"
+
+
+def test_azure_adapter_state_hash_drift_is_pre_submission() -> None:
+    adapter = _RecordingAdapter()
+    snapshot = build_defender_configuration_snapshot(_plan(), adapter)
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
+    # The observed state changed after approval (state_hash mismatch), but
+    # this must never reach an HTTP request.
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"ETag": '"v1"'},
+            json={"properties": {"pricingTier": "Free", "subPlan": "P2"}},
+        )
+
+    real_adapter = AzureArmDefenderConfigurationAdapter(
+        _Credential(), client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(DefenderConfigurationUnavailable) as excinfo:
+        real_adapter.submit(snapshot)
+    assert excinfo.value.reason == "execution_snapshot_drift"
+    assert excinfo.value.provider_submitted is False
+    assert excinfo.value.failure_class == "target_precondition"
+    assert [request.method for request in requests] == ["GET"]
+
+
+def test_defender_put_transport_failure_is_submission_ambiguous() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                headers={"ETag": '"v1"'},
+                json={"properties": {"pricingTier": "Free"}},
+            )
+        raise httpx.ConnectError("network down")
+
+    adapter = AzureArmDefenderConfigurationAdapter(
+        _Credential(), client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    snapshot = build_defender_configuration_snapshot(_plan(), adapter)
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
+
+    with pytest.raises(DefenderConfigurationUnavailable) as excinfo:
+        adapter.submit(snapshot)
+
+    assert excinfo.value.provider_submitted is True
+    assert excinfo.value.failure_class == "submission_ambiguous"
+    # IN-01: same coupling assertion as the patching adapter's equivalent
+    # test -- this real raise site's message must keep containing at least
+    # one of `_AMBIGUITY_MARKERS`, or a future wording change here would
+    # silently degrade legacy-record accuracy for records written before it
+    # lands (`_legacy_provider_submitted`'s fail-closed heuristic).
+    haystack = str(excinfo.value).casefold()
+    assert any(marker in haystack for marker in _AMBIGUITY_MARKERS)
+
+
+def test_defender_put_403_response_is_provider_authorization() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                headers={"ETag": '"v1"'},
+                json={"properties": {"pricingTier": "Free"}},
+            )
+        return httpx.Response(
+            403,
+            json={"error": {"code": "AuthorizationFailed", "message": "denied"}},
+        )
+
+    adapter = AzureArmDefenderConfigurationAdapter(
+        _Credential(), client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    snapshot = build_defender_configuration_snapshot(_plan(), adapter)
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
+
+    with pytest.raises(DefenderConfigurationUnavailable) as excinfo:
+        adapter.submit(snapshot)
+
+    assert excinfo.value.provider_submitted is True
+    assert excinfo.value.failure_class == "provider_authorization"
+
+
+def test_defender_inspect_get_failure_never_counts_as_submitted() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": {"message": "internal error"}})
+
+    adapter = AzureArmDefenderConfigurationAdapter(
+        _Credential(), client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(DefenderConfigurationUnavailable) as excinfo:
+        adapter.inspect({"method": "GET", "path": "/x", "api_version": "2024-01-01"})
+
+    assert excinfo.value.provider_submitted is False
 
 
 def test_approved_configuration_executes_only_snapshotted_action() -> None:

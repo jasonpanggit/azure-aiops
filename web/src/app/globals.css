@@ -782,7 +782,7 @@ textarea:focus-visible {
 }
 
 .posture-score-label {
-  margin-top: 2px;
+  margin-top: 10px;
   color: #b8cedd;
   font-size: 10px;
   font-weight: 700;
@@ -6319,9 +6319,132 @@ body.topology-fullscreen-open {
   box-shadow: inset 0 0 0 1px var(--color-brand);
 }
 
+.remediation-blockers,
+.remediation-degradation {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  margin: 16px 0;
+  background: var(--color-warning-subtle);
+  border: 1px solid #e8d89d;
+  border-radius: var(--radius-md);
+}
+
+.remediation-blockers h3,
+.remediation-degradation h3 {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.remediation-blocker-row,
+.remediation-degradation-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.remediation-blocker-row-active {
+  border-left: 3px solid var(--color-warning);
+  padding-left: 8px;
+}
+
+.remediation-blocker-step-chip {
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+}
+
+.remediation-degradation-source {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.remediation-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.remediation-supersede-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(100%, 42rem);
+  padding: 16px;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.remediation-supersede-form label {
+  display: grid;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.remediation-supersede-form textarea,
+.remediation-approval-form input,
+.remediation-approval-form select,
+.remediation-approval-form textarea,
+.remediation-search-field input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.remediation-supersede-form textarea,
+.remediation-approval-form textarea {
+  min-height: 4rem;
+  resize: vertical;
+}
+
+.remediation-supersede-form textarea:focus,
+.remediation-approval-form input:focus,
+.remediation-approval-form select:focus,
+.remediation-approval-form textarea:focus,
+.remediation-search-field input:focus {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 2px rgb(15 108 189 / 16%);
+  outline: 0;
+}
+
+.remediation-supersede-form > p {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.remediation-reconciliation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.remediation-lineage {
+  margin: 8px 0;
+  color: var(--color-text-secondary);
+}
+
 .remediation-workflow-layout {
   display: grid;
-  grid-template-columns: minmax(16rem, 0.7fr) minmax(0, 1.5fr);
+  grid-template-columns: minmax(19rem, 0.72fr) minmax(0, 1.5fr);
   gap: 16px;
   align-items: start;
 }
@@ -6346,13 +6469,24 @@ body.topology-fullscreen-open {
 }
 
 .remediation-fix-option small {
+  display: block;
   overflow-wrap: anywhere;
   word-break: break-word;
+  color: var(--color-text-muted);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .remediation-workflow-content {
   display: grid;
-  gap: 16px;
+  gap: 24px;
+}
+
+.remediation-workflow-content h3,
+.remediation-section-heading h3 {
+  font-size: 18px;
+  font-weight: 600;
 }
 
 .remediation-review-grid {
@@ -6362,8 +6496,103 @@ body.topology-fullscreen-open {
   min-width: 0;
 }
 
-.remediation-review-grid > div {
+.remediation-review-panel,
+.remediation-review-section {
   min-width: 0;
+  padding: 16px;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.remediation-review-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.remediation-review-panel-heading {
+  display: grid;
+  gap: 2px;
+}
+
+.remediation-review-panel-heading h3,
+.remediation-section-heading h3 {
+  margin: 0;
+}
+
+.remediation-review-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-border);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.remediation-review-facts > div {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  gap: 6px;
+  min-height: 78px;
+  padding: 12px;
+  background: var(--color-surface);
+}
+
+.remediation-review-facts dt {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.remediation-review-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.remediation-review-facts dd strong,
+.remediation-review-facts dd code {
+  display: block;
+}
+
+.remediation-review-facts dd code {
+  margin-top: 4px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.remediation-review-fact-wide {
+  grid-column: 1 / -1;
+}
+
+.remediation-state-change {
+  margin-top: auto;
+}
+
+.remediation-rollback {
+  padding: 12px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface);
+  border-left: 3px solid var(--color-brand);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.remediation-rollback p {
+  margin: 4px 0 0;
+  font-size: 14px;
+}
+
+.remediation-review-section {
+  display: grid;
+  gap: 12px;
 }
 
 .remediation-review-grid code,
@@ -6376,7 +6605,7 @@ body.topology-fullscreen-open {
 
 .remediation-evidence-list {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -6384,21 +6613,21 @@ body.topology-fullscreen-open {
 
 .remediation-evidence-item {
   display: grid;
-  gap: 2px;
-  padding: 8px 10px;
+  gap: 4px;
+  padding: 8px;
   background: var(--color-surface-subtle);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
 }
 
 .remediation-evidence-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--color-text);
 }
 
 .remediation-evidence-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-text-muted);
 }
 
@@ -6414,31 +6643,222 @@ body.topology-fullscreen-open {
 
 .remediation-patch-list {
   display: grid;
-  gap: 6px;
-  margin: 6px 0 0;
+  gap: 8px;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .remediation-patch-item {
-  padding: 6px 10px;
-  background: var(--color-surface-subtle);
+  padding: 12px;
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .remediation-patch-item label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.remediation-patch-item input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: var(--color-brand);
+}
+
+.remediation-patch-content {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.remediation-patch-content > strong {
+  line-height: 1.4;
+}
+
+.remediation-patch-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.remediation-patch-meta code {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.remediation-patch-mode-line,
+.remediation-empty-detail {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.remediation-review-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.remediation-review-actions .button {
+  min-width: 12rem;
+}
+
+.remediation-search-field {
+  display: grid;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.remediation-search-field + .plan-list {
+  margin-top: 16px;
+}
+
+.remediation-section-heading {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.remediation-section-heading > span {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.remediation-approval-requirements {
+  display: grid;
+  gap: 8px;
+}
+
+.remediation-approval-requirement-row {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.remediation-approval-requirement-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.remediation-approval-requirement-role {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.remediation-approval-requirement-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, 0.35fr);
+  gap: 16px;
+}
+
+.remediation-approval-requirement-meta > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.remediation-approval-requirement-meta dt {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.remediation-approval-requirement-meta dd {
+  min-width: 0;
+  color: var(--color-text-secondary);
+}
+
+.remediation-approval-requirement-message,
+.remediation-approval-requirement-satisfied-by {
+  color: var(--color-text-secondary);
+}
+
+.remediation-approval-requirement-row details {
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+}
+
+.remediation-approval-requirement-row summary {
+  color: var(--color-brand);
   cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.remediation-approval-requirement-row ul {
+  margin: 8px 0 0 18px;
+  color: var(--color-text-secondary);
+}
+
+.remediation-snapshot-callout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.remediation-snapshot-callout code {
+  color: var(--color-warning);
+  font-size: 12px;
 }
 
 .remediation-approval-form {
   display: grid;
-  gap: 12px;
-  max-width: 42rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 16px;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.remediation-approval-form > p,
+.remediation-approval-form > label:has(textarea),
+.remediation-approval-form > .button,
+.remediation-approval-form > [role="alert"] {
+  grid-column: 1 / -1;
+}
+
+.remediation-approval-form > label {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.remediation-approval-form > label > span {
+  color: var(--color-text-secondary);
+}
+
+.remediation-approval-role-hint {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.remediation-approval-form > .button {
+  justify-self: start;
 }
 
 .remediation-audit summary {
@@ -6451,6 +6871,20 @@ body.topology-fullscreen-open {
   .remediation-workflow-steps,
   .remediation-workflow-layout,
   .remediation-review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .remediation-review-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .remediation-review-fact-wide {
+    grid-column: auto;
+  }
+
+  .remediation-approval-form,
+  .remediation-approval-requirement-meta,
+  .remediation-snapshot-callout {
     grid-template-columns: 1fr;
   }
 }

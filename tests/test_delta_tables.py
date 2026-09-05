@@ -6,7 +6,12 @@ import pytest
 from deltalake import DeltaTable
 
 from fabric.schema_registry import schema_for
-from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
+from storage.delta_writer import (
+    DeltaWriteMode,
+    DeltaWriter,
+    DeltaWriteResult,
+    _is_transient,
+)
 from storage.partitioning import PartitioningPolicy
 
 REQUIRED = {
@@ -90,6 +95,66 @@ def test_delta_writer_merge_skips_unchanged_change_version(tmp_path: Path) -> No
     assert _rows(table)[0]["ingestion_run_id"] == "run-1"
 
 
+def test_delta_writer_snapshot_merge_upserts_and_deletes_stale_keys(tmp_path: Path) -> None:
+    table = tmp_path / "table"
+    writer = DeltaWriter()
+    writer.write(
+        table,
+        [
+            {**REQUIRED, "resource_id": "r1", "name": "keep-unchanged"},
+            {**REQUIRED, "resource_id": "r2", "name": "will-update"},
+            {**REQUIRED, "resource_id": "r3", "name": "will-be-deleted"},
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+    )
+
+    result = writer.write(
+        table,
+        [
+            {**REQUIRED, "resource_id": "r1", "name": "keep-unchanged"},
+            {
+                **REQUIRED,
+                "resource_id": "r2",
+                "name": "updated",
+                "change_version": "v2",
+                "ingestion_run_id": "run-2",
+            },
+        ],
+        mode=DeltaWriteMode.SNAPSHOT_MERGE,
+        key_columns=("resource_id",),
+    )
+
+    rows_by_id = {row["resource_id"]: row for row in _rows(table)}
+    assert set(rows_by_id) == {"r1", "r2"}
+    assert rows_by_id["r2"]["name"] == "updated"
+    # r1 was untouched by the merge predicate (same change_version), so its
+    # original run_id is preserved -- proof this rewrote only changed rows.
+    assert rows_by_id["r1"]["ingestion_run_id"] == "run-1"
+    assert result.rows_removed == 1
+    assert result.rows_changed == 1
+
+
+def test_delta_writer_snapshot_merge_on_empty_source_deletes_all_rows(tmp_path: Path) -> None:
+    table = tmp_path / "table"
+    writer = DeltaWriter()
+    writer.write(
+        table,
+        [{**REQUIRED, "resource_id": "r1", "name": "only"}],
+        mode=DeltaWriteMode.OVERWRITE,
+    )
+
+    result = writer.write(
+        table,
+        [],
+        mode=DeltaWriteMode.SNAPSHOT_MERGE,
+        key_columns=("resource_id",),
+        schema=schema_for("bronze_resources"),
+    )
+
+    assert result.rows_removed == 1
+    assert _rows(table) == []
+
+
 def test_delta_writer_rejects_missing_operational_columns(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="ingestion_run_id"):
         DeltaWriter().write(
@@ -130,6 +195,15 @@ def test_delta_writer_retries_transient_failures(tmp_path: Path, monkeypatch) ->
     assert result.rows_added == 1
     assert attempts == 2
     assert delays == [1]
+
+
+def test_delta_writer_retries_temporarily_missing_delta_log() -> None:
+    error = RuntimeError(
+        "Kernel error: File not found: Tables/metadata_ingestion_state/"
+        "_delta_log/00000000000000000130.json"
+    )
+
+    assert _is_transient(error)
 
 
 def test_delta_writer_refreshes_cloud_token_before_operation(tmp_path: Path, monkeypatch) -> None:

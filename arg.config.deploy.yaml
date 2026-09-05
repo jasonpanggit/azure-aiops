@@ -17,6 +17,16 @@ azure:
   cost_management:
     enabled: true
     lookback_days: 30
+  # 120s was too tight for a ~60-table OneLake publish at write_workers=4 and
+  # regularly tripped `_run_publish_with_timeout`, marking otherwise-healthy
+  # syncs as failed. Raised alongside fabric.write_workers (see
+  # fabric.config.deploy.yaml) instead of only extending the timeout, since
+  # most of that cost is unnecessary full-table OVERWRITE writes (tracked
+  # separately -- see sync_service._MERGE_WRITE_TABLES).
+  # A full subscription snapshot can contain hundreds of Fabric tables. A zero
+  # value leaves the background publish unbounded while this investigation
+  # confirms the actual Fabric completion time.
+  publish_timeout_seconds: 0
 
 storage:
   # output_dir is intentionally unset: it inherits AIOPS_HOME, which Terraform

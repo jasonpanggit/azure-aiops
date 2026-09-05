@@ -24,6 +24,17 @@ class CommandResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class PagedArgQueryResult:
+    """Rows plus non-secret proof that ARG continuation was exhausted."""
+
+    rows: tuple[dict[str, Any], ...]
+    pages_fetched: int
+    page_size: int
+    max_pages: int
+    complete: bool
+
+
 class CommandRunner(Protocol):
     def run(self, command: list[str], timeout: int) -> CommandResult: ...
 
@@ -89,14 +100,25 @@ class AzureCliArgClient:
         timeout: int = 60,
     ) -> None:
         self.runner = runner or SubprocessRunner()
+        if page_size < 1:
+            raise ValueError("ARG page_size must be positive")
+        if max_pages < 1:
+            raise ValueError("ARG max_pages must be positive")
         self.page_size = page_size
         self.max_pages = max_pages
         self.timeout = timeout
 
     def query(self, spec: QuerySpec, scope_ids: list[str]) -> list[dict]:
+        return list(self.query_with_metadata(spec, scope_ids).rows)
+
+    def query_with_metadata(
+        self,
+        spec: QuerySpec,
+        scope_ids: list[str],
+    ) -> PagedArgQueryResult:
         rows: list[dict] = []
         continuation_token: str | None = None
-        for _ in range(self.max_pages):
+        for page_number in range(1, self.max_pages + 1):
             command = [
                 "az",
                 "graph",
@@ -126,7 +148,9 @@ class AzureCliArgClient:
             page = payload.get("data") if isinstance(payload, dict) else payload
             if not isinstance(page, list):
                 raise TypeError(f"ARG query '{spec.name}' returned an invalid page")
-            rows.extend(item for item in page if isinstance(item, dict))
+            if any(not isinstance(item, dict) for item in page):
+                raise TypeError(f"ARG query '{spec.name}' returned an invalid page row")
+            rows.extend(page)
             raw_token = (
                 (payload or {}).get("skip_token")
                 or (payload or {}).get("skipToken")
@@ -134,7 +158,13 @@ class AzureCliArgClient:
             )
             continuation_token = str(raw_token) if raw_token else None
             if not continuation_token:
-                return rows
+                return PagedArgQueryResult(
+                    rows=tuple(rows),
+                    pages_fetched=page_number,
+                    page_size=self.page_size,
+                    max_pages=self.max_pages,
+                    complete=True,
+                )
         raise RuntimeError(f"ARG query '{spec.name}' exceeded max_pages={self.max_pages}")
 
 
@@ -154,12 +184,23 @@ class AzureResourceGraphClient:
         requester: HttpRequester | None = None,
     ) -> None:
         self.credential = credential
+        if page_size < 1:
+            raise ValueError("ARG page_size must be positive")
+        if max_pages < 1:
+            raise ValueError("ARG max_pages must be positive")
         self.page_size = page_size
         self.max_pages = max_pages
         self.timeout = timeout
         self.requester = requester or httpx.request
 
     def query(self, spec: QuerySpec, scope_ids: list[str]) -> list[dict]:
+        return list(self.query_with_metadata(spec, scope_ids).rows)
+
+    def query_with_metadata(
+        self,
+        spec: QuerySpec,
+        scope_ids: list[str],
+    ) -> PagedArgQueryResult:
         if not scope_ids:
             raise ValueError(f"ARG query '{spec.name}' requires at least one subscription scope")
 
@@ -170,7 +211,7 @@ class AzureResourceGraphClient:
 
         rows: list[dict] = []
         skip_token: str | None = None
-        for _ in range(self.max_pages):
+        for page_number in range(1, self.max_pages + 1):
             options: dict[str, Any] = {"$top": self.page_size}
             if skip_token:
                 options["$skipToken"] = skip_token
@@ -196,14 +237,22 @@ class AzureResourceGraphClient:
             page = payload.get("data") if isinstance(payload, dict) else payload
             if not isinstance(page, list):
                 raise TypeError(f"ARG query '{spec.name}' returned an invalid page")
-            rows.extend(item for item in page if isinstance(item, dict))
+            if any(not isinstance(item, dict) for item in page):
+                raise TypeError(f"ARG query '{spec.name}' returned an invalid page row")
+            rows.extend(page)
             skip_token = (
                 payload.get("$skipToken") or payload.get("skipToken")
                 if isinstance(payload, dict)
                 else None
             )
             if not skip_token:
-                return rows
+                return PagedArgQueryResult(
+                    rows=tuple(rows),
+                    pages_fetched=page_number,
+                    page_size=self.page_size,
+                    max_pages=self.max_pages,
+                    complete=True,
+                )
         raise RuntimeError(f"ARG query '{spec.name}' exceeded max_pages={self.max_pages}")
 
 

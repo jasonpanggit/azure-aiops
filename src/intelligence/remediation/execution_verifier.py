@@ -35,6 +35,73 @@ _TERMINAL_CANCELLED_STATUSES = frozenset({"canceled", "cancelled"})
 _RUNNING_STATUSES = frozenset({"inprogress", "running", "notstarted", "accepted"})
 
 
+def _nonnegative_int(value: Any) -> int:
+    """Coerce ``value`` to a non-negative int, never raising on bad input."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _provider_error_text(value: Any) -> str:
+    """Extract truncated error text from an ARM ``error``/``errorDetails`` item."""
+    if isinstance(value, dict):
+        text = str(value.get("message") or value.get("code") or "")
+    else:
+        text = str(value or "")
+    return text[:500]
+
+
+def _parse_patch_properties(payload: Any) -> dict[str, Any]:
+    """Extract nested patch-family result detail from an ARM operation body.
+
+    Never raises: a malformed or adversarial-shaped ``properties`` body
+    (missing, not a dict, non-numeric counts, unexpected error shapes)
+    resolves to safe zero/empty defaults rather than propagating an
+    exception (T-03.4-01).
+    """
+    properties = payload.get("properties") if isinstance(payload, dict) else None
+    if not isinstance(properties, dict):
+        # Hybrid Compute Update Manager operation results return the patch
+        # summary fields at the envelope root, while other ARM providers nest
+        # the same shape under ``properties``.
+        patch_result_fields = {
+            "installedPatchCount",
+            "failedPatchCount",
+            "pendingPatchCount",
+            "notSelectedPatchCount",
+            "error",
+            "errorDetails",
+        }
+        properties = (
+            payload
+            if isinstance(payload, dict) and patch_result_fields.intersection(payload)
+            else {}
+        )
+
+    provider_errors: list[str] = []
+    error = properties.get("error")
+    if isinstance(error, dict):
+        text = _provider_error_text(error)
+        if text:
+            provider_errors.append(text)
+    error_details = properties.get("errorDetails")
+    if isinstance(error_details, list):
+        for item in error_details:
+            text = _provider_error_text(item)
+            if text:
+                provider_errors.append(text)
+
+    return {
+        "detail_status": str(properties.get("status") or ""),
+        "installed_count": _nonnegative_int(properties.get("installedPatchCount")),
+        "failed_count": _nonnegative_int(properties.get("failedPatchCount")),
+        "pending_count": _nonnegative_int(properties.get("pendingPatchCount")),
+        "not_selected_count": _nonnegative_int(properties.get("notSelectedPatchCount")),
+        "provider_errors": provider_errors,
+    }
+
+
 class ExecutionVerificationUnavailable(RuntimeError):
     """Raised when the operation-URL poll itself cannot be completed.
 
@@ -92,6 +159,27 @@ class ExecutionVerifier:
 
         snapshot = execution_record.get("execution_snapshot") or {}
         if snapshot.get("snapshot_kind") == "defender_configuration":
+            # WR-02: the ARM envelope's own status must be interpreted
+            # before falling back to the properties-match heuristic -- a
+            # terminally-failed/cancelled ARM operation is never "still
+            # running" just because the desired properties happen not to
+            # match yet (CONTEXT.md's "interpret both envelope and nested
+            # properties.status" decision).
+            raw_status = str(payload.get("status") or "").casefold()
+            if raw_status in _TERMINAL_FAILED_STATUSES:
+                return {
+                    "verifiable": True,
+                    "outcome": _OUTCOME_FAILED,
+                    "verified_state": str(payload.get("status") or ""),
+                    "failure_details": _error_message(payload, response),
+                }
+            if raw_status in _TERMINAL_CANCELLED_STATUSES:
+                return {
+                    "verifiable": True,
+                    "outcome": _OUTCOME_CANCELLED,
+                    "verified_state": str(payload.get("status") or ""),
+                    "failure_details": _error_message(payload, response),
+                }
             properties = payload.get("properties") if isinstance(payload, dict) else {}
             desired = snapshot.get("desired_properties") or {}
             matched = _contains(properties, desired)
@@ -105,28 +193,98 @@ class ExecutionVerifier:
                 ),
             }
 
+        detail = _parse_patch_properties(payload)
         raw_status = str(payload.get("status") or "")
         normalized = raw_status.casefold()
 
+        # CR-03: a non-terminal ARM envelope status (e.g. "InProgress") must
+        # never be reinterpreted as a terminal failure just because Update
+        # Manager's progressive counts happen to show pending/failed patches
+        # -- pendingPatchCount > 0 (and, weaker but for consistency,
+        # failedPatchCount > 0) is completely ordinary mid-flight shape for a
+        # genuinely still-running multi-patch installation (03.4-01-PLAN.md:
+        # these counts are extracted "on every parseable patch-family poll
+        # (running, succeeded, or failed)"). Only once the envelope itself
+        # has reached a terminal state (mirroring WR-02's own
+        # envelope-status-first pattern immediately above) may remaining
+        # pending/failed counts be interpreted as partial/failed. Reporting
+        # a still-running operation as terminally "failed" would make it
+        # eligible for retry() while Azure is still actively working,
+        # risking a second concurrent submission against the same target.
+        is_terminal_envelope = normalized in (
+            _TERMINAL_SUCCEEDED_STATUSES | _TERMINAL_FAILED_STATUSES | _TERMINAL_CANCELLED_STATUSES
+        )
+        nested_failed = is_terminal_envelope and (
+            detail["detail_status"].casefold()
+            in {"completedwithwarnings", "partialsuccess", "timedout"}
+            or detail["failed_count"] > 0
+            # WR-01/CONTEXT.md's "partial success ... never clean success"
+            # decision: patches still pending (selected but neither
+            # installed nor failed) are material incompleteness, not a
+            # clean result, even when the envelope/nested status otherwise
+            # reads "Succeeded".
+            or detail["pending_count"] > 0
+        )
+        if nested_failed:
+            failure_details = (
+                "; ".join(detail["provider_errors"])
+                if detail["provider_errors"]
+                else _error_message(payload, response)
+            )
+            # A pending-only result (no failed_count, no explicit
+            # warnings/partial-success/timeout detail status) still needs a
+            # verified_state distinct from an unqualified terminal
+            # "Succeeded"/"CompletedWithWarnings" label, so a consumer
+            # reading the raw outcome cannot mistake a partially-completed
+            # patch run for a fully clean one (WR-01).
+            if (
+                detail["failed_count"] == 0
+                and detail["pending_count"] > 0
+                and detail["detail_status"].casefold()
+                not in {"completedwithwarnings", "partialsuccess", "timedout"}
+            ):
+                verified_state = "succeeded_with_pending_patches"
+            else:
+                verified_state = raw_status or detail["detail_status"]
+            return {
+                "verifiable": True,
+                "outcome": _OUTCOME_FAILED,
+                "verified_state": verified_state,
+                "failure_details": failure_details,
+                "verification_evidence": detail,
+            }
         if normalized in _TERMINAL_SUCCEEDED_STATUSES:
             return {
                 "verifiable": True,
                 "outcome": _OUTCOME_SUCCEEDED,
                 "verified_state": raw_status,
+                "verification_evidence": detail,
             }
         if normalized in _TERMINAL_FAILED_STATUSES:
+            failure_details = (
+                "; ".join(detail["provider_errors"])
+                if detail["provider_errors"]
+                else _error_message(payload, response)
+            )
             return {
                 "verifiable": True,
                 "outcome": _OUTCOME_FAILED,
                 "verified_state": raw_status,
-                "failure_details": _error_message(payload, response),
+                "failure_details": failure_details,
+                "verification_evidence": detail,
             }
         if normalized in _TERMINAL_CANCELLED_STATUSES:
+            failure_details = (
+                "; ".join(detail["provider_errors"])
+                if detail["provider_errors"]
+                else _error_message(payload, response)
+            )
             return {
                 "verifiable": True,
                 "outcome": _OUTCOME_CANCELLED,
                 "verified_state": raw_status,
-                "failure_details": _error_message(payload, response),
+                "failure_details": failure_details,
+                "verification_evidence": detail,
             }
         # InProgress/Running/anything else not recognized as terminal is
         # treated as still-running rather than guessed at as a failure.
@@ -134,6 +292,7 @@ class ExecutionVerifier:
             "verifiable": True,
             "outcome": _OUTCOME_RUNNING,
             "verified_state": raw_status or "unknown",
+            "verification_evidence": detail,
         }
 
     # -- HTTP ---------------------------------------------------------

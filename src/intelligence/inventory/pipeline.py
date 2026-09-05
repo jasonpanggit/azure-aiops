@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from intelligence.vulnerability.acquisition import (
+    AcquisitionFailure,
+    AcquisitionSuccess,
+    successful_rows_by_query,
+)
 from storage.datasets import DatasetStore
 from storage.locking import RunLock
 
@@ -70,6 +75,11 @@ class InventoryPipeline:
         law_specs = inventory_log_analytics_workspace_specs()
         specs = [*inventory_os_specs(), *inventory_resource_specs(), *law_specs]
         query_results = self.source.fetch(specs, subscriptions)
+        if query_results and all(
+            isinstance(value, (AcquisitionSuccess, AcquisitionFailure))
+            for value in query_results.values()
+        ):
+            query_results = successful_rows_by_query(query_results)
         requested_scope = {"subscription": sorted(subscriptions)}
         for spec in specs:
             for row in query_results.get(spec.name, []):

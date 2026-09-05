@@ -198,6 +198,63 @@ def _start_background_refresh(app: FastAPI, context: ApiContext) -> None:
         thread.join(timeout=5)
 
 
+def _start_verification_coordinator(app: FastAPI, context: ApiContext) -> None:
+    """Drive every due remediation execution on a dedicated background thread.
+
+    The autonomous half of Recommendation 3 (CR-03): an execution's
+    terminal status must not depend on a browser tab staying open. This
+    mirrors :func:`_start_background_refresh` exactly -- a bounded poll
+    interval, a stop event, per-pass error isolation (one failing record,
+    or the whole pass, never crashes the loop or blocks the next due
+    record), and a bounded-timeout shutdown join. A context built without
+    the provider (e.g. some test contexts) safely starts no thread at all.
+    """
+    if context.verification_coordinator_provider is None:
+        return
+    try:
+        coordinator = context.verification_coordinator_provider()
+    except Exception:
+        # WR-03: matches every per-pass call inside _loop() below (and
+        # _start_background_refresh's identical pattern) -- a remediation-
+        # subsystem-local construction failure must never escalate into a
+        # full API-startup failure.
+        logger.exception("remediation_verification_coordinator_construction_failed")
+        return
+    stop_event = threading.Event()
+    # Shorter than the provider-refresh interval: per-record verification
+    # backoff is already bounded at 60s (execution_service._next_backoff_seconds),
+    # so a tighter coordinator cadence lets a just-submitted execution's
+    # immediate (next_verification_at == now) first pass be picked up
+    # promptly without waiting a full provider-refresh cycle.
+    interval = 10
+
+    def _loop() -> None:
+        # Mirrors _start_background_refresh: run one pass immediately (do
+        # not wait a full interval before a freshly-restarted process picks
+        # up already-due work), then settle into the normal cadence.
+        try:
+            coordinator.run_once()
+        except Exception:
+            logger.exception("remediation_verification_pass_failed")
+        while not stop_event.wait(interval):
+            try:
+                coordinator.run_once()
+            except Exception:
+                logger.exception("remediation_verification_pass_failed")
+
+    thread = threading.Thread(
+        target=_loop, name="remediation-verification-coordinator", daemon=True
+    )
+    thread.start()
+    app.state.verification_coordinator_stop = stop_event
+    app.state.verification_coordinator_thread = thread
+
+    @app.on_event("shutdown")
+    def _stop_verification_coordinator() -> None:
+        stop_event.set()
+        thread.join(timeout=5)
+
+
 def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     """Build the API.
 
@@ -217,6 +274,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     )
     app.state.context = context
     _start_background_refresh(app, context)
+    _start_verification_coordinator(app, context)
     configured_origins = os.environ.get(
         "AIOPS_API_CORS_ORIGINS",
         "http://localhost:3000,http://127.0.0.1:3000",

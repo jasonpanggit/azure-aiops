@@ -11,11 +11,12 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
+import threading
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 from ontology.subscription_connection import (
     BusinessServiceLinkage,
@@ -54,6 +55,15 @@ class OnboardingError(RuntimeError):
 
 ORPHAN_SYNC_GRACE_MINUTES = 15
 
+#: Grace window for the *reactive* orphan check (see ``_reconcile_if_orphaned``).
+#: Much shorter than ``ORPHAN_SYNC_GRACE_MINUTES`` because this check only ever
+#: fires for a run_id this very process has no live record of, so there's no
+#: risk of racing a legitimately-running sync in *this* process -- the only
+#: race is between "submitted" and "registered in _live_run_ids", which
+#: resolves in milliseconds. Kept as a small positive number (rather than 0)
+#: purely as defense-in-depth against that submit/register ordering.
+ORPHAN_SYNC_REACTIVE_GRACE_SECONDS = 5
+
 
 class SubscriptionOnboardingService:
     #: Shared across every instance rather than per-service so that repeated
@@ -63,6 +73,23 @@ class SubscriptionOnboardingService:
     #: so a small bounded pool is enough to keep a handful of connections
     #: syncing concurrently without unbounded thread growth.
     _executor: ThreadPoolExecutor | None = None
+
+    #: run_ids for syncs currently executing on ``_executor`` in *this*
+    #: process. Consulted by ``_reconcile_if_orphaned`` so a poller
+    #: (health/detail) can detect -- within seconds, not just at the next
+    #: container startup -- that a "running" sync_state has no corresponding
+    #: live worker (e.g. the process that started it was killed mid-sync by
+    #: a deploy/restart/OOM) and fail it immediately instead of leaving the
+    #: UI stuck until the next process restart clears it via
+    #: ``_reconcile_orphaned_syncs``. Shared at the class level for the same
+    #: reason as ``_executor``: this reflects real, process-wide in-flight
+    #: work, not per-instance state. Assumes a single API replica (true for
+    #: this deployment); with multiple replicas, a run_id "live" on replica A
+    #: is invisible to replica B, so the reactive check only ever fires for
+    #: syncs this process itself lost track of, never for one legitimately
+    #: running elsewhere.
+    _live_run_ids: ClassVar[set[str]] = set()
+    _live_run_ids_lock = threading.Lock()
 
     def __init__(
         self,
@@ -142,6 +169,67 @@ class SubscriptionOnboardingService:
                 logger.debug(
                     "Unable to reconcile orphaned sync for %s", connection.connection_id, exc_info=True
                 )
+
+    def _reconcile_if_orphaned(self, connection: SubscriptionConnection) -> SubscriptionConnection:
+        """Reactively fail a "running" sync_state with no live worker.
+
+        ``_reconcile_orphaned_syncs`` only runs once, at process construction,
+        so a sync stranded by a mid-run deploy/restart/OOM stays "running"
+        (and the UI stays stuck) until the *next* process restart happens to
+        occur -- which may be minutes, hours, or never. This is the same
+        check, but invoked from every ``detail()``/``health_report()`` poll
+        instead: if ``sync_state.status == "running"`` and its ``run_id``
+        isn't in ``_live_run_ids`` (i.e. no thread on *this* process's shared
+        executor is actually working on it), and it's been running longer
+        than ``ORPHAN_SYNC_REACTIVE_GRACE_SECONDS``, it's safe to conclude the
+        worker that owned it is gone and fail it immediately -- the very next
+        poll after the orphaning event clears the UI instead of requiring a
+        manual restart.
+
+        Returns the (possibly updated) connection so callers building a
+        response always see the reconciled state without a second registry
+        round-trip.
+        """
+        state = connection.sync_state
+        if state is None or state.status != "running":
+            return connection
+        with self._live_run_ids_lock:
+            is_live = state.run_id in self._live_run_ids
+        if is_live:
+            return connection
+        if state.started_at:
+            try:
+                started_at = datetime.fromisoformat(state.started_at)
+            except ValueError:
+                started_at = None
+            if started_at is not None and self.clock() - started_at < timedelta(
+                seconds=ORPHAN_SYNC_REACTIVE_GRACE_SECONDS
+            ):
+                return connection
+        try:
+            failed_state = dataclasses.replace(
+                state,
+                status="failed",
+                last_failed_at=_iso(self.clock()),
+                attempts=state.attempts + 1,
+                stage="failed",
+                stage_message="Sync interrupted by a service restart or deployment",
+                message="Sync interrupted by a service restart or deployment",
+            )
+            saved = self._save_operation_state(connection.connection_id, sync_state=failed_state)
+            logger.warning(
+                "Reactively reconciled orphaned sync for connection %s (run_id=%s)",
+                connection.connection_id,
+                state.run_id,
+            )
+            return saved
+        except Exception:
+            logger.debug(
+                "Unable to reactively reconcile orphaned sync for %s",
+                connection.connection_id,
+                exc_info=True,
+            )
+            return connection
 
     @classmethod
     def _shared_executor(cls) -> ThreadPoolExecutor:
@@ -359,6 +447,7 @@ class SubscriptionOnboardingService:
 
     def detail(self, connection_id: str) -> dict[str, Any]:
         connection = self.registry.get(connection_id)
+        connection = self._reconcile_if_orphaned(connection)
         business = self.registry.metadata_for(connection)
         freshness = self.sync_coordinator.freshness(connection.sync_state)
         return {
@@ -452,6 +541,8 @@ class SubscriptionOnboardingService:
             progress_pct=0,
         )
         saved = self._save_operation_state(connection_id, sync_state=running_state)
+        with self._live_run_ids_lock:
+            self._live_run_ids.add(identifier)
         self._shared_executor().submit(self._run_sync_job, connection_id, mode, identifier)
         return {
             "connection_id": connection_id,
@@ -513,6 +604,9 @@ class SubscriptionOnboardingService:
                 self._save_operation_state(connection_id, sync_state=failed_state)
             except Exception:
                 logger.exception("Unable to persist failed sync state for %s", connection_id)
+        finally:
+            with self._live_run_ids_lock:
+                self._live_run_ids.discard(run_id)
 
     def _save_operation_state(
         self,
@@ -540,6 +634,7 @@ class SubscriptionOnboardingService:
         connections = (
             [self.registry.get(connection_id)] if connection_id else self.registry.list()
         )
+        connections = [self._reconcile_if_orphaned(connection) for connection in connections]
         summaries = [
             self.health.summarize(
                 connection, self.sync_coordinator.freshness(connection.sync_state)

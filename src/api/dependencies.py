@@ -124,7 +124,17 @@ class ApiContext:
     # OS inventory is a read-only projection of the active immutable generation.
     inventory_provider: Callable[[], Any] | None = None
     inventory_read_port_provider: Callable[[], Any] | None = None
+    exposure_read_port_provider: Callable[[], Any] | None = None
+    exposure_ontology_provider: Callable[[Scope], Any] | None = None
+    exposure_remediation_provider: Callable[[], Any] | None = None
     fabric_iq_provider: Callable[[], Any] | None = None
+    # The autonomous background verification coordinator (Phase 03.4,
+    # Recommendation 3) is a provider/callable -- not a pinned instance --
+    # because it is only ever invoked once at app startup to obtain the one
+    # long-lived coordinator instance the background thread drives; a test
+    # context built without this provider simply never starts that thread
+    # (mirrors provider_runtime's own optional-thread-start guard).
+    verification_coordinator_provider: Callable[[], Any] | None = None
 
     def resolve_provider(self, name: str, *, optional: bool = False) -> Any:
         """Resolve a provider through the managed runtime or legacy callable."""
@@ -303,10 +313,16 @@ def require_operate(principal: CurrentPrincipal, context: Context) -> Principal:
     return principal
 
 
+def require_approve(principal: CurrentPrincipal, context: Context) -> Principal:
+    context.authorizer.require(principal, "approve")
+    return principal
+
+
 def require_write(principal: CurrentPrincipal, context: Context) -> Principal:
     context.authorizer.require(principal, "write")
     return principal
 
 
 OperatePrincipal = Annotated[Principal, Depends(require_operate)]
+ApprovePrincipal = Annotated[Principal, Depends(require_approve)]
 WritePrincipal = Annotated[Principal, Depends(require_write)]

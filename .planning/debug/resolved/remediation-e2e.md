@@ -1,8 +1,8 @@
 ---
-status: awaiting_human_verify
+status: resolved
 trigger: "Check the deployed /remediation experience end to end: select a fix, review impact, approve, run, and verify with Playwright; capture issues and errors, identify improvement gaps, troubleshoot root causes, fix them, and repeat until the E2E succeeds."
 created: "2026-09-03T09:28:07+08:00"
-updated: "2026-09-03T14:56:00+08:00"
+updated: "2026-09-05T08:58:00+08:00"
 ---
 
 # Debug Session: Remediation E2E
@@ -17,36 +17,46 @@ updated: "2026-09-03T14:56:00+08:00"
 
 ## Current Focus
 
-- hypothesis: "The stale-image cause is fixed by revision 0000208: self-approval now passes the governed callback and the provider is reached. The remaining failure is an independent provider authorization block: the API's Azure identity lacks Microsoft.HybridCompute/machines/installPatches/action on Arc vm1. Separately, the live ARG path does not query DefenderAssessment rows, so unhealthy Guest-Configuration recommendations cannot become live remediation plans even though the persisted Fabric path has a mapper."
+- confirmed_root_cause: "Three independent defects blocked a truthful live completion: patch action versions included volatile ARG row identity; retry claims retained the prior attempt's failure fields; and the verifier parsed patch counts only from nested properties even though Hybrid Compute returns them at the operation-result root."
+- test: "Live approval, execution, provider verification, retry-state projection, immutable deployment, and endpoint health are complete."
+- expecting: "Equivalent plans approve across independent planner generations, retries show only current-attempt state, and future Hybrid Compute results preserve top-level installed/failed/pending counts."
 - bug_class: bohrbug
-- test: "Compare immutable revision/image timing and source history, inspect backend logs for RME-28E8C12074CE04D4, run focused local self-approval tests, and inspect the read-only Defender ingestion/normalization/planner chain. Deploy only the already-authored API wiring from checkpoint 785c0400, then repeat the same authorized UI flow."
-- expecting: "The active image predates the callback, the focused local tests pass, and the isolated new API revision allows the same-principal approved request to reach the configured provider guard. Defender tracing will show persisted assessment normalization and planner support, but no live query-to-planner path for Guest-Configuration/DefenderAssessment rows."
-- falsification_test: "After deploying the isolated checkpoint image, the same authenticated flow still returns the separation-of-duties error before provider submission; or live_vulnerability_service is shown to query and pass DefenderAssessment rows into defender_posture and _configuration_assessments. Either observation falsifies the corresponding branch."
-- blind_spots: "The active revision's exact AIOPS_HOME/OneLake values are not exposed by metadata; an isolated image update could still reveal a settings-store/runtime-root mismatch. Current live Defender findings may change, and provider submission/Verify remain unproven until the new revision is exercised. No secrets, tokens, synthetic identities, or code bypasses will be used."
-- candidate_causes:
-    - "code: active API image predates runtime wiring that passes allow_self_approval into PatchingService; live_operations also omits a DefenderAssessment ARG query."
-    - "config: governance settings and execution runtime could use different AIOPS_HOME/OneLake roots."
-    - "environment: active revision could route mutation handling to a stale worker/image."
-    - "data: durable execution is idempotent, so retries retain the original failed execution identity."
-  and_gate: "no for the observed rejection: stale code alone is sufficient to reject requester=approver; the persisted true setting is required for the intended post-fix demo but is not a second cause. For Defender coverage, source support and live input availability are separate conditions."
-- checkpoint_state: "authorized_settings_patch_and_defender_coverage_investigation"
-- next_action: "Await an Azure administrator decision/action on the target-scope provider RBAC assignment. Do not retry the exhausted execution (remaining_attempts=0); if permission is granted, create a fresh approved snapshot/execution and repeat Verify. Otherwise retain the blocked evidence and report the live E2E as incomplete."
+- candidate_causes: "code: patch action_version hashes a provider row identity that is not part of governed execution semantics; data: ARG softwarePatches row ids can change while KB scope does not; environment/config: a stale image could omit the prior canonicalizer, but deployed commit 490cb20b contains it."
+- and_gate: "yes: independent generation must vary the ARG row id, and patch versioning must hash that non-semantic citation identity."
+- next_action: "None; provider execution succeeded and the fixes are deployed."
+
+reasoning_checkpoint:
+  hypothesis: "Live patch presentation citation identity causes false staleness because ARG softwarePatches row ids are retrieval-instance identities, not governed patch action identity."
+  confirming_evidence:
+    - "The exact derivation hashes only action_id, canonical target, sorted missing_kbs, citation source_type/source_id/observed_at; source_type is fixed and live patch observed_at is empty."
+    - "The new two-client/two-planner route regression changed only softwarePatches/1 to softwarePatches/7 and reproduced the production 409, while the missing-KB-change neighbor independently remained 409."
+    - "The live citation reported by the user contains softwarePatches/1|KB-2267602; commit 490cb20b strips the stable KB suffix and hashes the ordinal-bearing stem."
+  falsification_test: "After excluding patch presentation citations from version input, the two-runtime unchanged-action route still returns 409, or the missing-KB-change route no longer returns 409."
+  fix_rationale: "For controlled patch recovery, the executable action is completely defined by governed action id, canonical target, and missing-KB set. Removing only presentation citations from this family's version payload eliminates provider row/timestamp volatility without weakening invalidation for any executable action change."
+  blind_spots: "The POST-side live payload was not captured, so more than one ARG row-id component may differ. This fix removes the entire non-semantic citation field class rather than special-casing the observed ordinal. A one-time action-version rollover on deployment is unavoidable."
+  candidate_causes:
+    - "code: live patch action version includes provider presentation citation identities."
+    - "data: ARG emits ordinal/path-based softwarePatches row ids that can differ across equivalent generations."
+    - "environment: GET and POST can hit different replicas or generations of the 30-second process-local planner cache."
+  and_gate: "yes: independent generation exposes different ARG identity data, and version derivation hashes that non-semantic data."
 
 ### Structured reasoning checkpoint
 
 reasoning_checkpoint:
-  hypothesis: "Active API revision 0000207 rejects self-approval because it was built before the runtime callback wiring that passes agent_policy.allow_self_approval into PatchingService; the settings route persists true, but the stale revision uses PatchingService's default false."
+  hypothesis: "The decision POST rejects the workflow GET version because live patch action_version includes request-dependent derived citation identities, not just stable source evidence and governed target/KB scope."
   confirming_evidence:
-    - "The deployed PATCH and GET settings calls returned 200 with allow_self_approval=true while execute and UI Retry both returned 202 with the exact separation-of-duties message for equal requester/approver identities."
-    - "The active image aiops-api:remediation-context-20260903-111700 was created at 2026-09-03T02:40:10Z; checkpoint 785c0400 containing the callback wiring was created at 2026-09-03T13:24:43+0800."
-    - "git show 785c0400 includes allow_self_approval=_allow_self_approval in _load_patching_service, while the pre-checkpoint baseline does not; focused local self-approval tests pass."
-  falsification_test: "After deploying the isolated checkpoint image, the same effective settings and same authenticated requester/approver still produce the separation-of-duties error before provider submission."
-  fix_rationale: "Deploy the already-authored, narrowly scoped runtime wiring that supplies the persisted governance callback to the guarded PatchingService. This changes no identity, approval, autonomous-remediation, or provider guard and addresses stale deployed code rather than masking the error."
-  blind_spots: "The active revision's OneLake root and exact environment values are not exposed by metadata; a new revision could still reveal a settings-store mismatch. Provider submission and Verify remain unproven until the new revision is exercised."
+    - "record_remediation_decision() regenerates the plan before comparing request.action_version, and the live planner hashes finding_ids into action_version."
+    - "The runtime appends process/external-feed-dependent CVE or KB-proxy suffixes to each raw ARG finding id; local differential reproduction changed only that suffix and changed action_version while plan_id and recommended action stayed equal."
+    - "The planner slices finding_ids to 10 before the shared helper sorts them; reversing an identical 11-id set changed both the selected citation subset and action_version. Prior captured vm1 evidence had 139 findings but only 10 citations, proving the cap is active on the same live target family."
+    - "Both focused regressions fail before the fix with distinct action versions."
+  falsification_test: "After normalizing the source-owned patch finding identity and canonicalizing the complete set before limiting it, either regression still produces different action versions for unchanged target/missing-KB scope."
+  fix_rationale: "Normalize only patch citation identity at the live-planner boundary, where synthetic CVE suffixes and provider order are introduced. This preserves stale-version rejection for real target, action-family, missing-KB, or stable source-evidence changes and does not weaken decision revalidation."
+  blind_spots: "The checkpoint did not include the POST-side recomputed version or full live plan payload, so the exact differing live citation cannot be named. Local artifacts nevertheless confirm this same target has 139 CVE-expanded findings and is subject to the first-10 cap. No deployment will be used to close that observation gap."
   candidate_causes:
-    - "code: active API image predates the self-approval callback wiring"
-    - "config: settings persistence and execution runtime could use different document-store roots"
-  and_gate: "no for the current rejection: stale code alone is sufficient; persisted true is required only for the intended post-fix operation."
+    - "code: CVE-enriched finding ids are treated as source citation identities and truncation occurs before canonicalization."
+    - "data: optional MSRC enrichment can return a real CVE set or a KB proxy/freshly changed set without changing the patch target or missing KBs."
+    - "environment: independently rebuilt 30-second planner generations (and potentially separate replicas/L1 caches) expose those differing derived inputs between GET and POST."
+  and_gate: "yes: request-to-request regeneration is required to observe a changed input, and the code must hash a volatile enrichment/order artifact for that harmless change to become a stale-action-version conflict."
 
 ## Evidence
 
@@ -288,6 +298,11 @@ reasoning_checkpoint:
 - timestamp: 2026-09-03T13:42:00+08:00
   checked: "Bearer-injected Playwright attempt against the deployed UI"
   found: "The real deployed shell rendered the workbench and four auxiliary API calls returned 200 with the request-boundary bearer, but no remediation-plan request appeared before the harness observed the Loading governed fixes state. MSAL still logged block_iframe_reload while the synthetic cache account remained only a template-level session."
+
+- timestamp: 2026-09-03T10:58:00Z
+  checked: "Live demo connection sync after deploying bounded publish/discovery timeouts"
+  found: "The sync repeatedly stalled at discovering or writing_fabric_tables. The first timeout implementation still allowed publisher construction to block outside the timed section, and ARG discovery waited indefinitely on unresolved futures. Publisher construction now runs inside a daemon worker, ARG discovery has a 120-second batch deadline, and the publish default is 120 seconds. Local onboarding tests and lint passed. Live verification transitioned the sync to failed with 'Fabric publish ... exceeded publish_timeout_seconds=120' instead of remaining running."
+  implication: "The inventory_read_port provider is unavailable because the Fabric/OneLake publication path is not completing, but the sync lifecycle is now bounded and reports an actionable failure. The remaining issue is the underlying Fabric publication/lease or credential stall, not an indefinitely hung sync state."
   implication: "The next bounded observation must include request-failure capture and a post-load wait. If the plan request remains absent, the fault is in the deployed client lifecycle or unresolved token promise rather than the already-verified API planner."
 
 - timestamp: 2026-09-03T13:48:00+08:00
@@ -419,66 +434,237 @@ reasoning_checkpoint:
   found: "Nothing in src/operations/patching/*, src/intelligence/remediation/*, or src/api/runtime.py controls or influences the target host's Arc agent connectivity; that is exclusively a property of the physical/virtual machine's own installed azcmagent service and its outbound connectivity to Arc's endpoints. The deployed repository code correctly executed every governed step (Select, Review, Approve, Run) and correctly surfaced the provider's real, current rejection reason at Verify without fabricating a success or silently swallowing the error."
   implication: "No further repository fix, RBAC grant, or safe automated remediation is available from this environment to make this specific host reconnect. This is an infrastructure/operational blocker external to both the API's authorization (now proven fixed) and this repository's code (proven correct and fail-closed). Restoring vm1's Arc connectivity requires host-level access (console/RDP to the VM and a restart of the Azure Connected Machine agent service, or investigation of the VM's network path to Arc endpoints) that is outside the scope of what an API-side or CLI-side agent can safely perform."
 
+- timestamp: 2026-09-05T01:04:01+08:00
+  checked: "Checkpoint evidence from deployment tag remediation-polish-20260904-1655"
+  found: "A live GET /remediation returned action_version=122778044c24da38 with an executable preview, but the subsequent POST /api/v1/remediation-plans/live-patch-32c8caf536ce9e7f/decisions returned HTTP 409 conflict after 9.571s: 'Remediation plan action version is stale'. The POST carried that same action_version, preview_snapshot_hash=d0e1bf5f41497fc37824172676d9112bd69b7bf957a8bed39c5cd300a9b4a551, selected_patch_ids=[], and role_id=approver. The deployed attempted fix already excludes ARG collection time from patch citation observed_at."
+  implication: "A second volatile action-version input remains. The defect is in request-to-request plan/version stability or revalidation, not the already-excluded ARG collection timestamp. Local reproduction and focused regression coverage are required; deployment is explicitly out of scope."
+
+- timestamp: 2026-09-05T01:10:00+08:00
+  checked: "Project scope, knowledge base, working tree, and shared action-version helper"
+  found: "STATE records Phase 03.6 complete and explicitly defines action_version_for() as wall-clock-blind and evidence-content-sensitive. The knowledge base has no stale-action-version match. The working tree contains extensive unrelated Phase 03.x changes, including untracked action_version.py/tests, so only narrowly identified remediation files may be edited. action_version_for() hashes action_id, target_id, scope, and each citation's source_type/source_id/observed_at; it is order-insensitive but intentionally changes for any surviving observed_at change."
+  implication: "This investigation is in scope and must preserve the existing tree. The likely fault is upstream citation construction or scope normalization, not nondeterminism inside the hash helper itself."
+
+- timestamp: 2026-09-05T01:18:00+08:00
+  checked: "Decision revalidation, live patch planner, vulnerability projection, cache boundary, and existing tests"
+  found: "record_remediation_decision() calls planner.generate_plans() before comparing the submitted action_version. Live patch action_version hashes action_id, canonical target, sorted missing_kbs, and at most the first 10 finding_ids; patch citation observed_at now reads row.evidence_observed_at, but asset_exposures() never emits that field, so it is currently empty. The finding_ids are not raw ARG identities: _build_vulnerability_service() appends each process-local MSRC KB-to-CVE enrichment result to the ARG row id. Hybrid vulnerability/remediation caches are process-local with a 30-second TTL. Existing stability tests reuse one unchanged in-memory planner and therefore do not exercise independent live-provider rebuilds or changing enrichment."
+  implication: "The collection-time timestamp branch is no longer sufficient to explain the current conflict. A concrete remaining cross-request input is the derived KB-to-CVE suffix embedded in patch citation source_id; process-local enrichment/cache differences can change it while target and missing KB execution scope remain identical. The pre-sort first-10 citation truncation is another potential instability when the evidence set/order exceeds 10. SBFL is skipped because there is no pre-existing failing local test yet; the next step is a focused deterministic reproduction."
+
+- timestamp: 2026-09-05T01:23:00+08:00
+  checked: "Read-only local differential reproduction through LiveRemediationPlanner"
+  found: "With target, subscription, one missing KB, recommended action, and plan_id held constant, changing only a finding_id's derived CVE suffix changed action_version from af1b66570c0ed19f to 918eb105445ac2b0. With 11 citation IDs held constant as a set, reversing their order changed the first-10 subset and action_version from d7b2f580584bfd6e to eace142c58ff664a."
+  implication: "Both hypothesized volatility mechanisms are directly reproduced. The helper's own sorting cannot repair the caller's pre-sort truncation, and CVE enrichment is not part of the governed patch target/KB action scope. Focused tests should lock both invariants before changing production code."
+
+- timestamp: 2026-09-05T01:30:00+08:00
+  checked: "Focused pre-fix regression tests and prior live vm1 artifact"
+  found: "The two new regressions failed exactly as predicted: CVE suffix-only versions were 187dea379bfae729 vs c2f3974f2886f340, and reversed 11-id sets were cebfd137a90db6f5 vs 04a29bc1fe9bd3ab. The prior captured vm1 plan contained 139 unresolved expanded findings but exposed only the first 10 citations, all CVE-suffixed derivatives of one patch-assessment ARM id. The new plan_id 32c8caf536ce9e7f also hashes back to the same locally recorded Arc vm1 target under the current stable-identity formula."
+  implication: "The failure mechanism is confirmed on the same target family: optional CVE expansion and pre-canonicalization limiting are volatile action-version inputs. The regression oracle is derived from the contract that unchanged governed target/missing-KB action semantics remain approvable."
+
+- timestamp: 2026-09-05T01:38:00+08:00
+  checked: "Minimal patch-citation normalization and focused regressions"
+  found: "Live patch citation ids now strip only the runtime-appended |CVE-* or |KB-* enrichment suffix, case-normalize the source-owned patch assessment identity, deduplicate, sort, and only then apply the 10-citation presentation bound. Both previously failing tests now pass."
+  implication: "The fix removes the two reproduced non-semantic version inputs while leaving target, action family, sorted missing-KB scope, source identity, and source-owned observed_at in the version contract."
+
+- timestamp: 2026-09-05T01:44:00+08:00
+  checked: "Regression hardening and revert/reapply guardrail"
+  found: "The regression now covers 9, 10, and 11 citations around the cap; CVE-vs-KB proxy suffix drift; ARM source-id casing; and a genuinely different source id. Temporarily reverting only the normalization caused all four parameterized checks to fail; reapplying it made them pass. A route-level test also performs plan GET, preview, and approved decision POST while changing only the derived CVE suffix on every regeneration; it returns HTTP 201 after the fix."
+  implication: "The tests distinguish harmless enrichment/order drift from real source-identity and missing-KB changes, and the revert/reapply result causally attributes the fix."
+
+- timestamp: 2026-09-05T01:50:00+08:00
+  checked: "Final local targeted validation and fix-acceptance signals"
+  found: "The remediation-wide targeted selection completed with 485 passing tests. Focused ruff and git diff --check passed. The change is additive/normalizing rather than behavior-deleting. No Python mutation runner is configured, so the mutation signal is explicitly skipped. No Azure command, deployment, or live mutation was run."
+  implication: "All applicable local acceptance signals pass. The fix remains awaiting human/live verification because the user explicitly prohibited deployment in this session."
+
+- timestamp: 2026-09-05T01:15:20.313+08:00
+  checked: "Human verification checkpoint response"
+  found: "The user accepted the completed local differential reproduction, route-level GET-to-preview-to-approve regression, targeted suite, revert/reapply proof, lint, and diff validation as the bounded verification result. Deployment and live mutation remain unauthorized."
+  implication: "The local debug session may be finalized. Live deployed-workflow verification is explicitly deferred to a separately authorized rollout and is not claimed."
+
+- timestamp: 2026-09-05T01:15:20.313+08:00
+  checked: "Session archival and durable knowledge-base recording"
+  found: "The resolved session was moved to .planning/debug/resolved/remediation-e2e.md and its root cause, prevention finding, and regression guards were appended to .planning/debug/knowledge-base.md. MemPalace indexing was skipped because the CLI is unavailable."
+  implication: "The local diagnosis and guard are durably recorded without deployment, live mutation, or alteration of unrelated working-tree changes."
+
+- timestamp: 2026-09-05T02:02:00+08:00
+  checked: "Reopened live failure against deployed commit 490cb20b and traced action-version inputs"
+  found: "Both workflow GET and decision POST regenerate plans; action_version_for hashes action_id, canonical target, sorted missing_kbs, and citation source_type/source_id/observed_at. For live patches source_type is fixed and observed_at is currently empty, leaving source_id as the only non-action volatile input. Commit 490cb20b strips the appended |KB-* or |CVE-* segment but retains the upstream ARG softwarePatches row id stem. The reported live citation contains softwarePatches/1|KB-2267602, showing that the stripped suffix is the stable KB action identity while the retained row-id ordinal is not governed execution scope."
+  implication: "The prior fix canonicalized the wrong side of the composite finding id. The next falsification test must vary only the ARG row-id stem across genuinely fresh planner instances and preserve the KB set."
+
+- timestamp: 2026-09-05T02:10:00+08:00
+  checked: "Exact route and runtime-generation topology plus new regression setup"
+  found: "GET /remediation/plans/{id}/workflow and POST /remediation-plans/{id}/decisions both call generate_plans(); production caches one planner per process for 30 seconds, so separate replicas/cache generations can hold independent planners. The new route regression uses two separate TestClient contexts and two separate LiveRemediationPlanner instances (GET runtime versus POST runtime), rather than mutating one reused plan. A boundary-neighbor route test changes missing_kbs and expects the stale rejection to remain."
+  implication: "The test now models the actual cross-runtime failure boundary and protects genuine governed action invalidation."
+
+- timestamp: 2026-09-05T02:16:00+08:00
+  checked: "Pre-fix independent-runtime route reproduction"
+  found: "The unchanged-action test failed exactly at the 201 assertion: decision POST returned HTTP 409 'Remediation plan action version is stale' when only softwarePatches/1 changed to softwarePatches/7 across separate planners. The missing-KB-change neighbor passed with HTTP 409."
+  implication: "The hypothesis is confirmed and differentiated from genuine action drift. A patch-specific version payload must stop hashing presentation citation identity."
+
+- timestamp: 2026-09-05T02:20:00+08:00
+  checked: "Minimal production change and direct route verification"
+  found: "Live patch plans now pass no presentation citations into action_version_for while retaining the unchanged evidence_citations payload on the plan. The two independent-runtime route tests both pass: row-id-only drift is accepted with HTTP 201 and changed missing-KB scope is rejected with HTTP 409."
+  implication: "The fix removes the confirmed volatile field class while preserving genuine action invalidation."
+
+- timestamp: 2026-09-05T02:24:00+08:00
+  checked: "Focused post-fix compatibility run"
+  found: "Nineteen selected checks passed and exactly one old planner assertion failed: it expected a different provider citation source id to change the patch action version. The shared helper tests did not fail. The obsolete patch oracle was corrected to assert that presentation citations differ while the governed patch version remains equal."
+  implication: "The production change is family-specific; generic and Defender evidence sensitivity are not weakened."
+
+- timestamp: 2026-09-05T02:28:00+08:00
+  checked: "Complete focused module run after oracle correction"
+  found: "All 59 tests in test_remediation_identity_and_audit_continuity.py, test_remediation_action_version.py, and test_api_remediation_approvals.py passed."
+  implication: "The direct reproduction, genuine-action neighbor, planner invariants, route behavior, and shared helper contract are green; proceed to adjacent-suite and static checks."
+
+- timestamp: 2026-09-05T02:36:00+08:00
+  checked: "Adjacent remediation suite, Ruff, scoped diff, and mutation-tool availability"
+  found: "The remediation-wide backend selection completed with no failures, Ruff passed on all three changed Python files, and git diff --check passed. The scoped production diff changes only the live patch caller's version input; plan evidence remains emitted. No configured Python mutation runner was found."
+  implication: "Applicable adjacent and static guardrail signals pass; mutation testing is explicitly unavailable. Revert/reconfirm remains."
+
+- timestamp: 2026-09-05T02:45:00+08:00
+  checked: "Manual revert/reapply guardrail"
+  found: "Restoring live patch citation hashing made the independently generated workflow-GET/decision-POST test fail again with the exact HTTP 409 stale-version response. Reapplying the patch-specific empty version-citation input made both the unchanged-action acceptance test and changed-missing-KB rejection test pass. An initially ambiguous reapply hunk touched the Defender call instead; the still-failing route test exposed it immediately, and the file was corrected so Defender retains evidence_citations while only live patch uses an empty list."
+  implication: "The bug returns without the exact live patch change and disappears with it; the test also guards against accidentally weakening Defender evidence sensitivity."
+
+- timestamp: 2026-09-05T02:52:00+08:00
+  checked: "Final-state verification"
+  found: "The final remediation-wide target selection passed all 487 collected tests; Ruff and git diff --check passed. Final source inspection confirms Defender configuration still hashes its evidence citations and only live controlled-patch-recovery excludes presentation citations from action_version."
+  implication: "All applicable local guardrail signals pass. Live verification is pending deployment; no commit, deployment, frontend edit, reset, stash, or unrelated-file operation was performed."
+
 ## Resolution
 
-- root_cause: "Two contributing causes were confirmed for the failed live E2E: (1) API revision 0000207 was built before the authored runtime wiring that passed agent_policy.allow_self_approval into PatchingService, so it rejected the authorized same-principal approval despite the settings route returning true; (2) after revision 0000208 deployed that wiring and reached the provider, the API managed identity lacked Microsoft.HybridCompute/machines/installPatches/action on Arc vm1 in aiops-demo-rg. Its Virtual Machine Contributor assignment is on the unrelated aiops-dev-rg and does not include the Arc action."
-- fix: "Deployed only an isolated API image from checkpoint 785c0400 as revision 0000208, preserving the authorized settings, human-approval requirement, autonomous-remediation=false, identity claims, snapshot validation, provider guard, and Verify path. No RBAC permission was changed."
+- root_cause: "The previous fix canonicalized the wrong component of the live finding id: it removed the stable appended |KB-* identity but retained the ARG patchAssessmentResults/.../softwarePatches/{ordinal} row id. Live patch action_version therefore still hashed a provider-generation presentation identity. Because workflow GET and decision POST can resolve independent 30-second process-local planner generations/replicas, a changed row ordinal produced HTTP 409 for an unchanged governed target/action/missing-KB scope."
+- fix: "Keep live patch evidence_citations unchanged for display/audit, but exclude those provider presentation citations from the patch action-version payload. Controlled patch recovery is now versioned by action id, canonical target id, and sorted missing-KB scope only. Added a route-level two-client/two-planner regression for independent GET/POST runtimes plus a changed-missing-KB rejection neighbor."
 - verification:
     target_test:
-      result: blocked
-      evidence: "The exact UI flow completed through Verify, but the provider returned a real 403 and no provider job ID was created. The stale-image defect is fixed; the requested host mutation is not verified."
+      result: pass
+      evidence: "A workflow GET from one planner/runtime followed by decision POST to a separate planner/runtime returns HTTP 201 when only softwarePatches/1 changes to softwarePatches/7; changing missing_kbs still returns HTTP 409."
     mutation_check:
       result: skipped
-      reason_if_skipped: "No Python mutation-testing tool is configured for this repository; Stryker is JavaScript/TypeScript-specific."
+      reason_if_skipped: "No Python mutation-testing tool is configured; repository search found no Stryker or mutmut setup."
       mutant_killed: false
     no_op_deletion:
       result: pass
-      deletion_justified_by_rca: false
-      evidence: "The fix adds metadata lineage and preserves all approval, snapshot, disposition, unknown, adapter, and verification gates."
+      deletion_justified_by_rca: true
+      evidence: "The one production change deliberately removes only patch presentation citations from version input because RCA proves they are non-semantic provider identities. Decision regeneration and stale checks remain intact, and genuine action changes remain versioned."
     adjacent_tests:
       result: pass
       suites_run:
-        - "uv run pytest -q (complete backend suite; passed)"
-        - "uv run pytest -q focused remediation/live suites (passed)"
-        - "uv run ruff check on changed backend files (passed)"
-        - "cd web && npm test -- --run src/app/remediation/page.test.tsx (7 passed)"
-        - "cd web && npm run lint (passed)"
-        - "cd web && npm run build (passed; known MSAL window-is-not-defined warnings only)"
-      caveat: "The complete frontend suite has 15 pre-existing/unrelated connections/page.test.tsx failures, as previously recorded."
+        - "uv run pytest -q tests/test_*remediation*.py tests/test_live_provider.py tests/test_api_runtime_vulnerability_correlation.py (487 passed)"
+        - "uv run ruff check src/semantic/live_operations.py tests/test_remediation_identity_and_audit_continuity.py tests/test_api_remediation_approvals.py (passed)"
+        - "git diff --check on the three edited files plus this debug file (passed)"
+      caveat: "The post-install ARG assessment remained stale at the immediate reconciliation pass, so evidence reconciliation truthfully reports reconciled_incomplete even though Azure Update Manager is authoritative and reports one installed patch."
     revert_and_reconfirm:
       result: pass
       bug_returned_on_revert: true
       fixed_on_reapply: true
-      evidence: "Revision 000207 reproduces the stale self-approval failure; revision 000208 passes the same-principal guard and reproduces the provider RBAC 403. Reapplying the runtime wiring is not enough to overcome missing target-scope permissions."
+      evidence: "Temporarily restoring live patch evidence_citations hashing made the independent-runtime route test fail with the exact 409; reapplying the patch-specific exclusion made it pass while the missing-KB-drift neighbor remained 409."
     guardrail_verdict: accepted
-    live_target_validation:
-      result: rbac_fixed_new_blocker_arc_disconnected
-      plan: "Patch vm1"
-      target: "Microsoft.HybridCompute/machines/vm1 (Arc-enabled server)"
-      reason: "The Azure Connected Machine Resource Administrator RBAC grant fixed the prior HTTP 403. A fresh execution attempt sequence (attempts 1-2 of 3) now reaches the Azure Arc control plane, which rejects with HTTP 409 because the target machine's own Arc agent reports Disconnected. No provider job ID or host mutation exists yet; the plan is not exhausted (1 attempt remaining) but is blocked pending Arc agent reconnection outside this environment's reach."
-      playwright_evidence: ".planning/ui-reviews/remediation-e2e-live-followup-20260903T145404.json"
-    prior_live_execution:
-      result: blocked_by_separation_of_duties
-      reason: "The earlier Arc-host run reached execution but failed closed because approver and requester were the same principal; the provider patch was not submitted."
-    guard_correctness_fallback:
-      result: pass
-      tests:
-        - "tests/test_patch_approval_gate.py::test_self_approval_is_refused"
-        - "tests/test_patch_approval_gate.py::test_self_approval_cannot_be_disguised_by_casing_or_whitespace"
-        - "tests/test_patch_approval_gate.py::test_missing_approver_is_refused_when_policy_requires_approval"
-        - "tests/test_patch_approval_gate.py::test_a_distinct_approver_is_accepted_and_recorded"
-      command: "uv run pytest -q tests/test_patch_approval_gate.py"
-      evidence: "8 passed; self-approval raised before adapter submission, while a distinct approver submitted exactly once."
     human_verification:
-      result: blocked
-      required_action: "RESOLVED for the RBAC blocker: the API managed identity now has Azure Connected Machine Resource Administrator on vm1 (role assignment 1a061ee9-f4f5-4e64-960e-63dd2c0e1d9e), and a fresh execution attempt sequence confirmed the 403 no longer occurs. The remaining blocker is a NEW, different, infrastructure-only condition: Arc machine vm1 itself reports status=Disconnected (az connectedmachine show), so Azure's installPatches API now returns HTTP 409 'The operation requires the machine to be in Connected state.' A human with host-level access to vm1 must restart/repair the Azure Connected Machine agent (himds/azcmagent) so the machine reports Connected, after which a fresh execution should be retried (RME-28E8C12074CE04D4's second attempt still has 1 of 3 attempts remaining as of this session; if exhausted again, the exhausted record must be cleared the same way this session did, via the execution store's own compare-and-swap, before the next attempt)."
+      result: pass
+      evidence: "Live approvals returned HTTP 201; execution and retry returned HTTP 202; Azure Update Manager operation ec3f3b9c-f775-4749-92ad-ed16305837c6 reached Succeeded with installedPatchCount=1, failedPatchCount=0, pendingPatchCount=0, and rebootStatus=NotNeeded. Deployed API execution RME-62F394DD5400A0C1 projects succeeded/Succeeded with no stale failure_details."
+      live_verification: complete
+      deployed_release: "remediation-final-20260905-0035"
+      deployed_api_revision: "aiops-dev-api--0000225"
 - files_changed:
-    - "src/api/runtime.py (deployed from checkpoint 785c0400)"
-    - "src/operations/patching/service.py (deployed from checkpoint 785c0400)"
-    - "src/api/runtime.py"
     - "src/semantic/live_operations.py"
-    - "tests/test_api_runtime_vulnerability_correlation.py"
-    - "tests/test_live_provider.py"
-    - "tests/test_api_remediation_router.py"
-    - "tests/test_api_patching_router.py"
-- oracle_type: "specified"
+    - "tests/test_remediation_identity_and_audit_continuity.py"
+    - "tests/test_api_remediation_approvals.py"
+    - "src/intelligence/remediation/execution_store.py"
+    - "src/intelligence/remediation/execution_service.py"
+    - "src/intelligence/remediation/execution_verifier.py"
+    - "tests/test_remediation_execution_retry.py"
+    - "tests/test_remediation_execution_verifier.py"
+    - "web/src/app/remediation/page.tsx"
+    - "web/src/app/remediation/page.test.tsx"
+    - ".planning/debug/resolved/remediation-e2e.md"
+- oracle_type: "derived"
+- commit: "0a130904; merged with concurrent Phase 11 mainline work and pushed via cac63cc"
+
+## 2026-09-05T00:58:00Z — Live E2E terminal verification
+
+**Outcome:** The governed remediation path completed end to end against the
+live Hybrid Compute target. Two approval decisions returned HTTP 201, execution
+returned HTTP 202, the disconnected-target failure was retained as immutable
+attempt 1 history, and retry attempt 2 was accepted by Azure Update Manager.
+Operation `ec3f3b9c-f775-4749-92ad-ed16305837c6` reached `Succeeded` with one
+installed patch, zero failed patches, zero pending patches, and no reboot
+required.
+
+**Final fixes:** Retry claims now clear record-level state from the previous
+attempt while preserving its immutable attempt history. The web keeps partial
+multi-role approval on Approve, keeps the returned execution visible
+immediately after Run/Retry, and polls the execution endpoint directly so a
+successful remediation that removes its own plan does not erase Verify context.
+Hybrid Compute Update Manager top-level patch counts are parsed alongside the
+nested ARM result shape, and execution API views project the latest attempt so
+old failure details cannot leak into a successful retry.
+
+**Deployment:** `remediation-final-20260905-0035` was applied as four in-place
+Container App image updates with zero additions and zero destructions. API
+revision `aiops-dev-api--0000225` and web revision
+`aiops-dev-web--0000183` are healthy; API `/health` and `/ready`, web `/`,
+`/api/config`, and `/remediation` return HTTP 200.
+
+**Remaining evidence note:** the immediate post-install ARG assessment still
+listed patch `2267602`, so reconciliation is `reconciled_incomplete`. This is
+reported separately from the authoritative provider outcome and is not
+presented as a failed installation.
+
+### Prevention
+
+- causal_branches:
+    - "code: live patch action-version derivation treated provider presentation citation identity as governed action identity; the first fix retained the ARG row-id stem."
+    - "data/environment: independent process-local planner generations can return different softwarePatches row ids/ordinals for the same target and missing KBs."
+- and_gate: "Both branches were required: regenerated data had to drift, and the planner had to hash that non-semantic drift."
+- why_not_caught: "The prior route regression reused one planner and varied only the appended enrichment suffix; it never modeled separate runtime generations with different upstream ARG row ids."
+- recurrence_guard: "Route regressions tests/test_api_remediation_approvals.py::test_patch_approval_survives_independent_runtime_arg_row_identity_drift and ::test_patch_approval_rejects_independent_runtime_missing_kb_drift, plus planner regression tests/test_remediation_identity_and_audit_continuity.py::test_live_patch_action_version_ignores_presentation_citation_identity."
+
+<!-- Freeform append below (not part of the YAML document above) -->
+
+## 2026-09-03T11:58:00Z — Fabric patch-intelligence canonical-target ValueError (fixed, live-verified)
+
+**Symptom:** Fresh container logs showed repeated `ValueError: Patch Semantic
+evidence requires a matching canonical target` raised from
+`PatchIntelligence.from_semantic_engine`
+(`src/intelligence/patch/patch_intelligence.py:388`), breaking three
+Fabric-backed API providers: `incidents`, `remediation` (via
+`_fabric_incident_engine`/`_fabric_remediation_planner`/
+`_fabric_change_intelligence` in `src/api/runtime.py` → `operations_agent()`
+in `src/fabric/runtime.py`), and the background provider cache refresh
+(`src/api/providers.py::_refresh_locked`). `GET /api/v1/incidents` returned
+HTTP 503 `provider_unavailable`.
+
+**Root cause:** `from_semantic_engine` built `names_by_id` strictly from
+`inventory` rows, then unconditionally raised if any `assessments`/
+`installations`/`history` evidence row's `assessed_resource_id`/
+`target_resource_id` (canonicalized) did not match a key in `names_by_id`.
+Unlike the *inventory*-vs-ontology correlation a few lines below (which
+explicitly treats missing ontology context as a "coverage gap" and
+continues), this evidence-vs-inventory check had no leniency: any drift
+between the live inventory snapshot and patch evidence tables (stale
+inventory, resources decommissioned/renamed, partial sync) hard-failed
+construction for every consumer.
+
+**Fix:** `src/intelligence/patch/patch_intelligence.py` — replaced the
+raise with a filter: unmatched evidence rows are now skipped and counted,
+with a single aggregated `_LOGGER.warning(...)` instead of an exception.
+Added a module-level `logging.getLogger(__name__)`. Updated
+`tests/test_patch_v2_hardening.py::test_semantic_patch_evidence_requires_matching_canonical_target`
+→ renamed to `test_semantic_patch_evidence_skips_unmatched_canonical_target`,
+asserting the unmatched row is dropped while a matching row is retained.
+
+**Verification:**
+- `ruff check` clean.
+- `pytest -q tests/test_patch_v2_hardening.py tests/test_patch_analysis.py tests/test_patch_compliance.py tests/test_patch_risk.py tests/test_patch_trends.py tests/test_patch_reporting.py` — all passed.
+- `pytest -q tests/test_change_semantic_integration.py tests/test_incident_semantic_integration.py tests/test_predictive_semantic_integration.py tests/test_lifecycle_analysis.py tests/test_api_runtime_vulnerability_correlation.py` — all passed.
+- Built `aiops-api:patch-evidence-skip-20260903-1150`, deployed as revision `aiops-dev-api--patch-evidence-skip` (100% traffic, Single revision mode).
+- Live: fresh container logs show zero occurrences of "canonical target"; `/health` shows `incidents`, `remediation`, `change` providers all transitioning `loading` → `ready` (previously stuck `unavailable` with `ValueError`); `GET /api/v1/incidents` now returns HTTP 200 with a populated incident report instead of HTTP 503 `provider_unavailable`.
+
+**Combined with the sync-timeout fix earlier in this session**, both known
+live blockers for the remediation E2E flow are now resolved: the Fabric
+publish no longer hangs indefinitely (bounded to `publish_timeout_seconds`,
+now failing cleanly instead of hanging), and the patch-intelligence engine
+no longer aborts on partial/stale evidence-vs-inventory drift. Remaining
+known blocker (unchanged, documented above): Arc-simulated `vm1` reports
+`Disconnected` at the host agent level, which requires human/host-level
+remediation outside this repository's reach to fully close the demo's
+patch-execution loop end-to-end.

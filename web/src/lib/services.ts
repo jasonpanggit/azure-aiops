@@ -51,6 +51,7 @@ import type {
   RiskException,
   SlaComplianceReport,
   AttackPathGraph,
+  ExposureCollection,
   VulnerabilityExposure,
   VulnerabilitySummary,
   EvidenceItem,
@@ -640,9 +641,30 @@ export interface RemediationApprovalDecision extends RemediationDecision {
   execution_snapshot?: RemediationExecutionSnapshot | null;
 }
 
+export interface RemediationApprovalRequirement {
+  policy_id: string;
+  role: string;
+  /**
+   * Stable, RBAC-capacity-compatible identifier satisfaction matching keys
+   * on -- separate from `role`'s presentation text (Phase 03.5 CR-01 fix).
+   * Absent on a requirement row generated before this fix (legacy/durable
+   * plan snapshot).
+   */
+  role_id?: string;
+  stage: string;
+  satisfied: boolean;
+  unmet_reason?: string;
+  approval_evidence_required: string[];
+  status?: string;
+  approval_recorded?: boolean;
+  /** Present only when `satisfied` -- the decision that satisfied this row. */
+  approver?: string;
+  decision_id?: string;
+}
+
 export interface RemediationApprovalContext {
   plan_id: string;
-  approval_requirements: Array<Record<string, unknown>>;
+  approval_requirements: RemediationApprovalRequirement[];
   decisions: RemediationApprovalDecision[];
 }
 
@@ -687,6 +709,8 @@ export interface RemediationExecutionAttempt {
   outcome?: string;
   execution_snapshot?: RemediationExecutionSnapshot;
   transitions: RemediationExecutionTransition[];
+  provider_submitted?: boolean;
+  failure_class?: string;
 }
 
 export interface RemediationExecution {
@@ -711,11 +735,53 @@ export interface RemediationExecution {
   cancellable: boolean;
   remaining_attempts: number;
   ineligibility_reason: string;
+  provider_submitted?: boolean;
+  failure_class?: string;
+  submitted_attempt_count?: number;
+  supersedes?: string;
+  superseded_by?: string;
+  superseded_reason?: string;
+  supersedable?: boolean;
+  supersede_ineligibility_reason?: string;
+  verification_deadline_at?: string;
+  next_verification_at?: string;
+  verification_attempts?: number;
+  evidence_reconciliation?: RemediationEvidenceReconciliation;
 }
 
 export interface RemediationExecutionList {
   plan_id: string;
   executions: RemediationExecution[];
+}
+
+export interface RemediationBlocker {
+  code: string;
+  message?: string;
+  step: "select" | "review" | "approve" | "run" | "verify";
+  next_action?: string;
+  severity?: "warning" | "critical";
+}
+
+export interface RemediationDegradation {
+  source: string;
+  availability: "degraded" | "unavailable" | "partial";
+  reason: string;
+  dropped_count?: number;
+  unmatched_count?: number;
+  freshness?: string;
+}
+
+export interface RemediationEvidenceReconciliation {
+  status:
+    | ""
+    | "pending"
+    | "reconciled_clean"
+    | "reconciled_incomplete"
+    | "unreconciled"
+    | "unreconciled_timed_out";
+  kbs_cleared: string[];
+  kbs_remaining: string[];
+  assessed_at: string;
 }
 
 export type RemediationActionFamily =
@@ -732,15 +798,22 @@ export interface RemediationWorkflow {
     family: RemediationActionFamily;
     executable: boolean;
     manual_review_reason: string;
+    can_operate: boolean;
+    operate_ineligible_reason?: string;
   };
   preview: RemediationExecutionPreview | null;
   preview_error: string;
   business_decision: RemediationBusinessDecision;
   approval: {
-    requirements: Array<Record<string, unknown>>;
+    requirements: RemediationApprovalRequirement[];
     decisions: RemediationApprovalDecision[];
     latest: RemediationApprovalDecision | null;
     current: boolean;
+    status: "none" | "current" | "stale" | "rejected" | "expired";
+    stale_reasons: string[];
+    can_approve: boolean;
+    approve_ineligible_reason?: string;
+    allow_self_approval: boolean;
   };
   execution: RemediationExecution | null;
   executions: RemediationExecution[];
@@ -750,6 +823,8 @@ export interface RemediationWorkflow {
     status: "complete" | "current" | "pending" | "blocked";
   }>;
   recommended_step: "review" | "approve" | "run" | "verify" | "manual_review";
+  blockers: RemediationBlocker[];
+  degradation: RemediationDegradation[];
   evidence: Array<Record<string, unknown>>;
   audit: {
     decisions: RemediationApprovalDecision[];
@@ -795,6 +870,12 @@ export const remediationApi = {
       expires_at?: string;
       preview_snapshot_hash?: string;
       selected_patch_ids?: string[];
+      /** Which single approval_requirements row (by role_id) this decision
+       * attests (Phase 03.5 CR-05 fix). Required by the server whenever
+       * more than one currently-unmet requirement row is eligible for the
+       * calling principal to attest; omit/"" when at most one is
+       * eligible. */
+      role_id?: string;
     },
     scope: ScopeSelection = {},
   ) =>
@@ -806,6 +887,7 @@ export const remediationApi = {
         expires_at: payload.expires_at ?? "",
         preview_snapshot_hash: payload.preview_snapshot_hash ?? "",
         selected_patch_ids: payload.selected_patch_ids ?? [],
+        role_id: payload.role_id ?? "",
       },
     }),
   execute: (planId: string, scope: ScopeSelection = {}) =>
@@ -830,6 +912,12 @@ export const remediationApi = {
     apiRequest<RemediationExecution>(`/remediation/executions/${encodeURIComponent(executionId)}/cancel`, {
       method: "POST",
       query: scopeToSearchParams(scope),
+    }),
+  supersede: (executionId: string, reason: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationExecution>(`/remediation/executions/${encodeURIComponent(executionId)}/supersede`, {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+      body: { reason },
     }),
 };
 
@@ -918,6 +1006,15 @@ export const vulnerabilityApi = {
     if (filters?.q) query.set("q", filters.q);
     if (filters?.reachableOnly) query.set("reachable_only", "true");
     return apiRequest<VulnerabilityExposure[]>("/vulnerabilities/exposures", { query });
+  },
+  authoritativeExposures: (
+    scope: ScopeSelection = {},
+    filters?: { q?: string; reachableOnly?: boolean },
+  ) => {
+    const query = scopeToSearchParams(scope);
+    if (filters?.q) query.set("q", filters.q);
+    if (filters?.reachableOnly) query.set("reachable_only", "true");
+    return apiRequest<ExposureCollection>("/vulnerabilities/exposures", { query });
   },
   patchPriorities: (scope: ScopeSelection = {}, filters?: { q?: string; reachableOnly?: boolean }) => {
     const query = scopeToSearchParams(scope);

@@ -26,23 +26,31 @@ from .scope import GRANTABLE_DIMENSIONS, Scope
 # Roles, ordered from least to most privileged.
 ROLE_READER = "reader"
 ROLE_OPERATOR = "operator"
+ROLE_APPROVER = "approver"
 ROLE_ADMIN = "admin"
 
-ROLES: tuple[str, ...] = (ROLE_READER, ROLE_OPERATOR, ROLE_ADMIN)
+ROLES: tuple[str, ...] = (ROLE_READER, ROLE_OPERATOR, ROLE_APPROVER, ROLE_ADMIN)
 
 # Actions the API gates on.
 ACTION_READ = "read"
 ACTION_OPERATE = "operate"
+ACTION_APPROVE = "approve"
 ACTION_WRITE = "write"
 
-ACTIONS: tuple[str, ...] = (ACTION_READ, ACTION_OPERATE, ACTION_WRITE)
+ACTIONS: tuple[str, ...] = (ACTION_READ, ACTION_OPERATE, ACTION_APPROVE, ACTION_WRITE)
 
 # Which roles satisfy which action.
 _ACTION_ROLES: dict[str, frozenset[str]] = {
-    ACTION_READ: frozenset({ROLE_READER, ROLE_OPERATOR, ROLE_ADMIN}),
-    # Operate = run a sync, validate a connection: state-changing but not
-    # registry-mutating.
+    ACTION_READ: frozenset({ROLE_READER, ROLE_OPERATOR, ROLE_APPROVER, ROLE_ADMIN}),
+    # Operate = run a sync, validate a connection, execute/retry/cancel
+    # approved remediation work: state-changing but not registry-mutating.
+    # ROLE_APPROVER deliberately does NOT satisfy operate (Phase 03.5, D-03).
     ACTION_OPERATE: frozenset({ROLE_OPERATOR, ROLE_ADMIN}),
+    # Approve = record a remediation approval decision. ROLE_OPERATOR
+    # deliberately does NOT satisfy approve -- this is the Phase 03.5, D-03
+    # split that lets approve-only and operate-only principals be expressed
+    # and enforced independently (REVIEW recommendation 4 / CR-04).
+    ACTION_APPROVE: frozenset({ROLE_APPROVER, ROLE_ADMIN}),
     # Write = create/update/disable a connection, mutate the registry.
     ACTION_WRITE: frozenset({ROLE_ADMIN}),
 }
@@ -96,6 +104,19 @@ class Principal:
     subject: str
     display_name: str = ""
     grants: tuple[Grant, ...] = ()
+    # Literal organizational role claims held by this principal (Phase
+    # 03.5 CR-05 fix) -- e.g. "Change Manager", "Business Service Owner"
+    # -- distinct from ``grants``' coarse RBAC action capacities
+    # (reader/operator/approver/admin). These are what
+    # ``record_remediation_decision`` checks a principal against before
+    # letting a decision attest a distinct-role ``approval_requirements``
+    # row: an "approver" grant alone is only ever sufficient for the
+    # RBAC-capacity-compatible ``DEFAULT_ROLE_ID`` rows a policy has
+    # explicitly opted into (see ``approval_engine.DEFAULT_ROLE_ID``);
+    # every other organizational role requires either a literal matching
+    # claim here, or an explicit, truthfully-recorded ``admin`` override.
+    # Casefolded/stripped/deduped/sorted for stable equality and hashing.
+    org_roles: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         subject = str(self.subject or "").strip()
@@ -113,6 +134,16 @@ class Principal:
         }
         if len(specialist_ids) > 1:
             raise ValueError("Principal grants cannot bind multiple MCP specialists")
+        normalized_org_roles = tuple(
+            sorted(
+                {
+                    str(role).strip().casefold()
+                    for role in self.org_roles or ()
+                    if str(role or "").strip()
+                }
+            )
+        )
+        object.__setattr__(self, "org_roles", normalized_org_roles)
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> Principal:
@@ -122,6 +153,7 @@ class Principal:
             grants=tuple(
                 Grant.from_mapping(item) for item in payload.get("grants") or ()
             ),
+            org_roles=tuple(str(role) for role in payload.get("org_roles") or ()),
         )
 
     def roles(self) -> frozenset[str]:
@@ -148,6 +180,7 @@ class Principal:
             "subject": self.subject,
             "display_name": self.display_name,
             "grants": [grant.to_dict() for grant in self.grants],
+            "org_roles": list(self.org_roles),
         }
 
 

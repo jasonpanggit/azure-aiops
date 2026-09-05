@@ -21,8 +21,41 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tf_dir="${repo_root}/infra/terraform"
 tfvars="${tf_dir}/terraform.tfvars"
+env_file="${AIOPS_ENV_FILE:-${repo_root}/web/.env.local}"
 
 export PATH="${PATH}:/opt/homebrew/bin:/usr/local/bin"
+
+read_env() {
+  awk -v key="$1" '
+    { line = $0
+      sub(/^[ \t]*/, "", line)
+      sub(/^export[ \t]+/, "", line)
+      idx = index(line, "=")
+      if (idx == 0) next
+      name = substr(line, 1, idx - 1)
+      gsub(/[ \t]+$/, "", name)
+      if (name != key) next
+      value = substr(line, idx + 1)
+      sub(/^[ \t]+/, "", value)
+      sub(/[ \t\r]+$/, "", value)
+      if (value ~ /^".*"$/ || value ~ /^'"'"'.*'"'"'$/)
+        value = substr(value, 2, length(value) - 2)
+      found = value
+    }
+    END { if (found != "") print found }
+  ' "${env_file}"
+}
+
+# These values are public browser configuration, not secrets. Resolve them from
+# the same env file as deploy.sh so a normal image build needs no manual exports.
+if [[ -f "${env_file}" ]]; then
+  for name in NEXT_PUBLIC_ENTRA_CLIENT_ID NEXT_PUBLIC_ENTRA_TENANT_ID NEXT_PUBLIC_ENTRA_API_SCOPE; do
+    if [[ -z "${!name:-}" ]]; then
+      printf -v "${name}" '%s' "$(read_env "${name}")"
+      export "${name}"
+    fi
+  done
+fi
 
 deploy_after=0
 tag=""
@@ -74,6 +107,16 @@ build_mode="${AIOPS_BUILD_MODE:-acr}"
 build_image() {
   local image="$1" dockerfile="$2" context="$3"
   local -a build_args=()
+
+  # A failed multi-image run may already have pushed earlier images. Tags are
+  # immutable by convention, so resume instead of rebuilding successful work.
+  if [[ "${AIOPS_FORCE_REBUILD:-0}" != "1" ]] && az acr repository show \
+    --name "${registry_name}" \
+    --image "${image}:${tag}" >/dev/null 2>&1; then
+    echo "build-and-push: reusing ${registry}/${image}:${tag}"
+    return 0
+  fi
+
   if [[ "${image}" == "aiops-web" ]]; then
     : "${NEXT_PUBLIC_ENTRA_CLIENT_ID:?Set NEXT_PUBLIC_ENTRA_CLIENT_ID}"
     : "${NEXT_PUBLIC_ENTRA_TENANT_ID:?Set NEXT_PUBLIC_ENTRA_TENANT_ID}"

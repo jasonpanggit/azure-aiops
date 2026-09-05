@@ -5,6 +5,7 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -52,6 +53,16 @@ class FabricSyncResult:
     duration_seconds: float
 
 
+@dataclass(frozen=True)
+class FabricTableWriteProgress:
+    """Best-effort notification emitted after a Fabric table write succeeds."""
+
+    completed_tables: int
+    total_tables: int
+    table_name: str
+    result: DeltaWriteResult
+
+
 class FabricSyncService:
     _MERGE_WRITE_TABLES: frozenset[str] = frozenset({
         "bronze_resource_changes",
@@ -62,6 +73,17 @@ class FabricSyncService:
         "silver_incident_history",
         "silver_predictive_history",
         "silver_cost_actuals",
+    })
+    # Full-state (current-snapshot) tables keyed by resource_id: rows must
+    # disappear once the underlying resource is gone, which plain MERGE can't
+    # express, but a full OVERWRITE rewrites the whole table even when only a
+    # handful of rows changed. SNAPSHOT_MERGE upserts changed keys and
+    # deletes keys absent from this run, giving OVERWRITE's replace semantics
+    # at MERGE's cost for the largest, least-churny tables.
+    _SNAPSHOT_MERGE_WRITE_TABLES: frozenset[str] = frozenset({
+        "bronze_resources",
+        "silver_vm_inventory",
+        "silver_server_inventory",
     })
 
     def __init__(
@@ -145,12 +167,14 @@ class FabricSyncService:
         replay_source_run_id: str = "",
         raise_on_quality_failure: bool = True,
         requested_scope: dict[str, list[str]] | None = None,
+        progress_callback: Callable[[FabricTableWriteProgress], None] | None = None,
     ) -> FabricSyncResult:
         with self.onelake.sync_lock():
             return self._sync_locked(
                 replay_source_run_id=replay_source_run_id,
                 raise_on_quality_failure=raise_on_quality_failure,
                 requested_scope=requested_scope,
+                progress_callback=progress_callback,
             )
 
     def _sync_locked(
@@ -159,6 +183,7 @@ class FabricSyncService:
         replay_source_run_id: str = "",
         raise_on_quality_failure: bool = True,
         requested_scope: dict[str, list[str]] | None = None,
+        progress_callback: Callable[[FabricTableWriteProgress], None] | None = None,
     ) -> FabricSyncResult:
         started_clock = self.clock()
         run_id = str(uuid.uuid4())
@@ -180,6 +205,7 @@ class FabricSyncService:
 
         table_results: dict[str, DeltaWriteResult] = {}
         written_versions: dict[str, tuple[str, int | None]] = {}
+        completed_tables = 0
         failed_records = 0
         ontology_started = self.clock()
         ontology_health: dict[str, Any] = {}
@@ -343,7 +369,9 @@ class FabricSyncService:
                 layer, logical_name = table_name.split("_", 1)
                 mode = self._write_mode_for_table(table_name)
                 table_uri = self.onelake.table_uri(layer, logical_name)
-                before_version = self.delta.version(table_uri)
+                before_version = known_versions.get(table_name)
+                if before_version is None and rows:
+                    before_version = self.delta.version(table_uri)
                 result = self.delta.write(
                     table_uri,
                     rows,
@@ -356,9 +384,31 @@ class FabricSyncService:
                 )
                 return table_name, table_uri, before_version, result
 
+            # Empty projections do not need a Fabric transaction unless the
+            # table already exists and must be cleared for this snapshot.
+            known_versions: dict[str, int | None] = {}
+            publish_items: list[tuple[str, list[dict[str, Any]]]] = []
+            for table_name, rows in datasets.items():
+                if rows:
+                    publish_items.append((table_name, rows))
+                    continue
+                table_uri = self.onelake.table_uri(
+                    table_name.split("_", 1)[0],
+                    table_name.split("_", 1)[1],
+                )
+                version = self.delta.version(table_uri)
+                if version is not None:
+                    known_versions[table_name] = version
+                    publish_items.append((table_name, rows))
+            _LOGGER.info(
+                "Preparing Fabric publish: %d datasets (%d non-empty, %d empty skipped)",
+                len(publish_items),
+                sum(bool(rows) for _, rows in publish_items),
+                len(datasets) - len(publish_items),
+            )
             with ThreadPoolExecutor(max_workers=self.write_workers) as executor:
                 futures = [
-                    executor.submit(write_table, item) for item in datasets.items()
+                    executor.submit(write_table, item) for item in publish_items
                 ]
                 write_error = None
                 for future in as_completed(futures):
@@ -368,9 +418,26 @@ class FabricSyncService:
                         write_error = write_error or exc
                         continue
                     table_results[table_name] = result
+                    completed_tables += 1
                     if result.version != before_version:
                         written_versions[table_name] = (table_uri, before_version)
                     self.metrics.record_table(table_name, result)
+                    if progress_callback is not None:
+                        try:
+                            progress_callback(
+                                FabricTableWriteProgress(
+                                    completed_tables=completed_tables,
+                                    total_tables=len(publish_items),
+                                    table_name=table_name,
+                                    result=result,
+                                )
+                            )
+                        except Exception:
+                            _LOGGER.debug(
+                                "Fabric table progress callback failed for %s",
+                                table_name,
+                                exc_info=True,
+                            )
                 if write_error is not None:
                     raise write_error
 
@@ -1343,6 +1410,17 @@ class FabricSyncService:
                 "policy_id": str(row.get("policy_id") or ""),
                 "conditions": parsed(row, "conditions_json", dict),
                 "roles": parsed(row, "roles_json", list),
+                # role_ids_json is nullable (Phase 03.5 CR-05 fix -- added
+                # after the original schema shipped): a governed policy row
+                # written before this column existed, or one that simply
+                # has not configured a distinct per-role identity yet,
+                # reads back with an empty mapping rather than raising --
+                # ApprovalEngine.requirements() then derives a stable,
+                # deterministic, distinct id per role on its own, never
+                # collapsing every unmapped role onto one shared default.
+                "role_ids": (
+                    parsed(row, "role_ids_json", dict) if row.get("role_ids_json") else {}
+                ),
             }
             for row in read("silver", "remediation_approval_policies")
         ]
@@ -1568,6 +1646,8 @@ class FabricSyncService:
             return DeltaWriteMode.APPEND
         if table_name in self._MERGE_WRITE_TABLES:
             return DeltaWriteMode.MERGE
+        if table_name in self._SNAPSHOT_MERGE_WRITE_TABLES:
+            return DeltaWriteMode.SNAPSHOT_MERGE
         return DeltaWriteMode.OVERWRITE
 
     def _extend_with_topology_tables(

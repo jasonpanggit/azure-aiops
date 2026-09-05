@@ -235,6 +235,18 @@ class RemediationDecisionRequest(ApiModel):
     action_version: str = Field(min_length=1, max_length=128)
     expires_at: str = Field("", max_length=128)
     preview_snapshot_hash: str = Field("", max_length=64)
+    role_id: str = Field(
+        "",
+        max_length=256,
+        description=(
+            "Which single approval_requirements row (by its stable role_id) "
+            "this decision attests (Phase 03.5 CR-05 fix) -- one decision "
+            "satisfies at most one requirement. Required only when more "
+            "than one currently-unmet requirement row is eligible for this "
+            "principal to attest; inferred automatically when at most one "
+            "is eligible. Ignored for 'rejected'/'expired' decisions."
+        ),
+    )
     selected_patch_ids: list[str] = Field(
         default_factory=list,
         description=(
@@ -245,6 +257,17 @@ class RemediationDecisionRequest(ApiModel):
             "and the decision is rejected as stale."
         ),
     )
+
+
+class SupersedeExecutionRequest(ApiModel):
+    """Operator-supplied audit reason for replacing an exhausted execution.
+
+    Free-text, persisted verbatim into the old execution's
+    ``superseded_reason`` -- never interpolated into any Azure API call,
+    file path, or query (T-03.3-06).
+    """
+
+    reason: str = Field(min_length=1, max_length=500)
 
 
 # --------------------------------------------------------------------------

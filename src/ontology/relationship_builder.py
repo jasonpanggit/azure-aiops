@@ -370,6 +370,88 @@ class RelationshipBuilder:
             connect(finding, "impacts", target, "defender")
             connect(target, "hasVulnerability", finding, "defender")
             connect(finding, "derivedFrom", assessment, "defender")
+        for observation in by_type["VulnerabilityObservation"]:
+            payload = _payload(observation)
+            target = by_id.get(
+                str(payload.get("ontology_target_id") or "").casefold()
+            )
+            weakness = by_id.get(
+                str(payload.get("weakness_entity_id") or "").casefold()
+            )
+            source_families = sorted(
+                {
+                    str(value).casefold()
+                    for value in payload.get("source_families") or ()
+                    if value
+                }
+            )
+            source = (
+                f"exposure:{'+'.join(source_families)}"
+                if source_families
+                else "exposure"
+            )
+            details = {
+                "read_model_generation_id": str(
+                    payload.get("read_model_generation_id") or ""
+                ),
+                "source_families": source_families,
+                "completeness": str(payload.get("completeness") or ""),
+            }
+            connect(observation, "affects", target, source, details)
+            connect(observation, "identifies", weakness, source, details)
+            connect(target, "hasVulnerabilityObservation", observation, source, details)
+        for image in by_type["LogicalImage"]:
+            payload = _payload(image)
+            connect(
+                by_id.get(str(payload.get("registry_id") or "").casefold()),
+                "containsImage",
+                image,
+                "exposure:defender",
+                _exposure_details(payload),
+            )
+            connect(
+                image,
+                "hasDigest",
+                by_id.get(str(payload.get("digest_entity_id") or "").casefold()),
+                "exposure:defender",
+                _exposure_details(payload),
+            )
+        for deployment in by_type["WorkloadDeployment"]:
+            payload = _payload(deployment)
+            details = _exposure_details(payload)
+            connect(
+                by_id.get(str(payload.get("digest_entity_id") or "").casefold()),
+                "deployedAs",
+                deployment,
+                "container_insights",
+                details,
+            )
+            connect(
+                by_id.get(str(payload.get("cluster_id") or "").casefold()),
+                "observesDeployment",
+                deployment,
+                "container_insights",
+                details,
+            )
+            application = by_id.get(
+                str(payload.get("application_entity_id") or "").casefold()
+            )
+            connect(
+                deployment,
+                "runsApplication",
+                application,
+                "container_insights",
+                details,
+            )
+            connect(
+                by_id.get(
+                    str(payload.get("business_service_entity_id") or "").casefold()
+                ),
+                "contains",
+                application,
+                "container_insights",
+                details,
+            )
         for alert in by_type["SecurityAlert"]:
             for resource_id in _payload(alert).get("resourceIds") or ():
                 connect(alert, "affects", by_id.get(str(resource_id).casefold()), "defender")
@@ -731,6 +813,22 @@ def _payload(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _exposure_details(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "read_model_generation_id": str(
+            payload.get("read_model_generation_id") or ""
+        ),
+        "source_families": sorted(
+            {
+                str(value).casefold()
+                for value in payload.get("source_families") or ()
+                if value
+            }
+        ),
+        "completeness": str(payload.get("completeness") or ""),
+    }
 
 
 def _pick(source: Mapping[str, Any], *keys: str) -> dict[str, Any]:
