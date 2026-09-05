@@ -723,11 +723,158 @@ def test_one_failed_connection_preserves_healthy_authorized_connections() -> Non
     assert "secret://" not in repr(observation)
 
 
-@pytest.mark.skip(reason="Pending implementation: Plan 03.1-07")
-def test_each_source_family_is_fresh_at_threshold_and_stale_at_plus_one_second() -> None:
-    from api.evidence import classify_freshness
+@pytest.mark.parametrize(
+    ("source_family", "threshold_seconds"),
+    [
+        ("aum", 1800),
+        ("defender", 21600),
+        ("images", 86400),
+        ("workloads", 900),
+        ("enrichment", 86400),
+    ],
+)
+def test_each_source_family_is_fresh_at_threshold_and_stale_at_plus_one_second(
+    source_family: str,
+    threshold_seconds: int,
+) -> None:
+    from api.evidence import qualify_source_freshness
 
-    assert classify_freshness is not None
+    now = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
+    exact = qualify_source_freshness(
+        (now - timedelta(seconds=threshold_seconds)).isoformat(),
+        source_family=source_family,
+        now=now,
+    )
+    plus_one = qualify_source_freshness(
+        (now - timedelta(seconds=threshold_seconds + 1)).isoformat(),
+        source_family=source_family,
+        now=now,
+    )
+    future = qualify_source_freshness(
+        (now + timedelta(seconds=1)).isoformat(),
+        source_family=source_family,
+        now=now,
+    )
+    missing = qualify_source_freshness(
+        "",
+        source_family=source_family,
+        now=now,
+    )
+
+    assert exact == {
+        "freshness": "fresh",
+        "freshness_threshold_seconds": threshold_seconds,
+        "freshness_source_family": source_family,
+    }
+    assert plus_one["freshness"] == "stale"
+    assert future["freshness"] == "unknown"
+    assert missing["freshness"] == "unknown"
+    assert plus_one["freshness_threshold_seconds"] == threshold_seconds
+    assert plus_one["freshness_source_family"] == source_family
+
+
+def test_fabric_source_freshness_defaults_and_positive_overrides(tmp_path) -> None:
+    from fabric.config import FabricRuntimeConfig
+
+    base = {
+        "fabric": {
+            "workspace_name": "workspace",
+            "lakehouse_name": "lakehouse",
+            "source_data_root": "./source",
+            "exposure": {"enabled": False},
+        }
+    }
+    defaults_path = tmp_path / "defaults.yaml"
+    defaults_path.write_text(json.dumps(base))
+    defaults = FabricRuntimeConfig.load(defaults_path)
+    assert defaults.exposure.freshness_threshold_seconds.to_dict() == {
+        "aum": 1800,
+        "defender": 21600,
+        "images": 86400,
+        "workloads": 900,
+        "enrichment": 86400,
+    }
+
+    base["fabric"]["exposure"]["freshness_threshold_seconds"] = {
+        "aum": 181,
+        "defender": 182,
+        "images": 183,
+        "workloads": 184,
+        "enrichment": 185,
+    }
+    override_path = tmp_path / "override.yaml"
+    override_path.write_text(json.dumps(base))
+    overridden = FabricRuntimeConfig.load(override_path)
+    assert overridden.exposure.freshness_threshold_seconds.to_dict() == {
+        "aum": 181,
+        "defender": 182,
+        "images": 183,
+        "workloads": 184,
+        "enrichment": 185,
+    }
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, "1800"])
+def test_fabric_source_freshness_overrides_must_be_positive_integers(
+    tmp_path, invalid: Any
+) -> None:
+    from fabric.config import FabricRuntimeConfig
+
+    path = tmp_path / f"invalid-{type(invalid).__name__}-{invalid}.yaml"
+    path.write_text(
+        json.dumps(
+            {
+                "fabric": {
+                    "workspace_name": "workspace",
+                    "lakehouse_name": "lakehouse",
+                    "source_data_root": "./source",
+                    "exposure": {
+                        "freshness_threshold_seconds": {"aum": invalid}
+                    },
+                }
+            }
+        )
+    )
+
+    error = TypeError if isinstance(invalid, (bool, str)) else ValueError
+    with pytest.raises(error, match="freshness_threshold_seconds.aum"):
+        FabricRuntimeConfig.load(path)
+
+
+def test_source_status_and_evidence_name_the_applied_freshness_policy() -> None:
+    from api.evidence import Evidence
+    from fabric.schema_registry import schema_for
+
+    projection = _source_projection(
+        {
+            "patch_assessment_details": _source_outcome(
+                query_name="patch_assessment_details",
+                source_family="azure_update_manager_missing",
+                row_id="aum-row",
+            )
+        },
+        generation="generation-1",
+    )
+    status = projection.statuses[0]
+    assert status["freshness_threshold_seconds"] == 1800
+    assert status["freshness_source_family"] == "aum"
+
+    payload = Evidence(
+        source_engine="exposure",
+        timestamp="2026-09-05T00:00:00Z",
+        freshness="fresh",
+        freshness_threshold_seconds=1800,
+        freshness_source_family="aum",
+    ).to_dict()
+    assert payload["freshness_threshold_seconds"] == 1800
+    assert payload["freshness_source_family"] == "aum"
+    assert {
+        "freshness_threshold_seconds",
+        "freshness_source_family",
+    } <= set(schema_for("metadata_source_status").names)
+    assert "role_ids_json" in schema_for(
+        "silver_remediation_approval_policies"
+    ).names
 
 
 def test_workload_impact_requires_exact_container_insights_digest_evidence() -> None:
