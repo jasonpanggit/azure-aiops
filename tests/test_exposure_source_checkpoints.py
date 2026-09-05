@@ -485,6 +485,50 @@ def test_failed_source_retains_only_its_own_last_known_good_partition() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "source_family",
+    [
+        "azure_update_manager_missing",
+        "defender_subassessment",
+        "defender_image",
+        "workloads",
+        "enrichment",
+    ],
+)
+def test_every_exposure_family_failure_retains_its_own_lkg(
+    source_family: str,
+) -> None:
+    current = _source_projection(
+        {
+            "family_query": _source_outcome(
+                query_name="family_query",
+                source_family=source_family,
+                row_id=f"{source_family}-row",
+            )
+        },
+        generation="generation-1",
+    )
+    failed = _source_projection(
+        {
+            "family_query": _source_outcome(
+                query_name="family_query",
+                source_family=source_family,
+                failed=True,
+            )
+        },
+        generation="generation-2",
+        previous=current,
+    )
+
+    assert failed.rows_by_query["family_query"][0]["id"] == (
+        f"{source_family}-row"
+    )
+    assert failed.statuses[0]["source_family"] == source_family
+    assert failed.statuses[0]["completeness"] == "stale"
+    assert failed.statuses[0]["attempted_generation"] == "generation-2"
+    assert failed.statuses[0]["effective_generation"] == "generation-1"
+
+
 def test_healthy_empty_replaces_prior_rows_but_failed_empty_does_not() -> None:
     populated = _source_projection(
         {

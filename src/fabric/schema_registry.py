@@ -7,7 +7,7 @@ from fabric_pipelines.topology_fabric_contracts import (
     TOPOLOGY_ENTITIES_CONTRACT,
 )
 
-SCHEMA_VERSION = "2.1.0"
+SCHEMA_VERSION = "2.2.0"
 
 _BASE = [
     pa.field("tenant_id", pa.string(), nullable=False),
@@ -572,6 +572,20 @@ SCHEMAS: dict[str, pa.Schema] = {
             # this table rather than creating a second status table.
             pa.field("row_count", pa.int64(), nullable=True),
             pa.field("lineage_ref", pa.string(), nullable=True),
+            # Exposure source partitions extend the generic status row
+            # additively. Nullable fields preserve all pre-03.1 status rows.
+            pa.field("partition_key", pa.string(), nullable=True),
+            pa.field("connection_id", pa.string(), nullable=True),
+            pa.field("attempted_generation", pa.string(), nullable=True),
+            pa.field("effective_generation", pa.string(), nullable=True),
+            pa.field("attempted_at", pa.string(), nullable=True),
+            pa.field("last_success_at", pa.string(), nullable=True),
+            pa.field("carried_forward_age_seconds", pa.int64(), nullable=True),
+            pa.field("represented_count", pa.int64(), nullable=True),
+            pa.field("expected_count", pa.int64(), nullable=True),
+            pa.field("completeness", pa.string(), nullable=True),
+            pa.field("safe_error_code", pa.string(), nullable=True),
+            pa.field("safe_error_summary", pa.string(), nullable=True),
         ]
     ),
     "metadata_workload_source_checkpoints": pa.schema(

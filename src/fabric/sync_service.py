@@ -219,6 +219,21 @@ class FabricSyncService:
         data_committed = False
         try:
             datasets = self.mapper.load(snapshot, run_id, fs=self._source_fs)
+            datasets["metadata_source_status"] = [
+                _with_source_partition_defaults(row)
+                for row in datasets.get("metadata_source_status", [])
+            ]
+            partition_status = self._load_source_partition_status(snapshot, run_id)
+            if partition_status:
+                partition_families = {
+                    row["source_family"] for row in partition_status
+                }
+                datasets["metadata_source_status"] = [
+                    row
+                    for row in datasets.get("metadata_source_status", [])
+                    if row.get("source_family") not in partition_families
+                ]
+                datasets["metadata_source_status"].extend(partition_status)
             datasets.update(self._load_workload_products(snapshot))
             self._validate_workload_products(datasets)
             if self.topology_enabled:
@@ -324,12 +339,15 @@ class FabricSyncService:
             reports = self._validate(datasets)
             failed_records = sum(report.failed_records for report in reports)
             self._write_quality_report(run_id, source_run_id, reports, started_at)
-            source_status_rows = _table_source_status_rows(
-                datasets,
-                run_id,
-                started_at,
-                requested_scope=requested_scope,
-            )
+            source_status_rows = [
+                *datasets.get("metadata_source_status", []),
+                *_table_source_status_rows(
+                    datasets,
+                    run_id,
+                    started_at,
+                    requested_scope=requested_scope,
+                ),
+            ]
             if source_status_rows:
                 table_uri = self.onelake.table_uri("metadata", "source_status")
                 before_version = self.delta.version(table_uri)
@@ -1697,6 +1715,23 @@ class FabricSyncService:
                 loaded[table_name] = rows
         return loaded
 
+    def _load_source_partition_status(
+        self,
+        snapshot: Path | str,
+        run_id: str,
+    ) -> list[dict[str, Any]]:
+        exists, rows = self._read_snapshot_jsonl(
+            snapshot,
+            "situations/source_status",
+        )
+        if not exists:
+            return []
+        return [
+            _source_partition_status_row(row, run_id)
+            for row in rows
+            if row.get("partition_key")
+        ]
+
     def _read_snapshot_jsonl(
         self,
         snapshot: Path | str,
@@ -2150,6 +2185,7 @@ def _table_source_status_rows(
                 "row_count": row_count,
                 "lineage_ref": f"{table_name}-table",
             }
+            content = _with_source_partition_defaults(content)
             resource_id = f"source-status://{table_name}"
             # Reuse the legacy key for the first scoped row so the first
             # corrected refresh replaces the pre-scope system row instead of
@@ -2168,6 +2204,86 @@ def _table_source_status_rows(
                 }
             )
     return rows
+
+
+def _with_source_partition_defaults(
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    result = dict(row)
+    for field in (
+        "partition_key",
+        "connection_id",
+        "attempted_generation",
+        "effective_generation",
+        "attempted_at",
+        "last_success_at",
+        "carried_forward_age_seconds",
+        "represented_count",
+        "expected_count",
+        "completeness",
+        "safe_error_code",
+        "safe_error_summary",
+    ):
+        result.setdefault(field, None)
+    return result
+
+
+def _source_partition_status_row(
+    row: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any]:
+    """Map an activated source partition without discarding its LKG evidence."""
+
+    requested_scope = row.get("requested_scope")
+    if not isinstance(requested_scope, dict):
+        requested_scope = {}
+    subscriptions = _scope_subscriptions(requested_scope)
+    partition_key = str(row.get("partition_key") or "")
+    timestamp = str(
+        row.get("ingested_at")
+        or row.get("attempted_at")
+        or row.get("observed_at")
+        or "unknown"
+    )
+    content = {
+        "source_family": str(row.get("source_family") or "unknown"),
+        "status": str(row.get("status") or "unknown"),
+        "observed_at": str(row.get("observed_at") or ""),
+        "ingested_at": str(row.get("ingested_at") or ""),
+        "watermark": str(row.get("watermark") or ""),
+        "query_version": str(row.get("query_version") or ""),
+        "requested_scope_json": json.dumps(requested_scope, sort_keys=True),
+        "provider_status": str(row.get("provider_status") or ""),
+        "freshness": str(row.get("freshness") or "unknown"),
+        "availability": str(row.get("availability") or "unknown"),
+        "quality": str(row.get("quality") or "unknown"),
+        "error": str(row.get("error") or ""),
+        "row_count": int(row.get("row_count") or 0),
+        "lineage_ref": partition_key,
+        "partition_key": partition_key,
+        "connection_id": str(row.get("connection_id") or ""),
+        "attempted_generation": str(row.get("attempted_generation") or ""),
+        "effective_generation": str(row.get("effective_generation") or ""),
+        "attempted_at": str(row.get("attempted_at") or ""),
+        "last_success_at": str(row.get("last_success_at") or ""),
+        "carried_forward_age_seconds": int(
+            row.get("carried_forward_age_seconds") or 0
+        ),
+        "represented_count": int(row.get("represented_count") or 0),
+        "expected_count": int(row.get("expected_count") or 0),
+        "completeness": str(row.get("completeness") or "unavailable"),
+        "safe_error_code": str(row.get("safe_error_code") or ""),
+        "safe_error_summary": str(row.get("safe_error_summary") or ""),
+    }
+    return {
+        "tenant_id": "system",
+        "subscription_id": subscriptions[0] if subscriptions else "system",
+        "resource_id": f"source-status://{partition_key}".casefold(),
+        "timestamp": timestamp,
+        "change_version": _hash_json(content),
+        "ingestion_run_id": run_id,
+        **content,
+    }
 
 
 def _scope_subscriptions(
