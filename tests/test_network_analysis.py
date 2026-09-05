@@ -466,7 +466,7 @@ class TestPolicyRules:
 class TestScoping:
     def test_scope_narrows_results_to_one_connection(self) -> None:
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(connection_ids=("conn-uat",)))
+        scoped = service.scoped(NetworkScope(connection_ids=("conn-uat",))).analyze()
         assert scoped.topology.classifications
         for item in scoped.topology.classifications:
             assert item.connection_id == "conn-uat"
@@ -482,20 +482,20 @@ class TestScoping:
         snapshot unscoped would report estate-wide counts and connection IDs
         to a caller who may only see one connection."""
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(connection_ids=("conn-uat",)))
+        scoped = service.scoped(NetworkScope(connection_ids=("conn-uat",))).analyze()
         assert scoped.topology.connection_ids == ("conn-uat",)
         assert scoped.topology.snapshot.counts()["vnets"] == 1
         assert service.analyze().topology.snapshot.counts()["vnets"] == 3
 
     def test_scope_preserves_the_observation_stamp(self) -> None:
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(connection_ids=("conn-uat",)))
+        scoped = service.scoped(NetworkScope(connection_ids=("conn-uat",))).analyze()
         assert scoped.topology.snapshot.observed_at == service.snapshot.observed_at
         assert scoped.topology.snapshot.observed_at
 
     def test_environment_scope_filters_findings(self) -> None:
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(environments=("uat",)))
+        scoped = service.scoped(NetworkScope(environments=("uat",))).analyze()
         for finding in scoped.rule_findings:
             assert finding.environment in {"uat", ""}
 

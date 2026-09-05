@@ -308,12 +308,11 @@ class NetworkIntelligenceService:
             self._findings = analyze_rules(self.snapshot)
         return self._findings
 
-    def analyze(self, scope: NetworkScope | None = None) -> NetworkAnalysis:
-        active = scope or NetworkScope()
+    def analyze(self) -> NetworkAnalysis:
         return NetworkAnalysis(
-            topology=self._scoped_topology(active),
-            gaps=tuple(gap for gap in self.gaps if active.matches(gap)),
-            rule_findings=tuple(item for item in self.rule_findings if active.matches(item)),
+            topology=self.topology,
+            gaps=self.gaps,
+            rule_findings=self.rule_findings,
             policy=self.policy,
         )
 
@@ -370,29 +369,6 @@ class NetworkIntelligenceService:
     def firewall_bypass_spokes(self) -> tuple[NetworkGap, ...]:
         """Answers "which spokes bypass the firewall?"."""
         return tuple(gap for gap in self.gaps if gap.category == "firewall_bypass")
-
-    def _scoped_topology(self, scope: NetworkScope) -> NetworkTopology:
-        if scope.is_empty:
-            return self.topology
-        base = self.topology
-        classifications = tuple(item for item in base.classifications if scope.matches(item))
-        kept = {item.vnet_id for item in classifications}
-        scoped_snapshot = scope.filter_snapshot(base.snapshot)
-        return NetworkTopology(
-            classifications=classifications,
-            links=tuple(
-                link
-                for link in base.links
-                if link.local_vnet_id in kept and link.remote_vnet_id in kept
-            ),
-            shared_services=tuple(
-                service for service in base.shared_services if scope.matches(service)
-            ),
-            unresolved_peer_vnet_ids=base.unresolved_peer_vnet_ids,
-            connection_ids=scoped_snapshot.connection_ids(),
-            snapshot=scoped_snapshot,
-        )
-
 
 def build_service(
     rows: Iterable[Mapping[str, Any]],
