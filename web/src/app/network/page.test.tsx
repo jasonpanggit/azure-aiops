@@ -178,6 +178,15 @@ describe("Network page honest totals and server pagination", () => {
     expect(within(metrics as HTMLElement).getAllByText("—").length).toBeGreaterThan(0);
   });
 
+  it("does not fabricate zero coverage for an unavailable companion collection", async () => {
+    mocks.gaps.mockRejectedValue(new Error("gaps unavailable"));
+    renderPage();
+
+    await waitFor(() => expect(mocks.gaps).toHaveBeenCalled());
+    expect(screen.queryByText("Results are incomplete.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/0 of 0 inspection gaps/)).not.toBeInTheDocument();
+  });
+
   it("requests an explicit first server page and advances gaps by one page", async () => {
     const user = userEvent.setup();
     renderPage();
