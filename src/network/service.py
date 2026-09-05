@@ -92,6 +92,9 @@ class NetworkScope:
             gateways=tuple(i for i in snapshot.gateways if keep(i)),
             load_balancers=tuple(i for i in snapshot.load_balancers if keep(i)),
             shared_services=tuple(i for i in snapshot.shared_services if keep(i)),
+            private_link_resources=tuple(
+                i for i in snapshot.private_link_resources if keep(i)
+            ),
         )
 
     @staticmethod
@@ -142,6 +145,59 @@ def _count_by(items: Iterable[Any], attribute: str) -> dict[str, int]:
         key = str(getattr(item, attribute, "") or "unknown")
         counts[key] = counts.get(key, 0) + 1
     return dict(sorted(counts.items(), key=lambda pair: (-pair[1], pair[0])))
+
+
+def _snapshot_resource_ids(snapshot: NetworkSnapshot) -> set[str]:
+    """Return every addressable resource id retained by a snapshot."""
+    groups = (
+        snapshot.vnets,
+        snapshot.subnets,
+        snapshot.nics,
+        snapshot.nsgs,
+        snapshot.route_tables,
+        snapshot.peerings,
+        snapshot.firewalls,
+        snapshot.firewall_policies,
+        snapshot.firewall_collections,
+        snapshot.private_endpoints,
+        snapshot.private_dns_zones,
+        snapshot.gateways,
+        snapshot.load_balancers,
+        snapshot.shared_services,
+        snapshot.private_link_resources,
+    )
+    resource_ids = {
+        resource.resource_id
+        for group in groups
+        for resource in group
+        if resource.resource_id
+    }
+    resource_ids.update(
+        rule.resource_id for nsg in snapshot.nsgs for rule in nsg.rules
+    )
+    resource_ids.update(
+        route.resource_id for table in snapshot.route_tables for route in table.routes
+    )
+    resource_ids.update(
+        rule.resource_id
+        for collection in snapshot.firewall_collections
+        for rule in collection.rules
+    )
+    return resource_ids
+
+
+def _scope_relationships(
+    relationships: Iterable[Mapping[str, Any]],
+    snapshot: NetworkSnapshot,
+) -> tuple[dict[str, Any], ...]:
+    """Keep semantic edges only when both endpoints survived snapshot scoping."""
+    resource_ids = _snapshot_resource_ids(snapshot)
+    return tuple(
+        dict(relationship)
+        for relationship in relationships
+        if str(relationship.get("subject_id") or "").casefold() in resource_ids
+        and str(relationship.get("object_id") or "").casefold() in resource_ids
+    )
 
 
 class NetworkIntelligenceService:
@@ -265,9 +321,14 @@ class NetworkIntelligenceService:
         """Return an isolated service whose every operation sees only ``scope``."""
         if scope.is_empty:
             return self
+        snapshot = scope.filter_snapshot(self.snapshot)
         return NetworkIntelligenceService(
-            scope.filter_snapshot(self.snapshot),
+            snapshot,
             policy=self.policy,
+            semantic_relationships=_scope_relationships(
+                self.semantic_relationships,
+                snapshot,
+            ),
         )
 
     def validate_flow(self, query: FlowQuery) -> FlowResult:
