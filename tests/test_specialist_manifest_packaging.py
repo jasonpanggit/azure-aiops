@@ -1099,12 +1099,34 @@ def test_live_auth_and_service_failures_are_fail_not_blocked(
 
 
 def _live_module_with_versions(monkeypatch, module, entries):
+    manifest = load_specialist_manifest()
+    operations_tools = sorted(
+        {
+            tool
+            for specialist in manifest.specialists
+            for tool in specialist.operations_mcp_tools
+        }
+    )
+    azure_tools = sorted(
+        {
+            tool
+            for specialist in manifest.specialists
+            for tool in specialist.azure_mcp_tools
+        }
+    )
     monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
     monkeypatch.setattr(
         module,
         "_post_json",
         lambda url, payload, headers: {
-            "result": {"tools": [{"name": name} for name in module.TOOL_REGISTRY]}
+            "result": {
+                "tools": [
+                    {"name": name}
+                    for name in (
+                        operations_tools if "operations-mcp" in url else azure_tools
+                    )
+                ]
+            }
         },
     )
     monkeypatch.setattr(module, "_get_json", lambda url, headers: {"value": entries})

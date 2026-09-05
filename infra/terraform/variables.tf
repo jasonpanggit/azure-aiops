@@ -445,6 +445,51 @@ variable "foundry_specialists" {
   }
 }
 
+variable "foundry_specialist_promotion_artifact" {
+  description = <<-EOT
+    Path to the reviewed, persisted validated-promotion artifact that decides
+    which specialist versions the running revision activates.
+
+    Terraform cannot consume apply-time local-exec output during the same
+    plan, so promotion is a two-stage boundary:
+
+      Stage 1 (apply N)   create-foundry-agent.sh publishes new immutable
+                          agent versions, captures the ACTUAL immutable
+                          provider version ID returned for each one, runs the
+                          live parity gate against those exact IDs, and -- only
+                          if the gate passes -- writes this artifact with
+                          status "validated", the manifest digest it was
+                          validated against, and the previously promoted
+                          mapping as `rollback_target`.
+      Stage 2 (apply N+1) Terraform reads this artifact at PLAN time and, if
+                          terraform_data.foundry_specialist_promotion_gate's
+                          preconditions hold, activates exactly that mapping on
+                          the Container Apps revision.
+
+    Because the artifact is read at plan time, a candidate version created by
+    the current apply can never activate in that same unvalidated step.
+
+    Leave empty (the default) or point at a missing/stale/unvalidated artifact
+    to keep the deterministic legacy eight-agent rollback mapping active. The
+    file is a deployment input, not repository state -- keep it outside the
+    build context and reviewed alongside the manifest it pins.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "foundry_model_deployment_name_override" {
+  description = <<-EOT
+    Optional explicit Azure model deployment name handed to the live parity
+    gate so it can verify the deployed agents actually point at the model
+    DEPLOYMENT (var.foundry_model_name), which is deliberately distinct from
+    the manifest's declared contract model (`foundry.model`). Empty means the
+    chat deployment's own name is used.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "agent_orchestration_mode" {
   description = "Operations Copilot orchestration mode. Defaults to 'maf' for Microsoft Agent Framework question-first delegation; set to 'deterministic' for the legacy page-anchored rollback path."
   type        = string

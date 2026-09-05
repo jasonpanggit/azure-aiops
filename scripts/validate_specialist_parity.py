@@ -79,6 +79,14 @@ AZURE_SERVER_LABEL = "azure-mcp"
 
 # Credential-bearing variables are only ever tested for presence. Their values
 # are never read into the report, logged, or echoed.
+#
+# MCP_APIM_AUDIENCE is required, not defaulted: the Foundry data plane and the
+# APIM MCP gateway are different services with different audiences, and
+# reusing one service's access token against the other both leaks a credential
+# across a trust boundary and produces meaningless 401s that look like parity
+# failures. FOUNDRY_CANDIDATE_MAPPING is required because the live gate
+# validates exact, pinned provider version IDs -- there is no defensible
+# "just check the newest one" fallback.
 LIVE_REQUIRED_ENV = (
     "FOUNDRY_PROJECT_ENDPOINT",
     "AZURE_TENANT_ID",
@@ -86,7 +94,17 @@ LIVE_REQUIRED_ENV = (
     "AZURE_CLIENT_SECRET",
     "OPERATIONS_MCP_SERVER_URL",
     "AZURE_MCP_SERVER_URL",
+    "MCP_APIM_AUDIENCE",
+    "FOUNDRY_CANDIDATE_MAPPING",
 )
+
+# Foundry's own data-plane audience. Overridable for sovereign clouds, but it
+# is never used for the APIM MCP endpoints.
+DEFAULT_FOUNDRY_AUDIENCE = "https://ai.azure.com"
+
+# Service labels used in failure records. These are controlled constants, not
+# URLs -- a report never carries an endpoint, token, or header.
+FOUNDRY_SERVICE = "foundry"
 
 # Restates the manifest loader's read-only contract so a *live* catalog can be
 # screened before any grant is accepted, plus the mutating azmcp verb suffixes
@@ -350,7 +368,7 @@ def _check_terraform_projection(manifest) -> dict[str, Any]:
         if f"  {local_name} = {{" not in foundry_tf:
             failures.append(_failure("terraform_missing_projection", tools=[local_name]))
 
-    if "local.foundry_specialist_deployment" not in container_tf:
+    if "local.foundry_specialist_activation" not in container_tf:
         failures.append(_failure("container_apps_not_manifest_derived"))
     if "AIOPS_SPECIALIST_MANIFEST_DIGEST" not in container_tf:
         failures.append(_failure("container_apps_missing_manifest_digest"))
@@ -372,6 +390,56 @@ def _check_terraform_projection(manifest) -> dict[str, Any]:
     if "FOUNDRY_SPECIALISTS_LEGACY_JSON" not in container_tf:
         failures.append(_failure("legacy_rollback_metadata_removed"))
     return _check("terraform_projection", failures)
+
+
+MODEL_CONTRACT_DIVERGENCE = "acknowledged_deployment_name_distinct_from_contract_model"
+DEPLOYMENT_MODEL_SOURCE = "var.foundry_model_name"
+
+
+def contract_models(manifest) -> list[str]:
+    """Return the distinct model names the manifest declares."""
+
+    return sorted({specialist.foundry.model for specialist in manifest.specialists})
+
+
+def _check_model_contract(manifest) -> dict[str, Any]:
+    """Validate the acknowledged contract-model / deployment-name distinction.
+
+    The manifest's ``foundry.model`` is a *contract* declaration; the value an
+    agent is actually deployed against is the Azure model DEPLOYMENT name
+    (``var.foundry_model_name``). Forcing them equal would point every agent at
+    a deployment that does not exist, so the divergence is deliberate -- but it
+    must be an explicitly validated and reported distinction, not an unchecked
+    field that merely looks like it is being verified.
+    """
+
+    failures: list[dict[str, Any]] = []
+    foundry_tf = _read("infra/terraform/foundry.tf")
+
+    models = contract_models(manifest)
+    if len(models) != 1:
+        # More than one contract model means "the contract model" is not a
+        # single reviewable fact and the divergence cannot be acknowledged.
+        failures.append(_failure("contract_model_not_singular", tools=models))
+
+    # The projection must carry BOTH, so neither can be silently dropped.
+    if not re.search(
+        r"^\s*contract_model\s*=\s*specialist\.foundry\.model\s*$",
+        foundry_tf,
+        flags=re.MULTILINE,
+    ):
+        failures.append(_failure("contract_model_not_projected"))
+    if not re.search(
+        r"^\s*model\s*=\s*var\.foundry_model_name\s*$", foundry_tf, flags=re.MULTILINE
+    ):
+        failures.append(_failure("deployment_model_not_variable_derived"))
+
+    # The live gate is what actually proves the deployed model; wire it or the
+    # distinction is unverifiable end to end.
+    if "FOUNDRY_MODEL_DEPLOYMENT_NAME" not in foundry_tf:
+        failures.append(_failure("deployment_model_not_passed_to_live_gate"))
+
+    return _check("model_contract", failures)
 
 
 def _check_package_contents() -> dict[str, Any]:
@@ -410,9 +478,11 @@ def run_offline() -> dict[str, Any]:
         _check_azure_grants(manifest),
         _check_api_catalog(manifest),
         _check_terraform_projection(manifest),
+        _check_model_contract(manifest),
         _check_package_contents(),
     ]
     failures = [failure for check in checks for failure in check["failures"]]
+    models = contract_models(manifest)
     return {
         "mode": "offline",
         "status": "pass" if not failures else "fail",
@@ -420,6 +490,15 @@ def run_offline() -> dict[str, Any]:
         "runtime_contract_version": manifest.runtime_contract_version,
         "specialist_count": len(manifest.specialists),
         "specialists": list(manifest.specialist_ids),
+        # The contract model and the Azure model DEPLOYMENT name are
+        # deliberately different things. Reporting both, side by side, is what
+        # keeps that an acknowledged distinction rather than hidden drift.
+        "model_contract": {
+            "contract_model": models[0] if len(models) == 1 else None,
+            "contract_models": models,
+            "deployment_model_source": DEPLOYMENT_MODEL_SOURCE,
+            "divergence": MODEL_CONTRACT_DIVERGENCE,
+        },
         "checks": checks,
         "failures": failures,
     }
@@ -447,15 +526,15 @@ def _get_json(url: str, headers: dict[str, str]) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _access_token(env: dict[str, str]) -> str:
-    """Acquire a data-plane token. The token is never returned in a report."""
+def _access_token(env: dict[str, str], *, scope: str) -> str:
+    """Acquire a token for one explicit audience."""
 
     data = urllib.parse.urlencode(
         {
             "grant_type": "client_credentials",
             "client_id": env["AZURE_CLIENT_ID"],
             "client_secret": env["AZURE_CLIENT_SECRET"],
-            "scope": "https://ai.azure.com/.default",
+            "scope": scope,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
@@ -505,6 +584,89 @@ def _agent_allowed_tools(definition: Any) -> dict[str, tuple[str, ...]]:
     return granted
 
 
+def _secure_service_urls(env: dict[str, str]) -> list[dict[str, Any]]:
+    """Reject credential-bearing requests to non-HTTPS service URLs."""
+
+    failures: list[dict[str, Any]] = []
+    for variable, service in (
+        ("FOUNDRY_PROJECT_ENDPOINT", FOUNDRY_SERVICE),
+        ("OPERATIONS_MCP_SERVER_URL", OPERATIONS_SERVER_LABEL),
+        ("AZURE_MCP_SERVER_URL", AZURE_SERVER_LABEL),
+    ):
+        parsed = urllib.parse.urlsplit(env[variable])
+        if parsed.scheme.casefold() != "https" or not parsed.netloc:
+            failures.append(_failure("insecure_service_url", service=service))
+    return failures
+
+
+def _oauth_scope(audience: str) -> str:
+    """Normalize an Entra audience into a client-credentials scope."""
+
+    audience = audience.strip().rstrip("/")
+    return audience if audience.endswith("/.default") else f"{audience}/.default"
+
+
+def _live_failure(error: Exception, *, service: str) -> dict[str, Any]:
+    """Return a controlled failure for a configured live-service error."""
+
+    if isinstance(error, urllib.error.HTTPError):
+        kind = (
+            "live_auth_rejected"
+            if error.code in {401, 403}
+            else "live_service_error"
+        )
+        return _failure(
+            kind,
+            service=service,
+            status=error.code,
+            error_type=type(error).__name__,
+        )
+    return _failure(
+        "live_service_error",
+        service=service,
+        status=0,
+        error_type=type(error).__name__,
+    )
+
+
+def _candidate_agents(path: str) -> dict[str, dict[str, str]]:
+    """Load exact provider IDs emitted by the candidate rollout."""
+
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    agents = payload.get("agents")
+    if not isinstance(agents, dict):
+        raise ValueError("candidate mapping has no agents map")
+
+    result: dict[str, dict[str, str]] = {}
+    for specialist_id, entry in agents.items():
+        if not isinstance(specialist_id, str) or not isinstance(entry, dict):
+            raise ValueError("candidate mapping entry is malformed")
+        agent_name = entry.get("agent_name")
+        provider_version_id = entry.get("provider_version_id")
+        if not isinstance(agent_name, str) or not agent_name.strip():
+            raise ValueError("candidate mapping has no agent name")
+        if not isinstance(provider_version_id, str) or not provider_version_id.strip():
+            raise ValueError("candidate mapping has no provider version id")
+        result[specialist_id] = {
+            "agent_name": agent_name.strip(),
+            "provider_version_id": provider_version_id.strip(),
+        }
+    return result
+
+
+def _entry_provider_version_id(entry: dict[str, Any]) -> str:
+    """Extract the immutable provider version identifier from a live entry."""
+
+    for key in ("version", "agentVersion", "agent_version", "versionId", "version_id"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    value = entry.get("id")
+    if isinstance(value, str) and value.strip():
+        return value.rstrip("/").rsplit("/", 1)[-1]
+    return ""
+
+
 def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
     """Read deployed Foundry and MCP state and compare it to the manifest."""
 
@@ -521,64 +683,158 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             "failures": [],
         }
 
+    url_failures = _secure_service_urls(env)
+    if url_failures:
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "insecure_service_url",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_configuration", url_failures)],
+            "failures": url_failures,
+        }
+
     manifest = load_specialist_manifest()
     endpoint = env["FOUNDRY_PROJECT_ENDPOINT"].rstrip("/")
     api_version = env.get("FOUNDRY_API_VERSION", "v1")
 
     try:
-        token = _access_token(env)
-        catalogs = {
-            OPERATIONS_SERVER_LABEL: _live_tool_catalog(
-                env["OPERATIONS_MCP_SERVER_URL"], token
-            ),
-            AZURE_SERVER_LABEL: _live_tool_catalog(env["AZURE_MCP_SERVER_URL"], token),
-        }
-    except (urllib.error.URLError, OSError, KeyError, ValueError) as error:
+        candidate_agents = _candidate_agents(env["FOUNDRY_CANDIDATE_MAPPING"])
+    except (OSError, ValueError, TypeError) as error:
+        failure = _failure(
+            "candidate_mapping_unreadable",
+            service=FOUNDRY_SERVICE,
+            status=0,
+            error_type=type(error).__name__,
+        )
         return {
             "mode": "live",
-            "status": "blocked",
-            "reason": "live_services_unreachable",
-            "error_type": type(error).__name__,
+            "status": "fail",
+            "reason": "candidate_mapping_invalid",
             "missing_configuration": [],
             "specialists": [],
-            "checks": [],
-            "failures": [],
+            "checks": [_check("live_configuration", [failure])],
+            "failures": [failure],
         }
+
+    try:
+        foundry_token = _access_token(
+            env,
+            scope=_oauth_scope(
+                env.get("FOUNDRY_AUDIENCE", DEFAULT_FOUNDRY_AUDIENCE)
+            ),
+        )
+    except (urllib.error.URLError, OSError, KeyError, ValueError) as error:
+        failure = _live_failure(error, service=FOUNDRY_SERVICE)
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "live_auth_or_service_failure",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_authentication", [failure])],
+            "failures": [failure],
+        }
+
+    try:
+        apim_token = _access_token(
+            env,
+            scope=_oauth_scope(env["MCP_APIM_AUDIENCE"]),
+        )
+    except (urllib.error.URLError, OSError, KeyError, ValueError) as error:
+        failure = _live_failure(error, service="apim")
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "live_auth_or_service_failure",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_authentication", [failure])],
+            "failures": [failure],
+        }
+
+    catalogs: dict[str, tuple[str, ...]] = {}
+    for server, variable in (
+        (OPERATIONS_SERVER_LABEL, "OPERATIONS_MCP_SERVER_URL"),
+        (AZURE_SERVER_LABEL, "AZURE_MCP_SERVER_URL"),
+    ):
+        try:
+            catalogs[server] = _live_tool_catalog(env[variable], apim_token)
+        except (urllib.error.URLError, OSError, KeyError, ValueError) as error:
+            failure = _live_failure(error, service=server)
+            return {
+                "mode": "live",
+                "status": "fail",
+                "reason": "live_auth_or_service_failure",
+                "missing_configuration": [],
+                "specialists": [],
+                "checks": [_check("live_catalogs", [failure])],
+                "failures": [failure],
+            }
 
     failures: list[dict[str, Any]] = []
     observed: list[dict[str, Any]] = []
+    for specialist_id in sorted(set(manifest.specialist_ids) - set(candidate_agents)):
+        failures.append(
+            _failure(
+                "pinned_version_absent",
+                specialist=specialist_id,
+                server=FOUNDRY_SERVICE,
+                tools=[],
+            )
+        )
+
+    deployment_model = env.get("FOUNDRY_MODEL_DEPLOYMENT_NAME", "").strip()
     for specialist in manifest.specialists:
-        agent_name = _deployed_agent_name(specialist, env)
+        candidate = candidate_agents.get(specialist.id)
+        if candidate is None:
+            continue
+        agent_name = candidate["agent_name"]
+        provider_version_id = candidate["provider_version_id"]
         try:
             versions = _get_json(
                 f"{endpoint}/agents/{agent_name}/versions?api-version={api_version}",
-                {"Authorization": f"Bearer {token}"},
+                {"Authorization": f"Bearer {foundry_token}"},
             )
         except (urllib.error.URLError, OSError, ValueError) as error:
-            failures.append(
-                _failure(
-                    "agent_version_unreadable",
-                    specialist=specialist.id,
-                    server="foundry",
-                    tools=[type(error).__name__],
-                )
-            )
+            failure = _live_failure(error, service=FOUNDRY_SERVICE)
+            failure["specialist"] = specialist.id
+            failures.append(failure)
             continue
 
         entries = (versions or {}).get("value", []) or []
-        if not entries:
+        pinned = next(
+            (
+                entry
+                for entry in entries
+                if isinstance(entry, dict)
+                and _entry_provider_version_id(entry) == provider_version_id
+            ),
+            None,
+        )
+        if pinned is None:
             failures.append(
                 _failure(
-                    "agent_version_missing",
+                    "pinned_version_missing",
                     specialist=specialist.id,
-                    server="foundry",
-                    tools=[],
+                    server=FOUNDRY_SERVICE,
+                    provider_version_id=provider_version_id,
                 )
             )
             continue
 
-        latest = entries[-1]
-        granted = _agent_allowed_tools(latest.get("definition"))
+        definition = pinned.get("definition") or {}
+        if deployment_model and definition.get("model") != deployment_model:
+            failures.append(
+                _failure(
+                    "deployed_model_mismatch",
+                    specialist=specialist.id,
+                    server=FOUNDRY_SERVICE,
+                )
+            )
+
+        granted = _agent_allowed_tools(definition)
         failures.extend(
             compare_grants(
                 specialist_id=specialist.id,
@@ -600,6 +856,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
         observed.append(
             {
                 "specialist": specialist.id,
+                "provider_version_id": provider_version_id,
                 "version_count": len(entries),
                 "operations_grant_count": len(granted[OPERATIONS_SERVER_LABEL]),
                 "azure_grant_count": len(granted[AZURE_SERVER_LABEL]),
@@ -615,6 +872,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
         "specialists": list(manifest.specialist_ids),
         "operations_catalog_size": len(catalogs[OPERATIONS_SERVER_LABEL]),
         "azure_catalog_size": len(catalogs[AZURE_SERVER_LABEL]),
+        "deployment_model_verified": bool(deployment_model),
         "checks": [_check("live_grants", failures)],
         "observed": observed,
         "failures": failures,
@@ -669,7 +927,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Additionally read deployed Foundry versions and MCP tool catalogs.",
     )
+    parser.add_argument(
+        "--candidate-mapping",
+        help="Path to the candidate provider-version mapping to validate live.",
+    )
+    parser.add_argument(
+        "--selftest",
+        action="store_true",
+        help="Verify that this interpreter can import and initialize the validator.",
+    )
     args = parser.parse_args(argv)
+    if args.selftest:
+        load_specialist_manifest()
+        return EXIT_PASS
+    if args.candidate_mapping:
+        os.environ["FOUNDRY_CANDIDATE_MAPPING"] = args.candidate_mapping
     if not args.offline and not args.live:
         args.offline = True
 

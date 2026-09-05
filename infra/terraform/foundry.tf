@@ -310,6 +310,96 @@ locals {
     })
   })
 
+  # ---------------------------------------------------------------------------
+  # Promotion boundary: create -> validate -> promote
+  #
+  # Everything above is a CANDIDATE. Publishing a candidate must not activate
+  # it. Terraform cannot read apply-time local-exec output during the same
+  # plan, so activation reads a reviewed, persisted artifact produced by an
+  # EARLIER apply's parity gate (var.foundry_specialist_promotion_artifact).
+  # Reading it at plan time is precisely what makes it impossible for a
+  # version created by the current agent-creation step to activate in that
+  # same unvalidated step.
+  #
+  # The artifact's `agents` map is specialist id -> { agent_name,
+  # provider_version_id }, where provider_version_id is the ACTUAL immutable
+  # version identifier Foundry returned when the version was created -- never
+  # the synthetic "<release>.<contract version>" stamp projected above.
+  # ---------------------------------------------------------------------------
+  foundry_promotion_artifact_path = var.foundry_specialist_promotion_artifact
+  foundry_promotion_artifact_present = (
+    local.foundry_promotion_artifact_path != "" &&
+    fileexists(local.foundry_promotion_artifact_path)
+  )
+  foundry_promotion_artifact = (
+    local.foundry_promotion_artifact_present
+    ? jsondecode(file(local.foundry_promotion_artifact_path))
+    : null
+  )
+  foundry_promoted_agents = try(local.foundry_promotion_artifact.agents, {})
+
+  # The parity gate wrote "validated" only after an exact live comparison.
+  foundry_promotion_status_ok = try(local.foundry_promotion_artifact.status, "") == "validated"
+
+  # The mapping is bound to the exact reviewed manifest it was validated
+  # against; a manifest edit invalidates it until it is re-validated.
+  foundry_promotion_digest_ok = try(local.foundry_promotion_artifact.manifest_digest, "") == local.specialist_manifest_digest
+
+  # Exact twelve-specialist mapping: no missing specialist, no extra key.
+  foundry_promotion_ids_ok = sort(keys(local.foundry_promoted_agents)) == sort(keys(local.specialists_by_id))
+
+  # Every entry carries a non-empty provider version ID and the agent name
+  # this manifest projects for that specialist.
+  foundry_promotion_ids_complete = alltrue([
+    for id, entry in local.foundry_promoted_agents :
+    try(entry.provider_version_id, "") != "" &&
+    try(entry.agent_name, "") == try(local.foundry_specialist_agent_names[id], "")
+  ])
+
+  # Defence in depth: a hand-edited artifact restating a synthetic candidate
+  # stamp as if it were a provider ID is rejected outright.
+  foundry_promotion_no_candidate_ids = alltrue([
+    for id, entry in local.foundry_promoted_agents :
+    !contains(values(local.foundry_specialist_agent_versions), try(entry.provider_version_id, ""))
+  ])
+
+  foundry_promotion_validated = (
+    local.foundry_promotion_artifact_present &&
+    local.foundry_promotion_status_ok &&
+    local.foundry_promotion_digest_ok &&
+    local.foundry_promotion_ids_ok &&
+    local.foundry_promotion_ids_complete &&
+    local.foundry_promotion_no_candidate_ids
+  )
+
+  # What the running revision actually selects. With a validated artifact it
+  # is the promoted provider IDs; without one it is the deterministic legacy
+  # eight-agent rollback mapping. It is never the candidate projection.
+  foundry_specialist_activation = local.foundry_promotion_validated ? {
+    for id, entry in local.foundry_promoted_agents : id => {
+      name    = entry.agent_name
+      version = entry.provider_version_id
+      source  = "validated_promotion"
+    }
+    } : {
+    for id, legacy in var.foundry_specialists : id => {
+      name    = legacy.name
+      version = legacy.version
+      source  = "legacy_rollback"
+    }
+  }
+
+  foundry_specialist_activation_source = local.foundry_promotion_validated ? "validated_promotion" : "legacy_rollback"
+
+  # Model deployment name handed to the live parity gate so the deployed
+  # agents' model can be checked against the real Azure deployment, keeping
+  # the manifest's `contract_model` an explicitly reported distinction rather
+  # than an unchecked claim.
+  foundry_model_deployment_name = coalesce(
+    var.foundry_model_deployment_name_override,
+    var.foundry_model_name,
+  )
+
   # The custom subdomain is mandatory for token-based (Entra) authentication
   # and for the agent data-plane endpoint. It is part of a global DNS name, so
   # it carries the unique suffix.
@@ -827,6 +917,19 @@ resource "terraform_data" "foundry_agent" {
       AZURE_TENANT_ID          = var.tenant_id
       AZURE_CLIENT_ID          = var.client_id
       AZURE_CLIENT_SECRET      = var.client_secret
+
+      # Stage 1 of the promotion boundary. The script publishes candidate
+      # versions, captures the actual immutable provider version IDs, runs the
+      # live gate against those exact IDs, and writes the validated artifact
+      # that a LATER plan reads. Nothing written here can activate in this
+      # apply.
+      FOUNDRY_PROMOTION_RECORD           = local.foundry_promotion_artifact_path
+      FOUNDRY_SPECIALIST_MANIFEST_DIGEST = local.specialist_manifest_digest
+      FOUNDRY_SPECIALIST_RELEASE         = var.foundry_specialist_release
+      FOUNDRY_MODEL_DEPLOYMENT_NAME      = local.foundry_model_deployment_name
+      OPERATIONS_MCP_SERVER_URL          = local.foundry_mcp_server_url == null ? "" : local.foundry_mcp_server_url
+      AZURE_MCP_SERVER_URL               = local.foundry_azure_mcp_server_url == null ? "" : local.foundry_azure_mcp_server_url
+      MCP_APIM_AUDIENCE                  = local.apim_audience
     }
   }
 
@@ -841,4 +944,58 @@ resource "terraform_data" "foundry_agent" {
     azurerm_role_assignment.foundry_project_search_service_contributor,
     terraform_data.foundry_knowledge_index,
   ]
+}
+
+# ---------------------------------------------------------------------------
+# Stage 2 of the promotion boundary: the parity gate resource.
+#
+# This resource is what the active Container Apps revision depends on, so a
+# revision cannot come up unless every precondition below holds for the
+# mapping it is about to activate. The preconditions are evaluated at PLAN
+# time against the persisted artifact from a previous apply -- they can never
+# be satisfied by output the current apply's agent-creation step produces.
+#
+# With no artifact (the default) the gate still passes, but the activation
+# mapping is the deterministic legacy eight-agent set and no candidate
+# provider ID is activated.
+# ---------------------------------------------------------------------------
+resource "terraform_data" "foundry_specialist_promotion_gate" {
+  input = {
+    activation_source = local.foundry_specialist_activation_source
+    manifest_digest   = local.specialist_manifest_digest
+    activated         = sha256(jsonencode(local.foundry_specialist_activation))
+    specialist_count  = length(local.foundry_specialist_activation)
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !local.foundry_promotion_artifact_present || local.foundry_promotion_status_ok
+      error_message = "Specialist promotion artifact is present but its status is not \"validated\"; it was produced by a held or failed parity gate and must not be activated."
+    }
+
+    precondition {
+      condition     = !local.foundry_promotion_artifact_present || local.foundry_promotion_digest_ok
+      error_message = "Specialist promotion artifact was validated against a different manifest digest than src/operations/specialists.v1.json; re-run the create -> validate stage before promoting."
+    }
+
+    precondition {
+      condition     = !local.foundry_promotion_artifact_present || local.foundry_promotion_ids_ok
+      error_message = "Specialist promotion artifact must map exactly the twelve manifest specialist IDs -- no missing specialist and no extra key."
+    }
+
+    precondition {
+      condition     = !local.foundry_promotion_artifact_present || local.foundry_promotion_ids_complete
+      error_message = "Every promoted specialist must carry a non-empty provider_version_id and the agent_name this manifest projects for it."
+    }
+
+    precondition {
+      condition     = !local.foundry_promotion_artifact_present || local.foundry_promotion_no_candidate_ids
+      error_message = "A promoted provider_version_id restates a synthetic candidate release stamp; only actual Foundry-returned version IDs may be activated."
+    }
+
+    precondition {
+      condition     = local.foundry_promotion_validated || alltrue([for id, entry in local.foundry_specialist_activation : entry.source == "legacy_rollback"])
+      error_message = "Without a validated promotion artifact the activation must remain the deterministic legacy eight-agent rollback mapping."
+    }
+  }
 }

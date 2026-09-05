@@ -225,15 +225,19 @@ resource "azurerm_container_app" "api" {
         value = tostring(var.enable_fabric_iq)
       }
 
-      # Canonical specialist metadata: one env pair per manifest specialist,
-      # generated from local.foundry_specialist_deployment (foundry.tf) rather
-      # than hand-listed, so the API runtime's
-      # FOUNDRY_<SPECIALIST>_AGENT_NAME/_VERSION lookups cannot drift from the
-      # committed contract and the four added specialists are wired
-      # automatically. for_each over a map yields a deterministic,
-      # key-sorted ordering.
+      # Canonical specialist metadata: one env pair per ACTIVATED specialist,
+      # generated from local.foundry_specialist_activation (foundry.tf).
+      #
+      # This is deliberately NOT the candidate projection this plan would
+      # publish: the activation map is either the previously validated,
+      # promoted provider-ID mapping (gated by
+      # terraform_data.foundry_specialist_promotion_gate, which this revision
+      # depends on) or the deterministic legacy eight-agent rollback mapping.
+      # A synthetic "<release>.<contract version>" candidate stamp can never
+      # reach the running revision. for_each over a map yields a
+      # deterministic, key-sorted ordering.
       dynamic "env" {
-        for_each = local.foundry_specialist_deployment
+        for_each = local.foundry_specialist_activation
         content {
           name  = "FOUNDRY_${upper(env.key)}_AGENT_NAME"
           value = env.value.name
@@ -241,11 +245,17 @@ resource "azurerm_container_app" "api" {
       }
 
       dynamic "env" {
-        for_each = local.foundry_specialist_deployment
+        for_each = local.foundry_specialist_activation
         content {
           name  = "FOUNDRY_${upper(env.key)}_AGENT_VERSION"
           value = env.value.version
         }
+      }
+
+      # Which side of the promotion boundary this revision is running on.
+      env {
+        name  = "AIOPS_SPECIALIST_ACTIVATION_SOURCE"
+        value = local.foundry_specialist_activation_source
       }
 
       env {
@@ -296,7 +306,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "FOUNDRY_SPECIALISTS_JSON"
-        value = jsonencode(local.foundry_specialist_deployment)
+        value = jsonencode(local.foundry_specialist_activation)
       }
 
       # Identity of the contract this revision was built from. The parity
@@ -416,6 +426,10 @@ resource "azurerm_container_app" "api" {
   depends_on = [
     azurerm_role_assignment.acr_pull,
     azurerm_role_assignment.kv_apps,
+    # The active revision may only come up behind a satisfied parity gate:
+    # its specialist activation mapping is either a previously validated,
+    # promoted provider-ID mapping or the legacy eight-agent rollback set.
+    terraform_data.foundry_specialist_promotion_gate,
   ]
 }
 
