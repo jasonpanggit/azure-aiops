@@ -1,7 +1,7 @@
 # Phase 12 Private Link Semantics Decision
 
-**Date:** 2026-09-06  
-**Status:** Confirmed from current official Microsoft documentation  
+**Date:** 2026-09-06
+**Status:** Confirmed from current official Microsoft documentation
 **Resume signal:** `fabric: mixed - tenant/workspace scoped, not capacity scoped; cognitive: per-resource; icons: available for Cognitive Services, unavailable for Fabric in Azure Public Service Icons V21`
 
 ## Evidence
@@ -50,4 +50,3 @@ Plan 12-06 must project both resource types, suppress the false per-capacity Fab
 
 - **A1:** Resolved. The assumption that Fabric capacity private-link posture is per-resource is false; the supported controls are tenant- and workspace-scoped.
 - **A4:** Resolved partially. Cognitive Services has an official V21 icon; Microsoft Fabric does not have one in V21 and must use the declared icon-less fallback.
-

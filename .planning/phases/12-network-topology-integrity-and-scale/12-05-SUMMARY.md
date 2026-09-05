@@ -58,4 +58,3 @@ The Azure documentation MCP timed out, so the same first-party Microsoft Learn p
 ## Self-Check: PASSED
 
 The decision artifact exists, names both resource types and icon outcomes, records dated first-party sources, and gives Plan 12-06 an executable disposition without leaving a semantic choice open.
-
