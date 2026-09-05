@@ -7,6 +7,7 @@ import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
+import { TablePagination } from "@/components/ui/TablePagination";
 import { TopologyWorkspace } from "@/components/network/TopologyWorkspace";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
@@ -17,18 +18,33 @@ import { buildCopilotSnapshot, copilotEvidenceRows, networkApi } from "@/lib/ser
 import type { CopilotEvidenceRow, FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
 
 type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
+const NETWORK_PAGE_SIZE = 100;
 
 /** Network decision workspace for cross-environment reachability, inspection, and rule analysis. */
 export default function NetworkPage() {
   const { scope } = useScope();
   const [tab, setTab] = useState<NetworkTab>("flow");
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [gapPage, setGapPage] = useState(0);
+  const [gapPageSize, setGapPageSize] = useState(NETWORK_PAGE_SIZE);
+  const [findingPage, setFindingPage] = useState(0);
+  const [findingPageSize, setFindingPageSize] = useState(NETWORK_PAGE_SIZE);
   const topology = useApi(() => networkApi.topology(scope), [scope]);
-  const gaps = useApi(() => networkApi.gaps(scope), [scope]);
-  const findings = useApi(() => networkApi.ruleFindings(scope), [scope]);
+  const gaps = useApi(
+    () => networkApi.gaps(scope, { limit: gapPageSize, offset: gapPage * gapPageSize }),
+    [scope, gapPage, gapPageSize],
+  );
+  const findings = useApi(
+    () => networkApi.ruleFindings(scope, { limit: findingPageSize, offset: findingPage * findingPageSize }),
+    [scope, findingPage, findingPageSize],
+  );
   const bypass = useApi(() => networkApi.firewallBypass(scope), [scope]);
 
   const summary = topology.data?.data.summary;
+  const gapTotal = gaps.data?.data.summary.gap_count;
+  const findingTotal = findings.data?.data.summary.rule_finding_count;
+  const gapCoverage = gaps.data?.data.coverage;
+  const findingCoverage = findings.data?.data.coverage;
   const evidence = [
     ...(topology.data?.evidence ?? []),
     ...(gaps.data?.evidence ?? []),
@@ -68,7 +84,7 @@ export default function NetworkPage() {
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about network paths" />}
         metadata={
           <>
-            <span>{summary?.connection_count ?? 0} subscription connections</span>
+            <span>{summary ? summary.connection_count : "—"} subscription connections</span>
             <span>Configuration-derived analysis</span>
             <span>No flow logs assumed</span>
           </>
@@ -84,26 +100,26 @@ export default function NetworkPage() {
       <div className="metric-grid network-metrics">
         <MetricCard
           label="Observed network"
-          value={`${summary?.hub_count ?? 0} / ${summary?.spoke_count ?? 0}`}
+          value={summary ? `${summary.hub_count} / ${summary.spoke_count}` : "—"}
           detail="Hub / spoke VNets across the current scope"
         />
         <MetricCard
           label="Inspection bypass"
           value={bypass.data?.data.count ?? "—"}
           detail="Spokes with a path that may avoid firewall inspection"
-          tone={(bypass.data?.data.count ?? 0) > 0 ? "critical" : "success"}
+          tone={bypass.data ? (bypass.data.data.count > 0 ? "critical" : "success") : "default"}
         />
         <MetricCard
           label="Unhealthy peerings"
           value={summary?.unhealthy_peering_count ?? "—"}
-          detail={`${summary?.cross_subscription_peering_count ?? 0} cross-subscription peerings`}
-          tone={(summary?.unhealthy_peering_count ?? 0) > 0 ? "warning" : "success"}
+          detail={summary ? `${summary.cross_subscription_peering_count} cross-subscription peerings` : "— cross-subscription peerings"}
+          tone={summary ? (summary.unhealthy_peering_count > 0 ? "warning" : "success") : "default"}
         />
         <MetricCard
           label="Broad or risky rules"
-          value={findings.data?.data.findings.length ?? "—"}
-          detail={`${gaps.data?.data.gaps.length ?? 0} structural or design gaps`}
-          tone={(findings.data?.data.findings.length ?? 0) > 0 ? "warning" : "success"}
+          value={findingTotal ?? "—"}
+          detail={`${gapTotal ?? "—"} structural or design gaps`}
+          tone={findingTotal == null ? "default" : findingTotal > 0 ? "warning" : "success"}
         />
       </div>
 
@@ -113,6 +129,18 @@ export default function NetworkPage() {
           <span>
             The workbench can prove observed structure and rule decisions, but cannot label deviations from an approved
             hub-spoke policy until that intent is mapped.
+          </span>
+        </div>
+      )}
+
+      {(gapCoverage?.truncated || findingCoverage?.truncated) && (
+        <div className="callout callout-warning">
+          <strong>Results are incomplete.</strong>
+          <span>
+            Showing {gapCoverage?.returned ?? gaps.data?.data.gaps.length ?? 0} of{" "}
+            {gapCoverage?.total ?? gapTotal ?? 0} inspection gaps and{" "}
+            {findingCoverage?.returned ?? findings.data?.data.findings.length ?? 0} of{" "}
+            {findingCoverage?.total ?? findingTotal ?? 0} rule findings. Metric totals are complete; the lists below are not.
           </span>
         </div>
       )}
@@ -142,13 +170,24 @@ export default function NetworkPage() {
 
       {tab === "flow" && <TrafficFlowWorkspace />}
       {tab === "topology" && (
-        <TopologyWorkspace
-          topology={topology.data?.data.topology ?? null}
-          loading={topology.loading}
-          error={topology.error}
-          gaps={gaps.data?.data.gaps ?? []}
-          ruleFindings={findings.data?.data.findings ?? []}
-        />
+        topology.error && !topology.data ? (
+          <StatePanel
+            title="Topology is unavailable"
+            message={`${topology.error.message}. No topology has been inferred for this scope.`}
+            tone="error"
+            action={<RetryButton label="Retry loading topology" loading={topology.loading} onClick={topology.refetch} />}
+          />
+        ) : (
+          <section aria-busy={topology.loading}>
+            <TopologyWorkspace
+              topology={topology.data?.data.topology ?? null}
+              loading={topology.loading}
+              error={topology.error}
+              gaps={gaps.data?.data.gaps ?? []}
+              ruleFindings={findings.data?.data.findings ?? []}
+            />
+          </section>
+        )
       )}
       {tab === "gaps" && (
         <FindingList
@@ -165,6 +204,20 @@ export default function NetworkPage() {
           }))}
           loading={gaps.loading}
           error={gaps.error}
+          errorTitle="Inspection gaps are unavailable"
+          errorMessage={gaps.error ? `${gaps.error.message}. Absence of findings below does not mean the estate is clean.` : ""}
+          emptyTitle="No inspection gaps detected"
+          emptyMessage="Every rule in the design policy was evaluated against the current scope and produced no finding."
+          pagination={gaps.data?.pagination}
+          page={gapPage}
+          pageSize={gapPageSize}
+          label="inspection gaps"
+          onPageChange={setGapPage}
+          onPageSizeChange={(size) => {
+            setGapPage(0);
+            setGapPageSize(size);
+          }}
+          onRetry={gaps.refetch}
         />
       )}
       {tab === "rules" && (
@@ -174,6 +227,20 @@ export default function NetworkPage() {
           items={(findings.data?.data.findings ?? []).map((finding) => ruleListItem(finding))}
           loading={findings.loading}
           error={findings.error}
+          errorTitle="Rule findings are unavailable"
+          errorMessage={findings.error ? `${findings.error.message}. Absence of findings below does not mean the estate is clean.` : ""}
+          emptyTitle="No rule findings detected"
+          emptyMessage="Every observed NSG, firewall, and route rule was evaluated and none was flagged."
+          pagination={findings.data?.pagination}
+          page={findingPage}
+          pageSize={findingPageSize}
+          label="rule findings"
+          onPageChange={setFindingPage}
+          onPageSizeChange={(size) => {
+            setFindingPage(0);
+            setFindingPageSize(size);
+          }}
+          onRetry={findings.refetch}
         />
       )}
       {tab === "policy" && <DesignPolicyWorkspace />}
@@ -461,19 +528,50 @@ function FindingList({
   items,
   loading,
   error,
+  errorTitle,
+  errorMessage,
+  emptyTitle,
+  emptyMessage,
+  pagination,
+  page,
+  pageSize,
+  label,
+  onPageChange,
+  onPageSizeChange,
+  onRetry,
 }: {
   title: string;
   description: string;
   items: FindingListItem[];
   loading: boolean;
   error: Error | null;
+  errorTitle: string;
+  errorMessage: string;
+  emptyTitle: string;
+  emptyMessage: string;
+  pagination?: import("@/lib/types").Pagination | null;
+  page: number;
+  pageSize: number;
+  label: string;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  onRetry: () => void;
 }) {
-  if (loading) return <StatePanel title={`Loading ${title.toLowerCase()}`} message="Evaluating observed network configuration." tone="loading" />;
-  if (error) return <StatePanel title={`${title} are unavailable`} message={error.message} tone="error" />;
-  if (items.length === 0) return <StatePanel title={`No ${title.toLowerCase()} detected`} message="No matching findings exist in the current scope." />;
+  if (loading && items.length === 0) return <StatePanel title={`Loading ${title.toLowerCase()}`} message="Evaluating observed network configuration." tone="loading" />;
+  if (error && items.length === 0) {
+    return (
+      <StatePanel
+        title={errorTitle}
+        message={errorMessage}
+        tone="error"
+        action={<RetryButton label={`Retry loading ${label}`} loading={loading} onClick={onRetry} />}
+      />
+    );
+  }
+  if (items.length === 0) return <StatePanel title={emptyTitle} message={emptyMessage} />;
 
   return (
-    <section className="network-workspace card">
+    <section className="network-workspace card" aria-busy={loading}>
       <div className="card-header">
         <div>
           <h2>{title}</h2>
@@ -497,7 +595,31 @@ function FindingList({
           </article>
         ))}
       </div>
+      <TablePagination
+        pagination={pagination}
+        pageRows={items.length}
+        page={page}
+        onPageChange={onPageChange}
+        pageSize={pageSize}
+        onPageSizeChange={onPageSizeChange}
+        label={label}
+      />
     </section>
+  );
+}
+
+function RetryButton({ label, loading, onClick }: { label: string; loading: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="button"
+      aria-label={label}
+      aria-busy={loading}
+      disabled={loading}
+      onClick={onClick}
+    >
+      Retry
+    </button>
   );
 }
 
@@ -742,7 +864,14 @@ function DesignPolicyWorkspace() {
     return <StatePanel title="Loading design policy" message="Fetching the rule-based network design policy." tone="loading" />;
   }
   if (policy.error) {
-    return <StatePanel title="Design policy is unavailable" message={policy.error.message} tone="error" />;
+    return (
+      <StatePanel
+        title="Design policy is unavailable"
+        message={`${policy.error.message}. Rules cannot be listed or edited, and the gaps below were evaluated against an unknown policy.`}
+        tone="error"
+        action={<RetryButton label="Retry loading design policy" loading={policy.loading} onClick={policy.refetch} />}
+      />
+    );
   }
 
   const serverRules = policy.data?.data.rules ?? [];

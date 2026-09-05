@@ -52,6 +52,14 @@ export interface Pagination {
   next_offset: number | null;
 }
 
+/** Honest server-side collection coverage. Optional on additive consumers so
+ * payloads from an older API remain valid during rolling deployment. */
+export interface CollectionCoverage {
+  total: number;
+  returned: number;
+  truncated: boolean;
+}
+
 /** Every successful response body: `{ data, evidence[], scope{}, knowledge_version, warnings[], pagination? }`. */
 export interface Envelope<T> {
   data: T;
@@ -1650,6 +1658,7 @@ export interface NetworkTopology {
   unresolved_peer_vnet_ids: string[];
   connection_ids: string[];
   counts: Record<string, number>;
+  coverage?: CollectionCoverage;
 }
 
 export interface NetworkSummary {
