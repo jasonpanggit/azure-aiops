@@ -77,6 +77,21 @@ describe("topology stylesheet", () => {
 
     expect(node.style("background-image")).toBe("none");
   });
+
+  it("uses the role-aware title supplied by the badge map", () => {
+    const cy = mount([{ data: { id: "a", kind: "resource", icon: "" } }]);
+    const node = cy.getElementById("a");
+
+    syncFindingBadge(node, {
+      severity: "high",
+      count: 2,
+      title: "2 open findings affecting this resource (high)",
+    });
+
+    expect(node.data("badgeTitle")).toBe(
+      "2 open findings affecting this resource (high)",
+    );
+  });
 });
 
 /**
