@@ -15,12 +15,17 @@ import {
 } from "@/test/network-fixtures";
 import type {
   NetworkSummary,
-  NetworkTopology,
   RuleFinding,
 } from "@/lib/types";
+import type { TopologyNodeData } from "@/lib/network-graph";
 
 const graphProbe = vi.hoisted(() => ({
   props: null as null | {
+    topology?: ReturnType<typeof buildTopologyEnvelope>["data"]["topology"];
+    onSelect?: (selection: {
+      node: TopologyNodeData | null;
+      edge: null;
+    }) => void;
     findingSeverityByResource?: Map<
       string,
       { severity: string; count: number; title?: string }
@@ -32,7 +37,35 @@ vi.mock("next/dynamic", () => ({
   default: () =>
     function GraphDouble(props: typeof graphProbe.props) {
       graphProbe.props = props;
-      return <div data-testid="topology-graph">Topology graph</div>;
+      const resource = props?.topology?.resources?.[0];
+      const node: TopologyNodeData | null = resource
+        ? {
+            id: resource.id,
+            label: resource.name,
+            kind: "resource",
+            icon: "",
+            subscriptionId: resource.subscription_id,
+            peerCount: 0,
+            score: 0,
+            signals: [],
+            entityType: resource.entity_type,
+            details: resource.details,
+            observed: true,
+          }
+        : null;
+      return (
+        <div data-testid="topology-graph">
+          Topology graph
+          {node && (
+            <button
+              type="button"
+              onClick={() => props?.onSelect?.({ node, edge: null })}
+            >
+              Select first graph node
+            </button>
+          )}
+        </div>
+      );
     },
 }));
 
@@ -212,6 +245,127 @@ describe("TopologyWorkspace badge coverage", () => {
       count: 1,
       title:
         "1 open finding on this control and 1 affecting this resource (critical)",
+    });
+  });
+
+  describe("TopologyWorkspace disclosure and visual-only controls", () => {
+    beforeEach(() => {
+      graphProbe.props = null;
+    });
+
+    it("keeps drawer findings available when the visual badge toggle is off", () => {
+      const topology = buildTopologyEnvelope(1, 1).data.topology;
+      const finding = {
+        ...buildRuleFindingsEnvelope(1).data.findings[0],
+        control_id: topology.resources![0].id,
+      };
+      renderWorkspace({ topology, ruleFindings: [finding] });
+
+      const toggle = screen.getByRole("checkbox", { name: "Finding badges" });
+      expect(toggle.closest("label")).toHaveAttribute(
+        "title",
+        "Visual only — the details drawer always lists open findings.",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Select first graph node" }));
+      fireEvent.click(toggle);
+
+      expect(graphProbe.props?.findingSeverityByResource).toBeUndefined();
+      expect(screen.getByText("Open findings (1)")).toBeInTheDocument();
+    });
+
+    it("announces an empty filter while retaining unfiltered and filter-hidden totals", () => {
+      renderWorkspace();
+
+      fireEvent.click(screen.getByRole("checkbox", { name: "Filter (hide non-matches)" }));
+      fireEvent.change(
+        screen.getByRole("textbox", { name: "Highlight topology nodes by name" }),
+        { target: { value: "no-such-resource" } },
+      );
+
+      expect(screen.getByRole("status")).toHaveTextContent(
+        'No resources match "no-such-resource". Clear the filter to see the 2 resources in scope.',
+      );
+      expect(screen.getByText("Rendering 2 of 2 nodes at summary detail.")).toBeInTheDocument();
+      expect(screen.getByText("2 hidden by filter")).toBeInTheDocument();
+    });
+
+    it("renders complete reduction, peer-resolution, badge, and freshness text", () => {
+      const topology = buildTopologyEnvelope(2, 2).data.topology;
+      topology.coverage = { total: 9, returned: 2, truncated: true };
+      topology.unresolved_peers = [
+        {
+          vnet_id: "/subscriptions/a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/not-ingested",
+          peer_resolution: "not_ingested",
+        },
+        {
+          vnet_id: "/subscriptions/a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/out-of-scope",
+          peer_resolution: "excluded_by_scope",
+        },
+        {
+          vnet_id: "/subscriptions/a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/observed",
+          peer_resolution: "observed",
+        },
+      ];
+      topology.unresolved_peer_vnet_ids = [
+        ...topology.unresolved_peers.map((peer) => peer.vnet_id),
+        "/subscriptions/a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/legacy",
+      ];
+      topology.counts = {
+        ...topology.counts,
+        dropped_relationships: { attached_to: 2, resolves_for: 1 },
+      };
+      const finding = {
+        ...buildRuleFindingsEnvelope(1).data.findings[0],
+        control_id: topology.resources![0].id,
+      };
+
+      renderWorkspace({
+        topology,
+        ruleFindings: [finding],
+        graphFreshness: "",
+      });
+
+      expect(screen.getByText("Rendering 6 of 9 nodes at summary detail.")).toBeInTheDocument();
+      expect(screen.getByText("0 hidden by filter")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "3 relationships dropped (attached_to, resolves_for) — endpoints were not present in this scope.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByText("1 peers not ingested")).toBeInTheDocument();
+      expect(screen.getByText("1 peers outside current scope")).toBeInTheDocument();
+      expect(screen.getByText("1 peers with unrecorded resolution")).toBeInTheDocument();
+      expect(screen.getByText("1 nodes with open findings")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Snapshot age unknown — no observation timestamp was recorded.",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it.each([undefined, "", "not-a-date", "1970-01-01T00:00:00Z"])(
+      "uses the exact long-form unknown freshness predicate for %s",
+      (graphFreshness) => {
+        renderWorkspace({ graphFreshness });
+        expect(
+          screen.getByText(
+            "Snapshot age unknown — no observation timestamp was recorded.",
+          ),
+        ).toBeInTheDocument();
+      },
+    );
+
+    it("omits zero dropped relationships and zero peer-resolution items", () => {
+      const topology = buildTopologyEnvelope().data.topology;
+      topology.counts = { ...topology.counts, dropped_relationships: {} };
+      topology.unresolved_peers = [];
+
+      renderWorkspace({ topology, graphFreshness: "2026-01-01T00:00:00Z" });
+
+      expect(screen.queryByText(/relationships dropped/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/peers not ingested/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/peers outside current scope/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Snapshot observed/)).toBeInTheDocument();
     });
   });
 
