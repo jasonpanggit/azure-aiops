@@ -5,12 +5,12 @@ milestone_name: milestone
 current_plan: 03.6 complete (6/6 plans) - ready for next phase
 status: executing
 stopped_at: Completed Phase 03.6 (03.6-01..03.6-06) — remediation workflow safety and operator guidance
-last_updated: "2026-09-05T16:06:44.976Z"
+last_updated: "2026-09-05T16:28:31.445Z"
 progress:
   total_phases: 17
   completed_phases: 9
   total_plans: 158
-  completed_plans: 91
+  completed_plans: 92
 current_phase_name: Remediation Workflow Safety and Operator Guidance
 ---
 
@@ -28,6 +28,7 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 - **03.1-01** COMPLETE — Wave 0 deterministic Exposure fixture, explicit backend/web pending gates, 100k correctness harness, and exhaustive fail-closed Fabric SQL readiness probe
 - **03.1-21** COMPLETE — Approved ontology v2 contract and production scope-first tracer through typed ontology, review-only container remediation, and Copilot parity
 - **03.1-04** COMPLETE — Pinned pyodbc/ODBC Driver 18 runtime, fail-closed Fabric SQL readiness, and managed dual-key cursor rotation
+- **03.1-05** COMPLETE — Frozen paged ARG outcomes, rowless sanitized failures, and shared live/persisted AUM normalization with distinct Defender provenance
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
 - **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
 - **03.6-03** COMPLETE — Fail-safe `selectedPatchIds: string[] | null` patch-selection model (fixes CR-07 deselect-all-then-widens-to-all bug) and bounded/backoff client polling (`usePollingBackoff`, capped at 40 requests or 600000ms) with independently-testable ceilings
@@ -128,6 +129,7 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 | Phase 03.1 P01 | 9min | 3 tasks | 10 files |
 | Phase 03.1 P21 | 19min | 3 tasks | 12 files |
 | Phase 03.1 P04 | 3min | 3 tasks | 11 files |
+| Phase 03.1 P05 | 16min | 2 tasks | 12 files |
 
 ## Decisions
 
@@ -178,6 +180,10 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 - [Phase 03.1]: Keep pyodbc in a dedicated pinned fabric-sql extra while installing Microsoft ODBC Driver 18 only in the production runtime image. — Local and test installs remain optional while the deployed adapter is reproducible.
 - [Phase 03.1]: Production Exposure fails closed on any Fabric SQL prerequisite; Delta remains available only when Exposure is disabled or explicit rollback mode is selected. — Production cannot silently switch to an unbounded or uncertified adapter.
 - [Phase 03.1]: Cursor key material stays in Key Vault and mode-0600 temporary files; Container Apps receives managed-identity references and non-secret active/previous kids. — Rotation and rollback preserve overlap without placing secret values in source, logs, Terraform, or artifacts.
+- [Phase 03.1]: Use separate frozen AcquisitionSuccess and AcquisitionFailure types so failures have no rows and cannot cross normalization.
+- [Phase 03.1]: Keep QuerySpec provider-table metadata separate from semantic source-family provenance.
+- [Phase 03.1]: Fail legacy ingestion closed on typed acquisition failure until Plan 03.1-07 adds partition LKG carry-forward.
+- [Phase 03.1]: Preserve provider KB and status values while carrying canonical values separately.
 
 ## Session
 
