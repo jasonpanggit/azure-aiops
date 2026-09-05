@@ -74,9 +74,29 @@ const policy: NetworkDesignPolicy = {
   rules: [],
 };
 
-function policyEnvelope() {
+const declarativeRule = {
+  rule_id: "subnets-need-vnet",
+  name: "Subnets require a VNet",
+  description: "Every subnet belongs to a VNet.",
+  category: "custom",
+  severity: "medium" as const,
+  enabled: true,
+  parameters: {
+    target: "subnets",
+    assert: [{ field: "vnet_id", exists: true }],
+  },
+  evaluated: true,
+  declarative: true,
+};
+
+function policyEnvelope(overrides: Partial<NetworkDesignPolicy> = {}) {
   return {
-    data: policy,
+    data: {
+      ...policy,
+      supported_targets: ["subnets", "vnets"],
+      supported_operators: ["exists", "equals"],
+      ...overrides,
+    },
     evidence: [],
     scope: {},
     knowledge_version: "network-fixture-v1",
@@ -269,4 +289,176 @@ describe("Network page loader recovery", () => {
       }
     },
   );
+});
+
+describe("Network page policy round-trip", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    primeSuccessfulLoaders();
+    mocks.policy.mockResolvedValue(
+      policyEnvelope({
+        rules: [
+          {
+            rule_id: "internet-via-firewall",
+            name: "Internet via firewall",
+            description: "Route internet traffic through the firewall.",
+            category: "routing",
+            severity: "high",
+            enabled: true,
+            parameters: {},
+            evaluated: true,
+          },
+          {
+            rule_id: "nsg-on-every-subnet",
+            name: "NSG on every subnet",
+            description: "Require subnet protection.",
+            category: "security",
+            severity: "high",
+            enabled: true,
+            parameters: {},
+            evaluated: true,
+          },
+        ],
+      }),
+    );
+    mocks.updatePolicy.mockResolvedValue(policyEnvelope());
+    mocks.previewPolicy.mockResolvedValue({
+      ...policyEnvelope(),
+      data: {
+        policy: policyEnvelope({ rules: [declarativeRule] }).data,
+        gaps: [],
+        summary: buildNetworkSummary({ gap_count: 339 }),
+      },
+    });
+  });
+
+  it("coalesces rapid successful mutations and refreshes every derived loader without reloading the page", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("switch", { name: "Disable Internet via firewall" }));
+    await user.click(screen.getByRole("switch", { name: "Disable NSG on every subnet" }));
+    await user.click(screen.getByRole("tab", { name: "Topology" }));
+
+    expect(screen.getByTestId("topology-workspace")).toHaveTextContent("620 topology findings");
+    await waitFor(
+      () => {
+        expect(mocks.topology).toHaveBeenCalledTimes(2);
+        expect(mocks.gaps).toHaveBeenCalledTimes(2);
+        expect(mocks.ruleFindings).toHaveBeenCalledTimes(2);
+      },
+      { timeout: 1_500 },
+    );
+    expect(screen.getByRole("heading", { name: "Topology & traffic paths" })).toBeInTheDocument();
+  });
+
+  it("retains the populated topology and metric totals while a policy-triggered refetch is in flight", async () => {
+    const user = userEvent.setup();
+    let resolveTopology: ((value: ReturnType<typeof buildTopologyEnvelope>) => void) | undefined;
+    let topologyCall = 0;
+    mocks.topology.mockImplementation(() => {
+      topologyCall += 1;
+      if (topologyCall === 1) return Promise.resolve(buildTopologyEnvelope());
+      return new Promise((resolve) => {
+        resolveTopology = resolve;
+      });
+    });
+
+    renderPage();
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("switch", { name: "Disable Internet via firewall" }));
+    await user.click(screen.getByRole("tab", { name: "Topology" }));
+
+    const canvas = screen.getByTestId("topology-workspace");
+    await waitFor(() => expect(canvas.parentElement).toHaveAttribute("aria-busy", "true"), { timeout: 1_500 });
+    expect(canvas).toBeInTheDocument();
+    expect(screen.getByText("Broad or risky rules").closest("article")).toHaveTextContent("620");
+
+    resolveTopology?.(buildTopologyEnvelope());
+  });
+
+  it("previews and saves a free-form declarative rule through the server contract", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.clear(screen.getByRole("textbox", { name: "Rule ID" }));
+    await user.type(screen.getByRole("textbox", { name: "Rule ID" }), declarativeRule.rule_id);
+    await user.clear(screen.getByRole("textbox", { name: "Name" }));
+    await user.type(screen.getByRole("textbox", { name: "Name" }), declarativeRule.name);
+    const assertion = screen.getByRole("textbox", { name: "Rule assertion (JSON)" });
+    await user.clear(assertion);
+    await user.type(assertion, JSON.stringify(declarativeRule.parameters));
+
+    await user.click(screen.getByRole("button", { name: "Preview rule" }));
+    await waitFor(() =>
+      expect(mocks.previewPolicy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rules: [expect.objectContaining({ rule_id: declarativeRule.rule_id, parameters: declarativeRule.parameters })],
+        }),
+        {},
+      ),
+    );
+    expect(await screen.findByText(/Preview found 0 gaps under this rule/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save rule" }));
+    await waitFor(() =>
+      expect(mocks.updatePolicy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rules: [expect.objectContaining({ rule_id: declarativeRule.rule_id, parameters: declarativeRule.parameters })],
+        }),
+      ),
+    );
+  });
+
+  it("renders a server semantic-validation reason beside the assertion and blocks save", async () => {
+    const user = userEvent.setup();
+    mocks.previewPolicy.mockResolvedValue({
+      ...policyEnvelope(),
+      data: {
+        policy: policyEnvelope({
+          rules: [{ ...declarativeRule, evaluated: false, invalid_reason: "operator eval is not supported" }],
+        }).data,
+        gaps: [],
+        summary: buildNetworkSummary({ gap_count: 340 }),
+      },
+    });
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.clear(screen.getByRole("textbox", { name: "Rule ID" }));
+    await user.type(screen.getByRole("textbox", { name: "Rule ID" }), declarativeRule.rule_id);
+    const assertion = screen.getByRole("textbox", { name: "Rule assertion (JSON)" });
+    await user.clear(assertion);
+    await user.type(assertion, JSON.stringify(declarativeRule.parameters));
+    await user.click(screen.getByRole("button", { name: "Preview rule" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("operator eval is not supported");
+    expect(alert).toHaveTextContent("nothing was saved");
+    expect(assertion).toHaveAttribute("aria-invalid", "true");
+    expect(assertion).toHaveAttribute("aria-describedby", alert.id);
+
+    await user.click(screen.getByRole("button", { name: "Save rule" }));
+    expect(mocks.updatePolicy).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed JSON locally and sends no preview or save request", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    const assertion = screen.getByRole("textbox", { name: "Rule assertion (JSON)" });
+    await user.clear(assertion);
+    await user.type(assertion, "{");
+    await user.click(screen.getByRole("button", { name: "Preview rule" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Nothing has been sent to the server");
+    expect(mocks.previewPolicy).not.toHaveBeenCalled();
+    expect(mocks.updatePolicy).not.toHaveBeenCalled();
+  });
 });
