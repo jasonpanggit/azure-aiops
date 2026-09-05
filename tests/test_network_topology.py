@@ -11,8 +11,17 @@ from network_scenario import (
     network_rows,
 )
 
-from network import build_service, build_topology, load_network_snapshot
-from network.topology import HUB_SCORE_THRESHOLD
+from network import (
+    NetworkIntelligenceService,
+    NetworkScope,
+    NetworkSnapshot,
+    VNet,
+    VNetPeering,
+    build_service,
+    build_topology,
+    load_network_snapshot,
+)
+from network.topology import HUB_SCORE_THRESHOLD, PEER_RESOLUTION_VALUES
 
 
 def _topology():
@@ -111,6 +120,104 @@ class TestPeeringStitching:
     def test_hub_for_resolves_a_spokes_hub(self) -> None:
         topology = _topology()
         assert topology.hub_for(PROD_VNET.casefold()) == HUB_VNET.casefold()
+
+
+class TestPeerResolution:
+    VNET_A = "/subscriptions/sub-a/resourceGroups/rg-a/providers/Microsoft.Network/virtualNetworks/a"
+    VNET_B = "/subscriptions/sub-b/resourceGroups/rg-b/providers/Microsoft.Network/virtualNetworks/b"
+    VNET_C = "/subscriptions/sub-c/resourceGroups/rg-c/providers/Microsoft.Network/virtualNetworks/c"
+
+    @classmethod
+    def _service(cls) -> NetworkIntelligenceService:
+        vnet_a = VNet(
+            resource_id=cls.VNET_A,
+            name="a",
+            subscription_id="sub-a",
+            resource_group="rg-a",
+        )
+        vnet_b = VNet(
+            resource_id=cls.VNET_B,
+            name="b",
+            subscription_id="sub-b",
+            resource_group="rg-b",
+        )
+        peer_b = VNetPeering(
+            resource_id=f"{cls.VNET_A}/virtualNetworkPeerings/to-b",
+            name="to-b",
+            subscription_id="sub-a",
+            resource_group="rg-a",
+            local_vnet_id=cls.VNET_A,
+            remote_vnet_id=cls.VNET_B,
+            peering_state="Connected",
+        )
+        peer_c = VNetPeering(
+            resource_id=f"{cls.VNET_A}/virtualNetworkPeerings/to-c",
+            name="to-c",
+            subscription_id="sub-a",
+            resource_group="rg-a",
+            local_vnet_id=cls.VNET_A,
+            remote_vnet_id=cls.VNET_C,
+            peering_state="Connected",
+        )
+        return NetworkIntelligenceService(
+            NetworkSnapshot(
+                vnets=(vnet_a, vnet_b),
+                peerings=(peer_b, peer_c),
+            )
+        )
+
+    def test_scoped_topology_distinguishes_excluded_and_not_ingested_peers(
+        self,
+    ) -> None:
+        payload = self._service().scoped(
+            NetworkScope(subscription_ids=("sub-a",))
+        ).topology.to_dict()
+
+        assert payload["unresolved_peers"] == [
+            {
+                "vnet_id": self.VNET_B.casefold(),
+                "peer_resolution": "excluded_by_scope",
+            },
+            {
+                "vnet_id": self.VNET_C.casefold(),
+                "peer_resolution": "not_ingested",
+            },
+        ]
+        assert payload["unresolved_peer_vnet_ids"] == [
+            self.VNET_B.casefold(),
+            self.VNET_C.casefold(),
+        ]
+
+    def test_peer_resolution_values_are_closed(self) -> None:
+        assert PEER_RESOLUTION_VALUES == frozenset(
+            {"not_ingested", "excluded_by_scope", "observed"}
+        )
+        payload = self._service().scoped(
+            NetworkScope(subscription_ids=("sub-a",))
+        ).topology.to_dict()
+        assert {
+            item["peer_resolution"] for item in payload["unresolved_peers"]
+        } <= PEER_RESOLUTION_VALUES
+
+    def test_empty_scope_never_marks_peer_excluded(self) -> None:
+        payload = self._service().scoped(NetworkScope()).topology.to_dict()
+
+        assert all(
+            item["peer_resolution"] != "excluded_by_scope"
+            for item in payload["unresolved_peers"]
+        )
+        assert payload["unresolved_peer_vnet_ids"] == [self.VNET_C.casefold()]
+
+    def test_widening_scope_restores_real_vnet_kind(self) -> None:
+        payload = self._service().scoped(
+            NetworkScope(subscription_ids=("sub-a", "sub-b"))
+        ).topology.to_dict()
+
+        assert self.VNET_B.casefold() not in {
+            item["vnet_id"] for item in payload["unresolved_peers"]
+        }
+        by_id = {item["id"]: item for item in payload["resources"]}
+        assert by_id[self.VNET_B.casefold()]["entity_type"] == "VNet"
 
 
 class TestSharedServices:
