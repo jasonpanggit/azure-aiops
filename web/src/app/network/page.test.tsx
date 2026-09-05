@@ -9,6 +9,7 @@ import {
   buildRuleFindingsEnvelope,
   buildTopologyEnvelope,
 } from "@/test/network-fixtures";
+import { ApiError } from "@/lib/types";
 import type { NetworkDesignPolicy } from "@/lib/types";
 
 const mocks = vi.hoisted(() => ({
@@ -597,6 +598,52 @@ describe("Network page policy round-trip", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Nothing has been sent to the server");
     expect(mocks.previewPolicy).not.toHaveBeenCalled();
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
+  });
+
+  it("forwards every well-formed JSON value to server-only semantic validation", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.type(screen.getByRole("textbox", { name: "Rule ID" }), declarativeRule.rule_id);
+    await user.type(screen.getByRole("textbox", { name: "Name" }), declarativeRule.name);
+    fireEvent.change(screen.getByRole("textbox", { name: "Rule assertion (JSON)" }), {
+      target: { value: "null" },
+    });
+    await user.click(screen.getByRole("button", { name: "Preview rule" }));
+
+    await waitFor(() =>
+      expect(mocks.previewPolicy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rules: [expect.objectContaining({ parameters: null })],
+        }),
+        {},
+      ),
+    );
+  });
+
+  it("renders a PATCH semantic rejection beside the retained assertion", async () => {
+    const user = userEvent.setup();
+    mocks.updatePolicy.mockRejectedValue(
+      new ApiError(400, "invalid_request", "operator eval is not supported"),
+    );
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.type(screen.getByRole("textbox", { name: "Rule ID" }), declarativeRule.rule_id);
+    await user.type(screen.getByRole("textbox", { name: "Name" }), declarativeRule.name);
+    const assertion = screen.getByRole("textbox", { name: "Rule assertion (JSON)" });
+    const body = JSON.stringify(declarativeRule.parameters);
+    fireEvent.change(assertion, { target: { value: body } });
+    await user.click(screen.getByRole("button", { name: "Save rule" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("operator eval is not supported");
+    expect(alert).toHaveTextContent("nothing was saved");
+    expect(assertion).toHaveValue(body);
+    expect(assertion).toHaveAttribute("aria-invalid", "true");
   });
 
   it("reports a saved rule delta from the pre- and post-refetch summary totals", async () => {
