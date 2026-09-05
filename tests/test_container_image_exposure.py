@@ -476,3 +476,72 @@ def test_workload_schemas_are_additive_and_preserve_approval_role_ids() -> None:
         "role_ids_json"
     )
     assert approval_field.nullable is True
+
+
+def test_ingestion_service_persists_the_exact_workload_slice(tmp_path) -> None:
+    from onboarding.config import ConnectorConfig
+    from onboarding.ingestion_service import IngestionService
+
+    pods, containers, images = _workload_rows()
+
+    class Source:
+        def fetch(self, specs, subscription_ids):
+            assert subscription_ids == ["sub1"]
+            return {
+                spec.name: (
+                    [
+                        {
+                            "id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.OperationalInsights/workspaces/law1",
+                            "name": "law1",
+                            "subscriptionId": "sub1",
+                            "resourceGroup": "rg1",
+                            "workspaceId": "workspace-1",
+                        }
+                    ]
+                    if spec.name == "inventory_log_analytics_workspaces"
+                    else (
+                        [_defender_image_row()]
+                        if spec.name == "defender_subassessments"
+                        else []
+                    )
+                )
+                for spec in specs
+            }
+
+    class Logs:
+        def query_kube_pod_inventory(self, workspace_id):
+            assert workspace_id == "workspace-1"
+            return pods
+
+        def query_container_inventory(self, workspace_id):
+            assert workspace_id == "workspace-1"
+            return containers
+
+        def query_container_image_inventory(self, workspace_id):
+            assert workspace_id == "workspace-1"
+            return images
+
+    service = IngestionService(
+        ConnectorConfig(
+            output_dir=tmp_path,
+            subscriptions=("sub1",),
+            tenant_id="tenant1",
+            connection_context={"connection_id": "connection-1"},
+            cost_management_enabled=False,
+        ),
+        source=Source(),
+        logs_client=Logs(),
+        clock=lambda: datetime(2026, 9, 2, tzinfo=UTC),
+    )
+
+    manifest = service.run()
+
+    assert manifest["datasets"]["exposure/workload_deployments"]["rowCount"] == 1
+    deployments = service.store.read_dataset("exposure/workload_deployments")
+    checkpoints = service.store.read_dataset("exposure/workload_source_checkpoints")
+    assert deployments[0]["image_digest"] == DIGEST_A
+    assert {row["source_family"] for row in checkpoints} == {
+        "kube_pod_inventory",
+        "container_inventory",
+        "container_image_inventory",
+    }
