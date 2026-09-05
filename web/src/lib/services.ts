@@ -963,21 +963,40 @@ export const networkApi = {
     return apiRequest<FlowResult>("/network/traffic-flow", { query });
   },
 
-  gaps: (scope: ScopeSelection = {}, options: { severity?: NetworkSeverity; category?: string } = {}) => {
+  gaps: (
+    scope: ScopeSelection = {},
+    options: { severity?: NetworkSeverity; category?: string; offset?: number; limit?: number } = {},
+  ) => {
     const query = scopeToSearchParams(scope);
     if (options.severity) query.set("severity", options.severity);
     if (options.category) query.set("category", options.category);
-    return apiRequest<{ gaps: NetworkGap[]; intended_design_declared: boolean; summary: NetworkSummary }>(
+    if (options.offset != null) query.set("offset", String(options.offset));
+    if (options.limit != null) query.set("limit", String(options.limit));
+    return apiRequest<{
+      gaps: NetworkGap[];
+      intended_design_declared: boolean;
+      summary: NetworkSummary;
+      coverage?: import("./types").CollectionCoverage;
+    }>(
       "/network/gaps",
       { query }
     );
   },
 
-  ruleFindings: (scope: ScopeSelection = {}, options: { severity?: NetworkSeverity; category?: string } = {}) => {
+  ruleFindings: (
+    scope: ScopeSelection = {},
+    options: { severity?: NetworkSeverity; category?: string; offset?: number; limit?: number } = {},
+  ) => {
     const query = scopeToSearchParams(scope);
     if (options.severity) query.set("severity", options.severity);
     if (options.category) query.set("category", options.category);
-    return apiRequest<{ findings: RuleFinding[]; summary: NetworkSummary }>("/network/rule-findings", { query });
+    if (options.offset != null) query.set("offset", String(options.offset));
+    if (options.limit != null) query.set("limit", String(options.limit));
+    return apiRequest<{
+      findings: RuleFinding[];
+      summary: NetworkSummary;
+      coverage?: import("./types").CollectionCoverage;
+    }>("/network/rule-findings", { query });
   },
 
   /** The rule-based, UI-editable design policy gap analysis is checked against. */

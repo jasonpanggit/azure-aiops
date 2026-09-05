@@ -52,6 +52,14 @@ export interface Pagination {
   next_offset: number | null;
 }
 
+/** Honest server-side collection coverage. Optional on additive consumers so
+ * payloads from an older API remain valid during rolling deployment. */
+export interface CollectionCoverage {
+  total: number;
+  returned: number;
+  truncated: boolean;
+}
+
 /** Every successful response body: `{ data, evidence[], scope{}, knowledge_version, warnings[], pagination? }`. */
 export interface Envelope<T> {
   data: T;
@@ -1635,6 +1643,11 @@ export interface NetworkTopologyRelationship {
   details: Record<string, unknown>;
 }
 
+export interface FlowLogProvenance {
+  state: "not_ingested" | "ingested_not_analyzed" | "analyzed";
+  observed_flow_count: number;
+}
+
 export interface NetworkTopology {
   hubs: HubClassification[];
   spokes: HubClassification[];
@@ -1650,6 +1663,9 @@ export interface NetworkTopology {
   unresolved_peer_vnet_ids: string[];
   connection_ids: string[];
   counts: Record<string, number>;
+  coverage?: CollectionCoverage;
+  /** Whether flow-log evidence exists and whether rule analysis consumed it. */
+  flow_log_provenance?: FlowLogProvenance;
 }
 
 export interface NetworkSummary {
@@ -1705,6 +1721,11 @@ export interface NetworkPolicyRule {
   /** Whether the analyzer has a gap check for this rule. Absent on older
    * API responses, in which case evaluability is unknown. */
   evaluated?: boolean;
+  /** Server classification for rules backed by the declarative engine. */
+  declarative?: boolean;
+  /** Server-owned semantic validation failure; the browser never recreates
+   * this validation contract. */
+  invalid_reason?: string;
 }
 
 /** The full design policy gap analysis is checked against. */
@@ -1726,6 +1747,11 @@ export interface NetworkDesignPolicy {
   exempt_subnet_names: string[];
   exempt_vnet_names: string[];
   rules: NetworkPolicyRule[];
+  /** Additive engine vocabulary used for rule-authoring help and controls. */
+  supported_targets?: string[];
+  supported_operators?: string[];
+  unevaluated_rule_ids?: string[];
+  invalid_rule_ids?: string[];
 }
 
 export interface RuleFinding {

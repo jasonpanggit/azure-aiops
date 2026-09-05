@@ -14,6 +14,15 @@ export interface EvidenceBarProps {
   durableSourceStatus?: DurableSourceStatus[];
 }
 
+/** Keep this predicate identical to the long-form topology freshness guard:
+ * absent, empty, unparseable, and at-or-before epoch are all unknown. */
+function freshnessChip(value?: string): string {
+  if (!value) return "Unknown";
+  const ms = new Date(value).getTime();
+  if (Number.isNaN(ms) || ms <= 0) return "Unknown";
+  return relativeTime(value);
+}
+
 /** Makes evidence confidence, provenance, freshness, and warnings visible beside the decision surface,
  * rendered as a lightweight left-to-right chain (source → freshness → confidence) so the provenance
  * story reads as a connected sequence rather than a flat badge list. */
@@ -38,7 +47,7 @@ export function EvidenceBar({
       : null,
     { key: "updated", label: "Updated", value: relativeTime(timestamp) },
     knowledgeVersion ? { key: "knowledge", label: "Knowledge", value: knowledgeVersion } : null,
-    graphFreshness ? { key: "graph", label: "Graph", value: relativeTime(graphFreshness) } : null,
+    { key: "graph", label: "Graph", value: freshnessChip(graphFreshness) },
     liveObservedAt ? { key: "live", label: "Live", value: relativeTime(liveObservedAt) } : null,
   ].filter((segment): segment is { key: string; label: string; value: string; title?: string } => segment !== null);
 
