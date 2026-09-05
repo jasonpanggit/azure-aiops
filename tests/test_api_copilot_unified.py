@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
+from test_api_copilot_investigation import HEADERS, _context
 
+from api.app import create_app
 from api.evidence import Evidence
 from api.scope import Scope
 from operations.foundry_agent import FoundryAgentError
@@ -422,3 +425,154 @@ def test_widened_request_scope_causes_zero_calls():
         )
 
     assert calls == []
+
+
+def _canonical_body(**overrides):
+    body = {
+        "contract_version": "1",
+        "question": "Show inventory resources and data health.",
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "inventory",
+            "page_id": "inventory",
+            "coverage": {
+                "visible_count": 1,
+                "total_count": 2,
+                "complete": False,
+            },
+            "freshness": [
+                {
+                    "source": "inventory",
+                    "observed_at": "2026-09-01T00:00:00Z",
+                    "status": "partial",
+                }
+            ],
+            "evidence": [
+                {
+                    "evidence_id": "inventory:os:stable",
+                    "source": "inventory/os_observations",
+                    "status": "ok",
+                    "observed_at": "2026-09-01T00:00:00Z",
+                    "resource_id": "inventory://os/Windows%20Server%7C2019",
+                    "data": {"machine_count": 1},
+                }
+            ],
+        },
+        "hint": {
+            "specialist_id": INVENTORY_DATA_HEALTH_ID,
+            "tool": "inventory_resources",
+            "arguments": {},
+        },
+    }
+    body.update(overrides)
+    return body
+
+
+def test_authenticated_canonical_route_preserves_governed_result(tmp_path):
+    observed_scopes: list[dict[str, list[str]]] = []
+
+    class InventoryPort:
+        def list_resources(self, scope, *, family, resource_type, limit):
+            observed_scopes.append(scope.to_dict())
+            return {
+                "resources": [
+                    {
+                        "id": "/subscriptions/sub-a/resourceGroups/rg/providers/"
+                        "Microsoft.Compute/virtualMachines/vm-1"
+                    }
+                ],
+                "total": 1,
+            }
+
+    context = _context(tmp_path, None)
+    context.inventory_read_port_provider = lambda: InventoryPort()
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    assert client.post(
+        "/api/v1/copilot/investigations",
+        json=_canonical_body(),
+    ).status_code == 401
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=_canonical_body(),
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert observed_scopes == [{"subscription": ["sub-a"]}]
+    assert data["policy_status"] == "accepted"
+    assert data["fallback_reason"] == ""
+    assert data["coverage"] == {
+        "visible_count": 1,
+        "total_count": 2,
+        "complete": False,
+    }
+    assert "visible subset is incomplete" in data["uncertainty"]
+    assert {citation["citation_id"] for citation in data["citations"]} >= {
+        "snapshot:coverage",
+        "inventory:os:stable",
+    }
+    assert data["thread_id"].startswith("thr-")
+    assert data["mutation_authorized"] is False
+
+
+def test_canonical_route_validates_hints_and_scope_before_tool_io(tmp_path):
+    calls: list[dict[str, list[str]]] = []
+
+    class InventoryPort:
+        def list_resources(self, scope, *, family, resource_type, limit):
+            calls.append(scope.to_dict())
+            return {"resources": [], "total": 0}
+
+    context = _context(tmp_path, None)
+    context.inventory_read_port_provider = lambda: InventoryPort()
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    invalid_hint = _canonical_body(
+        hint={
+            "specialist_id": "remediation",
+            "tool": "inventory_resources",
+            "arguments": {},
+        }
+    )
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=invalid_hint,
+        headers=HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["policy_status"] == "fallback"
+    assert response.json()["data"]["fallback_reason"].startswith("candidate_rejected:")
+    assert response.json()["data"]["selected_specialists"] == [
+        INVENTORY_DATA_HEALTH_ID
+    ]
+    assert calls == [{"subscription": ["sub-a"]}]
+
+    widened = _canonical_body(
+        requested_scope={"subscription": ["sub-a", "sub-b"]}
+    )
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=widened,
+        headers=HEADERS,
+    )
+    assert response.status_code == 400
+    assert calls == [{"subscription": ["sub-a"]}]
+
+
+def test_canonical_route_rejects_browser_authority_assertions(tmp_path):
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    body = _canonical_body()
+    body["snapshot"]["authorized"] = True
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 400

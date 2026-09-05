@@ -21,7 +21,7 @@ import time
 from typing import Any
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from operations.autonomous_investigation import ledger_store, run_context_investigation
 from operations.foundry_agent import FoundryAgentError
@@ -30,6 +30,18 @@ from operations.investigation import (
     run_investigation,
     tool_catalog,
 )
+from operations.investigation_thread_store import ThreadNotFound
+from operations.orchestration_contract import (
+    COVERAGE_CITATION_ID,
+    CandidatePlan,
+    SpecialistStep,
+    ToolCallCandidate,
+)
+from operations.orchestration_contract import (
+    InvestigationRequest as CanonicalInvestigationRequest,
+)
+from operations.orchestration_policy import PolicyViolation
+from operations.orchestration_service import OrchestrationService
 from operations.page_context import PageSnapshot
 
 from ..dependencies import Context, CurrentPrincipal, ReadScope
@@ -91,6 +103,22 @@ class ContextInvestigationRequest(BaseModel):
     """Strict page snapshot submitted by a supported consumer page."""
 
     snapshot: PageSnapshot
+
+
+class CanonicalPlanHint(BaseModel):
+    """Untrusted UI routing preference validated by orchestration policy."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    specialist_id: str = Field(min_length=1, max_length=80)
+    tool: str = Field(min_length=1, max_length=64)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class CanonicalInvestigationPayload(CanonicalInvestigationRequest):
+    """Versioned canonical request plus an optional policy-checked hint."""
+
+    hint: CanonicalPlanHint | None = None
 
 
 _HIDDEN = object()
@@ -349,6 +377,68 @@ def investigate_context(
         evidence=evidence,
         scope=scope.to_dict(),
         warnings=list(ledger["warnings"]),
+    )
+
+
+@router.post(
+    "/copilot/investigations",
+    summary="Run a canonical governed Operations Copilot investigation",
+)
+def investigate_canonical(
+    payload: CanonicalInvestigationPayload,
+    context: Context,
+    scope: ReadScope,
+    principal: CurrentPrincipal,
+) -> dict[str, Any]:
+    """Authorize a versioned request and invoke only the canonical service."""
+
+    request = CanonicalInvestigationRequest.model_validate(
+        payload.model_dump(exclude={"hint"})
+    )
+    planner = None
+    if payload.hint is not None:
+        citation_ids = [item.evidence_id for item in request.snapshot.evidence]
+        planner = lambda _request: CandidatePlan(
+            steps=[
+                SpecialistStep(
+                    specialist_id=payload.hint.specialist_id,
+                    tool_calls=[
+                        ToolCallCandidate(
+                            tool=payload.hint.tool,
+                            arguments=payload.hint.arguments,
+                            citation_ids=citation_ids or [COVERAGE_CITATION_ID],
+                        )
+                    ],
+                )
+            ],
+            estimated_tokens=0,
+            max_wall_seconds=5,
+        )
+
+    try:
+        result = OrchestrationService(planner=planner).execute(
+            request,
+            context=context,
+            principal_subject=principal.subject,
+            effective_scope=scope,
+        )
+    except PolicyViolation as exc:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            str(exc),
+            details={"field": "requested_scope", "reason": exc.code},
+        ) from exc
+    except ThreadNotFound as exc:
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "Investigation thread not found",
+            details={"field": "thread_id"},
+        ) from exc
+
+    return envelope(
+        result.model_dump(mode="json"),
+        scope=scope.to_dict(),
+        warnings=list(result.uncertainty),
     )
 
 
