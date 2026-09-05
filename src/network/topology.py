@@ -13,6 +13,7 @@ peerings, not because someone called it "hub".
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -142,6 +143,12 @@ class NetworkTopology:
     connection_ids: tuple[str, ...] = ()
     snapshot: NetworkSnapshot = field(default_factory=NetworkSnapshot)
     semantic_relationships: tuple[dict[str, Any], ...] = ()
+    flow_log_provenance: dict[str, Any] = field(
+        default_factory=lambda: {
+            "state": "not_ingested",
+            "observed_flow_count": 0,
+        }
+    )
 
     @property
     def hubs(self) -> tuple[HubClassification, ...]:
@@ -200,6 +207,7 @@ class NetworkTopology:
             "unresolved_peer_vnet_ids": list(self.unresolved_peer_vnet_ids),
             "connection_ids": list(self.connection_ids),
             "counts": counts,
+            "flow_log_provenance": dict(self.flow_log_provenance),
         }
         if dropped_relationships:
             total = sum(dropped_relationships.values())
@@ -232,6 +240,8 @@ class TopologyBuilder:
         self,
         snapshot: NetworkSnapshot,
         semantic_relationships: tuple[dict[str, Any], ...] = (),
+        *,
+        flow_log_provenance: dict[str, Any] | None = None,
     ) -> NetworkTopology:
         vnets = {vnet.resource_id: vnet for vnet in snapshot.vnets}
         links = self._stitch_peerings(snapshot, vnets)
@@ -256,6 +266,8 @@ class TopologyBuilder:
             connection_ids=snapshot.connection_ids(),
             snapshot=snapshot,
             semantic_relationships=semantic_relationships,
+            flow_log_provenance=flow_log_provenance
+            or _flow_log_provenance(semantic_relationships),
         )
 
     def _stitch_peerings(
@@ -762,6 +774,28 @@ def _relationship(
     }
 
 
+def _is_flow_log_observation(relationship: Mapping[str, Any]) -> bool:
+    if str(relationship.get("predicate") or "").casefold() != "trafficobserved":
+        return False
+    attributes = relationship.get("attributes")
+    return (
+        isinstance(attributes, Mapping)
+        and attributes.get("dataSource") == "traffic_analytics"
+    )
+
+
+def _flow_log_provenance(
+    semantic_relationships: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    observed = sum(
+        1 for relationship in semantic_relationships if _is_flow_log_observation(relationship)
+    )
+    return {
+        "state": "ingested_not_analyzed" if observed else "not_ingested",
+        "observed_flow_count": observed,
+    }
+
+
 def _has_resource(resource_ids: set[str], resource_id: str) -> bool:
     return bool(resource_id and resource_id.casefold() in resource_ids)
 
@@ -813,6 +847,7 @@ def _topology_relationships(
         "attachedto": "attached_to",
         "loadbalances": "load_balances",
         "hosts": "hosts",
+        "resolvesfor": "resolves_for",
     }
     for semantic in topology.semantic_relationships:
         predicate = str(semantic.get("predicate") or "").casefold()
