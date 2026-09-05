@@ -1,10 +1,74 @@
-from operations.mcp_server import REVIEWED_TOOLS, MCPServer, tool_definitions
+from operations.mcp_server import (
+    REVIEWED_TOOLS,
+    MCPServer,
+    reviewed_tools_for_specialist,
+    tool_definitions,
+)
+from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
 from operations.tools import STATUS_EMPTY, STATUS_OK
 
 
 def test_catalog_has_bounded_json_schemas():
     assert tuple(item["name"] for item in tool_definitions()) == REVIEWED_TOOLS
     assert all(item["inputSchema"]["additionalProperties"] is False for item in tool_definitions())
+
+
+def test_inventory_tool_is_an_exact_specialist_bound_reviewed_grant():
+    assert reviewed_tools_for_specialist(INVENTORY_DATA_HEALTH_ID) == (
+        "inventory_resources",
+    )
+    assert "inventory_resources" in REVIEWED_TOOLS
+
+    class Context:
+        provider_runtime = None
+
+        def resolve_provider(self, name):
+            return None
+
+    allowed = MCPServer().handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "method": "tools/call",
+            "params": {"name": "inventory_resources", "arguments": {}},
+        },
+        context=Context(),
+        principal=type("P", (), {"subject": INVENTORY_DATA_HEALTH_ID})(),
+        scope=__import__("api.scope", fromlist=["Scope"]).Scope.unrestricted(),
+        correlation_id="corr",
+        specialist_id=INVENTORY_DATA_HEALTH_ID,
+    )
+    assert allowed["result"]["isError"] is False
+    assert allowed["result"]["structuredContent"]["status"] == "unavailable"
+
+    legacy_denied = MCPServer().handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "method": "tools/call",
+            "params": {"name": "inventory_resources", "arguments": {}},
+        },
+        context=Context(),
+        principal=type("P", (), {"subject": "operator"})(),
+        scope=__import__("api.scope", fromlist=["Scope"]).Scope.unrestricted(),
+        correlation_id="corr",
+    )
+    assert legacy_denied["result"]["isError"] is True
+
+    cross_specialist_denied = MCPServer().handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "method": "tools/call",
+            "params": {"name": "network_topology", "arguments": {}},
+        },
+        context=Context(),
+        principal=type("P", (), {"subject": INVENTORY_DATA_HEALTH_ID})(),
+        scope=__import__("api.scope", fromlist=["Scope"]).Scope.unrestricted(),
+        correlation_id="corr",
+        specialist_id=INVENTORY_DATA_HEALTH_ID,
+    )
+    assert cross_specialist_denied["result"]["isError"] is True
 
 
 def test_dispatch_preserves_tool_result_shape_and_status():

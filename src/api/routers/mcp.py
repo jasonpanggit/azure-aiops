@@ -44,6 +44,7 @@ async def mcp(
     response = _SERVER.handle(
         payload, context=context, principal=principal, scope=scope,
         correlation_id=correlation_id,
+        specialist_id=principal.mcp_specialist_id(),
     )
     return JSONResponse(status_code=200, content=response)
 

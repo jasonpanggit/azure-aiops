@@ -6,7 +6,6 @@ from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
-from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 
@@ -14,11 +13,18 @@ TOKEN = "mcp-test-token-0123456789"
 SUB = "11111111-1111-1111-1111-111111111111"
 
 
-def client(tmp_path):
+def client(tmp_path, *, subject="mcp-user", specialist_id=""):
+    grant = Grant.from_mapping(
+        {
+            "role": "reader",
+            "scope": {"subscription": [SUB]},
+            "mcp_specialist_id": specialist_id,
+        }
+    )
     context = ApiContext(
         onboarding=SubscriptionOnboardingService(tmp_path / "registry"),
         authenticator=StaticTokenAuthenticator({
-            TOKEN: Principal("mcp-user", grants=(Grant("reader", Scope.from_mapping({"subscription": [SUB]})),))
+            TOKEN: Principal(subject, grants=(grant,))
         }),
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
@@ -55,6 +61,50 @@ def test_unknown_tool_is_an_error(tmp_path):
     unknown = c.post("/api/v1/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "delete_everything", "arguments": {}}}, headers=auth())
     assert unknown.json()["result"]["isError"] is True
+
+
+def test_inventory_specialist_gets_only_its_exact_manifest_grant(tmp_path):
+    c = client(
+        tmp_path,
+        subject="11111111-2222-3333-4444-555555555555",
+        specialist_id="inventory_data_health",
+    )
+    listed = c.post(
+        "/api/v1/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        headers=auth(),
+    ).json()["result"]["tools"]
+    assert [tool["name"] for tool in listed] == ["inventory_resources"]
+
+    denied = c.post(
+        "/api/v1/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "network_topology", "arguments": {}},
+        },
+        headers=auth(),
+    )
+    assert denied.json()["result"]["isError"] is True
+
+
+def test_non_specialist_cannot_call_inventory_grant(tmp_path):
+    denied = client(tmp_path).post(
+        "/api/v1/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "inventory_resources",
+                "arguments": {},
+                "specialist_id": "inventory_data_health",
+            },
+        },
+        headers=auth(),
+    )
+    assert denied.json()["result"]["isError"] is True
 
 
 def test_a_missing_required_argument_is_empty_not_an_error(tmp_path):
