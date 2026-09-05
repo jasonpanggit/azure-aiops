@@ -27,6 +27,7 @@ from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from network.design import NetworkDesignPolicyStore
+from network.rule_engine import SUPPORTED_OPERATORS, SUPPORTED_TARGETS
 from network.service import NetworkIntelligenceService, build_service
 from onboarding.service import SubscriptionOnboardingService
 from storage.onelake_documents import OneLakeDocumentStore
@@ -279,6 +280,106 @@ class TestAuthentication:
 
 
 class TestPolicy:
+    def test_read_additively_publishes_the_rule_engine_contract(self, tmp_path):
+        client = _client(tmp_path, network_policy_store=NetworkDesignPolicyStore())
+        data = client.get("/api/v1/network/policy", headers=_auth()).json()["data"]
+        legacy_types = {
+            "name": str,
+            "description": str,
+            "is_declared": bool,
+            "source_path": str,
+            "hub_vnet_names": list,
+            "require_firewall_in_hub": bool,
+            "require_default_route_to_firewall": bool,
+            "require_nsg_on_every_subnet": bool,
+            "forbid_spoke_to_spoke_peering": bool,
+            "forbid_public_ip_on_spoke_nics": bool,
+            "require_private_endpoint_for_services": list,
+            "require_private_dns_zone_link": bool,
+            "require_bidirectional_peering": bool,
+            "approved_peerings": list,
+            "exempt_subnet_names": list,
+            "exempt_vnet_names": list,
+            "rules": list,
+            "rules_declared": bool,
+            "unevaluated_rule_ids": list,
+            "invalid_rule_ids": list,
+        }
+
+        assert all(
+            key in data and isinstance(data[key], expected_type)
+            for key, expected_type in legacy_types.items()
+        )
+        assert data["supported_targets"] == sorted(SUPPORTED_TARGETS)
+        assert data["supported_operators"] == list(SUPPORTED_OPERATORS)
+
+    def test_malformed_declarative_rule_is_rejected_without_persisting(self, tmp_path):
+        store = NetworkDesignPolicyStore()
+        client = _client(tmp_path, network_policy_store=store)
+        before_revision = store.revision
+
+        response = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={
+                "rules": [
+                    {
+                        "rule_id": "unsafe-expression",
+                        "name": "Unsafe expression",
+                        "parameters": {
+                            "target": "subnets",
+                            "assert": [{"field": "name", "eval": "resource.name"}],
+                        },
+                    }
+                ]
+            },
+        )
+
+        assert response.status_code == 400
+        assert "no supported operator" in response.json()["error"]["message"]
+        assert store.revision == before_revision
+        assert store.read().rule("unsafe-expression") is None
+
+    def test_valid_declarative_rule_previews_then_saves(self, tmp_path):
+        store = NetworkDesignPolicyStore()
+        client = _client(tmp_path, network_policy_store=store)
+        rule = {
+            "rule_id": "subnets-need-vnet",
+            "name": "Subnets require a VNet",
+            "category": "custom",
+            "severity": "medium",
+            "enabled": True,
+            "parameters": {
+                "target": "subnets",
+                "assert": [{"field": "vnet_id", "exists": True}],
+            },
+        }
+
+        preview = client.post(
+            "/api/v1/network/policy/preview",
+            headers=_auth(),
+            json={"rules": [rule]},
+        )
+        assert preview.status_code == 200
+        preview_rule = next(
+            item
+            for item in preview.json()["data"]["policy"]["rules"]
+            if item["rule_id"] == rule["rule_id"]
+        )
+        assert preview_rule["declarative"] is True
+        assert preview_rule["evaluated"] is True
+        assert store.revision == 0
+        assert store.read().rule(rule["rule_id"]) is None
+
+        saved = client.patch(
+            "/api/v1/network/policy",
+            headers=_auth(),
+            json={"rules": [rule]},
+        )
+        assert saved.status_code == 200
+        assert store.revision == 1
+        assert store.read().rule(rule["rule_id"]) is not None
+
     @pytest.mark.parametrize("persistent", [False, True])
     def test_store_revision_increments_and_rejects_stale_writes(
         self, tmp_path, persistent
