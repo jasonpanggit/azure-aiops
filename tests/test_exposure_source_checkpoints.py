@@ -364,25 +364,248 @@ def test_live_and_persisted_aum_share_canonical_normalization() -> None:
     assert row.source_family == "azure_update_manager_missing"
 
 
-@pytest.mark.skip(reason="Pending implementation: Plan 03.1-07")
+def _source_outcome(
+    *,
+    query_name: str,
+    source_family: str,
+    connection_id: str = "connection-a",
+    scope: tuple[str, ...] = ("sub-a",),
+    row_id: str = "",
+    failed: bool = False,
+    attempted_at: datetime = datetime(2026, 9, 5, 0, 0, tzinfo=UTC),
+):
+    from intelligence.vulnerability.acquisition import (
+        AcquisitionFailure,
+        AcquisitionFailureCode,
+        AcquisitionSuccess,
+        PagingProof,
+    )
+
+    common = {
+        "connection_id": connection_id,
+        "query_name": query_name,
+        "source_family": source_family,
+        "scope": scope,
+        "attempted_at": attempted_at,
+        "completed_at": attempted_at + timedelta(seconds=1),
+    }
+    if failed:
+        return AcquisitionFailure(
+            **common,
+            error_code=AcquisitionFailureCode.PROVIDER_TIMEOUT,
+            error_summary="Provider query timed out.",
+        )
+    rows = ({"id": row_id, "subscriptionId": scope[0]},) if row_id else ()
+    return AcquisitionSuccess(
+        **common,
+        paging=PagingProof(
+            pages_fetched=1,
+            page_size=1000,
+            max_pages=1000,
+            row_count=len(rows),
+            complete=True,
+        ),
+        watermark="2026-09-05T00:00:00Z" if rows else None,
+        sequence=f"1.0.0:1:{len(rows)}",
+        rows=rows,
+    )
+
+
+def _source_projection(
+    outcomes: dict[str, Any],
+    *,
+    generation: str,
+    previous=None,
+):
+    from onboarding.ingestion_service import activate_source_partitions
+
+    return activate_source_partitions(
+        outcomes=outcomes,
+        attempted_generation=generation,
+        completed_at="2026-09-05T00:00:01Z",
+        previous_partition_rows=(
+            previous.partition_rows if previous is not None else ()
+        ),
+        previous_statuses=previous.statuses if previous is not None else (),
+    )
+
+
 def test_failed_source_retains_only_its_own_last_known_good_partition() -> None:
-    from intelligence.vulnerability.acquisition import AcquisitionOutcome
+    first = _source_projection(
+        {
+            "patch_assessment_details": _source_outcome(
+                query_name="patch_assessment_details",
+                source_family="azure_update_manager_missing",
+                row_id="aum-old",
+            ),
+            "defender_subassessments": _source_outcome(
+                query_name="defender_subassessments",
+                source_family="defender_subassessment",
+                row_id="defender-old",
+            ),
+        },
+        generation="generation-1",
+    )
+    second = _source_projection(
+        {
+            "patch_assessment_details": _source_outcome(
+                query_name="patch_assessment_details",
+                source_family="azure_update_manager_missing",
+                failed=True,
+            ),
+            "defender_subassessments": _source_outcome(
+                query_name="defender_subassessments",
+                source_family="defender_subassessment",
+                row_id="defender-new",
+            ),
+        },
+        generation="generation-2",
+        previous=first,
+    )
 
-    assert AcquisitionOutcome is not None
+    assert second.rows_by_query["patch_assessment_details"][0]["id"] == "aum-old"
+    assert second.rows_by_query["defender_subassessments"][0]["id"] == "defender-new"
+    by_family = {row["source_family"]: row for row in second.statuses}
+    assert by_family["azure_update_manager_missing"]["completeness"] == "stale"
+    assert by_family["azure_update_manager_missing"]["attempted_generation"] == (
+        "generation-2"
+    )
+    assert by_family["azure_update_manager_missing"]["effective_generation"] == (
+        "generation-1"
+    )
+    assert by_family["azure_update_manager_missing"]["last_success_at"] == (
+        "2026-09-05T00:00:01Z"
+    )
+    assert by_family["azure_update_manager_missing"]["safe_error_code"] == (
+        "provider_timeout"
+    )
+    assert by_family["defender_subassessment"]["completeness"] == "complete"
+    assert by_family["defender_subassessment"]["effective_generation"] == (
+        "generation-2"
+    )
 
 
-@pytest.mark.skip(reason="Pending implementation: Plan 03.1-07")
 def test_healthy_empty_replaces_prior_rows_but_failed_empty_does_not() -> None:
-    from intelligence.vulnerability.acquisition import AcquisitionOutcome
+    populated = _source_projection(
+        {
+            "patch_assessment_details": _source_outcome(
+                query_name="patch_assessment_details",
+                source_family="azure_update_manager_missing",
+                row_id="aum-old",
+            )
+        },
+        generation="generation-1",
+    )
+    healthy_empty = _source_projection(
+        {
+            "patch_assessment_details": _source_outcome(
+                query_name="patch_assessment_details",
+                source_family="azure_update_manager_missing",
+            )
+        },
+        generation="generation-2",
+        previous=populated,
+    )
+    failed = _source_projection(
+        {
+            "patch_assessment_details": _source_outcome(
+                query_name="patch_assessment_details",
+                source_family="azure_update_manager_missing",
+                failed=True,
+            )
+        },
+        generation="generation-3",
+        previous=populated,
+    )
 
-    assert AcquisitionOutcome is not None
+    assert healthy_empty.rows_by_query["patch_assessment_details"] == []
+    assert healthy_empty.partition_rows == ()
+    assert healthy_empty.statuses[0]["completeness"] == "healthy-empty"
+    assert healthy_empty.statuses[0]["effective_generation"] == "generation-2"
+    assert failed.rows_by_query["patch_assessment_details"][0]["id"] == "aum-old"
+    assert failed.statuses[0]["completeness"] == "stale"
+    assert failed.statuses[0]["effective_generation"] == "generation-1"
 
 
-@pytest.mark.skip(reason="Pending implementation: Plan 03.1-07")
 def test_failed_source_without_lkg_is_unavailable_and_emits_no_rows() -> None:
-    from intelligence.vulnerability.acquisition import AcquisitionOutcome
+    projected = _source_projection(
+        {
+            "defender_subassessments": _source_outcome(
+                query_name="defender_subassessments",
+                source_family="defender_subassessment",
+                failed=True,
+            )
+        },
+        generation="generation-1",
+    )
 
-    assert AcquisitionOutcome is not None
+    assert projected.rows_by_query["defender_subassessments"] == []
+    assert projected.partition_rows == ()
+    assert projected.statuses[0]["status"] == "unavailable"
+    assert projected.statuses[0]["availability"] == "unavailable"
+    assert projected.statuses[0]["completeness"] == "unavailable"
+    assert projected.statuses[0]["effective_generation"] == ""
+    assert projected.statuses[0]["represented_count"] == 0
+    assert projected.statuses[0]["expected_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    ["contract", "count", "duplicate", "reference"],
+)
+def test_invalid_source_partition_stage_never_switches_current_generation(
+    tmp_path, corrupt: str
+) -> None:
+    from storage.datasets import DatasetStore
+
+    projection = _source_projection(
+        {
+            "patch_assessment_details": _source_outcome(
+                query_name="patch_assessment_details",
+                source_family="azure_update_manager_missing",
+                row_id="aum-row",
+            )
+        },
+        generation="generation-1",
+    )
+    store = DatasetStore(tmp_path / corrupt)
+    datasets = {
+        "exposure/source_partition_rows": [
+            dict(row) for row in projection.partition_rows
+        ],
+        "situations/source_status": [dict(row) for row in projection.statuses],
+    }
+    store.publish(
+        datasets,
+        {},
+        {"runId": "generation-1", "status": "completed"},
+    )
+    before = store.current_generation()
+    invalid = {name: [dict(row) for row in rows] for name, rows in datasets.items()}
+    if corrupt == "contract":
+        invalid["situations/source_status"][0].pop("connection_id")
+    elif corrupt == "count":
+        invalid["situations/source_status"][0]["row_count"] += 1
+    elif corrupt == "duplicate":
+        invalid["exposure/source_partition_rows"].append(
+            dict(invalid["exposure/source_partition_rows"][0])
+        )
+    else:
+        invalid["exposure/source_partition_rows"][0]["partition_key"] = (
+            "missing-partition"
+        )
+
+    with pytest.raises(ValueError, match="source partition"):
+        store.publish(
+            invalid,
+            {},
+            {"runId": "generation-2", "status": "completed"},
+        )
+
+    assert store.current_generation() == before
+    assert store.read_dataset("exposure/source_partition_rows") == datasets[
+        "exposure/source_partition_rows"
+    ]
 
 
 @pytest.mark.skip(reason="Pending implementation: Plan 03.1-07")
