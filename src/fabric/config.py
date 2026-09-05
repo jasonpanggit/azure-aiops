@@ -30,6 +30,20 @@ class PipelineToggleRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class ExposureRuntimeConfig:
+    """Production Exposure serving policy.
+
+    The feature is default-off so generic/local Fabric users retain the
+    optional SQL accelerator. Once enabled, Fabric SQL is mandatory unless
+    operators deliberately select the bounded Delta rollback mode.
+    """
+
+    enabled: bool = False
+    adapter: str = "fabric_sql"
+    rollback_mode: bool = False
+
+
+@dataclass(frozen=True)
 class PatchPolicyRuntimeConfig:
     name: str
     environment: str
@@ -129,6 +143,7 @@ class FabricRuntimeConfig:
     # default and degrades silently to Delta reads when the endpoint or an
     # ODBC driver is unavailable.
     sql_endpoint_enabled: bool = True
+    exposure: ExposureRuntimeConfig = field(default_factory=ExposureRuntimeConfig)
     ontology: OntologyRuntimeConfig = field(default_factory=OntologyRuntimeConfig)
     topology_pipeline: PipelineToggleRuntimeConfig = field(
         default_factory=PipelineToggleRuntimeConfig
@@ -192,6 +207,27 @@ class FabricRuntimeConfig:
         ontology_pipeline_enabled = ontology_pipeline_payload.get("enabled", False)
         if not isinstance(ontology_pipeline_enabled, bool):
             raise TypeError("fabric.ontology_pipeline.enabled must be boolean")
+        raw_exposure_payload = fabric.get("exposure", {})
+        if raw_exposure_payload is False:
+            exposure_payload = {"enabled": False}
+        elif isinstance(raw_exposure_payload, dict):
+            exposure_payload = raw_exposure_payload
+        else:
+            raise TypeError("fabric.exposure must be a mapping or false")
+        exposure_enabled = exposure_payload.get("enabled", False)
+        if not isinstance(exposure_enabled, bool):
+            raise TypeError("fabric.exposure.enabled must be boolean")
+        exposure_rollback_mode = exposure_payload.get("rollback_mode", False)
+        if not isinstance(exposure_rollback_mode, bool):
+            raise TypeError("fabric.exposure.rollback_mode must be boolean")
+        exposure_adapter = exposure_payload.get("adapter", "fabric_sql")
+        if not isinstance(exposure_adapter, str):
+            raise TypeError("fabric.exposure.adapter must be a string")
+        if exposure_adapter != "fabric_sql":
+            raise ValueError("fabric.exposure.adapter must be fabric_sql")
+        sql_endpoint_enabled = fabric.get("sql_endpoint_enabled", True)
+        if not isinstance(sql_endpoint_enabled, bool):
+            raise TypeError("fabric.sql_endpoint_enabled must be boolean")
         raw_patch_payload = fabric.get("patch_intelligence", {})
         if raw_patch_payload is False:
             patch_payload = {"enabled": False}
@@ -296,7 +332,12 @@ class FabricRuntimeConfig:
             registration_attempts=int(fabric.get("registration_attempts") or 20),
             write_workers=int(fabric.get("write_workers") or 4),
             table_schema=str(fabric.get("table_schema") or ""),
-            sql_endpoint_enabled=bool(fabric.get("sql_endpoint_enabled", True)),
+            sql_endpoint_enabled=sql_endpoint_enabled,
+            exposure=ExposureRuntimeConfig(
+                enabled=exposure_enabled,
+                adapter=exposure_adapter,
+                rollback_mode=exposure_rollback_mode,
+            ),
             ontology=OntologyRuntimeConfig(
                 enabled=bool(ontology_payload.get("enabled", True)),
                 ontology_id=str(ontology_payload.get("ontology_id") or ""),
@@ -461,6 +502,15 @@ class FabricRuntimeConfig:
             raise ValueError("fabric.registration_attempts must be positive")
         if self.write_workers < 1:
             raise ValueError("fabric.write_workers must be positive")
+        if (
+            self.exposure.enabled
+            and not self.exposure.rollback_mode
+            and not self.sql_endpoint_enabled
+        ):
+            raise ValueError(
+                "fabric.sql_endpoint_enabled must be true when production "
+                "Exposure serving is enabled outside rollback mode"
+            )
         if self.ontology.enabled and not self.ontology.ontology_name and not self.ontology.ontology_id:
             raise ValueError("Configure fabric.ontology.ontology_name or ontology_id")
         for shortcut in self.shortcuts:

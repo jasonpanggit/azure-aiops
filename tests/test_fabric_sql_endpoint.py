@@ -21,8 +21,8 @@ import fabric.runtime as fabric_runtime
 from fabric.config import FabricRuntimeConfig
 from fabric.sql_endpoint import (
     REQUIRED_EXPOSURE_SCHEMA,
-    FabricSqlReadinessError,
     FabricSqlReader,
+    FabricSqlReadinessError,
     SqlEndpoint,
     build_sql_reader,
     probe_exposure_readiness,
@@ -441,5 +441,5 @@ def test_runtime_requires_readiness_only_for_enabled_nonrollback_exposure(
         fabric_runtime._build_lakehouse_sql_reader(
             lakehouse, object(), rollback_config
         )
-        is optional_reader
+        is None
     )

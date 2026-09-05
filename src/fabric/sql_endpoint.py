@@ -10,14 +10,15 @@ cheaper than the Delta path for the queries the UI actually issues:
 - The SQL endpoint pushes aggregation and filtering down to the engine, so a
   ``MAX(timestamp)`` transfers a single row.
 
-This module is an accelerator, not a requirement. It needs an ODBC driver,
-which is not present in every environment, so :func:`build_sql_reader`
-returns ``None`` when the endpoint or driver is unavailable and callers fall
-back to the Delta read path unchanged.
+Generic Fabric callers may use this module as an optional accelerator and
+fall back to Delta through :func:`build_sql_reader`. Production Exposure is
+different: :func:`require_exposure_ready` proves every prerequisite and fails
+closed rather than silently changing adapters.
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
 import struct
 from collections.abc import Iterable, Mapping
@@ -29,6 +30,31 @@ _LOGGER = logging.getLogger(__name__)
 # Fabric's SQL endpoint authenticates with an Entra token for the Azure SQL
 # resource, passed through the ODBC connection attribute below.
 SQL_SCOPE = "https://database.windows.net/.default"
+FABRIC_SQL_ADAPTER_ID = "fabric_sql"
+REQUIRED_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
+REQUIRED_EXPOSURE_SCHEMA: dict[str, frozenset[str]] = {
+    "gold_exposure_read_model": frozenset(
+        {
+            "exposure_id",
+            "read_model_generation_id",
+            "tenant_id",
+            "subscription_id",
+            "connection_id",
+            "target_id",
+            "target_kind",
+            "source_family",
+            "priority_score",
+        }
+    ),
+    "gold_exposure_summary": frozenset(
+        {
+            "read_model_generation_id",
+            "tenant_id",
+            "subscription_id",
+            "total_count",
+        }
+    ),
+}
 _SQL_COPT_SS_ACCESS_TOKEN = 1256
 
 _IDENTIFIER_ALLOWED = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
@@ -54,6 +80,70 @@ class SqlEndpoint:
     server: str
     database: str
     schema: str = "dbo"
+
+
+@dataclass(frozen=True)
+class FabricSqlReadinessCheck:
+    """One sanitized prerequisite result for the production Exposure adapter."""
+
+    check_id: str
+    status: str
+    reason_code: str
+    detail: Mapping[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "check_id": self.check_id,
+            "status": self.status,
+            "reason_code": self.reason_code,
+            "detail": dict(self.detail),
+        }
+
+
+@dataclass(frozen=True)
+class FabricSqlReadinessResult:
+    """Complete, secret-free readiness evidence for production Exposure."""
+
+    checks: tuple[FabricSqlReadinessCheck, ...]
+    adapter_id: str = FABRIC_SQL_ADAPTER_ID
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.checks) and all(check.status == "ready" for check in self.checks)
+
+    @property
+    def reason_codes(self) -> tuple[str, ...]:
+        return tuple(
+            check.reason_code for check in self.checks if check.status != "ready"
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "1.0.0",
+            "probe": "production_exposure_adapter",
+            "selected_production_adapter": self.adapter_id,
+            "ready": self.ready,
+            "status": "ready" if self.ready else "not_ready",
+            "fallback": {
+                "adapter_id": "delta",
+                "selected": False,
+                "production_scale_certified": False,
+            },
+            "checks": [check.to_dict() for check in self.checks],
+            "reason_codes": list(self.reason_codes),
+            "sanitized": True,
+        }
+
+
+class FabricSqlReadinessError(RuntimeError):
+    """Raised when production Exposure cannot prove its SQL prerequisites."""
+
+    def __init__(self, result: FabricSqlReadinessResult) -> None:
+        self.result = result
+        reasons = ", ".join(result.reason_codes) or "unknown"
+        super().__init__(
+            f"Production Exposure adapter {result.adapter_id!r} is not ready: {reasons}"
+        )
 
 
 class FabricSqlReader:
@@ -204,4 +294,298 @@ def build_sql_reader(
     return FabricSqlReader(endpoint, credential, **options)
 
 
-__all__ = ["SQL_SCOPE", "FabricSqlReader", "SqlEndpoint", "build_sql_reader"]
+def _readiness_check(
+    check_id: str,
+    status: str,
+    reason_code: str,
+    **detail: Any,
+) -> FabricSqlReadinessCheck:
+    return FabricSqlReadinessCheck(
+        check_id=check_id,
+        status=status,
+        reason_code=reason_code,
+        detail=detail,
+    )
+
+
+def _validated_endpoint(
+    endpoint: Mapping[str, str] | SqlEndpoint | None,
+) -> SqlEndpoint | None:
+    if endpoint is None:
+        return None
+    if isinstance(endpoint, SqlEndpoint):
+        candidate = endpoint
+    else:
+        candidate = SqlEndpoint(
+            server=str(endpoint.get("server") or "").strip(),
+            database=str(endpoint.get("database") or "").strip(),
+            schema=str(endpoint.get("schema") or "dbo").strip(),
+        )
+    if not candidate.server or not candidate.database or not candidate.schema:
+        return None
+    try:
+        _quote_identifier(candidate.schema)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _evaluate_exposure_readiness(
+    endpoint: Mapping[str, str] | SqlEndpoint | None,
+    credential: Any,
+    *,
+    driver: str,
+    connect: Any | None,
+    module_loader: Any,
+    endpoint_source: str,
+) -> tuple[FabricSqlReadinessResult, FabricSqlReader | None]:
+    checks: list[FabricSqlReadinessCheck] = []
+    validated_endpoint = _validated_endpoint(endpoint)
+    endpoint_ready = validated_endpoint is not None
+    checks.append(
+        _readiness_check(
+            "lakehouse_sql_endpoint_metadata",
+            "ready" if endpoint_ready else "not_ready",
+            "ready" if endpoint_ready else "fabric_sql_endpoint_metadata_missing_or_invalid",
+            configured=endpoint_ready,
+            source=endpoint_source if endpoint_ready else "none",
+        )
+    )
+
+    pyodbc_module: Any | None
+    try:
+        pyodbc_module = module_loader("pyodbc")
+    except Exception:  # noqa: BLE001 - readiness output must stay sanitized.
+        pyodbc_module = None
+    module_ready = pyodbc_module is not None
+    checks.append(
+        _readiness_check(
+            "pyodbc_import",
+            "ready" if module_ready else "not_ready",
+            "ready" if module_ready else "pyodbc_not_importable",
+            importable=module_ready,
+        )
+    )
+
+    registered_drivers: list[str] = []
+    if pyodbc_module is not None:
+        try:
+            registered_drivers = [str(item) for item in pyodbc_module.drivers()]
+        except Exception:  # noqa: BLE001 - readiness output must stay sanitized.
+            registered_drivers = []
+    driver_ready = driver in registered_drivers
+    checks.append(
+        _readiness_check(
+            "microsoft_odbc_driver_18",
+            "ready" if driver_ready else "not_ready",
+            "ready" if driver_ready else "odbc_driver_18_not_registered",
+            registered=driver_ready,
+            registered_driver_count=len(registered_drivers),
+        )
+    )
+
+    token_ready = False
+    token_blocked = not endpoint_ready or not module_ready or not driver_ready
+    if not token_blocked:
+        try:
+            token = credential.get_token(SQL_SCOPE)
+            token_ready = bool(getattr(token, "token", ""))
+        except Exception:  # noqa: BLE001 - never expose credential/provider details.
+            token_ready = False
+    checks.append(
+        _readiness_check(
+            "entra_token",
+            "ready" if token_ready else ("blocked" if token_blocked else "not_ready"),
+            (
+                "ready"
+                if token_ready
+                else (
+                    "entra_token_check_blocked_by_local_prerequisite"
+                    if token_blocked
+                    else "entra_token_unavailable"
+                )
+            ),
+            acquired=token_ready,
+        )
+    )
+
+    reader: FabricSqlReader | None = None
+    connectivity_ready = False
+    connectivity_blocked = not (
+        endpoint_ready and module_ready and driver_ready and token_ready
+    )
+    if not connectivity_blocked and validated_endpoint is not None:
+        try:
+            reader = FabricSqlReader(
+                validated_endpoint,
+                credential,
+                driver=driver,
+                connect=connect,
+            )
+            connectivity_ready = bool(reader.query("SELECT 1 AS probe"))
+        except Exception:  # noqa: BLE001 - readiness output must stay sanitized.
+            reader = None
+            connectivity_ready = False
+    checks.append(
+        _readiness_check(
+            "token_connectivity",
+            (
+                "ready"
+                if connectivity_ready
+                else ("blocked" if connectivity_blocked else "not_ready")
+            ),
+            (
+                "ready"
+                if connectivity_ready
+                else (
+                    "fabric_sql_connectivity_blocked_by_local_prerequisite"
+                    if connectivity_blocked
+                    else "fabric_sql_connectivity_failed"
+                )
+            ),
+            connected=connectivity_ready,
+        )
+    )
+
+    schema_ready = False
+    missing_tables: list[str] = []
+    missing_columns: dict[str, list[str]] = {}
+    if connectivity_ready and reader is not None:
+        try:
+            for table, required_columns in REQUIRED_EXPOSURE_SCHEMA.items():
+                if not reader.table_exists(table):
+                    missing_tables.append(table)
+                    continue
+                absent = sorted(required_columns - reader.column_names(table))
+                if absent:
+                    missing_columns[table] = absent
+            schema_ready = not missing_tables and not missing_columns
+        except Exception:  # noqa: BLE001 - readiness output must stay sanitized.
+            schema_ready = False
+    checks.append(
+        _readiness_check(
+            "required_gold_schema",
+            "ready" if schema_ready else ("blocked" if not connectivity_ready else "not_ready"),
+            (
+                "ready"
+                if schema_ready
+                else (
+                    "gold_schema_check_blocked_by_connectivity"
+                    if not connectivity_ready
+                    else "required_gold_schema_missing"
+                )
+            ),
+            missing_tables=missing_tables,
+            missing_columns=missing_columns,
+            required_tables=sorted(REQUIRED_EXPOSURE_SCHEMA),
+            required_columns={
+                table: sorted(columns)
+                for table, columns in sorted(REQUIRED_EXPOSURE_SCHEMA.items())
+            },
+        )
+    )
+
+    bounded_query_ready = False
+    if schema_ready and reader is not None and validated_endpoint is not None:
+        try:
+            qualified = (
+                f"{_quote_identifier(validated_endpoint.schema)}."
+                f"{_quote_identifier('gold_exposure_read_model')}"
+            )
+            probe_generation = "__readiness_probe__"
+            probe_subscription = "00000000-0000-0000-0000-000000000000"
+            reader.query(
+                f"SELECT COUNT_BIG(1) AS total_count FROM {qualified} "
+                "WHERE [read_model_generation_id] = ? AND [subscription_id] = ?",
+                (probe_generation, probe_subscription),
+            )
+            reader.query(
+                "SELECT TOP (1) [exposure_id], [priority_score] "
+                f"FROM {qualified} "
+                "WHERE [read_model_generation_id] = ? AND [subscription_id] = ? "
+                "AND ([priority_score] < ? OR "
+                "([priority_score] = ? AND [exposure_id] > ?)) "
+                "ORDER BY [priority_score] DESC, [exposure_id] ASC",
+                (probe_generation, probe_subscription, 0, 0, ""),
+            )
+            bounded_query_ready = True
+        except Exception:  # noqa: BLE001 - readiness output must stay sanitized.
+            bounded_query_ready = False
+    checks.append(
+        _readiness_check(
+            "bound_count_and_page_query",
+            "ready" if bounded_query_ready else ("blocked" if not schema_ready else "not_ready"),
+            (
+                "ready"
+                if bounded_query_ready
+                else (
+                    "bound_query_check_blocked_by_schema"
+                    if not schema_ready
+                    else "bound_count_or_page_query_failed"
+                )
+            ),
+            parameters_bound=True,
+            page_bounded=True,
+        )
+    )
+    return FabricSqlReadinessResult(tuple(checks)), reader
+
+
+def probe_exposure_readiness(
+    endpoint: Mapping[str, str] | SqlEndpoint | None,
+    credential: Any,
+    *,
+    driver: str = REQUIRED_ODBC_DRIVER,
+    connect: Any | None = None,
+    module_loader: Any = importlib.import_module,
+    endpoint_source: str = "runtime",
+) -> FabricSqlReadinessResult:
+    """Probe every production Exposure SQL prerequisite without leaking details."""
+    result, _reader = _evaluate_exposure_readiness(
+        endpoint,
+        credential,
+        driver=driver,
+        connect=connect,
+        module_loader=module_loader,
+        endpoint_source=endpoint_source,
+    )
+    return result
+
+
+def require_exposure_ready(
+    endpoint: Mapping[str, str] | SqlEndpoint | None,
+    credential: Any,
+    *,
+    driver: str = REQUIRED_ODBC_DRIVER,
+    connect: Any | None = None,
+    module_loader: Any = importlib.import_module,
+    endpoint_source: str = "runtime",
+) -> FabricSqlReader:
+    """Return the selected production reader or raise a sanitized typed error."""
+    result, reader = _evaluate_exposure_readiness(
+        endpoint,
+        credential,
+        driver=driver,
+        connect=connect,
+        module_loader=module_loader,
+        endpoint_source=endpoint_source,
+    )
+    if not result.ready or reader is None:
+        raise FabricSqlReadinessError(result)
+    return reader
+
+
+__all__ = [
+    "FABRIC_SQL_ADAPTER_ID",
+    "REQUIRED_EXPOSURE_SCHEMA",
+    "REQUIRED_ODBC_DRIVER",
+    "SQL_SCOPE",
+    "FabricSqlReader",
+    "FabricSqlReadinessCheck",
+    "FabricSqlReadinessError",
+    "FabricSqlReadinessResult",
+    "SqlEndpoint",
+    "build_sql_reader",
+    "probe_exposure_readiness",
+    "require_exposure_ready",
+]

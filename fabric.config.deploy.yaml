@@ -46,6 +46,10 @@ fabric:
     enabled: true
     ontology_id: ""
     ontology_name: "Operational_Context_Ontology_v2"
+  exposure:
+    enabled: true
+    adapter: fabric_sql
+    rollback_mode: false
 
   source_data_root: "/data/inventory-source"
   registration_attempts: 20
