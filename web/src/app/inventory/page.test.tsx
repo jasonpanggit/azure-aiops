@@ -27,6 +27,12 @@ vi.mock("@/lib/csv", async (importOriginal) => ({
   downloadCsv,
 }));
 
+const { investigateCanonical } = vi.hoisted(() => ({ investigateCanonical: vi.fn() }));
+vi.mock("@/lib/copilot/page-adapters", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/copilot/page-adapters")>("@/lib/copilot/page-adapters");
+  return { ...actual, investigateCanonical };
+});
+
 import InventoryPage from "./page";
 
 const envelope = <T,>(data: T) => ({
@@ -70,6 +76,25 @@ const collection = {
 
 describe("Inventory OS tracer", () => {
   beforeEach(() => {
+    investigateCanonical.mockResolvedValue({
+      data: {
+        contract_version: "1",
+        status: "partial",
+        policy_status: "fallback",
+        fallback_reason: "planner_unavailable",
+        selected_specialists: ["inventory_data_health"],
+        selected_tools: ["inventory_resources"],
+        tool_results: [],
+        uncertainty: ["visible subset is incomplete"],
+        coverage: { visible_count: 2, total_count: 120, complete: false },
+        citations: [],
+        thread_id: "thr-0123456789abcdef0123456789abcdef",
+        thread_revision: 1,
+        mutation_authorized: false,
+      },
+      evidence: [],
+      warnings: [],
+    });
     downloadCsv.mockClear();
     os.mockResolvedValue(envelope(collection));
     resources.mockResolvedValue({
@@ -311,6 +336,41 @@ describe("Inventory OS tracer", () => {
     fireEvent.click(screen.getByRole("button", { name: /View machines for Windows Server 2019/ }));
     expect(await screen.findByText("web-01")).toBeInTheDocument();
     expect(osGroup).toHaveBeenCalledWith("Windows Server|2019", {}, 0, 25);
+  });
+
+  it("submits the visible filtered inventory through the canonical drawer", async () => {
+    os.mockResolvedValue({
+      ...envelope(collection),
+      pagination: { offset: 0, limit: 20, total: 120, next_offset: 20 },
+    });
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+
+    fireEvent.change(await screen.findByPlaceholderText("Name or version"), {
+      target: { value: "2099" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ask Copilot about inventory" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Review visible inventory health/ }));
+
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalled());
+    const request = investigateCanonical.mock.calls[0][0];
+    expect(request).toMatchObject({
+      contract_version: "1",
+      requested_scope: {},
+      snapshot: {
+        version: "2",
+        page_kind: "inventory",
+        coverage: { visible_count: 1, total_count: 120, complete: false },
+      },
+      hint: {
+        specialist_id: "inventory_data_health",
+        tool: "inventory_resources",
+      },
+    });
+    expect(request.snapshot.evidence).toHaveLength(1);
+    expect(request.snapshot.evidence[0].data).toMatchObject({
+      os_name: "Windows Server",
+      os_version: "2099-preview",
+    });
   });
 
   it("renders canonical installed software and exact linked details", async () => {

@@ -9,6 +9,13 @@ import { useScope } from "@/lib/scope-context";
 import { copilotApi } from "@/lib/services";
 import type { CopilotAnswer, CopilotToolCall } from "@/lib/services";
 import { buildCopilotSnapshot } from "@/lib/services";
+import {
+  investigateCanonical,
+  type CanonicalCopilotCitation,
+  type CanonicalCopilotResult,
+  type CopilotEvidenceSnapshotV2,
+} from "@/lib/copilot/page-adapters";
+import type { ScopeSelection } from "@/lib/scope";
 import type { CopilotContextFinding, EvidenceItem } from "@/lib/types";
 
 interface ChatTurn {
@@ -21,7 +28,12 @@ interface ChatTurn {
   error?: string;
   findings?: CopilotContextFinding[];
   synthesisMode?: "foundry" | "deterministic";
-  snapshot?: ReturnType<typeof buildCopilotSnapshot>;
+  snapshot?: ReturnType<typeof buildCopilotSnapshot> | CopilotEvidenceSnapshotV2;
+  policyStatus?: CanonicalCopilotResult["policy_status"];
+  fallbackReason?: string;
+  uncertainty?: string[];
+  coverage?: CanonicalCopilotResult["coverage"];
+  citations?: CanonicalCopilotCitation[];
 }
 
 const TOOL_STATUS_TONE: Record<string, "success" | "warning" | "critical" | "info"> = {
@@ -37,6 +49,7 @@ const TOOL_STATUS_TONE: Record<string, "success" | "warning" | "critical" | "inf
  * keyword-based guess. */
 export interface CopilotStarterQuestion {
   label: string;
+  specialistId?: string;
   tool?: string;
   toolArguments?: Record<string, unknown>;
 }
@@ -49,7 +62,9 @@ export interface CopilotDrawerProps {
   /** Context-aware starter questions, optionally pre-bound to a known tool. */
   starterQuestions: CopilotStarterQuestion[];
   /** Exact bounded state rendered by the calling page. */
-  snapshot?: ReturnType<typeof buildCopilotSnapshot>;
+  snapshot?: ReturnType<typeof buildCopilotSnapshot> | CopilotEvidenceSnapshotV2;
+  /** Scope observed by the page; the server independently reauthorizes it. */
+  requestedScope?: ScopeSelection;
 }
 
 /**
@@ -74,16 +89,46 @@ function uniqueWarnings(...groups: Array<string[] | undefined>): string[] {
   ));
 }
 
-export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions, snapshot }: CopilotDrawerProps) {
+const THREAD_STORAGE_PREFIX = "aiops.copilot.thread.";
+const OPAQUE_THREAD_PATTERN = /^thr-[a-f0-9]{32}$/;
+
+function isCanonicalSnapshot(
+  snapshot: CopilotDrawerProps["snapshot"],
+): snapshot is CopilotEvidenceSnapshotV2 {
+  return snapshot?.version === "2";
+}
+
+function readStoredThread(pageKind: string | undefined): string | null {
+  if (!pageKind || typeof window === "undefined") return null;
+  const value = window.sessionStorage.getItem(`${THREAD_STORAGE_PREFIX}${pageKind}`);
+  return value && OPAQUE_THREAD_PATTERN.test(value) ? value : null;
+}
+
+function storeThread(pageKind: string, threadId: string): void {
+  if (typeof window === "undefined" || !OPAQUE_THREAD_PATTERN.test(threadId)) return;
+  window.sessionStorage.setItem(`${THREAD_STORAGE_PREFIX}${pageKind}`, threadId);
+}
+
+export function CopilotDrawer({
+  open,
+  onClose,
+  contextLabel,
+  starterQuestions,
+  snapshot,
+  requestedScope,
+}: CopilotDrawerProps) {
   const { scope } = useScope();
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<"idle" | "loading" | "partial" | "fallback" | "error">("idle");
-  const [lastSnapshot, setLastSnapshot] = useState<ReturnType<typeof buildCopilotSnapshot> | null>(null);
+  const [lastSnapshot, setLastSnapshot] = useState<CopilotDrawerProps["snapshot"] | null>(null);
   const [lastQuestion, setLastQuestion] = useState("");
   const [width, setWidth] = useState(MIN_WIDTH);
   const sessionId = useRef(`drawer-${Math.random().toString(36).slice(2)}-${Date.now()}`);
+  const canonicalThreadId = useRef(
+    readStoredThread(isCanonicalSnapshot(snapshot) ? snapshot.page_kind : undefined),
+  );
   const panelRef = useRef<HTMLDivElement>(null);
   const resizing = useRef(false);
 
@@ -115,19 +160,76 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions, s
     };
   }, []);
 
-  async function ask(value: string, tool?: string, toolArguments?: Record<string, unknown>) {
+  async function ask(
+    value: string,
+    tool?: string,
+    toolArguments?: Record<string, unknown>,
+    specialistId?: string,
+  ) {
     const nextQuestion = value.trim();
     if (!nextQuestion) return;
     setQuestion("");
     setLoading(true);
     setStage("loading");
-    const submittedSnapshot = snapshot
-      ? { ...snapshot, question: nextQuestion }
-      : buildCopilotSnapshot({ pageKind: "resource", pageId: "legacy-drawer", scope, question: nextQuestion });
-    setLastSnapshot(submittedSnapshot);
+    const canonicalSnapshot = isCanonicalSnapshot(snapshot) ? snapshot : null;
     setLastQuestion(nextQuestion);
     try {
-      const envelope = snapshot
+      if (canonicalSnapshot) {
+        setLastSnapshot(canonicalSnapshot);
+        const envelope = await investigateCanonical(
+            {
+              contract_version: "1",
+              question: nextQuestion,
+              requested_scope: requestedScope ?? scope,
+              snapshot: canonicalSnapshot,
+              ...(canonicalThreadId.current ? { thread_id: canonicalThreadId.current } : {}),
+              ...(specialistId && tool
+                ? {
+                    hint: {
+                      specialist_id: specialistId,
+                      tool,
+                      arguments: toolArguments ?? {},
+                    },
+                  }
+                : {}),
+            },
+            requestedScope ?? scope,
+          );
+        const result = envelope.data;
+        canonicalThreadId.current = result.thread_id;
+        storeThread(canonicalSnapshot.page_kind, result.thread_id);
+        setTurns((current) => [
+          ...current,
+          {
+            question: nextQuestion,
+            toolCalls: result.tool_results.map((call) => ({
+              tool: call.tool,
+              arguments: {},
+              status: call.status === "partial" ? "unavailable" : call.status,
+              data: call.data,
+              evidence: [],
+              warning: call.warning,
+            })),
+            evidence: envelope.evidence ?? [],
+            knowledgeVersion: envelope.knowledge_version,
+            warnings: uniqueWarnings(envelope.warnings),
+            policyStatus: result.policy_status,
+            fallbackReason: result.fallback_reason,
+            uncertainty: result.uncertainty,
+            coverage: result.coverage,
+            citations: result.citations,
+            snapshot: canonicalSnapshot,
+          },
+        ]);
+        setStage(result.policy_status === "fallback" ? "fallback" : result.status === "partial" ? "partial" : "idle");
+        return;
+      }
+      const legacySnapshot = snapshot?.version === "1" ? snapshot : undefined;
+      const submittedSnapshot = legacySnapshot
+        ? { ...legacySnapshot, question: nextQuestion }
+        : buildCopilotSnapshot({ pageKind: "resource", pageId: "legacy-drawer", scope, question: nextQuestion });
+      setLastSnapshot(submittedSnapshot);
+      const envelope = legacySnapshot
         ? await copilotApi.investigateContext(submittedSnapshot)
         : await copilotApi.investigate(nextQuestion, scope, { sessionId: sessionId.current, tool, toolArguments });
       const result = envelope.data as typeof envelope.data & {
@@ -233,7 +335,7 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions, s
                   <button
                     type="button"
                     key={prompt.label}
-                    onClick={() => ask(prompt.label, prompt.tool, prompt.toolArguments)}
+                    onClick={() => ask(prompt.label, prompt.tool, prompt.toolArguments, prompt.specialistId)}
                   >
                     {prompt.label}
                     <span>→</span>
@@ -270,9 +372,25 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions, s
                     )}
                     {!turn.narration && turn.toolCalls?.some((call) => call.status === "ok") && (
                       <p className="copilot-fallback-note">
-                        Showing governed tool results directly because narration is unavailable.
+                        {turn.policyStatus
+                          ? "Showing governed results directly because optional narration is unavailable."
+                          : "Showing governed tool results directly because narration is unavailable."}
                       </p>
                     )}
+                    {turn.coverage && (
+                      <div className="copilot-coverage" aria-label="Investigation coverage">
+                        <strong>{turn.coverage.visible_count} of {turn.coverage.total_count} visible records</strong>
+                        <span>{turn.coverage.complete ? "Complete visible coverage" : "Partial visible coverage"}</span>
+                      </div>
+                    )}
+                    {turn.uncertainty?.length ? (
+                      <div className="copilot-uncertainty" aria-label="Investigation uncertainty">
+                        <strong>Uncertainty</strong>
+                        <ul>
+                          {turn.uncertainty.map((item) => <li key={item}>{item}</li>)}
+                        </ul>
+                      </div>
+                    ) : null}
                     {turn.findings?.length ? (
                       <div className="copilot-findings" aria-label="Context findings">
                         {turn.findings.map((finding) => (
@@ -303,6 +421,19 @@ export function CopilotDrawer({ open, onClose, contextLabel, starterQuestions, s
                     ) : (
                       !turn.narration && <p>No matching context was found in this scope.</p>
                     )}
+                    {turn.citations?.length ? (
+                      <div className="copilot-citations" aria-label="Investigation citations">
+                        <strong>Citations</strong>
+                        <ul>
+                          {turn.citations.map((citation) => (
+                            <li key={citation.citation_id}>
+                              <code>{citation.citation_id}</code>
+                              <span>{citation.source}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
                   </>
                 )}
                 {!turn.error && (
