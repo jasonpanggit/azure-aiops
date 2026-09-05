@@ -85,6 +85,38 @@ def _bound(value: Any, limit: int = _MAX_ITEMS) -> Any:
     return value
 
 
+def _bound_disclosure(
+    value: Any,
+    limit: int = _MAX_ITEMS,
+    *,
+    path: str = "",
+) -> str:
+    """Describe every list the bounded payload helper will truncate."""
+    truncated: list[tuple[str, int]] = []
+
+    def walk(candidate: Any, candidate_path: str) -> None:
+        if isinstance(candidate, list):
+            if len(candidate) > limit:
+                truncated.append((candidate_path or "items", len(candidate)))
+            for item in candidate[:limit]:
+                walk(item, candidate_path)
+        elif isinstance(candidate, dict):
+            for key, child in candidate.items():
+                walk(
+                    child,
+                    f"{candidate_path}.{key}" if candidate_path else str(key),
+                )
+
+    walk(value, path)
+    if not truncated:
+        return ""
+    details = "; ".join(
+        f"{item_path} showing {limit} of {total}"
+        for item_path, total in truncated
+    )
+    return f"Agent result bound {limit}: {details}."
+
+
 @dataclass(frozen=True)
 class ToolResult:
     """What a tool call returns to the investigation loop.
@@ -463,9 +495,10 @@ def _tool_firewall_nsg_gaps(tool_context: ToolContext, args: Mapping[str, Any]) 
         findings = [finding.to_dict() for finding in analysis.rule_findings]
         if not gaps and not findings:
             return ToolResult(status=STATUS_EMPTY)
+        payload = {"gaps": gaps, "rule_findings": findings}
         return ToolResult(
             status=STATUS_OK,
-            data=_bound({"gaps": gaps, "rule_findings": findings}),
+            data=_bound(payload),
             evidence=(
                 Evidence(
                     source_engine="network.NetworkIntelligenceService",
@@ -474,6 +507,7 @@ def _tool_firewall_nsg_gaps(tool_context: ToolContext, args: Mapping[str, Any]) 
                     confidence=CONFIDENCE_MEDIUM,
                 ),
             ),
+            warning=_bound_disclosure(payload),
         )
 
     return _provider_result(tool_context, "network", run)

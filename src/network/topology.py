@@ -12,10 +12,11 @@ peerings, not because someone called it "hub".
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from .models import (
     FABRIC_CAPACITY_RESOURCE_TYPE,
@@ -49,6 +50,21 @@ MANY_PEERINGS_THRESHOLD = 2
 
 PEER_RESOLUTION_VALUES = frozenset(
     {"not_ingested", "excluded_by_scope", "observed"}
+)
+
+TopologyDetail = Literal["summary", "full"]
+
+# Summary topology is the browser-safe projection. Keep these values aligned
+# with the measured G-2 contract in tests/test_network_scale.py.
+SUMMARY_NODE_CAP = 1_500
+SUMMARY_SMALL_NODE_CAP = 200
+SUMMARY_SMALL_BYTE_CEILING = 250_000
+SUMMARY_BYTE_CEILING = 2_000_000
+_SUMMARY_OMITTED_ENTITY_TYPES = frozenset(
+    {"NetworkSecurityRule", "Route", "FirewallRule"}
+)
+_SUMMARY_OMITTED_DETAIL_KEYS = frozenset(
+    {"rules", "routes", "rule_collections"}
 )
 
 SHARED_SERVICE_KINDS: dict[str, str] = {
@@ -198,39 +214,100 @@ class NetworkTopology:
                 return peer
         return ""
 
-    def to_dict(self) -> dict[str, Any]:
-        relationships, dropped_relationships = _topology_relationships(self)
+    def to_dict(self, *, detail: TopologyDetail = "full") -> dict[str, Any]:
+        """Serialize the topology at the requested additive detail level.
+
+        ``full`` is deliberately the default and preserves the historical
+        payload byte-for-byte. ``summary`` omits rule-level nodes and embedded
+        detail collections, then applies both measured enterprise ceilings.
+        """
+        all_resources = _topology_resources(self, detail=detail)
+        omitted_ids = _summary_omitted_resource_ids(self.snapshot) if detail == "summary" else set()
+        relationships, dropped_relationships = _topology_relationships(
+            self,
+            resource_ids={
+                str(resource["id"]).casefold() for resource in all_resources
+            },
+            intentionally_omitted_ids=omitted_ids,
+        )
         counts: dict[str, Any] = {
             **self.snapshot.counts(),
             "dropped_relationships": dict(sorted(dropped_relationships.items())),
         }
-        payload = {
-            "hubs": [hub.to_dict() for hub in self.hubs],
-            "spokes": [spoke.to_dict() for spoke in self.spokes],
-            "isolated": [item.to_dict() for item in self.isolated],
-            "links": [link.to_dict() for link in self.links],
-            "shared_services": [service.to_dict() for service in self.shared_services],
-            "resources": _topology_resources(self),
-            "relationships": relationships,
-            "unresolved_peer_vnet_ids": list(self.unresolved_peer_vnet_ids),
-            "unresolved_peers": [dict(item) for item in self.unresolved_peers],
-            "connection_ids": list(self.connection_ids),
-            "counts": counts,
-            "flow_log_provenance": dict(self.flow_log_provenance),
-        }
-        if dropped_relationships:
-            total = sum(dropped_relationships.values())
-            breakdown = ", ".join(
-                f"{relationship_type}={count}"
-                for relationship_type, count in sorted(dropped_relationships.items())
-            )
-            payload["warnings"] = [
-                (
-                    f"{total} topology relationships dropped because an endpoint "
-                    f"was absent from this scope ({breakdown})"
-                )
+
+        def serialize(resources: list[dict[str, Any]]) -> dict[str, Any]:
+            resource_ids = {
+                str(resource["id"]).casefold() for resource in resources
+            }
+            visible_relationships = [
+                relationship
+                for relationship in relationships
+                if relationship["source"] in resource_ids
+                and relationship["target"] in resource_ids
             ]
-        return payload
+            payload: dict[str, Any] = {
+                "hubs": [hub.to_dict() for hub in self.hubs],
+                "spokes": [spoke.to_dict() for spoke in self.spokes],
+                "isolated": [item.to_dict() for item in self.isolated],
+                "links": [link.to_dict() for link in self.links],
+                "shared_services": [
+                    service.to_dict() for service in self.shared_services
+                ],
+                "resources": resources,
+                "relationships": visible_relationships,
+                "unresolved_peer_vnet_ids": list(self.unresolved_peer_vnet_ids),
+                "unresolved_peers": [dict(item) for item in self.unresolved_peers],
+                "connection_ids": list(self.connection_ids),
+                "counts": counts,
+                "flow_log_provenance": dict(self.flow_log_provenance),
+            }
+            if detail == "summary":
+                payload["coverage"] = {
+                    "total": len(all_resources),
+                    "returned": len(resources),
+                    "truncated": len(resources) < len(all_resources),
+                }
+            if dropped_relationships:
+                total = sum(dropped_relationships.values())
+                breakdown = ", ".join(
+                    f"{relationship_type}={count}"
+                    for relationship_type, count in sorted(
+                        dropped_relationships.items()
+                    )
+                )
+                payload["warnings"] = [
+                    (
+                        f"{total} topology relationships dropped because an endpoint "
+                        f"was absent from this scope ({breakdown})"
+                    )
+                ]
+            return payload
+
+        if detail == "full":
+            return serialize(all_resources)
+
+        resources = all_resources[:SUMMARY_NODE_CAP]
+        payload = serialize(resources)
+        byte_ceiling = (
+            SUMMARY_SMALL_BYTE_CEILING
+            if len(all_resources) <= SUMMARY_SMALL_NODE_CAP
+            else SUMMARY_BYTE_CEILING
+        )
+        if len(json.dumps(payload).encode()) <= byte_ceiling:
+            return payload
+
+        # The node ceiling normally satisfies the byte budget. Keep the byte
+        # ceiling authoritative if unusually large non-collection details
+        # arrive by finding the largest stable prefix that fits.
+        low, high = 0, len(resources)
+        while low < high:
+            candidate = (low + high + 1) // 2
+            candidate_payload = serialize(resources[:candidate])
+            if len(json.dumps(candidate_payload).encode()) <= byte_ceiling:
+                low = candidate
+            else:
+                high = candidate - 1
+        return serialize(resources[:low])
 
 
 class TopologyBuilder:
@@ -632,7 +709,68 @@ def _firewall_rules_for(
     return [_rule_summary(rule) for rule in sorted(deduped.values(), key=lambda r: (r.name, r.resource_id))]
 
 
-def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
+def _lean_summary_node(node: dict[str, Any]) -> dict[str, Any]:
+    """Return a node without embedded collections available via drill-down."""
+    lean = dict(node)
+    details = dict(lean.get("details") or {})
+    duplicated_keys = {
+        "resource_id",
+        "name",
+        "entity_type",
+        "subscription_id",
+        "resource_group",
+        "location",
+        "connection_id",
+        "environment",
+        "business_service",
+        "application",
+        "owner",
+        "tags",
+    }
+    lean["details"] = {
+        key: value
+        for key, value in details.items()
+        if key not in duplicated_keys
+        and key not in _SUMMARY_OMITTED_DETAIL_KEYS
+        and not isinstance(value, (dict, list, tuple))
+    }
+    return lean
+
+
+def _summary_omitted_resource_ids(snapshot: NetworkSnapshot) -> set[str]:
+    omitted = {
+        resource_id.casefold()
+        for resource_id in (
+            *(
+                rule.resource_id
+                for nsg in snapshot.nsgs
+                for rule in nsg.rules
+            ),
+            *(
+                route.resource_id
+                for table in snapshot.route_tables
+                for route in table.routes
+            ),
+            *(
+                rule.resource_id
+                for collection in snapshot.firewall_collections
+                for rule in collection.rules
+            ),
+        )
+    }
+    omitted.update(
+        nic.resource_id
+        for nic in snapshot.nics
+        if not nic.attached_resource_id and not nic.nsg_id
+    )
+    return omitted
+
+
+def _topology_resources(
+    topology: NetworkTopology,
+    *,
+    detail: TopologyDetail = "full",
+) -> list[dict[str, Any]]:
     snapshot = topology.snapshot
     role_by_vnet = {item.vnet_id: item.role for item in topology.classifications}
     collections_by_firewall: dict[str, tuple[FirewallRuleCollection, ...]] = defaultdict(tuple)
@@ -646,7 +784,11 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     nodes.extend(_resource_node(vnet, role=role_by_vnet.get(vnet.resource_id, "unknown")) for vnet in snapshot.vnets)
     nodes.extend(_resource_node(subnet) for subnet in snapshot.subnets)
-    nodes.extend(_resource_node(nic) for nic in snapshot.nics)
+    nodes.extend(
+        _resource_node(nic)
+        for nic in snapshot.nics
+        if detail == "full" or nic.attached_resource_id or nic.nsg_id
+    )
     nodes.extend(
         _resource_node(
             nsg,
@@ -658,7 +800,8 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
         )
         for nsg in snapshot.nsgs
     )
-    nodes.extend(_resource_node(rule) for nsg in snapshot.nsgs for rule in nsg.rules)
+    if detail == "full":
+        nodes.extend(_resource_node(rule) for nsg in snapshot.nsgs for rule in nsg.rules)
     nodes.extend(
         _resource_node(
             table,
@@ -669,7 +812,8 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
         )
         for table in snapshot.route_tables
     )
-    nodes.extend(_resource_node(route) for table in snapshot.route_tables for route in table.routes)
+    if detail == "full":
+        nodes.extend(_resource_node(route) for table in snapshot.route_tables for route in table.routes)
     nodes.extend(_resource_node(peering) for peering in snapshot.peerings)
     nodes.extend(
         _resource_node(
@@ -701,7 +845,12 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
         )
         for collection in snapshot.firewall_collections
     )
-    nodes.extend(_resource_node(rule) for collection in snapshot.firewall_collections for rule in collection.rules)
+    if detail == "full":
+        nodes.extend(
+            _resource_node(rule)
+            for collection in snapshot.firewall_collections
+            for rule in collection.rules
+        )
     nodes.extend(_resource_node(endpoint) for endpoint in snapshot.private_endpoints)
     nodes.extend(_resource_node(zone) for zone in snapshot.private_dns_zones)
     nodes.extend(_resource_node(gateway) for gateway in snapshot.gateways)
@@ -719,6 +868,12 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
 
     nodes = list(resources.values())
     nodes = _disambiguate_duplicate_names(nodes)
+    if detail == "summary":
+        nodes = [
+            _lean_summary_node(node)
+            for node in nodes
+            if node["entity_type"] not in _SUMMARY_OMITTED_ENTITY_TYPES
+        ]
     return sorted(nodes, key=lambda node: (node["entity_type"], node["name"], node["id"]))
 
 
@@ -884,9 +1039,12 @@ def _has_resource(resource_ids: set[str], resource_id: str) -> bool:
 
 def _topology_relationships(
     topology: NetworkTopology,
+    *,
+    resource_ids: set[str],
+    intentionally_omitted_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     snapshot = topology.snapshot
-    resource_ids = {str(node["id"]).casefold() for node in _topology_resources(topology)}
+    intentionally_omitted_ids = intentionally_omitted_ids or set()
     relationships: dict[str, dict[str, Any]] = {}
     dropped_relationships: dict[str, int] = {}
 
@@ -899,6 +1057,11 @@ def _topology_relationships(
             _has_resource(resource_ids, source_id)
             and _has_resource(resource_ids, target_id)
         ):
+            if (
+                source_id in intentionally_omitted_ids
+                or target_id in intentionally_omitted_ids
+            ):
+                return
             dropped_relationships[relationship_type] = (
                 dropped_relationships.get(relationship_type, 0) + 1
             )

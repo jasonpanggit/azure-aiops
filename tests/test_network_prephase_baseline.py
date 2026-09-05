@@ -40,10 +40,14 @@ def test_baseline_is_recorded_and_self_consistent(tmp_path: Path) -> None:
         assert serialized == recorded["body"]
         assert len(serialized.encode("utf-8")) == recorded["byte_length"]
         assert sorted(normalized) == recorded["top_level_keys"]
-        assert (
-            current["representative_item_keys"]
-            == recorded["representative_item_keys"]
-        )
+        data = normalized["data"]
+        if endpoint == "topology":
+            items = data["topology"]["resources"]
+        elif endpoint == "gaps":
+            items = data["gaps"]
+        else:
+            items = data["findings"]
+        assert sorted(items[0] if items else {}) == recorded["representative_item_keys"]
 
     assert baseline["topology"]["node_count"] == len(
         json.loads(baseline["endpoints"]["topology"]["body"])["data"]["topology"]["resources"]
@@ -76,6 +80,21 @@ def test_baseline_is_recorded_and_self_consistent(tmp_path: Path) -> None:
             "endpoint": "topology",
             "path": ["data", "topology", "unresolved_peers"],
             "introduced_by": "12-03",
+        },
+        {
+            "endpoint": "gaps",
+            "path": ["data", "coverage"],
+            "introduced_by": "12-07",
+        },
+        {
+            "endpoint": "rule_findings",
+            "path": ["data", "coverage"],
+            "introduced_by": "12-07",
+        },
+        {
+            "endpoint": "rule_findings",
+            "path": ["data", "findings", "*", "affected_resource_ids"],
+            "introduced_by": "12-07",
         },
     ]
 

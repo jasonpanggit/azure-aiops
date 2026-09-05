@@ -22,11 +22,75 @@ from network import (
     load_network_snapshot,
 )
 from network.models import PrivateEndpoint, PrivateLinkResource
+from network.tightening import RuleFinding
 from network.topology import HUB_SCORE_THRESHOLD, PEER_RESOLUTION_VALUES
 
 
 def _topology():
     return build_topology(load_network_snapshot(network_rows()))
+
+
+class TestRuleFindingAffectedResources:
+    def test_nsg_findings_name_the_subnets_and_nics_the_control_protects(self) -> None:
+        service = build_service(network_rows())
+        finding = next(
+            item
+            for item in service.rule_findings
+            if item.control == "nsg" and item.affected_resource_ids
+        )
+        nsg = next(
+            item
+            for item in service.snapshot.nsgs
+            if item.resource_id == finding.control_id
+        )
+
+        assert finding.affected_resource_ids == tuple(
+            sorted({*nsg.subnet_ids, *nsg.nic_ids})
+        )
+
+    def test_firewall_findings_name_the_network_the_collection_governs(self) -> None:
+        service = build_service(network_rows())
+        finding = next(
+            item
+            for item in service.rule_findings
+            if item.control == "azure_firewall"
+        )
+
+        assert finding.affected_resource_ids
+        assert any("/subnets/" in item for item in finding.affected_resource_ids)
+        assert any(
+            "/virtualnetworks/" in item and "/subnets/" not in item
+            for item in finding.affected_resource_ids
+        )
+
+    def test_legacy_finding_payload_uses_an_empty_optional_collection(self) -> None:
+        legacy = {
+            "finding_id": "finding-1",
+            "category": "any_any",
+            "severity": "critical",
+            "rule_id": "/rules/1",
+            "rule_name": "allow-all",
+            "control": "nsg",
+            "control_id": "/nsgs/1",
+            "title": "Broad rule",
+            "detail": "Existing detail",
+            "evidence": {"source": "*"},
+            "recommendation": "Narrow the rule",
+        }
+
+        finding = RuleFinding(**legacy)
+
+        assert finding.affected_resource_ids == ()
+        assert {
+            key: value
+            for key, value in finding.to_dict().items()
+            if key != "affected_resource_ids"
+        } == {
+            **legacy,
+            "connection_id": "",
+            "subscription_id": "",
+            "environment": "",
+        }
 
 
 class TestHubClassification:

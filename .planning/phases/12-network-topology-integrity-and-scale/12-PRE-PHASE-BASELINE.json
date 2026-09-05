@@ -148,6 +148,32 @@
         "unresolved_peers"
       ],
       "introduced_by": "12-03"
+    },
+    {
+      "endpoint": "gaps",
+      "path": [
+        "data",
+        "coverage"
+      ],
+      "introduced_by": "12-07"
+    },
+    {
+      "endpoint": "rule_findings",
+      "path": [
+        "data",
+        "coverage"
+      ],
+      "introduced_by": "12-07"
+    },
+    {
+      "endpoint": "rule_findings",
+      "path": [
+        "data",
+        "findings",
+        "*",
+        "affected_resource_ids"
+      ],
+      "introduced_by": "12-07"
     }
   ],
   "canvas_interactivity": {

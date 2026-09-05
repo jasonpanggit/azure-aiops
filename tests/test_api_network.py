@@ -8,6 +8,7 @@ the "unavailable, not empty" contract are validated end to end.
 from __future__ import annotations
 
 import json
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -119,6 +120,32 @@ def _scope_leak_service() -> NetworkIntelligenceService:
 
 
 class TestTopology:
+    def test_detail_contract_is_additive_and_defaults_to_full(self, client):
+        default = client.get("/api/v1/network/topology", headers=_auth())
+        full = client.get(
+            "/api/v1/network/topology",
+            params={"detail": "full"},
+            headers=_auth(),
+        )
+        summary = client.get(
+            "/api/v1/network/topology",
+            params={"detail": "summary"},
+            headers=_auth(),
+        )
+
+        assert default.status_code == full.status_code == summary.status_code == 200
+        assert default.content == full.content
+        assert summary.json()["data"]["topology"]["coverage"]["truncated"] is False
+
+    def test_rejects_an_unknown_detail_level(self, client):
+        response = client.get(
+            "/api/v1/network/topology",
+            params={"detail": "everything"},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 400
+
     def test_returns_stitched_hub_spoke_topology(self, client):
         response = client.get("/api/v1/network/topology", headers=_auth())
         assert response.status_code == 200
@@ -163,6 +190,57 @@ class TestTopology:
         ).json()["data"]["topology"]
         remotes = {link["remote_vnet_id"] for link in topology["links"]}
         assert any(UAT_SUB in remote for remote in remotes)
+
+    def test_withheld_nsg_rules_are_paginated_through_drill_down(self, tmp_path):
+        service = build_service(network_rows())
+        nsg = next(item for item in service.snapshot.nsgs if len(item.ordered_rules()) > 1)
+        client = _client(tmp_path, network_service=service)
+
+        response = client.get(
+            "/api/v1/network/topology/resources/"
+            f"{quote(nsg.resource_id.lstrip('/'), safe='/')}/details",
+            params={"offset": 1, "limit": 1},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["resource_id"] == nsg.resource_id
+        assert body["data"]["detail_type"] == "rules"
+        assert len(body["data"]["items"]) == 1
+        assert body["data"]["coverage"] == {
+            "total": len(nsg.ordered_rules()),
+            "returned": 1,
+            "truncated": True,
+        }
+        assert body["pagination"] == {
+            "offset": 1,
+            "limit": 1,
+            "total": len(nsg.ordered_rules()),
+            "next_offset": 2,
+        }
+        assert body["warnings"]
+
+    def test_drill_down_returns_no_data_for_an_out_of_scope_resource(self, tmp_path):
+        service = build_service(network_rows())
+        foreign_nsg = next(
+            item for item in service.snapshot.nsgs if item.subscription_id == UAT_SUB
+        )
+        client = _client(tmp_path, network_service=service)
+
+        response = client.get(
+            "/api/v1/network/topology/resources/"
+            f"{quote(foreign_nsg.resource_id.lstrip('/'), safe='/')}/details",
+            headers=_auth(SCOPED_TOKEN),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"] == {
+            "resource_id": foreign_nsg.resource_id,
+            "detail_type": "",
+            "items": [],
+            "coverage": {"total": 0, "returned": 0, "truncated": False},
+        }
 
 
 class TestHubDependents:
@@ -236,15 +314,127 @@ class TestGaps:
         assert len(body["data"]["gaps"]) <= 1
         assert body["pagination"]["limit"] == 1
 
+    def test_coverage_and_pagination_are_additive_and_honest(self, client):
+        complete = client.get(
+            "/api/v1/network/gaps",
+            params={"limit": 500},
+            headers=_auth(),
+        ).json()
+        total = len(complete["data"]["gaps"])
+        expected_legacy_types = {
+            "gaps": list,
+            "intended_design_declared": bool,
+            "summary": dict,
+        }
+
+        assert total > 1
+        assert all(
+            key in complete["data"]
+            and isinstance(complete["data"][key], expected_type)
+            for key, expected_type in expected_legacy_types.items()
+        )
+        assert complete["data"]["coverage"] == {
+            "total": total,
+            "returned": total,
+            "truncated": False,
+        }
+        assert "warnings" not in complete
+
+        first = client.get(
+            "/api/v1/network/gaps",
+            params={"limit": 1, "offset": 0},
+            headers=_auth(),
+        ).json()
+        second = client.get(
+            "/api/v1/network/gaps",
+            params={"limit": 1, "offset": 1},
+            headers=_auth(),
+        ).json()
+
+        assert first["data"]["coverage"] == {
+            "total": total,
+            "returned": 1,
+            "truncated": True,
+        }
+        assert second["data"]["gaps"] == complete["data"]["gaps"][1:2]
+        assert second["pagination"]["next_offset"] == 2
+        assert any(
+            f"Showing 1 of {total} inspection gaps" in warning
+            for warning in first["warnings"]
+        )
+
 
 class TestRuleFindings:
     def test_reports_overly_broad_rules(self, client):
         body = client.get("/api/v1/network/rule-findings", headers=_auth()).json()
         assert body["data"]["findings"]
 
+    def test_findings_name_the_affected_resources_additively(self, client):
+        body = client.get(
+            "/api/v1/network/rule-findings",
+            params={"limit": 500},
+            headers=_auth(),
+        ).json()
+        finding = next(
+            item
+            for item in body["data"]["findings"]
+            if item["control"] == "nsg" and item["affected_resource_ids"]
+        )
+
+        assert isinstance(finding["affected_resource_ids"], list)
+        assert all(
+            resource_id.startswith("/subscriptions/")
+            for resource_id in finding["affected_resource_ids"]
+        )
+
     def test_findings_are_medium_confidence_because_no_flow_logs_exist(self, client):
         body = client.get("/api/v1/network/rule-findings", headers=_auth()).json()
         assert body["evidence"][0]["confidence"] == "medium"
+
+    def test_coverage_and_pagination_are_additive_and_honest(self, client):
+        complete = client.get(
+            "/api/v1/network/rule-findings",
+            params={"limit": 500},
+            headers=_auth(),
+        ).json()
+        total = len(complete["data"]["findings"])
+        expected_legacy_types = {"findings": list, "summary": dict}
+
+        assert total > 1
+        assert all(
+            key in complete["data"]
+            and isinstance(complete["data"][key], expected_type)
+            for key, expected_type in expected_legacy_types.items()
+        )
+        assert complete["data"]["coverage"] == {
+            "total": total,
+            "returned": total,
+            "truncated": False,
+        }
+        assert "warnings" not in complete
+
+        first = client.get(
+            "/api/v1/network/rule-findings",
+            params={"limit": 1, "offset": 0},
+            headers=_auth(),
+        ).json()
+        second = client.get(
+            "/api/v1/network/rule-findings",
+            params={"limit": 1, "offset": 1},
+            headers=_auth(),
+        ).json()
+
+        assert first["data"]["coverage"] == {
+            "total": total,
+            "returned": 1,
+            "truncated": True,
+        }
+        assert second["data"]["findings"] == complete["data"]["findings"][1:2]
+        assert second["pagination"]["next_offset"] == 2
+        assert any(
+            f"Showing 1 of {total} rule findings" in warning
+            for warning in first["warnings"]
+        )
 
 
 class TestFirewallBypass:

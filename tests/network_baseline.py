@@ -101,6 +101,26 @@ def without_allowed_additive_keys(
 ) -> dict[str, Any]:
     """Remove explicitly registered additive fields for baseline comparison."""
     normalized = deepcopy(body)
+
+    def remove_path(parent: Any, path: list[str]) -> None:
+        segment = path[0]
+        if segment == "*":
+            if not isinstance(parent, list):
+                raise BaselineArtifactInvalidError(
+                    f"registered additive wildcard requires a list: {'.'.join(path)}"
+                )
+            for child in parent:
+                remove_path(child, path[1:])
+            return
+        if not isinstance(parent, dict) or segment not in parent:
+            raise BaselineArtifactInvalidError(
+                f"registered additive key path is absent: {'.'.join(path)}"
+            )
+        if len(path) == 1:
+            del parent[segment]
+            return
+        remove_path(parent[segment], path[1:])
+
     for addition in allowed_additive_keys:
         if addition.get("endpoint") != endpoint:
             continue
@@ -111,19 +131,7 @@ def without_allowed_additive_keys(
             raise BaselineArtifactInvalidError(
                 "allowed_additive_keys entries require a non-empty string path"
             )
-        parent: Any = normalized
-        for segment in path[:-1]:
-            if not isinstance(parent, dict) or segment not in parent:
-                raise BaselineArtifactInvalidError(
-                    f"registered additive key path is absent: {'.'.join(path)}"
-                )
-            parent = parent[segment]
-        leaf = path[-1]
-        if not isinstance(parent, dict) or leaf not in parent:
-            raise BaselineArtifactInvalidError(
-                f"registered additive key path is absent: {'.'.join(path)}"
-            )
-        del parent[leaf]
+        remove_path(normalized, path)
     return normalized
 
 
