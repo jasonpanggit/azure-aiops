@@ -7,7 +7,7 @@ from fabric_pipelines.topology_fabric_contracts import (
     TOPOLOGY_ENTITIES_CONTRACT,
 )
 
-SCHEMA_VERSION = "2.2.0"
+SCHEMA_VERSION = "2.3.0"
 
 _BASE = [
     pa.field("tenant_id", pa.string(), nullable=False),
@@ -264,6 +264,58 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("vulnerable_packages", pa.list_(pa.string()), nullable=False),
             pa.field("recommendation", pa.string(), nullable=False),
             pa.field("last_assessed_at", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_exposure_observations": pa.schema(
+        [
+            *_BASE,
+            pa.field("observation_id", pa.string(), nullable=False),
+            pa.field("current_key", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field("connection_id", pa.string(), nullable=False),
+            pa.field("source_family", pa.string(), nullable=False),
+            pa.field("target_id", pa.string(), nullable=False),
+            pa.field("target_kind", pa.string(), nullable=False),
+            pa.field("weakness_id", pa.string(), nullable=False),
+            pa.field("weakness_kind", pa.string(), nullable=False),
+            pa.field("event", pa.string(), nullable=False),
+            pa.field("provider_operation_id", pa.string(), nullable=False),
+            pa.field("provider_status", pa.string(), nullable=False),
+            pa.field("operation_succeeded", pa.bool_(), nullable=True),
+            pa.field("event_time", pa.string(), nullable=True),
+            pa.field("event_time_quality", pa.string(), nullable=False),
+            pa.field("source_sequence", pa.string(), nullable=False),
+            pa.field("source_generation", pa.string(), nullable=False),
+            pa.field("ingested_at", pa.string(), nullable=False),
+            pa.field("run_at", pa.string(), nullable=False),
+            pa.field("published_at", pa.string(), nullable=False),
+            pa.field("enriched_at", pa.string(), nullable=False),
+            pa.field("payload_fingerprint", pa.string(), nullable=False),
+            pa.field("payload_json", pa.string(), nullable=False),
+            pa.field("title", pa.string(), nullable=False),
+        ]
+    ),
+    "gold_exposure_current": pa.schema(
+        [
+            *_BASE,
+            pa.field("current_key", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field("projection_generation_id", pa.string(), nullable=False),
+            pa.field("target_id", pa.string(), nullable=False),
+            pa.field("target_kind", pa.string(), nullable=False),
+            pa.field("weakness_id", pa.string(), nullable=False),
+            pa.field("weakness_kind", pa.string(), nullable=False),
+            pa.field("state", pa.string(), nullable=False),
+            pa.field("active", pa.bool_(), nullable=False),
+            pa.field("active_source_families", pa.list_(pa.string()), nullable=False),
+            pa.field("source_states_json", pa.string(), nullable=False),
+            pa.field("first_detected_at", pa.string(), nullable=True),
+            pa.field("first_detection_quality", pa.string(), nullable=False),
+            pa.field("episode_started_at", pa.string(), nullable=True),
+            pa.field("last_observed_at", pa.string(), nullable=True),
+            pa.field("reintroduction_count", pa.int64(), nullable=False),
+            pa.field("observation_count", pa.int64(), nullable=False),
+            pa.field("last_observation_id", pa.string(), nullable=False),
         ]
     ),
     "silver_workload_observations": pa.schema(

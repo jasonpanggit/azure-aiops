@@ -3,10 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from intelligence.vulnerability.exposure_projection import (
+    ExposureTemporalProjection,
+    build_temporal_projection,
+)
 from intelligence.vulnerability.read_port import ExposureReadPort
 from onboarding.network_normalize import NETWORK_ENTITY_TYPES
 from ontology.confidence import compute_confidence
@@ -170,6 +175,163 @@ ONTOLOGY_ENTITY_TYPES = (
     # must still be a registered entity type for that relationship to publish.
     "FlowObservation",
 )
+
+
+def temporal_inputs_from_legacy(
+    datasets: Mapping[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Translate retained patch/Defender/image rows without inventing time."""
+
+    inputs: list[dict[str, Any]] = []
+    for row in datasets.get("silver_patch_findings", ()):
+        status = str(row.get("status") or "").strip().casefold()
+        is_install = status in {
+            "installed",
+            "succeeded",
+            "success",
+            "completedwithwarnings",
+            "installation_failed",
+            "failed",
+        }
+        inputs.append(
+            _legacy_temporal_input(
+                row,
+                source_family=(
+                    "azure_update_manager_installation"
+                    if is_install
+                    else "azure_update_manager_missing"
+                ),
+                target_id=str(row.get("target_resource_id") or ""),
+                target_kind="server",
+                weakness_id=str(row.get("kb_id") or row.get("update_id") or ""),
+                weakness_kind="kb",
+                status=(
+                    "installation_failed"
+                    if status in {"installation_failed", "failed"}
+                    else ("installed" if is_install else "missing")
+                ),
+                provider_time=str(
+                    row.get("installed_at")
+                    if is_install and row.get("installed_at")
+                    else row.get("last_modified") or ""
+                ),
+            )
+        )
+    for row in datasets.get("silver_defender_findings", ()):
+        weakness_id = str(row.get("cve_id") or row.get("assessment_id") or "")
+        inputs.append(
+            _legacy_temporal_input(
+                row,
+                source_family="defender_subassessment",
+                target_id=str(row.get("target_resource_id") or ""),
+                target_kind="server",
+                weakness_id=weakness_id,
+                weakness_kind=(
+                    "cve" if weakness_id.upper().startswith("CVE-") else "assessment"
+                ),
+                status=str(row.get("status") or "unknown"),
+                provider_time=str(row.get("last_assessed_at") or ""),
+            )
+        )
+    for row in datasets.get("silver_container_image_exposure", ()):
+        for weakness_id in sorted(
+            {str(value).upper() for value in row.get("cve_ids") or () if value}
+        ):
+            inputs.append(
+                _legacy_temporal_input(
+                    row,
+                    source_family="defender_image",
+                    target_id=str(
+                        row.get("image_digest")
+                        or row.get("target_resource_id")
+                        or ""
+                    ),
+                    target_kind="container_image",
+                    weakness_id=weakness_id,
+                    weakness_kind="cve",
+                    status=str(row.get("status") or "unknown"),
+                    provider_time=str(row.get("last_assessed_at") or ""),
+                )
+            )
+    return sorted(
+        inputs,
+        key=lambda row: (
+            str(row.get("tenant_id") or ""),
+            str(row.get("target_id") or ""),
+            str(row.get("weakness_id") or ""),
+            str(row.get("provider_operation_id") or ""),
+        ),
+    )
+
+
+def temporal_products_from_legacy(
+    datasets: Mapping[str, list[dict[str, Any]]],
+    *,
+    generation_id: str,
+    ingested_at: str,
+) -> ExposureTemporalProjection:
+    """Build additive temporal products while legacy products remain intact."""
+
+    return build_temporal_projection(
+        temporal_inputs_from_legacy(datasets),
+        generation_id=generation_id,
+        ingested_at=ingested_at,
+        run_at=ingested_at,
+    )
+
+
+def _legacy_temporal_input(
+    row: Mapping[str, Any],
+    *,
+    source_family: str,
+    target_id: str,
+    target_kind: str,
+    weakness_id: str,
+    weakness_kind: str,
+    status: str,
+    provider_time: str,
+) -> dict[str, Any]:
+    subscription_id = str(row.get("subscription_id") or "").strip().casefold()
+    return {
+        "tenant_id": str(row.get("tenant_id") or "legacy-unknown-tenant"),
+        "connection_id": str(
+            row.get("connection_id") or f"legacy:{subscription_id or 'unknown'}"
+        ),
+        "source_family": source_family,
+        "source_id": str(
+            row.get("resource_id")
+            or row.get("assessment_id")
+            or row.get("update_id")
+            or ""
+        ),
+        "target_id": target_id,
+        "target_kind": target_kind,
+        "weakness_id": weakness_id,
+        "weakness_kind": weakness_kind,
+        "status": status,
+        "provider_operation_id": str(
+            row.get("provider_operation_id")
+            or row.get("resource_id")
+            or row.get("assessment_id")
+            or row.get("update_id")
+            or ""
+        ),
+        "provider_status": str(row.get("provider_status") or status),
+        "operation_succeeded": status.casefold()
+        not in {"failed", "installation_failed", "unknown"},
+        "provider_event_time": provider_time or None,
+        "provider_event_time_quality": "provider" if provider_time else "unknown",
+        "source_sequence": str(row.get("change_version") or ""),
+        "source_generation": str(row.get("ingestion_run_id") or ""),
+        "title": str(
+            row.get("update_name")
+            or row.get("recommendation")
+            or row.get("repository")
+            or ""
+        ),
+        "subscription_id": subscription_id,
+        "legacy_payload": dict(row),
+    }
 
 #: Entity types that can appear as the object of a network containment edge.
 _NETWORK_CONTAINED = (
