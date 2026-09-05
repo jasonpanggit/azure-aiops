@@ -652,11 +652,75 @@ def test_invalid_source_partition_stage_never_switches_current_generation(
     ]
 
 
-@pytest.mark.skip(reason="Pending implementation: Plan 03.1-07")
 def test_one_failed_connection_preserves_healthy_authorized_connections() -> None:
+    from types import SimpleNamespace
+
+    from onboarding.query_contract import QuerySpec
     from semantic.live_provider import ConnectionScopedLiveResourceProvider
 
-    assert ConnectionScopedLiveResourceProvider is not None
+    healthy = SimpleNamespace(
+        connection_id="connection-a",
+        name="Production east",
+        subscription_id="sub-a",
+        is_active=True,
+        credential_reference="secret://must-not-leak",
+    )
+    failed = SimpleNamespace(
+        connection_id="connection-b",
+        name="Production west",
+        subscription_id="sub-b",
+        is_active=True,
+        credential_reference="secret://also-must-not-leak",
+    )
+
+    class Reader:
+        def __init__(self, connection_id: str) -> None:
+            self.connection_id = connection_id
+
+        def query(self, spec, scope_ids):
+            del spec, scope_ids
+            if self.connection_id == "connection-b":
+                raise RuntimeError("provider response bearer-secret")
+            return [{"id": "healthy-row", "subscriptionId": "sub-a"}]
+
+    provider = ConnectionScopedLiveResourceProvider(
+        connections=lambda: [healthy, failed],
+        reader_factory=lambda connection: Reader(connection.connection_id),
+    )
+    observation = provider.query(
+        QuerySpec(
+            "defender_subassessments",
+            "SecurityResources",
+            "SecurityResources",
+            False,
+            source_family="defender_subassessment",
+        ),
+        subscription_ids=["sub-a", "sub-b"],
+    )
+
+    assert observation.rows == (
+        {"id": "healthy-row", "subscriptionId": "sub-a"},
+    )
+    assert observation.completeness == "partial"
+    assert observation.represented_count == 1
+    assert observation.expected_count == 2
+    assert {row.connection_id for row in observation.source_status} == {
+        "connection-a",
+        "connection-b",
+    }
+    assert {row.display_name for row in observation.source_status} == {
+        "Production east",
+        "Production west",
+    }
+    failed_status = next(
+        row
+        for row in observation.source_status
+        if row.connection_id == "connection-b"
+    )
+    assert failed_status.completeness == "unavailable"
+    assert failed_status.safe_error_code == "provider_unavailable"
+    assert "bearer-secret" not in repr(observation)
+    assert "secret://" not in repr(observation)
 
 
 @pytest.mark.skip(reason="Pending implementation: Plan 03.1-07")
