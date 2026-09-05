@@ -1714,6 +1714,11 @@ export interface NetworkPolicyRule {
   /** Whether the analyzer has a gap check for this rule. Absent on older
    * API responses, in which case evaluability is unknown. */
   evaluated?: boolean;
+  /** Server classification for rules backed by the declarative engine. */
+  declarative?: boolean;
+  /** Server-owned semantic validation failure; the browser never recreates
+   * this validation contract. */
+  invalid_reason?: string;
 }
 
 /** The full design policy gap analysis is checked against. */
@@ -1735,6 +1740,11 @@ export interface NetworkDesignPolicy {
   exempt_subnet_names: string[];
   exempt_vnet_names: string[];
   rules: NetworkPolicyRule[];
+  /** Additive engine vocabulary used for rule-authoring help and controls. */
+  supported_targets?: string[];
+  supported_operators?: string[];
+  unevaluated_rule_ids?: string[];
+  invalid_rule_ids?: string[];
 }
 
 export interface RuleFinding {

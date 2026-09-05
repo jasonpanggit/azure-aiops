@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -334,6 +334,11 @@ describe("Network page policy round-trip", () => {
 
   it("coalesces rapid successful mutations and refreshes every derived loader without reloading the page", async () => {
     const user = userEvent.setup();
+    const refreshedFindings = buildRuleFindingsEnvelope(619);
+    refreshedFindings.data.findings = refreshedFindings.data.findings.slice(0, 99);
+    mocks.ruleFindings
+      .mockResolvedValueOnce(buildRuleFindingsEnvelope(620))
+      .mockResolvedValue(refreshedFindings);
     renderPage();
 
     await user.click(await screen.findByRole("tab", { name: "Design policy" }));
@@ -341,7 +346,7 @@ describe("Network page policy round-trip", () => {
     await user.click(screen.getByRole("switch", { name: "Disable NSG on every subnet" }));
     await user.click(screen.getByRole("tab", { name: "Topology" }));
 
-    expect(screen.getByTestId("topology-workspace")).toHaveTextContent("620 topology findings");
+    expect(screen.getByTestId("topology-workspace")).toHaveTextContent("100 topology findings");
     await waitFor(
       () => {
         expect(mocks.topology).toHaveBeenCalledTimes(2);
@@ -350,6 +355,7 @@ describe("Network page policy round-trip", () => {
       },
       { timeout: 1_500 },
     );
+    expect(screen.getByTestId("topology-workspace")).toHaveTextContent("99 topology findings");
     expect(screen.getByRole("heading", { name: "Topology & traffic paths" })).toBeInTheDocument();
   });
 
@@ -375,7 +381,7 @@ describe("Network page policy round-trip", () => {
     expect(canvas).toBeInTheDocument();
     expect(screen.getByText("Broad or risky rules").closest("article")).toHaveTextContent("620");
 
-    resolveTopology?.(buildTopologyEnvelope());
+    await act(async () => resolveTopology?.(buildTopologyEnvelope()));
   });
 
   it("previews and saves a free-form declarative rule through the server contract", async () => {
@@ -389,8 +395,7 @@ describe("Network page policy round-trip", () => {
     await user.clear(screen.getByRole("textbox", { name: "Name" }));
     await user.type(screen.getByRole("textbox", { name: "Name" }), declarativeRule.name);
     const assertion = screen.getByRole("textbox", { name: "Rule assertion (JSON)" });
-    await user.clear(assertion);
-    await user.type(assertion, JSON.stringify(declarativeRule.parameters));
+    fireEvent.change(assertion, { target: { value: JSON.stringify(declarativeRule.parameters) } });
 
     await user.click(screen.getByRole("button", { name: "Preview rule" }));
     await waitFor(() =>
@@ -401,7 +406,9 @@ describe("Network page policy round-trip", () => {
         {},
       ),
     );
-    expect(await screen.findByText(/Preview found 0 gaps under this rule/)).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Preview found 0 gaps under this rule. The saved policy is unchanged.",
+    );
 
     await user.click(screen.getByRole("button", { name: "Save rule" }));
     await waitFor(() =>
@@ -431,9 +438,10 @@ describe("Network page policy round-trip", () => {
     await user.click(await screen.findByRole("button", { name: "Add rule" }));
     await user.clear(screen.getByRole("textbox", { name: "Rule ID" }));
     await user.type(screen.getByRole("textbox", { name: "Rule ID" }), declarativeRule.rule_id);
+    await user.clear(screen.getByRole("textbox", { name: "Name" }));
+    await user.type(screen.getByRole("textbox", { name: "Name" }), declarativeRule.name);
     const assertion = screen.getByRole("textbox", { name: "Rule assertion (JSON)" });
-    await user.clear(assertion);
-    await user.type(assertion, JSON.stringify(declarativeRule.parameters));
+    fireEvent.change(assertion, { target: { value: JSON.stringify(declarativeRule.parameters) } });
     await user.click(screen.getByRole("button", { name: "Preview rule" }));
 
     const alert = await screen.findByRole("alert");
@@ -441,6 +449,7 @@ describe("Network page policy round-trip", () => {
     expect(alert).toHaveTextContent("nothing was saved");
     expect(assertion).toHaveAttribute("aria-invalid", "true");
     expect(assertion).toHaveAttribute("aria-describedby", alert.id);
+    expect(assertion.closest("label")?.previousElementSibling).toBe(alert);
 
     await user.click(screen.getByRole("button", { name: "Save rule" }));
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
@@ -452,13 +461,65 @@ describe("Network page policy round-trip", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Design policy" }));
     await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.type(screen.getByRole("textbox", { name: "Rule ID" }), declarativeRule.rule_id);
+    await user.type(screen.getByRole("textbox", { name: "Name" }), declarativeRule.name);
     const assertion = screen.getByRole("textbox", { name: "Rule assertion (JSON)" });
-    await user.clear(assertion);
-    await user.type(assertion, "{");
+    fireEvent.change(assertion, { target: { value: "{" } });
     await user.click(screen.getByRole("button", { name: "Preview rule" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Nothing has been sent to the server");
     expect(mocks.previewPolicy).not.toHaveBeenCalled();
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
+  });
+
+  it("reports a saved rule delta from the pre- and post-refetch summary totals", async () => {
+    const user = userEvent.setup();
+    mocks.gaps
+      .mockResolvedValueOnce(buildGapsEnvelope(340))
+      .mockResolvedValue(buildGapsEnvelope(339));
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.type(screen.getByRole("textbox", { name: "Rule ID" }), declarativeRule.rule_id);
+    await user.type(screen.getByRole("textbox", { name: "Name" }), declarativeRule.name);
+    fireEvent.change(screen.getByRole("textbox", { name: "Rule assertion (JSON)" }), {
+      target: { value: JSON.stringify(declarativeRule.parameters) },
+    });
+    await user.click(screen.getByRole("button", { name: "Save rule" }));
+
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status")).toHaveTextContent(
+          "Rule saved. Inspection gaps 340 → 339.",
+        ),
+      { timeout: 1_500 },
+    );
+  });
+
+  it("warns when the server identifies an unchanged cached analysis after save", async () => {
+    const user = userEvent.setup();
+    const cached = buildGapsEnvelope(340);
+    cached.warnings = ["Analysis response was served from a cached policy revision"];
+    mocks.gaps.mockResolvedValueOnce(buildGapsEnvelope(340)).mockResolvedValue(cached);
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.type(screen.getByRole("textbox", { name: "Rule ID" }), declarativeRule.rule_id);
+    await user.type(screen.getByRole("textbox", { name: "Name" }), declarativeRule.name);
+    fireEvent.change(screen.getByRole("textbox", { name: "Rule assertion (JSON)" }), {
+      target: { value: JSON.stringify(declarativeRule.parameters) },
+    });
+    await user.click(screen.getByRole("button", { name: "Save rule" }));
+
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status")).toHaveTextContent(
+          "Saved. Derived analysis has not refreshed yet — retry in a moment.",
+        ),
+      { timeout: 1_500 },
+    );
+    expect(screen.queryByText(/Inspection gaps 340 → 340/)).not.toBeInTheDocument();
   });
 });
