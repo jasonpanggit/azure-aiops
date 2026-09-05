@@ -26,7 +26,7 @@ from typing import Any
 
 from fabric.auth import FabricAuthConfig
 from fabric.config import FabricRuntimeConfig, OntologyRuntimeConfig
-from fabric.dataset_mapper import InventoryDatasetMapper
+from fabric.dataset_mapper import ExposureOntologyMapper, InventoryDatasetMapper
 from fabric.runtime import FabricRuntime, build_runtime
 from intelligence.governance import EnterpriseSettingsStore
 from intelligence.health.service import ResourceHealthService
@@ -39,7 +39,9 @@ from intelligence.vulnerability.connector import (
     NvdCveEnrichmentConnector,
 )
 from intelligence.vulnerability.enrichment_cache import EnrichmentCache
+from intelligence.vulnerability.exposure_contracts import EXPOSURE_METADATA_DATASET
 from intelligence.vulnerability.models import RiskException
+from intelligence.vulnerability.read_port import ExposureReadPort
 from intelligence.vulnerability.service import (
     VulnerabilityIntelligenceService,
     _defender_payload,
@@ -2250,6 +2252,11 @@ def _build_provider_runtime(
         configured=True,
         required=False,
     )
+    specs["exposure_read_port"] = ProviderSpec(
+        loader=_load_exposure_read_port,
+        configured=True,
+        required=False,
+    )
     # FinOps/identity/SPN governance is a projection of the same ontology
     # snapshot as the other providers above, always configured (it reads
     # from whatever has synced) but never required for overall readiness:
@@ -2655,6 +2662,16 @@ def _load_inventory_read_port() -> Any:
     return InventoryReadPort(service) if service is not None else None
 
 
+def _load_exposure_read_port() -> ExposureReadPort | None:
+    """Load the authoritative Exposure port only after a generation exists."""
+    from storage.datasets import DatasetStore
+
+    store = DatasetStore(aiops_home())
+    if not store.read_dataset(EXPOSURE_METADATA_DATASET):
+        return None
+    return ExposureReadPort(store)
+
+
 def _load_eol_review_service() -> Any:
     """Build the request-time catalog/review provider from server-owned state."""
     from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
@@ -2938,6 +2955,21 @@ def build_context() -> ApiContext:
             require_human_approval=_require_human_approval,
             allow_self_approval=_allow_self_approval,
         )
+
+    def exposure_read_port() -> ExposureReadPort | None:
+        return providers.get("exposure_read_port", optional=True)
+
+    def exposure_ontology(scope: Scope) -> Any:
+        read_port = exposure_read_port()
+        if read_port is None:
+            return None
+        return ExposureOntologyMapper(read_port).project(scope)
+
+    def exposure_remediation() -> DefenderRemediationCorrelator | None:
+        read_port = exposure_read_port()
+        if read_port is None:
+            return None
+        return DefenderRemediationCorrelator.from_exposure_read_port(read_port)
 
     def _planner_for_scope(scope: Scope) -> Any:
         subscription_ids = list(scope.values("subscription"))
@@ -3251,6 +3283,9 @@ def build_context() -> ApiContext:
         inventory_read_port_provider=lambda: providers.get(
             "inventory_read_port", optional=True
         ),
+        exposure_read_port_provider=exposure_read_port,
+        exposure_ontology_provider=exposure_ontology,
+        exposure_remediation_provider=exposure_remediation,
         fabric_iq_provider=lambda: providers.get("fabric_iq", optional=True),
         verification_coordinator_provider=_verification_coordinator,
     )

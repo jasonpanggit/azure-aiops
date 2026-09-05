@@ -123,6 +123,9 @@ class ApiContext:
     # OS inventory is a read-only projection of the active immutable generation.
     inventory_provider: Callable[[], Any] | None = None
     inventory_read_port_provider: Callable[[], Any] | None = None
+    exposure_read_port_provider: Callable[[], Any] | None = None
+    exposure_ontology_provider: Callable[[Scope], Any] | None = None
+    exposure_remediation_provider: Callable[[], Any] | None = None
     fabric_iq_provider: Callable[[], Any] | None = None
     # The autonomous background verification coordinator (Phase 03.4,
     # Recommendation 3) is a provider/callable -- not a pinned instance --

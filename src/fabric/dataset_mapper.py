@@ -357,12 +357,10 @@ class ExposureOntologyMapper:
         self,
         scope: Any,
         *,
-        tenant_id: str,
+        tenant_id: str = "",
         previous_entities: list[dict[str, Any]] | None = None,
         previous_relationships: list[dict[str, Any]] | None = None,
     ) -> OntologyGraphResult:
-        if not isinstance(tenant_id, str) or not tenant_id.strip():
-            raise ValueError("Exposure ontology projection requires tenant_id")
         page = self.read_port.list_exposures(
             scope,
             offset=0,
@@ -390,6 +388,20 @@ class ExposureOntologyMapper:
             findings.extend(next_findings)
             offset += len(next_findings)
 
+        tenant_values = {
+            str(row.get("tenant_id") or "").strip()
+            for row in findings
+            if str(row.get("tenant_id") or "").strip()
+        }
+        if not isinstance(tenant_id, str):
+            raise TypeError("Exposure ontology projection tenant_id must be a string")
+        tenant_id = tenant_id.strip()
+        if not tenant_id:
+            if len(tenant_values) != 1:
+                raise ValueError(
+                    "Exposure ontology projection requires one persisted tenant identity"
+                )
+            tenant_id = next(iter(tenant_values))
         source_rows = _exposure_ontology_source_rows(
             findings,
             tenant_id=tenant_id,
