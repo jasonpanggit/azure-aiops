@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RESOURCE_ICONS, SERVICE_ICONS, buildTopologyGraph, serviceIcon, shortName, subscriptionOf } from "@/lib/network-graph";
@@ -342,5 +342,15 @@ describe("icon assets", () => {
     for (const entityType of ["VirtualMachine", "CosmosDb"]) {
       expect(RESOURCE_ICONS[entityType]).toBeTruthy();
     }
+  });
+
+  it("uses only the available V21 icon and documents Fabric's icon-less fallback", () => {
+    const readme = readFileSync(resolve(iconDir, "README.md"), "utf8");
+
+    expect(existsSync(resolve(iconDir, "ai-services.svg"))).toBe(true);
+    expect(existsSync(resolve(iconDir, "fabric.svg"))).toBe(false);
+    expect(readme).toContain("`ai-services.svg` | Azure AI Services");
+    expect(readme).toContain("Microsoft Fabric");
+    expect(readme).toContain("intentionally icon-less");
   });
 });
