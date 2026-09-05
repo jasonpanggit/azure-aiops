@@ -3,13 +3,25 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from intelligence.vulnerability.read_port import ExposureReadPort
 from onboarding.network_normalize import NETWORK_ENTITY_TYPES
 from ontology.confidence import compute_confidence
-from ontology.entity_builder import PAAS_ENTITY_TYPES, EntityBuilder
-from ontology.ontology_sync import OntologyGraphSynchronizer
+from ontology.entity_builder import (
+    PAAS_ENTITY_TYPES,
+    EntityBuilder,
+    scoped_semantic_id,
+    semantic_id,
+    typed_image_semantic_id,
+)
+from ontology.ontology_sync import (
+    TYPED_IMAGE_ONTOLOGY_VERSION,
+    OntologyGraphResult,
+    OntologyGraphSynchronizer,
+)
 from ontology.ontology_validator import OntologyValidator
 from ontology.relationship_builder import RelationshipBuilder
 
@@ -40,6 +52,10 @@ ENTITY_FILES = (
     "DefenderAssessment",
     "DefenderVulnerabilityFinding",
     "ContainerImageExposure",
+    "LogicalImage",
+    "ImageDigest",
+    "VulnerabilityObservation",
+    "WorkloadDeployment",
     "SecurityAlert",
     "AttackPath",
     "AttackPathNode",
@@ -252,6 +268,20 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     ("DefenderVulnerabilityFinding", "derivedFrom", "DefenderAssessment"),
     ("ContainerImageExposure", "impacts", "Resource"),
     ("Resource", "hasImageExposure", "ContainerImageExposure"),
+    *(
+        ("VulnerabilityObservation", "affects", asset)
+        for asset in ("Resource", "VirtualMachine", "ArcServer", "ImageDigest")
+    ),
+    ("VulnerabilityObservation", "identifies", "CVE"),
+    *(
+        (asset, "hasVulnerabilityObservation", "VulnerabilityObservation")
+        for asset in ("Resource", "VirtualMachine", "ArcServer", "ImageDigest")
+    ),
+    ("ContainerRegistry", "containsImage", "LogicalImage"),
+    ("LogicalImage", "hasDigest", "ImageDigest"),
+    ("ImageDigest", "deployedAs", "WorkloadDeployment"),
+    ("KubernetesCluster", "observesDeployment", "WorkloadDeployment"),
+    ("WorkloadDeployment", "runsApplication", "Application"),
     *(("SecurityAlert", "affects", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *sorted(PAAS_ENTITY_TYPES))),
     ("AttackPath", "traverses", "AttackPathNode"),
     ("AttackPath", "startsAt", "AttackPathNode"),
@@ -300,6 +330,369 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     # observation id (flow logs carry no ARM resource id), not a real resource.
     ("FlowObservation", "trafficObserved", "NetworkSecurityRule"),
 )
+
+
+@dataclass
+class ExposureOntologyMapper:
+    """Project one scoped persisted Exposure generation into ontology v2.
+
+    The read port is the only input seam, so authorization filtering happens
+    before graph construction. The mapper then delegates entity, relationship,
+    and synchronization semantics to the same production builders used by the
+    inventory and Fabric ontology pipelines.
+    """
+
+    read_port: ExposureReadPort
+    entity_builder: EntityBuilder = field(default_factory=EntityBuilder)
+    relationship_builder: RelationshipBuilder = field(
+        default_factory=RelationshipBuilder
+    )
+    synchronizer: OntologyGraphSynchronizer = field(
+        default_factory=lambda: OntologyGraphSynchronizer(OntologyValidator())
+    )
+    page_size: int = 1_000
+    max_findings: int = 50_000
+
+    def project(
+        self,
+        scope: Any,
+        *,
+        tenant_id: str,
+        previous_entities: list[dict[str, Any]] | None = None,
+        previous_relationships: list[dict[str, Any]] | None = None,
+    ) -> OntologyGraphResult:
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValueError("Exposure ontology projection requires tenant_id")
+        page = self.read_port.list_exposures(
+            scope,
+            offset=0,
+            limit=self.page_size,
+        )
+        total_count = int(page["total_count"])
+        if total_count > self.max_findings:
+            raise ValueError("Exposure ontology finding source exceeds configured bound")
+        findings = [dict(row) for row in page["findings"]]
+        generation_id = str(page["read_model_generation_id"])
+        offset = len(findings)
+        while offset < total_count:
+            next_page = self.read_port.list_exposures(
+                scope,
+                offset=offset,
+                limit=min(self.page_size, total_count - offset),
+            )
+            if str(next_page["read_model_generation_id"]) != generation_id:
+                raise ValueError(
+                    "Exposure ontology projection crossed read-model generations"
+                )
+            next_findings = [dict(row) for row in next_page["findings"]]
+            if not next_findings:
+                raise ValueError("Exposure ontology projection pagination stalled")
+            findings.extend(next_findings)
+            offset += len(next_findings)
+
+        source_rows = _exposure_ontology_source_rows(
+            findings,
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+        )
+        entities = self.entity_builder.build(
+            source_rows,
+            generation_id,
+        )
+        relationships = self.relationship_builder.build(entities, generation_id)
+        return self.synchronizer.synchronize(
+            entities,
+            relationships,
+            previous_entities=previous_entities or (),
+            previous_relationships=previous_relationships or (),
+            ontology_version=TYPED_IMAGE_ONTOLOGY_VERSION,
+        )
+
+
+def _exposure_ontology_source_rows(
+    findings: list[dict[str, Any]],
+    *,
+    tenant_id: str,
+    generation_id: str,
+) -> list[dict[str, Any]]:
+    candidates: dict[str, dict[str, Any]] = {}
+
+    def add(
+        resource_id: str,
+        entity_type: str,
+        name: str,
+        subscription_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        key = resource_id.strip().casefold()
+        if not key:
+            raise ValueError("Exposure ontology entity identity must not be empty")
+        source = {
+            "tenant_id": tenant_id,
+            "subscription_id": subscription_id,
+            "resource_id": key,
+            "entity_type": entity_type,
+            "name": name,
+            "payload_json": _canonical(payload),
+            "discovery": "authoritative_exposure",
+        }
+        existing = candidates.get(key)
+        if existing is not None and existing != source:
+            raise ValueError(
+                f"Exposure ontology identity collision for {entity_type}"
+            )
+        candidates[key] = source
+
+    for finding in findings:
+        exposure_id = str(finding.get("exposure_id") or "").strip()
+        target_id = str(finding.get("target_id") or "").strip()
+        target_kind = str(finding.get("target_kind") or "").strip().casefold()
+        weakness_id = str(finding.get("weakness_id") or "").strip().upper()
+        subscription_id = str(finding.get("subscription_id") or "").strip()
+        row_tenant_id = str(finding.get("tenant_id") or tenant_id).strip()
+        if row_tenant_id.casefold() != tenant_id.casefold():
+            raise ValueError("Exposure ontology row tenant does not match projection tenant")
+        source_families = sorted(
+            {
+                str(value).strip().casefold()
+                for value in finding.get("source_families") or ()
+                if str(value).strip()
+            }
+        )
+        common = {
+            "exposure_id": exposure_id,
+            "target_kind": target_kind,
+            "weakness_id": weakness_id,
+            "source_families": source_families,
+            "connection_ids": sorted(
+                {
+                    str(value).strip()
+                    for value in finding.get("connection_ids") or ()
+                    if str(value).strip()
+                }
+            ),
+            "read_model_generation_id": generation_id,
+            "completeness": str(finding.get("completeness") or ""),
+        }
+        weakness_entity_id = semantic_id("CVE", tenant_id, weakness_id)
+        add(
+            weakness_entity_id,
+            "CVE",
+            weakness_id,
+            "not-applicable",
+            {
+                "cve_id": weakness_id,
+                "read_model_generation_id": generation_id,
+            },
+        )
+
+        if target_kind == "container_image":
+            digest = target_id.casefold()
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                raise ValueError("Exposure image target must be an immutable sha256 digest")
+            target_entity_id = typed_image_semantic_id(
+                "ImageDigest",
+                tenant_id,
+                subscription_id,
+                digest,
+            )
+            add(
+                target_entity_id,
+                "ImageDigest",
+                digest,
+                subscription_id,
+                {
+                    **common,
+                    "digest": digest,
+                },
+            )
+            registry_id = str(finding.get("registry_id") or "").strip()
+            repository = str(finding.get("image_repository") or "").strip()
+            if registry_id and repository:
+                logical_image_id = typed_image_semantic_id(
+                    "LogicalImage",
+                    tenant_id,
+                    subscription_id,
+                    registry_id,
+                    repository,
+                )
+                add(
+                    registry_id,
+                    "ContainerRegistry",
+                    registry_id.rsplit("/", 1)[-1],
+                    subscription_id,
+                    {
+                        "id": registry_id,
+                        "resourceType": "Microsoft.ContainerRegistry/registries",
+                        "read_model_generation_id": generation_id,
+                    },
+                )
+                add(
+                    logical_image_id,
+                    "LogicalImage",
+                    repository,
+                    subscription_id,
+                    {
+                        **common,
+                        "registry_id": registry_id.casefold(),
+                        "repository": repository,
+                        "image_tags": sorted(
+                            {
+                                str(value).strip()
+                                for value in finding.get("image_tags") or ()
+                                if str(value).strip()
+                            }
+                        ),
+                        "digest_entity_id": target_entity_id,
+                    },
+                )
+
+            if str(finding.get("workload_state") or "").casefold() == (
+                "observed-exact-digest"
+            ):
+                workload_identity = tuple(
+                    str(finding.get(name) or "").strip()
+                    for name in (
+                        "workload_cluster_id",
+                        "workload_namespace",
+                        "workload_controller_kind",
+                        "workload_controller_name",
+                        "workload_pod_uid",
+                    )
+                )
+                if any(not value for value in workload_identity):
+                    raise ValueError(
+                        "Observed Exposure workload requires complete exact-digest identity"
+                    )
+                (
+                    cluster_id,
+                    namespace,
+                    controller_kind,
+                    controller_name,
+                    pod_uid,
+                ) = workload_identity
+                application_name = str(finding.get("application_id") or "").strip()
+                business_service_name = str(
+                    finding.get("business_service_id") or ""
+                ).strip()
+                if not application_name or not business_service_name:
+                    raise ValueError(
+                        "Observed Exposure workload requires application and business service"
+                    )
+                workload_id = typed_image_semantic_id(
+                    "WorkloadDeployment",
+                    tenant_id,
+                    subscription_id,
+                    cluster_id,
+                    namespace,
+                    controller_kind,
+                    controller_name,
+                    pod_uid,
+                    digest,
+                )
+                application_id = scoped_semantic_id(
+                    "Application",
+                    tenant_id,
+                    subscription_id,
+                    application_name,
+                )
+                business_service_id = scoped_semantic_id(
+                    "BusinessService",
+                    tenant_id,
+                    subscription_id,
+                    business_service_name,
+                )
+                add(
+                    cluster_id,
+                    "KubernetesCluster",
+                    cluster_id.rsplit("/", 1)[-1],
+                    subscription_id,
+                    {
+                        "id": cluster_id,
+                        "resourceType": "Microsoft.ContainerService/managedClusters",
+                        "read_model_generation_id": generation_id,
+                    },
+                )
+                add(
+                    application_id,
+                    "Application",
+                    application_name,
+                    subscription_id,
+                    {
+                        "application_id": application_name,
+                        "read_model_generation_id": generation_id,
+                    },
+                )
+                add(
+                    business_service_id,
+                    "BusinessService",
+                    business_service_name,
+                    subscription_id,
+                    {
+                        "business_service_id": business_service_name,
+                        "read_model_generation_id": generation_id,
+                    },
+                )
+                add(
+                    workload_id,
+                    "WorkloadDeployment",
+                    f"{controller_kind}/{controller_name}",
+                    subscription_id,
+                    {
+                        **common,
+                        "cluster_id": cluster_id.casefold(),
+                        "namespace": namespace,
+                        "controller_kind": controller_kind,
+                        "controller_name": controller_name,
+                        "pod_uid": pod_uid,
+                        "digest_entity_id": target_entity_id,
+                        "application_entity_id": application_id,
+                        "business_service_entity_id": business_service_id,
+                        "workload_state": "observed-exact-digest",
+                    },
+                )
+        elif target_kind == "server":
+            folded_target = target_id.casefold()
+            target_entity_id = folded_target
+            if "/microsoft.hybridcompute/machines/" in folded_target:
+                entity_type = "ArcServer"
+            elif "/microsoft.compute/virtualmachines/" in folded_target:
+                entity_type = "VirtualMachine"
+            else:
+                entity_type = "Resource"
+            add(
+                folded_target,
+                entity_type,
+                target_id.rsplit("/", 1)[-1],
+                subscription_id,
+                {
+                    "id": target_id,
+                    "target_kind": "server",
+                    "read_model_generation_id": generation_id,
+                },
+            )
+        else:
+            raise ValueError(f"Unsupported Exposure ontology target kind: {target_kind}")
+
+        observation_id = typed_image_semantic_id(
+            "VulnerabilityObservation",
+            tenant_id,
+            subscription_id,
+            exposure_id,
+        )
+        add(
+            observation_id,
+            "VulnerabilityObservation",
+            exposure_id,
+            subscription_id,
+            {
+                **common,
+                "ontology_target_id": target_entity_id,
+                "weakness_entity_id": weakness_entity_id,
+            },
+        )
+
+    return [candidates[key] for key in sorted(candidates)]
 
 
 class InventoryDatasetMapper:
