@@ -5,9 +5,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { TopologyDetailDrawer } from "@/components/network/TopologyDetailDrawer";
 import type { TopologyGraphHandle, TopologySelection } from "@/components/network/TopologyGraph";
-import type { NetworkGap, NetworkTopology, RuleFinding } from "@/lib/types";
+import type {
+  NetworkGap,
+  NetworkSummary,
+  NetworkTopology,
+  RuleFinding,
+} from "@/lib/types";
 
 const SEVERITY_RANK: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
+
+export type TopologyDetailLevel = "summary" | "full";
+
+// Plan 12-02 measured the largest interactive fCoSE canvas at 1,500 nodes
+// (224.298 ms against a 250 ms ceiling). Never raise this above the contract cap.
+export const FULL_DETAIL_GUARD_NODES = 1_500;
 
 /** Highest-severity finding per resource id, used to badge topology nodes with
  * open gaps/rule findings without a separate lookup step on the canvas. */
@@ -70,6 +81,9 @@ const EMPTY_SELECTION: TopologySelection = { node: null, edge: null };
 
 interface TopologyWorkspaceProps {
   topology: NetworkTopology | null;
+  summary?: NetworkSummary | null;
+  detailLevel?: TopologyDetailLevel;
+  onDetailLevelChange?: (detail: TopologyDetailLevel) => void;
   loading: boolean;
   error: Error | null;
   gaps?: NetworkGap[];
@@ -79,6 +93,9 @@ interface TopologyWorkspaceProps {
 /** Interactive topology workspace: Cytoscape canvas, filters, and a detail drawer. */
 export function TopologyWorkspace({
   topology,
+  summary = null,
+  detailLevel = "summary",
+  onDetailLevelChange,
   loading,
   error,
   gaps = [],
@@ -89,6 +106,7 @@ export function TopologyWorkspace({
   const [showServices, setShowServices] = useState(true);
   const [showFindings, setShowFindings] = useState(true);
   const [expanded, setExpanded] = useState(false);
+  const [fullDetailPending, setFullDetailPending] = useState(false);
   const [selection, setSelection] = useState<TopologySelection>(EMPTY_SELECTION);
   const graphHandleRef = useRef<TopologyGraphHandle | null>(null);
 
@@ -106,6 +124,30 @@ export function TopologyWorkspace({
   }, []);
 
   const clearSelection = useCallback(() => setSelection(EMPTY_SELECTION), []);
+
+  const projectedFullNodeCount = useMemo(
+    () =>
+      Object.values(summary?.resource_counts ?? {}).reduce(
+        (total, count) => total + count,
+        0,
+      ),
+    [summary],
+  );
+
+  const chooseDetailLevel = useCallback(
+    (nextDetail: TopologyDetailLevel) => {
+      if (
+        nextDetail === "full" &&
+        projectedFullNodeCount > FULL_DETAIL_GUARD_NODES
+      ) {
+        setFullDetailPending(true);
+        return;
+      }
+      setFullDetailPending(false);
+      onDetailLevelChange?.(nextDetail);
+    },
+    [onDetailLevelChange, projectedFullNodeCount],
+  );
 
   useEffect(() => {
     if (!expanded) return undefined;
@@ -171,6 +213,30 @@ export function TopologyWorkspace({
           placeholder="Highlight resources by name"
           aria-label="Highlight topology nodes by name"
         />
+        {onDetailLevelChange && (
+          <div
+            className="segmented-control"
+            role="group"
+            aria-label="Topology detail level"
+          >
+            <button
+              type="button"
+              aria-pressed={detailLevel === "summary"}
+              className={detailLevel === "summary" ? "segmented-active" : ""}
+              onClick={() => chooseDetailLevel("summary")}
+            >
+              Summary
+            </button>
+            <button
+              type="button"
+              aria-pressed={detailLevel === "full"}
+              className={detailLevel === "full" ? "segmented-active" : ""}
+              onClick={() => chooseDetailLevel("full")}
+            >
+              Full detail
+            </button>
+          </div>
+        )}
         <label className="topology-toggle">
           <input
             type="checkbox"
@@ -226,6 +292,25 @@ export function TopologyWorkspace({
           {expanded ? "Exit full screen" : "Expand to full screen"}
         </button>
       </div>
+
+      {fullDetailPending && (
+        <div className="callout callout-warning" role="status">
+          <strong>
+            Full detail renders about {projectedFullNodeCount} nodes and may make
+            the canvas slow to interact with.
+          </strong>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => {
+              setFullDetailPending(false);
+              onDetailLevelChange?.("full");
+            }}
+          >
+            Load full detail
+          </button>
+        </div>
+      )}
 
       <div className="topology-stage">
         <TopologyGraph

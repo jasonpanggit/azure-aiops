@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { TopologyWorkspace } from "@/components/network/TopologyWorkspace";
+import type { TopologyDetailLevel } from "@/components/network/TopologyWorkspace";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
@@ -30,6 +31,8 @@ export default function NetworkPage() {
   const [gapPageSize, setGapPageSize] = useState(NETWORK_PAGE_SIZE);
   const [findingPage, setFindingPage] = useState(0);
   const [findingPageSize, setFindingPageSize] = useState(NETWORK_PAGE_SIZE);
+  const [topologyDetail, setTopologyDetail] =
+    useState<TopologyDetailLevel>("summary");
   const [policyFeedback, setPolicyFeedback] = useState<{ tone: "success" | "warning"; message: string } | null>(null);
   const [pendingPolicyRefresh, setPendingPolicyRefresh] = useState<{
     beforeGapTotal: number;
@@ -37,7 +40,10 @@ export default function NetworkPage() {
     successMessage?: string;
     saved: boolean;
   } | null>(null);
-  const topology = useApi(() => networkApi.topology(scope), [scope]);
+  const topology = useApi(
+    () => networkApi.topology(scope, { detail: topologyDetail }),
+    [scope, topologyDetail],
+  );
   const gaps = useApi(
     () => networkApi.gaps(scope, { limit: gapPageSize, offset: gapPage * gapPageSize }),
     [scope, gapPage, gapPageSize],
@@ -230,6 +236,9 @@ export default function NetworkPage() {
           <section aria-busy={topology.loading}>
             <TopologyWorkspace
               topology={topology.data?.data.topology ?? null}
+              summary={topology.data?.data.summary ?? null}
+              detailLevel={topologyDetail}
+              onDetailLevelChange={setTopologyDetail}
               loading={topology.loading}
               error={topology.error}
               gaps={gaps.data?.data.gaps ?? []}
