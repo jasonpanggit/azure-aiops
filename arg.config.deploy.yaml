@@ -23,7 +23,10 @@ azure:
   # fabric.config.deploy.yaml) instead of only extending the timeout, since
   # most of that cost is unnecessary full-table OVERWRITE writes (tracked
   # separately -- see sync_service._MERGE_WRITE_TABLES).
-  publish_timeout_seconds: 420
+  # A full subscription snapshot can contain hundreds of Fabric tables. A zero
+  # value leaves the background publish unbounded while this investigation
+  # confirms the actual Fabric completion time.
+  publish_timeout_seconds: 0
 
 storage:
   # output_dir is intentionally unset: it inherits AIOPS_HOME, which Terraform

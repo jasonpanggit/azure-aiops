@@ -19,6 +19,15 @@ equivalent deterministic evidence, and suppress repeated finding cards when a
 Foundry narration is present. APIM remains in place and is not destroyed or
 replaced.
 
+Current follow-up: speed up Fabric publish by raising write concurrency
+(write_workers 4 -> 12) and publish timeout (120s -> 420s), and add a new
+SNAPSHOT_MERGE delta write mode (upsert + when_not_matched_by_source_delete)
+for the three largest full-snapshot tables (bronze_resources,
+silver_vm_inventory, silver_server_inventory) so most rows are skipped instead
+of rewritten while decommissioned resources still disappear correctly. No
+Terraform/infra changes; config-value and Python code changes only, deployed
+via new container images.
+
 ## Workspace
 
 - Mode: MODIFY existing deployed application
@@ -39,6 +48,78 @@ replaced.
 
 ## Validation Proof
 
+- 2026-09-05: Built and pushed immutable release
+  `remediation-final-20260905-0035`; unchanged `azure-mcp` content was retagged
+  from the deployed digest after Azure CLI source packaging encountered
+  another worktree's fsmonitor socket. Terraform applied 0 additions, 4
+  in-place image updates, and 0 destructions. All four Container Apps serve the
+  release; API revision `aiops-dev-api--0000225` and web revision
+  `aiops-dev-web--0000183` are healthy. API `/health` and `/ready`, web `/`,
+  `/api/config`, and `/remediation` returned HTTP 200. Live Update Manager
+  operation `ec3f3b9c-f775-4749-92ad-ed16305837c6` reports `Succeeded`,
+  `installedPatchCount=1`, `failedPatchCount=0`, `pendingPatchCount=0`, and
+  `rebootStatus=NotNeeded`.
+- 2026-09-05: Remediation E2E completion fixes validated with
+  `uv run pytest tests/test_remediation_execution_verifier.py
+  tests/test_remediation_execution_retry.py` (36 passed), targeted remediation
+  web tests (47 passed), Ruff, Next.js ESLint, and the production web build.
+  `terraform -chdir=infra/terraform fmt -check`, `terraform validate`,
+  `python3 -m compileall -q src`, and the canonical
+  `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+  -refresh=false -lock=false` all passed; Terraform reported no infrastructure
+  changes. Subscription policy assignments were reviewed and this image-only
+  update does not change RBAC, policy, region, or resource topology.
+- 2026-09-04: Deployed `fabric-unbounded-20260904-0210` to all four ACA apps.
+  With Fabric capacity `aiopsdevcapg6ludc` active (F4), an authenticated
+  connection-scoped sync completed successfully at `2026-09-04T02:56:01Z`:
+  407/407 Fabric tables written, 12,605 records, `sync.status=succeeded`, and
+  `health.status=healthy`. `publish_timeout_seconds=0` is now explicitly
+  supported to leave the background Fabric publish unbounded while the
+  hundreds-of-tables workload is investigated.
+- 2026-09-04: Pending Delta-log retry fix validated with
+  `python3 -m pytest tests/test_delta_tables.py tests/test_fabric_sync_service.py
+  tests/test_incremental_sync.py -q` (40 tests passed), `python3 -m compileall -q src`,
+  and `cd web && npm run build` (passed). The canonical Terraform wrapper
+  `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan -refresh=false -lock=false`
+  reported no infrastructure changes. No Terraform files or RBAC assignments changed.
+- 2026-09-04: Fabric empty-table publish optimization validated with focused
+  Fabric sync tests and lint. Repository canonical
+  `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+  -refresh=false -lock=false` completed with no infrastructure changes.
+  `python3 -m compileall -q src` and `cd web && npm run build` passed.
+  Static RBAC review confirmed no Terraform role-assignment changes.
+- 2026-09-03 (Fabric publish speed-up, commit 003fe81e): `terraform -chdir=infra/terraform
+  fmt -check` passed. `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+  -refresh=false -lock=false` passed with no infrastructure changes (config-only +
+  Python code change, no Terraform diff). `python3 -m compileall -q src` passed.
+  `python3 -m pytest tests/test_delta_tables.py tests/test_fabric_sync_service.py
+  tests/test_incremental_sync.py -q` passed (39 tests, including 3 new tests covering
+  the new SNAPSHOT_MERGE write mode). `cd web && npm run build` completed successfully.
+  Static RBAC review: no Terraform/RBAC changes in this commit, so the shared
+  container-app identity's existing `AcrPull`, Key Vault, Foundry, Fabric, and VM
+  roles are unaffected.
+- 2026-09-03: `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+  -refresh=false -lock=false` passed with no infrastructure changes. `cd web &&
+  npm run build` completed successfully, and `python3 -m compileall -q src` passed.
+  Static RBAC review confirmed the shared container-app identity has scoped
+  `AcrPull`, Key Vault Secrets Officer, Virtual Machine Contributor, Defender
+  configuration, Foundry Agent Consumer, and Foundry Project Runtime User roles;
+  the MCP identities have scoped Reader, Monitoring Reader, Key Vault Secrets
+  User, and AcrPull roles.
+- 2026-09-03: Built and pushed API, web, MCP server, and Azure MCP images with
+  tag `fabric-sync-speedup-20260903-2246` (commit 003fe81e). Terraform applied
+  0 additions, 6 changes, 0 destructions (image-tag updates only, same as prior
+  deploys). All four Container Apps reached the new tag. API `/health` and
+  `/ready`, web `/` and `/api/config` returned HTTP 200. No RBAC/role changes
+  in this deploy (terraform plan showed no role-assignment diffs), so no
+  additional live role verification was required beyond the prior confirmed
+  baseline.
+- 2026-09-03: Built and pushed API, web, MCP server, and Azure MCP images with
+  tag `sync-progress-20260903-1235`. Terraform applied 0 additions, 6 changes,
+  and 0 destructions. All four Container Apps are serving the new tag. API
+  `/health` and `/ready`, web `/`, and web `/api/config` returned HTTP 200.
+  Live RBAC verification confirmed the shared app identity's ACR, Key Vault,
+  Foundry, Fabric, and VM roles.
 - 2026-09-03: `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh
   plan -refresh=false -lock=false` passed with no infrastructure changes.
   `./infra/scripts/build-and-push.sh remediation-card-overflow-20260903-0029`
@@ -409,3 +490,61 @@ replaced.
   per `03-UAT.md`, so full remediation UAT remains blocked pending real data.
 - Follow-up: reconcile `infra/terraform/terraform.tfvars` `image_tag` on the
   next full Terraform apply so state doesn't drift from the live revision.
+
+## Validation Proof (Reactive orphaned-sync reconciliation — 2026-09-03)
+
+- Trigger: commit `5f2cfe93` "fix(onboarding): reactively reconcile orphaned
+  syncs on every poll" — a follow-up to the Fabric publish speedup
+  (`003fe81e`) deployed earlier the same day. That deploy's rolling container
+  restart landed mid-sync on connection `demo`, stranding its `sync_state`
+  at `status="running"` indefinitely (the existing reconciler only runs at
+  process startup). This commit adds a reactive check on every
+  `detail()`/`health_report()` poll so a stranded sync clears itself within
+  seconds instead of requiring a manual container restart.
+- `terraform -chdir=infra/terraform fmt -check` → pass, no diff.
+- `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan -refresh=false -lock=false`
+  → "No changes. Your infrastructure matches the configuration." (no infra
+  changes, image-tag-only deploy expected).
+- `python3 -m compileall -q src` → pass.
+- `python3 -m pytest tests/test_subscription_onboarding.py tests/test_onboarding_activation.py -q`
+  → 52 passed (includes 2 new tests: reactive reconciliation on poll,
+  reactive check does not fail a genuinely live sync).
+- `ruff check src/onboarding/service.py tests/test_subscription_onboarding.py`
+  → all checks passed.
+- `cd web && npm run build` → pass.
+- No RBAC/Terraform changes in this commit (Python service-layer logic only).
+
+## Deployment Proof (Reactive orphaned-sync reconciliation — 2026-09-03)
+
+- Images built/pushed via `infra/scripts/build-and-push.sh`, tag
+  `orphan-sync-fix-20260903-2333`, all 4 images (aiops-api, aiops-web,
+  mcp-server, azure-mcp); `terraform.tfvars` `image_tag` recorded
+  automatically by the script.
+- `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh apply -auto-approve`
+  → 0 added, 6 changed (container app image references only), 0 destroyed.
+  All 4 Container Apps confirmed serving `orphan-sync-fix-20260903-2333` by
+  the deploy script's built-in wait/check.
+- Endpoint checks: API `/health`=200, `/ready`=200; web `/`=200,
+  `/api/config`=200.
+- No RBAC/Terraform resource changes — image tag update only.
+
+## Validation Proof (Remediation workflow hardening — 2026-09-04)
+
+- `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+  -refresh=false -lock=false` passed with no infrastructure changes.
+- `uv run python -m compileall -q src` passed.
+- `cd web && npm run build` passed, including lint and TypeScript checks.
+- Local `linux/amd64` API and web container builds passed. The web dependency
+  stage now copies the repository `.npmrc` and restores through
+  `https://packagefeedproxy.microsoft.io/npm/`, avoiding the Defender-blocked
+  direct npmjs.org route.
+- Local image smoke tests passed: API `/health` returned HTTP 200 and web
+  `/api/config` returned HTTP 200.
+- Static Terraform RBAC review passed. The deployment changes no role
+  assignments; existing application permissions remain scoped to ACR, Key
+  Vault, the application resource group for VM patch execution, and the
+  opt-in subscription-level Defender configuration role.
+- Azure Policy assignment enumeration was attempted through the Azure MCP
+  policy command but the tool failed to load its own
+  `Microsoft.Identity.Client` assembly. The image-only Terraform plan remains
+  policy-neutral and introduces no Azure resource or RBAC changes.

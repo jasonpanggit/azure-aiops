@@ -56,10 +56,24 @@ class ExecutionClaimConflict(RuntimeError):
         self.record = copy.deepcopy(record)
 
 
+class ExecutionLockContended(RuntimeError):
+    """The cross-replica claim lock stayed busy for the full retry window.
+
+    WR-04: distinct from a genuine defect in verification logic -- under
+    legitimate multi-replica load, another worker's own claim can hold the
+    lock long enough that this caller's bounded retry window (5s) elapses
+    first. This is expected, transient, and will resolve on its own on the
+    coordinator's next pass; a caller (e.g.
+    :class:`~intelligence.remediation.verification_coordinator
+    .RemediationVerificationCoordinator`) should count it separately from an
+    unexpected error rather than logging/counting it identically to one.
+    """
+
+
 class RemediationExecutionStore:
     """Revisioned execution records with cross-process claim serialization."""
 
-    _SCHEMA_VERSION = "2.0.0"
+    _SCHEMA_VERSION = "2.2.0"
 
     def __init__(
         self,
@@ -91,6 +105,7 @@ class RemediationExecutionStore:
         approved_by: str,
         execution_snapshot: dict[str, Any],
         rollback_guidance: list[str] | None = None,
+        scope_attributes: dict[str, str] | None = None,
         now: datetime | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Atomically claim the permanent identity for one approved snapshot."""
@@ -138,7 +153,18 @@ class RemediationExecutionStore:
                 "verified_state": "",
                 "failure_details": "",
                 "ineligibility_reason": "",
+                "provider_submitted": False,
+                "failure_class": "",
+                "supersedes": "",
+                "superseded_by": "",
+                "superseded_reason": "",
+                "verification_deadline_at": "",
+                "next_verification_at": "",
+                "verification_attempts": 0,
+                "verification_evidence": {},
+                "evidence_reconciliation": _empty_evidence_reconciliation(),
                 "execution_snapshot": snapshot,
+                "scope_attributes": dict(scope_attributes or {}),
                 "attempts": [attempt],
                 "history": copy.deepcopy(attempt["transitions"]),
             }
@@ -166,6 +192,118 @@ class RemediationExecutionStore:
         )
         return record
 
+    def create_superseding(
+        self,
+        old_execution_id: str,
+        *,
+        expected_revision: int,
+        plan_id: str,
+        requested_by: str,
+        approved_by: str,
+        execution_snapshot: dict[str, Any],
+        rollback_guidance: list[str] | None = None,
+        scope_attributes: dict[str, str] | None = None,
+        reason: str,
+        now: datetime | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Atomically mint a replacement execution and close out the old one.
+
+        Under one lock, in one write: (1) CAS-validates ``old_execution_id``
+        is still supersede-eligible (terminal ``failed``/``cancelled`` and
+        not already superseded) at ``expected_revision``; (2) creates a
+        brand-new execution record with its own fresh identity (never
+        colliding with the old one, even for a byte-identical snapshot,
+        because the identity is salted with ``old_execution_id``) carrying
+        ``supersedes=old_execution_id``; (3) sets ``superseded_by``/
+        ``superseded_reason`` on the OLD record in place, without touching
+        its ``attempts``/``history``. Never mutates or deletes the old
+        execution's audit trail (Supersession decision).
+        """
+        timestamp = _timestamp(now)
+        with self._claim_lock():
+            state, old_index, old_record = self._locate(old_execution_id)
+            if (
+                int(old_record.get("revision") or 0) != expected_revision
+                or old_record.get("status") not in RETRYABLE_STATUSES
+                or old_record.get("superseded_by")
+            ):
+                raise ExecutionClaimConflict("execution_claim_conflict", old_record)
+            if len(state["executions"]) >= self.max_executions:
+                # Same store-growth cap `create_or_get` already enforces
+                # (WR-01): a supersede always appends a brand-new record, so
+                # without this guard the cap could be defeated by repeatedly
+                # exhausting and superseding distinct executions.
+                raise ExecutionClaimConflict("execution_store_full", old_record)
+
+            snapshot = copy.deepcopy(execution_snapshot)
+            action_version = str(snapshot.get("action_version") or "")
+            snapshot_hash = str(snapshot.get("snapshot_hash") or "")
+            identity = (
+                f"{plan_id}|{snapshot_hash}|{action_version}|supersedes:{old_execution_id}"
+            )
+            if any(
+                str(row.get("execution_identity") or "") == identity
+                for row in state["executions"]
+            ):
+                # An identity collision here would mean this exact
+                # supersession was already minted -- refuse rather than
+                # silently returning (or worse, overwriting) a different
+                # caller's record.
+                raise ExecutionClaimConflict("execution_claim_conflict", old_record)
+
+            attempt = _new_attempt(
+                number=1,
+                actor=requested_by,
+                timestamp=timestamp,
+                snapshot=snapshot,
+            )
+            new_record = {
+                "execution_id": "RME-" + hashlib.sha256(identity.encode()).hexdigest()[:16].upper(),
+                "execution_identity": identity,
+                "plan_id": str(plan_id),
+                "status": EXECUTION_STATUS_QUEUED,
+                "revision": 0,
+                "requested_by": requested_by,
+                "approved_by": approved_by,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "provider_job_id": "",
+                "message": "",
+                "attempt_count": 1,
+                "rollback_guidance": list(
+                    rollback_guidance
+                    if rollback_guidance is not None
+                    else old_record.get("rollback_guidance") or []
+                ),
+                "verified_state": "",
+                "failure_details": "",
+                "ineligibility_reason": "",
+                "provider_submitted": False,
+                "failure_class": "",
+                "execution_snapshot": snapshot,
+                "scope_attributes": dict(scope_attributes or {}),
+                "attempts": [attempt],
+                "history": copy.deepcopy(attempt["transitions"]),
+                "supersedes": old_execution_id,
+                "superseded_by": "",
+                "superseded_reason": "",
+                "verification_deadline_at": "",
+                "next_verification_at": "",
+                "verification_attempts": 0,
+                "verification_evidence": {},
+                "evidence_reconciliation": _empty_evidence_reconciliation(),
+            }
+            state["executions"].append(new_record)
+
+            old_record["superseded_by"] = new_record["execution_id"]
+            old_record["superseded_reason"] = str(reason)
+            old_record["revision"] = int(old_record.get("revision") or 0) + 1
+            old_record["updated_at"] = timestamp
+            state["executions"][old_index] = old_record
+
+            self._persist_advanced(state, timestamp)
+            return copy.deepcopy(new_record), copy.deepcopy(old_record)
+
     def get(self, execution_id: str) -> dict[str, Any] | None:
         with self._lock:
             rows = self._read_state()["executions"]
@@ -179,6 +317,28 @@ class RemediationExecutionStore:
             rows = self._read_state()["executions"]
         return copy.deepcopy([row for row in rows if row["plan_id"] == plan_id])
 
+    def list_all(self) -> list[dict[str, Any]]:
+        """Every stored execution record, for read-only diagnostics."""
+        with self._lock:
+            rows = self._read_state()["executions"]
+        return copy.deepcopy(rows)
+
+    def list_due_for_verification(
+        self, *, now: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """Every record needing a verification/reconciliation pass right now.
+
+        Read-only: durable state alone answers "what is due" (Recommendation
+        3's Verification Lifecycle decision), so a fresh process after a
+        restart needs no in-memory scheduling state to resume this query.
+        Uses the same lock as :meth:`get`/:meth:`list_all` -- no CAS claim is
+        taken here since nothing is mutated.
+        """
+        moment = now or datetime.now(UTC)
+        with self._lock:
+            rows = self._read_state()["executions"]
+        return copy.deepcopy([row for row in rows if _needs_verification_pass(row, now=moment)])
+
     def claim_retry(
         self,
         execution_id: str,
@@ -187,8 +347,19 @@ class RemediationExecutionStore:
         actor: str,
         max_attempts: int,
         now: datetime | None = None,
+        verification_deadline_at: str = "",
+        next_verification_at: str = "",
+        verification_attempts: int = 0,
     ) -> dict[str, Any]:
-        """Claim one failed/cancelled attempt using status-and-revision CAS."""
+        """Claim one failed/cancelled attempt using status-and-revision CAS.
+
+        CR-01: the scheduling fields (when supplied by the caller) are
+        seeded in this *same* CAS write that claims ``"retrying"`` -- not
+        only in a later write -- so a crash between this claim and the
+        following ``retrying -> running`` transition still leaves a
+        durably-scheduled, due-for-recovery record rather than an
+        undeadlined one invisible to :func:`_needs_verification_pass`.
+        """
         timestamp = _timestamp(now)
         with self._claim_lock():
             state, index, record = self._locate(execution_id)
@@ -197,7 +368,7 @@ class RemediationExecutionStore:
                 or record.get("status") not in RETRYABLE_STATUSES
             ):
                 raise ExecutionClaimConflict("execution_claim_conflict", record)
-            if int(record.get("attempt_count") or 0) >= max_attempts:
+            if submitted_attempt_count(record) >= max_attempts:
                 raise ExecutionClaimConflict("max_attempts_exceeded", record)
             snapshot = copy.deepcopy(record.get("execution_snapshot") or {})
             number = int(record.get("attempt_count") or 0) + 1
@@ -210,6 +381,17 @@ class RemediationExecutionStore:
             )
             record["attempt_count"] = number
             record["ineligibility_reason"] = ""
+            record["outcome"] = ""
+            record["provider_job_id"] = ""
+            record["verified_state"] = ""
+            record["failure_details"] = ""
+            record["message"] = ""
+            record["provider_submitted"] = False
+            record["failure_class"] = ""
+            record["verification_evidence"] = {}
+            record["verification_deadline_at"] = verification_deadline_at
+            record["next_verification_at"] = next_verification_at
+            record["verification_attempts"] = verification_attempts
             record.setdefault("attempts", []).append(attempt)
             record.setdefault("history", []).extend(copy.deepcopy(attempt["transitions"]))
             self._replace_record(
@@ -323,6 +505,9 @@ class RemediationExecutionStore:
             "verified_state",
             "failure_details",
             "message",
+            "provider_submitted",
+            "failure_class",
+            "verification_evidence",
         ):
             if name in fields:
                 current[name] = copy.deepcopy(fields[name])
@@ -398,9 +583,12 @@ class RemediationExecutionStore:
                 )
                 try:
                     lock.__enter__()
-                except RuntimeError:
+                except RuntimeError as exc:
                     if time.monotonic() >= deadline:
-                        raise
+                        raise ExecutionLockContended(
+                            "Timed out waiting for the remediation execution "
+                            "claim lock; another replica is holding it."
+                        ) from exc
                     time.sleep(0.01)
                     continue
                 try:
@@ -486,6 +674,138 @@ def _execution_identity(plan_id: str, snapshot: dict[str, Any]) -> str:
     )
 
 
+def _subscription_id_from_target_id(target_id: str) -> str:
+    """Extract the subscription segment from a canonical ARM resource id.
+
+    Duplicates ``semantic.live_operations._subscription_id_from_resource_id``
+    rather than importing it: ``semantic`` already imports from
+    ``intelligence.remediation``, so importing the reverse direction would be
+    circular.
+    """
+    parts = [part for part in str(target_id or "").strip("/").split("/") if part]
+    for index, part in enumerate(parts[:-1]):
+        if part.casefold() == "subscriptions":
+            return parts[index + 1]
+    return ""
+
+
+def execution_scope_attributes(record: dict[str, Any]) -> dict[str, str]:
+    """Project an execution record's own durable scope, independent of its plan.
+
+    Authorization for a single execution read/retry/cancel must not depend on
+    the originating plan's continued existence (D-02): a plan's identity can
+    still change/disappear across evidence refresh for legacy records created
+    before this field existed. Returns the stored ``scope_attributes`` when
+    present; otherwise derives a subscription-only scope from the immutable
+    execution snapshot's ``target_id``; otherwise returns an empty mapping,
+    which fails closed for any restricted caller scope (D-02/D-04).
+    """
+    stored = record.get("scope_attributes")
+    if isinstance(stored, dict) and stored:
+        return {str(key): str(value) for key, value in stored.items()}
+    snapshot = record.get("execution_snapshot")
+    target_id = str((snapshot or {}).get("target_id") or "") if isinstance(snapshot, dict) else ""
+    subscription_id = _subscription_id_from_target_id(target_id)
+    if subscription_id:
+        return {"subscription": subscription_id}
+    return {}
+
+
+def submitted_attempt_count(record: dict[str, Any]) -> int:
+    """Count only attempts proven-or-ambiguous to have reached the provider.
+
+    This is Phase 03.3's Recommendation 2 counter: a plain refusal that
+    never touches Azure (validation, authorization, approval,
+    target-precondition) must not consume the bounded retry budget, while a
+    genuine submission -- even one that failed ambiguously in transport --
+    must. Both :meth:`execution_view`'s ``remaining_attempts``/``retryable``
+    projection and :meth:`claim_retry`'s own CAS gate call this single
+    function so a caller cannot bypass the ceiling by reading a stale view.
+    """
+    return sum(
+        1
+        for attempt in record.get("attempts", [])
+        if bool(attempt.get("provider_submitted"))
+    )
+
+
+def is_submission_ambiguous(record: dict[str, Any]) -> bool:
+    """Whether the record's last attempt is a submission-ambiguous failure.
+
+    A submission-ambiguous attempt may still be running against the
+    provider (the transport failed after the mutating call may already have
+    crossed the boundary), so it must never be treated as safely
+    supersedable (Plan 03.3-03's supersede eligibility guard).
+    """
+    attempts = record.get("attempts") or []
+    if not attempts:
+        return False
+    return str(attempts[-1].get("failure_class") or "") == "submission_ambiguous"
+
+
+_RECONCILED_TERMINAL_STATUSES = frozenset(
+    {"reconciled_clean", "reconciled_incomplete", "unreconciled"}
+)
+
+
+def _is_patch_evidence_candidate(record: dict[str, Any]) -> bool:
+    """Whether ``record`` has a KB-comparable patch selection to reconcile.
+
+    Defender configuration executions and any record with an empty
+    ``patch_ids`` selection have no comparable "did the KB disappear"
+    evidence, so they are never eligible for KB-based evidence
+    reconciliation. Shared by :meth:`RemediationExecutionStore
+    .list_due_for_verification` and (Plan 03.4-02) the service layer's
+    ``reconcile_evidence`` eligibility check so the two can never disagree.
+    """
+    snapshot = record.get("execution_snapshot")
+    if not isinstance(snapshot, dict):
+        return False
+    if snapshot.get("snapshot_kind") == "defender_configuration":
+        return False
+    return bool(snapshot.get("patch_ids"))
+
+
+def _needs_verification_pass(record: dict[str, Any], *, now: datetime) -> bool:
+    """Whether ``record`` needs a verification/reconciliation pass right now.
+
+    Durable-state-only decision (no in-memory scheduling carryover): a
+    "running" or "retrying" record is due immediately if never scheduled,
+    or once its ``next_verification_at`` has elapsed (CR-01: a "retrying"
+    record is treated identically to "running" so a crash between
+    ``claim_retry()`` and the following ``retrying -> running`` transition
+    is still recoverable rather than permanently invisible); a "failed"
+    record is due only while its last attempt is submission-ambiguous; a
+    "succeeded" patch record is due until its evidence reconciliation
+    reaches a terminal outcome.
+    """
+    status = str(record.get("status") or "")
+    if status in (EXECUTION_STATUS_RUNNING, EXECUTION_STATUS_RETRYING):
+        next_at = str(record.get("next_verification_at") or "").strip()
+        if not next_at:
+            return True
+        try:
+            parsed = datetime.fromisoformat(next_at)
+        except ValueError:
+            return True
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed <= now
+    if status == EXECUTION_STATUS_FAILED:
+        return is_submission_ambiguous(record)
+    if status == EXECUTION_STATUS_SUCCEEDED:
+        if not _is_patch_evidence_candidate(record):
+            return False
+        reconciliation = record.get("evidence_reconciliation")
+        recon_status = (
+            str(reconciliation.get("status") or "")
+            if isinstance(reconciliation, dict)
+            else ""
+        )
+        return recon_status not in _RECONCILED_TERMINAL_STATUSES
+    return False
+
+
 def _new_attempt(
     *,
     number: int,
@@ -514,6 +834,8 @@ def _new_attempt(
         "failure_details": "",
         "message": "",
         "outcome": "",
+        "provider_submitted": False,
+        "failure_class": "",
         "transitions": [transition],
     }
 
@@ -558,6 +880,33 @@ def _current_attempt(record: dict[str, Any]) -> dict[str, Any]:
     return attempts[-1]
 
 
+_AMBIGUITY_MARKERS = ("unreachable", "timed out", "timeout", "connection", "ambiguous")
+
+
+def _legacy_provider_submitted(attempt: dict[str, Any]) -> bool:
+    """Conservative fail-closed default for a pre-migration attempt.
+
+    Per CONTEXT.md's Compatibility and Safety decision: a recorded provider
+    job ID proves submission; otherwise the attempt is treated as
+    pre-submission unless its stored failure text carries an ambiguity
+    marker, in which case it fails closed as submitted (never silently
+    exempt, and never silently fully-submitted-only).
+    """
+    if "provider_submitted" in attempt:
+        return bool(attempt["provider_submitted"])
+    if str(attempt.get("provider_job_id") or "").strip():
+        return True
+    haystack = " ".join(
+        str(attempt.get(field) or "").casefold()
+        for field in ("failure_details", "message")
+    )
+    return any(marker in haystack for marker in _AMBIGUITY_MARKERS)
+
+
+def _empty_evidence_reconciliation() -> dict[str, Any]:
+    return {"status": "", "kbs_cleared": [], "kbs_remaining": [], "assessed_at": ""}
+
+
 def _with_defaults(item: dict[str, Any]) -> dict[str, Any]:
     record = copy.deepcopy(item)
     record.setdefault("revision", 0)
@@ -571,7 +920,27 @@ def _with_defaults(item: dict[str, Any]) -> dict[str, Any]:
     record.setdefault("provider_job_id", "")
     record.setdefault("message", "")
     record.setdefault("rollback_guidance", [])
+    record.setdefault("supersedes", "")
+    record.setdefault("superseded_by", "")
+    record.setdefault("superseded_reason", "")
     record.setdefault("attempt_count", 1)
+    record.setdefault("verification_deadline_at", "")
+    record.setdefault("next_verification_at", "")
+    record.setdefault("verification_attempts", 0)
+    record.setdefault("verification_evidence", {})
+    record.setdefault("evidence_reconciliation", _empty_evidence_reconciliation())
+    attempts = record["attempts"]
+    for attempt in attempts:
+        attempt["provider_submitted"] = _legacy_provider_submitted(attempt)
+        attempt.setdefault("failure_class", "")
+    record.setdefault(
+        "provider_submitted",
+        bool(attempts[-1].get("provider_submitted")) if attempts else False,
+    )
+    record.setdefault(
+        "failure_class",
+        str(attempts[-1].get("failure_class") or "") if attempts else "",
+    )
     return record
 
 
@@ -600,5 +969,10 @@ __all__ = [
     "EXECUTION_STATUS_SUCCEEDED",
     "EXECUTION_TERMINAL_STATUSES",
     "ExecutionClaimConflict",
+    "ExecutionLockContended",
     "RemediationExecutionStore",
+    "_is_patch_evidence_candidate",
+    "execution_scope_attributes",
+    "is_submission_ambiguous",
+    "submitted_attempt_count",
 ]

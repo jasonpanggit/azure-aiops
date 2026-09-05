@@ -2,7 +2,7 @@
 status: resolved
 trigger: "Check the deployed /remediation experience end to end: select a fix, review impact, approve, run, and verify with Playwright; capture issues and errors, identify improvement gaps, troubleshoot root causes, fix them, and repeat until the E2E succeeds."
 created: "2026-09-03T09:28:07+08:00"
-updated: "2026-09-05T01:15:20.313+08:00"
+updated: "2026-09-05T08:58:00+08:00"
 ---
 
 # Debug Session: Remediation E2E
@@ -17,9 +17,28 @@ updated: "2026-09-05T01:15:20.313+08:00"
 
 ## Current Focus
 
-- confirmed_root_cause: "Live patch action_version hashes citation source_ids taken from CVE-enriched finding_ids and caps them before canonicalization. Independent plan generations can therefore choose different version inputs when optional KB-to-CVE enrichment differs or a >10-item evidence set arrives in another order, even though the governed target and missing-KB action are unchanged."
+- confirmed_root_cause: "Three independent defects blocked a truthful live completion: patch action versions included volatile ARG row identity; retry claims retained the prior attempt's failure fields; and the verifier parsed patch counts only from nested properties even though Hybrid Compute returns them at the operation-result root."
+- test: "Live approval, execution, provider verification, retry-state projection, immutable deployment, and endpoint health are complete."
+- expecting: "Equivalent plans approve across independent planner generations, retries show only current-attempt state, and future Hybrid Compute results preserve top-level installed/failed/pending counts."
 - bug_class: bohrbug
-- next_action: "None; session archived. Live deployment verification remains deferred to a separately authorized rollout."
+- candidate_causes: "code: patch action_version hashes a provider row identity that is not part of governed execution semantics; data: ARG softwarePatches row ids can change while KB scope does not; environment/config: a stale image could omit the prior canonicalizer, but deployed commit 490cb20b contains it."
+- and_gate: "yes: independent generation must vary the ARG row id, and patch versioning must hash that non-semantic citation identity."
+- next_action: "None; provider execution succeeded and the fixes are deployed."
+
+reasoning_checkpoint:
+  hypothesis: "Live patch presentation citation identity causes false staleness because ARG softwarePatches row ids are retrieval-instance identities, not governed patch action identity."
+  confirming_evidence:
+    - "The exact derivation hashes only action_id, canonical target, sorted missing_kbs, citation source_type/source_id/observed_at; source_type is fixed and live patch observed_at is empty."
+    - "The new two-client/two-planner route regression changed only softwarePatches/1 to softwarePatches/7 and reproduced the production 409, while the missing-KB-change neighbor independently remained 409."
+    - "The live citation reported by the user contains softwarePatches/1|KB-2267602; commit 490cb20b strips the stable KB suffix and hashes the ordinal-bearing stem."
+  falsification_test: "After excluding patch presentation citations from version input, the two-runtime unchanged-action route still returns 409, or the missing-KB-change route no longer returns 409."
+  fix_rationale: "For controlled patch recovery, the executable action is completely defined by governed action id, canonical target, and missing-KB set. Removing only presentation citations from this family's version payload eliminates provider row/timestamp volatility without weakening invalidation for any executable action change."
+  blind_spots: "The POST-side live payload was not captured, so more than one ARG row-id component may differ. This fix removes the entire non-semantic citation field class rather than special-casing the observed ordinal. A one-time action-version rollover on deployment is unavoidable."
+  candidate_causes:
+    - "code: live patch action version includes provider presentation citation identities."
+    - "data: ARG emits ordinal/path-based softwarePatches row ids that can differ across equivalent generations."
+    - "environment: GET and POST can hit different replicas or generations of the 30-second process-local planner cache."
+  and_gate: "yes: independent generation exposes different ARG identity data, and version derivation hashes that non-semantic data."
 
 ### Structured reasoning checkpoint
 
@@ -465,57 +484,139 @@ reasoning_checkpoint:
   found: "The resolved session was moved to .planning/debug/resolved/remediation-e2e.md and its root cause, prevention finding, and regression guards were appended to .planning/debug/knowledge-base.md. MemPalace indexing was skipped because the CLI is unavailable."
   implication: "The local diagnosis and guard are durably recorded without deployment, live mutation, or alteration of unrelated working-tree changes."
 
+- timestamp: 2026-09-05T02:02:00+08:00
+  checked: "Reopened live failure against deployed commit 490cb20b and traced action-version inputs"
+  found: "Both workflow GET and decision POST regenerate plans; action_version_for hashes action_id, canonical target, sorted missing_kbs, and citation source_type/source_id/observed_at. For live patches source_type is fixed and observed_at is currently empty, leaving source_id as the only non-action volatile input. Commit 490cb20b strips the appended |KB-* or |CVE-* segment but retains the upstream ARG softwarePatches row id stem. The reported live citation contains softwarePatches/1|KB-2267602, showing that the stripped suffix is the stable KB action identity while the retained row-id ordinal is not governed execution scope."
+  implication: "The prior fix canonicalized the wrong side of the composite finding id. The next falsification test must vary only the ARG row-id stem across genuinely fresh planner instances and preserve the KB set."
+
+- timestamp: 2026-09-05T02:10:00+08:00
+  checked: "Exact route and runtime-generation topology plus new regression setup"
+  found: "GET /remediation/plans/{id}/workflow and POST /remediation-plans/{id}/decisions both call generate_plans(); production caches one planner per process for 30 seconds, so separate replicas/cache generations can hold independent planners. The new route regression uses two separate TestClient contexts and two separate LiveRemediationPlanner instances (GET runtime versus POST runtime), rather than mutating one reused plan. A boundary-neighbor route test changes missing_kbs and expects the stale rejection to remain."
+  implication: "The test now models the actual cross-runtime failure boundary and protects genuine governed action invalidation."
+
+- timestamp: 2026-09-05T02:16:00+08:00
+  checked: "Pre-fix independent-runtime route reproduction"
+  found: "The unchanged-action test failed exactly at the 201 assertion: decision POST returned HTTP 409 'Remediation plan action version is stale' when only softwarePatches/1 changed to softwarePatches/7 across separate planners. The missing-KB-change neighbor passed with HTTP 409."
+  implication: "The hypothesis is confirmed and differentiated from genuine action drift. A patch-specific version payload must stop hashing presentation citation identity."
+
+- timestamp: 2026-09-05T02:20:00+08:00
+  checked: "Minimal production change and direct route verification"
+  found: "Live patch plans now pass no presentation citations into action_version_for while retaining the unchanged evidence_citations payload on the plan. The two independent-runtime route tests both pass: row-id-only drift is accepted with HTTP 201 and changed missing-KB scope is rejected with HTTP 409."
+  implication: "The fix removes the confirmed volatile field class while preserving genuine action invalidation."
+
+- timestamp: 2026-09-05T02:24:00+08:00
+  checked: "Focused post-fix compatibility run"
+  found: "Nineteen selected checks passed and exactly one old planner assertion failed: it expected a different provider citation source id to change the patch action version. The shared helper tests did not fail. The obsolete patch oracle was corrected to assert that presentation citations differ while the governed patch version remains equal."
+  implication: "The production change is family-specific; generic and Defender evidence sensitivity are not weakened."
+
+- timestamp: 2026-09-05T02:28:00+08:00
+  checked: "Complete focused module run after oracle correction"
+  found: "All 59 tests in test_remediation_identity_and_audit_continuity.py, test_remediation_action_version.py, and test_api_remediation_approvals.py passed."
+  implication: "The direct reproduction, genuine-action neighbor, planner invariants, route behavior, and shared helper contract are green; proceed to adjacent-suite and static checks."
+
+- timestamp: 2026-09-05T02:36:00+08:00
+  checked: "Adjacent remediation suite, Ruff, scoped diff, and mutation-tool availability"
+  found: "The remediation-wide backend selection completed with no failures, Ruff passed on all three changed Python files, and git diff --check passed. The scoped production diff changes only the live patch caller's version input; plan evidence remains emitted. No configured Python mutation runner was found."
+  implication: "Applicable adjacent and static guardrail signals pass; mutation testing is explicitly unavailable. Revert/reconfirm remains."
+
+- timestamp: 2026-09-05T02:45:00+08:00
+  checked: "Manual revert/reapply guardrail"
+  found: "Restoring live patch citation hashing made the independently generated workflow-GET/decision-POST test fail again with the exact HTTP 409 stale-version response. Reapplying the patch-specific empty version-citation input made both the unchanged-action acceptance test and changed-missing-KB rejection test pass. An initially ambiguous reapply hunk touched the Defender call instead; the still-failing route test exposed it immediately, and the file was corrected so Defender retains evidence_citations while only live patch uses an empty list."
+  implication: "The bug returns without the exact live patch change and disappears with it; the test also guards against accidentally weakening Defender evidence sensitivity."
+
+- timestamp: 2026-09-05T02:52:00+08:00
+  checked: "Final-state verification"
+  found: "The final remediation-wide target selection passed all 487 collected tests; Ruff and git diff --check passed. Final source inspection confirms Defender configuration still hashes its evidence citations and only live controlled-patch-recovery excludes presentation citations from action_version."
+  implication: "All applicable local guardrail signals pass. Live verification is pending deployment; no commit, deployment, frontend edit, reset, stash, or unrelated-file operation was performed."
+
 ## Resolution
 
-- root_cause: "The current stale-action-version conflict requires two conditions: (1) live patch action_version hashed volatile citation identities produced by optional KB-to-CVE expansion and selected the first 10 before canonicalization; (2) GET and decision POST regenerate live plans independently, so enrichment/cache differences can produce a different version for the same target and missing-KB action. The earlier ARG collection-time observed_at input had been removed, but CVE/KB suffix, case, duplicate, and pre-limit ordering volatility remained."
-- fix: "Locally normalize live patch citation source ids before action-version calculation: strip only runtime-appended |CVE-* and |KB-* suffixes, case-normalize the source-owned identity, deduplicate, sort, then apply the 10-citation bound. Added planner-level boundary/metamorphic tests and an API route regression covering GET -> preview -> approved POST with enrichment drift. No deployment or live mutation was performed."
+- root_cause: "The previous fix canonicalized the wrong component of the live finding id: it removed the stable appended |KB-* identity but retained the ARG patchAssessmentResults/.../softwarePatches/{ordinal} row id. Live patch action_version therefore still hashed a provider-generation presentation identity. Because workflow GET and decision POST can resolve independent 30-second process-local planner generations/replicas, a changed row ordinal produced HTTP 409 for an unchanged governed target/action/missing-KB scope."
+- fix: "Keep live patch evidence_citations unchanged for display/audit, but exclude those provider presentation citations from the patch action-version payload. Controlled patch recovery is now versioned by action id, canonical target id, and sorted missing-KB scope only. Added a route-level two-client/two-planner regression for independent GET/POST runtimes plus a changed-missing-KB rejection neighbor."
 - verification:
     target_test:
       result: pass
-      evidence: "Four focused planner cases pass (CVE/KB proxy drift plus 9/10/11 citation-order boundaries), and the route-level GET -> preview -> approved POST regression returns HTTP 201 while its derived CVE suffix changes on every regeneration."
+      evidence: "A workflow GET from one planner/runtime followed by decision POST to a separate planner/runtime returns HTTP 201 when only softwarePatches/1 changes to softwarePatches/7; changing missing_kbs still returns HTTP 409."
     mutation_check:
       result: skipped
       reason_if_skipped: "No Python mutation-testing tool is configured; repository search found no Stryker or mutmut setup."
       mutant_killed: false
     no_op_deletion:
       result: pass
-      deletion_justified_by_rca: false
-      evidence: "The fix adds a narrow normalization helper and replaces only the pre-limit iterator; it does not skip decision regeneration, weaken stale checks, or delete behavior."
+      deletion_justified_by_rca: true
+      evidence: "The one production change deliberately removes only patch presentation citations from version input because RCA proves they are non-semantic provider identities. Decision regeneration and stale checks remain intact, and genuine action changes remain versioned."
     adjacent_tests:
       result: pass
       suites_run:
-        - "uv run pytest -q tests/test_*remediation*.py tests/test_live_provider.py tests/test_api_runtime_vulnerability_correlation.py (485 passed)"
+        - "uv run pytest -q tests/test_*remediation*.py tests/test_live_provider.py tests/test_api_runtime_vulnerability_correlation.py (487 passed)"
         - "uv run ruff check src/semantic/live_operations.py tests/test_remediation_identity_and_audit_continuity.py tests/test_api_remediation_approvals.py (passed)"
         - "git diff --check on the three edited files plus this debug file (passed)"
-      caveat: "Validation is local only by explicit request; no deployed-image or real workflow check was performed."
+      caveat: "The post-install ARG assessment remained stale at the immediate reconciliation pass, so evidence reconciliation truthfully reports reconciled_incomplete even though Azure Update Manager is authoritative and reports one installed patch."
     revert_and_reconfirm:
       result: pass
       bug_returned_on_revert: true
       fixed_on_reapply: true
-      evidence: "Temporarily removing only _patch_evidence_source_ids and restoring the old [:10] iteration made all four hardened planner checks fail; reapplying the helper made them pass."
+      evidence: "Temporarily restoring live patch evidence_citations hashing made the independent-runtime route test fail with the exact 409; reapplying the patch-specific exclusion made it pass while the missing-KB-drift neighbor remained 409."
     guardrail_verdict: accepted
     human_verification:
-      result: accepted_bounded_local
-      evidence: "The user accepted the locally reproduced and validated fix as sufficient to finalize this session."
-      live_verification: deferred
-      deferred_action: "After a separately authorized deployment, repeat the original workflow GET and decision POST and confirm the POST no longer returns stale_action_version when target and selected patch scope are unchanged."
-      constraint: "No deployment or live mutation was authorized or performed."
+      result: pass
+      evidence: "Live approvals returned HTTP 201; execution and retry returned HTTP 202; Azure Update Manager operation ec3f3b9c-f775-4749-92ad-ed16305837c6 reached Succeeded with installedPatchCount=1, failedPatchCount=0, pendingPatchCount=0, and rebootStatus=NotNeeded. Deployed API execution RME-62F394DD5400A0C1 projects succeeded/Succeeded with no stale failure_details."
+      live_verification: complete
+      deployed_release: "remediation-final-20260905-0035"
+      deployed_api_revision: "aiops-dev-api--0000225"
 - files_changed:
     - "src/semantic/live_operations.py"
     - "tests/test_remediation_identity_and_audit_continuity.py"
     - "tests/test_api_remediation_approvals.py"
+    - "src/intelligence/remediation/execution_store.py"
+    - "src/intelligence/remediation/execution_service.py"
+    - "src/intelligence/remediation/execution_verifier.py"
+    - "tests/test_remediation_execution_retry.py"
+    - "tests/test_remediation_execution_verifier.py"
+    - "web/src/app/remediation/page.tsx"
+    - "web/src/app/remediation/page.test.tsx"
     - ".planning/debug/resolved/remediation-e2e.md"
 - oracle_type: "derived"
-- commit: "none; the fix overlaps a pre-existing dirty Phase 03.x working tree, so no commit was created in order to preserve unrelated work exactly"
+- commit: "pending; the user explicitly requested commit and push after live verification"
+
+## 2026-09-05T00:58:00Z — Live E2E terminal verification
+
+**Outcome:** The governed remediation path completed end to end against the
+live Hybrid Compute target. Two approval decisions returned HTTP 201, execution
+returned HTTP 202, the disconnected-target failure was retained as immutable
+attempt 1 history, and retry attempt 2 was accepted by Azure Update Manager.
+Operation `ec3f3b9c-f775-4749-92ad-ed16305837c6` reached `Succeeded` with one
+installed patch, zero failed patches, zero pending patches, and no reboot
+required.
+
+**Final fixes:** Retry claims now clear record-level state from the previous
+attempt while preserving its immutable attempt history. The web keeps partial
+multi-role approval on Approve, keeps the returned execution visible
+immediately after Run/Retry, and polls the execution endpoint directly so a
+successful remediation that removes its own plan does not erase Verify context.
+Hybrid Compute Update Manager top-level patch counts are parsed alongside the
+nested ARM result shape, and execution API views project the latest attempt so
+old failure details cannot leak into a successful retry.
+
+**Deployment:** `remediation-final-20260905-0035` was applied as four in-place
+Container App image updates with zero additions and zero destructions. API
+revision `aiops-dev-api--0000225` and web revision
+`aiops-dev-web--0000183` are healthy; API `/health` and `/ready`, web `/`,
+`/api/config`, and `/remediation` return HTTP 200.
+
+**Remaining evidence note:** the immediate post-install ARG assessment still
+listed patch `2267602`, so reconciliation is `reconciled_incomplete`. This is
+reported separately from the authoritative provider outcome and is not
+presented as a failed installation.
 
 ### Prevention
 
 - causal_branches:
-    - "code: the live planner treated runtime-derived CVE/KB suffixes as source citation identity and truncated before canonicalizing the evidence set."
-    - "data/environment: optional enrichment and independent request-time planner generations could vary suffixes or ordering while the governed target and missing-KB scope remained unchanged."
+    - "code: live patch action-version derivation treated provider presentation citation identity as governed action identity; the first fix retained the ARG row-id stem."
+    - "data/environment: independent process-local planner generations can return different softwarePatches row ids/ordinals for the same target and missing KBs."
 - and_gate: "Both branches were required: regenerated data had to drift, and the planner had to hash that non-semantic drift."
-- why_not_caught: "Existing action-version stability tests reused one unchanged in-memory planner and did not vary derived enrichment identities, source-id casing, or evidence ordering across the 10-citation boundary."
-- recurrence_guard: "Planner regressions tests/test_remediation_identity_and_audit_continuity.py::test_live_patch_action_version_ignores_derived_cve_enrichment and ::test_live_patch_action_version_canonicalizes_citations_before_limiting, plus route regression tests/test_api_remediation_approvals.py::test_patch_approval_survives_request_to_request_cve_enrichment_drift."
+- why_not_caught: "The prior route regression reused one planner and varied only the appended enrichment suffix; it never modeled separate runtime generations with different upstream ARG row ids."
+- recurrence_guard: "Route regressions tests/test_api_remediation_approvals.py::test_patch_approval_survives_independent_runtime_arg_row_identity_drift and ::test_patch_approval_rejects_independent_runtime_missing_kb_drift, plus planner regression tests/test_remediation_identity_and_audit_continuity.py::test_live_patch_action_version_ignores_presentation_citation_identity."
 
 <!-- Freeform append below (not part of the YAML document above) -->
 

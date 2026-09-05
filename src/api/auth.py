@@ -88,12 +88,19 @@ class HeaderPrincipalAuthenticator:
         *,
         subject_header: str = "x-ms-client-principal-name",
         roles_header: str = "x-ms-client-principal-roles",
+        org_roles_header: str = "x-aiops-org-roles",
         assertion_header: str = "x-aiops-gateway-assertion",
         assertion_value: str = "",
         grants_resolver: Callable[[str, list[str]], tuple[Grant, ...]] | None = None,
     ) -> None:
         self.subject_header = subject_header.casefold()
         self.roles_header = roles_header.casefold()
+        # Distinct from ``roles_header`` -- carries literal organizational
+        # role claims (Phase 03.5 CR-05 fix), never RBAC action capacities.
+        # Asserted by the same trusted upstream gateway, behind the same
+        # validated assertion, following the same comma-separated-header
+        # convention already used for ``roles_header``.
+        self.org_roles_header = org_roles_header.casefold()
         self.assertion_header = assertion_header.casefold()
         self.assertion_value = str(assertion_value or "").strip()
         # Maps an authenticated gateway subject to concrete, explicitly
@@ -121,6 +128,11 @@ class HeaderPrincipalAuthenticator:
             for role in str(folded.get(self.roles_header) or "").split(",")
             if role.strip()
         ]
+        org_roles = tuple(
+            role.strip()
+            for role in str(folded.get(self.org_roles_header) or "").split(",")
+            if role.strip()
+        )
         if self.grants_resolver is None:
             raise ApiError(
                 ErrorCode.UNAUTHENTICATED,
@@ -132,7 +144,7 @@ class HeaderPrincipalAuthenticator:
                 ErrorCode.UNAUTHENTICATED,
                 f"Principal {subject!r} was asserted without any usable role",
             )
-        return Principal(subject=subject, grants=grants)
+        return Principal(subject=subject, grants=grants, org_roles=org_roles)
 
 
 class EntraJwtAuthenticator:
@@ -199,6 +211,19 @@ class EntraJwtAuthenticator:
             for role in claims.get("roles") or ()
             if str(role).strip()
         ]
+        # Literal organizational role claims (Phase 03.5 CR-05 fix),
+        # distinct from the RBAC app-role ``roles`` claim above -- an
+        # optional custom claim ("org_roles"), a string list, that a
+        # tenant's Entra app registration/claims-mapping policy may assert
+        # separately from the coarse reader/operator/approver/admin app
+        # roles. Absent for every tenant that has not configured one --
+        # never an error, exactly like ``grants_resolver``'s own
+        # documented interim behavior for unconfigured claims.
+        org_roles = tuple(
+            str(role).strip()
+            for role in claims.get("org_roles") or ()
+            if str(role).strip()
+        )
         grants = tuple(self.grants_resolver(subject, roles))
         if not subject or not grants:
             # Deliberately no token contents logged. subject/roles are the
@@ -217,7 +242,7 @@ class EntraJwtAuthenticator:
                 ErrorCode.UNAUTHENTICATED,
                 "Entra principal has no configured AIOps grants",
             )
-        return Principal(subject=subject, grants=grants)
+        return Principal(subject=subject, grants=grants, org_roles=org_roles)
 
 
 class GatewayOrDirectAuthenticator:

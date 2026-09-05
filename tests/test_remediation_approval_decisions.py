@@ -10,6 +10,7 @@ from intelligence.remediation.approval_decisions import (
     build_execution_snapshot,
     execution_snapshot_hash,
 )
+from intelligence.remediation.approval_engine import ApprovalEngine
 from operations.patching.models import AvailablePatch, PatchTarget
 
 TARGET_ID = (
@@ -161,3 +162,156 @@ def test_non_approved_decision_never_persists_an_execution_snapshot() -> None:
     )
 
     assert record["execution_snapshot"] is None
+
+
+def test_append_persists_approver_roles_and_policy_version_with_safe_defaults() -> None:
+    store = RemediationDecisionStore()
+
+    record = store.append(
+        plan=_plan(),
+        decision="approved",
+        approver="approver@example.com",
+        reason="Approved",
+        scope={},
+        action_version="action-v1",
+        approver_roles=["Security Response Owner", "security response owner", " "],
+        approval_policy_version="policy-v1",
+    )
+
+    assert record["approver_roles"] == ["security response owner"]
+    assert record["approval_policy_version"] == "policy-v1"
+    assert record["self_approved"] is False
+    assert record["self_approval_policy_id"] == ""
+
+
+def test_append_defaults_approver_roles_and_policy_version_when_omitted() -> None:
+    store = RemediationDecisionStore()
+
+    record = store.append(
+        plan=_plan(),
+        decision="approved",
+        approver="approver@example.com",
+        reason="Approved",
+        scope={},
+        action_version="action-v1",
+    )
+
+    assert record["approver_roles"] == []
+    assert record["approval_policy_version"] == ""
+    assert record["self_approved"] is False
+    assert record["self_approval_policy_id"] == ""
+
+
+def test_record_self_approval_marks_exactly_one_decision_and_is_idempotent() -> None:
+    store = RemediationDecisionStore()
+    record = store.append(
+        plan=_plan(),
+        decision="approved",
+        approver="approver@example.com",
+        reason="Approved",
+        scope={},
+        action_version="action-v1",
+    )
+    other = store.append(
+        plan=_plan(),
+        decision="approved",
+        approver="other@example.com",
+        reason="Approved",
+        scope={},
+        action_version="action-v1",
+    )
+
+    updated = store.record_self_approval(record["decision_id"], policy_id="demo-self-approval")
+
+    assert updated["self_approved"] is True
+    assert updated["self_approval_policy_id"] == "demo-self-approval"
+
+    rows = store.list("RMP-0001")
+    marked = next(row for row in rows if row["decision_id"] == record["decision_id"])
+    unmarked = next(row for row in rows if row["decision_id"] == other["decision_id"])
+    assert marked["self_approved"] is True
+    assert unmarked["self_approved"] is False
+
+    # Idempotent: calling twice with the same policy_id is a no-op.
+    again = store.record_self_approval(record["decision_id"], policy_id="demo-self-approval")
+    assert again["self_approved"] is True
+    assert again["self_approval_policy_id"] == "demo-self-approval"
+
+
+def test_record_self_approval_raises_on_unknown_decision_id() -> None:
+    store = RemediationDecisionStore()
+
+    with pytest.raises(ValueError):
+        store.record_self_approval("RMD-UNKNOWN", policy_id="demo-self-approval")
+
+
+def test_record_self_approval_concurrent_callers_converge_with_no_lost_update() -> None:
+    store = RemediationDecisionStore()
+    record = store.append(
+        plan=_plan(),
+        decision="approved",
+        approver="approver@example.com",
+        reason="Approved",
+        scope={},
+        action_version="action-v1",
+    )
+
+    # Simulate two concurrent callers each performing their own read/mutate/
+    # write cycle -- the CAS retry loop must converge without a lost update.
+    first = store.record_self_approval(record["decision_id"], policy_id="demo-self-approval")
+    second = store.record_self_approval(record["decision_id"], policy_id="demo-self-approval")
+
+    assert first["self_approved"] is True
+    assert second["self_approved"] is True
+    assert len(store.list("RMP-0001")) == 1
+
+
+def test_list_backfills_legacy_document_with_no_new_keys() -> None:
+    store = RemediationDecisionStore()
+    # Hand-write a legacy (schema 1.0.0) decision document with none of the
+    # four Phase 03.5 fields present at all.
+    store._memory = {
+        "schema_version": "1.0.0",
+        "revision": 1,
+        "decisions": [
+            {
+                "decision_id": "RMD-LEGACY",
+                "plan_id": "RMP-0001",
+                "decision": "approved",
+                "approver": "legacy@example.com",
+                "decided_at": "2020-01-01T00:00:00+00:00",
+                "reason": "Legacy",
+                "scope": {},
+                "action_version": "action-v0",
+                "expires_at": "",
+                "revalidation": {"status": "passed", "checks": []},
+                "execution_authorized": False,
+                "execution_performed": False,
+                "read_only": True,
+                "execution_snapshot": None,
+            }
+        ],
+        "updated_at": "2020-01-01T00:00:00+00:00",
+    }
+
+    rows = store.list("RMP-0001")
+
+    assert len(rows) == 1
+    assert rows[0]["approver_roles"] == []
+    assert rows[0]["approval_policy_version"] == ""
+    assert rows[0]["self_approved"] is False
+    assert rows[0]["self_approval_policy_id"] == ""
+
+
+
+def _policy(policy_id: str, roles: list[str]) -> dict:
+    return {"policy_id": policy_id, "roles": roles, "conditions": {}}
+
+
+def test_policy_version_is_order_independent_and_change_sensitive() -> None:
+    first = ApprovalEngine([_policy("p1", ["Change Manager"]), _policy("p2", ["Security Response Owner"])])
+    reordered = ApprovalEngine([_policy("p2", ["Security Response Owner"]), _policy("p1", ["Change Manager"])])
+    changed = ApprovalEngine([_policy("p1", ["Change Manager"]), _policy("p2", ["Different Role"])])
+
+    assert first.policy_version == reordered.policy_version
+    assert first.policy_version != changed.policy_version

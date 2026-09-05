@@ -736,7 +736,11 @@ class LiveRemediationPlanner:
             action_id=action_id,
             target_id=canonical_resource_key(target_id),
             scope=sorted(missing_kbs),
-            evidence_citations=evidence_citations,
+            # ARG softwarePatches row ids are presentation/audit evidence, not
+            # governed action identity: their ordinal/path can change across
+            # equivalent provider generations. Patch execution semantics are
+            # fully captured by action + canonical target + missing-KB scope.
+            evidence_citations=[],
         )
         approval_requirements = self._patch_approvals.requirements(
             {

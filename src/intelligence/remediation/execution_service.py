@@ -11,11 +11,16 @@ from __future__ import annotations
 import copy
 import hmac
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from api.scope import scope_attributes
 from intelligence.remediation.action_catalog import EXECUTABLE_ACTION_IDS
 from intelligence.remediation.approval_decisions import execution_snapshot_hash
+from intelligence.remediation.approval_gate import (
+    is_self_approval,
+    requirement_satisfaction,
+)
 from operations.defender_configuration import (
     DEFENDER_CONFIGURATION_ACTION_IDS,
     DefenderConfigurationUnavailable,
@@ -26,7 +31,13 @@ from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.models import PatchTarget
 from operations.patching.service import PatchingService, PatchValidationError
 
-from .execution_store import ExecutionClaimConflict
+from .execution_store import (
+    ExecutionClaimConflict,
+    _is_patch_evidence_candidate,
+    execution_scope_attributes,
+    is_submission_ambiguous,
+    submitted_attempt_count,
+)
 from .execution_verifier import ExecutionVerificationUnavailable, ExecutionVerifier
 
 # Patch recovery and the small code-authored Defender configuration catalog
@@ -36,6 +47,11 @@ CONTROLLED_PATCH_RECOVERY = "controlled-patch-recovery"
 # Bounded retry ceiling (T-03-11): a failing target cannot be retried
 # indefinitely against Azure.
 MAX_EXECUTION_ATTEMPTS = 3
+
+# Recommendation 3 (Deadline and Recovery): every provider-submitted
+# execution reaches a terminal outcome by this deadline, never staying
+# "running"/"submission_ambiguous" indefinitely. 30 minutes.
+VERIFICATION_DEADLINE_SECONDS = 1800.0
 
 
 class RemediationExecutionError(RuntimeError):
@@ -112,6 +128,10 @@ class RemediationExecutionService:
         defender_configuration_adapter: Any | None = None,
         execution_store: Any | None = None,
         execution_verifier: ExecutionVerifier | None = None,
+        verification_deadline_seconds: float = VERIFICATION_DEADLINE_SECONDS,
+        target_evidence_refresher: Callable[[str, str], dict[str, Any] | None] | None = None,
+        allow_self_approval: Callable[[], bool] | bool = False,
+        policy_version_resolver: Callable[[], str] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._plans = plan_repository
@@ -122,7 +142,54 @@ class RemediationExecutionService:
         )
         self._store = execution_store
         self._verifier = execution_verifier
+        self._verification_deadline_seconds = verification_deadline_seconds
+        self._evidence_refresher = target_evidence_refresher
+        # Cross-family self-approval exception (Phase 03.5, D-02): resolved
+        # per call, not captured at construction, mirroring
+        # PatchingService's identical pattern. Defaults closed so a
+        # service built without the policy fails closed. This is the
+        # shared gate's OWN policy -- independent of
+        # PatchingService._allow_self_approval, which remains as defense
+        # in depth for the patch family specifically (its own
+        # pre-existing, non-raising, budget-neutral refusal path inside
+        # PatchingService.trigger is untouched).
+        self._allow_self_approval: Callable[[], bool] = (
+            allow_self_approval
+            if callable(allow_self_approval)
+            else (lambda value=allow_self_approval: bool(value))
+        )
+        # WR-02 fix: resolved per call so the gate compares each decision
+        # against the plan's *live* ApprovalEngine.policy_version -- the
+        # same value ``approval_gate.policy_version_for(planner)`` projects
+        # at the read-side routes -- rather than reusing the very decision
+        # being evaluated's own recorded value (a self-referential
+        # comparison that could never detect an actual policy change).
+        # Defaults to a constant "" resolver when not wired, matching the
+        # documented interim behavior for callers (e.g. the verification
+        # coordinator) that have no live planner to consult at all.
+        self._policy_version_resolver: Callable[[], str] = policy_version_resolver or (
+            lambda: ""
+        )
         self._now = now
+
+    def _claim_schedule_fields(self) -> dict[str, Any]:
+        """Scheduling fields seeded at every ``running``/``retrying`` claim.
+
+        CR-01: computed once and passed into the *same* CAS write that
+        claims ``"running"``/``"retrying"``, never only into a later,
+        separate write -- so no crash window exists between a claim and the
+        record becoming durably deadline-bound and due-for-recovery.
+        ``_submit_and_record``'s own scheduling writes then simply
+        re-confirm the identical values (idempotent), rather than being the
+        only place they are ever established.
+        """
+        return {
+            "verification_deadline_at": (
+                self._now() + timedelta(seconds=self._verification_deadline_seconds)
+            ).isoformat(),
+            "next_verification_at": self._now().isoformat(),
+            "verification_attempts": 0,
+        }
 
     def execute(self, plan_id: str, *, requested_by: str) -> dict[str, Any]:
         """Execute ``plan_id`` if -- and only if -- it is currently approved.
@@ -132,6 +199,12 @@ class RemediationExecutionService:
         :class:`RemediationExecutionError` for every rejection case listed
         below, before any patching-service call or Azure request.
         """
+        if self._plans is None:
+            raise RemediationExecutionError(
+                f"No remediation plan repository is configured; cannot execute {plan_id!r}",
+                reason="plan_repository_unavailable",
+                details={"plan_id": plan_id},
+            )
         plan = self._plans.get(plan_id)
         if plan is None:
             raise RemediationExecutionError(
@@ -140,7 +213,9 @@ class RemediationExecutionService:
                 details={"plan_id": plan_id},
             )
 
-        decision = self._check_approval_gate(plan)
+        decision, self_approved_decision_ids = self._check_approval_gate(
+            plan, requested_by=requested_by
+        )
         snapshot = self._validated_execution_snapshot(plan, decision)
 
         execution_id = None
@@ -154,6 +229,10 @@ class RemediationExecutionService:
                 approved_by=str(decision.get("approver") or ""),
                 execution_snapshot=snapshot,
                 rollback_guidance=rollback_guidance,
+                scope_attributes={
+                    **scope_attributes(plan.get("resource") or {}),
+                    **scope_attributes(plan),
+                },
                 now=self._now(),
             )
             execution_id = record["execution_id"]
@@ -166,8 +245,16 @@ class RemediationExecutionService:
                 status="running",
                 actor=requested_by,
                 now=self._now(),
+                **self._claim_schedule_fields(),
             )
 
+        # WR-03 fix: only now, with the execution durably claimed (or, when
+        # no store is configured, immediately before dispatch) is
+        # self-approval consumption recorded -- never earlier, when a later
+        # step (the snapshot validation above, the store claim itself)
+        # could still have raised and left a "self-approval was used"
+        # audit fact for an execution that never actually proceeded.
+        self._finalize_self_approvals(self_approved_decision_ids)
         return self._submit_and_record(
             plan=plan,
             decision=decision,
@@ -175,12 +262,33 @@ class RemediationExecutionService:
             execution_id=execution_id,
         )
 
-    def _check_approval_gate(self, plan: dict[str, Any]) -> dict[str, Any]:
-        """Run the four approval-gate checks against ``plan``'s *current* state.
+    def _check_approval_gate(
+        self, plan: dict[str, Any], *, requested_by: str = ""
+    ) -> tuple[dict[str, Any], frozenset[str]]:
+        """Run the approval-gate checks against ``plan``'s *current* state.
 
         Shared verbatim by :meth:`execute` and :meth:`retry` so the two
         code paths cannot drift apart (T-03-10): action_id allowlist,
-        approval status, action_version currency, and expiry.
+        approval status, action_version currency, expiry, per-role
+        ``approval_requirements`` satisfaction (Phase 03.5, D-01), and
+        cross-family requester-vs-approver separation of duties (D-02).
+
+        ``requested_by`` is optional and empty for :meth:`plan_eligibility`
+        (a pure "can this plan run at all" projection, identity-blind by
+        design per 03.5-UI-SPEC.md's Authorization Contract) -- an empty
+        string can never equal a real approver identity
+        (:func:`is_self_approval` treats empty as never-equal), so passing
+        it is a safe no-op for that caller.
+
+        Returns ``(decision, self_approved_decision_ids)``: ``decision`` is
+        the plan's overall-latest decision (used for the not_approved/
+        stale_approval/approval_expired checks above, and by callers for
+        ``approved_by``/snapshot validation); ``self_approved_decision_ids``
+        is the set of decision ids that were found to be a self-approval of
+        a *satisfied requirement row* during this call and are pending a
+        durable ``record_self_approval`` write (CR-02/WR-03 fix) -- deferred
+        to :meth:`_finalize_self_approvals`, called only once the caller
+        has confirmed execution is actually going to proceed, never here.
         """
         plan_id = str(plan.get("plan_id") or "")
         action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
@@ -217,7 +325,120 @@ class RemediationExecutionService:
             )
         validate_business_eligibility(plan)
         self._validated_execution_snapshot(plan, decision)
-        return decision
+
+        # Per-role approval_requirements satisfaction (Phase 03.5, D-01):
+        # the single "some decision exists" check above is not sufficient
+        # for a plan requiring multiple distinct roles -- every row must be
+        # independently satisfied (CR-04, REVIEW recommendation 4).
+        decisions_for_plan = (
+            self._plans.decisions.list(plan_id) if hasattr(self._plans, "decisions") else []
+        )
+        requirements = plan.get("approval_requirements") or []
+        # NOTE (documented interim simplification, Plan 03.5-05): a freshly
+        # rebuilt preview snapshot_hash is not directly reachable from
+        # RemediationExecutionService without new plumbing beyond this
+        # plan's budget. current_snapshot_hash is left empty (never
+        # triggers stale_evidence_snapshot here -- that comparison is
+        # covered by _validated_execution_snapshot's own hmac check above).
+        # policy_version, however, IS independently sourced (WR-02 fix) via
+        # self._policy_version_resolver(), the same live
+        # ApprovalEngine.policy_version the read-side routes project --
+        # never the decision's own recorded value, which would make the
+        # comparison self-referentially always-true for the very decision
+        # matching each row.
+        satisfaction = requirement_satisfaction(
+            requirements,
+            decisions_for_plan,
+            current_action_version=current_action_version,
+            current_snapshot_hash="",
+            policy_version=self._policy_version_resolver(),
+            now=self._now(),
+        )
+        unmet = [row for row in satisfaction if not row.get("satisfied")]
+        if unmet:
+            raise RemediationExecutionError(
+                "This plan's approval requirements are not fully satisfied",
+                reason="approval_requirements_unmet",
+                details={
+                    "plan_id": plan_id,
+                    "unmet": [
+                        {
+                            "policy_id": row.get("policy_id"),
+                            "role": row.get("role"),
+                            "stage": row.get("stage"),
+                            "unmet_reason": row.get("unmet_reason"),
+                        }
+                        for row in unmet
+                    ],
+                },
+            )
+
+        # Cross-family requester-vs-approver separation of duties (Phase
+        # 03.5, D-02): previously enforced only against the plan's single
+        # overall-latest decision, which missed a requester who
+        # self-approved one *earlier* required row while a different,
+        # legitimate approver later signed another row (CR-02). Checked
+        # here against EVERY candidate decision that matters: the plan's
+        # overall-latest ``decision`` (the baseline the pre-03.5-05 gate
+        # always checked, and still the only candidate for a plan with zero
+        # distinct ``approval_requirements`` rows, e.g. a family whose
+        # default policy carries no rows at all) *and* every required
+        # row's own satisfying decision (closing CR-02's per-row gap for
+        # plans that DO carry rows). Deduplicated by decision_id so a
+        # decision satisfying several rows -- or matching both the overall
+        # latest and a row -- is only ever flagged/finalized once. Runs
+        # identically for both families, before either adapter is ever
+        # reached.
+        self_approved_decision_ids: set[str] = set()
+        if requested_by:
+            candidates: list[tuple[Any, Any]] = [
+                (decision.get("decision_id"), decision.get("approver"))
+            ]
+            candidates.extend(
+                (row.get("decision_id"), row.get("approver"))
+                for row in satisfaction
+                if row.get("satisfied")
+            )
+            seen_decision_ids: set[str] = set()
+            for decision_id, approver in candidates:
+                key = str(decision_id) if decision_id else None
+                if key is not None:
+                    if key in seen_decision_ids:
+                        continue
+                    seen_decision_ids.add(key)
+                if approver is None:
+                    continue
+                if is_self_approval(requested_by, approver):
+                    if not self._allow_self_approval():
+                        raise RemediationExecutionError(
+                            "The approver must be someone other than the requester",
+                            reason="self_approval_not_permitted",
+                            details={"plan_id": plan_id},
+                        )
+                    if decision_id:
+                        self_approved_decision_ids.add(str(decision_id))
+        return decision, frozenset(self_approved_decision_ids)
+
+    def _finalize_self_approvals(self, decision_ids: frozenset[str]) -> None:
+        """Durably record self-approval only once execution is guaranteed to proceed.
+
+        Deferred from :meth:`_check_approval_gate` itself (WR-03 fix): that
+        method previously called ``record_self_approval`` immediately, which
+        could durably, irreversibly mark a decision ``self_approved: true``
+        even when a later step in the same request (execution snapshot
+        mismatch, target no longer found, store conflict) meant the
+        execution never actually proceeded. Callers invoke this only after
+        their own store claim (or, when no store is configured, immediately
+        before dispatch) succeeds -- ``record_self_approval`` is itself
+        idempotent, so calling it once per decision id per successful claim
+        is always safe.
+        """
+        if not decision_ids or not hasattr(self._plans, "decisions"):
+            return
+        for decision_id in decision_ids:
+            self._plans.decisions.record_self_approval(
+                decision_id, policy_id="demo-self-approval"
+            )
 
     def build_execution_snapshot(
         self, plan: dict[str, Any], *, scope: Any = None
@@ -231,6 +452,17 @@ class RemediationExecutionService:
             configuration_adapter=self._defender_configuration,
             scope=scope,
         )
+
+    def allow_self_approval(self) -> bool:
+        """Public read of the gate's current self-approval policy.
+
+        Resolved per call, matching ``_allow_self_approval``'s own
+        callable-vs-bool normalization -- used by the read-side workflow
+        route (Phase 03.5, D-05) to render the demo self-approval
+        disclosure banner only when this policy is actually enabled,
+        never a client-side guess.
+        """
+        return bool(self._allow_self_approval())
 
     def _submit_and_record(
         self,
@@ -248,7 +480,10 @@ class RemediationExecutionService:
             # Target and allowlist revalidation happens after the durable
             # attempt claim. Persist that refusal as a terminal attempt rather
             # than leaving an execution permanently "running" when inventory
-            # changes between approval and submission.
+            # changes between approval and submission. Proven pre-submission
+            # by construction: this fires before any adapter is ever called,
+            # so it must never consume the Azure submission budget
+            # (Recommendation 2, Submission Accounting decision).
             if execution_id is None:
                 raise
             current = self._store.get(execution_id)
@@ -263,6 +498,8 @@ class RemediationExecutionService:
                 message=str(exc),
                 failure_details=str(exc),
                 outcome="failed",
+                provider_submitted=False,
+                failure_class="target_precondition",
                 now=self._now(),
             )
             return self.execution_view(self._store.get(execution_id))
@@ -289,8 +526,39 @@ class RemediationExecutionService:
             PatchExecutionUnavailable,
         ) as exc:
             message = str(exc)
+            # PatchValidationError only ever fires inside
+            # PatchingService.trigger before self._adapter.submit() is
+            # reached (per its own docstring) -- always pre-submission.
+            # DefenderConfigurationUnavailable/PatchExecutionUnavailable
+            # carry their own classification from Plan 03.3-01's adapter
+            # boundary; read it directly off the caught exception, falling
+            # back to the same fail-closed default the adapters themselves
+            # use if a future adapter forgets to classify.
+            if isinstance(exc, PatchValidationError):
+                provider_submitted = False
+                failure_class = "internal_validation"
+            else:
+                provider_submitted = bool(getattr(exc, "provider_submitted", True))
+                failure_class = str(
+                    getattr(exc, "failure_class", "") or "submission_ambiguous"
+                )
             if execution_id is not None:
                 current = self._store.get(execution_id)
+                schedule_fields: dict[str, Any] = {}
+                if failure_class == "submission_ambiguous":
+                    # Only an ambiguous submission needs reconciliation
+                    # scheduling -- a plain provider_rejected/
+                    # provider_authorization/target_precondition/
+                    # internal_validation failure has nothing left to
+                    # reconcile, so it leaves the store's own defaults.
+                    schedule_fields = {
+                        "verification_deadline_at": (
+                            self._now()
+                            + timedelta(seconds=self._verification_deadline_seconds)
+                        ).isoformat(),
+                        "next_verification_at": self._now().isoformat(),
+                        "verification_attempts": 0,
+                    }
                 self._store.transition(
                     execution_id,
                     expected_revision=int(current.get("revision") or 0),
@@ -300,7 +568,10 @@ class RemediationExecutionService:
                     message=message,
                     failure_details=message,
                     outcome="failed",
+                    provider_submitted=provider_submitted,
+                    failure_class=failure_class,
                     now=self._now(),
+                    **schedule_fields,
                 )
             if execution_id is not None:
                 return self.execution_view(self._store.get(execution_id))
@@ -332,6 +603,15 @@ class RemediationExecutionService:
                 actor=requested_by,
                 provider_job_id=run.provider_job_id,
                 message=message,
+                # A successful submission unambiguously reached the
+                # provider.
+                provider_submitted=True,
+                failure_class="",
+                verification_deadline_at=(
+                    self._now() + timedelta(seconds=self._verification_deadline_seconds)
+                ).isoformat(),
+                next_verification_at=self._now().isoformat(),
+                verification_attempts=0,
                 now=self._now(),
             )
             return self.execution_view(self._store.get(execution_id))
@@ -374,8 +654,31 @@ class RemediationExecutionService:
                 reason="execution_not_retryable",
                 details={"execution_id": execution_id, "status": status},
             )
+        if is_submission_ambiguous(record):
+            # The last attempt's transport failed after the mutating call may
+            # already have crossed the provider boundary -- it may still be
+            # running against Azure. Firing a second concurrent submission
+            # would risk a genuine double-mutation (e.g. two concurrent patch
+            # installs/reboots). Until the ambiguity is reconciled (Phase
+            # 03.4's verification worker) or the operator explicitly
+            # supersedes this execution (which refuses the same condition,
+            # forcing a deliberate decision), retry must fail closed. This
+            # mirrors `_supersede_eligibility`'s identical guard so the two
+            # write paths can never disagree (CR-01).
+            raise RemediationExecutionError(
+                "This execution's last attempt may still be running against the "
+                "provider; retry is refused until it is reconciled or superseded",
+                reason="submission_ambiguous",
+                details={"execution_id": execution_id},
+            )
 
         plan_id = str(record.get("plan_id") or "")
+        if self._plans is None:
+            raise RemediationExecutionError(
+                f"No remediation plan repository is configured; cannot retry {plan_id!r}",
+                reason="plan_repository_unavailable",
+                details={"plan_id": plan_id},
+            )
         plan = self._plans.get(plan_id)
         if plan is None:
             raise RemediationExecutionError(
@@ -387,7 +690,9 @@ class RemediationExecutionService:
         # Revalidate the plan's *current* approval/target state -- it may
         # have changed since the original attempt even though this
         # execution was itself once approved.
-        decision = self._check_approval_gate(plan)
+        decision, self_approved_decision_ids = self._check_approval_gate(
+            plan, requested_by=str(record.get("requested_by") or "")
+        )
         approved_snapshot = self._validated_execution_snapshot(plan, decision)
         immutable_snapshot = record.get("execution_snapshot") or {}
         if (
@@ -403,12 +708,14 @@ class RemediationExecutionService:
         immutable_decision["execution_snapshot"] = immutable_snapshot
 
         try:
+            schedule_fields = self._claim_schedule_fields()
             claimed = self._store.claim_retry(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 actor=str(record.get("requested_by") or ""),
                 max_attempts=MAX_EXECUTION_ATTEMPTS,
                 now=self._now(),
+                **schedule_fields,
             )
             self._store.transition(
                 execution_id,
@@ -416,6 +723,127 @@ class RemediationExecutionService:
                 expected_status="retrying",
                 status="running",
                 actor=str(record.get("requested_by") or ""),
+                now=self._now(),
+                **schedule_fields,
+            )
+        except ExecutionClaimConflict as exc:
+            raise RemediationExecutionError(
+                "Another lifecycle operation already claimed this execution",
+                reason=exc.reason,
+                details={
+                    "execution_id": execution_id,
+                    "status": exc.record.get("status"),
+                    "revision": exc.record.get("revision"),
+                },
+            ) from exc
+
+        # WR-03 fix: see execute()'s identical placement -- only once the
+        # retry claim has durably succeeded is self-approval consumption
+        # recorded.
+        self._finalize_self_approvals(self_approved_decision_ids)
+        return self._submit_and_record(
+            plan=plan,
+            decision=immutable_decision,
+            requested_by=str(record.get("requested_by") or ""),
+            execution_id=execution_id,
+        )
+
+    def supersede(
+        self, execution_id: str, *, requested_by: str, reason: str
+    ) -> dict[str, Any]:
+        """Close out an exhausted (but non-ambiguous) execution with a new one.
+
+        Never mutates or deletes the old execution's audit trail (only its
+        ``superseded_by``/``superseded_reason`` fields). Re-runs the approval
+        gate fresh against the *current* plan state -- never reusing the old
+        execution's already-approved snapshot -- so a plan whose approval was
+        revoked cannot be superseded at all. Target/allowlist eligibility is
+        revalidated fresh too, at the same single resolution point
+        ``execute()``/``retry()`` use (inside ``_submit_and_record``): if the
+        target has since drifted, the new execution is still minted and
+        linked (``supersedes``), but its first attempt is recorded as a
+        pre-submission ``target_precondition`` failure rather than ever
+        reaching the adapter -- consistent with how ``execute()``/``retry()``
+        themselves handle the identical drift (T-03.3-05).
+        """
+        if self._store is None:
+            raise RemediationExecutionError(
+                "No execution store is configured; nothing to supersede",
+                reason="store_not_configured",
+                details={"execution_id": execution_id},
+            )
+        record = self._store.get(execution_id)
+        if record is None:
+            raise RemediationExecutionError(
+                f"Execution {execution_id!r} was not found",
+                reason="execution_not_found",
+                details={"execution_id": execution_id},
+            )
+        if not str(reason or "").strip():
+            raise RemediationExecutionError(
+                "A non-empty reason is required to supersede an execution",
+                reason="supersede_reason_required",
+                details={"execution_id": execution_id},
+            )
+        ineligibility = _supersede_eligibility(record)
+        if ineligibility:
+            raise RemediationExecutionError(
+                "This execution is not eligible for supersession",
+                reason=ineligibility,
+                details={"execution_id": execution_id, "status": record.get("status")},
+            )
+
+        plan_id = str(record.get("plan_id") or "")
+        if self._plans is None:
+            raise RemediationExecutionError(
+                f"No remediation plan repository is configured; cannot supersede {plan_id!r}",
+                reason="plan_repository_unavailable",
+                details={"plan_id": plan_id},
+            )
+        plan = self._plans.get(plan_id)
+        if plan is None:
+            raise RemediationExecutionError(
+                f"Remediation plan {plan_id!r} was not found",
+                reason="plan_not_found",
+                details={"plan_id": plan_id},
+            )
+
+        # Fresh revalidation -- the same checks execute()/retry() use, never
+        # the old execution's already-approved snapshot forwarded as-is.
+        # Target/allowlist resolution itself is intentionally left to
+        # `_submit_and_record`'s own `_resolve_target` call below (the same
+        # single resolution point `execute()`/`retry()` use) rather than
+        # duplicated here: a second, earlier call read the identical
+        # `(plan, decision)` pair with no intervening store mutation, so it
+        # could never disagree with the later one, but it was also pure
+        # wasted work with a latent trap if `_resolve_target` ever gains a
+        # side effect (WR-02). If resolution now fails, `_submit_and_record`
+        # already handles it the same way execute()/retry() do: it persists
+        # a pre-submission `target_precondition` failure on the newly minted
+        # execution without consuming submission budget -- it does not
+        # silently widen what was approved.
+        decision, self_approved_decision_ids = self._check_approval_gate(
+            plan, requested_by=requested_by
+        )
+        approved_snapshot = self._validated_execution_snapshot(plan, decision)
+
+        rollback_guidance = list(
+            (plan.get("rollback_plan") or {}).get("rollback_actions") or []
+        )
+        try:
+            new_record, _old_record = self._store.create_superseding(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                plan_id=plan_id,
+                requested_by=requested_by,
+                approved_by=str(decision.get("approver") or ""),
+                execution_snapshot=approved_snapshot,
+                rollback_guidance=rollback_guidance,
+                scope_attributes={
+                    **scope_attributes(plan.get("resource") or {}),
+                    **scope_attributes(plan),
+                },
+                reason=reason,
                 now=self._now(),
             )
         except ExecutionClaimConflict as exc:
@@ -429,11 +857,26 @@ class RemediationExecutionService:
                 },
             ) from exc
 
+        new_execution_id = new_record["execution_id"]
+        self._store.transition(
+            new_execution_id,
+            expected_revision=int(new_record.get("revision") or 0),
+            expected_status="queued",
+            status="running",
+            actor=requested_by,
+            now=self._now(),
+            **self._claim_schedule_fields(),
+        )
+
+        # WR-03 fix: see execute()'s identical placement -- only once the
+        # superseding execution has durably claimed "running" is
+        # self-approval consumption recorded.
+        self._finalize_self_approvals(self_approved_decision_ids)
         return self._submit_and_record(
             plan=plan,
-            decision=immutable_decision,
-            requested_by=str(record.get("requested_by") or ""),
-            execution_id=execution_id,
+            decision=decision,
+            requested_by=requested_by,
+            execution_id=new_execution_id,
         )
 
     def get_execution(self, execution_id: str) -> dict[str, Any] | None:
@@ -452,16 +895,57 @@ class RemediationExecutionService:
             for record in self._store.list_for_plan(plan_id)
         ]
 
+    def orphaned_executions(self) -> list[dict[str, Any]]:
+        """Diagnostics: executions with no remaining way to reauthorize them.
+
+        A record is orphaned only when *both* its originating plan is
+        unresolvable (no plan repository at all, or the plan_id no longer
+        resolves against the current one) *and* it has no derivable scope
+        attributes of its own (D-02/D-04) -- i.e. there is no remaining way
+        to reauthorize or reconcile the record against a live plan. This is
+        read-only: it performs no migration and rewrites nothing (D-04).
+        """
+        if self._store is None:
+            return []
+        orphans: list[dict[str, Any]] = []
+        for record in self._store.list_all():
+            plan_unresolvable = self._plans is None or self._plans.get(
+                str(record.get("plan_id") or "")
+            ) is None
+            if not plan_unresolvable:
+                continue
+            if execution_scope_attributes(record):
+                continue
+            orphans.append(
+                {
+                    "execution_id": record.get("execution_id"),
+                    "plan_id": record.get("plan_id"),
+                    "status": record.get("status"),
+                    "reason": (
+                        "plan_repository_unavailable"
+                        if self._plans is None
+                        else "legacy_scope_unresolvable"
+                    ),
+                }
+            )
+        return orphans
+
     def plan_eligibility(self, plan_id: str) -> dict[str, Any]:
         """Project whether the current durable plan can be executed."""
+        if self._plans is None:
+            return {"executable": False, "ineligibility_reason": "plan_repository_unavailable"}
         plan = self._plans.get(plan_id)
         if plan is None:
             return {"executable": False, "ineligibility_reason": "plan_not_found"}
         try:
-            decision = self._check_approval_gate(plan)
+            decision, _self_approved_decision_ids = self._check_approval_gate(
+                plan, requested_by=""
+            )
             # Eligibility is a server projection, not a cached approval
             # assertion. Re-resolve the approved target and allowlist so the
-            # UI cannot offer execution after inventory has drifted.
+            # UI cannot offer execution after inventory has drifted. Never
+            # finalizes any self-approval (requested_by="" guarantees the
+            # set is always empty) -- this is a pure, non-mutating read.
             self._resolve_target(plan, decision)
         except RemediationExecutionError as exc:
             return {"executable": False, "ineligibility_reason": exc.reason}
@@ -469,12 +953,33 @@ class RemediationExecutionService:
 
     @staticmethod
     def execution_view(record: dict[str, Any]) -> dict[str, Any]:
-        """Add authoritative retry/cancel eligibility to a durable record."""
+        """Add authoritative retry/cancel/supersede eligibility to a record."""
         view = copy.deepcopy(record)
-        attempts = int(view.get("attempt_count") or 0)
-        remaining = max(0, MAX_EXECUTION_ATTEMPTS - attempts)
+        attempts = view.get("attempts") or []
+        if attempts:
+            current_attempt = attempts[-1]
+            for field in (
+                "provider_job_id",
+                "verified_state",
+                "failure_details",
+                "message",
+                "provider_submitted",
+                "failure_class",
+                "verification_evidence",
+                "outcome",
+            ):
+                if field in current_attempt:
+                    view[field] = copy.deepcopy(current_attempt[field])
+        submitted = submitted_attempt_count(view)
+        remaining = max(0, MAX_EXECUTION_ATTEMPTS - submitted)
         status = str(view.get("status") or "")
-        retryable = status in {"failed", "cancelled"} and remaining > 0
+        # A submission-ambiguous last attempt is never retryable -- it may
+        # still be running against the provider -- regardless of remaining
+        # budget. This must agree with `retry()`'s own guard (CR-01) so the
+        # API/web contract can never advertise `retryable: true` for a
+        # record `retry()` would actually refuse.
+        ambiguous = is_submission_ambiguous(view)
+        retryable = status in {"failed", "cancelled"} and remaining > 0 and not ambiguous
         cancellable = (
             status == "queued" and not bool(view.get("provider_job_id"))
         )
@@ -485,18 +990,24 @@ class RemediationExecutionService:
             reason = "provider_not_cancellable"
         elif status == "succeeded":
             reason = "already_succeeded"
+        elif status in {"failed", "cancelled"} and ambiguous:
+            reason = "submission_ambiguous"
         elif status in {"failed", "cancelled"} and remaining == 0:
             reason = "max_attempts_exceeded"
         elif retryable or cancellable:
             reason = ""
         else:
             reason = "execution_not_retryable"
+        supersede_ineligibility_reason = _supersede_eligibility(view)
         view.update(
             {
                 "retryable": retryable,
                 "cancellable": cancellable,
                 "remaining_attempts": remaining,
+                "submitted_attempt_count": submitted,
                 "ineligibility_reason": reason,
+                "supersedable": supersede_ineligibility_reason == "",
+                "supersede_ineligibility_reason": supersede_ineligibility_reason,
             }
         )
         return view
@@ -559,12 +1070,18 @@ class RemediationExecutionService:
     def poll_verification(self, execution_id: str) -> dict[str, Any]:
         """Poll the real upstream source of truth for one running execution.
 
-        A terminal ARM outcome ("succeeded"/"failed") updates the stored
-        record accordingly. A still-running outcome is a no-op -- the
-        record stays "running". A not-verifiable or verification-unavailable
-        result leaves ``status`` unchanged but appends a note to ``message``
-        so a poller can see verification itself is degraded, without
-        falsely claiming success or failure.
+        Deadline-first (Recommendation 3, Deadline and Recovery): a running
+        execution whose ``verification_deadline_at`` has already passed is
+        transitioned straight to a terminal ``unknown``/
+        ``verification_timed_out`` outcome *before* the verifier is ever
+        touched -- an execution can never stay "running" indefinitely.
+        Otherwise, a terminal ARM outcome ("succeeded"/"failed"/"cancelled")
+        updates the stored record accordingly. A still-running or degraded
+        (verifier unavailable/not verifiable) outcome bumps
+        ``verification_attempts`` and reschedules ``next_verification_at``
+        via a capped exponential backoff, so a poller (browser or the
+        background coordinator) knows when to look again without polling in
+        a tight loop.
         """
         if self._store is None:
             raise RemediationExecutionError(
@@ -579,54 +1096,137 @@ class RemediationExecutionService:
                 reason="execution_not_found",
                 details={"execution_id": execution_id},
             )
-        if record.get("status") != "running":
+        status = str(record.get("status") or "")
+        if status not in {"running", "retrying"}:
             return self.execution_view(record)
+
+        if status == "retrying":
+            # CR-01: a crash between claim_retry() and the following
+            # retrying -> running transition leaves this record here with
+            # no provider submission for the *current* attempt at all --
+            # any provider_job_id on the record still belongs to a prior,
+            # already-terminal attempt and must never be polled as if it
+            # were this one. Bounded exclusively by the deadline seeded at
+            # claim time: recoverable via deadline expiry into an ordinary
+            # terminal failure, never resubmitted or ARM-verified here.
+            if self._is_verification_deadline_exceeded(record):
+                return self._transition_or_current(
+                    execution_id,
+                    expected_revision=int(record.get("revision") or 0),
+                    expected_status="retrying",
+                    status="failed",
+                    actor="execution-verifier",
+                    outcome="unknown",
+                    failure_class="verification_timed_out",
+                    verified_state="verification_deadline_exceeded",
+                    message=_append_note(
+                        record.get("message"),
+                        "A retry claim did not resume to a submitted attempt "
+                        "within the configured deadline; confirm actual target "
+                        "state before retrying or superseding again.",
+                    ),
+                    failure_details=(
+                        "A retry claim did not resume to a submitted attempt "
+                        "within the configured deadline; confirm actual target "
+                        "state before retrying or superseding again."
+                    ),
+                )
+            current_attempts = int(record.get("verification_attempts") or 0)
+            next_attempts = current_attempts + 1
+            return self._transition_or_current(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="retrying",
+                status="retrying",
+                actor="execution-verifier",
+                verification_attempts=next_attempts,
+                next_verification_at=(
+                    self._now() + timedelta(seconds=_next_backoff_seconds(next_attempts))
+                ).isoformat(),
+            )
+
+        if self._is_verification_deadline_exceeded(record):
+            return self._transition_or_current(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="running",
+                status="failed",
+                actor="execution-verifier",
+                outcome="unknown",
+                failure_class="verification_timed_out",
+                verified_state="verification_deadline_exceeded",
+                message=_append_note(
+                    record.get("message"),
+                    "Verification did not reach a terminal Azure status within the "
+                    "configured deadline; confirm actual target state before "
+                    "retrying or superseding.",
+                ),
+                failure_details=(
+                    "Verification did not reach a terminal Azure status within the "
+                    "configured deadline; confirm actual target state before "
+                    "retrying or superseding."
+                ),
+            )
+
+        current_attempts = int(record.get("verification_attempts") or 0)
+        next_attempts = current_attempts + 1
+        backoff_at = (
+            self._now() + timedelta(seconds=_next_backoff_seconds(next_attempts))
+        ).isoformat()
+
         if self._verifier is None:
-            note = "Verification unavailable: no execution verifier is configured"
-            message = _append_note(record.get("message"), note)
-            if message == record.get("message"):
-                return self.execution_view(record)
-            return self.execution_view(self._store.transition(
+            message = _append_note(
+                record.get("message"),
+                "Verification unavailable: no execution verifier is configured",
+            )
+            return self._transition_or_current(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
                 status="running",
                 actor="execution-verifier",
                 message=message,
-                now=self._now(),
-            ))
+                verification_evidence={},
+                verification_attempts=next_attempts,
+                next_verification_at=backoff_at,
+            )
 
         try:
             outcome = self._verifier.verify(record)
         except ExecutionVerificationUnavailable as exc:
-            note = f"Verification unavailable: {exc}"
-            message = _append_note(record.get("message"), note)
-            return self.execution_view(self._store.transition(
+            message = _append_note(record.get("message"), f"Verification unavailable: {exc}")
+            return self._transition_or_current(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
                 status="running",
                 actor="execution-verifier",
                 message=message,
-                now=self._now(),
-            ))
+                verification_evidence={},
+                verification_attempts=next_attempts,
+                next_verification_at=backoff_at,
+            )
 
         if not outcome.get("verifiable", False):
-            note = f"Verification not available: {outcome.get('reason', 'unknown')}"
-            message = _append_note(record.get("message"), note)
-            return self.execution_view(self._store.transition(
+            message = _append_note(
+                record.get("message"),
+                f"Verification not available: {outcome.get('reason', 'unknown')}",
+            )
+            return self._transition_or_current(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
                 status="running",
                 actor="execution-verifier",
                 message=message,
-                now=self._now(),
-            ))
+                verification_evidence=outcome.get("verification_evidence") or {},
+                verification_attempts=next_attempts,
+                next_verification_at=backoff_at,
+            )
 
         result_outcome = outcome.get("outcome")
         if result_outcome == "succeeded":
-            return self.execution_view(self._store.transition(
+            return self._transition_or_current(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
@@ -634,42 +1234,326 @@ class RemediationExecutionService:
                 actor="execution-verifier",
                 verified_state=outcome.get("verified_state", ""),
                 outcome="succeeded",
-                now=self._now(),
-            ))
+                verification_evidence=outcome.get("verification_evidence") or {},
+                verification_attempts=next_attempts,
+                # Restart the deadline window for the reconciliation phase:
+                # a freshly-succeeded patch record is immediately due for
+                # evidence reconciliation (Plan 03.4-01's
+                # list_due_for_verification rule).
+                verification_deadline_at=(
+                    self._now() + timedelta(seconds=self._verification_deadline_seconds)
+                ).isoformat(),
+                next_verification_at=self._now().isoformat(),
+            )
         if result_outcome == "failed":
-            return self.execution_view(self._store.transition(
+            return self._transition_or_current(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
                 status="failed",
                 actor="execution-verifier",
                 verified_state=outcome.get("verified_state", ""),
-                failure_details=outcome.get("failure_details", ""),
+                failure_details=(
+                    outcome.get("failure_details")
+                    or "Provider reported a terminal outcome with no additional detail."
+                ),
                 outcome="failed",
-                now=self._now(),
-            ))
+                failure_class="provider_rejected",
+                verification_evidence=outcome.get("verification_evidence") or {},
+                verification_attempts=next_attempts,
+            )
         if result_outcome == "cancelled":
-            return self.execution_view(self._store.transition(
+            return self._transition_or_current(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
                 expected_status="running",
                 status="cancelled",
                 actor="execution-verifier",
                 verified_state=outcome.get("verified_state", ""),
-                failure_details=outcome.get("failure_details", ""),
+                failure_details=(
+                    outcome.get("failure_details")
+                    or "Provider reported a terminal outcome with no additional detail."
+                ),
                 outcome="cancelled",
-                now=self._now(),
-            ))
-        # Still running -- no-op, but record the latest verified_state seen.
-        return self.execution_view(self._store.transition(
+                verification_evidence=outcome.get("verification_evidence") or {},
+                verification_attempts=next_attempts,
+            )
+        # Still running -- no-op except the latest verified_state/evidence
+        # and the next bounded-backoff scheduling.
+        return self._transition_or_current(
             execution_id,
             expected_revision=int(record.get("revision") or 0),
             expected_status="running",
             status="running",
             actor="execution-verifier",
             verified_state=outcome.get("verified_state", ""),
-            now=self._now(),
-        ))
+            verification_evidence=outcome.get("verification_evidence") or {},
+            verification_attempts=next_attempts,
+            next_verification_at=backoff_at,
+        )
+
+    def reconcile_evidence(self, execution_id: str) -> dict[str, Any]:
+        """Compare a verified-succeeded patch execution's selected KBs against
+        freshly refreshed target evidence.
+
+        Never widens or reinterprets Azure's own reported outcome: ``status``
+        stays "succeeded" regardless of the comparison result (CONTEXT.md's
+        Evidence Reconciliation decision to "preserve provider success
+        separately"); only ``evidence_reconciliation`` records whether the
+        selected KBs actually cleared. A no-op (returns the current view
+        unchanged) for a non-patch/defender-configuration record, or once
+        reconciliation has already reached a terminal outcome.
+        """
+        if self._store is None:
+            raise RemediationExecutionError(
+                "No execution store is configured; nothing to reconcile",
+                reason="store_not_configured",
+                details={"execution_id": execution_id},
+            )
+        record = self._store.get(execution_id)
+        if record is None:
+            raise RemediationExecutionError(
+                f"Execution {execution_id!r} was not found",
+                reason="execution_not_found",
+                details={"execution_id": execution_id},
+            )
+        if record.get("status") != "succeeded" or not _is_patch_evidence_candidate(record):
+            return self.execution_view(record)
+        reconciliation = record.get("evidence_reconciliation") or {}
+        if str(reconciliation.get("status") or "") in _RECONCILIATION_TERMINAL_STATUSES:
+            return self.execution_view(record)
+
+        selected = set(record["execution_snapshot"].get("patch_ids") or [])
+        result = self._refresh_target_evidence(record)
+        if result is not None and _target_evidence_confirmed(result):
+            missing_now = set(result.get("missing_kbs") or [])
+            kbs_remaining = sorted(selected & missing_now)
+            kbs_cleared = sorted(selected - missing_now)
+            new_status = "reconciled_clean" if not kbs_remaining else "reconciled_incomplete"
+            return self._transition_or_current(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="succeeded",
+                status="succeeded",
+                actor="execution-verifier",
+                evidence_reconciliation={
+                    "status": new_status,
+                    "kbs_cleared": kbs_cleared,
+                    "kbs_remaining": kbs_remaining,
+                    "assessed_at": str(result.get("assessed_at") or ""),
+                },
+            )
+
+        # Refresher unavailable/raised/returned nothing, or returned an
+        # unconfirmed (target-not-observed) result: retry within the
+        # deadline window, then reach a terminal "unreconciled" outcome.
+        # WR-06: a target the refresher could not confirm it actually
+        # observed must never be treated as "nothing missing" -- it is
+        # unreconciled, exactly like an unavailable refresher, not clean.
+        if self._is_verification_deadline_exceeded(record):
+            return self._transition_or_current(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="succeeded",
+                status="succeeded",
+                actor="execution-verifier",
+                evidence_reconciliation={
+                    "status": "unreconciled",
+                    "kbs_cleared": [],
+                    "kbs_remaining": sorted(selected),
+                    "assessed_at": "",
+                },
+                message=_append_note(
+                    record.get("message"),
+                    "Evidence reconciliation could not be completed within the "
+                    "configured deadline; provider success is preserved but the "
+                    "selected KBs' actual state is unconfirmed.",
+                ),
+            )
+        current_attempts = int(record.get("verification_attempts") or 0)
+        next_attempts = current_attempts + 1
+        return self._transition_or_current(
+            execution_id,
+            expected_revision=int(record.get("revision") or 0),
+            expected_status="succeeded",
+            status="succeeded",
+            actor="execution-verifier",
+            evidence_reconciliation={
+                "status": "pending",
+                "kbs_cleared": [],
+                "kbs_remaining": sorted(selected),
+                "assessed_at": "",
+            },
+            verification_attempts=next_attempts,
+            next_verification_at=(
+                self._now() + timedelta(seconds=_next_backoff_seconds(next_attempts))
+            ).isoformat(),
+        )
+
+    def reconcile_ambiguous_submission(self, execution_id: str) -> dict[str, Any]:
+        """Resolve a submission-ambiguous failed execution using target evidence.
+
+        Retry/supersede refuse forever on ``failure_class ==
+        "submission_ambiguous"`` unless this reconciles it: either refreshed
+        target evidence proves every selected KB installed (promoted to
+        "succeeded"), or the reconciliation deadline passes with no such
+        proof (reclassified to the ordinary, bounded-retryable
+        "submission_unconfirmed").
+        """
+        if self._store is None:
+            raise RemediationExecutionError(
+                "No execution store is configured; nothing to reconcile",
+                reason="store_not_configured",
+                details={"execution_id": execution_id},
+            )
+        record = self._store.get(execution_id)
+        if record is None:
+            raise RemediationExecutionError(
+                f"Execution {execution_id!r} was not found",
+                reason="execution_not_found",
+                details={"execution_id": execution_id},
+            )
+        if record.get("status") != "failed" or not is_submission_ambiguous(record):
+            return self.execution_view(record)
+
+        selected = set(record["execution_snapshot"].get("patch_ids") or [])
+        result = (
+            self._refresh_target_evidence(record)
+            if _is_patch_evidence_candidate(record)
+            else None
+        )
+        if result is not None and _target_evidence_confirmed(result):
+            missing_now = set(result.get("missing_kbs") or [])
+            kbs_remaining = sorted(selected & missing_now)
+            if selected and not kbs_remaining:
+                return self._transition_or_current(
+                    execution_id,
+                    expected_revision=int(record.get("revision") or 0),
+                    expected_status="failed",
+                    status="succeeded",
+                    actor="execution-verifier",
+                    outcome="succeeded",
+                    failure_class="",
+                    verified_state="reconciled_from_target_evidence",
+                    evidence_reconciliation={
+                        "status": "reconciled_clean",
+                        "kbs_cleared": sorted(selected),
+                        "kbs_remaining": [],
+                        "assessed_at": str(result.get("assessed_at") or ""),
+                    },
+                )
+
+        # WR-06: an unconfirmed (target-not-observed) result must never
+        # promote a submission-ambiguous failure to "succeeded" -- fall
+        # through exactly like an unavailable refresher, into the bounded
+        # retry/timeout path below.
+        if self._is_verification_deadline_exceeded(record):
+            return self._transition_or_current(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="failed",
+                status="failed",
+                actor="execution-verifier",
+                failure_class="submission_unconfirmed",
+                verified_state="reconciliation_timed_out",
+                evidence_reconciliation={
+                    "status": "unreconciled_timed_out",
+                    "kbs_cleared": [],
+                    "kbs_remaining": sorted(selected),
+                    "assessed_at": "",
+                },
+                message=_append_note(
+                    record.get("message"),
+                    "The submission's provider outcome could not be confirmed within "
+                    "the reconciliation deadline; it is now an ordinary bounded "
+                    "failure, retryable or supersedable like any other.",
+                ),
+                failure_details=(
+                    "The submission's provider outcome could not be confirmed within "
+                    "the reconciliation deadline; it is now an ordinary bounded "
+                    "failure, retryable or supersedable like any other."
+                ),
+            )
+        current_attempts = int(record.get("verification_attempts") or 0)
+        next_attempts = current_attempts + 1
+        return self._transition_or_current(
+            execution_id,
+            expected_revision=int(record.get("revision") or 0),
+            expected_status="failed",
+            status="failed",
+            actor="execution-verifier",
+            verification_attempts=next_attempts,
+            next_verification_at=(
+                self._now() + timedelta(seconds=_next_backoff_seconds(next_attempts))
+            ).isoformat(),
+        )
+
+    def _is_verification_deadline_exceeded(self, record: dict[str, Any]) -> bool:
+        """Whether ``record``'s deadline has passed, fail-safe on absence.
+
+        A legacy record (or one never given a deadline for any reason) is
+        never treated as already-expired -- absence of a deadline is not
+        the same as an expired one (matching the store's own conservative
+        legacy-default philosophy).
+        """
+        deadline_text = str(record.get("verification_deadline_at") or "").strip()
+        if not deadline_text:
+            return False
+        try:
+            deadline = datetime.fromisoformat(deadline_text)
+        except ValueError:
+            return False
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=UTC)
+        return self._now() > deadline
+
+    def _refresh_target_evidence(self, record: dict[str, Any]) -> dict[str, Any] | None:
+        """Call the injected refresher, treating any failure as unavailable.
+
+        A refresher failure (None configured, raises, returns nothing) must
+        never propagate and must never block a terminal deadline outcome --
+        it is retried within the window, not treated as an error.
+        """
+        if self._evidence_refresher is None:
+            return None
+        subscription_id = execution_scope_attributes(record).get("subscription", "")
+        target_id = str((record.get("execution_snapshot") or {}).get("target_id") or "")
+        try:
+            return self._evidence_refresher(subscription_id, target_id)
+        except Exception:  # noqa: BLE001 - unavailable, not an error to propagate
+            return None
+
+    def _transition_or_current(
+        self,
+        execution_id: str,
+        *,
+        expected_revision: int,
+        expected_status: str | set[str] | frozenset[str],
+        status: str,
+        actor: str,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Transition, or -- on a lost concurrent race -- return the winner's view.
+
+        Shared by :meth:`poll_verification`, :meth:`reconcile_evidence`, and
+        :meth:`reconcile_ambiguous_submission` so two concurrent callers
+        (e.g. a browser GET and the background coordinator) never see an
+        unhandled :class:`ExecutionClaimConflict`: the loser simply reads
+        back the winner's already-persisted, equally valid outcome.
+        """
+        try:
+            record = self._store.transition(
+                execution_id,
+                expected_revision=expected_revision,
+                expected_status=expected_status,
+                status=status,
+                actor=actor,
+                now=self._now(),
+                **fields,
+            )
+        except ExecutionClaimConflict:
+            record = self._store.get(execution_id)
+        return self.execution_view(record)
 
     def _latest_decision(self, plan_id: str) -> dict[str, Any] | None:
         decisions = self._plans.decisions.list(plan_id) if hasattr(self._plans, "decisions") else []
@@ -810,10 +1694,70 @@ def _append_note(existing_message: Any, note: str) -> str:
     return f"{text} | {note}"
 
 
+def _target_evidence_confirmed(result: dict[str, Any]) -> bool:
+    """Whether a non-``None`` refresher ``result`` confirms the target was
+    actually observed (WR-06).
+
+    A refresher may return an empty ``missing_kbs`` list either because the
+    target genuinely has zero remaining exposures, or because the target
+    was never observed at all (wrong/unresolvable subscription, migrated
+    resource, or a target that does not exist) -- both produce the
+    identical empty result otherwise. The optional ``target_observed`` key
+    makes this explicit: only a confirmed ``True`` observation may be
+    trusted for a ``reconciled_clean`` outcome or an ambiguity promotion.
+    Absent entirely (a legacy refresher predating this key), default to
+    ``True`` so every existing caller's prior behavior is preserved
+    unchanged.
+    """
+    return bool(result.get("target_observed", True))
+
+
+# Evidence-reconciliation status values that mean "nothing left to do" --
+# mirrors execution_store's own private terminal-status set so store and
+# service can never disagree on when reconciliation has finished.
+_RECONCILIATION_TERMINAL_STATUSES = frozenset(
+    {"reconciled_clean", "reconciled_incomplete", "unreconciled"}
+)
+
+
+def _next_backoff_seconds(verification_attempts: int) -> float:
+    """Bounded exponential backoff for the next verification pass.
+
+    5 seconds on the first attempt, doubling each subsequent attempt,
+    capped at 60 seconds: 5, 10, 20, 40, 60, 60, 60... A transient poll
+    failure backs off within the deadline rather than polling in a tight
+    loop (CONTEXT.md's Deadline and Recovery decision).
+    """
+    attempt = max(1, int(verification_attempts))
+    return min(60.0, 5.0 * (2 ** (attempt - 1)))
+
+
+def _supersede_eligibility(record: dict[str, Any]) -> str:
+    """Shared write/read supersede-eligibility check.
+
+    A single function used by both :meth:`RemediationExecutionService
+    .supersede` (the write-side guard) and :meth:`execution_view` (the
+    read-side projection) so the two can never disagree (CONTEXT.md's
+    Supersession decision): refused for anything still active, anything
+    already superseded, or a submission-ambiguous latest attempt (it may
+    still be running against the provider). Returns ``""`` when eligible,
+    else the specific ineligibility reason.
+    """
+    status = str(record.get("status") or "")
+    if status not in {"failed", "cancelled"}:
+        return "execution_active"
+    if record.get("superseded_by"):
+        return "already_superseded"
+    if is_submission_ambiguous(record):
+        return "submission_ambiguous"
+    return ""
+
+
 __all__ = [
     "CONTROLLED_PATCH_RECOVERY",
     "EXECUTABLE_ACTION_IDS",
     "MAX_EXECUTION_ATTEMPTS",
+    "VERIFICATION_DEADLINE_SECONDS",
     "RemediationExecutionError",
     "RemediationExecutionService",
     "validate_business_eligibility",

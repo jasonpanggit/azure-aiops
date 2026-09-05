@@ -60,6 +60,22 @@ class TokenCredential(Protocol):
     def get_token(self, *scopes: str, **kwargs: Any) -> Any: ...
 
 
+def classify_azure_response_failure(status_code: int) -> str:
+    """Map one Azure ARM HTTP status code onto the closed failure vocabulary.
+
+    Single source of truth for status-to-class mapping (Phase 03.3's
+    Failure Classification decision): every adapter that receives an HTTP
+    error response from Azure -- the patch adapter's POST and the Defender
+    configuration adapter's GET/PUT -- classifies through this one helper,
+    so there is exactly one status-to-class mapping in the codebase.
+    """
+    if status_code in (401, 403):
+        return "provider_authorization"
+    if status_code == 429 or status_code >= 500:
+        return "provider_transient"
+    return "provider_rejected"
+
+
 def _is_linux(target: PatchTarget) -> bool:
     os_family = str(target.os_family or "").casefold()
     return any(hint in os_family for hint in _LINUX_OS_HINTS)
@@ -81,6 +97,8 @@ def _install_patches_body(run: PatchRun, target: PatchTarget) -> dict[str, Any]:
             "Refusing to submit an installPatches request with no selected "
             "patches: an empty filter installs everything.",
             capability="update_manager_install_patches",
+            provider_submitted=False,
+            failure_class="internal_validation",
         )
 
     body: dict[str, Any] = {
@@ -129,12 +147,16 @@ class AzureArmPatchExecutionAdapter:
             raise PatchExecutionUnavailable(
                 f"Could not acquire an Azure management token: {exc}",
                 capability="azure_arm_token",
+                provider_submitted=False,
+                failure_class="provider_authorization",
             ) from exc
         value = getattr(token, "token", "") or ""
         if not value:
             raise PatchExecutionUnavailable(
                 "Azure credential returned an empty management token.",
                 capability="azure_arm_token",
+                provider_submitted=False,
+                failure_class="provider_authorization",
             )
         return str(value)
 
@@ -148,9 +170,16 @@ class AzureArmPatchExecutionAdapter:
         try:
             return client.post(url, headers=headers, json=body)
         except httpx.HTTPError as exc:
+            # This IS the mutating POST -- there is no read-only path in
+            # this adapter. The request may have already crossed the
+            # mutation boundary before the transport failed, so this must
+            # fail closed as submission-ambiguous and consume budget until
+            # reconciled (Recommendation 2, Submission Accounting decision).
             raise PatchExecutionUnavailable(
                 f"Azure Resource Manager was unreachable: {exc}",
                 capability="azure_arm_request",
+                provider_submitted=True,
+                failure_class="submission_ambiguous",
             ) from exc
         finally:
             if self._client is None:
@@ -170,6 +199,8 @@ class AzureArmPatchExecutionAdapter:
                 f"Azure rejected the patch request ({response.status_code}): "
                 f"{_error_message(response)}",
                 capability=_capability(run),
+                provider_submitted=True,
+                failure_class=classify_azure_response_failure(response.status_code),
             )
 
         # 200/201/202 all mean accepted for these long-running operations. The
@@ -209,6 +240,8 @@ class AzureArmPatchExecutionAdapter:
             raise PatchExecutionUnavailable(
                 f"No install-patches route for inventory kind {target.inventory_kind!r}.",
                 capability="update_manager_install_patches",
+                provider_submitted=False,
+                failure_class="target_precondition",
             )
 
         resource_id = _require_resource_id(target)
@@ -221,6 +254,8 @@ class AzureArmPatchExecutionAdapter:
             raise PatchExecutionUnavailable(
                 f"Node image upgrade is not valid for inventory kind {target.inventory_kind!r}.",
                 capability="aks_node_image_upgrade",
+                provider_submitted=False,
+                failure_class="target_precondition",
             )
 
         cluster_id = _require_resource_id(target)
@@ -230,6 +265,8 @@ class AzureArmPatchExecutionAdapter:
                 "The AKS node pool could not be determined for this upgrade; "
                 "HOG will not upgrade every pool in the cluster implicitly.",
                 capability="aks_node_image_upgrade",
+                provider_submitted=False,
+                failure_class="target_precondition",
             )
         path = f"{cluster_id}/agentPools/{quote(node_pool, safe='')}/upgradeNodeImageVersion"
         # The ARM operation always rolls the pool to the latest available image;
@@ -245,11 +282,15 @@ def _require_resource_id(target: PatchTarget) -> str:
             f"{target.target_id!r} is not an Azure resource id, so it cannot be "
             "patched through Resource Manager.",
             capability="azure_arm_request",
+            provider_submitted=False,
+            failure_class="target_precondition",
         )
     if not _resource_group(resource_id):
         raise PatchExecutionUnavailable(
             f"{target.target_id!r} has no resource group segment.",
             capability="azure_arm_request",
+            provider_submitted=False,
+            failure_class="target_precondition",
         )
     return resource_id.rstrip("/")
 
@@ -287,4 +328,5 @@ __all__ = [
     "ARM_SCOPE",
     "AzureArmPatchExecutionAdapter",
     "TokenCredential",
+    "classify_azure_response_failure",
 ]

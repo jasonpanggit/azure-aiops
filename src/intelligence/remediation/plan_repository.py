@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import re
+import threading
 from typing import Any
 
 from ontology.confidence import compute_confidence
@@ -29,6 +30,16 @@ class PlanRepository:
             raise ValueError("Use either decision_store or decision_document_store, not both")
         self.max_plans = max_plans
         self._plans: tuple[dict[str, Any], ...] = ()
+        # WR-01: 03.2-02 makes one PlanRepository instance shared across
+        # concurrently in-flight requests for up to 30s (the hybrid_remediation
+        # TTL cache). All remediation router handlers are plain ``def`` routes,
+        # which Starlette dispatches to its worker thread pool, so two
+        # concurrent requests can call generate_plans() -> replace_generation()
+        # on the *same* repository object from two OS threads at once. Use the
+        # same threading.RLock() pattern RemediationExecutionStore already uses
+        # around every read/write so a slower request's write can never
+        # interleave with -- or silently lose to -- a faster one's.
+        self._lock = threading.RLock()
         self.decisions = decision_store or RemediationDecisionStore(
             document_store=decision_document_store
         )
@@ -39,14 +50,20 @@ class PlanRepository:
         identities = [str(plan.get("plan_id") or "") for plan in plans]
         if any(not identity for identity in identities) or len(identities) != len(set(identities)):
             raise ValueError("Remediation repository requires unique plan_id")
-        self._plans = tuple(copy.deepcopy(plans))
+        materialized = tuple(copy.deepcopy(plans))
+        with self._lock:
+            self._plans = materialized
 
     def list(self) -> list[dict[str, Any]]:
-        return copy.deepcopy(list(self._plans))
+        with self._lock:
+            plans = self._plans
+        return copy.deepcopy(list(plans))
 
     def get(self, plan_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            plans = self._plans
         return next(
-            (copy.deepcopy(plan) for plan in self._plans if plan["plan_id"] == plan_id),
+            (copy.deepcopy(plan) for plan in plans if plan["plan_id"] == plan_id),
             None,
         )
 

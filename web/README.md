@@ -46,9 +46,9 @@ npm install
 npm run start
 ```
 
-The lockfile and local `.npmrc` use the public npm registry. If Defender prompts
-for `ms-feed-*.pkgs.visualstudio.com`, refresh dependencies with the repo `.npmrc`
-in effect so npm does not use a machine-level Azure DevOps registry override.
+The lockfile resolves packages through the Microsoft package-feed proxy configured
+in the repo `.npmrc`. Keep that configuration in effect so dependency restores do
+not connect directly to npmjs.org.
 
 `npm run start` starts the web app. It does not start the API. In a second
 terminal, start the local API from `web/`:

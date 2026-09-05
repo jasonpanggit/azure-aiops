@@ -1,0 +1,84 @@
+- text: Live operational context Governed remediation
+- heading "Fix safely, one step at a time" [level=1]
+- paragraph: Select a governed fix, review its impact, approve the exact snapshot, run it once, and verify the provider outcome.
+- text: Allowlisted actions only Approval-bound snapshots Provider-verified outcomes
+- complementary "Data trust and provenance":
+  - text: high confidence
+  - strong: Source
+  - text: ARG
+  - strong: Updated
+  - text: 2 days ago
+  - strong: Knowledge
+  - text: graph-1
+  - time: Sep 3, 8:00 AM
+- navigation "Remediation workflow":
+  - button "1 Select fix Complete":
+    - text: "1"
+    - strong: Select fix
+    - text: Complete
+  - button "2 Review impact Complete":
+    - text: "2"
+    - strong: Review impact
+    - text: Complete
+  - button "3 Approve Complete":
+    - text: "3"
+    - strong: Approve
+    - text: Complete
+  - button "4 Run Complete":
+    - text: "4"
+    - strong: Run
+    - text: Complete
+  - button "5 Verify Complete":
+    - text: "5"
+    - strong: Verify
+    - text: Complete
+- heading "Workflow blockers" [level=3]
+- text: Blocked Approve No decision has been recorded yet.
+- strong: "Next:"
+- text: Record an approval decision for every required role.
+- complementary:
+  - heading "Select fix" [level=2]
+  - paragraph: Only generated plans can enter approval and execution.
+  - text: 1 fixes Search fixes
+  - textbox "Search fixes":
+    - /placeholder: Action, resource, or service
+  - button "Draft Controlled Patch Recovery Patch payroll database /subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll":
+    - text: Draft Controlled Patch Recovery
+    - strong: Patch payroll database
+    - text: /subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll
+- main:
+  - text: Step 3 of 5
+  - heading "Approve" [level=2]
+  - paragraph: Patch payroll database
+  - text: Patch
+  - status:
+    - text: No decision has been recorded yet.
+    - strong: "Next:"
+    - text: Record an approval decision for every required role.
+  - heading "Degraded inputs" [level=3]
+  - text: "Degraded AUM patch inventory AUM patch inventory evidence is degraded. 3 evidence row(s) dropped, 1 unmatched for this scope. Last known good: 2026-09-01T00:00:00Z"
+  - paragraph:
+    - text: Approval binds to snapshot
+    - code: snapshot-hash-1
+    - text: . It does not run the change.
+  - heading "Approval requirements" [level=3]
+  - paragraph: 1 of 1 requirements satisfied
+  - text: Satisfied Change Manager
+  - code: change-control
+  - text: Planning
+  - paragraph:
+    - text: Satisfied by
+    - strong: unknown
+  - group: Evidence required
+  - paragraph: Approved Approved by approver@example.com on 9/3/2026, 8:00:00 AM. This approval matches the current version, evidence, and policy.
+  - text: Decision
+  - combobox "Decision":
+    - option "Approve" [selected]
+    - option "Reject"
+    - option "Expire"
+  - text: Rationale
+  - textbox "Rationale"
+  - text: Expires
+  - textbox "Expires"
+  - button "Record decision"
+- group: Evidence and audit history

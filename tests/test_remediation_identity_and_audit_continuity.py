@@ -185,8 +185,8 @@ def test_live_patch_action_version_ignores_arg_collection_time() -> None:
     assert second["evidence_citations"][0]["observed_at"] == ""
 
 
-def test_live_patch_action_version_ignores_derived_cve_enrichment() -> None:
-    """A KB-to-CVE lookup must not version the governed target/KB action."""
+def test_live_patch_action_version_ignores_presentation_citation_identity() -> None:
+    """Provider row identity must not version the governed target/KB action."""
 
     class _EnrichedVulnerabilityService(_MutableVulnerabilityService):
         def __init__(self, finding_id: str) -> None:
@@ -225,7 +225,8 @@ def test_live_patch_action_version_ignores_derived_cve_enrichment() -> None:
     assert first["recommended_action"] == second["recommended_action"]
     assert first["action_version"] == second["action_version"]
     assert first["evidence_citations"] == second["evidence_citations"]
-    assert different_source["action_version"] != first["action_version"]
+    assert different_source["evidence_citations"] != first["evidence_citations"]
+    assert different_source["action_version"] == first["action_version"]
 
 
 @pytest.mark.parametrize("finding_count", [9, 10, 11])

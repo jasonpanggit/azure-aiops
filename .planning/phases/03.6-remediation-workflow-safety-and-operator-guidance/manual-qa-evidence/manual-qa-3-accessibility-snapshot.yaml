@@ -1,0 +1,76 @@
+- text: Live operational context Governed remediation
+- heading "Fix safely, one step at a time" [level=1]
+- paragraph: Select a governed fix, review its impact, approve the exact snapshot, run it once, and verify the provider outcome.
+- text: Allowlisted actions only Approval-bound snapshots Provider-verified outcomes
+- complementary "Data trust and provenance":
+  - text: high confidence
+  - strong: Source
+  - text: ARG
+  - strong: Updated
+  - text: 2 days ago
+  - strong: Knowledge
+  - text: graph-1
+  - time: Sep 3, 8:00 AM
+- navigation "Remediation workflow":
+  - button "1 Select fix Complete":
+    - text: "1"
+    - strong: Select fix
+    - text: Complete
+  - button "2 Review impact Complete":
+    - text: "2"
+    - strong: Review impact
+    - text: Complete
+  - button "3 Approve Complete":
+    - text: "3"
+    - strong: Approve
+    - text: Complete
+  - button "4 Run Complete":
+    - text: "4"
+    - strong: Run
+    - text: Complete
+  - button "5 Verify Complete":
+    - text: "5"
+    - strong: Verify
+    - text: Complete
+- heading "Workflow blockers" [level=3]
+- text: Blocked Approve No decision has been recorded yet.
+- strong: "Next:"
+- text: Record an approval decision for every required role.
+- complementary:
+  - heading "Select fix" [level=2]
+  - paragraph: Only generated plans can enter approval and execution.
+  - text: 1 fixes Search fixes
+  - textbox "Search fixes":
+    - /placeholder: Action, resource, or service
+  - button "Draft Controlled Patch Recovery Patch payroll database /subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll":
+    - text: Draft Controlled Patch Recovery
+    - strong: Patch payroll database
+    - text: /subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll
+- main:
+  - text: Step 5 of 5
+  - heading "Verify" [level=2]
+  - paragraph: Patch payroll database
+  - text: Patch Succeeded Attempt 1
+  - heading "Provider verification" [level=3]
+  - paragraph:
+    - text: "Execution:"
+    - code: RME-1
+  - paragraph: "Provider state: Succeeded"
+  - paragraph: "Outcome: succeeded"
+  - paragraph: "Remaining attempts: 2"
+  - paragraph: "Submitted attempts: 1"
+  - paragraph: "Rollback guidance: Restore the last known-good image"
+  - list:
+    - listitem:
+      - strong: Attempt 1
+      - text: — Succeeded
+      - list:
+        - listitem: 2026-09-03T00:01:00Z · Succeeded · Provider accepted the operation
+  - heading "Decisions" [level=3]
+  - list:
+    - listitem: Approved by approver@example.com on 9/3/2026, 8:00:00 AM
+  - text: Reason
+  - textbox "Reason"
+  - button "Confirm supersede" [disabled]
+  - button "Back"
+- group: Evidence and audit history

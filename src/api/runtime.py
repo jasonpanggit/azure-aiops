@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -49,12 +50,19 @@ from onboarding.query_contract import QuerySpec
 _LOGGER = logging.getLogger(__name__)
 
 from intelligence.remediation.approval_decisions import RemediationDecisionStore
+from intelligence.remediation.approval_gate import policy_version_for
 from intelligence.remediation.defender_correlation import DefenderRemediationCorrelator
 from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
-from intelligence.remediation.execution_service import RemediationExecutionService
+from intelligence.remediation.execution_service import (
+    VERIFICATION_DEADLINE_SECONDS,
+    RemediationExecutionService,
+)
 from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.execution_verifier import ExecutionVerifier
 from intelligence.remediation.plan_repository import PlanRepository
+from intelligence.remediation.verification_coordinator import (
+    RemediationVerificationCoordinator,
+)
 from network.design import NetworkDesignPolicyStore
 from network.flow import FlowQuery
 from network.models import PRIVATE_LINK_RESOURCE_TYPES
@@ -138,6 +146,13 @@ ENV_APPROVED_SEARCH_API_KEY = "APPROVED_SEARCH_API_KEY"
 ENV_PATCH_EXECUTION = "AIOPS_PATCH_EXECUTION"
 ENV_DEFENDER_CONFIGURATION_EXECUTION = "AIOPS_DEFENDER_CONFIGURATION_EXECUTION"
 ENV_GATEWAY_ASSERTION = "AIOPS_GATEWAY_ASSERTION"
+# Override for how long a submitted remediation execution may stay
+# unverified before the autonomous coordinator (Phase 03.4) reports it
+# terminal-unknown. Absent, RemediationExecutionService's own default
+# (VERIFICATION_DEADLINE_SECONDS, 30 minutes) applies.
+ENV_REMEDIATION_VERIFICATION_DEADLINE_SECONDS = (
+    "AIOPS_REMEDIATION_VERIFICATION_DEADLINE_SECONDS"
+)
 
 AUTH_GATEWAY = "gateway"
 AUTH_ENTRA = "entra"
@@ -343,6 +358,91 @@ _HYBRID_NETWORK_CACHE_TTL_SECONDS = 30
 _hybrid_network_cache: dict[tuple[str, tuple[str, ...]], tuple[float, list[dict]]] = {}
 _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS = 30
 _hybrid_vulnerability_cache: dict[tuple[str, tuple[str, ...]], tuple[float, Any]] = {}
+# Resolves the request-consistency half of WR-07: both the router's scope-
+# validation path (operations.py::_require's remediation branch) and the
+# execution-construction path (runtime.py::_execution_service_for_scope) call
+# hybrid_remediation independently within one HTTP request. Without a cache
+# they could observe two different LiveRemediationPlanner/PlanRepository
+# generations even though 03.2-01 already made plan_id itself stable.
+_hybrid_remediation_cache: dict[tuple[str, tuple[str, ...]], tuple[float, Any]] = {}
+
+
+# WR-05: guards creation of the per-(cache, key) locks below. Held only
+# long enough to look up or insert a single lock object -- never across a
+# `build()` call -- so it can never itself become a contention point.
+_ttl_cache_locks_guard = threading.Lock()
+# Keyed by the cache dict's identity (`id(cache)`) and then by cache key, so
+# a lock is scoped to one specific `(cache, key)` pair. This is what lets two
+# callers racing the *same* key serialize on each other while callers
+# resolving *different* keys (e.g. different subscription scopes, or a
+# different TTL-cache family entirely) never block on each other, even while
+# a build() for another key is in flight.
+_ttl_cache_locks: dict[int, dict[Any, threading.RLock]] = {}
+
+
+def _ttl_cache_lock(cache: dict, key: Any) -> threading.RLock:
+    """Return the lock serializing builds for one ``(cache, key)`` pair.
+
+    A :class:`threading.RLock` is used (not a plain ``Lock``) so that if a
+    future ``build()`` ever re-entered :func:`_ttl_cached_value` for the same
+    ``(cache, key)`` on the *same thread*, it would not deadlock against
+    itself -- it would simply re-acquire the lock it already holds. The lock
+    is created lazily on first use and never removed, mirroring the existing
+    unbounded-lifetime cache dicts it protects.
+    """
+    with _ttl_cache_locks_guard:
+        per_cache_locks = _ttl_cache_locks.setdefault(id(cache), {})
+        lock = per_cache_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            per_cache_locks[key] = lock
+        return lock
+
+
+def _ttl_cached_value(
+    cache: dict[tuple[str, tuple[str, ...]], tuple[float, Any]],
+    key: tuple[str, tuple[str, ...]],
+    *,
+    ttl_seconds: float,
+    now: float,
+    build: Callable[[], Any],
+    completion_clock: Callable[[], float] | None = None,
+) -> Any:
+    """Return ``cache[key]`` if it is younger than ``ttl_seconds``, else rebuild.
+
+    Standalone and module-scoped (not nested inside :func:`build_context`) so
+    it is importable and unit-testable on its own, independent of any request
+    context.
+
+    Thread-safe (WR-05): Starlette dispatches plain ``def`` routes -- like
+    every route that resolves ``hybrid_remediation`` -- to a worker thread
+    pool, so two genuinely concurrent requests can race this function for the
+    same key. A lock-free read serves the common warm-cache case with no
+    locking at all. On a miss, callers serialize on a lock scoped to this
+    specific ``(cache, key)`` pair (see :func:`_ttl_cache_lock`) -- never a
+    single module-wide lock -- so concurrent callers for *different* keys are
+    never blocked by a build in flight for another key. The lock is held
+    across `build()` for the racing key so exactly one build happens and
+    every concurrent same-key caller observes the identical cached object,
+    instead of each caller building (and one silently overwriting another's)
+    its own competing value. A second check inside the lock covers a caller
+    that queued behind another that already refreshed the entry while it
+    waited.
+    """
+    cached = cache.get(key)
+    if cached is not None and now - cached[0] < ttl_seconds:
+        return cached[1]
+
+    with _ttl_cache_lock(cache, key):
+        cached = cache.get(key)
+        if cached is not None and now - cached[0] < ttl_seconds:
+            return cached[1]
+        value = build()
+        cache[key] = (
+            completion_clock() if completion_clock is not None else now,
+            value,
+        )
+        return value
 
 
 def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
@@ -807,10 +907,19 @@ def _build_vulnerability_service(
         )
     }
     installed_kbs: set[tuple[str, str]] = set()
+    # WR-06: every target_resource_id seen in a raw silver_patch_findings
+    # row, regardless of kb_id or installed/missing status -- proves the
+    # target was actually observed by this snapshot's source data, so
+    # `VulnerabilityIntelligenceService.is_asset_observed()` can tell "this
+    # target genuinely has zero remaining exposures" apart from "this
+    # target was never observed at all" (e.g. the wrong subscription).
+    observed_target_ids: set[str] = set()
     for table in tables:
         for row in table.get("silver_patch_findings") or []:
             kb_id = str(row.get("kb_id") or "").strip()
             target = str(row.get("target_resource_id") or "")
+            if target:
+                observed_target_ids.add(target)
             if not kb_id or not target:
                 continue
             status = str(row.get("status") or "missing")
@@ -1043,6 +1152,7 @@ def _build_vulnerability_service(
         metadata_connector=None,
         epss_scores=epss_scores,
         kev_catalog=kev_catalog,
+        observed_asset_ids=observed_target_ids,
     )
 
     resolver = _network_reachability_resolver(network)
@@ -2683,6 +2793,13 @@ def build_context() -> ApiContext:
         # Cached per (root, subscription set): every scoped network route hits
         # this path, and each miss is a live ARG round trip. The TTL matches
         # the snapshot-table cache so freshness behaviour is consistent.
+        #
+        # Thread-safe (WR-05): reachable from the background remediation-
+        # verification-coordinator thread too, transitively via
+        # `hybrid_vulnerability` (itself called from
+        # `_target_evidence_refresher`), not only from request threads.
+        # Double-checked locking on a miss, matching `hybrid_vulnerability`
+        # immediately below -- never a single cache-wide lock.
         cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
         now = time.time()
         cached = _hybrid_network_cache.get(cache_key)
@@ -2693,30 +2810,39 @@ def build_context() -> ApiContext:
                 default="",
             )
         else:
-            # Private Link candidates are fetched alongside the network plane
-            # so private-endpoint coverage can be judged per resource rather
-            # than per service kind.
-            paas_types = ", ".join(
-                f"'{name}'" for name in sorted(PRIVATE_LINK_RESOURCE_TYPES)
-            )
-            observation = live_resources.query(
-                QuerySpec(
-                    name="live_network_resources",
-                    table="Resources",
-                    query=(
-                        "Resources "
-                        "| where type startswith 'microsoft.network/' "
-                        f"or tolower(type) in ({paas_types}) "
-                        "| project id, name, type, tenantId, subscriptionId, "
-                        "resourceGroup, location, tags, properties, observed_at=now()"
-                    ),
-                    incremental=False,
-                ),
-                subscription_ids=subscription_ids,
-            )
-            rows = list(observation.rows)
-            observed_at = observation.observed_at
-            _hybrid_network_cache[cache_key] = (now, rows)
+            with _ttl_cache_lock(_hybrid_network_cache, cache_key):
+                cached = _hybrid_network_cache.get(cache_key)
+                if cached is not None and now - cached[0] < _HYBRID_NETWORK_CACHE_TTL_SECONDS:
+                    rows = cached[1]
+                    observed_at = max(
+                        (str(row.get("observed_at") or "") for row in rows),
+                        default="",
+                    )
+                else:
+                    # Private Link candidates are fetched alongside the
+                    # network plane so private-endpoint coverage can be
+                    # judged per resource rather than per service kind.
+                    paas_types = ", ".join(
+                        f"'{name}'" for name in sorted(PRIVATE_LINK_RESOURCE_TYPES)
+                    )
+                    observation = live_resources.query(
+                        QuerySpec(
+                            name="live_network_resources",
+                            table="Resources",
+                            query=(
+                                "Resources "
+                                "| where type startswith 'microsoft.network/' "
+                                f"or tolower(type) in ({paas_types}) "
+                                "| project id, name, type, tenantId, subscriptionId, "
+                                "resourceGroup, location, tags, properties, observed_at=now()"
+                            ),
+                            incremental=False,
+                        ),
+                        subscription_ids=subscription_ids,
+                    )
+                    rows = list(observation.rows)
+                    observed_at = observation.observed_at
+                    _hybrid_network_cache[cache_key] = (now, rows)
         return NetworkIntelligenceService.from_arg_rows(
             rows,
             observed_at=observed_at,
@@ -2731,41 +2857,75 @@ def build_context() -> ApiContext:
         # lookup, preview snapshot, patch target lookup), and each miss is two
         # live ARG round trips. The TTL matches the network cache above so
         # freshness behaviour is consistent across hybrid providers.
+        #
+        # Thread-safe (WR-05): the background remediation-verification-
+        # coordinator thread (Plan 03.4-03) now also reads/writes this same
+        # module-level cache via `_target_evidence_refresher`, on every
+        # due-record reconciliation pass, independently of any request
+        # thread -- a check-then-act race this cache was not originally
+        # built to expect. Mirrors `hybrid_remediation`'s own use of
+        # `_ttl_cached_value`/`_ttl_cache_lock` immediately below: a
+        # lock-free read serves the common warm-cache case, and only a miss
+        # serializes on a lock scoped to this specific `(cache, key)` pair,
+        # never a single cache-wide lock.
         cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
         now = time.time()
         cached = _hybrid_vulnerability_cache.get(cache_key)
         if cached is not None and now - cached[0] < _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS:
             return cached[1]
-        graph = providers.get("semantic_graph")
-        try:
-            network = hybrid_network(subscription_ids)
-        except (RuntimeError, ValueError):
-            network = None
-        service = live_vulnerability_service(
-            live_resources,
-            subscription_ids=subscription_ids,
-            semantic=graph,
-            network=network,
-            build_service=lambda tables, freshness, **kwargs: _build_vulnerability_service(
-                tables,
-                freshness,
-                **kwargs,
-                connection_context=live_connection_business_context(),
-            ),
-        )
-        _hybrid_vulnerability_cache[cache_key] = (now, service)
-        return service
+
+        with _ttl_cache_lock(_hybrid_vulnerability_cache, cache_key):
+            cached = _hybrid_vulnerability_cache.get(cache_key)
+            if cached is not None and now - cached[0] < _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS:
+                return cached[1]
+            graph = providers.get("semantic_graph")
+            try:
+                network = hybrid_network(subscription_ids)
+            except (RuntimeError, ValueError):
+                network = None
+            service = live_vulnerability_service(
+                live_resources,
+                subscription_ids=subscription_ids,
+                semantic=graph,
+                network=network,
+                build_service=lambda tables, freshness, **kwargs: _build_vulnerability_service(
+                    tables,
+                    freshness,
+                    **kwargs,
+                    connection_context=live_connection_business_context(),
+                ),
+            )
+            _hybrid_vulnerability_cache[cache_key] = (now, service)
+            return service
 
     def hybrid_incidents(subscription_ids: list[str]) -> Any:
         return live_incident_engine(live_resources, subscription_ids=subscription_ids)
 
     def hybrid_remediation(subscription_ids: list[str]) -> LiveRemediationPlanner:
-        vulnerability_service = hybrid_vulnerability(subscription_ids)
-        planner = LiveRemediationPlanner(
-            vulnerability_service,
-            repository=PlanRepository(decision_store=_remediation_decision_store()),
+        # Cached per (root, subscription set) exactly like hybrid_vulnerability
+        # above (same TTL): resolves one LiveRemediationPlanner/PlanRepository
+        # per request window so scope validation (operations.py::_require's
+        # remediation branch) and execution construction
+        # (_execution_service_for_scope -> _planner_for_scope) observe the
+        # same generation instead of each building a fresh repository (D-03).
+        cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
+
+        def _build_planner() -> LiveRemediationPlanner:
+            vulnerability_service = hybrid_vulnerability(subscription_ids)
+            planner = LiveRemediationPlanner(
+                vulnerability_service,
+                repository=PlanRepository(decision_store=_remediation_decision_store()),
+            )
+            return _attach_live_defender_correlator(planner, vulnerability_service)
+
+        return _ttl_cached_value(
+            _hybrid_remediation_cache,
+            cache_key,
+            ttl_seconds=_HYBRID_VULNERABILITY_CACHE_TTL_SECONDS,
+            now=time.time(),
+            build=_build_planner,
+            completion_clock=time.time,
         )
-        return _attach_live_defender_correlator(planner, vulnerability_service)
 
     def hybrid_patching(subscription_ids: list[str]) -> PatchingService | None:
         service = hybrid_vulnerability(subscription_ids)
@@ -2818,16 +2978,133 @@ def build_context() -> ApiContext:
                 return hybrid_patching(all_subscription_ids)
         return providers.get("patching", optional=True)
 
+    def _target_evidence_refresher(subscription_id: str, target_id: str) -> dict[str, Any] | None:
+        """Narrowest available live target-evidence refresh for reconciliation.
+
+        Reuses the existing per-request TTL-cached ``hybrid_vulnerability``
+        live ARG path -- the codebase's narrowest available evidence refresh
+        (WR-06/CR-03: do not wait for a full Fabric publication). Returns
+        ``None`` only when the vulnerability service itself is unavailable
+        for this subscription (a deployment with no live provider
+        configured); an empty exposure list for the target is itself
+        evidence that nothing is missing, not an unavailable signal.
+
+        CR-02: an empty/unresolvable ``subscription_id`` or ``target_id``
+        must fail closed as *unavailable* rather than being queried at all.
+        A record with no derivable scope (a real category: legacy
+        pre-Phase-03.2 execution records predate ``scope_attributes``
+        entirely) must never have its unresolvable scope silently coerced
+        into ``hybrid_vulnerability([""])``, whose only empty-list guard
+        does not fire for a non-empty list containing an empty string --
+        the call would otherwise reach Azure Resource Graph with a
+        malformed subscription id, and *any* resulting empty row set would
+        be indistinguishable downstream from "this asset has no exposures",
+        producing a false ``reconciled_clean`` or a false promotion of a
+        submission-ambiguous failure to ``succeeded`` without ever having
+        queried the correct (or any) subscription.
+
+        WR-06: CR-02 closes the *empty*-scope case, but a non-empty,
+        syntactically valid, *wrong* subscription id (e.g. a resource
+        migrated across subscriptions, or a stale ``scope_attributes``
+        value) still reaches ``asset_exposures()`` unchanged, and an
+        absent/wrong-subscription target produces the identical empty
+        ``missing_kbs`` result as a genuinely fully-patched target. The
+        returned ``target_observed`` flag makes that distinction explicit:
+        ``True`` only when the target was actually seen in this snapshot's
+        source data (an active exposure row, or a raw Update-Manager
+        assessment/installation record even with zero remaining KBs);
+        ``False`` when the target was not observed at all, so a caller can
+        require confirmed observation before trusting an empty
+        ``missing_kbs`` as "clean" (see ``RemediationExecutionService.
+        reconcile_evidence``/``reconcile_ambiguous_submission``).
+        """
+        subscription_id = str(subscription_id or "").strip()
+        target_id = str(target_id or "").strip()
+        if not subscription_id or not target_id:
+            return None  # unresolvable scope: unavailable, not "nothing missing"
+        service = hybrid_vulnerability([subscription_id])
+        if service is None:
+            return None
+        rows = service.asset_exposures()
+        target_row = next(
+            (
+                row
+                for row in rows
+                if str(row.get("asset_id") or "").casefold() == target_id.casefold()
+            ),
+            None,
+        )
+        missing_kbs = list(target_row.get("missing_kbs") or []) if target_row else []
+        target_observed = target_row is not None or service.is_asset_observed(target_id)
+        return {
+            "missing_kbs": missing_kbs,
+            "assessed_at": service.freshness,
+            "target_observed": target_observed,
+        }
+
     def _execution_service_for_scope(scope: Scope) -> RemediationExecutionService:
         planner = _planner_for_scope(scope)
         if planner is not None and hasattr(planner, "generate_plans"):
             planner.generate_plans()
+        deadline_seconds = float(
+            os.environ.get(ENV_REMEDIATION_VERIFICATION_DEADLINE_SECONDS, "").strip()
+            or VERIFICATION_DEADLINE_SECONDS
+        )
         return RemediationExecutionService(
             plan_repository=getattr(planner, "repository", None),
             patching_service=_patching_for_scope(scope),
             defender_configuration_adapter=_defender_configuration_adapter(),
             execution_store=_remediation_execution_store(),
             execution_verifier=_execution_verifier(),
+            target_evidence_refresher=_target_evidence_refresher,
+            verification_deadline_seconds=deadline_seconds,
+            # CR-03 fix: both PatchingService production factories in this
+            # same file (_load_patching_service, hybrid_patching) already
+            # pass this identical `_allow_self_approval` closure -- this
+            # constructor was the one isolated omission, silently defaulting
+            # the shared gate's own self-approval policy to False forever
+            # regardless of the administrator's real
+            # agent_policy.allow_self_approval setting, even though the
+            # shared gate (Plan 03.5-05) now runs and raises before
+            # PatchingService's own correctly-wired check is ever reached.
+            allow_self_approval=_allow_self_approval,
+            # WR-02 fix: thread this request's live planner's
+            # ApprovalEngine.policy_version into the execution gate the same
+            # way `policy_version_for(planner)` projects it at the read-side
+            # routes, rather than the gate's previous self-referential reuse
+            # of the very decision being evaluated's own recorded value.
+            # Resolved lazily (a closure, not a captured value) so a planner
+            # rebuilt mid-request-window is still reflected.
+            policy_version_resolver=lambda: policy_version_for(planner),
+        )
+
+    def _verification_coordinator() -> RemediationVerificationCoordinator:
+        # A closure (not truly module-level) because it depends on
+        # `_target_evidence_refresher` above, which itself needs
+        # `hybrid_vulnerability`'s per-request TTL cache defined in this
+        # same `build_context()` closure. The coordinator-owned service
+        # below is constructed with `plan_repository=None,
+        # patching_service=None`: it only ever calls
+        # `poll_verification`/`reconcile_evidence`/
+        # `reconcile_ambiguous_submission`, none of which touch
+        # `self._plans`/`self._patching` (Plan 03.4-02), so it structurally
+        # cannot execute, retry, or supersede a plan -- it can only
+        # observe/reconcile already-durable records (mirrors CR-06's
+        # fail-closed handling, not a workaround of it).
+        deadline_seconds = float(
+            os.environ.get(ENV_REMEDIATION_VERIFICATION_DEADLINE_SECONDS, "").strip()
+            or VERIFICATION_DEADLINE_SECONDS
+        )
+        return RemediationVerificationCoordinator(
+            execution_store=_remediation_execution_store(),
+            execution_service=RemediationExecutionService(
+                plan_repository=None,
+                patching_service=None,
+                execution_store=_remediation_execution_store(),
+                execution_verifier=_execution_verifier(),
+                target_evidence_refresher=_target_evidence_refresher,
+                verification_deadline_seconds=deadline_seconds,
+            ),
         )
 
     def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:
@@ -2975,4 +3252,5 @@ def build_context() -> ApiContext:
             "inventory_read_port", optional=True
         ),
         fabric_iq_provider=lambda: providers.get("fabric_iq", optional=True),
+        verification_coordinator_provider=_verification_coordinator,
     )

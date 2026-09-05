@@ -10,7 +10,7 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
-import { titleize } from "@/lib/format";
+import { relativeTime, titleize } from "@/lib/format";
 import type { ScopeSelection } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import {
@@ -18,24 +18,46 @@ import {
   remediationApi,
 } from "@/lib/services";
 import type {
+  RemediationApprovalDecision,
+  RemediationApprovalRequirement,
+  RemediationAvailablePatch,
+  RemediationBlocker,
+  RemediationDegradation,
+  RemediationEvidenceReconciliation,
   RemediationExecution,
   RemediationWorkflow,
 } from "@/lib/services";
 import { ApiError } from "@/lib/types";
 import type { RemediationDecision, RemediationPlan } from "@/lib/types";
 
-type WorkflowStep = "select" | "review" | "approve" | "run" | "verify";
+import { usePollingBackoff } from "./polling";
 
-const WORKFLOW_STEPS: Array<{ id: WorkflowStep; label: string }> = [
-  { id: "select", label: "Select fix" },
-  { id: "review", label: "Review impact" },
-  { id: "approve", label: "Approve" },
-  { id: "run", label: "Run" },
-  { id: "verify", label: "Verify" },
-];
+import { BLOCKER_VOCABULARY, WORKFLOW_STEPS, blockerCopyWithTelemetry } from "./blockers";
+import type { WorkflowStep } from "./blockers";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stepBlockerEcho(blockers: RemediationBlocker[] | undefined, step: WorkflowStep) {
+  const rows = (blockers ?? []).filter((row) => row.step === step && row.code !== "already_succeeded");
+  if (!rows.length) return null;
+  return (
+    <>
+      {rows.map((row, index) => {
+        const copy = blockerCopyWithTelemetry(row.code, row.step, row.message, row.next_action, row.severity);
+        return (
+          <p
+            key={`${row.code}-${index}`}
+            className={`callout ${copy.severity === "critical" ? "callout-critical" : "callout-warning"}`}
+            role="status"
+          >
+            {copy.message} <strong>Next:</strong> {copy.nextAction}
+          </p>
+        );
+      })}
+    </>
+  );
 }
 
 function details(value: unknown, fallback = "Not specified"): string {
@@ -57,6 +79,34 @@ function shortenId(value: string, keep = 2): string {
   const segments = trimmed.split("/").filter(Boolean);
   if (segments.length <= keep) return trimmed;
   return `…/${segments.slice(-keep).join("/")}`;
+}
+
+function summaryDetails(value: unknown, fallback = "Not specified"): string {
+  if (!isRecord(value)) return details(value, fallback);
+
+  const preferredKeys = ["message", "service", "application", "level", "status", "name"];
+  const preferred = preferredKeys
+    .map((key) => value[key])
+    .filter((item) => item !== null && item !== undefined && item !== "")
+    .map((item) => details(item, ""));
+  if (preferred.length) return preferred.map(titleize).join(" · ");
+
+  if (isRecord(value.overall_risk)) {
+    return details(value.overall_risk, fallback);
+  }
+  if (Array.isArray(value.affected_services)) {
+    return details(value.affected_services, fallback);
+  }
+  return details(value, fallback);
+}
+
+function patchClassification(patch: RemediationAvailablePatch): string {
+  const value = patch.severity || patch.classification || "";
+  const normalized = String(value)
+    .trim()
+    .replace(/^\[['"]?/, "")
+    .replace(/['"]?\]$/, "");
+  return normalized ? titleize(normalized) : "";
 }
 
 function citationLabel(citation: unknown): { title: string; meta: string } {
@@ -84,6 +134,97 @@ function resourceId(plan: RemediationPlan | RemediationWorkflow["plan"]): string
     return String(plan.resource.id ?? plan.resource.resource_key ?? plan.resource.name ?? "");
   }
   return String(plan.resource ?? plan.resource_key ?? "");
+}
+
+function resourceName(plan: RemediationPlan | RemediationWorkflow["plan"]): string {
+  if (isRecord(plan.resource)) {
+    return String(plan.resource.name ?? plan.resource.id ?? "");
+  }
+  return String(plan.resource ?? "");
+}
+
+// Closed, machine-readable vocabulary -- exact locked copy from
+// 03.5-UI-SPEC.md's "Approval Requirement Contract" table. Never
+// paraphrased.
+const UNMET_REASON_COPY: Record<string, string> = {
+  pending: "No decision recorded yet for this role.",
+  wrong_role_decision: "A decision exists, but not from the required {role}. This requirement remains unmet.",
+  stale_action_version: "The plan's action version changed since the last decision for this role.",
+  stale_evidence_snapshot: "The executable preview changed since the last decision for this role.",
+  stale_policy_version: "The approval policy was updated since the last decision for this role.",
+  expired: "The last decision for this role expired.",
+};
+
+// Exact locked copy fragments for joining `stale_reasons` in the
+// plan-level Stale Approval State Contract -- same closed vocabulary as
+// the per-row unmet_reason table above, just phrased as a fragment.
+const STALE_REASON_FRAGMENT: Record<string, string> = {
+  stale_action_version: "the plan's action version changed",
+  stale_evidence_snapshot: "the executable preview changed",
+  stale_policy_version: "the approval policy was updated",
+};
+
+function joinStaleReasons(reasons: string[]): string {
+  const fragments = reasons.map((reason) => STALE_REASON_FRAGMENT[reason] ?? reason);
+  if (fragments.length === 0) return "";
+  if (fragments.length === 1) return fragments[0];
+  return `${fragments.slice(0, -1).join(", ")} and ${fragments[fragments.length - 1]}`;
+}
+
+function ApprovalRequirementsList({ requirements }: { requirements: RemediationApprovalRequirement[] }) {
+  const satisfiedCount = requirements.filter((row) => row.satisfied).length;
+  return (
+    <section className="remediation-approval-requirements">
+      <div className="remediation-section-heading">
+        <h3>Approval requirements</h3>
+        <span>{satisfiedCount} of {requirements.length} requirements satisfied</span>
+      </div>
+      {requirements.map((row, index) => (
+        <div key={`${row.policy_id}-${row.stage}-${index}`} className="remediation-approval-requirement-row">
+          <div className="remediation-approval-requirement-heading">
+            <StatusBadge
+              label={row.satisfied ? "Satisfied" : "Unmet"}
+              tone={row.satisfied ? "success" : "warning"}
+            />
+            <strong className="remediation-approval-requirement-role">{row.role}</strong>
+          </div>
+          <dl className="remediation-approval-requirement-meta">
+            <div>
+              <dt>Policy</dt>
+              <dd><code title={row.policy_id}>{row.policy_id}</code></dd>
+            </div>
+            <div>
+              <dt>Stage</dt>
+              <dd>{row.stage}</dd>
+            </div>
+          </dl>
+          {!row.satisfied && row.unmet_reason && (
+            <p className="remediation-approval-requirement-message">
+              {(UNMET_REASON_COPY[row.unmet_reason] ?? row.unmet_reason).replace("{role}", row.role)}
+            </p>
+          )}
+          {row.satisfied && (
+            // Phase 03.5 CR-05 fix: disclose exactly which decision/approver
+            // satisfied this row -- an operator must never mistake one
+            // person's single sign-off for genuine multi-stakeholder
+            // approval across every row that happens to show "Satisfied".
+            <p className="remediation-approval-requirement-satisfied-by">
+              Satisfied by <strong>{row.approver ?? "unknown"}</strong>
+              {row.decision_id && <> (decision <code>{row.decision_id}</code>)</>}
+            </p>
+          )}
+          <details>
+            <summary>Evidence required</summary>
+            <ul>
+              {(row.approval_evidence_required ?? []).map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </details>
+        </div>
+      ))}
+    </section>
+  );
 }
 
 function resourceMatches(plan: RemediationPlan, requested: string): boolean {
@@ -128,6 +269,25 @@ export default function RemediationPage() {
   );
 }
 
+function withExecution(
+  workflow: RemediationWorkflow,
+  execution: RemediationExecution,
+): RemediationWorkflow {
+  const replace = (rows: RemediationExecution[]) => {
+    const next = rows.filter((row) => row.execution_id !== execution.execution_id);
+    return [execution, ...next];
+  };
+  return {
+    ...workflow,
+    execution,
+    executions: replace(workflow.executions),
+    audit: {
+      ...workflow.audit,
+      executions: replace(workflow.audit.executions),
+    },
+  };
+}
+
 function RemediationContent() {
   const { scope } = useScope();
   const searchParams = useSearchParams();
@@ -158,11 +318,31 @@ function RemediationContent() {
   const [decision, setDecision] = useState<RemediationDecision["decision"]>("approved");
   const [decisionReason, setDecisionReason] = useState("");
   const [decisionExpiresAt, setDecisionExpiresAt] = useState("");
+  const [selectedRoleId, setSelectedRoleId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState("");
   const [confirmRun, setConfirmRun] = useState(false);
-  const [selectedPatchIds, setSelectedPatchIds] = useState<string[]>([]);
+  const [selectedPatchIds, setSelectedPatchIds] = useState<string[] | null>(null);
+  const [patchSelectionRefusal, setPatchSelectionRefusal] = useState("");
   const requestId = useRef(0);
+
+  // Phase 03.5 CR-05 fix: a decision attests exactly one required role
+  // (approval_role_id), so the operator must pick which unmet requirement
+  // row a new approval decision is for whenever more than one distinct
+  // role is still unmet. Deduped by role_id (falling back to role text
+  // for a legacy requirement row with no role_id at all).
+  const unmetRoleOptions = useMemo(() => {
+    const rows = workflow?.approval.requirements ?? [];
+    const seen = new Map<string, string>();
+    for (const row of rows) {
+      if (row.satisfied) continue;
+      const roleId = String(row.role_id || row.role || "");
+      if (!roleId || seen.has(roleId)) continue;
+      seen.set(roleId, row.role);
+    }
+    return Array.from(seen, ([roleId, role]) => ({ roleId, role }));
+  }, [workflow?.approval.requirements]);
+  const roleSelectionRequired = decision === "approved" && unmetRoleOptions.length > 1;
 
   const planRows = useMemo(
     () => plans.data?.data.plans ?? [],
@@ -202,7 +382,7 @@ function RemediationContent() {
     const currentRequest = ++requestId.current;
     setWorkflowLoading(true);
     setWorkflowError("");
-    void remediationApi.workflow(selectedPlanId, effectiveScope, selectedPatchIds)
+    void remediationApi.workflow(selectedPlanId, effectiveScope, selectedPatchIds ?? [])
       .then((response) => {
         if (requestId.current !== currentRequest) return;
         setWorkflow(response.data);
@@ -226,15 +406,60 @@ function RemediationContent() {
     setActiveStep(selectedPlanId ? "review" : "select");
     setActionError("");
     setConfirmRun(false);
-    setSelectedPatchIds([]);
+    setSelectedPatchIds(null);
+    setPatchSelectionRefusal("");
+    setSelectedRoleId("");
   }, [selectedPlanId]);
 
+  // Patch Selection Safety Contract: "Evidence-refresh reconciliation"
+  // (locked). A refreshed available-patches set that shrinks below a
+  // current explicit selection narrows (removal-only) or refuses -- it
+  // never falls back to "all".
   useEffect(() => {
-    const execution = workflow?.execution;
-    if (!execution || !["queued", "running", "retrying"].includes(execution.status)) return;
-    const timer = setTimeout(() => setWorkflowRefresh((value) => value + 1), 1500);
-    return () => clearTimeout(timer);
-  }, [workflow?.execution]);
+    const availablePatches = workflow?.preview?.execution_snapshot?.available_patches;
+    if (!availablePatches || selectedPatchIds === null) return;
+    const availableIds = new Set(availablePatches.map((patch) => patch.patch_id));
+    const stillAvailable = selectedPatchIds.filter((id) => availableIds.has(id));
+    if (stillAvailable.length === selectedPatchIds.length) return;
+    if (stillAvailable.length > 0) {
+      setSelectedPatchIds(stillAvailable);
+      setPatchSelectionRefusal("");
+    } else {
+      setPatchSelectionRefusal(
+        "Your previously selected patches are no longer available. Choose at least one currently available patch.",
+      );
+    }
+    // selectedPatchIds intentionally excluded: this effect only reacts to
+    // the *available* set narrowing, not to the operator's own selection
+    // changes (which are handled inline by the checkbox handler).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflow?.preview?.execution_snapshot?.available_patches]);
+
+  const executionStatus = workflow?.execution?.status ?? "";
+  const pollingActive = ["queued", "running", "retrying"].includes(executionStatus);
+  const pollingResetKey = `${selectedPlanId}:${workflow?.execution?.execution_id ?? ""}`;
+  const handlePoll = useRef(() => setWorkflowRefresh((value) => value + 1));
+  handlePoll.current = () => {
+    const executionId = workflow?.execution?.execution_id;
+    if (!executionId) {
+      setWorkflowRefresh((value) => value + 1);
+      return;
+    }
+    void remediationApi.execution(executionId, effectiveScope)
+      .then((response) => {
+        setWorkflow((current) => (
+          current ? withExecution(current, response.data) : current
+        ));
+      })
+      .catch((error) => {
+        setActionError(error instanceof Error ? error.message : String(error));
+      });
+  };
+  const polling = usePollingBackoff({
+    active: pollingActive,
+    resetKey: pollingResetKey,
+    onPoll: () => handlePoll.current(),
+  });
 
   const recordDecision = async () => {
     const planId = String(workflow?.plan.plan_id ?? "");
@@ -252,6 +477,10 @@ function RemediationContent() {
       setActionError("Approved decisions require a future expiry.");
       return;
     }
+    if (roleSelectionRequired && !selectedRoleId) {
+      setActionError("Select which required role this decision is for.");
+      return;
+    }
     setSubmitting(true);
     setActionError("");
     try {
@@ -265,13 +494,21 @@ function RemediationContent() {
           preview_snapshot_hash: decision === "approved"
             ? workflow.preview?.execution_snapshot?.snapshot_hash
             : undefined,
-          selected_patch_ids: decision === "approved" ? selectedPatchIds : [],
+          selected_patch_ids: decision === "approved" ? (selectedPatchIds ?? []) : [],
+          role_id: decision === "approved"
+            ? (selectedRoleId || unmetRoleOptions[0]?.roleId || "")
+            : "",
         },
         effectiveScope,
       );
       setDecisionReason("");
+      setSelectedRoleId("");
       setWorkflowRefresh((value) => value + 1);
-      setActiveStep(decision === "approved" ? "run" : "approve");
+      setActiveStep(
+        decision === "approved" && unmetRoleOptions.length <= 1
+          ? "run"
+          : "approve",
+      );
     } catch (error) {
       if (error instanceof ApiError && error.details?.reason === "stale_execution_preview") {
         setActionError("The preview changed. Review the refreshed impact before approving.");
@@ -291,9 +528,11 @@ function RemediationContent() {
     setSubmitting(true);
     setActionError("");
     try {
-      await remediationApi.execute(planId, effectiveScope);
+      const response = await remediationApi.execute(planId, effectiveScope);
+      setWorkflow((current) => (
+        current ? withExecution(current, response.data) : current
+      ));
       setConfirmRun(false);
-      setWorkflowRefresh((value) => value + 1);
       setActiveStep("verify");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
@@ -307,10 +546,52 @@ function RemediationContent() {
     setSubmitting(true);
     setActionError("");
     try {
-      await remediationApi.retry(execution.execution_id, effectiveScope);
-      setWorkflowRefresh((value) => value + 1);
+      const response = await remediationApi.retry(execution.execution_id, effectiveScope);
+      setWorkflow((current) => (
+        current ? withExecution(current, response.data) : current
+      ));
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const [supersedeIneligibilityReason, setSupersedeIneligibilityReason] = useState("");
+
+  const cancelExecution = async (execution: RemediationExecution) => {
+    if (!execution.cancellable || submitting) return;
+    setSubmitting(true);
+    setActionError("");
+    try {
+      const response = await remediationApi.cancel(execution.execution_id, effectiveScope);
+      setWorkflow((current) => (
+        current ? withExecution(current, response.data) : current
+      ));
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const supersedeExecution = async (execution: RemediationExecution, reason: string) => {
+    if (!execution.supersedable || submitting) return;
+    setSubmitting(true);
+    setActionError("");
+    setSupersedeIneligibilityReason("");
+    try {
+      const response = await remediationApi.supersede(execution.execution_id, reason, effectiveScope);
+      setWorkflow((current) => (
+        current ? withExecution(current, response.data) : current
+      ));
+    } catch (error) {
+      if (error instanceof ApiError && typeof error.details?.reason === "string") {
+        setSupersedeIneligibilityReason(error.details.reason);
+        setWorkflowRefresh((value) => value + 1);
+      } else {
+        setActionError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -364,6 +645,14 @@ function RemediationContent() {
         {WORKFLOW_STEPS.map((step) => {
           const projected = workflow?.steps.find((item) => item.id === step.id)?.status;
           const status = step.id === "select" ? "complete" : projected ?? "pending";
+          const stepBlockers = (workflow?.blockers ?? []).filter((row) => row.step === step.id);
+          const blockedSeverityStyle = status === "blocked"
+            ? {
+                color: stepBlockers.some((row) => (row.severity ?? BLOCKER_VOCABULARY[row.code]?.severity) === "critical")
+                  ? "var(--color-critical)"
+                  : "var(--color-warning)",
+              }
+            : undefined;
           return (
             <button
               type="button"
@@ -374,11 +663,15 @@ function RemediationContent() {
             >
               <span>{WORKFLOW_STEPS.findIndex((item) => item.id === step.id) + 1}</span>
               <strong>{step.label}</strong>
-              <small>{titleize(status)}</small>
+              <small style={blockedSeverityStyle}>{titleize(status)}</small>
             </button>
           );
         })}
       </nav>
+
+      {workflow && workflow.blockers.length > 0 && (
+        <WorkflowBlockers blockers={workflow.blockers} activeStep={activeStep} />
+      )}
 
       {pageError ? (
         <StatePanel title="Remediation plans unavailable" message={pageError.message} tone="error" />
@@ -392,11 +685,11 @@ function RemediationContent() {
                 <h2>Select fix</h2>
                 <p>Only generated plans can enter approval and execution.</p>
               </div>
-              <StatusBadge label={`${planRows.length} fixes`} tone="info" />
+              <StatusBadge label={`${planRows.length} ${planRows.length === 1 ? "fix" : "fixes"}`} tone="info" />
             </div>
             <div className="card-body">
-              <label>
-                Search fixes
+              <label className="remediation-search-field">
+                <span>Search fixes</span>
                 <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Action, resource, or service" />
               </label>
               <div className="plan-list">
@@ -412,7 +705,9 @@ function RemediationContent() {
                       <StatusBadge label={titleize(String(plan.action_id ?? "manual review"))} tone="info" compact />
                     </span>
                     <strong>{plan.title}</strong>
-                    <small>{resourceId(plan) || plan.business_service || "Scope not mapped"}</small>
+                    <small title={resourceId(plan)}>
+                      {shortenId(resourceId(plan), 4) || plan.business_service || "Scope not mapped"}
+                    </small>
                   </button>
                 ))}
                 {!filteredPlans.length && <StatePanel title="No governed fixes" message="No generated remediation plan matches this scope and search." />}
@@ -445,49 +740,123 @@ function RemediationContent() {
                     <section>
                       <h3>Selected fix</h3>
                       <p>{workflow.plan.title}</p>
-                      <p>Resource: <code>{resourceId(workflow.plan) || "Not mapped"}</code></p>
+                      <p>Resource: <code title={resourceId(workflow.plan)}>{shortenId(resourceId(workflow.plan), 4) || "Not mapped"}</code></p>
                       <button type="button" className="button button-primary" onClick={() => setActiveStep("review")}>Review impact</button>
                     </section>
                   )}
 
                   {activeStep === "review" && (
                     <>
-                      {!workflow.action.executable && (
-                        <p className="callout callout-warning" role="status">
-                          Manual review required: {workflow.action.manual_review_reason}
-                        </p>
-                      )}
-                      {workflow.preview_error && (
-                        <p className="callout callout-warning">Preview blocked: {titleize(workflow.preview_error)}</p>
-                      )}
+                      {stepBlockerEcho(workflow.blockers, "review")}
+                      <WorkflowDegradation degradation={workflow.degradation} />
                       <section className="remediation-review-grid">
-                        <div>
-                          <h3>Impact and evidence</h3>
-                          <p>Disposition: {titleize(workflow.business_decision.disposition ?? "not assessed")}</p>
-                          <p>Business impact: {details(workflow.business_decision.business_impact)}</p>
-                          <p>Cost of acting: {details(workflow.business_decision.cost_of_action)}</p>
-                          <p>Cost of inaction: {details(workflow.business_decision.cost_of_inaction)}</p>
-                          <p>Risk: {details(workflow.plan.risk_assessment)}</p>
-                          <p>Dependencies: {details(workflow.plan.dependencies)}</p>
+                        <div className="remediation-review-panel">
+                          <div className="remediation-review-panel-heading">
+                            <span className="eyebrow">Decision context</span>
+                            <h3>Impact summary</h3>
+                          </div>
+                          <dl className="remediation-review-facts">
+                            <div>
+                              <dt>Disposition</dt>
+                              <dd>
+                                <StatusBadge
+                                  label={titleize(workflow.business_decision.disposition ?? "not assessed")}
+                                  tone="info"
+                                  compact
+                                />
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>Business impact</dt>
+                              <dd>{summaryDetails(workflow.business_decision.business_impact)}</dd>
+                            </div>
+                            <div>
+                              <dt>Cost of acting</dt>
+                              <dd>{summaryDetails(workflow.business_decision.cost_of_action)}</dd>
+                            </div>
+                            <div>
+                              <dt>Cost of inaction</dt>
+                              <dd>{summaryDetails(workflow.business_decision.cost_of_inaction)}</dd>
+                            </div>
+                            <div>
+                              <dt>Risk</dt>
+                              <dd>{summaryDetails(workflow.plan.risk_assessment)}</dd>
+                            </div>
+                            <div>
+                              <dt>Dependencies</dt>
+                              <dd>{summaryDetails(workflow.plan.dependencies)}</dd>
+                            </div>
+                          </dl>
                         </div>
-                        <div>
-                          <h3>Exact operation</h3>
-                          <p>Family: {titleize(workflow.action.family)}</p>
-                          <p>Action: <code>{workflow.action.action_id}</code></p>
-                          <p>Target: <code>{workflow.preview?.execution_snapshot?.target_id ?? resourceId(workflow.plan)}</code></p>
-                          <p>Operation: <code>{workflow.preview?.operation ?? "Manual review only"}</code></p>
+                        <div className="remediation-review-panel">
+                          <div className="remediation-review-panel-heading">
+                            <span className="eyebrow">Execution scope</span>
+                            <h3>Exact operation</h3>
+                          </div>
+                          <dl className="remediation-review-facts">
+                            <div>
+                              <dt>Action</dt>
+                              <dd>{titleize(workflow.action.action_id)}</dd>
+                            </div>
+                            <div>
+                              <dt>Operation</dt>
+                              <dd>{titleize(workflow.preview?.operation ?? "Manual review only")}</dd>
+                            </div>
+                            <div className="remediation-review-fact-wide">
+                              <dt>Target</dt>
+                              <dd>
+                                <strong>{resourceName(workflow.plan) || workflow.plan.title}</strong>
+                                <code title={workflow.preview?.execution_snapshot?.target_id ?? resourceId(workflow.plan)}>
+                                  {shortenId(workflow.preview?.execution_snapshot?.target_id ?? resourceId(workflow.plan), 4)}
+                                </code>
+                              </dd>
+                            </div>
+                          </dl>
                           {workflow.preview?.execution_snapshot?.snapshot_kind === "defender_configuration" ? (
+                            <dl className="remediation-review-facts remediation-state-change">
+                              <div>
+                                <dt>Current state</dt>
+                                <dd>{details(workflow.preview.execution_snapshot.prior_properties)}</dd>
+                              </div>
+                              <div>
+                                <dt>Approved state</dt>
+                                <dd>{details(workflow.preview.execution_snapshot.desired_properties)}</dd>
+                              </div>
+                            </dl>
+                          ) : null}
+                          <div className="remediation-rollback">
+                            <span className="eyebrow">Rollback plan</span>
+                            <p>{summaryDetails(workflow.plan.rollback_plan)}</p>
+                          </div>
+                        </div>
+                      </section>
+                      {workflow.preview?.execution_snapshot?.snapshot_kind !== "defender_configuration" && (
+                        <section className="remediation-review-section">
+                          <div className="remediation-section-heading">
+                            <div>
+                              <span className="eyebrow">Change contents</span>
+                              <h3>Patch selection</h3>
+                            </div>
+                            {workflow.preview?.execution_snapshot?.available_patches?.length ? (
+                              <StatusBadge
+                                label={`${selectedPatchIds?.length ?? workflow.preview.execution_snapshot.available_patches.length} selected`}
+                                tone="info"
+                                compact
+                              />
+                            ) : null}
+                          </div>
+                          {workflow.preview?.execution_snapshot?.available_patches?.length ? (
                             <>
-                              <p>Prior state: {details(workflow.preview.execution_snapshot.prior_properties)}</p>
-                              <p>Approved state: {details(workflow.preview.execution_snapshot.desired_properties)}</p>
-                            </>
-                          ) : workflow.preview?.execution_snapshot?.available_patches?.length ? (
-                            <div className="remediation-patch-picker">
-                              <p>Select which patches to install:</p>
+                              <p className="remediation-patch-mode-line">
+                                {selectedPatchIds === null
+                                  ? `All ${workflow.preview.execution_snapshot.available_patches.length} eligible patches are selected.`
+                                  : `${selectedPatchIds.length} of ${workflow.preview.execution_snapshot.available_patches.length} patches explicitly selected.`}
+                              </p>
                               <ul className="remediation-patch-list">
                                 {workflow.preview.execution_snapshot.available_patches.map((patch) => {
-                                  const checked = selectedPatchIds.length === 0
-                                    || selectedPatchIds.includes(patch.patch_id);
+                                  const allPatchIds = workflow.preview!.execution_snapshot!.available_patches!.map((p) => p.patch_id);
+                                  const checked = selectedPatchIds === null || selectedPatchIds.includes(patch.patch_id);
+                                  const classification = patchClassification(patch);
                                   return (
                                     <li key={patch.patch_id} className="remediation-patch-item">
                                       <label>
@@ -495,36 +864,54 @@ function RemediationContent() {
                                           type="checkbox"
                                           checked={checked}
                                           onChange={(event) => {
-                                            const all = workflow.preview!.execution_snapshot!.available_patches!.map((p) => p.patch_id);
-                                            const current = selectedPatchIds.length === 0 ? all : selectedPatchIds;
+                                            const current = selectedPatchIds === null ? allPatchIds : selectedPatchIds;
                                             const next = event.target.checked
                                               ? [...current, patch.patch_id]
                                               : current.filter((id) => id !== patch.patch_id);
-                                            // Empty selection means "all" server-side; represent
-                                            // deselect-everything as an explicit non-empty list
-                                            // when it differs from the full set, otherwise clear
-                                            // back to the default (all) state.
-                                            setSelectedPatchIds(next.length === all.length ? [] : next);
+                                            if (next.length === allPatchIds.length) {
+                                              setSelectedPatchIds(null);
+                                              setPatchSelectionRefusal("");
+                                            } else if (next.length === 0) {
+                                              setPatchSelectionRefusal(
+                                                "At least one patch must remain selected for this plan to be approved. Select a patch below, or use the mode line above to restore all eligible patches.",
+                                              );
+                                            } else {
+                                              setSelectedPatchIds(next);
+                                              setPatchSelectionRefusal("");
+                                            }
                                           }}
                                         />
-                                        <strong> {patch.patch_id}</strong>
-                                        {patch.title ? ` — ${patch.title}` : ""}
-                                        {patch.severity ? ` (${patch.severity})` : ""}
-                                        {patch.reboot_required ? " · reboot required" : ""}
+                                        <span className="remediation-patch-content">
+                                          <strong>{patch.title || `Update ${patch.patch_id}`}</strong>
+                                          <span className="remediation-patch-meta">
+                                            <code>{patch.patch_id}</code>
+                                            {classification && <StatusBadge label={classification} tone={classification.toLowerCase() === "critical" ? "critical" : "warning"} compact />}
+                                            {patch.reboot_required && <StatusBadge label="Reboot required" tone="warning" compact />}
+                                          </span>
+                                        </span>
                                       </label>
                                     </li>
                                   );
                                 })}
                               </ul>
-                            </div>
+                              {patchSelectionRefusal && (
+                                <p className="callout callout-warning" role="alert">{patchSelectionRefusal}</p>
+                              )}
+                            </>
                           ) : (
-                            <p>Patch selection: {workflow.preview?.execution_snapshot?.patch_ids.join(", ") || "None"}</p>
+                            <p className="remediation-empty-detail">
+                              {workflow.preview?.execution_snapshot?.patch_ids.length
+                                ? workflow.preview.execution_snapshot.patch_ids.join(", ")
+                                : "No patch inventory is attached to this snapshot."}
+                            </p>
                           )}
-                          <p>Rollback: {details(workflow.plan.rollback_plan)}</p>
+                        </section>
+                      )}
+                      <section className="remediation-review-section">
+                        <div className="remediation-review-panel-heading">
+                          <span className="eyebrow">Source material</span>
+                          <h3>Evidence citations</h3>
                         </div>
-                      </section>
-                      <section>
-                        <h3>Evidence citations</h3>
                         {selectedEvidence.length ? (
                           <ul className="remediation-evidence-list">
                             {selectedEvidence.slice(0, 8).map((citation, index) => {
@@ -545,7 +932,9 @@ function RemediationContent() {
                         )}
                       </section>
                       {workflow.action.executable && workflow.preview?.execution_snapshot ? (
-                        <button type="button" className="button button-primary" onClick={() => setActiveStep("approve")}>Continue to approval</button>
+                        <div className="remediation-review-actions">
+                          <button type="button" className="button button-primary" onClick={() => setActiveStep("approve")}>Continue to approval</button>
+                        </div>
                       ) : !workflow.action.executable ? (
                         <p>This recommendation cannot enter automated approval or execution. Route it to the owning platform team with the evidence above.</p>
                       ) : (
@@ -556,39 +945,81 @@ function RemediationContent() {
 
                   {activeStep === "approve" && (
                     <>
+                      {stepBlockerEcho(workflow.blockers, "approve")}
+                      <WorkflowDegradation degradation={workflow.degradation} />
                       {!workflow.action.executable ? (
                         <StatePanel title="Manual review only" message={workflow.action.manual_review_reason} />
                       ) : !workflow.preview?.execution_snapshot ? (
                         <StatePanel title="Preview required" message="Return to Review impact and resolve the provider preview before approval." />
                       ) : (
                         <>
-                          <p className="callout callout-warning">
-                            Approval binds to snapshot <code>{workflow.preview?.execution_snapshot?.snapshot_hash ?? "unavailable"}</code>. It does not run the change.
+                          <p className="callout callout-warning remediation-snapshot-callout">
+                            <span>Approval binds to this exact snapshot. It does not run the change.</span>
+                            <code title={workflow.preview?.execution_snapshot?.snapshot_hash ?? "unavailable"}>
+                              {workflow.preview?.execution_snapshot?.snapshot_hash
+                                ? `${workflow.preview.execution_snapshot.snapshot_hash.slice(0, 12)}…`
+                                : "unavailable"}
+                            </code>
                           </p>
-                          <p>Required: {details(workflow.approval.requirements)}</p>
-                          <p>Latest decision: {workflow.approval.latest ? `${workflow.approval.latest.decision} by ${workflow.approval.latest.approver}` : "None"}</p>
+                          {workflow.approval.allow_self_approval && (
+                            <p className="callout">
+                              Demo policy exception: self-approval is enabled for this environment.
+                              Approvers may approve their own requests. Production policy defaults this off.
+                            </p>
+                          )}
+                          <ApprovalRequirementsList requirements={workflow.approval.requirements} />
                           <div className="remediation-approval-form">
+                            <ApprovalStatusLine approval={workflow.approval} />
                             <label>
-                              Decision
+                              <span>Decision</span>
                               <select value={decision} onChange={(event) => setDecision(event.target.value as RemediationDecision["decision"])}>
                                 <option value="approved">Approve</option>
                                 <option value="rejected">Reject</option>
                                 <option value="expired">Expire</option>
                               </select>
                             </label>
+                            {decision === "approved" && unmetRoleOptions.length > 0 && (
+                              <label>
+                                <span>Required role this decision is for</span>
+                                <select
+                                  value={selectedRoleId}
+                                  onChange={(event) => setSelectedRoleId(event.target.value)}
+                                >
+                                  {unmetRoleOptions.length > 1 && (
+                                    <option value="">Select a role…</option>
+                                  )}
+                                  {unmetRoleOptions.map((option) => (
+                                    <option key={option.roleId} value={option.roleId}>{option.role}</option>
+                                  ))}
+                                </select>
+                                {unmetRoleOptions.length > 1 && (
+                                  <p className="remediation-approval-role-hint">
+                                    This decision attests exactly one required role. Multiple unmet roles remain -- a separate decision is needed for each.
+                                  </p>
+                                )}
+                              </label>
+                            )}
                             <label>
-                              Rationale
+                              <span>Rationale</span>
                               <textarea value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} />
                             </label>
                             {decision === "approved" && (
                               <label>
-                                Expires
+                                <span>Expires</span>
                                 <input type="date" value={decisionExpiresAt} onChange={(event) => setDecisionExpiresAt(event.target.value)} />
                               </label>
                             )}
-                            <button type="button" className="button button-primary" disabled={submitting} onClick={() => void recordDecision()}>
+                            <button
+                              type="button"
+                              className="button button-primary"
+                              disabled={submitting || !workflow.approval.can_approve || (roleSelectionRequired && !selectedRoleId)}
+                              onClick={() => void recordDecision()}
+                            >
                               {submitting ? "Recording…" : "Record decision"}
                             </button>
+                            {!workflow.approval.can_approve && (
+                              <p>You can review this approval but cannot record a decision. Ask an approver to record it.</p>
+                            )}
                           </div>
                         </>
                       )}
@@ -597,6 +1028,8 @@ function RemediationContent() {
 
                   {activeStep === "run" && (
                     <>
+                      {stepBlockerEcho(workflow.blockers, "run")}
+                      <WorkflowDegradation degradation={workflow.degradation} />
                       <h3>Approved operation</h3>
                       <p>{actionSummary(workflow)}</p>
                       <p>Target: <code>{workflow.preview?.execution_snapshot?.target_id ?? resourceId(workflow.plan)}</code></p>
@@ -605,31 +1038,65 @@ function RemediationContent() {
                         <p className="callout callout-warning">Decision-grade business evidence is incomplete.</p>
                       )}
                       {canRun && !confirmRun && (
-                        <button type="button" className="button button-primary" onClick={() => setConfirmRun(true)}>Review and run</button>
+                        <button
+                          type="button"
+                          className="button button-primary"
+                          disabled={!workflow.action.can_operate}
+                          onClick={() => setConfirmRun(true)}
+                        >
+                          Review and run
+                        </button>
                       )}
                       {canRun && confirmRun && (
                         <div className="callout" role="alertdialog" aria-label="Confirm governed execution">
                           <p>Run this exact approved snapshot once? Provider verification, not submission, determines success.</p>
-                          <button type="button" className="button button-primary" disabled={submitting} onClick={() => void runPlan()}>
+                          <button
+                            type="button"
+                            className="button button-primary"
+                            disabled={submitting || !workflow.action.can_operate}
+                            onClick={() => void runPlan()}
+                          >
                             {submitting ? "Submitting…" : "Confirm run"}
                           </button>
                           <button type="button" className="button button-quiet" onClick={() => setConfirmRun(false)}>Back</button>
                         </div>
+                      )}
+                      {canRun && !workflow.action.can_operate && (
+                        <p>You can approve work but cannot run it. Ask an operator to run this approved snapshot.</p>
                       )}
                     </>
                   )}
 
                   {activeStep === "verify" && (
                     <>
+                      {stepBlockerEcho(workflow.blockers, "verify")}
                       {!workflow.execution ? (
                         <StatePanel title="Not run yet" message="Complete approval and run before verification." />
                       ) : (
-                        <ExecutionAudit execution={workflow.execution} />
+                        <ExecutionAudit
+                          execution={workflow.execution}
+                          decisions={workflow.approval.decisions}
+                          onCheckReconciliation={() => polling.checkNow()}
+                        />
                       )}
-                      {workflow.execution?.retryable && (
-                        <button type="button" className="button button-primary" disabled={submitting} onClick={() => void retryExecution(workflow.execution!)}>
-                          Retry approved snapshot
-                        </button>
+                      {polling.paused && (
+                        <p className="callout callout-warning" role="status">
+                          {`Live updates paused after ${polling.requestCount} checks. This execution may still be progressing server-side.`}
+                          {" "}
+                          <button type="button" className="button button-quiet" onClick={() => polling.checkNow()}>
+                            Check now
+                          </button>
+                        </p>
+                      )}
+                      {workflow.execution && (
+                        <RecoveryControls
+                          execution={workflow.execution}
+                          onCancel={() => cancelExecution(workflow.execution!)}
+                          onRetry={() => retryExecution(workflow.execution!)}
+                          onSupersede={(reason) => supersedeExecution(workflow.execution!, reason)}
+                          submitting={submitting}
+                          supersedeIneligibilityReason={supersedeIneligibilityReason}
+                        />
                       )}
                     </>
                   )}
@@ -663,7 +1130,252 @@ function RemediationContent() {
   );
 }
 
-function ExecutionAudit({ execution }: { execution: RemediationExecution }) {
+function ApprovalStatusLine({ approval }: { approval: RemediationWorkflow["approval"] }) {
+  const { status, stale_reasons: staleReasons, latest } = approval;
+  const approver = latest?.approver ?? "";
+  const decidedAt = latest?.decided_at ? new Date(latest.decided_at).toLocaleString() : "";
+  if (status === "current") {
+    return (
+      <p>
+        <StatusBadge label="Approved" tone="success" />{" "}
+        {`Approved by ${approver} on ${decidedAt}. This approval matches the current version, evidence, and policy.`}
+      </p>
+    );
+  }
+  if (status === "stale") {
+    return (
+      <p>
+        <StatusBadge label="Stale" tone="warning" />{" "}
+        {`Approved by ${approver} on ${decidedAt}, but ${joinStaleReasons(staleReasons)} since. A new decision is required before running.`}
+      </p>
+    );
+  }
+  if (status === "rejected") {
+    return (
+      <p>
+        <StatusBadge label="Rejected" tone="critical" />{" "}
+        {`Rejected by ${approver} on ${decidedAt}: ${latest?.reason ?? ""}`}
+      </p>
+    );
+  }
+  if (status === "expired") {
+    return (
+      <p>
+        <StatusBadge label="Expired" tone="warning" />{" "}
+        {`Expired on ${latest?.expires_at ?? ""}. A new decision is required.`}
+      </p>
+    );
+  }
+  return (
+    <p>
+      <StatusBadge label="No decision" tone="neutral" /> No decision recorded yet.
+    </p>
+  );
+}
+
+function WorkflowBlockers({
+  blockers,
+  activeStep,
+}: {
+  blockers: RemediationBlocker[];
+  activeStep: WorkflowStep;
+}) {
+  const rows = blockers.filter((row) => row.code !== "already_succeeded");
+  if (!rows.length) return null;
+  return (
+    <section className="remediation-blockers">
+      <h3>Workflow blockers</h3>
+      {rows.map((row, index) => {
+        const copy = blockerCopyWithTelemetry(row.code, row.step, row.message, row.next_action, row.severity);
+        const stepLabel = WORKFLOW_STEPS.find((item) => item.id === copy.step)?.label ?? titleize(copy.step);
+        return (
+          <div
+            key={`${row.code}-${row.step}-${index}`}
+            className={`remediation-blocker-row${copy.step === activeStep ? " remediation-blocker-row-active" : ""}`}
+          >
+            <StatusBadge label="Blocked" tone={copy.severity === "critical" ? "critical" : "warning"} compact />
+            <span className="remediation-blocker-step-chip">{stepLabel}</span>
+            <span>{copy.message}</span>
+            <span><strong>Next:</strong> {copy.nextAction}</span>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function WorkflowDegradation({ degradation }: { degradation: RemediationDegradation[] }) {
+  if (!degradation.length) return null;
+  return (
+    <section className="remediation-degradation">
+      <h3>Degraded inputs</h3>
+      {degradation.map((row, index) => {
+        const droppedCount = row.dropped_count ?? 0;
+        const unmatchedCount = row.unmatched_count ?? 0;
+        const hasCounts = Boolean(row.dropped_count) || Boolean(row.unmatched_count);
+        return (
+          <div key={`${row.source}-${index}`} className="remediation-degradation-row">
+            <StatusBadge label={titleize(row.availability)} tone="warning" compact />
+            <span className="remediation-degradation-source">{row.source}</span>
+            <span>{row.reason}</span>
+            {hasCounts && (
+              <span>{`${droppedCount} evidence row(s) dropped, ${unmatchedCount} unmatched for this scope.`}</span>
+            )}
+            <span>{row.freshness ? `Last known good: ${row.freshness}` : "Freshness: unknown"}</span>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function ReconciliationSummary({
+  reconciliation,
+  nextVerificationAt,
+  onCheckReconciliation,
+}: {
+  reconciliation?: RemediationEvidenceReconciliation;
+  nextVerificationAt?: string;
+  onCheckReconciliation?: () => void;
+}) {
+  if (!reconciliation || !reconciliation.status) return null;
+  const tone = reconciliation.status === "reconciled_clean" ? "success" : "warning";
+  let message: string;
+  switch (reconciliation.status) {
+    case "pending":
+      message = `Reconciliation in progress — next check ${relativeTime(nextVerificationAt)}.`;
+      break;
+    case "reconciled_clean":
+      message = `All selected patches confirmed cleared as of ${reconciliation.assessed_at}.`;
+      break;
+    case "reconciled_incomplete":
+      message = `Provider reported success, but ${reconciliation.kbs_remaining.length} patch(es) remain present: ${reconciliation.kbs_remaining.join(", ")}.`;
+      break;
+    case "unreconciled":
+      message = "Reconciliation could not confirm the outcome within the deadline; provider success is preserved, but the selected patches' actual state is unconfirmed.";
+      break;
+    case "unreconciled_timed_out":
+      message = "The submission's outcome could not be confirmed within the deadline; this is now an ordinary retryable/supersedable failure.";
+      break;
+    default:
+      message = "";
+  }
+  return (
+    <div className="remediation-reconciliation">
+      <StatusBadge label={titleize(reconciliation.status)} tone={tone} compact />
+      <span>{message}</span>
+      {reconciliation.kbs_cleared.length > 0 && (
+        <span>{`Confirmed cleared: ${reconciliation.kbs_cleared.join(", ")}.`}</span>
+      )}
+      {reconciliation.status === "pending" && onCheckReconciliation && (
+        <button type="button" className="button button-quiet" onClick={() => onCheckReconciliation()}>
+          Check reconciliation
+        </button>
+      )}
+    </div>
+  );
+}
+
+function RecoveryControls({
+  execution,
+  onCancel,
+  onRetry,
+  onSupersede,
+  submitting,
+  supersedeIneligibilityReason,
+}: {
+  execution: RemediationExecution;
+  onCancel: () => void | Promise<void>;
+  onRetry: () => void | Promise<void>;
+  onSupersede: (reason: string) => void | Promise<void>;
+  submitting: boolean;
+  supersedeIneligibilityReason: string;
+}) {
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [showSupersedeForm, setShowSupersedeForm] = useState(false);
+  const [supersedeReason, setSupersedeReason] = useState("");
+
+  if (!execution.cancellable && !execution.retryable && !execution.supersedable) return null;
+
+  return (
+    <div className="remediation-recovery">
+      {execution.cancellable && !confirmCancel && (
+        <button type="button" className="button" onClick={() => setConfirmCancel(true)}>
+          Cancel queued execution
+        </button>
+      )}
+      {execution.cancellable && confirmCancel && (
+        <div className="callout" role="alertdialog" aria-label="Confirm cancel">
+          <p>Cancel this queued execution before it reaches the provider?</p>
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={submitting}
+            onClick={() => {
+              void onCancel();
+              setConfirmCancel(false);
+            }}
+          >
+            Confirm cancel
+          </button>
+          <button type="button" className="button button-quiet" onClick={() => setConfirmCancel(false)}>Back</button>
+        </div>
+      )}
+      {execution.retryable && (
+        <button type="button" className="button" disabled={submitting} onClick={() => void onRetry()}>
+          Retry approved snapshot
+        </button>
+      )}
+      {execution.supersedable && !showSupersedeForm && (
+        <button type="button" className="button" onClick={() => setShowSupersedeForm(true)}>
+          Supersede this execution
+        </button>
+      )}
+      {execution.supersedable && showSupersedeForm && (
+        <div className="remediation-supersede-form">
+          <label>
+            <span>Reason</span>
+            <textarea
+              value={supersedeReason}
+              onChange={(event) => setSupersedeReason(event.target.value)}
+              aria-describedby="supersede-reason-hint"
+              required
+            />
+          </label>
+          <p id="supersede-reason-hint">Explain why this execution should be replaced. The reason is written to the audit trail.</p>
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={submitting || !supersedeReason.trim()}
+            onClick={() => {
+              void onSupersede(supersedeReason.trim());
+              setShowSupersedeForm(false);
+              setSupersedeReason("");
+            }}
+          >
+            Confirm supersede
+          </button>
+          <button type="button" className="button button-quiet" onClick={() => setShowSupersedeForm(false)}>Back</button>
+        </div>
+      )}
+      {supersedeIneligibilityReason && (
+        <p className="callout callout-warning">
+          {blockerCopyWithTelemetry(supersedeIneligibilityReason, "verify").message}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ExecutionAudit({
+  execution,
+  decisions,
+  onCheckReconciliation,
+}: {
+  execution: RemediationExecution;
+  decisions?: RemediationApprovalDecision[];
+  onCheckReconciliation?: () => void;
+}) {
   return (
     <section>
       <div className="plan-row-badges">
@@ -674,7 +1386,52 @@ function ExecutionAudit({ execution }: { execution: RemediationExecution }) {
       <p>Execution: <code>{execution.execution_id}</code></p>
       <p>Provider state: {execution.verified_state || "Awaiting verification"}</p>
       <p>Outcome: {execution.outcome || "Pending"}</p>
-      {execution.failure_details && <p className="callout callout-warning">{execution.failure_details}</p>}
+      {execution.status === "failed" && (
+        execution.provider_submitted === false ? (
+          <p className="callout callout-warning">
+            {execution.failure_details
+              ? `Blocked before submission: ${execution.failure_details}. No change was sent to the provider.`
+              : "Blocked before submission: no failure detail was recorded for this attempt. No change was sent to the provider."}
+          </p>
+        ) : (
+          <p className="callout callout-warning">
+            {execution.failure_details
+              ? `Submitted; provider reported: ${execution.failure_details}.`
+              : "Submitted; the provider did not return failure detail for this attempt."}
+          </p>
+        )
+      )}
+      {execution.remaining_attempts !== undefined && (
+        <p>{`Remaining attempts: ${execution.remaining_attempts}`}</p>
+      )}
+      {(execution.submitted_attempt_count !== undefined || execution.attempt_count !== undefined) && (
+        <p>{`Submitted attempts: ${execution.submitted_attempt_count ?? execution.attempt_count}`}</p>
+      )}
+      {execution.verification_deadline_at && (
+        <p>
+          {execution.verified_state === "verification_deadline_exceeded"
+            ? "Verification deadline passed"
+            : `Verification deadline: ${new Date(execution.verification_deadline_at).toLocaleString()}`}
+        </p>
+      )}
+      {execution.next_verification_at && !["succeeded", "failed", "cancelled"].includes(execution.status) && (
+        <p>{`Next automatic check: ${relativeTime(execution.next_verification_at)}`}</p>
+      )}
+      <ReconciliationSummary
+        reconciliation={execution.evidence_reconciliation}
+        nextVerificationAt={execution.next_verification_at}
+        onCheckReconciliation={onCheckReconciliation}
+      />
+      {(execution.supersedes || execution.superseded_by) && (
+        <div className="remediation-lineage">
+          {execution.supersedes && (
+            <p>Supersedes execution <code>{execution.supersedes}</code>.</p>
+          )}
+          {execution.superseded_by && (
+            <p>Superseded by execution <code>{execution.superseded_by}</code>: {execution.superseded_reason}.</p>
+          )}
+        </div>
+      )}
       <p>Rollback guidance: {execution.rollback_guidance.join("; ") || "No automated rollback is available."}</p>
       <ol>
         {execution.attempts.map((attempt) => (
@@ -688,6 +1445,25 @@ function ExecutionAudit({ execution }: { execution: RemediationExecution }) {
           </li>
         ))}
       </ol>
+      {decisions && decisions.length > 0 && (
+        <>
+          <h3>Decisions</h3>
+          <ul>
+            {decisions.map((entry, index) => (
+              <li key={entry.decision_id || index}>
+                {titleize(entry.decision)} by {entry.approver} on {entry.decided_at ? new Date(entry.decided_at).toLocaleString() : "unknown time"}
+                {entry.self_approved && (
+                  <>
+                    {" "}
+                    <StatusBadge label="Self-approved (demo exception)" tone="info" />
+                    {entry.self_approval_policy_id && <code>{entry.self_approval_policy_id}</code>}
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </section>
   );
 }

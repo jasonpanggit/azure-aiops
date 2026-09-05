@@ -16,7 +16,12 @@ from typing import Any, Protocol
 import httpx
 
 from api.scope import Scope
-from operations.patching.azure_adapter import ARM_ENDPOINT, ARM_SCOPE, TokenCredential
+from operations.patching.azure_adapter import (
+    ARM_ENDPOINT,
+    ARM_SCOPE,
+    TokenCredential,
+    classify_azure_response_failure,
+)
 
 DEFENDER_CONFIGURATION_API_VERSION = "2024-01-01"
 ENABLE_DEFENDER_SERVERS_P1 = "defender-enable-servers-plan-p1"
@@ -69,7 +74,14 @@ DEFENDER_CONFIGURATION_ACTION_IDS = frozenset(DEFENDER_CONFIGURATION_ACTIONS)
 
 
 class DefenderConfigurationUnavailable(RuntimeError):
-    """A Defender configuration action was refused or could not reach ARM."""
+    """A Defender configuration action was refused or could not reach ARM.
+
+    ``provider_submitted``/``failure_class`` mirror
+    :class:`operations.patching.adapters.PatchExecutionUnavailable`'s
+    Phase 03.3 submission-accounting contract: whether the mutating call is
+    proven to have reached Azure, and why it failed. Defaults are
+    fail-closed (an unclassified raise still consumes the retry budget).
+    """
 
     def __init__(
         self,
@@ -77,10 +89,14 @@ class DefenderConfigurationUnavailable(RuntimeError):
         *,
         reason: str = "defender_configuration_unavailable",
         capability: str = "defender_configuration",
+        provider_submitted: bool = True,
+        failure_class: str = "submission_ambiguous",
     ) -> None:
         super().__init__(message)
         self.reason = reason
         self.capability = capability
+        self.provider_submitted = provider_submitted
+        self.failure_class = failure_class
 
 
 @dataclass(frozen=True)
@@ -108,12 +124,16 @@ class UnconfiguredDefenderConfigurationAdapter:
         raise DefenderConfigurationUnavailable(
             "No Defender configuration execution adapter is configured.",
             reason="configuration_execution_unavailable",
+            provider_submitted=False,
+            failure_class="internal_validation",
         )
 
     def submit(self, snapshot: dict[str, Any]) -> DefenderConfigurationResult:
         raise DefenderConfigurationUnavailable(
             "No Defender configuration execution adapter is configured.",
             reason="configuration_execution_unavailable",
+            provider_submitted=False,
+            failure_class="internal_validation",
         )
 
 
@@ -143,11 +163,15 @@ class AzureArmDefenderConfigurationAdapter:
             payload = response.json()
         except ValueError as exc:
             raise DefenderConfigurationUnavailable(
-                "Azure returned an invalid Defender configuration response."
+                "Azure returned an invalid Defender configuration response.",
+                provider_submitted=False,
+                failure_class="internal_validation",
             ) from exc
         if not isinstance(payload, dict):
             raise DefenderConfigurationUnavailable(
-                "Azure returned an invalid Defender configuration response."
+                "Azure returned an invalid Defender configuration response.",
+                provider_submitted=False,
+                failure_class="internal_validation",
             )
         properties = payload.get("properties")
         properties = properties if isinstance(properties, dict) else {}
@@ -166,12 +190,16 @@ class AzureArmDefenderConfigurationAdapter:
             raise DefenderConfigurationUnavailable(
                 "Defender configuration changed after approval; refusing the stale write.",
                 reason="execution_snapshot_drift",
+                provider_submitted=False,
+                failure_class="target_precondition",
             )
         expected_etag = str(expected.get("etag") or "")
         if expected_etag and observed["etag"] != expected_etag:
             raise DefenderConfigurationUnavailable(
                 "Defender configuration ETag changed after approval; refusing the stale write.",
                 reason="execution_snapshot_drift",
+                provider_submitted=False,
+                failure_class="target_precondition",
             )
         response = self._request(
             "PUT",
@@ -208,8 +236,20 @@ class AzureArmDefenderConfigurationAdapter:
                 json=request["body"] if method == "PUT" else None,
             )
         except httpx.HTTPError as exc:
+            if method == "PUT":
+                # The only mutating verb this adapter uses. The request may
+                # have already crossed the mutation boundary before the
+                # transport failed, so this fails closed as
+                # submission-ambiguous and consumes budget until reconciled.
+                raise DefenderConfigurationUnavailable(
+                    f"Azure Resource Manager was unreachable: {exc}",
+                    provider_submitted=True,
+                    failure_class="submission_ambiguous",
+                ) from exc
             raise DefenderConfigurationUnavailable(
-                f"Azure Resource Manager was unreachable: {exc}"
+                f"Azure Resource Manager was unreachable: {exc}",
+                provider_submitted=False,
+                failure_class="provider_transient",
             ) from exc
         finally:
             if self._client is None:
@@ -223,6 +263,8 @@ class AzureArmDefenderConfigurationAdapter:
                 f"Could not acquire an Azure management token: {exc}",
                 reason="azure_arm_token_unavailable",
                 capability="azure_arm_token",
+                provider_submitted=False,
+                failure_class="provider_authorization",
             ) from exc
         value = str(getattr(token, "token", "") or "")
         if not value:
@@ -230,6 +272,8 @@ class AzureArmDefenderConfigurationAdapter:
                 "Azure credential returned an empty management token.",
                 reason="azure_arm_token_unavailable",
                 capability="azure_arm_token",
+                provider_submitted=False,
+                failure_class="provider_authorization",
             )
         return value
 
@@ -237,9 +281,23 @@ class AzureArmDefenderConfigurationAdapter:
     def _raise_for_status(response: httpx.Response, operation: str) -> None:
         if response.status_code < 400:
             return
-        raise DefenderConfigurationUnavailable(
+        message = (
             f"Azure rejected the Defender configuration {operation} "
             f"({response.status_code}): {_error_message(response)}"
+        )
+        if operation == "update":
+            # The PUT path: a rejected response was still submitted to Azure.
+            raise DefenderConfigurationUnavailable(
+                message,
+                provider_submitted=True,
+                failure_class=classify_azure_response_failure(response.status_code),
+            )
+        # The GET (read) path: informative classification, but never counts
+        # as submitted since nothing mutated.
+        raise DefenderConfigurationUnavailable(
+            message,
+            provider_submitted=False,
+            failure_class=classify_azure_response_failure(response.status_code),
         )
 
 
@@ -393,6 +451,8 @@ def _validated_snapshot_request(snapshot: dict[str, Any]) -> dict[str, Any]:
         raise DefenderConfigurationUnavailable(
             "The approved Defender configuration action is not supported.",
             reason="unsupported_configuration_action",
+            provider_submitted=False,
+            failure_class="internal_validation",
         )
     expected = _request_for(action, str(snapshot.get("target_id") or ""))
     request = snapshot.get("request")
@@ -400,6 +460,8 @@ def _validated_snapshot_request(snapshot: dict[str, Any]) -> dict[str, Any]:
         raise DefenderConfigurationUnavailable(
             "The approved Defender configuration request was altered.",
             reason="execution_snapshot_invalid",
+            provider_submitted=False,
+            failure_class="internal_validation",
         )
     return expected
 

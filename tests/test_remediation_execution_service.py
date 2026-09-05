@@ -9,6 +9,7 @@ approved decision.
 
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
@@ -19,11 +20,16 @@ from intelligence.remediation.approval_decisions import (
     execution_snapshot_hash,
 )
 from intelligence.remediation.execution_service import (
+    VERIFICATION_DEADLINE_SECONDS,
     RemediationExecutionError,
     RemediationExecutionService,
 )
 from intelligence.remediation.execution_store import RemediationExecutionStore
 from intelligence.remediation.plan_repository import PlanRepository
+from operations.defender_configuration import (
+    ENABLE_DEFENDER_SERVERS_P1,
+    DefenderConfigurationResult,
+)
 from operations.patching.adapters import (
     PatchExecutionUnavailable,
     RecordingPatchExecutionAdapter,
@@ -470,6 +476,65 @@ def test_target_revalidation_failure_is_persisted_as_failed_attempt():
     assert record["attempts"][0]["transitions"][-1]["status"] == "failed"
 
 
+def _service_without_plan_repository(
+    *, adapter=None
+) -> RemediationExecutionService:
+    """A service with no plan repository at all (CR-06 fail-closed guards)."""
+    vulnerability_service = _FakeVulnerabilityService(TARGET_ID)
+    patching_service = PatchingService(
+        vulnerability_service,
+        adapter=adapter or RecordingPatchExecutionAdapter(),
+        require_human_approval=False,
+    )
+    return RemediationExecutionService(
+        plan_repository=None,
+        patching_service=patching_service,
+        execution_store=RemediationExecutionStore(),
+        now=lambda: NOW,
+    )
+
+
+def test_execute_never_raises_attribute_error_when_plan_repository_unavailable():
+    service = _service_without_plan_repository()
+
+    with pytest.raises(RemediationExecutionError) as excinfo:
+        service.execute("RMP-0001", requested_by="operator@example.com")
+
+    assert excinfo.value.reason == "plan_repository_unavailable"
+
+
+def test_retry_never_raises_attribute_error_when_plan_repository_unavailable():
+    service = _service_without_plan_repository()
+    queued, _ = service._store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        execution_snapshot=_execution_snapshot(_plan()),
+    )
+    service._store.transition(
+        queued["execution_id"],
+        expected_revision=int(queued.get("revision") or 0),
+        expected_status="queued",
+        status="failed",
+        actor="operator@example.com",
+        now=NOW,
+    )
+
+    with pytest.raises(RemediationExecutionError) as excinfo:
+        service.retry(queued["execution_id"])
+
+    assert excinfo.value.reason == "plan_repository_unavailable"
+
+
+def test_plan_eligibility_never_raises_attribute_error_when_plan_repository_unavailable():
+    service = _service_without_plan_repository()
+
+    assert service.plan_eligibility("RMP-0001") == {
+        "executable": False,
+        "ineligibility_reason": "plan_repository_unavailable",
+    }
+
+
 def _service_with_store(
     *,
     plan: dict | None,
@@ -495,6 +560,53 @@ def _service_with_store(
         now=lambda: NOW,
     )
     return service, store
+
+
+def test_orphaned_executions_reports_none_for_a_healthy_store():
+    plan = _plan()
+    service, _store = _service_with_store(plan=plan)
+    service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    assert service.orphaned_executions() == []
+
+
+def test_orphaned_executions_flags_a_legacy_record_with_no_resolvable_plan_or_scope():
+    service, store = _service_with_store(plan=None)
+    legacy = store.create("RMP-does-not-exist", requested_by="legacy@example.com")
+
+    orphans = service.orphaned_executions()
+
+    assert len(orphans) == 1
+    assert orphans[0]["execution_id"] == legacy["execution_id"]
+    assert orphans[0]["plan_id"] == "RMP-does-not-exist"
+    assert orphans[0]["status"] == legacy["status"]
+    assert orphans[0]["reason"] == "legacy_scope_unresolvable"
+
+
+def test_orphaned_executions_does_not_flag_an_unresolvable_plan_with_derivable_scope():
+    service, store = _service_with_store(plan=None)
+    snapshot = _execution_snapshot(_plan())
+    store.create_or_get(
+        "RMP-does-not-exist",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        execution_snapshot=snapshot,
+    )
+
+    # No stored scope_attributes, but the execution_snapshot's target_id
+    # still yields a derivable subscription -- reconcilable, not orphaned.
+    assert service.orphaned_executions() == []
+
+
+def test_orphaned_executions_reports_plan_repository_unavailable_reason():
+    service = _service_without_plan_repository()
+    legacy = service._store.create("RMP-0001", requested_by="legacy@example.com")
+
+    orphans = service.orphaned_executions()
+
+    assert len(orphans) == 1
+    assert orphans[0]["execution_id"] == legacy["execution_id"]
+    assert orphans[0]["reason"] == "plan_repository_unavailable"
 
 
 def test_execution_store_persists_record_surviving_round_trip(tmp_path):
@@ -656,3 +768,314 @@ def _full_plan(plan: dict) -> dict:
         "evidence_citations": [{"source_type": "assessment", "source_id": "assess-001"}],
         **plan,
     }
+
+
+# --- Plan 03.4-02 Task 1: deadline-first poll_verification ------------------
+
+
+def test_execute_sets_verification_deadline_and_next_verification_at():
+    plan = _plan()
+    service, store = _service_with_store(plan=plan)
+
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    record = store.get(result["execution_id"])
+    assert record["status"] == "running"
+    assert record["verification_deadline_at"] == (
+        NOW + timedelta(seconds=VERIFICATION_DEADLINE_SECONDS)
+    ).isoformat()
+    assert record["next_verification_at"] == NOW.isoformat()
+    assert record["verification_attempts"] == 0
+
+
+def test_poll_verification_past_deadline_terminates_without_touching_verifier():
+    plan = _plan()
+    service, store = _service_with_store(plan=plan)
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    execution_id = result["execution_id"]
+
+    service._now = lambda: NOW + timedelta(seconds=VERIFICATION_DEADLINE_SECONDS + 1)
+    polled = service.poll_verification(execution_id)
+
+    assert polled["status"] == "failed"
+    assert polled["outcome"] == "unknown"
+    assert polled["failure_class"] == "verification_timed_out"
+    assert polled["verified_state"] == "verification_deadline_exceeded"
+    assert polled["failure_details"]
+    stored = store.get(execution_id)
+    assert stored["status"] == "failed"
+    assert stored["attempts"][-1]["failure_class"] == "verification_timed_out"
+
+
+def test_poll_verification_before_deadline_bumps_attempts_and_backoff():
+    plan = _plan()
+    store = RemediationExecutionStore()
+    repository = PlanRepository()
+    repository.replace_generation([_full_plan(plan)])
+    _approve(repository.decisions, _full_plan(plan))
+    vulnerability_service = _FakeVulnerabilityService(TARGET_ID)
+    patching_service = PatchingService(
+        vulnerability_service,
+        adapter=RecordingPatchExecutionAdapter(),
+        require_human_approval=False,
+    )
+
+    class _StillRunningVerifier:
+        def verify(self, execution_record):
+            return {"verifiable": True, "outcome": "running", "verified_state": "InProgress"}
+
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=patching_service,
+        execution_store=store,
+        execution_verifier=_StillRunningVerifier(),
+        now=lambda: NOW,
+    )
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    execution_id = result["execution_id"]
+
+    polled = service.poll_verification(execution_id)
+
+    assert polled["status"] == "running"
+    assert polled["verification_attempts"] == 1
+    assert polled["next_verification_at"] == (NOW + timedelta(seconds=5)).isoformat()
+
+
+def test_poll_verification_with_empty_deadline_is_never_timed_out(tmp_path):
+    path = tmp_path / "state" / "remediation_executions.json"
+    plan = _plan()
+    service, _store = _service_with_store(
+        plan=plan, execution_store=RemediationExecutionStore(path=path)
+    )
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    execution_id = result["execution_id"]
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for execution in payload["executions"]:
+        if execution["execution_id"] == execution_id:
+            execution["verification_deadline_at"] = ""
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reread_store = RemediationExecutionStore(path=path)
+    service._store = reread_store
+    service._now = lambda: NOW + timedelta(days=365)
+    polled = service.poll_verification(execution_id)
+
+    assert polled["status"] == "running"
+
+
+# --- Plan 03.5-05: per-role satisfaction and cross-family self-approval ----
+
+
+class _RecordingDefenderConfigurationAdapter:
+    """Test-only defender configuration adapter that records submissions."""
+
+    def __init__(self) -> None:
+        self.state = {"pricingTier": "Free"}
+        self.submissions: list[dict] = []
+
+    def inspect(self, request: dict) -> dict:
+        import hashlib
+        import json as _json
+
+        digest = hashlib.sha256(
+            _json.dumps(self.state, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+        return {"etag": '"v1"', "state_hash": digest, "properties": self.state}
+
+    def submit(self, snapshot: dict) -> DefenderConfigurationResult:
+        self.submissions.append(snapshot)
+        return DefenderConfigurationResult(
+            provider="recording",
+            provider_job_id=(
+                "https://management.azure.com"
+                f"{snapshot['request']['path']}?api-version=2024-01-01"
+            ),
+            state="submitted",
+            message="recorded",
+        )
+
+
+def _defender_plan(**overrides) -> dict:
+    plan = {
+        "plan_id": "RMP-CONFIG-1",
+        "action_id": ENABLE_DEFENDER_SERVERS_P1,
+        "action_version": "v1",
+        "resource_key": VM_DEFENDER_ID,
+        "resource": {"id": VM_DEFENDER_ID, "name": "vm-1"},
+        "approval_requirements": [],
+        "business_decision": {
+            "disposition": "schedule",
+            "business_impact": {"status": "known"},
+            "review_requirements": [],
+            "unknowns": [],
+            "urgency_rationale": {"evidence_citations": ["assessment:assessment-1"]},
+        },
+        "evidence_citations": [
+            {"source_type": "assessment", "source_id": "assessment-1"}
+        ],
+        "rollback_plan": {
+            "rollback_actions": ["Restore the captured prior pricing configuration."]
+        },
+    }
+    plan.update(overrides)
+    return plan
+
+
+VM_DEFENDER_ID = (
+    "/subscriptions/sub-1/resourceGroups/rg/providers/"
+    "Microsoft.Compute/virtualMachines/vm-1"
+)
+
+
+def _defender_service(
+    plan: dict, *, allow_self_approval=False
+) -> tuple[RemediationExecutionService, _RecordingDefenderConfigurationAdapter, PlanRepository]:
+    repository = PlanRepository()
+    repository.replace_generation([plan])
+    adapter = _RecordingDefenderConfigurationAdapter()
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=None,
+        defender_configuration_adapter=adapter,
+        execution_store=RemediationExecutionStore(),
+        allow_self_approval=allow_self_approval,
+        now=lambda: NOW,
+    )
+    return service, adapter, repository
+
+
+def _approve_defender(
+    service: RemediationExecutionService,
+    repository: PlanRepository,
+    plan: dict,
+    *,
+    approver: str = "security@example.com",
+    approver_roles: list[str] = (),
+) -> dict:
+    snapshot = service.build_execution_snapshot(
+        plan, scope=None
+    )
+    return repository.decisions.append(
+        plan=plan,
+        decision="approved",
+        approver=approver,
+        reason="Approved exact Defender configuration",
+        scope={},
+        action_version=plan["action_version"],
+        expires_at=(NOW + timedelta(days=1)).isoformat(),
+        execution_snapshot=snapshot,
+        approver_roles=list(approver_roles),
+        now=NOW,
+    )
+
+
+def test_two_role_approval_requirements_cannot_be_satisfied_by_one_wrong_role_decision() -> None:
+    plan = _full_plan(
+        _plan(
+            approval_requirements=[
+                {
+                    "policy_id": "change-control",
+                    "role": "Change Manager",
+                    "stage": "Planning",
+                    "approval_evidence_required": [],
+                },
+                {
+                    "policy_id": "security-review",
+                    "role": "Security Response Owner",
+                    "stage": "Planning",
+                    "approval_evidence_required": [],
+                },
+            ]
+        )
+    )
+    repository = PlanRepository()
+    repository.replace_generation([plan])
+    repository.decisions.append(
+        plan=plan,
+        decision="approved",
+        approver="security@example.com",
+        reason="Security sign-off only",
+        scope={},
+        action_version=plan["action_version"],
+        expires_at=(NOW + timedelta(days=1)).isoformat(),
+        execution_snapshot=_execution_snapshot(plan),
+        approver_roles=["Security Response Owner"],
+        now=NOW,
+    )
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=PatchingService(
+            _FakeVulnerabilityService(TARGET_ID),
+            adapter=RecordingPatchExecutionAdapter(),
+            require_human_approval=False,
+        ),
+        now=lambda: NOW,
+    )
+
+    with pytest.raises(RemediationExecutionError) as excinfo:
+        service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    assert excinfo.value.reason == "approval_requirements_unmet"
+    unmet_roles = {row["role"] for row in excinfo.value.details["unmet"]}
+    assert unmet_roles == {"Change Manager"}
+
+
+@pytest.mark.parametrize("family", ["patch", "defender"])
+def test_self_approval_refused_for_both_families_when_disallowed(family: str) -> None:
+    if family == "patch":
+        plan = _full_plan(_plan())
+        repository = PlanRepository()
+        repository.replace_generation([plan])
+        repository.decisions.append(
+            plan=plan,
+            decision="approved",
+            approver="operator@example.com",
+            reason="Self-approved",
+            scope={},
+            action_version=plan["action_version"],
+            expires_at=(NOW + timedelta(days=1)).isoformat(),
+            execution_snapshot=_execution_snapshot(plan),
+            now=NOW,
+        )
+        adapter = RecordingPatchExecutionAdapter()
+        service = RemediationExecutionService(
+            plan_repository=repository,
+            patching_service=PatchingService(
+                _FakeVulnerabilityService(TARGET_ID),
+                adapter=adapter,
+                require_human_approval=False,
+            ),
+            now=lambda: NOW,
+        )
+    else:
+        plan = _defender_plan()
+        service, adapter, repository = _defender_service(plan)
+        _approve_defender(service, repository, plan, approver="operator@example.com")
+
+    with pytest.raises(RemediationExecutionError) as excinfo:
+        service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    assert excinfo.value.reason == "self_approval_not_permitted"
+    assert adapter.submissions == []
+
+
+def test_self_approval_allowed_is_durably_recorded_on_the_decision() -> None:
+    plan = _defender_plan()
+    service, adapter, repository = _defender_service(plan, allow_self_approval=True)
+    recorded = _approve_defender(
+        service, repository, plan, approver="operator@example.com"
+    )
+
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    assert result["status"] == "running"
+    assert len(adapter.submissions) == 1
+
+    decisions = repository.decisions.list(plan["plan_id"])
+    matching = [
+        row for row in decisions if row["decision_id"] == recorded["decision_id"]
+    ]
+    assert len(matching) == 1
+    assert matching[0]["self_approved"] is True
+    assert matching[0]["self_approval_policy_id"] != ""

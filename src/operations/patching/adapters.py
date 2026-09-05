@@ -20,11 +20,29 @@ from .models import PatchRun, PatchTarget
 
 
 class PatchExecutionUnavailable(RuntimeError):
-    """Raised when no execution backend is configured or reachable."""
+    """Raised when no execution backend is configured or reachable.
 
-    def __init__(self, message: str, *, capability: str = "patch_execution") -> None:
+    ``provider_submitted`` and ``failure_class`` are the Phase 03.3
+    submission-accounting signals (CONTEXT.md's Submission Accounting /
+    Failure Classification decisions): whether the mutating call is proven
+    to have reached Azure, and why it failed, from the closed six-value
+    vocabulary. The defaults are deliberately fail-closed -- an unclassified
+    raise still consumes the retry budget rather than silently exempting
+    itself.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        capability: str = "patch_execution",
+        provider_submitted: bool = True,
+        failure_class: str = "submission_ambiguous",
+    ) -> None:
         super().__init__(message)
         self.capability = capability
+        self.provider_submitted = provider_submitted
+        self.failure_class = failure_class
 
 
 @dataclass(frozen=True)
@@ -76,6 +94,8 @@ class UnconfiguredPatchExecutionAdapter:
                 if run.operation == "node_image_upgrade"
                 else "update_manager_install_patches"
             ),
+            provider_submitted=False,
+            failure_class="internal_validation",
         )
 
 

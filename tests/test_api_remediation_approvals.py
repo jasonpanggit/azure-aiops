@@ -275,6 +275,129 @@ def test_patch_approval_survives_request_to_request_cve_enrichment_drift(
     assert decision["execution_snapshot"]["snapshot_hash"] == preview_hash
 
 
+class _IndependentPatchGeneration:
+    """One runtime generation of the same semantic live patch plan."""
+
+    freshness = "2026-09-05T00:00:00Z"
+
+    def __init__(
+        self,
+        *,
+        patch_row_id: str,
+        missing_kbs: tuple[str, ...] = ("KB600001", "KB600002"),
+    ) -> None:
+        self.patch_row_id = patch_row_id
+        self.missing_kbs = missing_kbs
+
+    def asset_exposures(self, scope=None) -> list[dict]:
+        return [
+            {
+                "asset_id": VM_PAYMENTS_ID,
+                "name": "vm-payments",
+                "inventory_kind": "Azure VM",
+                "resource_type": "Microsoft.Compute/virtualMachines",
+                "subscription_id": "sub-1",
+                "business_service": "Checkout",
+                "application": "Payments API",
+                "missing_kbs": list(self.missing_kbs),
+                "finding_ids": [f"{self.patch_row_id}|KB-600001"],
+                "finding_count": 1,
+                "severities": ["Critical"],
+                "cve_ids": [],
+            }
+        ]
+
+    def defender_posture(self, scope=None) -> list[dict]:
+        return []
+
+
+def _independent_patch_client(
+    tmp_path,
+    *,
+    patch_row_ordinal: int,
+    missing_kbs: tuple[str, ...] = ("KB600001", "KB600002"),
+) -> TestClient:
+    patch_row_id = (
+        f"{VM_PAYMENTS_ID}/patchAssessmentResults/latest/softwarePatches/"
+        f"{patch_row_ordinal}"
+    )
+    return _client(
+        tmp_path,
+        planner=LiveRemediationPlanner(
+            _IndependentPatchGeneration(
+                patch_row_id=patch_row_id,
+                missing_kbs=missing_kbs,
+            )
+        ),
+    )
+
+
+def test_patch_approval_survives_independent_runtime_arg_row_identity_drift(
+    tmp_path,
+) -> None:
+    """GET and POST replicas must agree when only the ARG row ordinal differs."""
+    get_client = _independent_patch_client(tmp_path / "get", patch_row_ordinal=1)
+    post_client = _independent_patch_client(tmp_path / "post", patch_row_ordinal=7)
+    plan = _patch_recovery_plan(get_client)
+    workflow_response = get_client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/workflow",
+        headers=_auth(),
+    )
+    assert workflow_response.status_code == 200, workflow_response.text
+    workflow = workflow_response.json()["data"]
+    workflow_plan = workflow["plan"]
+    preview = workflow["preview"]["execution_snapshot"]
+    assert workflow_plan["action_version"] == preview["action_version"]
+
+    response = post_client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json={
+            **_approval_payload(
+                workflow_plan,
+                preview["snapshot_hash"],
+            ),
+            "selected_patch_ids": [],
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    decision = response.json()["data"]
+    assert decision["action_version"] == workflow_plan["action_version"]
+    assert decision["execution_snapshot"]["snapshot_hash"] == preview["snapshot_hash"]
+
+
+def test_patch_approval_rejects_independent_runtime_missing_kb_drift(
+    tmp_path,
+) -> None:
+    """A real governed patch-scope change must still invalidate approval."""
+    get_client = _independent_patch_client(tmp_path / "get", patch_row_ordinal=1)
+    post_client = _independent_patch_client(
+        tmp_path / "post",
+        patch_row_ordinal=7,
+        missing_kbs=("KB600001", "KB600002", "KB600003"),
+    )
+    plan = _patch_recovery_plan(get_client)
+    workflow = get_client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/workflow",
+        headers=_auth(),
+    ).json()["data"]
+
+    response = post_client.post(
+        f"/api/v1/remediation-plans/{plan['plan_id']}/decisions",
+        headers=_auth(),
+        json=_approval_payload(
+            workflow["plan"],
+            workflow["preview"]["execution_snapshot"]["snapshot_hash"],
+        ),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["message"] == (
+        "Remediation plan action version is stale"
+    )
+
+
 @pytest.mark.parametrize("preview_hash", [None, "0" * 64])
 def test_patch_approval_rejects_omitted_or_wrong_preview_hash_without_persisting(
     tmp_path, preview_hash: str | None
