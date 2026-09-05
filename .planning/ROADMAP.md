@@ -105,7 +105,7 @@ Plans:
 **Goal:** Make Exposure authoritative, failure-tolerant, temporally correct, ontology-complete for container images, and operable at Defender-scale volumes before Phase 4 pilot validation.
 **Requirements:** PILOT-01, PILOT-02, PILOT-03, PILOT-04 (reliability prerequisites; final pilot completion remains downstream)
 **Depends on:** Phase 3
-**Plans:** 6/25 plans executed
+**Plans:** 7/25 plans executed
 
 Plans:
 
@@ -115,7 +115,7 @@ Plans:
 - [x] 03.1-21-PLAN.md — Gate permanent typed-image ontology identities, then complete the production tracer through ontology, remediation review handoff, and Copilot parity
 - [x] 03.1-04-PLAN.md — Productionize Fabric SQL/ODBC and managed Key Vault cursor-key rotation
 - [x] 03.1-05-PLAN.md — Normalize typed AUM/Defender acquisition outcomes without failure rows
-- [ ] 03.1-06-PLAN.md — Acquire and persist exact Container Insights workload-to-digest evidence
+- [x] 03.1-06-PLAN.md — Acquire and persist exact Container Insights workload-to-digest evidence
 - [ ] 03.1-07-PLAN.md — Publish source checkpoints/LKG and per-family freshness/completeness
 - [ ] 03.1-08-PLAN.md — Persist immutable observations and replay deterministic current state
 - [ ] 03.1-09-PLAN.md — Serve temporal state with honest first-detection and SLA semantics
