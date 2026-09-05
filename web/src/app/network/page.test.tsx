@@ -40,15 +40,23 @@ vi.mock("@/components/network/TopologyWorkspace", () => ({
     topology,
     gaps,
     ruleFindings,
+    detailLevel,
+    onDetailLevelChange,
   }: {
     topology: unknown;
     gaps: unknown[];
     ruleFindings: unknown[];
+    detailLevel: "summary" | "full";
+    onDetailLevelChange: (detail: "summary" | "full") => void;
   }) => (
     <div data-testid="topology-workspace">
       <span>{topology ? "Topology canvas" : "No topology"}</span>
       <span>{gaps.length} topology gaps</span>
       <span>{ruleFindings.length} topology findings</span>
+      <span>Detail: {detailLevel}</span>
+      <button type="button" onClick={() => onDetailLevelChange("full")}>
+        Test full detail
+      </button>
     </div>
   ),
 }));
@@ -146,6 +154,28 @@ describe("Network page honest totals and server pagination", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     primeSuccessfulLoaders();
+  });
+
+  describe("Network page topology detail requests", () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+      primeSuccessfulLoaders();
+    });
+
+    it("requests summary explicitly and sends every later chosen detail level", async () => {
+      const user = userEvent.setup();
+      renderPage();
+
+      await waitFor(() =>
+        expect(mocks.topology).toHaveBeenCalledWith({}, { detail: "summary" }),
+      );
+      await user.click(screen.getByRole("tab", { name: "Topology" }));
+      await user.click(screen.getByRole("button", { name: "Test full detail" }));
+
+      await waitFor(() =>
+        expect(mocks.topology).toHaveBeenLastCalledWith({}, { detail: "full" }),
+      );
+    });
   });
 
   it("renders summary totals rather than capped array lengths and discloses both incomplete collections", async () => {
