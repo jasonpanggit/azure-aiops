@@ -226,12 +226,17 @@ def test_observation_identity_is_immutable_and_payload_sensitive() -> None:
         payload={"severity": "High", "nested": {"b": 2, "a": 1}},
         ingested_at="2026-08-09T00:00:00Z",
     )
+    different_generation = _observation(
+        payload={"severity": "High", "nested": {"b": 2, "a": 1}},
+        source_generation="generation-z",
+    )
 
     assert first.observation_id == reordered.observation_id
     assert first.payload_fingerprint == reordered.payload_fingerprint
     assert first.observation_id != changed.observation_id
     # Retries do not mint a new provider observation identity.
     assert first.observation_id == different_ingestion.observation_id
+    assert first.observation_id == different_generation.observation_id
     assert first.current_key == changed.current_key
     assert first.observation_id.startswith("exposure-observation:v1:")
     assert first.current_key.startswith("exposure-current:v1:")
@@ -269,6 +274,17 @@ def test_duplicate_observation_identity_rejects_conflicting_content() -> None:
 
     with pytest.raises(ValueError, match="Conflicting immutable observation"):
         project_current((original, conflicting))
+
+
+def test_persisted_observation_identity_is_revalidated_before_replay() -> None:
+    from intelligence.vulnerability.observations import ExposureObservation
+
+    observation = _observation()
+    tampered = observation.to_dict()
+    tampered["target_id"] = "/subscriptions/sub-a/resourceGroups/rg/providers/x/y"
+
+    with pytest.raises(ValueError, match="current key"):
+        ExposureObservation.from_dict(tampered)
 
 
 @pytest.mark.skip(reason="Pending implementation: Plan 03.1-09")
