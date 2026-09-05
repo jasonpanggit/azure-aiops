@@ -97,15 +97,27 @@ class IngestionService:
         if not subscriptions:
             raise RuntimeError("No Azure subscriptions were returned by Azure MCP")
 
-        from intelligence.inventory.sources.arg import (
-            inventory_log_analytics_workspace_specs,
-        )
+        from onboarding.query_contract import QuerySpec
 
+        workspace_spec = QuerySpec(
+            "inventory_log_analytics_workspaces",
+            "Resources",
+            (
+                "Resources "
+                "| where type =~ 'microsoft.operationalinsights/workspaces' "
+                "| project id, name, subscriptionId, resourceGroup, "
+                "workspaceId=tostring(properties.customerId) "
+                "| order by id asc"
+            ),
+            False,
+            source_family="log_analytics_workspace_discovery",
+            version="inventory-law-workspaces-v1",
+        )
         specs = [
             *QueryCatalog(self.config.change_overlap_minutes).build(
                 since, include_management_groups=bool(self.config.management_groups)
             ),
-            *inventory_log_analytics_workspace_specs(),
+            workspace_spec,
         ]
         # Cost Management is independent of ARG discovery. Overlap both
         # bounded acquisition paths; normalization and publication stay

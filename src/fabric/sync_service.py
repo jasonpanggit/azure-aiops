@@ -85,6 +85,13 @@ class FabricSyncService:
         "silver_vm_inventory",
         "silver_server_inventory",
     })
+    _WORKLOAD_APPEND_WRITE_TABLES: frozenset[str] = frozenset({
+        "silver_workload_observations",
+    })
+    _WORKLOAD_MERGE_WRITE_TABLES: frozenset[str] = frozenset({
+        "silver_workload_deployments",
+        "metadata_workload_source_checkpoints",
+    })
 
     def __init__(
         self,
@@ -212,6 +219,8 @@ class FabricSyncService:
         data_committed = False
         try:
             datasets = self.mapper.load(snapshot, run_id, fs=self._source_fs)
+            datasets.update(self._load_workload_products(snapshot))
+            self._validate_workload_products(datasets)
             if self.topology_enabled:
                 self._extend_with_topology_tables(
                     datasets,
@@ -1642,13 +1651,136 @@ class FabricSyncService:
             )
 
     def _write_mode_for_table(self, table_name: str) -> DeltaWriteMode:
-        if table_name == "metadata_audit_events":
+        if (
+            table_name == "metadata_audit_events"
+            or table_name in self._WORKLOAD_APPEND_WRITE_TABLES
+        ):
             return DeltaWriteMode.APPEND
-        if table_name in self._MERGE_WRITE_TABLES:
+        if (
+            table_name in self._MERGE_WRITE_TABLES
+            or table_name in self._WORKLOAD_MERGE_WRITE_TABLES
+        ):
             return DeltaWriteMode.MERGE
         if table_name in self._SNAPSHOT_MERGE_WRITE_TABLES:
             return DeltaWriteMode.SNAPSHOT_MERGE
         return DeltaWriteMode.OVERWRITE
+
+    def _load_workload_products(
+        self,
+        snapshot: Path | str,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Read additive v1 products with a legacy path compatibility window."""
+
+        products = {
+            "silver_workload_observations": (
+                "exposure/workload_observations",
+                "workload/workload_observations",
+            ),
+            "silver_workload_deployments": (
+                "exposure/workload_deployments",
+                "workload/workload_deployments",
+            ),
+            "metadata_workload_source_checkpoints": (
+                "exposure/workload_source_checkpoints",
+                "workload/workload_source_checkpoints",
+            ),
+        }
+        loaded: dict[str, list[dict[str, Any]]] = {}
+        for table_name, paths in products.items():
+            rows: list[dict[str, Any]] = []
+            for relative in paths:
+                exists, candidate = self._read_snapshot_jsonl(snapshot, relative)
+                if exists:
+                    rows = candidate
+                    break
+            if rows:
+                loaded[table_name] = rows
+        return loaded
+
+    def _read_snapshot_jsonl(
+        self,
+        snapshot: Path | str,
+        relative: str,
+    ) -> tuple[bool, list[dict[str, Any]]]:
+        path = (
+            f"{str(snapshot).rstrip('/')}/{relative}.jsonl"
+            if self._source_root_is_remote
+            else Path(snapshot) / f"{relative}.jsonl"
+        )
+        if self._source_fs is not None:
+            if not self._source_fs.exists(path):
+                return False, []
+            with self._source_fs.open(path, "rt") as handle:
+                lines = handle.read().splitlines()
+        else:
+            local_path = Path(path)
+            if not local_path.exists():
+                return False, []
+            lines = local_path.read_text().splitlines()
+        rows: list[dict[str, Any]] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            parsed = json.loads(line)
+            if not isinstance(parsed, dict):
+                raise TypeError("Workload product rows must be JSON objects")
+            rows.append(parsed)
+        return True, rows
+
+    def _validate_workload_products(
+        self,
+        datasets: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        from intelligence.vulnerability.workload_inventory import (
+            WORKLOAD_QUERY_FAMILIES,
+            normalize_digest,
+            workload_checkpoint_key,
+        )
+
+        checkpoints = datasets.get("metadata_workload_source_checkpoints", [])
+        observations = datasets.get("silver_workload_observations", [])
+        deployments = datasets.get("silver_workload_deployments", [])
+        if not checkpoints and not observations and not deployments:
+            return
+        checkpoint_ids = {
+            str(row.get("checkpoint_key") or "") for row in checkpoints
+        }
+        workspace_families: dict[tuple[str, str], set[str]] = {}
+        for row in checkpoints:
+            connection_id = str(row.get("connection_id") or "")
+            workspace_id = str(row.get("workspace_id") or "")
+            source_family = str(row.get("source_family") or "")
+            expected_key = workload_checkpoint_key(
+                connection_id,
+                workspace_id,
+                source_family,
+            )
+            if row.get("checkpoint_key") != expected_key:
+                raise ValueError("Workload checkpoint identity is invalid")
+            workspace_families.setdefault(
+                (connection_id, workspace_id),
+                set(),
+            ).add(source_family)
+            status = str(row.get("status") or "")
+            effective = str(row.get("effective_generation") or "")
+            if status == "unavailable" and effective:
+                raise ValueError("Unavailable workload checkpoint has an effective generation")
+            if status in {"complete", "healthy-empty", "stale"} and not effective:
+                raise ValueError("Usable workload checkpoint lacks an effective generation")
+        required_families = set(WORKLOAD_QUERY_FAMILIES)
+        if any(families != required_families for families in workspace_families.values()):
+            raise ValueError("Workload checkpoint family set is incomplete")
+        for row in [*observations, *deployments]:
+            if str(row.get("checkpoint_key") or "") not in checkpoint_ids:
+                raise ValueError("Workload row references an unknown checkpoint")
+        for row in deployments:
+            digest = str(row.get("image_digest") or "")
+            if normalize_digest(digest) != digest:
+                raise ValueError("Workload deployment image digest is invalid")
+            if row.get("unknown_reason"):
+                raise ValueError("Unknown workload evidence cannot be a deployment row")
+            if not row.get("effective_generation"):
+                raise ValueError("Workload deployment lacks an effective generation")
 
     def _extend_with_topology_tables(
         self,

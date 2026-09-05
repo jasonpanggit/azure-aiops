@@ -111,12 +111,10 @@ def build_connection_ingestion(
         max_workers=scoped.max_query_workers,
         management_group_ids=(),
     )
-    logs_client = AzureMonitorLogsClient(
-        (resolver or CredentialResolver(provider=default_secret_provider())).build(
-            connection.credential
-        ),
-        limits=LogsQueryLimits(timeout_seconds=scoped.command_timeout_seconds),
-    )
+    # The connection-scoped factory is the sole Logs authority. It supplies
+    # the credential and hard query limits; IngestionService supplies only
+    # server-discovered workspaces to the fixed Container Insights methods.
+    logs_client = build_connection_logs_client(scoped, connection, resolver)
     cost_source = (
         CostActualsSource(cost=build_connection_cost_client(scoped, connection, resolver))
         if scoped.cost_management_enabled
@@ -160,12 +158,7 @@ def build_connection_inventory_pipeline(
         max_workers=scoped.max_query_workers,
         management_group_ids=(),
     )
-    logs_client = AzureMonitorLogsClient(
-        (resolver or CredentialResolver(provider=default_secret_provider())).build(
-            connection.credential
-        ),
-        limits=LogsQueryLimits(timeout_seconds=scoped.command_timeout_seconds),
-    )
+    logs_client = build_connection_logs_client(scoped, connection, resolver)
     return InventoryPipeline(scoped, source=source, logs_client=logs_client)
 
 
