@@ -25,6 +25,7 @@ from network.rule_engine import (
     validate_rule_parameters,
 )
 from network.service import NetworkIntelligenceService, NetworkScope
+from network.topology import TopologyDetail
 
 from ..dependencies import Context, Page, ReadScope, WritePrincipal
 from ..errors import ApiError, ErrorCode
@@ -85,18 +86,119 @@ def _evidence(
 
 
 @router.get("/topology", summary="Hub-spoke network topology")
-def network_topology(context: Context, scope: ReadScope) -> dict[str, Any]:
+def network_topology(
+    context: Context,
+    scope: ReadScope,
+    detail: Annotated[TopologyDetail, Query()] = "full",
+) -> dict[str, Any]:
     service = _service(context, scope)
     analysis = service.analyze()
     return envelope(
         {
-            "topology": analysis.topology.to_dict(),
+            "topology": analysis.topology.to_dict(detail=detail),
             "summary": analysis.summary(),
         },
         # Topology is stitched from observed peering resources, so it is a
         # direct reading of the estate rather than an inference.
         evidence=_evidence(service),
         scope=scope.to_dict(),
+    )
+
+
+def _topology_resource_details(
+    service: NetworkIntelligenceService,
+    resource_id: str,
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Resolve drill-down data only from the already-scoped snapshot."""
+    requested_id = f"/{resource_id.lstrip('/')}".casefold()
+    snapshot = service.snapshot
+
+    for nsg in snapshot.nsgs:
+        if nsg.resource_id == requested_id:
+            return (
+                nsg.resource_id,
+                "rules",
+                [rule.to_dict() for rule in nsg.ordered_rules()],
+            )
+    for table in snapshot.route_tables:
+        if table.resource_id == requested_id:
+            return (
+                table.resource_id,
+                "routes",
+                [route.to_dict() for route in table.routes],
+            )
+    for collection in snapshot.firewall_collections:
+        if collection.resource_id == requested_id:
+            return (
+                collection.resource_id,
+                "rules",
+                [rule.to_dict() for rule in collection.rules],
+            )
+    for policy in snapshot.firewall_policies:
+        if policy.resource_id == requested_id:
+            collections = [
+                collection.to_dict()
+                for collection in snapshot.firewall_collections
+                if collection.policy_id == policy.resource_id
+            ]
+            return policy.resource_id, "rule_collections", collections
+    for firewall in snapshot.firewalls:
+        if firewall.resource_id != requested_id:
+            continue
+        collections = [
+            collection
+            for collection in snapshot.firewall_collections
+            if collection.firewall_id == firewall.resource_id
+            or (
+                firewall.policy_id
+                and collection.policy_id == firewall.policy_id
+            )
+        ]
+        rules = {
+            rule.resource_id: rule.to_dict()
+            for collection in collections
+            for rule in collection.rules
+        }
+        return (
+            firewall.resource_id,
+            "rules",
+            [rules[key] for key in sorted(rules)],
+        )
+    return requested_id, "", []
+
+
+@router.get(
+    "/topology/resources/{resource_id:path}/details",
+    summary="Paginated topology resource details",
+)
+def topology_resource_details(
+    resource_id: str,
+    context: Context,
+    scope: ReadScope,
+    page: Page,
+) -> dict[str, Any]:
+    """Return summary-withheld details without bypassing request scope."""
+    service = _service(context, scope)
+    canonical_id, detail_type, items = _topology_resource_details(
+        service,
+        resource_id,
+    )
+    visible = items[page.offset : page.offset + page.limit]
+    coverage = {
+        "total": len(items),
+        "returned": len(visible),
+        "truncated": len(visible) < len(items),
+    }
+    return envelope(
+        {
+            "resource_id": canonical_id,
+            "detail_type": detail_type,
+            "items": visible,
+            "coverage": coverage,
+        },
+        evidence=_evidence(service, resource_id=canonical_id),
+        scope=scope.to_dict(),
+        pagination=page.to_dict(len(items)),
     )
 
 

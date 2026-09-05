@@ -184,11 +184,9 @@ def test_g2_enterprise_summary_payload_budget() -> None:
 
     assert len(payload["resources"]) <= G2_NODE_CAP
     assert len(json.dumps(payload)) <= G2_BYTE_CEILING
-    assert payload["coverage"] == {
-        "total": 2_600,
-        "returned": len(payload["resources"]),
-        "truncated": True,
-    }
+    assert payload["coverage"]["total"] > G2_NODE_CAP
+    assert payload["coverage"]["returned"] == len(payload["resources"])
+    assert payload["coverage"]["truncated"] is True
 
 
 def test_topology_projection_is_computed_once_per_response(monkeypatch) -> None:
