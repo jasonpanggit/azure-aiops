@@ -70,6 +70,7 @@ ENTITY_TYPES = (
 class NormalizedGraph:
     entities: dict[str, list[dict]] = field(default_factory=lambda: {name: [] for name in ENTITY_TYPES})
     relationships: list[dict] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     changes: list[dict] = field(default_factory=list)
     # Phase 1 projections are carried alongside the established graph so the
     # immutable generation remains the single publication path.
@@ -465,7 +466,13 @@ class Normalizer:
             for row in payload.get("resource_changes", [])
             if not _failed_provider_row(row)
         ]
-        self._normalize_network(payload, observed, entity_index, edge_index)
+        self._normalize_network(
+            payload,
+            observed,
+            entity_index,
+            edge_index,
+            graph.warnings,
+        )
         if context:
             for entity_type in ENTITY_TYPES:
                 for entity in entity_index[entity_type].values():
@@ -587,6 +594,7 @@ class Normalizer:
         observed: str,
         entity_index: dict[str, dict[str, dict]],
         edge_index: dict[str, dict],
+        warnings: list[str],
     ) -> None:
         """Flattens network payloads into entities plus topology edges.
 
@@ -752,7 +760,13 @@ class Normalizer:
             containment(row, zone)
         for zone_id, vnet_id in dns_links:
             zone = dns_zones.get(zone_id)
-            if zone is not None and vnet_id not in zone["linkedVnetIds"]:
+            if zone is None:
+                warnings.append(
+                    "Skipped private DNS virtual network link because its "
+                    "parent zone was absent from the payload"
+                )
+                continue
+            if vnet_id not in zone["linkedVnetIds"]:
                 zone["linkedVnetIds"].append(vnet_id)
             link(zone_id, "resolvesFor", vnet_id, 0.98)
         for zone in dns_zones.values():

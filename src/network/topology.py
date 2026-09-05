@@ -13,6 +13,7 @@ peerings, not because someone called it "hub".
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +43,10 @@ HUB_SCORE_THRESHOLD = 3.0
 
 #: Peerings above this count count as "many".
 MANY_PEERINGS_THRESHOLD = 2
+
+PEER_RESOLUTION_VALUES = frozenset(
+    {"not_ingested", "excluded_by_scope", "observed"}
+)
 
 SHARED_SERVICE_KINDS: dict[str, str] = {
     "AzureFirewall": "firewall",
@@ -139,9 +144,16 @@ class NetworkTopology:
     links: tuple[PeeringLink, ...] = ()
     shared_services: tuple[SharedService, ...] = ()
     unresolved_peer_vnet_ids: tuple[str, ...] = ()
+    unresolved_peers: tuple[dict[str, Any], ...] = ()
     connection_ids: tuple[str, ...] = ()
     snapshot: NetworkSnapshot = field(default_factory=NetworkSnapshot)
     semantic_relationships: tuple[dict[str, Any], ...] = ()
+    flow_log_provenance: dict[str, Any] = field(
+        default_factory=lambda: {
+            "state": "not_ingested",
+            "observed_flow_count": 0,
+        }
+    )
 
     @property
     def hubs(self) -> tuple[HubClassification, ...]:
@@ -184,18 +196,38 @@ class NetworkTopology:
         return ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        relationships, dropped_relationships = _topology_relationships(self)
+        counts: dict[str, Any] = {
+            **self.snapshot.counts(),
+            "dropped_relationships": dict(sorted(dropped_relationships.items())),
+        }
+        payload = {
             "hubs": [hub.to_dict() for hub in self.hubs],
             "spokes": [spoke.to_dict() for spoke in self.spokes],
             "isolated": [item.to_dict() for item in self.isolated],
             "links": [link.to_dict() for link in self.links],
             "shared_services": [service.to_dict() for service in self.shared_services],
             "resources": _topology_resources(self),
-            "relationships": _topology_relationships(self),
+            "relationships": relationships,
             "unresolved_peer_vnet_ids": list(self.unresolved_peer_vnet_ids),
+            "unresolved_peers": [dict(item) for item in self.unresolved_peers],
             "connection_ids": list(self.connection_ids),
-            "counts": self.snapshot.counts(),
+            "counts": counts,
+            "flow_log_provenance": dict(self.flow_log_provenance),
         }
+        if dropped_relationships:
+            total = sum(dropped_relationships.values())
+            breakdown = ", ".join(
+                f"{relationship_type}={count}"
+                for relationship_type, count in sorted(dropped_relationships.items())
+            )
+            payload["warnings"] = [
+                (
+                    f"{total} topology relationships dropped because an endpoint "
+                    f"was absent from this scope ({breakdown})"
+                )
+            ]
+        return payload
 
 
 class TopologyBuilder:
@@ -214,6 +246,9 @@ class TopologyBuilder:
         self,
         snapshot: NetworkSnapshot,
         semantic_relationships: tuple[dict[str, Any], ...] = (),
+        *,
+        flow_log_provenance: dict[str, Any] | None = None,
+        peer_resolutions: Mapping[str, str] | None = None,
     ) -> NetworkTopology:
         vnets = {vnet.resource_id: vnet for vnet in snapshot.vnets}
         links = self._stitch_peerings(snapshot, vnets)
@@ -228,6 +263,11 @@ class TopologyBuilder:
                 if not link.remote_vnet_observed and link.remote_vnet_id
             }
         )
+        unresolved_peers = self._unresolved_peers(
+            unresolved,
+            snapshot,
+            peer_resolutions,
+        )
         shared_services = self._attach_consumers(shared_services, classifications, links)
 
         return NetworkTopology(
@@ -235,10 +275,43 @@ class TopologyBuilder:
             links=tuple(links),
             shared_services=tuple(shared_services),
             unresolved_peer_vnet_ids=tuple(unresolved),
+            unresolved_peers=tuple(unresolved_peers),
             connection_ids=snapshot.connection_ids(),
             snapshot=snapshot,
             semantic_relationships=semantic_relationships,
+            flow_log_provenance=flow_log_provenance
+            or _flow_log_provenance(semantic_relationships),
         )
+
+    @staticmethod
+    def _unresolved_peers(
+        unresolved_ids: list[str],
+        snapshot: NetworkSnapshot,
+        peer_resolutions: Mapping[str, str] | None,
+    ) -> list[dict[str, Any]]:
+        """Describe missing peers without inferring facts unavailable here."""
+        if peer_resolutions is None:
+            observed_vnet_ids = {vnet.resource_id for vnet in snapshot.vnets}
+            resolutions = {
+                peer_id: "not_ingested"
+                for peer_id in unresolved_ids
+                if peer_id not in observed_vnet_ids
+            }
+        else:
+            resolutions = {
+                str(peer_id or "").casefold(): str(resolution or "")
+                for peer_id, resolution in peer_resolutions.items()
+            }
+
+        return [
+            {
+                "vnet_id": peer_id,
+                "peer_resolution": resolutions[peer_id],
+            }
+            for peer_id in unresolved_ids
+            if resolutions.get(peer_id) in PEER_RESOLUTION_VALUES
+            and resolutions[peer_id] != "observed"
+        ]
 
     def _stitch_peerings(
         self, snapshot: NetworkSnapshot, vnets: dict[str, VNet]
@@ -744,19 +817,60 @@ def _relationship(
     }
 
 
+def _is_flow_log_observation(relationship: Mapping[str, Any]) -> bool:
+    if str(relationship.get("predicate") or "").casefold() != "trafficobserved":
+        return False
+    attributes = relationship.get("attributes")
+    return (
+        isinstance(attributes, Mapping)
+        and attributes.get("dataSource") == "traffic_analytics"
+    )
+
+
+def _flow_log_provenance(
+    semantic_relationships: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    observed = sum(
+        1 for relationship in semantic_relationships if _is_flow_log_observation(relationship)
+    )
+    return {
+        "state": "ingested_not_analyzed" if observed else "not_ingested",
+        "observed_flow_count": observed,
+    }
+
+
 def _has_resource(resource_ids: set[str], resource_id: str) -> bool:
-    return bool(resource_id and resource_id in resource_ids)
+    return bool(resource_id and resource_id.casefold() in resource_ids)
 
 
-def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
+def _topology_relationships(
+    topology: NetworkTopology,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     snapshot = topology.snapshot
-    resource_ids = {node["id"] for node in _topology_resources(topology)}
+    resource_ids = {str(node["id"]).casefold() for node in _topology_resources(topology)}
     relationships: dict[str, dict[str, Any]] = {}
+    dropped_relationships: dict[str, int] = {}
 
     def add(source: str, target: str, relationship_type: str, *, label: str = "", details: dict[str, Any] | None = None) -> None:
-        if not (_has_resource(resource_ids, source) and _has_resource(resource_ids, target)):
+        source_id = str(source or "").casefold()
+        target_id = str(target or "").casefold()
+        if not source_id or not target_id:
             return
-        relationship = _relationship(source, target, relationship_type, label=label, details=details)
+        if not (
+            _has_resource(resource_ids, source_id)
+            and _has_resource(resource_ids, target_id)
+        ):
+            dropped_relationships[relationship_type] = (
+                dropped_relationships.get(relationship_type, 0) + 1
+            )
+            return
+        relationship = _relationship(
+            source_id,
+            target_id,
+            relationship_type,
+            label=label,
+            details=details,
+        )
         relationships[relationship["id"]] = relationship
 
     def add_hosted(resource: Any, label: str) -> None:
@@ -776,6 +890,7 @@ def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
         "attachedto": "attached_to",
         "loadbalances": "load_balances",
         "hosts": "hosts",
+        "resolvesfor": "resolves_for",
     }
     for semantic in topology.semantic_relationships:
         predicate = str(semantic.get("predicate") or "").casefold()
@@ -910,4 +1025,14 @@ def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
         if item["relationship_type"] == "linked_to" and (item["source"], item["target"]) in served_pairs:
             del relationships[key]
 
-    return sorted(relationships.values(), key=lambda item: (item["relationship_type"], item["source"], item["target"]))
+    return (
+        sorted(
+            relationships.values(),
+            key=lambda item: (
+                item["relationship_type"],
+                item["source"],
+                item["target"],
+            ),
+        ),
+        dropped_relationships,
+    )

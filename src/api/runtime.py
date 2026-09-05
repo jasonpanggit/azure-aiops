@@ -636,11 +636,12 @@ def _load_semantic_snapshot() -> SemanticEngine | None:
 
 
 def _load_network_service() -> NetworkIntelligenceService | None:
-    entities, relationships, _freshness = _load_ontology_rows()
+    entities, relationships, freshness = _load_ontology_rows()
     if not entities:
         return None
     return NetworkIntelligenceService.from_rows(
         entities,
+        observed_at=freshness,
         policy=_network_policy_store().read(),
         semantic_relationships=relationships,
     )

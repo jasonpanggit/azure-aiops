@@ -205,14 +205,19 @@ class NetworkSnapshotLoader:
     and ownership are explicit rather than rediscovered by every analyzer.
     """
 
-    def load(self, rows: Iterable[Mapping[str, Any]]) -> NetworkSnapshot:
+    def load(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        observed_at: str | None = None,
+    ) -> NetworkSnapshot:
         buckets: dict[str, list[Mapping[str, Any]]] = {}
         # PaaS resources are collected by ARM type rather than entity type: the
         # ontology normalises them to a generic "Resource" and live ARG rows
         # carry no entity type at all. Without this the estate's Private Link
         # candidates would be invisible to gap analysis.
         private_link_rows: list[Mapping[str, Any]] = []
-        observed = ""
+        observed = str(observed_at or "")
         for row in rows:
             entity_type = _entity_type(row)
             if entity_type:
@@ -573,6 +578,10 @@ def _observed_at(row: Mapping[str, Any]) -> str:
     )
 
 
-def load_network_snapshot(rows: Iterable[Mapping[str, Any]]) -> NetworkSnapshot:
+def load_network_snapshot(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    observed_at: str | None = None,
+) -> NetworkSnapshot:
     """Convenience wrapper around :class:`NetworkSnapshotLoader`."""
-    return NetworkSnapshotLoader().load(rows)
+    return NetworkSnapshotLoader().load(rows, observed_at=observed_at)

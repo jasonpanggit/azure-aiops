@@ -209,10 +209,32 @@ class NetworkIntelligenceService:
         *,
         policy: NetworkDesignPolicy | None = None,
         semantic_relationships: Iterable[Mapping[str, Any]] = (),
+        flow_observations: Iterable[Mapping[str, Any]] | None = None,
+        peer_resolutions: Mapping[str, str] | None = None,
     ) -> None:
         self.snapshot = snapshot
         self.policy = policy if policy is not None else NetworkDesignPolicy()
-        self.semantic_relationships = tuple(dict(row) for row in semantic_relationships)
+        self.semantic_relationships = tuple(
+            {
+                **dict(row),
+                "subject_id": str(row.get("subject_id") or "").casefold(),
+                "object_id": str(row.get("object_id") or "").casefold(),
+            }
+            for row in semantic_relationships
+        )
+        self.flow_observations = (
+            None
+            if flow_observations is None
+            else tuple(dict(row) for row in flow_observations)
+        )
+        self.peer_resolutions = (
+            None
+            if peer_resolutions is None
+            else {
+                str(peer_id or "").casefold(): str(resolution or "")
+                for peer_id, resolution in peer_resolutions.items()
+            }
+        )
         self._topology: NetworkTopology | None = None
         self._gaps: tuple[NetworkGap, ...] | None = None
         self._findings: tuple[RuleFinding, ...] | None = None
@@ -225,12 +247,15 @@ class NetworkIntelligenceService:
         policy: NetworkDesignPolicy | None = None,
         policy_path: str | None = None,
         semantic_relationships: Iterable[Mapping[str, Any]] = (),
+        observed_at: str | None = None,
+        flow_observations: Iterable[Mapping[str, Any]] | None = None,
     ) -> NetworkIntelligenceService:
         resolved = policy if policy is not None else load_design_policy(policy_path)
         return cls(
-            load_network_snapshot(rows),
+            load_network_snapshot(rows, observed_at=observed_at),
             policy=resolved,
             semantic_relationships=semantic_relationships,
+            flow_observations=flow_observations,
         )
 
     @classmethod
@@ -288,13 +313,44 @@ class NetworkIntelligenceService:
             policy=policy,
             policy_path=policy_path,
             semantic_relationships=semantic_relationships,
+            observed_at=observed_at,
         )
 
     @property
     def topology(self) -> NetworkTopology:
         if self._topology is None:
-            self._topology = TopologyBuilder().build(self.snapshot, self.semantic_relationships)
+            self._topology = TopologyBuilder().build(
+                self.snapshot,
+                self.semantic_relationships,
+                flow_log_provenance=self.flow_log_provenance,
+                peer_resolutions=self.peer_resolutions,
+            )
         return self._topology
+
+    @property
+    def flow_log_provenance(self) -> dict[str, Any]:
+        evidence = tuple(
+            row
+            for row in self.semantic_relationships
+            if str(row.get("predicate") or "").casefold() == "trafficobserved"
+            and isinstance(row.get("attributes"), Mapping)
+            and row["attributes"].get("dataSource") == "traffic_analytics"
+        )
+        if self.flow_observations is None:
+            return {
+                "state": "ingested_not_analyzed" if evidence else "not_ingested",
+                "observed_flow_count": len(evidence),
+            }
+        analyzed = tuple(
+            row
+            for row in self.flow_observations
+            if isinstance(row.get("attributes"), Mapping)
+            and row["attributes"].get("dataSource") == "traffic_analytics"
+        )
+        return {
+            "state": "analyzed",
+            "observed_flow_count": len(analyzed),
+        }
 
     @property
     def gaps(self) -> tuple[NetworkGap, ...]:
@@ -305,7 +361,10 @@ class NetworkIntelligenceService:
     @property
     def rule_findings(self) -> tuple[RuleFinding, ...]:
         if self._findings is None:
-            self._findings = analyze_rules(self.snapshot)
+            self._findings = analyze_rules(
+                self.snapshot,
+                self.flow_observations or (),
+            )
         return self._findings
 
     def analyze(self) -> NetworkAnalysis:
@@ -321,6 +380,19 @@ class NetworkIntelligenceService:
         if scope.is_empty:
             return self
         snapshot = scope.filter_snapshot(self.snapshot)
+        unscoped_vnet_ids = {vnet.resource_id for vnet in self.snapshot.vnets}
+        scoped_vnet_ids = {vnet.resource_id for vnet in snapshot.vnets}
+        peer_resolutions: dict[str, str] = {}
+        for peering in snapshot.peerings:
+            peer_id = peering.remote_vnet_id
+            if not peer_id:
+                continue
+            if peer_id in scoped_vnet_ids:
+                peer_resolutions[peer_id] = "observed"
+            elif peer_id in unscoped_vnet_ids:
+                peer_resolutions[peer_id] = "excluded_by_scope"
+            else:
+                peer_resolutions[peer_id] = "not_ingested"
         return NetworkIntelligenceService(
             snapshot,
             policy=self.policy,
@@ -328,6 +400,8 @@ class NetworkIntelligenceService:
                 self.semantic_relationships,
                 snapshot,
             ),
+            flow_observations=self.flow_observations,
+            peer_resolutions=peer_resolutions,
         )
 
     def validate_flow(self, query: FlowQuery) -> FlowResult:
