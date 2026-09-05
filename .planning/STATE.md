@@ -192,5 +192,4 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 
 ### Blockers
 
-- Phase 03.1 Plan 02 requires explicit human verification of pyodbc provenance before any package or image change; blocking-human gate cannot be auto-approved.
 - Phase 03.1 Plan 21 requires explicit approval of the permanent versioned typed-image ontology contract before first ontology publication; one-way decision gate cannot be auto-selected while the user is unavailable.
