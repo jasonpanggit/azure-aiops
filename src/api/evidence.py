@@ -145,6 +145,14 @@ class Envelope:
             for key in ("graph_freshness", "live_observed_at", "source_status"):
                 if key in self.data:
                     body[key] = self.data[key]
+            source_status = self.data.get("source_status")
+            if isinstance(source_status, Sequence) and not isinstance(
+                source_status,
+                (str, bytes, bytearray),
+            ):
+                body["source_completeness"] = summarize_source_completeness(
+                    source_status
+                )
         if self.pagination is not None:
             body["pagination"] = dict(self.pagination)
         warnings = list(dict.fromkeys((*_truncation_warnings(self.data), *self.warnings)))
@@ -177,6 +185,81 @@ def envelope(
         warnings=tuple(warnings or ()),
         pagination=pagination,
     ).to_dict()
+
+
+def summarize_source_completeness(
+    source_status: Sequence[Any],
+) -> dict[str, Any]:
+    """Reduce effective partition status into conservative response coverage."""
+
+    rows: list[Mapping[str, Any]] = []
+    for item in source_status:
+        if isinstance(item, Mapping):
+            rows.append(item)
+            continue
+        to_dict = getattr(item, "to_dict", None)
+        if callable(to_dict):
+            value = to_dict()
+        else:
+            value = vars(item) if hasattr(item, "__dict__") else {}
+        if isinstance(value, Mapping):
+            rows.append(value)
+
+    represented = sum(
+        max(0, int(row.get("represented_count") or 0)) for row in rows
+    )
+    expected = sum(max(0, int(row.get("expected_count") or 0)) for row in rows)
+    states = {
+        str(row.get("completeness") or "unavailable").strip().casefold()
+        for row in rows
+    }
+    if not rows or represented == 0:
+        state = "unavailable"
+    elif represented < expected or "partial" in states or "unavailable" in states:
+        state = "partial"
+    elif "stale" in states:
+        state = "stale"
+    elif "healthy-empty" in states:
+        state = "healthy-empty"
+    else:
+        state = "complete"
+
+    represented_rows = [
+        row for row in rows if int(row.get("represented_count") or 0) > 0
+    ]
+    return {
+        "state": state,
+        "represented_count": represented,
+        "expected_count": expected,
+        "contributing_connection_count": len(
+            {
+                str(row.get("connection_id") or "")
+                for row in represented_rows
+                if row.get("connection_id")
+            }
+        ),
+        "expected_connection_count": len(
+            {
+                str(row.get("connection_id") or "")
+                for row in rows
+                if row.get("connection_id")
+            }
+        ),
+        "contributing_source_family_count": len(
+            {
+                str(row.get("source_family") or "")
+                for row in represented_rows
+                if row.get("source_family")
+            }
+        ),
+        "expected_source_family_count": len(
+            {
+                str(row.get("source_family") or "")
+                for row in rows
+                if row.get("source_family")
+            }
+        ),
+    }
 
 
 def _truncation_warnings(value: Any) -> tuple[str, ...]:
