@@ -61,6 +61,12 @@ PRIVATE_LINK_RESOURCE_TYPES: dict[str, str] = {
     "microsoft.fabric/capacities": "Microsoft Fabric",
 }
 
+# Fabric private-link controls apply to a tenant or workspace, not to an
+# individual capacity resource. Keep the normalized ARM type and scope value
+# shared by topology projection and gap analysis so they cannot drift.
+FABRIC_CAPACITY_RESOURCE_TYPE = "microsoft.fabric/capacities"
+FABRIC_PRIVATE_LINK_SCOPE = "tenant_or_workspace"
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()

@@ -18,10 +18,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .models import (
+    FABRIC_CAPACITY_RESOURCE_TYPE,
+    FABRIC_PRIVATE_LINK_SCOPE,
     AzureFirewall,
     FirewallRule,
     FirewallRuleCollection,
     NetworkSnapshot,
+    PrivateLinkResource,
     SharedService,
     VNet,
 )
@@ -703,7 +706,18 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
     nodes.extend(_resource_node(zone) for zone in snapshot.private_dns_zones)
     nodes.extend(_resource_node(gateway) for gateway in snapshot.gateways)
     nodes.extend(_resource_node(lb) for lb in snapshot.load_balancers)
-    nodes.extend(_attached_workload_nodes(snapshot))
+
+    # Attached workloads and inventory-backed private-link candidates share
+    # one case-insensitive identity map. A candidate wins over a placeholder
+    # because it carries authoritative service and public-access facts.
+    resources = {str(node["id"]).casefold(): node for node in nodes}
+    for node in _attached_workload_nodes(snapshot):
+        resources.setdefault(str(node["id"]).casefold(), node)
+    for resource in snapshot.private_link_resources:
+        node = _private_link_resource_node(resource)
+        resources[str(node["id"]).casefold()] = node
+
+    nodes = list(resources.values())
     nodes = _disambiguate_duplicate_names(nodes)
     return sorted(nodes, key=lambda node: (node["entity_type"], node["name"], node["id"]))
 
@@ -749,6 +763,31 @@ _WORKLOAD_ENTITY_TYPE_BY_PROVIDER = {
     "microsoft.cognitiveservices/accounts": "AIFoundryAccount",
     "microsoft.fabric/capacities": "FabricCapacity",
 }
+
+
+def _private_link_resource_node(resource: PrivateLinkResource) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "service_kind": resource.service_kind,
+        "public_network_access": resource.public_network_access,
+        "private_link_candidate": True,
+    }
+    if resource.resource_type == FABRIC_CAPACITY_RESOURCE_TYPE:
+        details.update(
+            {
+                "private_link_scope": FABRIC_PRIVATE_LINK_SCOPE,
+                "private_link_scope_qualification": (
+                    "Fabric private-link posture is evaluated at tenant or "
+                    "workspace scope, not capacity scope."
+                ),
+            }
+        )
+
+    node = _resource_node(resource, role="private_link", details=details)
+    node["entity_type"] = (
+        _WORKLOAD_ENTITY_TYPE_BY_PROVIDER.get(resource.resource_type)
+        or resource.entity_type
+    )
+    return node
 
 
 def _attached_workload_nodes(snapshot: NetworkSnapshot) -> list[dict[str, Any]]:

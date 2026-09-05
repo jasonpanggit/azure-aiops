@@ -31,7 +31,11 @@ from .design import (
     NetworkDesignPolicy,
     PolicyRule,
 )
-from .models import PRIVATE_LINK_RESOURCE_TYPES, NetworkSnapshot
+from .models import (
+    FABRIC_CAPACITY_RESOURCE_TYPE,
+    PRIVATE_LINK_RESOURCE_TYPES,
+    NetworkSnapshot,
+)
 from .rule_engine import CustomRuleEvaluator, InvalidRule, is_declarative_rule
 from .topology import NetworkTopology
 
@@ -388,6 +392,10 @@ class NetworkGapAnalyzer:
         gaps: list[NetworkGap] = []
 
         for resource in self.snapshot.private_link_resources:
+            # Fabric private links are tenant/workspace controls. A capacity
+            # cannot truthfully carry a per-resource missing-endpoint finding.
+            if resource.resource_type == FABRIC_CAPACITY_RESOURCE_TYPE:
+                continue
             label = resource.service_kind or resource.resource_type
             if scope and label.casefold() not in scope:
                 continue
