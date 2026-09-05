@@ -376,8 +376,59 @@ variable "foundry_agent_name" {
   default     = "operations-copilot"
 }
 
+variable "foundry_agent_name_prefix" {
+  description = <<-EOT
+    Prefix applied to every manifest-derived Foundry specialist agent name.
+
+    Deployed agent names are projected from the committed specialist manifest
+    (src/operations/specialists.v1.json) as
+    "<prefix><manifest foundry.name><suffix>". The defaults reproduce the
+    eight already-deployed names exactly (manifest `network` ->
+    `aiops-network-agent`), so adopting the manifest adds the four new
+    specialists instead of orphaning the existing eight.
+  EOT
+  type        = string
+  default     = "aiops-"
+}
+
+variable "foundry_agent_name_suffix" {
+  description = "Suffix applied to every manifest-derived Foundry specialist agent name."
+  type        = string
+  default     = "-agent"
+}
+
+variable "foundry_specialist_release" {
+  description = <<-EOT
+    Immutable release stamp for the manifest-derived specialist version set.
+
+    The deployed version of each specialist is
+    "<release>.<manifest foundry.version>". Foundry agent versions are
+    additive and immutable, so a contract change must publish a new version
+    string rather than redefine a published one. Pin this back to a prior
+    release (e.g. "2026.08") to re-select the previously published version
+    set for rollback without editing the manifest.
+  EOT
+  type        = string
+  default     = "2026.09"
+
+  validation {
+    condition     = can(regex("^[0-9A-Za-z][0-9A-Za-z.-]*$", var.foundry_specialist_release))
+    error_message = "foundry_specialist_release must be an alphanumeric/dot/hyphen release stamp."
+  }
+}
+
 variable "foundry_specialists" {
-  description = "Independently named/versioned Foundry prompt specialists. Phase 09-09 expansion: all 8 agents deployed."
+  description = <<-EOT
+    DEPRECATED compatibility input: the pre-manifest eight named/versioned
+    Foundry prompt specialists.
+
+    The committed specialist manifest is now the primary source for agent
+    names, versions, prompts, and grants (see local.foundry_specialist_deployment
+    in foundry.tf). This variable is retained for one migration window so
+    existing tfvars keep planning and so the previously deployed name/version
+    pairs stay visible to the running app (FOUNDRY_SPECIALISTS_LEGACY_JSON)
+    as a rollback target. It no longer drives the deployed agent definitions.
+  EOT
   type = map(object({
     name    = string
     version = string

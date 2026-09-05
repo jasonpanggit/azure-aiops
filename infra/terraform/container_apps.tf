@@ -225,84 +225,27 @@ resource "azurerm_container_app" "api" {
         value = tostring(var.enable_fabric_iq)
       }
 
-      env {
-        name  = "FOUNDRY_NETWORK_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "network", { name = "", version = "" }).name
+      # Canonical specialist metadata: one env pair per manifest specialist,
+      # generated from local.foundry_specialist_deployment (foundry.tf) rather
+      # than hand-listed, so the API runtime's
+      # FOUNDRY_<SPECIALIST>_AGENT_NAME/_VERSION lookups cannot drift from the
+      # committed contract and the four added specialists are wired
+      # automatically. for_each over a map yields a deterministic,
+      # key-sorted ordering.
+      dynamic "env" {
+        for_each = local.foundry_specialist_deployment
+        content {
+          name  = "FOUNDRY_${upper(env.key)}_AGENT_NAME"
+          value = env.value.name
+        }
       }
 
-      env {
-        name  = "FOUNDRY_NETWORK_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "network", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_VULNERABILITY_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "vulnerability", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_VULNERABILITY_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "vulnerability", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_PATCH_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "patch", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_PATCH_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "patch", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_INCIDENT_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "incident", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_INCIDENT_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "incident", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_CHANGE_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "change", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_CHANGE_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "change", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_GOVERNANCE_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "governance", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_GOVERNANCE_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "governance", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_REMEDIATION_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "remediation", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_REMEDIATION_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "remediation", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_EXECUTIVE_SUMMARY_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "executive_summary", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_EXECUTIVE_SUMMARY_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "executive_summary", { name = "", version = "" }).version
+      dynamic "env" {
+        for_each = local.foundry_specialist_deployment
+        content {
+          name  = "FOUNDRY_${upper(env.key)}_AGENT_VERSION"
+          value = env.value.version
+        }
       }
 
       env {
@@ -353,6 +296,28 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "FOUNDRY_SPECIALISTS_JSON"
+        value = jsonencode(local.foundry_specialist_deployment)
+      }
+
+      # Identity of the contract this revision was built from. The parity
+      # validator compares it to the manifest it loads, so a revision running
+      # a different contract than the one that was reviewed is detectable
+      # without shipping the manifest body through the environment.
+      env {
+        name  = "AIOPS_SPECIALIST_MANIFEST_PATH"
+        value = "operations/specialists.v1.json"
+      }
+
+      env {
+        name  = "AIOPS_SPECIALIST_MANIFEST_DIGEST"
+        value = local.specialist_manifest_digest
+      }
+
+      # Compatibility window: the pre-manifest eight name/version pairs stay
+      # visible so a rollback to the previously deployed specialist set does
+      # not require a Terraform edit. Nothing reads this as authority.
+      env {
+        name  = "FOUNDRY_SPECIALISTS_LEGACY_JSON"
         value = jsonencode(var.foundry_specialists)
       }
 

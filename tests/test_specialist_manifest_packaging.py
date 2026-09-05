@@ -137,11 +137,18 @@ def test_built_wheel_contains_the_manifest_at_the_loader_path(tmp_path):
 
 def test_container_image_carries_and_verifies_the_manifest():
     dockerfile = _read("Dockerfile")
+    dockerignore = {
+        line.strip()
+        for line in _read(".dockerignore").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
 
     assert "COPY src/ /app/src/" in dockerfile
     # Build-time assertion: a missing or unparseable manifest must fail the
     # image build rather than surface as a runtime import error in production.
     assert CONTAINER_MANIFEST_PATH in dockerfile
+    # The build context must actually carry the manifest.
+    assert not {"src", "src/", "src/operations", "*.json"} & dockerignore
 
 
 # ---------------------------------------------------------------------------

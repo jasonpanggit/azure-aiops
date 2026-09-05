@@ -9,105 +9,49 @@
 # ---------------------------------------------------------------------------
 
 locals {
+  # ---------------------------------------------------------------------------
+  # Specialist manifest: the one committed source of truth
+  #
+  # src/operations/specialists.v1.json is the reviewed, credential-free
+  # contract that the API loads and strictly validates at runtime
+  # (operations.specialist_manifest). Terraform decodes the same file rather
+  # than restating specialist IDs, tool grants, agent names, or versions, so
+  # infrastructure cannot silently drift from the deployed runtime contract.
+  # Every projection below is derived from this decode.
+  # ---------------------------------------------------------------------------
+  specialist_manifest_path   = "${path.module}/../../src/operations/specialists.v1.json"
+  specialist_manifest        = jsondecode(file(local.specialist_manifest_path))
+  specialist_manifest_digest = filesha256(local.specialist_manifest_path)
+
+  specialists_by_id = {
+    for specialist in local.specialist_manifest.specialists :
+    specialist.id => specialist
+  }
+
   # Every specialist is a native Foundry MCP tool-caller: each carries a
   # server_label/allowed_tools pair that becomes its agent definition's
-  # `tools` entry (see local.foundry_mcp_tool_config below). Tool names must
-  # match operations.mcp_server.REVIEWED_TOOLS exactly.
-  foundry_generic_context_tools = [
-    "business_service_context",
-    "application_context",
-    "impact_context",
-    "fabric_iq_relationships",
-    "fabric_iq_topology",
-    "fabric_iq_policy_context",
-  ]
-
+  # `tools` entry (see local.foundry_mcp_tool_config below). The grants are
+  # the manifest's own reviewed, read-only per-specialist lists -- the
+  # manifest loader rejects mutation-capable or unimplemented tool names, so
+  # there is nothing left to re-review here.
   foundry_specialist_tools = {
-    network = concat([
-      "network_topology",
-      "hub_dependents",
-      "traffic_flow",
-      "firewall_nsg_gaps",
-    ], local.foundry_generic_context_tools)
-    vulnerability = concat([
-      "cve_exposure",
-      "cve_detail",
-      "cve_attack_path",
-      "defender_alerts",
-      "defender_attack_paths",
-      "defender_secure_score",
-    ], local.foundry_generic_context_tools)
-    patch = local.foundry_generic_context_tools
-    incident = concat([
-      "incidents",
-    ], local.foundry_generic_context_tools)
-    change     = local.foundry_generic_context_tools
-    governance = local.foundry_generic_context_tools
-    remediation = concat([
-      "remediation_plans",
-      "remediation_opportunities",
-      "defender_alerts",
-      "defender_attack_paths",
-      "defender_secure_score",
-      "defender_remediation_cases",
-      "remediation_business_decision",
-    ], local.foundry_generic_context_tools)
-    executive_summary = local.foundry_generic_context_tools
+    for id, specialist in local.specialists_by_id :
+    id => specialist.operations_mcp_tools
   }
 
   # Second tool-caller: Microsoft's official Azure MCP Server
   # (azurerm_container_app.azure_mcp), giving specialists direct read-only
   # access to live Azure resource state that the governed Operations MCP
   # relay does not model (e.g. Advisor recommendations, Monitor activity
-  # logs, Resource Health, ARM deployment status). Tool names must match the
-  # azmcp tool catalog exactly (see `tools/list` on the azure-mcp server).
-  # Deliberately excludes any tool that mutates or applies a change
-  # (e.g. advisor_recommendation_apply, arm_whatif_deployment) -- specialists
-  # are read-only advisors, never actors.
-  foundry_azure_mcp_generic_tools = [
-    "subscription_list",
-    "group_list",
-  ]
-
+  # logs, Resource Health, ARM deployment status). The manifest carries the
+  # complete per-specialist list (including the shared subscription/resource
+  # group scoping tools) and its loader accepts only names present in a
+  # pinned read-only azmcp catalog, so a mutation-capable grant
+  # (e.g. advisor_recommendation_apply, arm_whatif_deployment) cannot reach
+  # this projection.
   foundry_azure_mcp_specialist_tools = {
-    network = [
-      "resourcehealth_availability-status_get",
-      "monitor_activitylog_list",
-      "arm_execute_query",
-      "wellarchitectedframework_serviceguide_get",
-    ]
-    vulnerability = [
-      "advisor_recommendation_list",
-      "advisor_recommendation_summary",
-    ]
-    patch = [
-      "compute_vm_get",
-      "appservice_webapp_get",
-      "functionapp_get",
-      "arm_execute_query",
-    ]
-    incident = [
-      "monitor_activitylog_list",
-      "monitor_resource_log_query",
-      "resourcehealth_health-events_list",
-    ]
-    change = [
-      "arm_get_deployment_status",
-      "monitor_activitylog_list",
-      "arm_execute_query",
-    ]
-    governance = [
-      "policy_assignment_list",
-      "role_assignment_list",
-      "arm_execute_query",
-      "wellarchitectedframework_serviceguide_get",
-    ]
-    remediation = [
-      "advisor_recommendation_list",
-    ]
-    executive_summary = [
-      "arm_query_costs",
-    ]
+    for id, specialist in local.specialists_by_id :
+    id => specialist.azure_mcp_tools
   }
 
   # Shared decision rule explaining which of the two independent MCP
@@ -134,6 +78,9 @@ locals {
     business_service_context      = { server = "operations-mcp", purpose = "Look up the business service(s) a resource or finding belongs to and their criticality." }
     application_context           = { server = "operations-mcp", purpose = "Look up which application(s) own or depend on a resource." }
     impact_context                = { server = "operations-mcp", purpose = "Assess business/technical blast radius of a resource, finding, or proposed change." }
+    risk_context                  = { server = "operations-mcp", purpose = "Read the aggregated governed risk score for a business service, application, or resource." }
+    search                        = { server = "operations-mcp", purpose = "Run an intent-driven read-only search across governed operational context when the subject is named but its domain record is not yet identified." }
+    inventory_resources           = { server = "operations-mcp", purpose = "List scoped inventory resources (optionally filtered by ARM resource type or inventory family) to establish coverage, completeness, and freshness." }
     fabric_iq_relationships       = { server = "operations-mcp", purpose = "Traverse Fabric IQ dependency/relationship graph for a resource or service." }
     fabric_iq_topology            = { server = "operations-mcp", purpose = "Retrieve Fabric IQ's modeled topology for a resource, service, or scope." }
     fabric_iq_policy_context      = { server = "operations-mcp", purpose = "Retrieve policy/governance context Fabric IQ has already joined to a resource." }
@@ -174,40 +121,71 @@ locals {
   }
 
   # Renders one specialist's full assigned tool set (operations-mcp +
-  # azure-mcp) into "- tool_name (server): purpose" guide lines, sorted by
-  # server so the two tool sources stay visually grouped in the prompt. The
+  # azure-mcp) into "- tool_name (server): purpose" guide lines, grouped by
+  # server so the two tool sources stay visually separated in the prompt. The
   # knowledge search tool (when enabled) is not an MCP tool call -- it has no
   # entry in foundry_tool_registry -- so its guide line is appended
-  # separately rather than folded into this loop.
+  # separately rather than folded into this loop. Indexing (not lookup())
+  # into foundry_tool_registry is deliberate: a manifest grant with no
+  # reviewed registry entry must fail the plan, not deploy an undocumented
+  # tool.
   foundry_specialist_tool_guide = {
-    for id in keys(local.foundry_specialist_tools) : id => join("\n", concat(
+    for id, specialist in local.specialists_by_id : id => join("\n", concat(
       [
         for name in concat(
-          lookup(local.foundry_specialist_tools, id, []),
-          concat(local.foundry_azure_mcp_generic_tools, lookup(local.foundry_azure_mcp_specialist_tools, id, []))
+          local.foundry_specialist_tools[id],
+          local.foundry_azure_mcp_specialist_tools[id]
         ) : "- ${name} (${local.foundry_tool_registry[name].server}): ${local.foundry_tool_registry[name].purpose}"
       ],
       var.enable_foundry_knowledge_search ? [
         "- knowledge search (azure-ai-search): Search a general-purpose, citable knowledge base (design standards, governance policy, and Azure best-practice guidance -- not limited to any single framework) for evidence grounding a design-policy or best-practice claim."
+      ] : [],
+      length(local.foundry_specialist_tools[id]) + length(local.foundry_azure_mcp_specialist_tools[id]) == 0 && !var.enable_foundry_knowledge_search ? [
+        "- none: you are aggregation-only. Synthesize the specialist findings supplied to you and never claim evidence you did not receive."
       ] : []
     ))
   }
 
+  # Shared read-only behavioral contract applied verbatim to every
+  # specialist. Previously this prose was retyped once per specialist, which
+  # is how the eight prompts drifted from one another; it is stated once here
+  # and composed below.
+  foundry_specialist_behavior_rule = "Never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Never assume evidence that no tool call returned, distinguish observed facts from derived inference and unknowns, cite the tool call each claim came from, call out stale, empty, unavailable, or denied results, and state plainly when the available evidence cannot answer the question. Never invent identifiers, policy results, resources, or freshness, and never execute or suggest an unapproved production mutation."
+
+  # The only hand-authored specialist prose left: the domain directive that
+  # the manifest's declarative purpose cannot express. Keys are indexed (not
+  # looked up with a default) against the manifest's specialist IDs, so a
+  # specialist added to the manifest without a reviewed directive fails the
+  # plan instead of silently deploying a generic prompt.
+  foundry_specialist_domain_directives = {
+    network                       = "Cite real tool results when describing topology, traffic paths, firewall and NSG configuration, and blast radius."
+    vulnerability                 = "Prioritize exploitable or business-impacting findings using only real tool results, and recommend bounded validation or remediation steps without inventing CVEs, assets, or fixes."
+    patch                         = "Identify missing, stale, or risky patch posture, explain business and technical impact, and recommend bounded next checks or approval-gated actions without ever claiming a patch was applied."
+    incident                      = "Establish the observed timeline and affected scope, identify likely contributing relationships only when supported by real tool results, and recommend safe bounded investigation steps without declaring an unproven root cause."
+    change                        = "Compare observed change context with affected services and controls, and recommend bounded validation or approval-gated follow-up without approving or executing changes."
+    governance                    = "Identify control gaps and their scope with the freshness of each supporting tool call, and recommend bounded remediation or evidence requests without inventing policy results."
+    remediation                   = "Produce a bounded, approval-aware remediation proposal tied to real tool results, including prerequisites, uncertainty, pros, cons, urgency reasoning, and rollback or validation checks. Never execute changes or present a hypothesis as an approved plan."
+    executive_summary             = "Synthesize only the specialist findings supplied to you for an engineering decision-maker: summarize material risk and scope, cite the supplied finding each claim came from, and state the next bounded decision or evidence request. You have no tools of your own, so never claim evidence that was not supplied."
+    inventory_data_health         = "Report scoped inventory coverage, completeness, provider availability, and data freshness as observed facts, and never present an incomplete ingest as an empty environment."
+    identity_access               = "Report role assignments, stale privilege, ownership, and access risk as observed facts, never propose or perform an access change, and never reproduce secrets or credential material."
+    finops                        = "Report cost drivers, waste signals, savings options, and business tradeoffs from real cost and Advisor results, and never present a modeled estimate as billed spend."
+    resource_health_observability = "Report availability, health events, metrics, and telemetry as observed facts with their freshness, and never infer a healthy state from the absence of a signal."
+  }
+
   # Role/behavior prompt per specialist -- deliberately contains NO tool
-  # names. Tool names are injected separately from foundry_tool_registry via
-  # foundry_specialist_tool_guide (below), so the registry is the single
-  # source of truth for "what tools exist and when to use them" instead of
-  # tool names being hand-typed into prose here (which could silently drift
-  # from the actual allowed_tools wiring above).
+  # names. Identity and purpose come from the manifest, the shared behavioral
+  # contract and the domain directive are the reviewed prose, and tool names
+  # are injected separately from foundry_tool_registry via
+  # foundry_specialist_tool_guide (above). The registry therefore stays the
+  # single source of truth for "what tools exist and when to use them"
+  # instead of tool names being hand-typed into prose here.
   foundry_specialist_role_prompts = {
-    network           = "You are the Network Agent specialist. Never assume evidence that no tool call returned. Never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Cite real tool results, distinguish observed facts from inference and unknowns, and state plainly when the available evidence cannot answer the question. Never invent policy results, resources, or freshness, and never execute or suggest an unapproved production mutation."
-    vulnerability     = "You are the Vulnerability Agent specialist. Never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Prioritize exploitable or business-impacting findings using only real tool results, distinguish facts from inference, cite the tool call each claim came from, call out stale, empty, unavailable, or denied results, and recommend bounded validation or remediation steps without inventing CVEs, assets, or fixes."
-    patch             = "You are the Patch Agent specialist. Never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Identify missing, stale, or risky patch posture, explain business and technical impact using only real tool results, distinguish facts from inference, cite the tool call each claim came from, and recommend bounded next checks or approval-gated actions without claiming a patch was applied or inventing evidence no tool returned."
-    incident          = "You are the Incident Agent specialist. Never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Establish the observed timeline and affected scope, identify likely contributing relationships only when supported by real tool results, distinguish facts from inference, cite the tool call each claim came from, and recommend safe bounded investigation steps without declaring an unproven root cause."
-    change            = "You are the Change Agent specialist. Never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Compare observed context with affected services and controls, distinguish facts from inference, cite the tool call each claim came from, and recommend bounded validation or approval-gated follow-up without approving, executing changes, or inventing evidence no tool returned."
-    governance        = "You are the Governance Agent specialist. Never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Identify control gaps and their scope, distinguish observed facts from derived inferences and unknowns, cite the tool call each claim came from and its freshness, and recommend bounded remediation or evidence requests without inventing policy results."
-    remediation       = "You are the Remediation Agent specialist. Never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Produce a bounded, approval-aware remediation proposal tied to real tool results, including prerequisites, uncertainty, and rollback or validation checks. Never execute changes, invent missing details, or present a hypothesis as an approved plan."
-    executive_summary = "You are the Executive Summary specialist. Synthesize alongside any specialist findings supplied to you for an engineering decision-maker. Never ask the user for permission or confirmation before calling a tool; call every tool you need autonomously in the same turn and only then respond. Answer the operator's actual question directly; do not replace the answer with a generic inventory of findings. Lead with the direct operational answer, then give only the evidence needed to support it. Do not repeat the same finding in both prose and a list. Summarize material risk and scope, cite the tool call or supplied finding each claim came from, distinguish facts from inference and unknowns, and state the next bounded decision or evidence request. Do not add unsupported claims."
+    for id, specialist in local.specialists_by_id : id => join(" ", [
+      "You are the ${specialist.display_name} Agent specialist.",
+      "Purpose: ${specialist.purpose}",
+      local.foundry_specialist_domain_directives[id],
+      local.foundry_specialist_behavior_rule,
+    ])
   }
 
   # Final per-specialist instruction = role prompt + shared MCP routing rule
@@ -269,22 +247,60 @@ locals {
     }
   } : null
 
+  # ---------------------------------------------------------------------------
+  # Deployment identity: agent names and immutable version stamps
+  #
+  # Both are derived from the manifest so a rename or a silent version reuse
+  # is impossible without a manifest or reviewed-variable change. The default
+  # prefix/suffix reproduce the eight names already deployed
+  # (manifest `network` -> `aiops-network-agent`) and extend deterministically
+  # to the four added specialists, so this migration adds four agents rather
+  # than orphaning eight.
+  # ---------------------------------------------------------------------------
+  foundry_specialist_agent_names = {
+    for id, specialist in local.specialists_by_id :
+    id => "${var.foundry_agent_name_prefix}${specialist.foundry.name}${var.foundry_agent_name_suffix}"
+  }
+
+  # Version stamp = reviewed release + the manifest's own per-specialist
+  # contract version. Foundry agent versions are additive and immutable, so a
+  # contract change must produce a new string rather than redefine a
+  # published one; pinning `foundry_specialist_release` back to a prior value
+  # re-selects the previous published version for rollback.
+  foundry_specialist_agent_versions = {
+    for id, specialist in local.specialists_by_id :
+    id => "${var.foundry_specialist_release}.${specialist.foundry.version}"
+  }
+
+  # Canonical per-specialist deployment metadata consumed by both the agent
+  # rollout script and the Container Apps environment. `model` is the actual
+  # Azure model deployment name (azurerm_cognitive_deployment.chat);
+  # `contract_model` is the model the manifest declares, carried separately
+  # and reported by the parity validator so a divergence is visible instead
+  # of pointing an agent at a deployment that does not exist.
+  foundry_specialist_deployment = {
+    for id, specialist in local.specialists_by_id : id => {
+      name           = local.foundry_specialist_agent_names[id]
+      version        = local.foundry_specialist_agent_versions[id]
+      model          = var.foundry_model_name
+      contract_model = specialist.foundry.model
+      display_name   = specialist.display_name
+      read_only      = specialist.read_only
+    }
+  }
+
   foundry_specialists_json = jsonencode({
-    for id, specialist in var.foundry_specialists : id => merge(specialist, {
-      prompt = lookup(local.foundry_specialist_instructions, id, local.agent_instructions)
-      model  = var.foundry_model_name
+    for id, deployment in local.foundry_specialist_deployment : id => merge(deployment, {
+      prompt = local.foundry_specialist_instructions[id]
       tools = concat(
         local.foundry_mcp_tool_config == null ? [] : [
           merge(local.foundry_mcp_tool_config, {
-            allowed_tools = lookup(local.foundry_specialist_tools, id, local.foundry_generic_context_tools)
+            allowed_tools = local.foundry_specialist_tools[id]
           })
         ],
         local.foundry_azure_mcp_tool_config == null ? [] : [
           merge(local.foundry_azure_mcp_tool_config, {
-            allowed_tools = concat(
-              local.foundry_azure_mcp_generic_tools,
-              lookup(local.foundry_azure_mcp_specialist_tools, id, [])
-            )
+            allowed_tools = local.foundry_azure_mcp_specialist_tools[id]
           })
         ],
         local.foundry_ai_search_tool_config == null ? [] : [
@@ -293,6 +309,7 @@ locals {
       )
     })
   })
+
   # The custom subdomain is mandatory for token-based (Entra) authentication
   # and for the agent data-plane endpoint. It is part of a global DNS name, so
   # it carries the unique suffix.
