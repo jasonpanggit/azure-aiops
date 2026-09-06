@@ -1451,3 +1451,303 @@ def test_multi_agent_non_canonical_preserves_legacy_loop(
     assert not service_calls, (
         "OrchestrationService.execute must not be called in non-canonical mode"
     )
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER A: context canonical fidelity — page kind, evidence, and ledger
+# ---------------------------------------------------------------------------
+
+
+def test_context_canonical_unsupported_page_routes_to_legacy_not_inventory(
+    tmp_path, monkeypatch
+):
+    """BLOCKER-A: A page_kind not in the canonical contract (e.g. 'network')
+    must route through the legacy adapter even in canonical mode.  It must
+    NEVER masquerade as inventory through the canonical service."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+
+    legacy_calls: list[object] = []
+    service_calls: list[object] = []
+
+    def _spy_legacy(*args, **kwargs):
+        legacy_calls.append(True)
+        return {
+            "ledger_id": "ctx-legacynet001",
+            "contract_version": "1",
+            "warnings": [],
+            "page_kind": "network",
+        }
+
+    _orig_execute = OrchestrationService.execute
+
+    def _spy_execute(self, *args, **kwargs):
+        service_calls.append(True)
+        return _orig_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "api.routers.copilot.run_context_investigation", _spy_legacy
+    )
+    monkeypatch.setattr(OrchestrationService, "execute", _spy_execute)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate-context?subscription=sub-a",
+        json={
+            "snapshot": {
+                "version": "1",
+                "page_kind": "network",
+                "page_id": "topology",
+                "question": "What firewall gaps exist?",
+                "scope": {"declared": {}},
+                "evidence": [
+                    {
+                        "evidence_id": "route-1",
+                        "section": "route",
+                        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt-1",
+                        "data": {"finding": "Default route bypasses firewall"},
+                    }
+                ],
+                "selected_resources": [],
+                "freshness": [],
+                "rechecks": [],
+            }
+        },
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert legacy_calls, (
+        "Unsupported page kind must route through legacy adapter"
+    )
+    assert not service_calls, (
+        "OrchestrationService must NOT execute unsupported pages under false identity"
+    )
+
+
+def test_context_canonical_supported_page_translates_evidence_and_kind(
+    tmp_path, monkeypatch
+):
+    """BLOCKER-A: When a page kind IS in the canonical contract,
+    _run_context_via_canonical must translate the ACTUAL page kind, submitted
+    evidence, freshness, and selected resources into the canonical request;
+    select specialists through the canonical loop (not hardcoded inventory);
+    and project a complete legacy ledger preserving canonical findings,
+    citations, status, and warnings."""
+    from types import SimpleNamespace
+
+    from operations.orchestration_contract import Citation, SnapshotCoverage
+
+    captured_requests: list[object] = []
+
+    # Build a controlled OrchestrationResult via the real dataclass
+    from operations.orchestration_contract import OrchestrationResult
+
+    fake_result = OrchestrationResult(
+        status="ok",
+        policy_status="fallback",
+        fallback_reason="planner_unavailable",
+        selected_specialists=["connections_health"],
+        selected_tools=["connections_status"],
+        tool_results=[
+            {
+                "call_id": "0:0:connections_health:connections_status",
+                "specialist_id": "connections_health",
+                "tool": "connections_status",
+                "status": "ok",
+                "data": {"connections": [{"id": "conn-1", "status": "healthy"}]},
+                "warning": "",
+                "evidence": [],
+            }
+        ],
+        uncertainty=["visible subset is incomplete"],
+        coverage=SnapshotCoverage(visible_count=2, total_count=5, complete=False),
+        citations=[
+            Citation(
+                citation_id="conn-ev-1",
+                source="connections-panel",
+                status="ok",
+                observed_at="2026-09-01T00:00:00Z",
+            )
+        ],
+        thread_id="thr-" + "a" * 32,
+        thread_revision=1,
+    )
+
+    def _capture_execute(self, request, **kwargs):
+        captured_requests.append(request)
+        return fake_result
+
+    monkeypatch.setattr(OrchestrationService, "execute", _capture_execute)
+
+    # Duck-typed snapshot with canonical-supported page_kind="connections"
+    evidence_row = SimpleNamespace(
+        evidence_id="conn-ev-1",
+        resource_id="/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/connections/c1",
+        section="connection",
+        data={"status": "connected"},
+        status="ok",
+        observed_at="2026-09-01T00:00:00Z",
+    )
+    freshness_rec = SimpleNamespace(
+        source="connections",
+        observed_at="2026-09-01T00:00:00Z",
+        status="fresh",
+    )
+    selected_res = SimpleNamespace(
+        resource_id="/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/connections/c1",
+        resource_type="Microsoft.Network/connections",
+    )
+    snapshot = SimpleNamespace(
+        page_kind="connections",
+        page_id="connections-panel",
+        question="What is the connection health status?",
+        evidence=[evidence_row],
+        freshness=[freshness_rec],
+        selected_resources=[selected_res],
+    )
+    scope = SimpleNamespace(to_dict=lambda: {"subscription": ["sub-a"]})
+
+    from api.routers.copilot import _run_context_via_canonical
+
+    ledger = _run_context_via_canonical(
+        snapshot,
+        context=_context(tmp_path, None),
+        scope=scope,
+        principal_subject="test@example.com",
+    )
+
+    # --- Canonical request must carry the ACTUAL page kind ---
+    assert len(captured_requests) == 1
+    req = captured_requests[0]
+    assert req.snapshot.page_kind == "connections", (
+        "Canonical snapshot must use the real page_kind, not hardcoded 'inventory'"
+    )
+
+    # --- Submitted evidence must be translated into canonical snapshot ---
+    assert len(req.snapshot.evidence) >= 1, (
+        "Submitted evidence rows must be translated into canonical snapshot evidence"
+    )
+    assert req.snapshot.evidence[0].evidence_id == "conn-ev-1"
+    assert req.snapshot.evidence[0].resource_id == selected_res.resource_id
+
+    # --- Legacy ledger must preserve canonical results ---
+    assert ledger["page_kind"] == "connections"
+    assert ledger["contract_version"] == "1"
+    assert ledger["orchestration"]["selected_ids"] == ["connections_health"]
+
+    # Tool calls must preserve canonical data (not strip it)
+    assert len(ledger["tool_calls"]) == 1
+    assert ledger["tool_calls"][0]["tool"] == "connections_status"
+    assert ledger["tool_calls"][0]["status"] == "ok"
+    assert ledger["tool_calls"][0].get("data"), (
+        "Canonical tool data must be preserved in legacy projection"
+    )
+
+    # Findings must be populated from canonical results (not empty [])
+    assert ledger.get("findings"), (
+        "Findings must be projected from canonical tool results"
+    )
+
+    # Citations must be projected
+    assert ledger.get("citations"), (
+        "Canonical citations must be projected into legacy ledger"
+    )
+
+    # Synthesis must include canonical status
+    assert ledger["synthesis"].get("status") == "ok", (
+        "Synthesis must include canonical result status"
+    )
+
+    # Warnings must reflect canonical uncertainty
+    assert "visible subset is incomplete" in ledger["warnings"]
+    assert ledger.get("thread_id", "").startswith("thr-")
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER B: deep-copy audit immutability for project_legacy_ledger
+# ---------------------------------------------------------------------------
+
+
+def test_project_legacy_ledger_deep_copy_nested_mutation_isolation():
+    """BLOCKER-B: project_legacy_ledger must deep-copy so nested mutations to
+    decisions, approvals, agent_runs, synthesis, and human_controls in the
+    projected copy never affect the original store record."""
+    from operations.autonomous_investigation import project_legacy_ledger
+    import json
+
+    original = {
+        "ledger_id": "mai-deepcopy001",
+        "contract_version": "1",
+        "status": "synthesized",
+        "decisions": [{"action": "approve", "by": "admin"}],
+        "approvals": [{"role": "operator", "approved": True}],
+        "agent_runs": [{"agent_id": "inv", "tool_calls": [{"tool": "t1"}]}],
+        "synthesis": {"mode": "canonical", "narration": "all good"},
+        "human_controls": {
+            "available_actions": ["approve_plan", "stop_investigation"]
+        },
+    }
+    snapshot = json.loads(json.dumps(original))
+
+    projected = project_legacy_ledger(original)
+
+    # Mutate every nested structure in the projected copy
+    projected["decisions"].append({"action": "reject", "by": "attacker"})
+    projected["approvals"][0]["approved"] = False
+    projected["agent_runs"][0]["tool_calls"].append({"tool": "injected"})
+    projected["synthesis"]["narration"] = "tampered"
+    projected["human_controls"]["available_actions"].append("escalate")
+
+    # Original must be entirely unchanged
+    assert original == snapshot, (
+        "Deep nested mutations on projected copy must never propagate to original"
+    )
+
+
+def test_project_legacy_ledger_preserves_explicit_falsy_contract_version():
+    """BLOCKER-B: An explicit falsy contract_version key (empty string) must
+    be preserved by project_legacy_ledger, not overwritten with default."""
+    from operations.autonomous_investigation import project_legacy_ledger
+
+    ledger = {
+        "ledger_id": "mai-falsy001",
+        "contract_version": "",
+        "status": "synthesized",
+    }
+    projected = project_legacy_ledger(ledger)
+
+    assert projected["contract_version"] == "", (
+        "Explicit falsy contract_version must be preserved"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER C: Terraform mode validation includes canonical
+# ---------------------------------------------------------------------------
+
+
+def test_terraform_orchestration_mode_includes_canonical():
+    """BLOCKER-C: The Terraform agent_orchestration_mode variable must accept
+    'canonical' (runtime support via MODE_CANONICAL) and must NOT accept
+    'shadow' (no runtime support)."""
+    import re
+    from pathlib import Path
+
+    tf = Path("infra/terraform/variables.tf").read_text()
+    # Extract the contains() validation for agent_orchestration_mode
+    match = re.search(
+        r'variable\s+"agent_orchestration_mode".*?'
+        r'condition\s*=\s*contains\(\[(.*?)\]',
+        tf,
+        re.DOTALL,
+    )
+    assert match, "agent_orchestration_mode validation block not found"
+    allowed_modes = match.group(1)
+    assert '"canonical"' in allowed_modes, (
+        "canonical must be an allowed orchestration mode in Terraform"
+    )
+    assert '"shadow"' not in allowed_modes, (
+        "shadow must NOT be allowed — no runtime support exists"
+    )
