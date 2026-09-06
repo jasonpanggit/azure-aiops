@@ -519,6 +519,23 @@ def test_legacy_binding_unresolved_cross_replica_conflict_fails_closed() -> None
         store.bind_legacy_session("legacy-session", "operator-a", thread.thread_id)
 
 
+def test_legacy_binding_invalidation_outage_preserves_durable_binding() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    thread = store.create("operator-a", SUB_A)
+    store.bind_legacy_session("legacy-session", "operator-a", thread.thread_id)
+    documents.fail_writes = True
+
+    with pytest.raises(ThreadStoreUnavailable):
+        store.forget_legacy_binding("legacy-session", "operator-a")
+
+    documents.fail_writes = False
+    assert (
+        store.resolve_legacy_binding("legacy-session", "operator-a")
+        == thread.thread_id
+    )
+
+
 def test_expired_legacy_binding_can_be_replaced() -> None:
     documents = FakeDocuments()
     store = InvestigationThreadStore(documents=documents)

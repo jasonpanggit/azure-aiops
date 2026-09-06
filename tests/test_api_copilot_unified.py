@@ -14,6 +14,7 @@ from operations.foundry_agent import FoundryAgentError
 from operations.investigation_thread_store import (
     InvestigationThreadStore,
     ThreadNotFound,
+    ThreadRevisionConflict,
     ThreadStoreUnavailable,
 )
 from operations.orchestration_contract import (
@@ -1881,6 +1882,69 @@ def test_canonical_history_projects_thread_storage_outage_as_unavailable(
     response = client.get(
         "/api/v1/copilot/history/outage-session?subscription=sub-a",
         headers=HEADERS,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+def test_canonical_endpoint_projects_thread_storage_outage_as_unavailable(
+    tmp_path, monkeypatch
+):
+    context = _context(tmp_path, None)
+    monkeypatch.setattr(
+        OrchestrationService,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_canonical_body(),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+def test_canonical_endpoint_projects_sustained_thread_contention_as_conflict(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        OrchestrationService,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ThreadRevisionConflict(current_revision=3)
+        ),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_canonical_body(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conflict"
+
+
+def test_multi_agent_projects_thread_storage_outage_as_unavailable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={"objective": "Show inventory health"},
     )
 
     assert response.status_code == 503

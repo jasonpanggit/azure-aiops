@@ -24,6 +24,7 @@ from api.scope import Scope
 from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
 from operations.investigation_thread_store import (
     OBSERVATION_HISTORICAL,
+    ThreadDocumentStore,
     configure_thread_store,
 )
 from operations.maf_orchestrator import maf_mode_enabled, select_specialists_for_turn
@@ -1100,6 +1101,10 @@ class LedgerDocumentStore(Protocol):
     def put(self, name: str, payload: dict[str, Any]) -> None: ...
 
 
+class OrchestrationDocumentStore(LedgerDocumentStore, ThreadDocumentStore, Protocol):
+    """Durable document operations required by ledgers and thread continuity."""
+
+
 def _ledger_document_name(ledger_id: str) -> str:
     """Map a ledger id to its document path.
 
@@ -1235,13 +1240,17 @@ def ledger_store() -> InvestigationLedgerStore:
     return _LEDGER_STORE
 
 
-def configure_ledger_store(documents: LedgerDocumentStore | None) -> InvestigationLedgerStore:
+def configure_ledger_store(
+    documents: OrchestrationDocumentStore | None,
+) -> InvestigationLedgerStore:
     """Attach durable storage to the process-wide ledger store.
 
     Called once during API startup. Ledgers already held in memory are flushed
     so a store configured after the first investigation does not leave a gap
     at the head of the audit trail.
     """
+    if documents is not None and not callable(getattr(documents, "write", None)):
+        raise TypeError("durable orchestration storage requires thread compare-and-swap")
     _LEDGER_STORE.documents = documents
     configure_thread_store(documents)
     if documents is not None:

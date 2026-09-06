@@ -27,6 +27,7 @@ from operations.investigation_thread_store import (
     InvestigationThreadStore,
     ThreadNotFound,
     ThreadRevisionConflict,
+    ThreadStoreUnavailable,
     investigation_thread_store,
     scope_within,
 )
@@ -197,14 +198,17 @@ def _legacy_session_thread(
         return None
     key = (principal_subject, session_id)
     with _legacy_session_lock:
-        thread_id = _legacy_session_threads.get(key)
-        if thread_id is None:
-            thread_id = investigation_thread_store().resolve_legacy_binding(
+        store = investigation_thread_store()
+        thread_id = (
+            store.resolve_legacy_binding(
                 session_id,
                 principal_subject,
             )
-            if thread_id is not None:
-                _legacy_session_threads[key] = thread_id
+            if store.is_durable
+            else _legacy_session_threads.get(key)
+        )
+        if thread_id is not None:
+            _legacy_session_threads[key] = thread_id
         if thread_id is not None:
             _legacy_session_threads.move_to_end(key)
         return thread_id
@@ -221,14 +225,19 @@ def _legacy_session_thread_for_execution(
         return None
     key = (principal_subject, session_id)
     with _legacy_session_lock:
-        thread_id = _legacy_session_threads.get(key)
+        store = investigation_thread_store()
+        thread_id = (
+            store.resolve_legacy_binding(session_id, principal_subject)
+            if store.is_durable
+            else _legacy_session_threads.get(key)
+        )
         if thread_id is None:
             thread_id = _adopt_or_create_thread(
                 session_id,
                 principal_subject,
                 scope,
             )
-            thread_id = investigation_thread_store().bind_legacy_session(
+            thread_id = store.bind_legacy_session(
                 session_id,
                 principal_subject,
                 thread_id,
@@ -297,12 +306,12 @@ def _forget_legacy_session_thread(
 ) -> None:
     if not session_id:
         return
-    with _legacy_session_lock:
-        _legacy_session_threads.pop((principal_subject, session_id), None)
     investigation_thread_store().forget_legacy_binding(
         session_id,
         principal_subject,
     )
+    with _legacy_session_lock:
+        _legacy_session_threads.pop((principal_subject, session_id), None)
 
 
 _EXECUTIVE_INTENT_PATTERNS: tuple[str, ...] = (
@@ -1125,6 +1134,8 @@ def execute_from_question(
 
     try:
         result = _execute(request)
+    except ThreadStoreUnavailable:
+        raise
     except ThreadNotFound:
         _forget_legacy_session_thread(session_id, principal_subject)
         result = _execute(
@@ -1171,6 +1182,8 @@ def legacy_session_history(
             principal_subject,
             scope,
         )
+    except ThreadStoreUnavailable:
+        raise
     except ThreadNotFound:
         _forget_legacy_session_thread(session_id, principal_subject)
         return []

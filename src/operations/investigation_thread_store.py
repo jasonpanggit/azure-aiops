@@ -84,11 +84,12 @@ class ThreadRevisionConflict(RuntimeError):
         self.current_revision = current_revision
 
 
-class ThreadStoreUnavailable(ThreadNotFound):
+class ThreadStoreUnavailable(RuntimeError):
     """Configured durable continuity cannot currently be read or committed."""
 
     def __init__(self) -> None:
-        super().__init__(reason="storage_unavailable")
+        super().__init__("investigation thread storage is unavailable")
+        self.reason = "storage_unavailable"
 
 
 class ThreadDocumentStore(Protocol):
@@ -294,12 +295,7 @@ class InvestigationThreadStore:
     # -- persistence ------------------------------------------------------
 
     def _persist(self, record: InvestigationThread) -> None:
-        """Write the thread through to storage, best-effort.
-
-        A storage outage must not fail the turn the operator is running, so
-        the failure downgrades the record's reported durability instead. The
-        downgrade is the signal that continuity is process-local again.
-        """
+        """Write through to configured storage or fail the turn closed."""
 
         if self.documents is None:
             record.durability = DURABILITY_MEMORY_ONLY
@@ -418,18 +414,12 @@ class InvestigationThreadStore:
     ) -> InvestigationThread:
         """Return a thread only after every current-turn gate passes."""
 
-        cached = self._threads.get(thread_id)
         persisted = self._load(thread_id) if self.documents is not None else None
-        if persisted is not None and (
-            cached is None
-            or persisted.storage_revision >= cached.storage_revision
-            or persisted.revision >= cached.revision
-        ):
-            record = self._cache(persisted)
+        if self.documents is not None:
+            self._threads.pop(thread_id, None)
+            record = self._cache(persisted) if persisted is not None else None
         else:
-            record = cached
-            if record is not None and self.documents is not None:
-                record.durability = DURABILITY_MEMORY_ONLY
+            record = self._threads.get(thread_id)
         # Sweep after resolving the requested thread so its own expiry is
         # reported as an expiry rather than being flattened into "missing";
         # the reason is what makes an aged-out thread distinguishable in
@@ -491,7 +481,7 @@ class InvestigationThreadStore:
         with self._lock:
             now = self._clock()
             record = self._resolve(thread_id, principal_subject, current_scope, now)
-            for _ in range(2):
+            for attempt in range(2):
                 self._age_retained_turns(record)
                 record.scope = current_scope
                 record.scope_fingerprint = _scope_fingerprint(current_scope)
@@ -503,15 +493,13 @@ class InvestigationThreadStore:
                     record = self._resolve(
                         thread_id, principal_subject, current_scope, now
                     )
+                    if attempt == 1:
+                        raise ThreadRevisionConflict(
+                            current_revision=record.revision
+                        ) from None
                     continue
                 return record
-            record = self._resolve(thread_id, principal_subject, current_scope, now)
-            self._age_retained_turns(record)
-            record.scope = current_scope
-            record.scope_fingerprint = _scope_fingerprint(current_scope)
-            record.last_seen = now
-            record.durability = DURABILITY_MEMORY_ONLY
-            return record
+            raise AssertionError("authorization retry loop terminated unexpectedly")
 
     def append(
         self,
@@ -647,7 +635,7 @@ class InvestigationThreadStore:
             document = self.documents.read(name)
         except Exception:
             _LOGGER.warning("failed to read legacy thread binding", exc_info=True)
-            return None
+            raise ThreadStoreUnavailable() from None
         if not document:
             return None
         if document.get("binding_key") != name:
@@ -674,8 +662,12 @@ class InvestigationThreadStore:
                 {"revision": current + 1, "deleted": True},
                 expected_revision=current,
             )
-        except (DocumentConflictError, OSError, RuntimeError, ValueError):
+        except DocumentConflictError:
             _LOGGER.warning("failed to invalidate legacy thread binding", exc_info=True)
+            raise ThreadRevisionConflict(current_revision=0) from None
+        except Exception:
+            _LOGGER.warning("failed to invalidate legacy thread binding", exc_info=True)
+            raise ThreadStoreUnavailable() from None
 
     def bind_legacy_session(
         self,
@@ -704,11 +696,13 @@ class InvestigationThreadStore:
                 expected_revision=current,
             )
         except DocumentConflictError:
-            return self.resolve_legacy_binding(
-                session_id, principal_subject
-            ) or thread_id
+            winner = self.resolve_legacy_binding(session_id, principal_subject)
+            if winner is None:
+                raise ThreadRevisionConflict(current_revision=0) from None
+            return winner
         except Exception:
             _LOGGER.warning("failed to persist legacy thread binding", exc_info=True)
+            raise ThreadStoreUnavailable() from None
         return thread_id
 
 
