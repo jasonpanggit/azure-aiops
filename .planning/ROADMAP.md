@@ -105,7 +105,7 @@ Plans:
 **Goal:** Make Exposure authoritative, failure-tolerant, temporally correct, ontology-complete for container images, and operable at Defender-scale volumes before Phase 4 pilot validation.
 **Requirements:** PILOT-01, PILOT-02, PILOT-03, PILOT-04 (reliability prerequisites; final pilot completion remains downstream)
 **Depends on:** Phase 3
-**Plans:** 16/25 plans executed
+**Plans:** 17/25 plans executed
 
 Plans:
 
@@ -126,7 +126,7 @@ Plans:
 - [x] 03.1-13-PLAN.md — Enforce scope-first Fabric SQL queries and managed signed cursors
 - [x] 03.1-14-PLAN.md — Consolidate scoped consumers and enforce handoff-only container remediation
 - [ ] 03.1-15-PLAN.md — Build cursor-aware web query, same-scope LKG, and independent-section contracts
-- [ ] 03.1-18-PLAN.md — Add complete low-cardinality Exposure telemetry, alerts, and shadow reconciliation
+- [x] 03.1-18-PLAN.md — Add complete low-cardinality Exposure telemetry, alerts, and shadow reconciliation
 - [ ] 03.1-24-PLAN.md — Extend and test the actual shared PageHeader, MetricCard, TablePagination, and governed risk dialog
 - [ ] 03.1-16-PLAN.md — Deliver trustworthy Defender sections and explicit safe deep links
 - [ ] 03.1-17-PLAN.md — Deliver governed Patch/remediation handoffs with responsive accessibility

@@ -21,6 +21,7 @@ from intelligence.vulnerability.workload_inventory import (
     acquire_workload_inventory,
     activate_workload_partitions,
 )
+from operations.exposure_metrics import ExposureMetrics
 from storage.datasets import DatasetStore as GenerationDatasetStore
 from storage.locking import RunLock
 
@@ -54,6 +55,7 @@ def activate_source_partitions(
     completed_at: str,
     previous_partition_rows: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
     previous_statuses: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+    metrics: ExposureMetrics | None = None,
 ) -> SourcePartitionProjection:
     """Select each connection/family/scope partition without false clears.
 
@@ -148,6 +150,18 @@ def activate_source_partitions(
                     completeness="healthy-empty" if row_count == 0 else "complete",
                 )
             )
+            _record_source_partition_metrics(
+                metrics,
+                source_family=partition_outcomes[0].source_family,
+                attempted_rows=row_count,
+                effective_rows=row_count,
+                previous_effective_rows=int(
+                    (prior_status or {}).get("row_count") or len(prior_rows)
+                ),
+                source_age_seconds=0,
+                outcome="succeeded",
+                completeness="healthy-empty" if row_count == 0 else "complete",
+            )
             continue
 
         failure = failures[0]
@@ -178,6 +192,21 @@ def activate_source_partitions(
                     ),
                 )
             )
+            _record_source_partition_metrics(
+                metrics,
+                source_family=partition_outcomes[0].source_family,
+                attempted_rows=0,
+                effective_rows=len(prior_rows),
+                previous_effective_rows=int(
+                    (prior_status or {}).get("row_count") or len(prior_rows)
+                ),
+                source_age_seconds=_age_seconds(
+                    last_success_at,
+                    completed_at,
+                ),
+                outcome="partial",
+                completeness="stale",
+            )
             continue
 
         statuses.append(
@@ -194,11 +223,139 @@ def activate_source_partitions(
                 failure=failure,
             )
         )
+        _record_source_partition_metrics(
+            metrics,
+            source_family=partition_outcomes[0].source_family,
+            attempted_rows=0,
+            effective_rows=0,
+            previous_effective_rows=0,
+            source_age_seconds=0,
+            outcome="unavailable",
+            completeness="unavailable",
+        )
 
     return SourcePartitionProjection(
         rows_by_query=rows_by_query,
         partition_rows=tuple(effective_rows),
         statuses=tuple(statuses),
+    )
+
+
+def _record_source_partition_metrics(
+    metrics: ExposureMetrics | None,
+    *,
+    source_family: str,
+    attempted_rows: int,
+    effective_rows: int,
+    previous_effective_rows: int,
+    source_age_seconds: int,
+    outcome: str,
+    completeness: str,
+) -> None:
+    if metrics is None or source_family not in {
+        "azure_update_manager_missing",
+        "defender_subassessment",
+        "defender_image",
+        "workloads",
+        "enrichment",
+    }:
+        return
+    metrics.record_ingestion_cycle(
+        source_family=source_family,
+        target_kind=(
+            "container_image"
+            if source_family in {"defender_image", "workloads"}
+            else "server"
+        ),
+        attempted_rows=attempted_rows,
+        effective_rows=effective_rows,
+        previous_effective_rows=previous_effective_rows,
+        source_age_seconds=source_age_seconds,
+        outcome=outcome,
+        completeness=completeness,
+    )
+
+
+def _record_workload_projection_metrics(
+    metrics: ExposureMetrics,
+    workload: WorkloadProjection,
+    *,
+    completed_at: str,
+    previous_checkpoints: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+) -> None:
+    """Emit one aggregate workload cycle without workspace/connection labels."""
+
+    checkpoints = tuple(workload.checkpoints)
+    states = {
+        str(row.get("completeness") or row.get("status") or "unknown")
+        .strip()
+        .casefold()
+        for row in checkpoints
+    }
+    if not checkpoints or states == {"unavailable"}:
+        outcome = "unavailable"
+        completeness = "unavailable"
+    elif "unavailable" in states or "stale" in states:
+        outcome = "partial"
+        completeness = "stale" if states <= {"stale"} else "partial"
+    else:
+        outcome = "succeeded"
+        completeness = (
+            "healthy-empty"
+            if states == {"healthy-empty"}
+            else "complete"
+        )
+    attempted_rows = sum(
+        int(row.get("row_count") or 0)
+        for row in checkpoints
+        if str(row.get("completeness") or row.get("status") or "")
+        in {"complete", "healthy-empty"}
+    )
+    effective_rows = sum(
+        int(row.get("row_count") or 0) for row in checkpoints
+    )
+    previous_by_key = {
+        str(row.get("checkpoint_key") or ""): int(
+            row.get("row_count") or 0
+        )
+        for row in previous_checkpoints
+        if row.get("checkpoint_key")
+    }
+    previous_effective_rows = sum(
+        previous_by_key.get(
+            str(row.get("checkpoint_key") or ""),
+            int(row.get("row_count") or 0),
+        )
+        for row in checkpoints
+    )
+    source_age_seconds = max(
+        (
+            _age_seconds(
+                str(row.get("last_success_at") or ""),
+                completed_at,
+            )
+            for row in checkpoints
+        ),
+        default=0,
+    )
+    metrics.record_ingestion_cycle(
+        source_family="workloads",
+        target_kind="container_image",
+        attempted_rows=attempted_rows,
+        effective_rows=effective_rows,
+        previous_effective_rows=previous_effective_rows,
+        source_age_seconds=source_age_seconds,
+        outcome=outcome,
+        completeness=completeness,
+    )
+    represented = len(workload.deployments)
+    unknown = len(workload.unknown_reasons)
+    metrics.record_coverage(
+        represented=represented,
+        total=represented + unknown,
+        unknown=unknown,
+        target_kind="container_image",
+        completeness=completeness,
     )
 
 
@@ -355,6 +512,7 @@ class IngestionService:
         cost_source: CostActualsSource | None = None,
         logs_client: AzureMonitorLogsClient | None = None,
         inventory_read_port: Any = None,
+        metrics: ExposureMetrics | None = None,
     ) -> None:
         self.config = config
         self.clock = clock or (lambda: datetime.now(UTC))
@@ -380,6 +538,7 @@ class IngestionService:
         # Left None otherwise -- no runtime behavior changes for the default
         # "arg" source until 08-03's operator-gated cutover explicitly flips it.
         self.inventory_read_port = inventory_read_port
+        self.metrics = metrics or ExposureMetrics()
 
     def run(self) -> dict:
         with RunLock(self.config.output_dir):
@@ -455,6 +614,7 @@ class IngestionService:
                 previous_statuses=self.store.read_dataset(
                     "situations/source_status"
                 ),
+                metrics=self.metrics,
             )
             query_results = source_projection.rows_by_query
         for spec in specs:
@@ -472,6 +632,9 @@ class IngestionService:
         )
         normalization_payload["cost_actuals"] = cost_rows
         completed_at = _iso(started)
+        previous_workload_checkpoints = self.store.read_dataset(
+            "exposure/workload_source_checkpoints"
+        )
         workload_outcomes = acquire_workload_inventory(
             logs_client=self.logs_client,
             connection_id=str(
@@ -494,9 +657,7 @@ class IngestionService:
                 previous_deployments=self.store.read_dataset(
                     "exposure/workload_deployments"
                 ),
-                previous_checkpoints=self.store.read_dataset(
-                    "exposure/workload_source_checkpoints"
-                ),
+                previous_checkpoints=previous_workload_checkpoints,
             )
             if workload_outcomes
             else WorkloadProjection(
@@ -511,6 +672,12 @@ class IngestionService:
                 ),
                 unknown_reasons=("workspace_discovery_unavailable",),
             )
+        )
+        _record_workload_projection_metrics(
+            self.metrics,
+            workload,
+            completed_at=completed_at,
+            previous_checkpoints=previous_workload_checkpoints,
         )
         graph = Normalizer(self.config.connection_context).normalize(
             normalization_payload,
