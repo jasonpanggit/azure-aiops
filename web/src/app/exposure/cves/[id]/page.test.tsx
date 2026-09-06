@@ -337,6 +337,10 @@ describe("CVE detail", () => {
       expect.not.stringContaining("generation=generation-old"),
       { scroll: false },
     );
+    expect(navigation.replace).toHaveBeenCalledWith(
+      expect.stringContaining("origin=%2Fexposure%2Fpatch-priorities"),
+      { scroll: false },
+    );
   });
 
   it("keeps local retry focus when a failed section recovers", async () => {
@@ -417,7 +421,7 @@ describe("CVE detail", () => {
     expect(api.acceptRisk).toHaveBeenCalledWith({
       cve_id: "CVE-2026-0001",
       reason: "Compensating network control is active",
-      expires_at: "2026-10-01T09:30",
+      expires_at: expect.stringMatching(/^2026-10-01T\d{2}:30:00\.000Z$/),
     });
   });
 

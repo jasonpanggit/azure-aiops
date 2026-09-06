@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import { useMsal } from "@azure/msal-react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import {
   RiskExceptionDialog,
@@ -28,7 +28,6 @@ import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import {
   advanceExposureCursor,
-  encodeExposureQueryState,
   exposureDetailHref,
   exposureDetailParentLabel,
   exposureDetailReturnHref,
@@ -87,11 +86,6 @@ const TARGET_KIND_OPTIONS = [
   { value: "server", label: "Servers" },
   { value: "container_image", label: "Container images" },
 ];
-
-function canonicalPath(pathname: string, state: ExposureQueryState): string {
-  const encoded = encodeExposureQueryState(state).toString();
-  return encoded ? `${pathname}?${encoded}` : pathname;
-}
 
 function statusRank(status: ExposureSectionPresentation["status"]): number {
   return {
@@ -170,10 +164,12 @@ function presentSection<T>(
     loaded,
     empty = false,
     source,
+    requiresSource = false,
   }: {
     loaded?: number;
     empty?: boolean;
     source?: ExposureEnrichmentSourceState | null;
+    requiresSource?: boolean;
   } = {},
 ): ExposureSectionPresentation {
   const metadata = {
@@ -225,6 +221,16 @@ function presentSection<T>(
         status: "unavailable",
       };
     }
+  } else if (requiresSource) {
+    return {
+      ...presentedSection,
+      metadata: {
+        ...metadata,
+        safeErrorMessage: "No durable source status was returned.",
+      },
+      error: new Error("No durable source status was returned."),
+      status: "unavailable",
+    };
   }
   if (empty) return { ...presentedSection, metadata, status: "healthy-empty" };
   const commonStatus = common.data
@@ -273,7 +279,6 @@ function Section({
 export default function CveDetailPage({ params }: { params: { id: string } }) {
   const cveId = decodeURIComponent(params.id);
   const { scope } = useScope();
-  const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryState = useMemo(
@@ -383,20 +388,24 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
     loaded: nvd.data ? 1 : 0,
     empty: Boolean(nvd.data && !nvd.data.cve.cvss?.vector && !nvd.data.cve.description),
     source: sourceRecord(nvd.data, "nvd"),
+    requiresSource: true,
   });
   const epssState = presentSection(epss, common, {
     loaded: epss.data ? 1 : 0,
     source: sourceRecord(epss.data, "epss"),
+    requiresSource: true,
   });
   const kevState = presentSection(kev, common, {
     loaded: kev.data?.cve.is_known_exploited ? 1 : 0,
     empty: Boolean(kev.data && !kev.data.cve.is_known_exploited),
     source: sourceRecord(kev.data, "kev"),
+    requiresSource: true,
   });
   const kbState = presentSection(kb, common, {
     loaded: kb.data?.cve.associated_kbs.length ?? 0,
     empty: Boolean(kb.data && kb.data.cve.associated_kbs.length === 0),
     source: sourceRecord(kb.data, "msrc"),
+    requiresSource: Boolean(kb.data?.cve.associated_kbs.length),
   });
   const allStates = [coreState, attackState, nvdState, epssState, kevState, kbState];
   const headerState = aggregateCompleteness(allStates);
@@ -405,6 +414,12 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
   );
   const parentLabel = exposureDetailParentLabel(detailContext.origin);
   const backHref = exposureDetailReturnHref(queryState, detailContext);
+  const currentDetailHref = exposureDetailHref(
+    "cves",
+    cveId,
+    queryState,
+    detailContext,
+  );
   const findingPage = findings.data;
   const first = rows.length ? (findingState.page - 1) * findingState.pageSize + 1 : 0;
   const last = rows.length ? first + rows.length - 1 : 0;
@@ -419,7 +434,9 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
       const response = await vulnerabilityApi.acceptRisk({
         cve_id: request.cveId,
         reason: request.reason,
-        expires_at: request.expiresAt || undefined,
+        expires_at: request.expiresAt
+          ? new Date(request.expiresAt).toISOString()
+          : undefined,
       });
       return {
         status: "success",
@@ -520,7 +537,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
                 className="button button-primary"
                 href={`/remediation?cve=${encodeURIComponent(data.cve.cve_id)}&generation=${encodeURIComponent(
                   findingState.generation,
-                )}&return_to=${encodeURIComponent(canonicalPath(pathname, queryState))}`}
+                )}&return_to=${encodeURIComponent(currentDetailHref)}`}
               >
                 Open governed remediation
               </Link>
@@ -550,9 +567,15 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
             type="button"
             className="button"
             onClick={() =>
-              router.replace(canonicalPath(pathname, restartExposureQuery(queryState)), {
-                scroll: false,
-              })
+              router.replace(
+                exposureDetailHref(
+                  "cves",
+                  cveId,
+                  restartExposureQuery(queryState),
+                  detailContext,
+                ),
+                { scroll: false },
+              )
             }
           >
             Restart results
