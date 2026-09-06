@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from math import ceil
 from pathlib import Path
 from time import perf_counter
@@ -22,6 +23,7 @@ from network.topology import build_topology
 from operations.mcp_server import MCPServer
 from operations.tools import STATUS_OK, call_tool
 from tests.network_baseline import (
+    BASELINE_PATH,
     BaselineArtifactInvalidError,
     BaselineArtifactMissingError,
     capture_default_responses,
@@ -47,6 +49,16 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXPORT_COMPONENT = (
     REPOSITORY_ROOT / "web" / "src" / "components" / "network" / "TopologyGraph.tsx"
 )
+WORKSPACE_COMPONENT = (
+    REPOSITORY_ROOT
+    / "web"
+    / "src"
+    / "components"
+    / "network"
+    / "TopologyWorkspace.tsx"
+)
+NETWORK_PAGE = REPOSITORY_ROOT / "web" / "src" / "app" / "network" / "page.tsx"
+GLOBAL_STYLES = REPOSITORY_ROOT / "web" / "src" / "app" / "globals.css"
 
 EXPECTED_ADDITIVE_KEYS = {
     (
@@ -78,6 +90,11 @@ EXPECTED_EXPORT_KEYS = (
 )
 G3_PLAN_12_02_BASELINE_SECONDS = 0.882940
 G3_SAMPLE_COUNT = 7
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+class PhaseDiffRangeError(RuntimeError):
+    """Raised when the phase-wide hygiene range cannot be proven."""
 
 
 def _serialized(body: dict[str, Any]) -> str:
@@ -273,6 +290,78 @@ def measure_scale_gates(
             ),
         },
     }
+
+
+def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "--no-pager", *args],
+        cwd=REPOSITORY_ROOT,
+        check=check,
+        capture_output=True,
+        text=True,
+    )
+
+
+def phase_diff(
+    baseline_path: Path,
+    *,
+    paths: tuple[str, ...] = (),
+    unified: int | None = None,
+) -> str:
+    """Return a proven non-empty phase diff anchored to the frozen base."""
+    baseline = load_baseline(baseline_path)
+    phase_base_commit = str(baseline.get("phase_base_commit") or "")
+    if not _FULL_SHA.fullmatch(phase_base_commit):
+        raise PhaseDiffRangeError(
+            "phase_base_commit is not a full lowercase 40-character SHA"
+        )
+    resolved = _git(
+        "rev-parse",
+        "--verify",
+        f"{phase_base_commit}^{{commit}}",
+        check=False,
+    )
+    if resolved.returncode != 0:
+        raise PhaseDiffRangeError(
+            f"phase_base_commit does not resolve: {phase_base_commit}"
+        )
+    changed = _git("diff", "--name-only", f"{phase_base_commit}..HEAD").stdout
+    if not changed.strip():
+        raise PhaseDiffRangeError(
+            f"phase diff range is empty: {phase_base_commit}..HEAD"
+        )
+
+    args = ["diff"]
+    if unified is not None:
+        args.append(f"-U{unified}")
+    args.append(f"{phase_base_commit}..HEAD")
+    if paths:
+        args.extend(("--", *paths))
+    return _git(*args).stdout
+
+
+def _added_and_removed_lines(diff: str) -> tuple[list[str], list[str]]:
+    added = [
+        line[1:]
+        for line in diff.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    ]
+    removed = [
+        line[1:]
+        for line in diff.splitlines()
+        if line.startswith("-") and not line.startswith("---")
+    ]
+    return added, removed
+
+
+def _css_rule(source: str, selector: str) -> str:
+    match = re.search(
+        rf"{re.escape(selector)}\s*\{{(?P<body>[^}}]+)\}}",
+        source,
+        re.MULTILINE,
+    )
+    assert match is not None, f"missing CSS rule for {selector}"
+    return match.group("body")
 
 
 class _NetworkContext:
@@ -548,3 +637,144 @@ def test_g5_enterprise_default_pages_are_bounded_and_warn() -> None:
     assert findings["data"]["coverage"]["truncated"] is True
     assert_collection_coverage(gaps, "gaps")
     assert_collection_coverage(findings, "findings")
+
+
+def test_phase_diff_range_is_valid_and_non_empty() -> None:
+    diff = phase_diff(BASELINE_PATH)
+
+    assert diff.strip()
+
+
+def test_phase_diff_range_fails_closed_for_an_unresolvable_commit(
+    tmp_path: Path,
+) -> None:
+    baseline = load_baseline()
+    baseline["phase_base_commit"] = "f" * 40
+    path = tmp_path / "unresolvable-baseline.json"
+    path.write_text(json.dumps(baseline), encoding="utf-8")
+
+    with pytest.raises(PhaseDiffRangeError, match="does not resolve"):
+        phase_diff(path)
+
+
+def test_hygiene_a37_dependency_manifests_are_unchanged() -> None:
+    diff = phase_diff(
+        BASELINE_PATH,
+        paths=("web/package.json", "pyproject.toml"),
+    )
+
+    assert diff == "", f"A37 dependency manifests changed:\n{diff}"
+
+
+def test_hygiene_a43_shared_time_formatter_is_unchanged() -> None:
+    diff = phase_diff(
+        BASELINE_PATH,
+        paths=("web/src/lib/format.ts",),
+    )
+
+    assert diff == "", f"A43 shared formatter changed:\n{diff}"
+
+
+def test_hygiene_a51_typography_uses_only_the_phase_scale() -> None:
+    diff = phase_diff(
+        BASELINE_PATH,
+        paths=(
+            "web/src/app/network",
+            "web/src/components/network",
+            "web/src/app/globals.css",
+        ),
+        unified=0,
+    )
+    added, removed = _added_and_removed_lines(diff)
+    typography = re.compile(
+        r"""font-(?P<property>size|weight)["']?\s*:\s*["']?(?P<value>\d+)(?P<unit>px)?"""
+    )
+    violations: list[str] = []
+    for line in added:
+        for match in typography.finditer(line):
+            value = int(match.group("value"))
+            allowed = (
+                {10, 11, 12, 13}
+                if match.group("property") == "size"
+                else {400, 700}
+            )
+            if value not in allowed:
+                violations.append(line.strip())
+    removed_declarations = [
+        line.strip() for line in removed if typography.search(line)
+    ]
+
+    assert not violations, f"A51 added off-scale typography: {violations}"
+    assert not removed_declarations, (
+        "A51 changed pre-existing typography declarations: "
+        f"{removed_declarations}"
+    )
+
+
+def test_hygiene_a38_a52_add_no_colour_or_spacing_literals() -> None:
+    diff = phase_diff(
+        BASELINE_PATH,
+        paths=(
+            "web/src/app/network",
+            "web/src/components/network",
+            "web/src/app/globals.css",
+        ),
+        unified=0,
+    )
+    added, _ = _added_and_removed_lines(diff)
+    colour_literals = [
+        line.strip()
+        for line in added
+        if re.search(r"#[0-9a-fA-F]{3,8}\b", line)
+    ]
+    spacing = re.compile(
+        r"""(?:gap|padding(?:-[a-z]+)?|margin(?:-[a-z]+)?)["']?\s*:\s*["']?(\d+)px"""
+    )
+    spacing_violations = [
+        line.strip()
+        for line in added
+        for match in spacing.finditer(line)
+        if int(match.group(1)) not in {4, 8, 12, 16, 24, 32}
+    ]
+
+    assert not colour_literals, f"A38 added colour literals: {colour_literals}"
+    assert not spacing_violations, (
+        f"A52 added off-scale spacing literals: {spacing_violations}"
+    )
+
+
+def test_ui_backstops_preserve_zero_values_and_wrap_narrow_surfaces() -> None:
+    workspace = WORKSPACE_COMPONENT.read_text(encoding="utf-8")
+    page = NETWORK_PAGE.read_text(encoding="utf-8")
+    styles = GLOBAL_STYLES.read_text(encoding="utf-8")
+
+    assert "Rendering {counts.rendered} of {counts.total} nodes" in workspace
+    assert "Badges: {badgeCoverage.mapped} of {badgeCoverage.total} findings" in (
+        workspace
+    )
+    assert "truncated: context.coverage.truncated" in (
+        EXPORT_COMPONENT.read_text(encoding="utf-8")
+    )
+    assert "semanticError" in page
+    assert 'id="policy-assertion-error"' in page
+
+    assert "flex-wrap: wrap" in _css_rule(styles, ".topology-toolbar")
+    assert "flex-wrap: wrap" in _css_rule(styles, ".topology-footnote")
+    coverage_rule = _css_rule(styles, ".topology-coverage")
+    assert "flex-wrap: wrap" in coverage_rule
+    assert "overflow-wrap: anywhere" in coverage_rule
+    drawer_rule = _css_rule(styles, ".topology-drawer-body")
+    assert "overflow-y: auto" in drawer_rule
+    assert "overflow-x: hidden" in drawer_rule
+    assert "overflow-wrap: anywhere" in _css_rule(
+        styles,
+        ".topology-detail-fact dd",
+    )
+    assert "overflow-wrap: anywhere" in _css_rule(
+        styles,
+        ".topology-drawer-body .callout",
+    )
+    assert "overflow-wrap: anywhere" in _css_rule(
+        styles,
+        "#policy-assertion-error",
+    )
