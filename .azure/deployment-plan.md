@@ -67,11 +67,14 @@ or existing Container Apps.
 - Create the ontology-discovery ACA scheduled Job in the existing Container Apps
   environment with finite execution, `parallelism = 1`, bounded timeout/retry,
   and the existing application image.
-- Create distinct coordinator and publisher user-assigned identities. Fabric's
-  workspace Contributor role is the least broad role that can write/delete
-  Lakehouse data, so grant it only to the publisher, reduce the shared API/web
-  identity to Viewer, and leave coordinator/curator without a workspace writer
-  role.
+- Create distinct coordinator and publisher user-assigned identities plus two
+  non-production workspaces on the existing Fabric capacity. Grant coordinator
+  Contributor only in the ontology-state workspace and publisher Contributor
+  only in the separate RBAC-validation workspace. API and curator receive no
+  role in either new workspace.
+- Preserve the production `aiops-dev-ops` workspace, Lakehouse, and existing
+  API/web Contributor assignment unchanged until Plan 13-10 migrates legacy
+  writes.
 - Independently enable the code-first Foundry ontology curator without turning
   on the complete specialist candidate-publish flow. The curator uses
   `gpt-5.4-mini` and exactly four scoped read-only Operations MCP tools.
@@ -102,8 +105,8 @@ or existing Container Apps.
   agent `azd` deployment.
 - Apply only the targets and actions recorded in
   `.planning/phases/13-autonomous-ontology-discovery-and-fabric-synchronization/13-07-TARGETED-PLAN.md`.
-  The reviewed target set is 7 creates, 1 in-place role reduction, and 0
-  destroys. The current `azure-mcp-timeout-20260906-1454` image does not contain
+  The reviewed target set is 12 creates, 0 updates, and 0 destroys. The current
+  `azure-mcp-timeout-20260906-1454` image does not contain
   the validator script, so a new immutable API image and regenerated targeted
   plan are required before apply.
 

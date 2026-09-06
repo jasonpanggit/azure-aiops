@@ -1,24 +1,28 @@
 # Plan 13-07 Targeted Deployment Review
 
-**Generated:** 2026-09-06T16:29Z  
+**Generated:** 2026-09-06T16:50Z
 **Status:** Reviewed plan only — **do not apply yet**  
 **State source:** canonical local state from the main checkout  
 **Variables:** canonical main `terraform.tfvars`, canonical deployment environment,
 `image_tag=azure-mcp-timeout-20260906-1454`, and
 `enable_ontology_curator_agent=true`  
 **Planning mode:** `-refresh=false -lock=false` with explicit targets  
-**Result:** 7 creates, 1 in-place update, 0 destroys
+**Result:** 12 creates, 0 updates, 0 destroys
 
 ## Exact Targets
 
 1. `azurerm_user_assigned_identity.ontology_coordinator`
 2. `azurerm_role_assignment.ontology_coordinator_acr_pull`
-3. `azurerm_container_app_job.ontology_discovery`
-4. `azurerm_user_assigned_identity.ontology_publisher`
-5. `fabric_workspace_role_assignment.apps[0]`
-6. `fabric_workspace_role_assignment.ontology_publisher[0]`
-7. `terraform_data.foundry_ontology_curator_agent[0]`
-8. `azurerm_container_app_job.ontology_rbac_validation[0]`
+3. `fabric_workspace.ontology_discovery_state[0]`
+4. `fabric_lakehouse.ontology_discovery_state[0]`
+5. `fabric_workspace_role_assignment.ontology_coordinator_state[0]`
+6. `azurerm_container_app_job.ontology_discovery`
+7. `azurerm_user_assigned_identity.ontology_publisher`
+8. `fabric_workspace.ontology_rbac_validation[0]`
+9. `fabric_lakehouse.ontology_rbac_validation[0]`
+10. `fabric_workspace_role_assignment.ontology_publisher[0]`
+11. `terraform_data.foundry_ontology_curator_agent[0]`
+12. `azurerm_container_app_job.ontology_rbac_validation[0]`
 
 ## Exact Planned Actions
 
@@ -26,27 +30,34 @@
 |---|---|---|
 | `azurerm_user_assigned_identity.ontology_coordinator` | create | Dedicated scheduled coordinator identity |
 | `azurerm_role_assignment.ontology_coordinator_acr_pull` | create | Image pull only for the coordinator identity |
-| `azurerm_container_app_job.ontology_discovery` | create | Finite scheduled `run-once` coordinator |
+| `fabric_workspace.ontology_discovery_state[0]` | create | Dedicated non-production durable-state boundary on the existing capacity |
+| `fabric_lakehouse.ontology_discovery_state[0]` | create | Run-ledger and evidence-batch storage |
+| `fabric_workspace_role_assignment.ontology_coordinator_state[0]` | create | Grant only coordinator Contributor in the state workspace |
+| `azurerm_container_app_job.ontology_discovery` | create | Finite scheduled `run-once` coordinator pointed at the state lakehouse |
 | `azurerm_user_assigned_identity.ontology_publisher` | create | Dedicated authoritative publisher identity |
-| `fabric_workspace_role_assignment.apps[0]` | update in place | Reduce shared API/web identity from Contributor to Viewer |
-| `fabric_workspace_role_assignment.ontology_publisher[0]` | create | Grant the publisher Fabric Contributor, the platform's least broad Lakehouse writer role |
+| `fabric_workspace.ontology_rbac_validation[0]` | create | Separate non-production authorization-canary boundary on the existing capacity |
+| `fabric_lakehouse.ontology_rbac_validation[0]` | create | Isolated canary stage/pointer target |
+| `fabric_workspace_role_assignment.ontology_publisher[0]` | create | Grant only publisher Contributor in the validation workspace |
 | `terraform_data.foundry_ontology_curator_agent[0]` | create | Publish the independent `gpt-5.4-mini` four-tool curator |
 | `azurerm_container_app_job.ontology_rbac_validation[0]` | create | Manual-only three-UAI live validation runtime |
 
-No resource replacement or destruction is present. The targeted plan excludes
+All planned actions are additive. No update, replacement, or destruction is
+present. The targeted plan excludes
 the Exposure enrichment Job, all existing Container App revisions, the legacy
 `terraform_data.foundry_agent`, the specialist promotion gate, APIM, the
-Foundry account/project, the Fabric workspace/lakehouse, and all later Phase 13
-resources.
+Foundry account/project, the production `fabric_workspace.ops`,
+`fabric_lakehouse.context_graph`, and
+`fabric_workspace_role_assignment.apps`, and all later Phase 13 resources.
 
 ## Authorization Evidence Design
 
-- **API identity:** actual create-only stage and conditional-pointer attempts;
-  only explicit `401`/`403` is accepted.
+- **API identity:** actual create-only stage and conditional-pointer attempts
+  against only the validation lakehouse; only explicit `401`/`403` is accepted.
 - **Coordinator identity:** actual create-only stage and conditional-pointer
-  attempts; only explicit `401`/`403` is accepted.
+  attempts against only the validation lakehouse; only explicit `401`/`403` is
+  accepted. Its separate Contributor grant applies only in the state workspace.
 - **Publisher identity:** actual canary stage, pointer CAS, rollback CAS, and
-  cleanup under a unique non-production prefix.
+  cleanup under a unique prefix in the validation lakehouse.
 - **Curator identity:** structural live evidence, because a safe validator
   cannot impersonate the Foundry project identity without granting it a writer
   tool. The validator requires both:
@@ -63,11 +74,13 @@ kind, timestamp, role-definition hash, and hashed correlation evidence.
 
 Official Fabric authorization exposes Admin, Member, Contributor, and Viewer at
 workspace scope; it does not expose a custom path-level Lakehouse writer role.
-The ineffective Azure resource-group custom role was removed. Publisher
-Contributor is therefore the least broad working platform grant. API is reduced
-to Viewer; coordinator and curator receive no Fabric workspace assignment.
-Application-level create-only writes, ETag CAS, fencing, canary isolation, and
-rollback remain mandatory defense in depth.
+The ineffective Azure resource-group custom role was removed. Two additive
+non-production workspaces preserve least privilege without touching production:
+coordinator alone is Contributor in the state workspace, and publisher alone is
+Contributor in the validation workspace. API and curator receive no role in
+either. The production app Contributor assignment remains unchanged until Plan
+13-10. Application-level create-only writes, ETag CAS, fencing, canary
+isolation, and rollback remain mandatory defense in depth.
 
 ## Remaining Blockers Before Apply
 
@@ -76,14 +89,10 @@ rollback remain mandatory defense in depth.
    newly packaged validator script. Build and publish a new immutable API image,
    then regenerate this same targeted plan with that tag. Do not apply the
    current saved plan.
-2. **API write cutover:** changing the shared app identity from Contributor to
-   Viewer intentionally removes existing direct Fabric write access. Confirm
-   the non-production cutover window before apply; any still-active legacy API
-   Fabric write path will be denied after the update.
-3. **Live evidence:** after the targeted apply, manually start only
+2. **Live evidence:** after the targeted apply, manually start only
    `aiops-dev-ontology-rbac-check` and retain its sanitized report. Plan 13-07
    remains incomplete until all four evidence classes pass.
-4. **Curator read authority:** the existing API identity is used only to read
+3. **Curator read authority:** the existing API identity is used only to read
    the deployed Foundry agent definition. If its current Foundry Consumer /
    Runtime roles cannot list agent versions, validation must block. Do not
    broaden the API or validator Job to Foundry Project Manager merely to make
