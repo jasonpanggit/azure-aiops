@@ -28,6 +28,14 @@ of rewritten while decommissioned resources still disappear correctly. No
 Terraform/infra changes; config-value and Python code changes only, deployed
 via new container images.
 
+Current follow-up: eliminate intermittent Azure MCP documentation/tool request
+timeouts by replacing concurrent FIFO stdio forwarding with a bounded,
+single-flight JSON-RPC queue. The bridge must correlate response IDs, preserve
+notification ordering and UTF-8 framing, recover from hung/broken child
+processes, require reinitialization after restart, reject malformed requests,
+and require APIM's gateway assertion on the public ACA backend. Keep one warm
+replica and one maximum replica because MCP session state is process-local.
+
 ## Workspace
 
 - Mode: MODIFY existing deployed application
@@ -548,3 +556,80 @@ via new container images.
   policy command but the tool failed to load its own
   `Microsoft.Identity.Client` assembly. The image-only Terraform plan remains
   policy-neutral and introduces no Azure resource or RBAC changes.
+
+## Preparation Proof (Azure MCP timeout reliability — 2026-09-06)
+
+- Live baseline: direct Microsoft Learn fetch 0.34s; Azure MCP initialize
+  0.64s; initialized notification 0.69s; tools/list 0.99s; documentation
+  search 2.76s with a 65.9 KB response.
+- Root cause: the HTTP bridge wrote concurrent requests to one stateful stdio
+  child while assuming FIFO responses, had no queue/execution deadlines, and
+  allowed stale queued work to cross child restarts.
+- Implemented true single-flight execution, exact JSON-RPC ID matching,
+  bounded 5s queue wait and 25s execution budgets, queue backpressure, request
+  and response size bounds, UTF-8-safe framing, child recovery, and mandatory
+  reinitialization after process replacement.
+- Hardened the public ACA backend with APIM's high-entropy gateway assertion,
+  strict inbound JSON-RPC validation, one replica, and one explicit APIM
+  backend request with a 35s timeout.
+- `node --test tests/mcp-stdio-http-bridge.test.js` → 16 passed.
+- `node --check scripts/mcp-stdio-http-bridge.js` → passed.
+- `terraform -chdir=infra/terraform fmt -check` → passed.
+- `terraform -chdir=infra/terraform validate -no-color` → passed.
+- `git diff --check` → passed.
+- Generic Terraform preflight passed install/auth/init/fmt/validate/state/template
+  checks; its unparameterized plan step failed because it does not load this
+  repository's required environment variables.
+- Repository-native targeted plan:
+  `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan
+  -refresh=false -lock=false -target=azurerm_container_app.azure_mcp
+  -target=azapi_resource.azure_mcp_server_policy` → 0 add, 2 in-place
+  changes, 0 destroy.
+- `docker build -f Dockerfile.azure-mcp -t azure-mcp-bridge:test .` → passed
+  after reusing the repository's trusted Microsoft npm feed proxy.
+- Local container smoke → unauthenticated direct request 401; authenticated
+  initialize 200; notification 202; tools/list 200 with 67 tools;
+  documentation search 200 in 2.02s with a 47.9 KB response.
+- Three independent code-review passes were completed; all reported
+  concurrency, lifecycle, UTF-8, APIM, authentication, and protocol-validation
+  findings were fixed. Final review: no significant issues.
+- Deployment scope: build/push only the `azure-mcp` image, apply the Azure MCP
+  Container App and APIM policy changes without replacing APIM, then verify
+  unauthorized direct requests return 401 and authenticated APIM
+  initialize/tools/list/documentation requests complete within their budgets.
+
+## Role Assignment Verification (Azure MCP timeout reliability)
+
+- Status: Verified.
+- Identity: `azurerm_user_assigned_identity.azure_mcp`.
+- Roles: `Reader` and `Monitoring Reader` on each explicitly onboarded
+  subscription, plus `AcrPull` on the project registry.
+- Scope rationale: the Azure MCP service is intentionally a cross-subscription
+  read-only operations surface; no Contributor, Owner, write, or mutation role
+  is granted. The timeout/security change adds no RBAC assignments.
+- Backend access: public ACA ingress is retained only because APIM is not VNet
+  injected; the bridge now requires APIM's high-entropy gateway assertion
+  before it can use the managed identity.
+
+## Deployment Proof (Azure MCP timeout reliability — 2026-09-06)
+
+- ACR build `crhy` published
+  `aiopsdevacrg6ludc.azurecr.io/azure-mcp:azure-mcp-timeout-20260906-1454`
+  with digest
+  `sha256:27c94f946e005541cdfbc731122dab820ffbb75ecc662cf5ff976cc99efccc95`.
+- Saved targeted Terraform plan was machine-checked to contain exactly:
+  `azurerm_container_app.azure_mcp` update and
+  `azapi_resource.azure_mcp_server_policy[0]` update.
+- Apply result: 0 added, 2 changed in place, 0 destroyed.
+- Healthy live revision: `aiops-dev-azure-mcp--0000074`, one ready replica,
+  image tag `azure-mcp-timeout-20260906-1454`.
+- Direct backend POST without APIM assertion returns HTTP 401.
+- APIM-authenticated initialize: HTTP 200 in 1.63s; initialized notification:
+  HTTP 202; tools/list: HTTP 200 in 1.21s with 67 tools; documentation search:
+  HTTP 200 in 3.30s.
+- Three concurrent documentation searches all returned HTTP 200 in
+  2.50–3.78s. Bridge telemetry proved single-flight queueing with queue waits
+  of 0ms, 1592ms, and 2172ms and no timeout.
+- Live RBAC remains least privilege: `AcrPull` on ACR, `Reader` and
+  `Monitoring Reader` on the onboarded subscription; no write role added.
+- Post-apply targeted Terraform plan reports no changes.

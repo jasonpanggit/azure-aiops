@@ -8,7 +8,8 @@
  * so specialist agents can also query/list Azure resources directly across
  * the full generic tool catalog (compute, storage, network, monitor, cost,
  * etc.), read-only, authorized purely via this container's own managed
- * identity -- no shared secret, no dependency on the Operations executor.
+ * identity. Public ingress additionally requires APIM's high-entropy gateway
+ * assertion so callers cannot bypass the authenticated gateway.
  */
 
 resource "azurerm_container_app" "azure_mcp" {
@@ -76,20 +77,55 @@ resource "azurerm_container_app" "azure_mcp" {
         name  = "AZMCP_ARGS"
         value = "--read-only --mode namespace --dangerously-disable-elicitation --outgoing-auth-strategy UseHostingEnvironmentIdentity"
       }
+
+      env {
+        name  = "AIOPS_GATEWAY_ASSERTION"
+        value = local.gateway_assertion
+      }
+
+      # The stdio bridge is intentionally single-flight because every HTTP
+      # request shares one Azure MCP child process. Bound queueing and active
+      # execution below Foundry/APIM deadlines so callers receive a retryable
+      # response instead of an opaque upstream timeout.
+      env {
+        name  = "AZMCP_REQUEST_TIMEOUT_MS"
+        value = "25000"
+      }
+
+      env {
+        name  = "AZMCP_QUEUE_TIMEOUT_MS"
+        value = "5000"
+      }
+
+      env {
+        name  = "AZMCP_MAX_QUEUE_DEPTH"
+        value = "32"
+      }
+
+      env {
+        name  = "AZMCP_MAX_REQUEST_BYTES"
+        value = "1048576"
+      }
+
+      env {
+        name  = "AZMCP_MAX_RESPONSE_BYTES"
+        value = "1048576"
+      }
     }
 
     min_replicas = 1
-    max_replicas = 3
+    # MCP initialization and all subsequent requests share process-local
+    # stdio state. Multiple replicas would let ingress route one logical
+    # client across different child processes and break protocol ordering.
+    max_replicas = 1
   }
 
   ingress {
     # Public ingress so APIM (deployed without VNet injection) can reach this
     # service, matching the pattern already used for the Operations relay.
-    # There is no shared-secret gate here: every tool this server exposes is
-    # read-only and authorized solely by this container's managed identity
-    # roles below, so the blast radius of a direct call is bounded to the
-    # same read-only access an authenticated caller already gets via APIM's
-    # Azure AD JWT + product subscription requirement.
+    # APIM has no VNet injection, so ingress remains public. The bridge rejects
+    # direct callers without APIM's high-entropy gateway assertion before any
+    # request reaches the managed-identity-backed Azure MCP child.
     external_enabled = true
     target_port      = 8000
     transport        = "http"
