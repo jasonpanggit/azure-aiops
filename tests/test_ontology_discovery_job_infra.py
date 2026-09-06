@@ -70,6 +70,7 @@ def test_rbac_validator_job_is_manual_only_and_selects_exactly_three_uais() -> N
     )
 
     assert "manual_trigger_config" in job
+    assert 'name                         = "${local.base}-ontology-rbac-check"' in job
     assert "schedule_trigger_config" not in job
     assert "replica_timeout_in_seconds" in job
     assert "= 600" in job

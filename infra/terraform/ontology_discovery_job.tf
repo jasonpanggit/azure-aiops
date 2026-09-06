@@ -122,7 +122,7 @@ resource "azurerm_container_app_job" "ontology_discovery" {
 resource "azurerm_container_app_job" "ontology_rbac_validation" {
   count = var.enable_fabric ? 1 : 0
 
-  name                         = "${local.base}-ontology-rbac-validation"
+  name                         = "${local.base}-ontology-rbac-check"
   resource_group_name          = azurerm_resource_group.main.name
   location                     = azurerm_resource_group.main.location
   container_app_environment_id = azurerm_container_app_environment.main.id
