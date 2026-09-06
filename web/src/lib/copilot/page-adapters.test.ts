@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildInventoryCopilotContext,
+  canonicalEvidenceStableId,
+  COPILOT_SNAPSHOT_LIMITS,
   copilotPageDisposition,
+  serializeCopilotSnapshot,
   type InventoryCopilotRecord,
 } from "./page-adapters";
 
@@ -11,47 +14,115 @@ const records: InventoryCopilotRecord[] = [
     kind: "os_group",
     source: "inventory/os_observations",
     observedAt: "2026-08-25T10:00:00Z",
-    data: { os_name: "Windows Server", os_version: "2019", machine_count: 2 },
+    data: {
+      os_name: "Windows Server",
+      os_version: "2019",
+      machine_count: 2,
+    },
   },
   {
-    identity: "microsoft.app:containerapps|Unknown|Unknown",
+    identity: "vm-1",
     kind: "azure_group",
     source: "inventory/resource_observations",
     observedAt: "2026-08-25T10:00:00Z",
-    resourceId: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.App/containerApps/app-1",
-    data: { resource_type: "microsoft.app/containerapps", resource_count: 1 },
+    resourceId:
+      "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.App/containerApps/App-1",
+    data: {
+      resource_type: "microsoft.app/containerapps",
+      resource_count: 1,
+    },
   },
 ];
+
+const baseInput = {
+  scope: { subscription: ["sub-a"] },
+  tab: "os" as const,
+  filters: { search: "windows", lifecycle: "supported" },
+  sort: { os_name: "asc" as const },
+  records,
+  selectedIdentity: "Windows Server|2019",
+  totalCount: 4,
+  offset: 0,
+  limit: 50,
+  sourceStatuses: [
+    {
+      source: "azure_vm",
+      observedAt: "2026-08-25T10:00:00Z",
+      status: "fresh",
+    },
+    {
+      source: "arc",
+      observedAt: "2026-08-25T09:00:00Z",
+      status: "partial",
+    },
+  ],
+};
 
 describe("inventory Copilot page adapter", () => {
   it("has an explicit integrated route disposition", () => {
     expect(copilotPageDisposition("/inventory")).toBe("integrated");
   });
 
-  it("builds a strict v2 snapshot with filters, coverage, freshness, and typed hints", () => {
-    const context = buildInventoryCopilotContext({
-      scope: { subscription: ["sub-a"] },
-      tab: "os",
-      filters: { search: "windows", lifecycle: "supported" },
-      records,
-      selectedIdentity: "Windows Server|2019",
-      totalCount: 4,
-      sourceStatuses: [
-        { source: "azure_vm", observedAt: "2026-08-25T10:00:00Z", status: "fresh" },
-        { source: "arc", observedAt: "2026-08-25T09:00:00Z", status: "partial" },
-      ],
+  it("matches the server bounds exactly", () => {
+    expect(COPILOT_SNAPSHOT_LIMITS).toEqual({
+      snapshotBytes: 128 * 1024,
+      selectedEntities: 50,
+      evidenceRows: 200,
+      evidenceRowBytes: 8 * 1024,
+      freshnessRecords: 32,
+      evidenceCitations: 32,
+      materialClaims: 200,
     });
+  });
 
-    expect(context.requestedScope).toEqual({ subscription: ["sub-a"] });
+  it("builds the complete strict v2 wire contract without authority fields", () => {
+    const context = buildInventoryCopilotContext(baseInput);
+
+    expect(context.requestedScope).toEqual({
+      subscription: ["sub-a"],
+    });
     expect(context.snapshot).toMatchObject({
       version: "2",
       page_kind: "inventory",
       page_id: "inventory:os",
-      coverage: { visible_count: 2, total_count: 4, complete: false },
+      coverage: {
+        visible_count: 2,
+        total_count: 4,
+        complete: false,
+      },
+      material_claims: [],
     });
-    const selected = context.snapshot.evidence.find((item) => item.data.selected);
-    expect(selected?.resource_id).toMatch(/^inventory:\/\/os_group\//);
-    expect(context.snapshot.evidence.some((item) => item.resource_id === records[1].resourceId)).toBe(true);
+    expect(context.snapshot).not.toHaveProperty("authorized");
+    expect(context.snapshot.selected_entities).toEqual([
+      {
+        type: "domain",
+        namespace: "inventory",
+        kind: "os_group",
+        source_key: "Windows Server|2019",
+      },
+    ]);
+    expect(context.snapshot.evidence[0]).toMatchObject({
+      source_key: expect.any(String),
+      entity: expect.objectContaining({ type: expect.any(String) }),
+      claim_type: expect.any(String),
+      citations: [],
+      selected: expect.any(Boolean),
+      direct: true,
+      actionable: false,
+      severity: "unknown",
+      quality: "high",
+    });
+    expect(context.snapshot.evidence[0].data.inventory_context).toEqual({
+      tab: "os",
+      filters: { lifecycle: "supported", search: "windows" },
+      sort: { os_name: "asc" },
+      offset: 0,
+      limit: 50,
+    });
+    expect(context.uncertainty).toEqual([
+      "visible subset is incomplete",
+      "arc freshness is partial",
+    ]);
     expect(context.starterQuestions[0]).toMatchObject({
       specialistId: "inventory_data_health",
       tool: "inventory_resources",
@@ -59,43 +130,187 @@ describe("inventory Copilot page adapter", () => {
     });
   });
 
-  it("keeps evidence IDs stable across record reorder and retains non-Azure identities", () => {
-    const input = {
-      scope: { subscription: ["sub-a"] },
-      tab: "os" as const,
-      filters: {},
-      totalCount: 2,
-      sourceStatuses: [],
-    };
-    const first = buildInventoryCopilotContext({ ...input, records });
-    const reordered = buildInventoryCopilotContext({ ...input, records: [...records].reverse() });
+  it("emits discriminated canonical Azure and non-Azure entities", () => {
+    const snapshot = buildInventoryCopilotContext(baseInput).snapshot;
+    const domain = snapshot.evidence.find(
+      (item) => item.source === "inventory/os_observations",
+    );
+    const azure = snapshot.evidence.find(
+      (item) => item.source === "inventory/resource_observations",
+    );
+
+    expect(domain?.entity).toEqual({
+      type: "domain",
+      namespace: "inventory",
+      kind: "os_group",
+      source_key: "Windows Server|2019",
+    });
+    expect(domain?.resource_id).toBe("");
+    expect(azure?.entity).toEqual({
+      type: "azure",
+      resource_id:
+        "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.app/containerapps/app-1",
+    });
+    expect(azure?.resource_id).toBe(
+      "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.app/containerapps/app-1",
+    );
+  });
+
+  it("matches the backend stable evidence key algorithm", () => {
+    expect(
+      canonicalEvidenceStableId({
+        source: "inventory/os_observations",
+        sourceKey: "Windows Server|2019",
+        entity: {
+          type: "domain",
+          namespace: "inventory",
+          kind: "os_group",
+          source_key: "Windows Server|2019",
+        },
+        claimType: "os_group",
+      }),
+    ).toBe("evidence:8260f36a5239818a9fbe280261d162e5");
+  });
+
+  it("keeps stable keys and serialization unchanged across reorder and refresh", () => {
+    const first = buildInventoryCopilotContext(baseInput);
+    const reordered = buildInventoryCopilotContext({
+      ...baseInput,
+      records: [...records]
+        .reverse()
+        .map((record) => ({
+          ...record,
+          observedAt: "2026-09-06T10:00:00Z",
+        })),
+      sourceStatuses: [...baseInput.sourceStatuses].reverse(),
+    });
 
     expect(first.snapshot.evidence.map((item) => item.evidence_id)).toEqual(
       reordered.snapshot.evidence.map((item) => item.evidence_id),
     );
-    const nonAzure = first.snapshot.evidence.find((item) => item.source === "inventory/os_observations");
-    expect(nonAzure?.resource_id).toContain("Windows%20Server%7C2019");
+    expect(first.snapshot.evidence.map((item) => item.source_key)).toEqual(
+      reordered.snapshot.evidence.map((item) => item.source_key),
+    );
+    const withoutObservationTimes = (value: string) =>
+      value.replaceAll(/2026-(08-25|09-06)T\d{2}:00:00Z/g, "OBSERVED");
+    expect(
+      withoutObservationTimes(serializeCopilotSnapshot(first.snapshot)),
+    ).toBe(
+      withoutObservationTimes(serializeCopilotSnapshot(reordered.snapshot)),
+    );
   });
 
-  it("keeps complete coverage independent from stale source freshness", () => {
+  it("preserves pagination mismatch and unavailable source uncertainty", () => {
     const context = buildInventoryCopilotContext({
-      scope: {},
-      tab: "os",
-      filters: {},
-      records,
-      totalCount: records.length,
-      sourceStatuses: [{
-        source: "arc",
-        observedAt: "2026-08-25T09:00:00Z",
-        status: "stale",
-      }],
+      ...baseInput,
+      records: records.slice(0, 1),
+      totalCount: 20,
+      offset: 10,
+      limit: 10,
+      sourceStatuses: [
+        {
+          source: "arc",
+          status: "unavailable",
+        },
+      ],
     });
 
-    expect(context.snapshot.coverage.complete).toBe(true);
-    expect(context.snapshot.freshness).toEqual([{
-      source: "arc",
-      observed_at: "2026-08-25T09:00:00Z",
-      status: "stale",
-    }]);
+    expect(context.snapshot.coverage).toEqual({
+      visible_count: 1,
+      total_count: 20,
+      complete: false,
+    });
+    expect(context.snapshot.freshness).toEqual([
+      {
+        source: "arc",
+        observed_at: "unknown",
+        status: "unavailable",
+      },
+    ]);
+    expect(context.uncertainty).toEqual([
+      "visible subset is incomplete",
+      "arc freshness is unavailable",
+    ]);
+  });
+
+  it("preserves contradictory values as stable conflict variants", () => {
+    const conflicting = [
+      {
+        ...records[0],
+        data: { ...records[0].data, lifecycle_status: "supported" },
+      },
+      {
+        ...records[0],
+        data: { ...records[0].data, lifecycle_status: "unsupported" },
+      },
+    ];
+
+    const snapshot = buildInventoryCopilotContext({
+      ...baseInput,
+      records: conflicting,
+      totalCount: conflicting.length,
+    }).snapshot;
+
+    expect(snapshot.evidence).toHaveLength(2);
+    expect(new Set(snapshot.evidence.map((item) => item.evidence_id)).size).toBe(
+      2,
+    );
+    expect(new Set(snapshot.evidence.map((item) => item.source_key))).toEqual(
+      new Set(["Windows Server|2019"]),
+    );
+    expect(new Set(snapshot.evidence.map((item) => item.claim_type))).toEqual(
+      new Set(["os_group"]),
+    );
+  });
+
+  it("rejects invalid coverage and every server-side size bound", () => {
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        totalCount: 1,
+      }),
+    ).toThrow(/visible count cannot exceed total count/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        records: Array.from(
+          { length: COPILOT_SNAPSHOT_LIMITS.evidenceRows + 1 },
+          (_, index) => ({
+            ...records[0],
+            identity: `row-${index}`,
+          }),
+        ),
+        totalCount: COPILOT_SNAPSHOT_LIMITS.evidenceRows + 1,
+      }),
+    ).toThrow(/evidence rows/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        records: [
+          {
+            ...records[0],
+            data: {
+              blob: "x".repeat(
+                COPILOT_SNAPSHOT_LIMITS.evidenceRowBytes + 1,
+              ),
+            },
+          },
+        ],
+        totalCount: 1,
+      }),
+    ).toThrow(/evidence row/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        sourceStatuses: Array.from(
+          { length: COPILOT_SNAPSHOT_LIMITS.freshnessRecords + 1 },
+          (_, index) => ({
+            source: `source-${index}`,
+            observedAt: "2026-08-25T10:00:00Z",
+            status: "fresh",
+          }),
+        ),
+      }),
+    ).toThrow(/freshness records/i);
   });
 });
