@@ -9,11 +9,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from api.routers.connections import sync_connection
-from ontology_discovery.contracts import CheckpointResult
+from onboarding.service import SubscriptionOnboardingService
 from ontology_discovery.cli import run_once as run_cli_once
+from ontology_discovery.contracts import CheckpointResult
 from ontology_discovery.coordinator import OntologyDiscoveryCoordinator
 from ontology_discovery.store import OntologyRunStore
-from onboarding.service import SubscriptionOnboardingService
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 
