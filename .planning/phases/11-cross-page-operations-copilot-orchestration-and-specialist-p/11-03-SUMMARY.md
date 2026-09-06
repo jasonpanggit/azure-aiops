@@ -23,7 +23,7 @@ affects: [11-05, 11-06, 11-07, 11-08, 11-09, 11-10, 11-11, 11-12, 11-14, 11-15, 
 actuals:
   tokens: 17163
   tasks: 2
-  commits: 25
+  commits: 27
 tech-stack:
   added: []
   patterns:
@@ -33,10 +33,13 @@ tech-stack:
     - Old ledgers projected on read without bulk rewrite via deep copy
     - Shared execute_from_question adapter resolves a bounded page/intent and returns explicit unsupported results when required arguments are unavailable
     - CANONICAL_CONTEXT_PAGE_KINDS gate prevents unsupported page kinds from masquerading as inventory
+    - Legacy session mappings atomically bind concurrent first turns to one principal-scoped canonical thread
+    - Canonical multi-agent ledgers retain the complete existing UI contract and classify evidence-free conclusions as unsupported
 key-files:
   created: []
   modified:
     - src/operations/maf_orchestrator.py
+    - src/operations/orchestration_contract.py
     - src/operations/orchestration_service.py
     - src/operations/investigation.py
     - src/operations/autonomous_investigation.py
@@ -143,6 +146,9 @@ status: complete
 - Canonical context adapters preserve actual page identity, selected entities, freshness, citations, findings, and tool evidence instead of substituting Inventory.
 - Canonical multi-agent ledgers now satisfy the complete existing UI contract, including agent findings/evidence, reconciliation defaults, synthesis fields, evaluation metrics, and budget-skipped `not_started` status.
 - Ledger reads and actions reauthorize immutable stored scope against the caller's current scope and deep-copy nested state.
+- Concurrent first turns for a legacy session atomically reuse one canonical thread; bounded history preserves the original question and policy-validated executed arguments.
+- The inventory-specific `/copilot/investigations` endpoint rejects non-inventory snapshots while public contextual routes retain their real page identities.
+- Canonical multi-agent timeouts flow into the service deadline, and evidence counts exclude synthetic coverage citations; evidence-free conclusions remain explicitly unsupported.
 - Terraform accepts the implemented `canonical` mode while retaining deterministic and MAF rollback modes.
 
 ## Task Commits
@@ -169,33 +175,44 @@ status: complete
 20. **Adapter contract RED** — `7c0e805c` test(orchestration): Enforce final adapter contracts
 21. **Adapter contract GREEN** — `d8b3652f` fix(orchestration): Complete canonical adapter contracts
 22. **Hint guard GREEN** — `564af420` fix(11-03): Reject invalid canonical hints before fallback
+23. **Final review RED** — `fa28417d` test(orchestration): Cover final review edge cases
+24. **Final review GREEN** — `f0528aeb` fix(orchestration): Close final review edge cases
+25. **Evidence integrity RED** — `18ed4f29` test(orchestration): Reject evidence-free conclusions
+26. **Evidence integrity GREEN** — `202d5a0c` fix(orchestration): Flag evidence-free conclusions
+27. **Final summary** — docs(11-03): Record final review and validation evidence
 
 ## Files Modified
 
 - `src/operations/maf_orchestrator.py` — `build_deterministic_fallback`, `canonical_orchestration_enabled`, `MODE_CANONICAL`
+- `src/operations/orchestration_contract.py` — Manifest-backed page kinds for canonical evidence snapshots
 - `src/operations/orchestration_service.py` — Generalized `_fallback_candidate` delegation, shared `execute_from_question` canonical adapter
 - `src/operations/investigation.py` — `canonicalize_investigation`, `CONTRACT_VERSION`
 - `src/operations/autonomous_investigation.py` — `project_legacy_ledger` (deep copy), `CONTRACT_VERSION`, stamped on new ledger writes
 - `src/api/routers/copilot.py` — `CANONICAL_CONTEXT_PAGE_KINDS` gate, `_run_context_via_canonical` rewrite (actual page kind, evidence translation, canonical loop, complete ledger projection), `_investigate_via_canonical`
-- `src/api/routers/multi_agent.py` — Canonical mode branch in POST `/agents/investigations` via `_create_investigation_canonical`; imports for `execute_from_question`, `uuid`, `datetime`
+- `src/api/routers/multi_agent.py` — Canonical creation, complete UI-compatible projection, immutable-scope reauthorization, timeout propagation, and evidence-integrity reconciliation
 - `infra/terraform/variables.tf` — `agent_orchestration_mode` accepts `canonical`; description and error updated
 - `tests/test_orchestration_policy.py` — 5 new keyword fallback and policy tests
-- `tests/test_api_copilot_unified.py` — 15 new tests (6 contract/projection + 4 service-routing + 5 blocker A/B/C)
+- `tests/test_api_copilot_unified.py` — Canonical route convergence, context fidelity, session continuity, scope reauthorization, UI ledger shape, timeout, intent, and evidence-integrity regressions
 
 ## Decisions Made
 
 - The generalized fallback uses the existing `select_specialists_for_turn` keyword matching rather than duplicating a second specialist-selection path, keeping the two orchestration paths from silently drifting apart.
 - Contract version stamping is unconditional on new writes — the mode switch controls routing, not versioning. This ensures every new ledger is self-describing regardless of the active mode.
 - Legacy planners are retained in full through Phase 11; the `AIOPS_AGENT_ORCHESTRATION_MODE` env var provides three positions: `deterministic` (page-anchored rollback), `maf` (existing MAF behavior), and `canonical` (canonical service routing).
-- Shared `execute_from_question` adapter uses `page_kind="inventory"` with incomplete coverage; questions that don't map to inventory page specialists receive honest `partial`/`unavailable` results through the standard uncertainty mechanism, not incorrect page bridging.
-- `_run_context_via_canonical` translates the actual page kind and submitted evidence into the canonical contract; only page kinds in `CANONICAL_CONTEXT_PAGE_KINDS` (`inventory`, `connections`, `connections_fabric`) are permitted — all others route through the legacy adapter.
+- Shared `execute_from_question` resolves a manifest-backed page identity using boundary-aware intent phrases or a policy-validated tool hint; unmatched and under-specified requests return explicit unavailable results with zero tool I/O.
+- `_run_context_via_canonical` translates the actual page kind and submitted evidence into the canonical contract; the six public `PageSnapshot` kinds (`network`, `vulnerability`, `patch`, `incident`, `governance`, `resource`) are canonical, while unsupported kinds route explicitly through the legacy adapter.
+- `/copilot/investigations` uses an endpoint-specific inventory snapshot type so its inventory selector cannot receive schema-valid non-inventory snapshots.
+- Legacy session mappings are created atomically before execution and remain principal/scope bound; persisted turns contain only the question, validated executed arguments, and canonical result.
+- Multi-agent ledgers reauthorize the immutable stored scope on reads and decisions and retain the complete `MultiAgentLedger` frontend contract.
 - `project_legacy_ledger` upgraded from shallow `{**ledger}` to `copy.deepcopy(ledger)` to guarantee full nested-structure isolation for `decisions`, `approvals`, `agent_runs`, `synthesis`, and `human_controls`.
 - Terraform `agent_orchestration_mode` validation extended to accept `canonical`; `shadow` deliberately excluded because no runtime code path processes it.
 
 ## Verification Evidence
 
-- Combined focused/adjacent canonical orchestration suite — **166 passed**
-- Final hint/scope/ledger/routing regression subset — **105 passed**
+- `python3 -m pytest tests/test_orchestration_policy.py tests/test_context_specialist_routing.py -q` — **32 passed**
+- `python3 -m pytest tests/test_api_copilot_unified.py tests/test_api_copilot_investigation.py tests/test_api_copilot_snapshot.py tests/test_api_multi_agent.py -q` — **95 passed**
+- `python3 -m pytest tests/test_foundry_agent.py tests/test_mcp_tools.py tests/test_mcp_protocol.py -q` — **40 passed**
+- `python3 -m pytest tests/test_orchestration_parity.py -q` — **1 passed, 1 external baseline failure**: current `origin/main` registers four ontology-curator tools in `TOOL_REGISTRY`/`REVIEWED_TOOLS` without adding them to the specialist manifest; Plan 11-03 does not modify those files.
 - `python3 -m ruff check` on all changed files — **passed**
 - `python3 -m compileall -q` on all changed source files — **passed**
 - `git diff --check` — **passed**
@@ -219,6 +236,15 @@ status: complete
 - **Fix:** Updated test to `test_investigate_context_canonical_unsupported_page_uses_legacy` verifying unsupported pages route through legacy
 - **Files modified:** `tests/test_api_copilot_unified.py`
 - **Commit:** `7801de64`
+
+**3. [External baseline] Ontology-curator registry parity**
+- **Found during:** Final adjacent regression run after `origin/main` advanced
+- **Issue:** `tests/test_orchestration_parity.py::test_operations_mcp_and_registry_grants_are_exact_and_read_only` sees four ontology-curator tools in `TOOL_REGISTRY`/`REVIEWED_TOOLS` that are absent from `specialists.v1.json`.
+- **Disposition:** Not modified because the mismatch is present in current `origin/main` and belongs to the concurrently active ontology/network tool surface outside Plan 11-03.
+
+## Independent Review
+
+- Final focused re-review at `202d5a0c` reported **no significant blocking, high, or medium findings**.
 
 ## Known Stubs
 
