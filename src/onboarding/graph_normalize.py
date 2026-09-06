@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from intelligence.vulnerability.normalization import normalize_aum_row
 from ontology.confidence import compute_confidence
 
 from .defender_normalize import (
@@ -15,6 +16,7 @@ from .defender_normalize import (
     normalize_assessment,
     normalize_attack_path,
     normalize_container_image_exposure,
+    normalize_container_image_products,
     normalize_secure_score,
     normalize_secure_score_control,
     normalize_security_alert,
@@ -59,6 +61,9 @@ ENTITY_TYPES = (
     "DefenderAssessment",
     "DefenderVulnerabilityFinding",
     "ContainerImageExposure",
+    "LogicalImage",
+    "ImageDigest",
+    "VulnerabilityObservation",
     "SecurityAlert",
     "AttackPath",
     "AttackPathNode",
@@ -168,6 +173,8 @@ class Normalizer:
 
         for row in payload.get("patch_assessment_details", []):
             entity = _patch_assessment_detail(row, observed)
+            if entity is None:
+                continue
             entity_index["PatchAssessmentDetail"][entity["id"]] = entity
             target = entity.get("targetResourceId", "")
             if target:
@@ -183,6 +190,8 @@ class Normalizer:
 
         for row in payload.get("patch_installations", []):
             entity = _patch_installation(row, observed)
+            if entity is None:
+                continue
             entity_index["PatchInstallation"][entity["id"]] = entity
             target = entity.get("targetResourceId", "")
             if target:
@@ -240,6 +249,22 @@ class Normalizer:
                     observed,
                     compute_confidence("arg:SecurityResources"),
                 )
+
+        image_products = normalize_container_image_products(
+            image_assessments,
+            observed,
+            source_generation=run_id,
+        )
+        for entity_type, rows in (
+            ("LogicalImage", image_products.logical_images),
+            ("ImageDigest", image_products.digests),
+            (
+                "VulnerabilityObservation",
+                image_products.vulnerability_observations,
+            ),
+        ):
+            for entity in rows:
+                entity_index[entity_type][entity["id"]] = entity
 
         for row in payload.get("defender_subassessments", []):
             for entity in normalize_vulnerability_subassessments(row, observed):
@@ -885,59 +910,70 @@ def _patch_assessment(row: dict, observed: str) -> dict:
     return entity
 
 
-def _patch_assessment_detail(row: dict, observed: str) -> dict:
+def _patch_assessment_detail(row: dict, observed: str) -> dict | None:
     """Per-KB pending/missing patch detail (the ``/softwarepatches`` sub-type
     of ``patchassessmentresources``). This is the row shape that actually
     carries a KB id, MSRC severity, and classification per outstanding
     update -- the aggregate ``PatchAssessment`` entity only has counts."""
     entity = _base(row, observed, "arg:PatchAssessmentResources")
-    props = row.get("properties") or {}
-    classifications = props.get("classifications") or []
-    target = _lower(
-        props.get("resourceId")
-        or props.get("machineId")
-        or _target_from_assessment_id(row.get("id"))
+    normalized, _failure = normalize_aum_row(
+        row,
+        source_family="azure_update_manager_missing",
+        observed_at=observed,
     )
+    if normalized is None:
+        return None
+    props = row.get("properties") or {}
     entity.update(
         {
-            "targetResourceId": target,
-            "updateName": str(props.get("patchName") or row.get("name") or ""),
-            "kbId": str(props.get("kbId") or row.get("name") or ""),
-            "classifications": classifications
-            if isinstance(classifications, list)
-            else [str(classifications)],
-            "msrcSeverity": str(props.get("msrcSeverity") or ""),
+            "targetResourceId": normalized.target_id,
+            "updateName": normalized.title,
+            "kbId": normalized.source_weakness_id,
+            "classifications": list(normalized.classifications),
+            "sourceClassifications": list(normalized.source_classifications),
+            "msrcSeverity": normalized.source_severity,
+            "severity": normalized.severity,
+            "sourceFamily": normalized.source_family,
+            "provenance": normalized.provenance,
             "rebootBehavior": str(props.get("rebootBehavior") or ""),
             "publishedDateTime": str(props.get("publishedDateTime") or ""),
-            "lastModifiedDateTime": str(props.get("lastModifiedDateTime") or ""),
+            "lastModifiedDateTime": normalized.observed_at,
             "properties": props,
         }
     )
     return entity
 
 
-def _patch_installation(row: dict, observed: str) -> dict:
+def _patch_installation(row: dict, observed: str) -> dict | None:
     entity = _base(row, observed, "arg:PatchInstallationResources")
-    props = row.get("properties") or {}
-    classifications = props.get("classifications") or []
-    target = _lower(
-        props.get("resourceId")
-        or props.get("machineId")
-        or _target_from_installation_id(row.get("id"))
+    normalized, _failure = normalize_aum_row(
+        row,
+        source_family="azure_update_manager_installation",
+        observed_at=observed,
     )
+    if normalized is None:
+        return None
+    props = row.get("properties") or {}
     entity.update(
         {
-            "targetResourceId": target,
-            "updateName": str(props.get("patchName") or row.get("name") or ""),
-            "kbId": str(props.get("kbId") or row.get("name") or ""),
-            "classifications": classifications
-            if isinstance(classifications, list)
-            else [str(classifications)],
+            "targetResourceId": normalized.target_id,
+            "updateName": normalized.title,
+            "kbId": normalized.source_weakness_id,
+            "classifications": list(normalized.classifications),
+            "sourceClassifications": list(normalized.source_classifications),
+            "msrcSeverity": normalized.source_severity,
+            "severity": normalized.severity,
+            "sourceFamily": normalized.source_family,
+            "provenance": normalized.provenance,
+            # Preserve the provider operation value for existing onboarding
+            # consumers while carrying the conservative canonical state
+            # separately for Exposure projection.
             "status": str(
                 props.get("installationState") or props.get("status") or "unknown"
             ),
+            "canonicalStatus": normalized.status,
             "publishedDateTime": str(props.get("publishedDateTime") or ""),
-            "lastModifiedDateTime": str(props.get("lastModifiedDateTime") or ""),
+            "lastModifiedDateTime": normalized.observed_at,
             "errorDetails": props.get("errorDetails") or [],
             "properties": props,
         }

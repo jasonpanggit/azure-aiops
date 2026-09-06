@@ -517,6 +517,43 @@ def _tool_firewall_nsg_gaps(tool_context: ToolContext, args: Mapping[str, Any]) 
 def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     """CVE/KB exposure, optionally narrowed to a business service."""
     business_service = str(args.get("business_service") or "").strip().casefold()
+    read_port_provider = getattr(
+        tool_context.context, "exposure_read_port_provider", None
+    )
+    try:
+        read_port = (
+            read_port_provider()
+            if callable(read_port_provider)
+            else None
+        )
+    except (LookupError, RuntimeError, TypeError, AttributeError) as exc:
+        _LOGGER.warning("exposure_read_port_failed error=%s", exc)
+        return ToolResult(
+            status=STATUS_UNAVAILABLE,
+            warning="The authoritative Exposure provider failed to answer",
+        )
+    if read_port is not None:
+        page = read_port.list_exposures(
+            tool_context.scope,
+            offset=0,
+            limit=_MAX_ITEMS,
+            business_service=business_service or None,
+        )
+        if not page["findings"]:
+            return ToolResult(status=STATUS_EMPTY)
+        generation_id = str(page.get("read_model_generation_id") or "")
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(page),
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.vulnerability.ExposureReadPort",
+                    source_table="gold_exposure_findings",
+                    timestamp=generation_id,
+                    confidence=CONFIDENCE_HIGH,
+                ),
+            ),
+        )
 
     def run(vulnerability: Any) -> ToolResult:
         rows = vulnerability.exposures(tool_context.scope)

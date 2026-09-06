@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
+from test_api_copilot_investigation import HEADERS, _context
 
+from api.app import create_app
 from api.evidence import Evidence
 from api.scope import Scope
 from operations.foundry_agent import FoundryAgentError
@@ -422,3 +425,478 @@ def test_widened_request_scope_causes_zero_calls():
         )
 
     assert calls == []
+
+
+def _canonical_body(**overrides):
+    body = {
+        "contract_version": "1",
+        "question": "Show inventory resources and data health.",
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "inventory",
+            "page_id": "inventory",
+            "coverage": {
+                "visible_count": 1,
+                "total_count": 2,
+                "complete": False,
+            },
+            "freshness": [
+                {
+                    "source": "inventory",
+                    "observed_at": "2026-09-01T00:00:00Z",
+                    "status": "partial",
+                }
+            ],
+            "evidence": [
+                {
+                    "evidence_id": "inventory:os:stable",
+                    "source": "inventory/os_observations",
+                    "status": "ok",
+                    "observed_at": "2026-09-01T00:00:00Z",
+                    "resource_id": "inventory://os/Windows%20Server%7C2019",
+                    "data": {
+                        "os_name": "Windows Server",
+                        "os_version": "2019",
+                        "machine_count": 1,
+                        "selected": False,
+                        "inventory_context": {
+                            "tab": "os",
+                            "filters": {
+                                "os_name": "all",
+                                "os_version": "all",
+                            },
+                        },
+                    },
+                }
+            ],
+        },
+        "hint": {
+            "specialist_id": INVENTORY_DATA_HEALTH_ID,
+            "tool": "inventory_resources",
+            "arguments": {},
+        },
+    }
+    body.update(overrides)
+    return body
+
+
+def test_authenticated_canonical_route_preserves_governed_result(tmp_path):
+    observed_calls: list[tuple[dict[str, list[str]], str | None, str | None]] = []
+
+    class InventoryPort:
+        def list_resources(self, scope, *, family, resource_type, limit):
+            observed_calls.append((scope.to_dict(), family, resource_type))
+            return {
+                "resources": [
+                    {
+                        "id": "/subscriptions/sub-a/resourceGroups/rg/providers/"
+                        "Microsoft.Compute/virtualMachines/vm-1"
+                    }
+                ],
+                "total": 1,
+            }
+
+    context = _context(tmp_path, None)
+    context.inventory_read_port_provider = lambda: InventoryPort()
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    assert client.post(
+        "/api/v1/copilot/investigations",
+        json=_canonical_body(),
+    ).status_code == 401
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=_canonical_body(),
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert observed_calls == [
+        ({"subscription": ["sub-a"]}, "os", None)
+    ]
+    assert data["policy_status"] == "accepted"
+    assert data["fallback_reason"] == ""
+    assert data["coverage"] == {
+        "visible_count": 1,
+        "total_count": 2,
+        "complete": False,
+    }
+    assert "visible subset is incomplete" in data["uncertainty"]
+    assert data["citations"]
+    assert all(
+        citation["citation_id"].startswith("tool:")
+        for citation in data["citations"]
+    )
+    assert "inventory:os:stable" not in {
+        citation["citation_id"] for citation in data["citations"]
+    }
+    assert data["thread_id"].startswith("thr-")
+    assert data["mutation_authorized"] is False
+
+
+def test_canonical_route_uses_snapshot_selectors_for_governed_reads(tmp_path):
+    observed_calls: list[tuple[str | None, str | None]] = []
+
+    class InventoryPort:
+        def list_resources(self, scope, *, family, resource_type, limit):
+            observed_calls.append((family, resource_type))
+            return {
+                "resources": [{"family": family, "resource_type": resource_type}],
+                "total": 1,
+            }
+
+    context = _context(tmp_path, None)
+    context.inventory_read_port_provider = lambda: InventoryPort()
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    os_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=_canonical_body(),
+        headers=HEADERS,
+    )
+    azure_body = _canonical_body()
+    azure_body["snapshot"] = {
+        **azure_body["snapshot"],
+        "page_id": "inventory:azure",
+        "evidence": [{
+            "evidence_id": "inventory:azure:stable",
+            "source": "inventory/resource_observations",
+            "status": "ok",
+            "observed_at": "2026-09-01T00:00:00Z",
+            "resource_id": "inventory://azure/microsoft.app",
+            "data": {
+                "resource_type": "microsoft.app/containerapps",
+                "sku": "",
+                "tier": "",
+                "selected": False,
+                "inventory_context": {
+                    "tab": "azure",
+                    "filters": {
+                        "resource_type": "microsoft.app/containerapps",
+                    },
+                },
+            },
+        }],
+    }
+    azure_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=azure_body,
+        headers=HEADERS,
+    )
+
+    assert os_response.status_code == 200
+    assert azure_response.status_code == 200
+    assert observed_calls == [
+        ("os", None),
+        ("paas", "microsoft.app/containerapps"),
+    ]
+    assert os_response.json()["data"]["tool_results"][0]["data"] != (
+        azure_response.json()["data"]["tool_results"][0]["data"]
+    )
+
+
+def test_canonical_route_resolves_selected_software_through_scoped_service(
+    tmp_path,
+):
+    observed: list[tuple[str, str, dict[str, list[str]], int]] = []
+
+    class InventoryService:
+        def software_detail(
+            self, software_name, software_version, scope, *, offset, limit
+        ):
+            observed.append(
+                (software_name, software_version, scope.to_dict(), limit)
+            )
+            return {
+                "data": {
+                    "group": {
+                        "software_name": software_name,
+                        "software_version": software_version,
+                    },
+                    "machines": [{"machine_name": "server-1"}],
+                },
+                "total": 1,
+                "evidence": [{
+                    "source_engine": "Azure Monitor Logs",
+                    "source_table": "ConfigurationData",
+                    "timestamp": "2026-09-01T00:00:00Z",
+                    "resource_id": "/subscriptions/sub-a/machines/server-1",
+                    "confidence": "high",
+                }],
+                "warnings": [],
+            }
+
+    context = _context(tmp_path, None)
+    context.inventory_provider = lambda: InventoryService()
+    context.inventory_read_port_provider = lambda: pytest.fail(
+        "software context must not use the generic resource read port"
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    body = _canonical_body()
+    body["snapshot"] = {
+        **body["snapshot"],
+        "page_id": "inventory:software",
+        "evidence": [{
+            "evidence_id": "inventory:software:stable",
+            "source": "inventory/software_observations",
+            "status": "ok",
+            "observed_at": "2026-09-01T00:00:00Z",
+            "resource_id": "inventory://software/7-Zip%7C19.00",
+            "data": {
+                "software_name": "7-Zip",
+                "software_version": "19.00",
+                "selected": True,
+                "inventory_context": {
+                    "tab": "software",
+                    "filters": {"software": "7-Zip"},
+                },
+            },
+        }],
+    }
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert observed == [
+        ("7-Zip", "19.00", {"subscription": ["sub-a"]}, 25)
+    ]
+    result = response.json()["data"]
+    assert result["tool_results"][0]["data"]["group"] == {
+        "software_name": "7-Zip",
+        "software_version": "19.00",
+    }
+    assert result["citations"]
+    assert all(
+        citation["citation_id"].startswith("tool:")
+        for citation in result["citations"]
+    )
+    assert all(
+        citation["citation_id"] != "inventory:software:stable"
+        for citation in result["citations"]
+    )
+
+
+def test_canonical_route_bounds_large_selected_paas_evidence(tmp_path):
+    evidence_count = 300
+
+    class InventoryService:
+        def paas_detail(self, key, scope, *, offset, limit):
+            assert key == "microsoft.app:containerapps|Unknown|Unknown"
+            assert scope.to_dict() == {"subscription": ["sub-a"]}
+            return {
+                "data": {
+                    "group": {"key": key},
+                    "resources": [{"resource_name": f"app-{index}"} for index in range(limit)],
+                },
+                "total": evidence_count,
+                "evidence": [{
+                    "source_engine": "Azure Resource Graph",
+                    "source_table": "Resources",
+                    "timestamp": "2026-09-01T00:00:00Z",
+                    "resource_id": f"/subscriptions/sub-a/apps/app-{index}",
+                    "confidence": "high",
+                } for index in range(evidence_count)],
+                "warnings": [],
+            }
+
+    context = _context(tmp_path, None)
+    context.inventory_provider = lambda: InventoryService()
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    body = _canonical_body()
+    body["snapshot"] = {
+        **body["snapshot"],
+        "page_id": "inventory:azure",
+        "evidence": [{
+            "evidence_id": "inventory:azure:stable",
+            "source": "inventory/resource_observations",
+            "status": "ok",
+            "observed_at": "2026-09-01T00:00:00Z",
+            "resource_id": "inventory://azure/microsoft.app",
+            "data": {
+                "resource_type": "microsoft.app/containerapps",
+                "sku": "",
+                "tier": "",
+                "selected": True,
+                "inventory_context": {
+                    "tab": "azure",
+                    "filters": {"resource_type": "microsoft.app/containerapps"},
+                },
+            },
+        }],
+    }
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200, response.json()
+    result = response.json()["data"]
+    assert len(result["citations"]) == 255
+    assert result["tool_results"][0]["data"]["total"] == evidence_count
+    assert len(result["tool_results"][0]["data"]["resources"]) == 25
+    assert result["tool_results"][0]["warning"] == (
+        "Server evidence truncated to 255 of 300 records"
+    )
+
+
+def test_canonical_route_rejects_conflicting_inventory_context_before_io(
+    tmp_path,
+):
+    calls: list[object] = []
+
+    class InventoryPort:
+        def list_resources(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return {"resources": [], "total": 0}
+
+    context = _context(tmp_path, None)
+    context.inventory_read_port_provider = lambda: InventoryPort()
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    body = _canonical_body()
+    body["snapshot"]["evidence"][0]["data"]["inventory_context"]["tab"] = (
+        "software"
+    )
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 400
+    assert calls == []
+
+
+def test_canonical_route_validates_hints_and_scope_before_tool_io(tmp_path):
+    calls: list[dict[str, list[str]]] = []
+
+    class InventoryPort:
+        def list_resources(self, scope, *, family, resource_type, limit):
+            calls.append(scope.to_dict())
+            return {"resources": [], "total": 0}
+
+    context = _context(tmp_path, None)
+    context.inventory_read_port_provider = lambda: InventoryPort()
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    invalid_hint = _canonical_body(
+        hint={
+            "specialist_id": "remediation",
+            "tool": "inventory_resources",
+            "arguments": {},
+        }
+    )
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=invalid_hint,
+        headers=HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["policy_status"] == "fallback"
+    assert response.json()["data"]["fallback_reason"].startswith("candidate_rejected:")
+    assert response.json()["data"]["selected_specialists"] == [
+        INVENTORY_DATA_HEALTH_ID
+    ]
+    assert calls == [{"subscription": ["sub-a"]}]
+
+    conflicting_hint = _canonical_body(
+        hint={
+            "specialist_id": INVENTORY_DATA_HEALTH_ID,
+            "tool": "inventory_resources",
+            "arguments": {"family": "paas"},
+        }
+    )
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=conflicting_hint,
+        headers=HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["policy_status"] == "fallback"
+    assert response.json()["data"]["fallback_reason"].startswith(
+        "candidate_rejected:"
+    )
+    assert calls == [
+        {"subscription": ["sub-a"]},
+        {"subscription": ["sub-a"]},
+    ]
+
+    widened = _canonical_body(
+        requested_scope={"subscription": ["sub-a", "sub-b"]}
+    )
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=widened,
+        headers=HEADERS,
+    )
+    assert response.status_code == 400
+    assert calls == [
+        {"subscription": ["sub-a"]},
+        {"subscription": ["sub-a"]},
+    ]
+
+
+def test_canonical_route_rejects_browser_authority_assertions(tmp_path):
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    body = _canonical_body()
+    body["snapshot"]["authorized"] = True
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 400
+
+
+def test_canonical_route_never_promotes_browser_observations_to_authority(
+    tmp_path,
+):
+    class InventoryPort:
+        def list_resources(self, scope, *, family, resource_type, limit):
+            return {"resources": [], "total": 0}
+
+    context = _context(tmp_path, None)
+    context.inventory_read_port_provider = lambda: InventoryPort()
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    body = _canonical_body()
+    body["snapshot"]["coverage"] = {
+        "visible_count": 1,
+        "total_count": 1,
+        "complete": True,
+    }
+    body["snapshot"]["freshness"][0]["status"] = "fresh"
+    body["snapshot"]["evidence"][0]["resource_id"] = (
+        "/subscriptions/sub-b/resourceGroups/rg/providers/"
+        "Microsoft.Compute/virtualMachines/untrusted"
+    )
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["coverage"] == {
+        "visible_count": 1,
+        "total_count": 1,
+        "complete": False,
+    }
+    assert "visible subset is incomplete" in data["uncertainty"]
+    assert "inventory freshness is unavailable" in data["uncertainty"]
+    assert "inventory:os:stable" not in {
+        citation["citation_id"] for citation in data["citations"]
+    }

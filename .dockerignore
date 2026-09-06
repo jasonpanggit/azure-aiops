@@ -9,7 +9,8 @@ __pycache__
 *.pyc
 
 # The web app has its own image and build context.
-web
+web/*
+!web/.npmrc
 dist
 graphify-out
 

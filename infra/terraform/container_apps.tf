@@ -89,6 +89,21 @@ resource "azurerm_container_app" "api" {
     }
   }
 
+  # Versionless references let Key Vault rotation publish a new active or
+  # previous version without placing key material in Terraform configuration
+  # or state. The existing user-assigned app identity resolves both values.
+  secret {
+    name                = "cursor-active"
+    identity            = azurerm_user_assigned_identity.apps.id
+    key_vault_secret_id = "${azurerm_key_vault.main.vault_uri}secrets/exposure-cursor-active"
+  }
+
+  secret {
+    name                = "cursor-previous"
+    identity            = azurerm_user_assigned_identity.apps.id
+    key_vault_secret_id = "${azurerm_key_vault.main.vault_uri}secrets/exposure-cursor-previous"
+  }
+
   ingress {
     external_enabled = var.api_external_ingress
     target_port      = 8080
@@ -210,84 +225,45 @@ resource "azurerm_container_app" "api" {
         value = tostring(var.enable_fabric_iq)
       }
 
+      # Canonical specialist metadata: one env pair per ACTIVATED specialist,
+      # generated from local.foundry_specialist_activation (foundry.tf).
+      #
+      # This is deliberately NOT the candidate projection this plan would
+      # publish: the activation map is either the previously validated,
+      # promoted provider-ID mapping (gated by
+      # terraform_data.foundry_specialist_promotion_gate, which this revision
+      # depends on) or the deterministic legacy eight-agent rollback mapping.
+      # A synthetic "<release>.<contract version>" candidate stamp can never
+      # reach the running revision. for_each over a map yields a
+      # deterministic, key-sorted ordering.
+      dynamic "env" {
+        for_each = local.foundry_specialist_activation
+        content {
+          name  = "FOUNDRY_${upper(env.key)}_AGENT_NAME"
+          value = env.value.name
+        }
+      }
+
+      dynamic "env" {
+        for_each = {
+          for id, agent in local.foundry_specialist_activation : id => agent
+          if agent.version != ""
+        }
+        content {
+          name  = "FOUNDRY_${upper(env.key)}_AGENT_VERSION"
+          value = env.value.version
+        }
+      }
+
+      # Which side of the promotion boundary this revision is running on.
       env {
-        name  = "FOUNDRY_NETWORK_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "network", { name = "", version = "" }).name
+        name  = "AIOPS_SPECIALIST_ACTIVATION_SOURCE"
+        value = local.foundry_specialist_activation_source
       }
 
       env {
-        name  = "FOUNDRY_NETWORK_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "network", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_VULNERABILITY_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "vulnerability", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_VULNERABILITY_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "vulnerability", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_PATCH_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "patch", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_PATCH_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "patch", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_INCIDENT_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "incident", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_INCIDENT_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "incident", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_CHANGE_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "change", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_CHANGE_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "change", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_GOVERNANCE_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "governance", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_GOVERNANCE_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "governance", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_REMEDIATION_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "remediation", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_REMEDIATION_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "remediation", { name = "", version = "" }).version
-      }
-
-      env {
-        name  = "FOUNDRY_EXECUTIVE_SUMMARY_AGENT_NAME"
-        value = lookup(var.foundry_specialists, "executive_summary", { name = "", version = "" }).name
-      }
-
-      env {
-        name  = "FOUNDRY_EXECUTIVE_SUMMARY_AGENT_VERSION"
-        value = lookup(var.foundry_specialists, "executive_summary", { name = "", version = "" }).version
+        name  = "AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED"
+        value = tostring(local.foundry_version_pinning_required)
       }
 
       env {
@@ -333,11 +309,41 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "FOUNDRY_AGENT_NAME"
-        value = var.foundry_agent_name
+        value = local.foundry_coordinator_activation.name
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_coordinator_activation.version == "" ? [] : [local.foundry_coordinator_activation.version]
+        content {
+          name  = "FOUNDRY_AGENT_VERSION"
+          value = env.value
+        }
       }
 
       env {
         name  = "FOUNDRY_SPECIALISTS_JSON"
+        value = jsonencode(local.foundry_specialist_activation)
+      }
+
+      # Identity of the contract this revision was built from. The parity
+      # validator compares it to the manifest it loads, so a revision running
+      # a different contract than the one that was reviewed is detectable
+      # without shipping the manifest body through the environment.
+      env {
+        name  = "AIOPS_SPECIALIST_MANIFEST_PATH"
+        value = "operations/specialists.v1.json"
+      }
+
+      env {
+        name  = "AIOPS_SPECIALIST_MANIFEST_DIGEST"
+        value = local.specialist_manifest_digest
+      }
+
+      # Compatibility window: the pre-manifest eight name/version pairs stay
+      # visible so a rollback to the previously deployed specialist set does
+      # not require a Terraform edit. Nothing reads this as authority.
+      env {
+        name  = "FOUNDRY_SPECIALISTS_LEGACY_JSON"
         value = jsonencode(var.foundry_specialists)
       }
 
@@ -372,6 +378,28 @@ resource "azurerm_container_app" "api" {
           name        = "AIOPS_REFRESH_TRIGGER_SECRET"
           secret_name = "refresh-trigger-secret"
         }
+      }
+
+      env {
+        name        = "EXPOSURE_CURSOR_ACTIVE_KEY"
+        secret_name = "cursor-active"
+      }
+
+      env {
+        name        = "EXPOSURE_CURSOR_PREVIOUS_KEY"
+        secret_name = "cursor-previous"
+      }
+
+      # Key identifiers are routing metadata, not key material. The rotation
+      # script updates these values when it creates a new revision.
+      env {
+        name  = "EXPOSURE_CURSOR_ACTIVE_KID"
+        value = "unprovisioned"
+      }
+
+      env {
+        name  = "EXPOSURE_CURSOR_PREVIOUS_KID"
+        value = "unprovisioned"
       }
 
       env {
@@ -414,6 +442,101 @@ resource "azurerm_container_app" "api" {
   depends_on = [
     azurerm_role_assignment.acr_pull,
     azurerm_role_assignment.kv_apps,
+    # The active revision may only come up behind a satisfied parity gate:
+    # its specialist activation mapping is either a previously validated,
+    # promoted provider-ID mapping or the legacy eight-agent rollback set.
+    terraform_data.foundry_specialist_promotion_gate,
+  ]
+}
+
+# ---------------------------------------------------------------------------
+# Durable Exposure enrichment
+#
+# This job uses the exact API image and managed identity selected above, but
+# replaces the web process with the bounded worker CLI. A schedule-triggered
+# Container Apps Job remains manually startable through Azure for recovery;
+# no request path or always-running API replica schedules provider work.
+# ---------------------------------------------------------------------------
+
+resource "azurerm_container_app_job" "exposure_enrichment" {
+  name                         = "${local.base}-exposure-enrichment"
+  resource_group_name          = azurerm_resource_group.main.name
+  location                     = azurerm_resource_group.main.location
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  workload_profile_name        = "Consumption"
+  replica_timeout_in_seconds   = 900
+  replica_retry_limit          = 2
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.apps.id]
+  }
+
+  registry {
+    server   = local.registry_server
+    identity = azurerm_user_assigned_identity.apps.id
+  }
+
+  dynamic "secret" {
+    for_each = var.nvd_api_key != "" ? [var.nvd_api_key] : []
+    content {
+      name  = "nvd-api-key"
+      value = secret.value
+    }
+  }
+
+  schedule_trigger_config {
+    cron_expression          = var.exposure_enrichment_schedule
+    parallelism              = 1
+    replica_completion_count = 1
+  }
+
+  template {
+    container {
+      name   = "exposure-enrichment"
+      image  = var.deploy_images ? local.api_image : local.placeholder_image
+      cpu    = var.api_cpu
+      memory = var.api_memory
+      command = [
+        "python",
+      ]
+      args = [
+        "/app/scripts/refresh_exposure_enrichment.py",
+        "--all-due",
+        "--max-items",
+        tostring(var.exposure_enrichment_max_items),
+      ]
+
+      env {
+        name  = "AIOPS_HOME"
+        value = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops" : "/tmp/aiops"
+      }
+
+      env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.apps.client_id
+      }
+
+      env {
+        name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        value = azurerm_application_insights.main.connection_string
+      }
+
+      dynamic "env" {
+        for_each = var.nvd_api_key != "" ? [1] : []
+        content {
+          name        = "NVD_API_KEY"
+          secret_name = "nvd-api-key"
+        }
+      }
+    }
+  }
+
+  tags = local.tags
+
+  depends_on = [
+    azurerm_role_assignment.acr_pull,
+    fabric_workspace_role_assignment.apps,
   ]
 }
 

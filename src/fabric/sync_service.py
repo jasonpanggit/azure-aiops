@@ -85,6 +85,17 @@ class FabricSyncService:
         "silver_vm_inventory",
         "silver_server_inventory",
     })
+    _WORKLOAD_APPEND_WRITE_TABLES: frozenset[str] = frozenset({
+        "silver_container_vulnerability_observations",
+        "silver_workload_observations",
+    })
+    _WORKLOAD_MERGE_WRITE_TABLES: frozenset[str] = frozenset({
+        "silver_container_image_digests",
+        "silver_container_logical_images",
+        "silver_container_registries",
+        "silver_workload_deployments",
+        "metadata_workload_source_checkpoints",
+    })
 
     def __init__(
         self,
@@ -212,6 +223,23 @@ class FabricSyncService:
         data_committed = False
         try:
             datasets = self.mapper.load(snapshot, run_id, fs=self._source_fs)
+            datasets["metadata_source_status"] = [
+                _with_source_partition_defaults(row)
+                for row in datasets.get("metadata_source_status", [])
+            ]
+            partition_status = self._load_source_partition_status(snapshot, run_id)
+            if partition_status:
+                partition_families = {
+                    row["source_family"] for row in partition_status
+                }
+                datasets["metadata_source_status"] = [
+                    row
+                    for row in datasets.get("metadata_source_status", [])
+                    if row.get("source_family") not in partition_families
+                ]
+                datasets["metadata_source_status"].extend(partition_status)
+            datasets.update(self._load_workload_products(snapshot))
+            self._validate_workload_products(datasets)
             if self.topology_enabled:
                 self._extend_with_topology_tables(
                     datasets,
@@ -315,12 +343,15 @@ class FabricSyncService:
             reports = self._validate(datasets)
             failed_records = sum(report.failed_records for report in reports)
             self._write_quality_report(run_id, source_run_id, reports, started_at)
-            source_status_rows = _table_source_status_rows(
-                datasets,
-                run_id,
-                started_at,
-                requested_scope=requested_scope,
-            )
+            source_status_rows = [
+                *datasets.get("metadata_source_status", []),
+                *_table_source_status_rows(
+                    datasets,
+                    run_id,
+                    started_at,
+                    requested_scope=requested_scope,
+                ),
+            ]
             if source_status_rows:
                 table_uri = self.onelake.table_uri("metadata", "source_status")
                 before_version = self.delta.version(table_uri)
@@ -1642,13 +1673,153 @@ class FabricSyncService:
             )
 
     def _write_mode_for_table(self, table_name: str) -> DeltaWriteMode:
-        if table_name == "metadata_audit_events":
+        if (
+            table_name == "metadata_audit_events"
+            or table_name in self._WORKLOAD_APPEND_WRITE_TABLES
+        ):
             return DeltaWriteMode.APPEND
-        if table_name in self._MERGE_WRITE_TABLES:
+        if (
+            table_name in self._MERGE_WRITE_TABLES
+            or table_name in self._WORKLOAD_MERGE_WRITE_TABLES
+        ):
             return DeltaWriteMode.MERGE
         if table_name in self._SNAPSHOT_MERGE_WRITE_TABLES:
             return DeltaWriteMode.SNAPSHOT_MERGE
         return DeltaWriteMode.OVERWRITE
+
+    def _load_workload_products(
+        self,
+        snapshot: Path | str,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Read additive v1 products with a legacy path compatibility window."""
+
+        products = {
+            "silver_workload_observations": (
+                "exposure/workload_observations",
+                "workload/workload_observations",
+            ),
+            "silver_workload_deployments": (
+                "exposure/workload_deployments",
+                "workload/workload_deployments",
+            ),
+            "metadata_workload_source_checkpoints": (
+                "exposure/workload_source_checkpoints",
+                "workload/workload_source_checkpoints",
+            ),
+        }
+        loaded: dict[str, list[dict[str, Any]]] = {}
+        for table_name, paths in products.items():
+            rows: list[dict[str, Any]] = []
+            for relative in paths:
+                exists, candidate = self._read_snapshot_jsonl(snapshot, relative)
+                if exists:
+                    rows = candidate
+                    break
+            if rows:
+                loaded[table_name] = rows
+        return loaded
+
+    def _load_source_partition_status(
+        self,
+        snapshot: Path | str,
+        run_id: str,
+    ) -> list[dict[str, Any]]:
+        exists, rows = self._read_snapshot_jsonl(
+            snapshot,
+            "situations/source_status",
+        )
+        if not exists:
+            return []
+        return [
+            _source_partition_status_row(row, run_id)
+            for row in rows
+            if row.get("partition_key")
+        ]
+
+    def _read_snapshot_jsonl(
+        self,
+        snapshot: Path | str,
+        relative: str,
+    ) -> tuple[bool, list[dict[str, Any]]]:
+        path = (
+            f"{str(snapshot).rstrip('/')}/{relative}.jsonl"
+            if self._source_root_is_remote
+            else Path(snapshot) / f"{relative}.jsonl"
+        )
+        if self._source_fs is not None:
+            if not self._source_fs.exists(path):
+                return False, []
+            with self._source_fs.open(path, "rt") as handle:
+                lines = handle.read().splitlines()
+        else:
+            local_path = Path(path)
+            if not local_path.exists():
+                return False, []
+            lines = local_path.read_text().splitlines()
+        rows: list[dict[str, Any]] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            parsed = json.loads(line)
+            if not isinstance(parsed, dict):
+                raise TypeError("Workload product rows must be JSON objects")
+            rows.append(parsed)
+        return True, rows
+
+    def _validate_workload_products(
+        self,
+        datasets: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        from intelligence.vulnerability.workload_inventory import (
+            WORKLOAD_QUERY_FAMILIES,
+            normalize_digest,
+            workload_checkpoint_key,
+        )
+
+        checkpoints = datasets.get("metadata_workload_source_checkpoints", [])
+        observations = datasets.get("silver_workload_observations", [])
+        deployments = datasets.get("silver_workload_deployments", [])
+        if not checkpoints and not observations and not deployments:
+            return
+        checkpoint_ids = {
+            str(row.get("checkpoint_key") or "") for row in checkpoints
+        }
+        workspace_families: dict[tuple[str, str], set[str]] = {}
+        for row in checkpoints:
+            connection_id = str(row.get("connection_id") or "")
+            workspace_id = str(row.get("workspace_id") or "")
+            source_family = str(row.get("source_family") or "")
+            expected_key = workload_checkpoint_key(
+                connection_id,
+                workspace_id,
+                source_family,
+            )
+            if row.get("checkpoint_key") != expected_key:
+                raise ValueError("Workload checkpoint identity is invalid")
+            workspace_families.setdefault(
+                (connection_id, workspace_id),
+                set(),
+            ).add(source_family)
+            status = str(row.get("status") or "")
+            effective = str(row.get("effective_generation") or "")
+            if status == "unavailable" and effective:
+                raise ValueError("Unavailable workload checkpoint has an effective generation")
+            if status in {"complete", "healthy-empty", "stale"} and not effective:
+                raise ValueError("Usable workload checkpoint lacks an effective generation")
+        required_families = set(WORKLOAD_QUERY_FAMILIES)
+        if any(families != required_families for families in workspace_families.values()):
+            raise ValueError("Workload checkpoint family set is incomplete")
+        for row in [*observations, *deployments]:
+            if str(row.get("checkpoint_key") or "") not in checkpoint_ids:
+                raise ValueError("Workload row references an unknown checkpoint")
+        for row in deployments:
+            digest = str(row.get("image_digest") or "")
+            if normalize_digest(digest) != digest:
+                raise ValueError("Workload deployment image digest is invalid")
+            if row.get("unknown_reason"):
+                raise ValueError("Unknown workload evidence cannot be a deployment row")
+            if not row.get("effective_generation"):
+                raise ValueError("Workload deployment lacks an effective generation")
 
     def _extend_with_topology_tables(
         self,
@@ -2018,6 +2189,7 @@ def _table_source_status_rows(
                 "row_count": row_count,
                 "lineage_ref": f"{table_name}-table",
             }
+            content = _with_source_partition_defaults(content)
             resource_id = f"source-status://{table_name}"
             # Reuse the legacy key for the first scoped row so the first
             # corrected refresh replaces the pre-scope system row instead of
@@ -2036,6 +2208,94 @@ def _table_source_status_rows(
                 }
             )
     return rows
+
+
+def _with_source_partition_defaults(
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    result = dict(row)
+    for field in (
+        "partition_key",
+        "connection_id",
+        "attempted_generation",
+        "effective_generation",
+        "attempted_at",
+        "last_success_at",
+        "carried_forward_age_seconds",
+        "represented_count",
+        "expected_count",
+        "completeness",
+        "safe_error_code",
+        "safe_error_summary",
+        "freshness_threshold_seconds",
+        "freshness_source_family",
+    ):
+        result.setdefault(field, None)
+    return result
+
+
+def _source_partition_status_row(
+    row: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any]:
+    """Map an activated source partition without discarding its LKG evidence."""
+
+    requested_scope = row.get("requested_scope")
+    if not isinstance(requested_scope, dict):
+        requested_scope = {}
+    subscriptions = _scope_subscriptions(requested_scope)
+    partition_key = str(row.get("partition_key") or "")
+    timestamp = str(
+        row.get("ingested_at")
+        or row.get("attempted_at")
+        or row.get("observed_at")
+        or "unknown"
+    )
+    content = {
+        "source_family": str(row.get("source_family") or "unknown"),
+        "status": str(row.get("status") or "unknown"),
+        "observed_at": str(row.get("observed_at") or ""),
+        "ingested_at": str(row.get("ingested_at") or ""),
+        "watermark": str(row.get("watermark") or ""),
+        "query_version": str(row.get("query_version") or ""),
+        "requested_scope_json": json.dumps(requested_scope, sort_keys=True),
+        "provider_status": str(row.get("provider_status") or ""),
+        "freshness": str(row.get("freshness") or "unknown"),
+        "availability": str(row.get("availability") or "unknown"),
+        "quality": str(row.get("quality") or "unknown"),
+        "error": str(row.get("error") or ""),
+        "row_count": int(row.get("row_count") or 0),
+        "lineage_ref": partition_key,
+        "partition_key": partition_key,
+        "connection_id": str(row.get("connection_id") or ""),
+        "attempted_generation": str(row.get("attempted_generation") or ""),
+        "effective_generation": str(row.get("effective_generation") or ""),
+        "attempted_at": str(row.get("attempted_at") or ""),
+        "last_success_at": str(row.get("last_success_at") or ""),
+        "carried_forward_age_seconds": int(
+            row.get("carried_forward_age_seconds") or 0
+        ),
+        "represented_count": int(row.get("represented_count") or 0),
+        "expected_count": int(row.get("expected_count") or 0),
+        "completeness": str(row.get("completeness") or "unavailable"),
+        "safe_error_code": str(row.get("safe_error_code") or ""),
+        "safe_error_summary": str(row.get("safe_error_summary") or ""),
+        "freshness_threshold_seconds": int(
+            row.get("freshness_threshold_seconds") or 0
+        ),
+        "freshness_source_family": str(
+            row.get("freshness_source_family") or ""
+        ),
+    }
+    return {
+        "tenant_id": "system",
+        "subscription_id": subscriptions[0] if subscriptions else "system",
+        "resource_id": f"source-status://{partition_key}".casefold(),
+        "timestamp": timestamp,
+        "change_version": _hash_json(content),
+        "ingestion_run_id": run_id,
+        **content,
+    }
 
 
 def _scope_subscriptions(

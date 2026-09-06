@@ -83,6 +83,8 @@ class QueryCatalog:
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, "
                 "location, properties",
                 False,
+                source_family="defender_recommendation",
+                semantic_families=("defender_recommendation", "defender_image"),
             ),
             QuerySpec(
                 "defender_subassessments",
@@ -93,6 +95,8 @@ class QueryCatalog:
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, "
                 "location, properties",
                 False,
+                source_family="defender_subassessment",
+                semantic_families=("defender_subassessment", "defender_image"),
             ),
             QuerySpec(
                 "defender_alerts",
@@ -101,6 +105,7 @@ class QueryCatalog:
                 "| where type =~ 'microsoft.security/locations/alerts' "
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
                 False,
+                source_family="defender_alert",
             ),
             QuerySpec(
                 "defender_attack_paths",
@@ -109,6 +114,7 @@ class QueryCatalog:
                 "| where type =~ 'microsoft.security/attackpaths' "
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
                 False,
+                source_family="defender_attack_path",
             ),
             QuerySpec(
                 "defender_secure_scores",
@@ -117,6 +123,7 @@ class QueryCatalog:
                 "| where type =~ 'microsoft.security/securescores' "
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
                 False,
+                source_family="defender_posture",
             ),
             QuerySpec(
                 "defender_secure_score_controls",
@@ -125,6 +132,7 @@ class QueryCatalog:
                 "| where type =~ 'microsoft.security/securescores/securescorecontrols' "
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
                 False,
+                source_family="defender_posture",
             ),
             QuerySpec(
                 "patch_assessments",
@@ -133,6 +141,7 @@ class QueryCatalog:
                 "| where type !endswith '/softwarepatches' "
                 f"| {projection}",
                 False,
+                source_family="azure_update_manager_assessment",
             ),
             QuerySpec(
                 "patch_assessment_details",
@@ -141,6 +150,7 @@ class QueryCatalog:
                 "| where type endswith '/softwarepatches' "
                 f"| {projection}",
                 False,
+                source_family="azure_update_manager_missing",
             ),
             QuerySpec(
                 "patch_installations",
@@ -149,6 +159,7 @@ class QueryCatalog:
                 "| where type endswith '/softwarepatches' "
                 f"| {projection}",
                 False,
+                source_family="azure_update_manager_installation",
             ),
             QuerySpec(
                 "advisor_recommendations",

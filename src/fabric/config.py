@@ -30,6 +30,78 @@ class PipelineToggleRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class SourceFreshnessThresholds:
+    """Typed freshness policy for the five governed Exposure families."""
+
+    aum: int = 1800
+    defender: int = 21600
+    images: int = 86400
+    workloads: int = 900
+    enrichment: int = 86400
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "aum": self.aum,
+            "defender": self.defender,
+            "images": self.images,
+            "workloads": self.workloads,
+            "enrichment": self.enrichment,
+        }
+
+    def threshold_for(self, source_family: str) -> int:
+        return self.to_dict()[freshness_source_family(source_family)]
+
+
+def freshness_source_family(source_family: str) -> str:
+    """Map detailed provider families onto one governed freshness family."""
+
+    value = str(source_family or "").strip().casefold().replace("-", "_")
+    if value in {"aum", "defender", "images", "workloads", "enrichment"}:
+        return value
+    if value.startswith("defender") and "image" in value:
+        return "images"
+    if value.startswith(("azure_update_manager", "aum_")):
+        return "aum"
+    if any(
+        marker in value
+        for marker in (
+            "workload",
+            "kube_pod",
+            "container_inventory",
+            "container_image_inventory",
+        )
+    ):
+        return "workloads"
+    if "image" in value:
+        return "images"
+    if any(
+        marker in value
+        for marker in ("enrichment", "msrc", "nvd", "epss", "kev")
+    ):
+        return "enrichment"
+    if value.startswith("defender"):
+        return "defender"
+    raise ValueError(f"Unknown Exposure freshness source family {source_family!r}")
+
+
+@dataclass(frozen=True)
+class ExposureRuntimeConfig:
+    """Production Exposure serving policy.
+
+    The feature is default-off so generic/local Fabric users retain the
+    optional SQL accelerator. Once enabled, Fabric SQL is mandatory unless
+    operators deliberately select the bounded Delta rollback mode.
+    """
+
+    enabled: bool = False
+    adapter: str = "fabric_sql"
+    rollback_mode: bool = False
+    freshness_threshold_seconds: SourceFreshnessThresholds = field(
+        default_factory=SourceFreshnessThresholds
+    )
+
+
+@dataclass(frozen=True)
 class PatchPolicyRuntimeConfig:
     name: str
     environment: str
@@ -129,6 +201,7 @@ class FabricRuntimeConfig:
     # default and degrades silently to Delta reads when the endpoint or an
     # ODBC driver is unavailable.
     sql_endpoint_enabled: bool = True
+    exposure: ExposureRuntimeConfig = field(default_factory=ExposureRuntimeConfig)
     ontology: OntologyRuntimeConfig = field(default_factory=OntologyRuntimeConfig)
     topology_pipeline: PipelineToggleRuntimeConfig = field(
         default_factory=PipelineToggleRuntimeConfig
@@ -192,6 +265,30 @@ class FabricRuntimeConfig:
         ontology_pipeline_enabled = ontology_pipeline_payload.get("enabled", False)
         if not isinstance(ontology_pipeline_enabled, bool):
             raise TypeError("fabric.ontology_pipeline.enabled must be boolean")
+        raw_exposure_payload = fabric.get("exposure", {})
+        if raw_exposure_payload is False:
+            exposure_payload = {"enabled": False}
+        elif isinstance(raw_exposure_payload, dict):
+            exposure_payload = raw_exposure_payload
+        else:
+            raise TypeError("fabric.exposure must be a mapping or false")
+        exposure_enabled = exposure_payload.get("enabled", False)
+        if not isinstance(exposure_enabled, bool):
+            raise TypeError("fabric.exposure.enabled must be boolean")
+        exposure_rollback_mode = exposure_payload.get("rollback_mode", False)
+        if not isinstance(exposure_rollback_mode, bool):
+            raise TypeError("fabric.exposure.rollback_mode must be boolean")
+        exposure_adapter = exposure_payload.get("adapter", "fabric_sql")
+        if not isinstance(exposure_adapter, str):
+            raise TypeError("fabric.exposure.adapter must be a string")
+        if exposure_adapter != "fabric_sql":
+            raise ValueError("fabric.exposure.adapter must be fabric_sql")
+        source_freshness = _source_freshness_thresholds(
+            exposure_payload.get("freshness_threshold_seconds", {})
+        )
+        sql_endpoint_enabled = fabric.get("sql_endpoint_enabled", True)
+        if not isinstance(sql_endpoint_enabled, bool):
+            raise TypeError("fabric.sql_endpoint_enabled must be boolean")
         raw_patch_payload = fabric.get("patch_intelligence", {})
         if raw_patch_payload is False:
             patch_payload = {"enabled": False}
@@ -296,7 +393,13 @@ class FabricRuntimeConfig:
             registration_attempts=int(fabric.get("registration_attempts") or 20),
             write_workers=int(fabric.get("write_workers") or 4),
             table_schema=str(fabric.get("table_schema") or ""),
-            sql_endpoint_enabled=bool(fabric.get("sql_endpoint_enabled", True)),
+            sql_endpoint_enabled=sql_endpoint_enabled,
+            exposure=ExposureRuntimeConfig(
+                enabled=exposure_enabled,
+                adapter=exposure_adapter,
+                rollback_mode=exposure_rollback_mode,
+                freshness_threshold_seconds=source_freshness,
+            ),
             ontology=OntologyRuntimeConfig(
                 enabled=bool(ontology_payload.get("enabled", True)),
                 ontology_id=str(ontology_payload.get("ontology_id") or ""),
@@ -461,6 +564,15 @@ class FabricRuntimeConfig:
             raise ValueError("fabric.registration_attempts must be positive")
         if self.write_workers < 1:
             raise ValueError("fabric.write_workers must be positive")
+        if (
+            self.exposure.enabled
+            and not self.exposure.rollback_mode
+            and not self.sql_endpoint_enabled
+        ):
+            raise ValueError(
+                "fabric.sql_endpoint_enabled must be true when production "
+                "Exposure serving is enabled outside rollback mode"
+            )
         if self.ontology.enabled and not self.ontology.ontology_name and not self.ontology.ontology_id:
             raise ValueError("Configure fabric.ontology.ontology_name or ontology_id")
         for shortcut in self.shortcuts:
@@ -563,3 +675,29 @@ def _strict_section_int(
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"fabric.{section}.{name} must be an integer")
     return value
+
+
+def _source_freshness_thresholds(value: object) -> SourceFreshnessThresholds:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise TypeError(
+            "fabric.exposure.freshness_threshold_seconds must be a mapping"
+        )
+    defaults = SourceFreshnessThresholds().to_dict()
+    unknown = sorted(set(value) - set(defaults))
+    if unknown:
+        raise ValueError(
+            "fabric.exposure.freshness_threshold_seconds has unknown families: "
+            + ",".join(unknown)
+        )
+    resolved: dict[str, int] = {}
+    for family, default in defaults.items():
+        threshold = value.get(family, default)
+        qualified = f"fabric.exposure.freshness_threshold_seconds.{family}"
+        if isinstance(threshold, bool) or not isinstance(threshold, int):
+            raise TypeError(f"{qualified} must be an integer")
+        if threshold < 1:
+            raise ValueError(f"{qualified} must be positive")
+        resolved[family] = threshold
+    return SourceFreshnessThresholds(**resolved)

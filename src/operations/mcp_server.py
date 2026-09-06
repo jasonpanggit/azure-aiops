@@ -15,10 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from operations.specialist_manifest import (
-    INVENTORY_DATA_HEALTH_ID,
-    load_specialist_manifest,
-)
+from operations.specialist_manifest import load_specialist_manifest
 
 LOGGER = logging.getLogger("aiops.mcp")
 MCP_VERSION = "2025-06-18"
@@ -32,33 +29,9 @@ MAX_CALLS = 100_000  # Coarse per-process circuit breaker, not a per-caller
 # legitimate multi-tool-call agent turn can ever exhaust it.
 MAX_TOOL_NAME = 64
 
-_BASE_REVIEWED_TOOLS = (
-    "network_topology",
-    "hub_dependents",
-    "traffic_flow",
-    "firewall_nsg_gaps",
-    "business_service_context",
-    "application_context",
-    "impact_context",
-    "fabric_iq_relationships",
-    "fabric_iq_topology",
-    "fabric_iq_policy_context",
-    "cve_exposure",
-    "cve_detail",
-    "cve_attack_path",
-    "defender_alerts",
-    "defender_attack_paths",
-    "defender_secure_score",
-    "incidents",
-    "defender_remediation_cases",
-    "remediation_business_decision",
-    "remediation_plans",
-    "remediation_opportunities",
-)
-_TRACER_REVIEWED_TOOLS = load_specialist_manifest().require(
-    INVENTORY_DATA_HEALTH_ID
-).operations_mcp_tools
-REVIEWED_TOOLS = (*_BASE_REVIEWED_TOOLS, *_TRACER_REVIEWED_TOOLS)
+_SPECIALIST_MANIFEST = load_specialist_manifest()
+REVIEWED_TOOLS = _SPECIALIST_MANIFEST.operations_tool_names()
+_LEGACY_REVIEWED_TOOLS = _SPECIALIST_MANIFEST.legacy_operations_mcp_tools
 
 
 class MCPRequest(BaseModel):
@@ -90,6 +63,7 @@ class ToolArguments(BaseModel):
     incident_id: str | None = Field(default=None, min_length=1, max_length=256)
     resource_type: str | None = Field(default=None, min_length=1, max_length=256)
     family: str | None = Field(default=None, min_length=1, max_length=64)
+    query: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 _REQUIRED: dict[str, tuple[str, ...]] = {
@@ -97,18 +71,22 @@ _REQUIRED: dict[str, tuple[str, ...]] = {
     "traffic_flow": ("source", "destination"),
     "business_service_context": ("name",),
     "application_context": ("name",),
+    "risk_context": ("subject",),
     "impact_context": ("subject",),
     "fabric_iq_relationships": ("subject",),
     "fabric_iq_topology": ("subject",),
     "fabric_iq_policy_context": ("subject",),
     "cve_detail": ("cve_id",),
     "cve_attack_path": ("cve_id",),
+    "remediation_business_decision": ("name",),
+    "search": ("query",),
 }
 
 # Optional (non-required) arguments per tool, kept separate from _REQUIRED so
 # a tool can accept a field without forcing the caller to supply it.
 _OPTIONAL: dict[str, tuple[str, ...]] = {
     "cve_exposure": ("business_service",),
+    "defender_remediation_cases": ("business_service",),
     "incidents": ("incident_id",),
     "inventory_resources": ("resource_type", "family"),
 }
@@ -249,7 +227,7 @@ class MCPServer:
             names = (
                 reviewed_tools_for_specialist(specialist_id)
                 if specialist_id
-                else _BASE_REVIEWED_TOOLS
+                else _LEGACY_REVIEWED_TOOLS
             )
             return {
                 "jsonrpc": "2.0",
@@ -281,7 +259,7 @@ class MCPServer:
         if specialist_id:
             if name not in reviewed_tools_for_specialist(specialist_id):
                 return _tool_error("Unknown or unauthorized tool")
-        elif name not in _BASE_REVIEWED_TOOLS:
+        elif name not in _LEGACY_REVIEWED_TOOLS:
             return _tool_error("Unknown or unauthorized tool")
         try:
             args, missing = validate_tool_arguments(

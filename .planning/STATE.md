@@ -10,7 +10,7 @@ progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 99
+  completed_plans: 108
 current_phase_name: Autonomous Ontology Discovery and Fabric Synchronization
 ---
 
@@ -27,6 +27,16 @@ current_phase_name: Autonomous Ontology Discovery and Fabric Synchronization
 
 - **12-01..12-11** COMPLETE — Scope-safe topology projection, private-link/Fabric/Foundry semantics, bounded summary/detail contracts, policy refresh, truthful provenance, accessible graph/drawer/export UX, downstream compatibility, representative scale gates, and final review remediation
 - **03.1-01** COMPLETE — Wave 0 deterministic Exposure fixture, explicit backend/web pending gates, 100k correctness harness, and exhaustive fail-closed Fabric SQL readiness probe
+- **03.1-21** COMPLETE — Approved ontology v2 contract and production scope-first tracer through typed ontology, review-only container remediation, and Copilot parity
+- **03.1-04** COMPLETE — Pinned pyodbc/ODBC Driver 18 runtime, fail-closed Fabric SQL readiness, and managed dual-key cursor rotation
+- **03.1-05** COMPLETE — Frozen paged ARG outcomes, rowless sanitized failures, and shared live/persisted AUM normalization with distinct Defender provenance
+- **03.1-06** COMPLETE — Fixed bounded Container Insights acquisition, exact digest/time workload deployment evidence, and versioned connection/workspace/family LKG checkpoints
+- **03.1-07** COMPLETE — Atomic source-family LKG activation, isolated multi-connection completeness, and exact typed freshness thresholds
+- **03.1-08** COMPLETE — Versioned immutable observations, deterministic family-safe replay, generation-qualified current state, and provider-time-only resumable backfill
+- **03.1-09** COMPLETE — Generation-pinned temporal compatibility findings, provider-only nullable SLA semantics, and projection-owned runtime state with legacy rollback
+- **03.1-10** COMPLETE — Versioned registry/logical-image/digest/CVE evidence, exact workload impact, honest unknown coverage, and fail-closed container target typing
+- **03.1-23** COMPLETE — Durable per-item MSRC/NVD/EPSS/KEV refresh, bounded scheduled/manual trigger, and provider-call-free API reads
+- **03.1-12** COMPLETE — Scoped generation-pinned Gold facts/facets/summaries/evidence, exact pre-activation reconciliation, and retained-pointer rollback
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
 - **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
 - **03.6-03** COMPLETE — Fail-safe `selectedPatchIds: string[] | null` patch-selection model (fixes CR-07 deselect-all-then-widens-to-all bug) and bounded/backoff client polling (`usePollingBackoff`, capped at 40 requests or 600000ms) with independently-testable ceilings
@@ -125,6 +135,17 @@ current_phase_name: Autonomous Ontology Discovery and Fabric Synchronization
 | Phase 03.4 P02 | ~50min | 3 tasks | 4 files |
 | Phase 03.4 P03 | ~35min | 3 tasks | 5 files |
 | Phase 03.1 P01 | 9min | 3 tasks | 10 files |
+| Phase 03.1 P21 | 19min | 3 tasks | 12 files |
+| Phase 03.1 P04 | 3min | 3 tasks | 11 files |
+| Phase 03.1 P05 | 16min | 2 tasks | 12 files |
+| Phase 03.1 P06 | 15 min | 3 tasks | 8 files |
+| Phase 03.1 P07 | 18 min | 3 tasks | 9 files |
+| Phase 03.1 P08 | 17min | 3 tasks | 10 files |
+| Phase 03.1 P09 | 101m | 2 tasks | 6 files |
+| Phase 03.1 P10 | 19min | 3 tasks | 9 files |
+| Phase 03.1 P11 | 1h 57m | 2 tasks | 7 files |
+| Phase 03.1 P23 | 28min | 2 tasks | 14 files |
+| Phase 03.1 P12 | 31min | 2 tasks | 6 files |
 
 ## Decisions
 
@@ -171,11 +192,43 @@ current_phase_name: Autonomous Ontology Discovery and Fabric Synchronization
 - [Phase 03.5]: `requirement_satisfaction()`/`latest_decision_status()` share one internal staleness predicate so the execution gate and the read-side workflow route can never compute a different stale/current answer for the same inputs.
 - [Phase 03.5]: `can_approve`/`can_operate` are computed server-side from RBAC and rendered as informational, non-authoritative signals; the real enforcement stays in the route-level RBAC dependency and the execution-service gate.
 - [Phase 03.5]: `approval_requirements` role names are organizational-policy strings (e.g. "Change Manager") while API-recorded `approver_roles` are RBAC capacity names (`approver`/`admin`); a decision satisfies a requirement row only on literal (casefolded) match — documented as a known limitation for richer organizational-role catalogs pending a future directory-backed role-claim model.
+- [Phase 03.1]: Accepted the version 2 typed-image ontology contract; future identity changes require additive versioning, retained-generation migration/backfill, dual-reader compatibility, relationship regeneration, and active-generation pointer rollback. — The user explicitly selected accept-ontology-contract before the first ontology publication.
+- [Phase 03.1]: Keep pyodbc in a dedicated pinned fabric-sql extra while installing Microsoft ODBC Driver 18 only in the production runtime image. — Local and test installs remain optional while the deployed adapter is reproducible.
+- [Phase 03.1]: Production Exposure fails closed on any Fabric SQL prerequisite; Delta remains available only when Exposure is disabled or explicit rollback mode is selected. — Production cannot silently switch to an unbounded or uncertified adapter.
+- [Phase 03.1]: Cursor key material stays in Key Vault and mode-0600 temporary files; Container Apps receives managed-identity references and non-secret active/previous kids. — Rotation and rollback preserve overlap without placing secret values in source, logs, Terraform, or artifacts.
+- [Phase 03.1]: Use separate frozen AcquisitionSuccess and AcquisitionFailure types so failures have no rows and cannot cross normalization.
+- [Phase 03.1]: Keep QuerySpec provider-table metadata separate from semantic source-family provenance.
+- [Phase 03.1]: Fail legacy ingestion closed on typed acquisition failure until Plan 03.1-07 adds partition LKG carry-forward.
+- [Phase 03.1]: Preserve provider KB and status values while carrying canonical values separately.
+- [Phase 03.1]: Accepted the additive versioned connection/workspace/family checkpoint key and exact immutable digest deployment identity; later identity changes require migration/backfill, dual-reader compatibility, and generation-pointer rollback. — Prevents retained workload evidence from being reinterpreted by code rollback alone.
+- [Phase 03.1]: Persist deployments only for exact Defender-authoritative sha256 and observation-time matches; repository/tag-only, malformed, stale, conflicting, or unavailable evidence remains typed unknown. — Prevents spoofed runtime impact and preserves the Phase 4 evidence gate.
+- [Phase 03.1]: A failed workload source family may carry only an already-proven deployment LKG with its original effective generation; stale component evidence cannot synthesize a new deployment. — Keeps connection/workspace/family failure isolation from manufacturing domain facts.
+- [Phase 03.1]: Key source partitions by normalized connection, semantic family, and authorized scope; activate only after staged row/status validation. — Prevents failed or invalid attempts from false-clearing another partition or changing the active generation.
+- [Phase 03.1]: Treat mixed live connections as partial with explicit represented/expected counts, reserving unavailable for zero usable connections. — Preserves authorized healthy results without overstating tenant completeness.
+- [Phase 03.1]: Use five canonical freshness families with inclusive exact thresholds and explicit applied-policy metadata. — Makes stale decisions deterministic and auditable per source family.
+- [Phase 03.1]: Accepted the v1 immutable Exposure observation/current identity and deterministic provider-time precedence contract; future changes require additive migration/backfill, dual-reader compatibility, and generation-pointer rollback.
+- [Phase 03.1]: Keep AUM and Defender active evidence family-specific, preserve first-ever provider-time detection, and leave unknown historical detection null rather than substituting ingestion or publication time.
+- [Phase 03.1]: Null or non-provider first detection remains indeterminate; publication and ingestion timestamps never substitute for SLA age.
+- [Phase 03.1]: Enabled temporal serving treats generation-pinned gold_exposure_current as the sole active-state authority while retaining explicit legacy rollback.
+- [Phase 03.1]: Phase 03.2-03.6 remediation cache, stores, observed-target reconciliation, and no-planner/no-patching coordinator contracts remain unchanged.
+- [Phase 03.1]: Accepted the additive versioned container contract: registry, logical image, immutable digest, per-CVE observation, and exact workload deployment identities require backfill, dual readers, ontology regeneration, and generation-pointer rollback for future changes.
+- [Phase 03.1]: Treat registry-plus-repository as logical image identity and canonical sha256 as digest identity; tags are mutable aliases only.
+- [Phase 03.1]: Use only exact observed digest deployments for container impact; unavailable evidence remains explicit unknown and never fabricates deployment or service context.
+- [Phase 03.1]: Container findings retain target_kind=container_image and server_patch_eligible=false.
+- [Phase 03.1]: Plan 03.1-11 keeps ontology vocabulary v2 and derives typed identities from scoped durable Fabric keys while retaining exact source rows for reverse mapping.
+- [Phase 03.1]: Container CVE traversal requires exact typed observation-digest-deployment evidence plus complete non-carried-forward checkpoints; unknown evidence is excluded with reason counts.
+- [Phase 03.1]: Failed ontology definition updates restore and verify the prior active definition unless the requested update is already observably active.
+- [Phase 03.1]: Plan 03.1-23: Exposure API joins only worker-owned durable enrichment records; environment CVE routes perform no live enrichment lookup.
+- [Phase 03.1]: Plan 03.1-23: Scheduled enrichment reuses the API image and app managed identity as an additive Container Apps Job, preserving Phase 11 activation and rollback resources.
+- [Phase 03.1]: Plan 03.1-12: Gold fact identity includes connection/scope, target, weakness, source family, state, and generation while scope identity remains generation-independent.
+- [Phase 03.1]: Plan 03.1-12: Secure score is sum(current)/sum(max)*100 over authorized subscription scopes; unknown deployment impact remains excluded from represented counts.
+- [Phase 03.1]: Plan 03.1-12: Only validated Plan 23 durable enrichment enters Gold; malformed items are isolated and no provider calls occur in projection or publication.
+- [Phase 03.1]: Plan 03.1-12: Exact reconciliation gates a CAS-readable generation pointer; retained generation rows support pointer-only rollback.
 
 ## Session
 
-**Last session:** 2026-09-04T13:30:00Z<br>
-**Stopped at:** Completed Phase 03.5 (03.5-01..03.5-07) — unified remediation approval governance<br>
+**Last session:** 2026-09-06T08:21:49.132Z
+**Stopped at:** Completed 03.1-12-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context
@@ -194,5 +247,4 @@ current_phase_name: Autonomous Ontology Discovery and Fabric Synchronization
 
 ### Blockers
 
-- Phase 03.1 Plan 02 requires explicit human verification of pyodbc provenance before any package or image change; blocking-human gate cannot be auto-approved.
-- Phase 03.1 Plan 21 requires explicit approval of the permanent versioned typed-image ontology contract before first ontology publication; one-way decision gate cannot be auto-selected while the user is unavailable.
+None

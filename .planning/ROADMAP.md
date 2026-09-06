@@ -105,24 +105,24 @@ Plans:
 **Goal:** Make Exposure authoritative, failure-tolerant, temporally correct, ontology-complete for container images, and operable at Defender-scale volumes before Phase 4 pilot validation.
 **Requirements:** PILOT-01, PILOT-02, PILOT-03, PILOT-04 (reliability prerequisites; final pilot completion remains downstream)
 **Depends on:** Phase 3
-**Plans:** 2/25 plans executed
+**Plans:** 14/25 plans executed
 
 Plans:
 
 - [x] 03.1-01-PLAN.md — Create Wave 0 Exposure fixtures, test scaffolds, benchmark, and Fabric SQL readiness probe
-- [ ] 03.1-02-PLAN.md — Human-verify the flagged pyodbc package before any install
+- [x] 03.1-02-PLAN.md — Human-verify the flagged pyodbc package before any install
 - [x] 03.1-03-PLAN.md — Prove the governed tracer through persistence, API, vulnerabilityApi, and a real Exposure section
-- [ ] 03.1-21-PLAN.md — Gate permanent typed-image ontology identities, then complete the production tracer through ontology, remediation review handoff, and Copilot parity
-- [ ] 03.1-04-PLAN.md — Productionize Fabric SQL/ODBC and managed Key Vault cursor-key rotation
-- [ ] 03.1-05-PLAN.md — Normalize typed AUM/Defender acquisition outcomes without failure rows
-- [ ] 03.1-06-PLAN.md — Acquire and persist exact Container Insights workload-to-digest evidence
-- [ ] 03.1-07-PLAN.md — Publish source checkpoints/LKG and per-family freshness/completeness
-- [ ] 03.1-08-PLAN.md — Persist immutable observations and replay deterministic current state
-- [ ] 03.1-09-PLAN.md — Serve temporal state with honest first-detection and SLA semantics
-- [ ] 03.1-10-PLAN.md — Persist granular image/digest/deployment evidence
-- [ ] 03.1-11-PLAN.md — Expand the approved typed-image ontology with exact round-trip and traversal integrity
-- [ ] 03.1-23-PLAN.md — Refresh MSRC/NVD/EPSS/KEV asynchronously with durable per-item status and provider-free API reads
-- [ ] 03.1-12-PLAN.md — Materialize and publish generation-pinned Gold
+- [x] 03.1-21-PLAN.md — Gate permanent typed-image ontology identities, then complete the production tracer through ontology, remediation review handoff, and Copilot parity
+- [x] 03.1-04-PLAN.md — Productionize Fabric SQL/ODBC and managed Key Vault cursor-key rotation
+- [x] 03.1-05-PLAN.md — Normalize typed AUM/Defender acquisition outcomes without failure rows
+- [x] 03.1-06-PLAN.md — Acquire and persist exact Container Insights workload-to-digest evidence
+- [x] 03.1-07-PLAN.md — Publish source checkpoints/LKG and per-family freshness/completeness
+- [x] 03.1-08-PLAN.md — Persist immutable observations and replay deterministic current state
+- [x] 03.1-09-PLAN.md — Serve temporal state with honest first-detection and SLA semantics
+- [x] 03.1-10-PLAN.md — Persist granular image/digest/deployment evidence
+- [x] 03.1-11-PLAN.md — Expand the approved typed-image ontology with exact round-trip and traversal integrity
+- [x] 03.1-23-PLAN.md — Refresh MSRC/NVD/EPSS/KEV asynchronously with durable per-item status and provider-free API reads
+- [x] 03.1-12-PLAN.md — Materialize and publish generation-pinned Gold
 - [ ] 03.1-13-PLAN.md — Enforce scope-first Fabric SQL queries and managed signed cursors
 - [ ] 03.1-14-PLAN.md — Consolidate scoped consumers and enforce handoff-only container remediation
 - [ ] 03.1-15-PLAN.md — Build cursor-aware web query, same-scope LKG, and independent-section contracts

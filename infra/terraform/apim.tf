@@ -24,10 +24,11 @@ locals {
   # above -- see azure_mcp_server.tf.
   azure_mcp_backend_url = "https://${azurerm_container_app.azure_mcp.ingress[0].fqdn}"
   azure_mcp_policy_vars = {
-    tenant_id   = var.tenant_id
-    audience    = local.apim_audience
-    audience_id = local.apim_audience_id
-    backend_url = local.azure_mcp_backend_url
+    tenant_id         = var.tenant_id
+    audience          = local.apim_audience
+    audience_id       = local.apim_audience_id
+    backend_url       = local.azure_mcp_backend_url
+    gateway_assertion = local.gateway_assertion
   }
 }
 

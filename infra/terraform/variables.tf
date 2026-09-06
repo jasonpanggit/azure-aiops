@@ -242,6 +242,32 @@ variable "nvd_api_key" {
   sensitive   = true
 }
 
+variable "exposure_enrichment_schedule" {
+  description = "Five-field UTC cron schedule for the durable Exposure enrichment Container Apps Job."
+  type        = string
+  default     = "0 */6 * * *"
+
+  validation {
+    condition     = length(split(" ", trimspace(var.exposure_enrichment_schedule))) == 5
+    error_message = "exposure_enrichment_schedule must be a five-field cron expression."
+  }
+}
+
+variable "exposure_enrichment_max_items" {
+  description = "Maximum durable enrichment items attempted by one scheduled job execution."
+  type        = number
+  default     = 100
+
+  validation {
+    condition = (
+      var.exposure_enrichment_max_items >= 1
+      && var.exposure_enrichment_max_items <= 1000
+      && floor(var.exposure_enrichment_max_items) == var.exposure_enrichment_max_items
+    )
+    error_message = "exposure_enrichment_max_items must be an integer from 1 through 1000."
+  }
+}
+
 variable "refresh_trigger_secret" {
   description = <<-EOT
     Shared secret checked against the x-aiops-trigger-secret header on
@@ -376,8 +402,59 @@ variable "foundry_agent_name" {
   default     = "operations-copilot"
 }
 
+variable "foundry_agent_name_prefix" {
+  description = <<-EOT
+    Prefix applied to every manifest-derived Foundry specialist agent name.
+
+    Deployed agent names are projected from the committed specialist manifest
+    (src/operations/specialists.v1.json) as
+    "<prefix><manifest foundry.name><suffix>". The defaults reproduce the
+    eight already-deployed names exactly (manifest `network` ->
+    `aiops-network-agent`), so adopting the manifest adds the four new
+    specialists instead of orphaning the existing eight.
+  EOT
+  type        = string
+  default     = "aiops-"
+}
+
+variable "foundry_agent_name_suffix" {
+  description = "Suffix applied to every manifest-derived Foundry specialist agent name."
+  type        = string
+  default     = "-agent"
+}
+
+variable "foundry_specialist_release" {
+  description = <<-EOT
+    Immutable release stamp for the manifest-derived specialist version set.
+
+    The deployed version of each specialist is
+    "<release>.<manifest foundry.version>". Foundry agent versions are
+    additive and immutable, so a contract change must publish a new version
+    string rather than redefine a published one. Pin this back to a prior
+    release (e.g. "2026.08") to re-select the previously published version
+    set for rollback without editing the manifest.
+  EOT
+  type        = string
+  default     = "2026.09"
+
+  validation {
+    condition     = can(regex("^[0-9A-Za-z][0-9A-Za-z.-]*$", var.foundry_specialist_release))
+    error_message = "foundry_specialist_release must be an alphanumeric/dot/hyphen release stamp."
+  }
+}
+
 variable "foundry_specialists" {
-  description = "Independently named/versioned Foundry prompt specialists. Phase 09-09 expansion: all 8 agents deployed."
+  description = <<-EOT
+    DEPRECATED compatibility input: the pre-manifest eight named/versioned
+    Foundry prompt specialists.
+
+    The committed specialist manifest is now the primary source for agent
+    names, versions, prompts, and grants (see local.foundry_specialist_deployment
+    in foundry.tf). This variable is retained for one migration window so
+    existing tfvars keep planning and so the previously deployed name/version
+    pairs stay visible to the running app (FOUNDRY_SPECIALISTS_LEGACY_JSON)
+    as a rollback target. It no longer drives the deployed agent definitions.
+  EOT
   type = map(object({
     name    = string
     version = string
@@ -392,6 +469,82 @@ variable "foundry_specialists" {
     remediation       = { name = "aiops-remediation-agent", version = "2026.08.1" }
     executive_summary = { name = "aiops-executive-summary-agent", version = "2026.08.1" }
   }
+}
+
+variable "foundry_specialist_promotion_artifact" {
+  description = <<-EOT
+    Path to the reviewed, persisted validated-promotion artifact that decides
+    which specialist versions the running revision activates.
+
+    Terraform cannot consume apply-time local-exec output during the same
+    plan, so promotion is a two-stage boundary:
+
+      Stage 1 (apply N)   create-foundry-agent.sh publishes new immutable
+                          agent versions, captures the ACTUAL immutable
+                          provider version ID returned for each one, runs the
+                          live parity gate against those exact IDs, and -- only
+                          if the gate passes -- writes this artifact with
+                          status "validated", the manifest digest it was
+                          validated against, and the previously promoted
+                          mapping as `rollback_target`.
+      Stage 2 (apply N+1) Terraform reads this artifact at PLAN time and, if
+                          terraform_data.foundry_specialist_promotion_gate's
+                          preconditions hold, activates exactly that mapping on
+                          the Container Apps revision.
+
+    Because the artifact is read at plan time, a candidate version created by
+    the current apply can never activate in that same unvalidated step.
+
+    Leave empty (the default) to keep the deterministic legacy eight-agent
+    migration mapping active without sending synthetic release labels as
+    provider IDs. Select active or rollback explicitly only after supplying a
+    matching validated artifact. The file is a deployment input, not
+    repository state -- keep it outside the build context and reviewed
+    alongside the manifest it pins.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "foundry_specialist_activation_target" {
+  description = "Specialist provider-ID mapping to activate: legacy, active, or rollback."
+  type        = string
+  default     = "legacy"
+
+  validation {
+    condition     = contains(["legacy", "active", "rollback"], lower(var.foundry_specialist_activation_target))
+    error_message = "foundry_specialist_activation_target must be legacy, active, or rollback."
+  }
+}
+
+variable "enable_foundry_specialist_candidate_publish" {
+  description = "Explicit stage-B switch for additive specialist candidate publication after the version-pinning runtime is verified."
+  type        = bool
+  default     = false
+}
+
+variable "foundry_version_pinning_runtime_verified" {
+  description = "Reviewed assertion that the deployed API runtime pins outbound Foundry requests to configured provider version IDs."
+  type        = bool
+  default     = false
+}
+
+variable "foundry_specialist_rollback_rotation" {
+  description = "Optional operator-chosen rotation epoch. A new non-empty value advances the immutable rollback target once during the next successful promotion; reusing the value leaves it stable."
+  type        = string
+  default     = ""
+}
+
+variable "foundry_model_deployment_name_override" {
+  description = <<-EOT
+    Optional explicit Azure model deployment name handed to the live parity
+    gate so it can verify the deployed agents actually point at the model
+    DEPLOYMENT (var.foundry_model_name), which is deliberately distinct from
+    the manifest's declared contract model (`foundry.model`). Empty means the
+    chat deployment's own name is used.
+  EOT
+  type        = string
+  default     = ""
 }
 
 variable "agent_orchestration_mode" {

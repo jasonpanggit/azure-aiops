@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from operations.specialist_manifest import load_specialist_manifest
 from operations.tools import TOOL_REGISTRY
 
 _FOUNDRY_TF = Path(__file__).resolve().parents[1] / "infra" / "terraform" / "foundry.tf"
@@ -31,6 +32,20 @@ _ROW = re.compile(
     r'^\s*(\S+)\s*=\s*\{\s*server\s*=\s*"([^"]+)"',
     re.MULTILINE,
 )
+
+
+def _manifest_grants() -> dict[str, tuple[str, ...]]:
+    """Return each specialist's combined reviewed grants from the manifest.
+
+    Terraform no longer restates the per-specialist tool lists -- it projects
+    them from ``src/operations/specialists.v1.json`` -- so the manifest is now
+    the only place an assignment exists.
+    """
+    manifest = load_specialist_manifest()
+    return {
+        specialist.id: (*specialist.operations_mcp_tools, *specialist.azure_mcp_tools)
+        for specialist in manifest.specialists
+    }
 
 
 def _registry_rows() -> dict[str, str]:
@@ -69,8 +84,7 @@ def test_every_registry_tool_is_assigned_to_a_specialist() -> None:
     reverse -- a tool defined but never assigned -- is silent: it renders into
     no prompt, so no agent can ever call it.
     """
-    text = _FOUNDRY_TF.read_text(encoding="utf-8")
-    assigned = set(re.findall(r'^\s*"([a-z0-9_\-]+)",\s*$', text, re.MULTILINE))
+    assigned = {tool for grants in _manifest_grants().values() for tool in grants}
     unassigned = sorted(set(_registry_rows()) - assigned)
     assert not unassigned, (
         f"Defined in foundry_tool_registry but assigned to no specialist: {unassigned}. "
@@ -96,22 +110,22 @@ def test_traffic_flow_is_not_described_as_observed_traffic() -> None:
 
 def test_new_defender_tools_are_advertised_and_assigned() -> None:
     rows = _registry_rows()
+    grants = _manifest_grants()
     for name in ("defender_alerts", "defender_attack_paths", "defender_secure_score"):
         assert rows.get(name) == "operations-mcp"
-    text = _FOUNDRY_TF.read_text(encoding="utf-8")
-    remediation_block = text[text.index("remediation = concat(["):text.index("executive_summary =", text.index("remediation = concat(["))]
-    vulnerability_block = text[text.index("vulnerability = concat(["):text.index("patch =", text.index("vulnerability = concat(["))]
-    for block in (remediation_block, vulnerability_block):
-        for name in ("defender_alerts", "defender_attack_paths", "defender_secure_score"):
-            assert f'"{name}"' in block
+        assert name in grants["remediation"]
+        assert name in grants["vulnerability"]
 
 
 
 def test_remediation_decision_tools_are_advertised_and_only_remediation_assigned() -> None:
     rows = _registry_rows()
+    grants = _manifest_grants()
     for name in ("defender_remediation_cases", "remediation_business_decision"):
         assert rows.get(name) == "operations-mcp"
-    text = _FOUNDRY_TF.read_text(encoding="utf-8")
-    remediation_block = text[text.index("remediation = concat(["):text.index("executive_summary =", text.index("remediation = concat(["))]
-    assert '"defender_remediation_cases"' in remediation_block
-    assert '"remediation_business_decision"' in remediation_block
+        assert name in grants["remediation"]
+        assert [
+            specialist_id
+            for specialist_id, tools in grants.items()
+            if name in tools
+        ] == ["remediation"]

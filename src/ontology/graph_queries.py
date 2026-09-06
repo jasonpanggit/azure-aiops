@@ -94,6 +94,13 @@ _BOUNDARY_TYPES = {
     "PublicIPAddress",
 }
 
+_SERVER_ENTITY_TYPES = {"Resource", "VirtualMachine", "ArcServer"}
+_EXACT_IMAGE_PATH = (
+    ("VulnerabilityObservation", "identifies", "CVE"),
+    ("VulnerabilityObservation", "affects", "ImageDigest"),
+    ("ImageDigest", "deployedAs", "WorkloadDeployment"),
+)
+
 
 class OntologyQueryService:
     """Read-only deterministic traversals over Fabric-backed ontology projections."""
@@ -190,6 +197,17 @@ class OntologyQueryService:
         self._traversal_truncated = False
         normalized = " ".join(question.strip().rstrip(".?!").casefold().split())
         roots = self._find(entity or _extract_subject(question))
+        if "cve" in normalized and "workload" in normalized:
+            impact = self.image_vulnerability_impact(
+                entity or _extract_cve(question)
+            )
+            return {
+                "question": question,
+                "count": impact["total_count"],
+                "returned": impact["represented_count"],
+                "truncated": False,
+                **impact,
+            }
         if "missing ownership" in normalized or "without owners" in normalized:
             items = self._missing_ownership()
         elif "orphan infrastructure" in normalized:
@@ -236,6 +254,203 @@ class OntologyQueryService:
             "truncated": self._traversal_truncated or len(returned) < len(items),
             "items": returned,
         }
+
+    def image_vulnerability_impact(self, cve_id: str) -> dict[str, Any]:
+        """Return only exact, complete CVE-to-workload evidence paths.
+
+        Mutable image aliases and generic graph reachability are intentionally
+        not consulted. A workload is represented only by the approved typed
+        path and only when its deployment edge and source checkpoints are
+        complete. Missing, stale, or partial checkpoint evidence contributes
+        explicit exclusion metadata instead of a guessed deployment.
+        """
+
+        if not isinstance(cve_id, str) or not cve_id.strip():
+            raise ValueError("CVE id must be a non-empty string")
+        normalized_cve = cve_id.strip().upper()
+        cve_nodes = {
+            entity_id
+            for entity_id, row in self.entities.items()
+            if row.get("entity_type") == "CVE"
+            and (
+                str(row.get("name") or "").strip().upper() == normalized_cve
+                or str(_payload_mapping(row).get("cve_id") or "")
+                .strip()
+                .upper()
+                == normalized_cve
+            )
+        }
+        observation_edges = {
+            edge["subject_id"]: edge
+            for cve_node in cve_nodes
+            for edge in self.incoming[cve_node]
+            if _typed_edge(edge, _EXACT_IMAGE_PATH[0])
+        }
+        excluded_reasons: defaultdict[str, int] = defaultdict(int)
+        digest_observations: dict[str, list[str]] = defaultdict(list)
+        for observation_id in sorted(observation_edges):
+            observation = self.entities.get(observation_id)
+            if observation is None or not _exact_observation_evidence(
+                observation,
+                observation_edges[observation_id],
+                normalized_cve,
+            ):
+                excluded_reasons["invalid_exact_evidence"] += 1
+                continue
+            exact_digest_found = False
+            for edge in self.outgoing[observation_id]:
+                if not _typed_edge(edge, _EXACT_IMAGE_PATH[1]):
+                    continue
+                digest = self.entities.get(edge["object_id"])
+                if digest is None or not _exact_observation_digest_edge(
+                    observation,
+                    digest,
+                    edge,
+                ):
+                    continue
+                exact_digest_found = True
+                digest_observations[edge["object_id"]].append(observation_id)
+            if not exact_digest_found:
+                excluded_reasons["invalid_exact_evidence"] += 1
+
+        items_by_deployment: dict[str, dict[str, Any]] = {}
+        for digest_id in sorted(digest_observations):
+            digest = self.entities.get(digest_id)
+            if digest is None or digest.get("entity_type") != "ImageDigest":
+                continue
+            digest_payload = _payload_mapping(digest)
+            coverage = _coverage_for_digest(digest_payload)
+            coverage_complete = bool(coverage) and all(
+                str(row.get("completeness") or row.get("status") or "")
+                .casefold()
+                in {"complete", "healthy-empty"}
+                for row in coverage
+            )
+            unknown_counts = _coverage_unknown_counts(coverage)
+            deployment_edges = [
+                edge
+                for edge in self.outgoing[digest_id]
+                if _typed_edge(edge, _EXACT_IMAGE_PATH[2])
+            ]
+            represented_for_digest = 0
+            for edge in deployment_edges:
+                deployment = self.entities.get(edge["object_id"])
+                if deployment is None:
+                    continue
+                deployment_payload = _payload_mapping(deployment)
+                edge_evidence = _payload_mapping(edge)
+                fabric_row = deployment_payload.get("fabric_row")
+                exact = _exact_deployment_edge(
+                    digest_id=digest_id,
+                    digest_payload=digest_payload,
+                    deployment=deployment,
+                    deployment_payload=deployment_payload,
+                    edge_evidence=edge_evidence,
+                    coverage=coverage,
+                )
+                if not exact or not isinstance(fabric_row, Mapping):
+                    excluded_reasons["invalid_exact_evidence"] += 1
+                    continue
+                if not coverage_complete:
+                    continue
+                if bool(fabric_row.get("carried_forward")):
+                    excluded_reasons["stale_workload_evidence"] += 1
+                    continue
+                observation = self.entities[
+                    digest_observations[digest_id][0]
+                ]
+                observation_payload = _payload_mapping(observation)
+                observation_row = observation_payload.get("fabric_row")
+                if not isinstance(observation_row, Mapping):
+                    excluded_reasons["invalid_exact_evidence"] += 1
+                    continue
+                deployment_key = str(
+                    deployment_payload.get("fabric_key") or ""
+                )
+                items_by_deployment[deployment_key] = {
+                    "deployment_id": deployment_key,
+                    "image_digest": str(
+                        fabric_row.get("image_digest")
+                        or digest_payload.get("digest")
+                        or ""
+                    ),
+                    "observation_id": str(
+                        observation_payload.get("fabric_key") or ""
+                    ),
+                    "effective_generation": str(
+                        edge_evidence.get("effective_generation") or ""
+                    ),
+                    "event_interval": dict(
+                        edge_evidence.get("event_interval") or {}
+                    ),
+                    "provenance": dict(
+                        edge_evidence.get("provenance") or {}
+                    ),
+                    "path": [
+                        f"{subject}:{predicate}:{obj}"
+                        for subject, predicate, obj in _EXACT_IMAGE_PATH
+                    ],
+                }
+                represented_for_digest += 1
+            if not coverage_complete:
+                if unknown_counts:
+                    for reason, count in unknown_counts.items():
+                        excluded_reasons[reason] += count
+                else:
+                    excluded_reasons["incomplete_workload_evidence"] += max(
+                        1,
+                        len(deployment_edges),
+                    )
+
+        represented_count = len(items_by_deployment)
+        excluded_count = sum(excluded_reasons.values())
+        return {
+            "cve_id": normalized_cve,
+            "represented_count": represented_count,
+            "total_count": represented_count + excluded_count,
+            "excluded_count": excluded_count,
+            "excluded_reasons": dict(sorted(excluded_reasons.items())),
+            "completeness": (
+                "complete" if excluded_count == 0 else "unknown"
+            ),
+            "items": [
+                items_by_deployment[key]
+                for key in sorted(items_by_deployment)
+            ],
+        }
+
+    def server_vulnerability_impact(
+        self,
+        cve_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return server targets for a CVE without admitting image vertices."""
+
+        if not isinstance(cve_id, str) or not cve_id.strip():
+            raise ValueError("CVE id must be a non-empty string")
+        normalized_cve = cve_id.strip().upper()
+        cve_nodes = {
+            entity_id
+            for entity_id, row in self.entities.items()
+            if row.get("entity_type") == "CVE"
+            and str(row.get("name") or "").strip().upper() == normalized_cve
+        }
+        observations = {
+            edge["subject_id"]
+            for cve_node in cve_nodes
+            for edge in self.incoming[cve_node]
+            if edge.get("predicate") == "identifies"
+            and edge.get("subject_type") == "VulnerabilityObservation"
+            and edge.get("object_type") == "CVE"
+        }
+        target_ids = {
+            edge["object_id"]
+            for observation in observations
+            for edge in self.outgoing[observation]
+            if edge.get("predicate") == "affects"
+            and edge.get("subject_type") == "VulnerabilityObservation"
+            and edge.get("object_type") in _SERVER_ENTITY_TYPES
+        }
+        return self._rows(target_ids, types=_SERVER_ENTITY_TYPES)
 
     def _find(self, value: str) -> set[str]:
         needle = value.casefold().strip()
@@ -581,6 +796,192 @@ def _failed(row: dict[str, Any]) -> bool:
     return status in {"failed", "error", "noncompliant", "non-compliant"} or int(
         payload.get("failedPatchCount") or payload.get("failedPatchInstallations") or 0
     ) > 0
+
+
+def _typed_edge(
+    row: Mapping[str, Any],
+    expected: tuple[str, str, str],
+) -> bool:
+    return (
+        str(row.get("subject_type") or ""),
+        str(row.get("predicate") or ""),
+        str(row.get("object_type") or ""),
+    ) == expected
+
+
+def _payload_mapping(row: Mapping[str, Any]) -> dict[str, Any]:
+    value = row.get("payload_json")
+    if isinstance(value, Mapping):
+        return dict(value)
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _coverage_for_digest(
+    digest_payload: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    fabric_row = digest_payload.get("fabric_row")
+    connection_id = (
+        str(fabric_row.get("connection_id") or "")
+        if isinstance(fabric_row, Mapping)
+        else ""
+    )
+    checkpoints = [
+        dict(row)
+        for row in digest_payload.get("coverage_checkpoints") or ()
+        if isinstance(row, Mapping)
+    ]
+    if not connection_id:
+        return checkpoints
+    return [
+        row
+        for row in checkpoints
+        if str(row.get("connection_id") or "") == connection_id
+    ]
+
+
+def _coverage_unknown_counts(
+    checkpoints: Iterable[Mapping[str, Any]],
+) -> dict[str, int]:
+    counts: defaultdict[str, int] = defaultdict(int)
+    for checkpoint in checkpoints:
+        value = checkpoint.get("unknown_reason_counts_json")
+        try:
+            parsed = json.loads(str(value or "{}"))
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, Mapping):
+            for reason, count in parsed.items():
+                if (
+                    isinstance(count, int)
+                    and not isinstance(count, bool)
+                    and count > 0
+                ):
+                    counts[str(reason)] += count
+    return dict(counts)
+
+
+def _exact_observation_evidence(
+    observation: Mapping[str, Any],
+    identifies_edge: Mapping[str, Any],
+    cve_id: str,
+) -> bool:
+    payload = _payload_mapping(observation)
+    fabric_row = payload.get("fabric_row")
+    evidence = _payload_mapping(identifies_edge)
+    if not isinstance(fabric_row, Mapping):
+        return False
+    fabric_key = str(payload.get("fabric_key") or "")
+    return (
+        observation.get("entity_type") == "VulnerabilityObservation"
+        and payload.get("target_kind") == "container_image"
+        and fabric_row.get("target_kind") == "container_image"
+        and str(fabric_row.get("cve_id") or "").strip().upper() == cve_id
+        and str(fabric_row.get("vulnerability_observation_id") or "")
+        == fabric_key
+        and str(evidence.get("evidence_identity") or "") == fabric_key
+    )
+
+
+def _exact_observation_digest_edge(
+    observation: Mapping[str, Any],
+    digest: Mapping[str, Any],
+    edge: Mapping[str, Any],
+) -> bool:
+    observation_payload = _payload_mapping(observation)
+    digest_payload = _payload_mapping(digest)
+    observation_row = observation_payload.get("fabric_row")
+    digest_row = digest_payload.get("fabric_row")
+    evidence = _payload_mapping(edge)
+    if not isinstance(observation_row, Mapping) or not isinstance(
+        digest_row,
+        Mapping,
+    ):
+        return False
+    return (
+        digest.get("entity_type") == "ImageDigest"
+        and digest_payload.get("target_kind") == "container_image"
+        and observation_payload.get("ontology_target_id")
+        == digest.get("resource_id")
+        and observation_row.get("image_digest_id")
+        == digest_row.get("image_digest_id")
+        and str(observation_row.get("image_digest") or "").casefold()
+        == str(digest_row.get("image_digest") or "").casefold()
+        and evidence.get("evidence_identity")
+        == observation_payload.get("fabric_key")
+    )
+
+
+def _exact_deployment_edge(
+    *,
+    digest_id: str,
+    digest_payload: Mapping[str, Any],
+    deployment: Mapping[str, Any],
+    deployment_payload: Mapping[str, Any],
+    edge_evidence: Mapping[str, Any],
+    coverage: Iterable[Mapping[str, Any]],
+) -> bool:
+    fabric_row = deployment_payload.get("fabric_row")
+    digest_row = digest_payload.get("fabric_row")
+    if not isinstance(fabric_row, Mapping) or not isinstance(
+        digest_row,
+        Mapping,
+    ):
+        return False
+    checkpoint = next(
+        (
+            row
+            for row in coverage
+            if row.get("checkpoint_key") == fabric_row.get("checkpoint_key")
+        ),
+        None,
+    )
+    if checkpoint is None:
+        return False
+    try:
+        provenance = json.loads(str(fabric_row.get("provenance_json") or "{}"))
+    except json.JSONDecodeError:
+        return False
+    expected_interval = {
+        "from": str(fabric_row.get("defender_observed_at") or ""),
+        "to": str(fabric_row.get("observed_at") or ""),
+    }
+    return (
+        deployment.get("entity_type") == "WorkloadDeployment"
+        and deployment_payload.get("workload_state") == "observed-exact-digest"
+        and deployment_payload.get("digest_entity_id") == digest_id
+        and str(fabric_row.get("deployment_id") or "")
+        == str(deployment_payload.get("fabric_key") or "")
+        and str(fabric_row.get("image_digest") or "").casefold()
+        == str(digest_row.get("image_digest") or "").casefold()
+        and not fabric_row.get("unknown_reason")
+        and edge_evidence.get("evidence_identity")
+        == deployment_payload.get("fabric_key")
+        and edge_evidence.get("event_interval") == expected_interval
+        and edge_evidence.get("provenance") == provenance
+        and edge_evidence.get("effective_generation")
+        == fabric_row.get("effective_generation")
+        == checkpoint.get("effective_generation")
+        and str(edge_evidence.get("completeness") or "").casefold()
+        == str(
+            checkpoint.get("completeness")
+            or checkpoint.get("status")
+            or ""
+        ).casefold()
+    )
+
+
+def _extract_cve(question: str) -> str:
+    for word in question.strip().rstrip(".?!").split():
+        candidate = word.strip(",:;()[]{}").upper()
+        if candidate.startswith("CVE-"):
+            return candidate
+    return ""
 
 
 def _extract_subject(question: str) -> str:

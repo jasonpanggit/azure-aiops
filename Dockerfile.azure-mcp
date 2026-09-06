@@ -34,6 +34,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends libssl3 ca-cert
 
 WORKDIR /app
 
+# Use the same trusted package-feed proxy as the web build. Direct npmjs.org
+# TLS is blocked by the development environment's network controls.
+COPY web/.npmrc .npmrc
+
 # Pin a version once validated in this environment; bump deliberately rather
 # than tracking @latest so a registry-side release can't silently change the
 # tool surface agents depend on.

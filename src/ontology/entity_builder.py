@@ -95,6 +95,15 @@ PAAS_ENTITY_TYPES = frozenset(
     }
 )
 
+TYPED_IMAGE_ENTITY_TYPES = frozenset(
+    {
+        "LogicalImage",
+        "ImageDigest",
+        "VulnerabilityObservation",
+        "WorkloadDeployment",
+    }
+)
+
 
 def semantic_id(entity_type: str, tenant_id: str, value: str) -> str:
     normalized = " ".join(value.casefold().split())
@@ -107,6 +116,35 @@ def scoped_semantic_id(
 ) -> str:
     """Create a business-context identity isolated to one subscription."""
     return semantic_id(entity_type, tenant_id, f"{subscription_id}:{value}")
+
+
+def typed_image_semantic_id(
+    entity_type: str,
+    tenant_id: str,
+    subscription_id: str,
+    *identity_parts: str,
+) -> str:
+    """Return a v1 stable identity for an approved typed-image concept.
+
+    The entity kind and ordered identity parts are deliberately included in
+    the digest input. A future identity change must introduce a new ontology
+    vocabulary version rather than reinterpret already-published identifiers.
+    """
+    if entity_type not in TYPED_IMAGE_ENTITY_TYPES:
+        raise ValueError(f"Unsupported typed-image ontology entity: {entity_type}")
+    normalized_parts = [
+        " ".join(str(part).strip().casefold().split()) for part in identity_parts
+    ]
+    if not tenant_id.strip() or not subscription_id.strip() or any(
+        not part for part in normalized_parts
+    ):
+        raise ValueError("Typed-image ontology identities require complete scope and keys")
+    return scoped_semantic_id(
+        entity_type,
+        tenant_id,
+        subscription_id,
+        "|".join(("typed-image-v1", *normalized_parts)),
+    )
 
 
 def stable_version(value: Any) -> str:

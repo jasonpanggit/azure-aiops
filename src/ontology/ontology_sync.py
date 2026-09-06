@@ -11,6 +11,12 @@ from .pending_relationships import PendingRelationshipStore
 
 ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *PAAS_ENTITY_TYPES}
 
+# First durable typed-image vocabulary accepted by the Plan 03.1-21 decision
+# gate. Changes to entity/edge identity semantics require a new additive
+# version, retained-generation backfill, dual-reader compatibility, relationship
+# regeneration, and coordinated active-generation pointer rollback.
+TYPED_IMAGE_ONTOLOGY_VERSION = "2"
+
 
 @dataclass(frozen=True)
 class OntologyGraphResult:

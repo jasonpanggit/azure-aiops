@@ -18,15 +18,13 @@ from __future__ import annotations
 import argparse
 import bisect
 import hashlib
-import importlib
 import json
 import math
 import os
-import re
 import sys
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,40 +33,25 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-PRODUCTION_ADAPTER_ID = "fabric_sql"
+from fabric.auth import FabricAuthConfig, build_credential
+from fabric.sql_endpoint import (
+    FABRIC_SQL_ADAPTER_ID,
+    REQUIRED_EXPOSURE_SCHEMA,
+    REQUIRED_ODBC_DRIVER,
+    probe_exposure_readiness,
+)
+
+PRODUCTION_ADAPTER_ID = FABRIC_SQL_ADAPTER_ID
 LOCAL_ADAPTER_ID = "deterministic_memory"
-REQUIRED_DRIVER = "ODBC Driver 18 for SQL Server"
+REQUIRED_DRIVER = REQUIRED_ODBC_DRIVER
 DEFAULT_ROWS = 100_000
 DEFAULT_SEED = 31_001
 DEFAULT_WARMUPS = 5
 DEFAULT_MEASUREMENTS = 20
 DEFAULT_PAGE_SIZE = 50
 SLO_MILLISECONDS = 2_000.0
-_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_]+$")
 
-REQUIRED_GOLD_SCHEMA: dict[str, frozenset[str]] = {
-    "gold_exposure_read_model": frozenset(
-        {
-            "exposure_id",
-            "read_model_generation_id",
-            "tenant_id",
-            "subscription_id",
-            "connection_id",
-            "target_id",
-            "target_kind",
-            "source_family",
-            "priority_score",
-        }
-    ),
-    "gold_exposure_summary": frozenset(
-        {
-            "read_model_generation_id",
-            "tenant_id",
-            "subscription_id",
-            "total_count",
-        }
-    ),
-}
+REQUIRED_GOLD_SCHEMA = REQUIRED_EXPOSURE_SCHEMA
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,14 +84,6 @@ class PageResult:
     rows: tuple[ExposureRow, ...]
     total_count: int
     next_position: tuple[int, str] | None
-
-
-@dataclass(frozen=True, slots=True)
-class ProbeCheck:
-    check_id: str
-    status: str
-    reason_code: str
-    detail: dict[str, Any]
 
 
 def _stable_digest(*parts: object) -> str:
@@ -445,243 +420,23 @@ def _endpoint_metadata(config: dict[str, Any]) -> tuple[dict[str, str], str]:
     return values, source
 
 
-def _check(
-    check_id: str,
-    status: str,
-    reason_code: str,
-    **detail: Any,
-) -> ProbeCheck:
-    return ProbeCheck(
-        check_id=check_id,
-        status=status,
-        reason_code=reason_code,
-        detail=detail,
-    )
-
-
 def probe_production_adapter(config_path: Path) -> dict[str, Any]:
-    """Return a sanitized, exhaustive readiness report for Fabric SQL."""
+    """Return the runtime-owned sanitized readiness result for Fabric SQL."""
     config = _load_yaml(config_path)
     endpoint, endpoint_source = _endpoint_metadata(config)
-    checks: list[ProbeCheck] = []
-    server = endpoint["server"]
-    database = endpoint["database"]
-    schema = endpoint["schema"]
-    endpoint_valid = (
-        bool(server)
-        and bool(database)
-        and bool(schema)
-        and bool(_SAFE_IDENTIFIER.fullmatch(schema))
-    )
-    checks.append(
-        _check(
-            "lakehouse_sql_endpoint_metadata",
-            "ready" if endpoint_valid else "not_ready",
-            "ready" if endpoint_valid else "fabric_sql_endpoint_metadata_missing_or_invalid",
-            configured=endpoint_valid,
-            source=endpoint_source,
-        )
-    )
-
-    pyodbc_module: Any | None = None
     try:
-        pyodbc_module = importlib.import_module("pyodbc")
-    except Exception:  # noqa: BLE001 - no package install or raw error disclosure.
-        pyodbc_module = None
-    checks.append(
-        _check(
-            "pyodbc_import",
-            "ready" if pyodbc_module is not None else "not_ready",
-            "ready" if pyodbc_module is not None else "pyodbc_not_importable",
-            importable=pyodbc_module is not None,
+        fabric = config.get("fabric")
+        fabric = fabric if isinstance(fabric, dict) else {}
+        credential = build_credential(
+            FabricAuthConfig.from_mapping(fabric.get("auth") or {})
         )
-    )
-
-    registered_drivers: list[str] = []
-    if pyodbc_module is not None:
-        try:
-            registered_drivers = [str(item) for item in pyodbc_module.drivers()]
-        except Exception:  # noqa: BLE001 - safe reason code only.
-            registered_drivers = []
-    driver_ready = REQUIRED_DRIVER in registered_drivers
-    checks.append(
-        _check(
-            "microsoft_odbc_driver_18",
-            "ready" if driver_ready else "not_ready",
-            "ready" if driver_ready else "odbc_driver_18_not_registered",
-            registered=driver_ready,
-            registered_driver_count=len(registered_drivers),
-        )
-    )
-
-    fabric = config.get("fabric")
-    fabric = fabric if isinstance(fabric, dict) else {}
-    credential: Any | None = None
-    token_ready = False
-    token_blockers = not endpoint_valid or pyodbc_module is None or not driver_ready
-    if not token_blockers:
-        try:
-            from fabric.auth import FabricAuthConfig, build_credential
-            from fabric.sql_endpoint import SQL_SCOPE
-
-            credential = build_credential(FabricAuthConfig.from_mapping(fabric.get("auth") or {}))
-            token = credential.get_token(SQL_SCOPE)
-            token_ready = bool(getattr(token, "token", ""))
-        except Exception:  # noqa: BLE001 - never expose credential/provider details.
-            credential = None
-            token_ready = False
-    checks.append(
-        _check(
-            "entra_token",
-            "ready" if token_ready else ("blocked" if token_blockers else "not_ready"),
-            (
-                "ready"
-                if token_ready
-                else (
-                    "entra_token_check_blocked_by_local_prerequisite"
-                    if token_blockers
-                    else "entra_token_unavailable"
-                )
-            ),
-            acquired=token_ready,
-        )
-    )
-
-    reader: Any | None = None
-    connectivity_ready = False
-    connectivity_blocked = not (endpoint_valid and pyodbc_module and driver_ready and token_ready)
-    if not connectivity_blocked:
-        try:
-            from fabric.sql_endpoint import FabricSqlReader, SqlEndpoint
-
-            reader = FabricSqlReader(
-                SqlEndpoint(server=server, database=database, schema=schema),
-                credential,
-                driver=REQUIRED_DRIVER,
-            )
-            connectivity_ready = bool(reader.query("SELECT 1 AS probe"))
-        except Exception:  # noqa: BLE001 - sanitized readiness only.
-            reader = None
-            connectivity_ready = False
-    checks.append(
-        _check(
-            "token_connectivity",
-            (
-                "ready"
-                if connectivity_ready
-                else ("blocked" if connectivity_blocked else "not_ready")
-            ),
-            (
-                "ready"
-                if connectivity_ready
-                else (
-                    "fabric_sql_connectivity_blocked_by_local_prerequisite"
-                    if connectivity_blocked
-                    else "fabric_sql_connectivity_failed"
-                )
-            ),
-            connected=connectivity_ready,
-        )
-    )
-
-    schema_ready = False
-    missing_tables: list[str] = []
-    missing_columns: dict[str, list[str]] = {}
-    if connectivity_ready and reader is not None:
-        try:
-            for table, required_columns in REQUIRED_GOLD_SCHEMA.items():
-                if not reader.table_exists(table):
-                    missing_tables.append(table)
-                    continue
-                available = reader.column_names(table)
-                absent = sorted(required_columns - available)
-                if absent:
-                    missing_columns[table] = absent
-            schema_ready = not missing_tables and not missing_columns
-        except Exception:  # noqa: BLE001 - report safe schema reason only.
-            schema_ready = False
-    checks.append(
-        _check(
-            "required_gold_schema",
-            "ready" if schema_ready else ("blocked" if not connectivity_ready else "not_ready"),
-            (
-                "ready"
-                if schema_ready
-                else (
-                    "gold_schema_check_blocked_by_connectivity"
-                    if not connectivity_ready
-                    else "required_gold_schema_missing"
-                )
-            ),
-            missing_tables=missing_tables,
-            missing_columns=missing_columns,
-            required_tables=sorted(REQUIRED_GOLD_SCHEMA),
-            required_columns={
-                table: sorted(columns)
-                for table, columns in sorted(REQUIRED_GOLD_SCHEMA.items())
-            },
-        )
-    )
-
-    bounded_query_ready = False
-    if schema_ready and reader is not None:
-        try:
-            qualified = f"[{schema}].[gold_exposure_read_model]"
-            probe_generation = "__readiness_probe__"
-            probe_subscription = "00000000-0000-0000-0000-000000000000"
-            reader.query(
-                f"SELECT COUNT_BIG(1) AS total_count FROM {qualified} "
-                "WHERE [read_model_generation_id] = ? AND [subscription_id] = ?",
-                (probe_generation, probe_subscription),
-            )
-            reader.query(
-                "SELECT TOP (1) [exposure_id], [priority_score] "
-                f"FROM {qualified} "
-                "WHERE [read_model_generation_id] = ? AND [subscription_id] = ? "
-                "AND ([priority_score] < ? OR "
-                "([priority_score] = ? AND [exposure_id] > ?)) "
-                "ORDER BY [priority_score] DESC, [exposure_id] ASC",
-                (probe_generation, probe_subscription, 0, 0, ""),
-            )
-            bounded_query_ready = True
-        except Exception:  # noqa: BLE001 - report safe capability reason only.
-            bounded_query_ready = False
-    checks.append(
-        _check(
-            "bound_count_and_page_query",
-            "ready" if bounded_query_ready else ("blocked" if not schema_ready else "not_ready"),
-            (
-                "ready"
-                if bounded_query_ready
-                else (
-                    "bound_query_check_blocked_by_schema"
-                    if not schema_ready
-                    else "bound_count_or_page_query_failed"
-                )
-            ),
-            parameters_bound=True,
-            page_bounded=True,
-        )
-    )
-
-    ready = all(item.status == "ready" for item in checks)
-    return {
-        "schema_version": "1.0.0",
-        "probe": "production_exposure_adapter",
-        "selected_production_adapter": PRODUCTION_ADAPTER_ID,
-        "ready": ready,
-        "status": "ready" if ready else "not_ready",
-        "fallback": {
-            "adapter_id": "delta",
-            "selected": False,
-            "production_scale_certified": False,
-        },
-        "checks": [asdict(item) for item in checks],
-        "reason_codes": [
-            item.reason_code for item in checks if item.status != "ready"
-        ],
-        "sanitized": True,
-    }
+    except Exception:  # noqa: BLE001 - readiness emits only stable reason codes.
+        credential = None
+    return probe_exposure_readiness(
+        endpoint,
+        credential,
+        endpoint_source=endpoint_source,
+    ).to_dict()
 
 
 def _emit(report: dict[str, Any], *, as_json: bool) -> None:

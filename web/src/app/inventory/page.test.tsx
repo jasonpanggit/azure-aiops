@@ -27,6 +27,12 @@ vi.mock("@/lib/csv", async (importOriginal) => ({
   downloadCsv,
 }));
 
+const { investigateCanonical } = vi.hoisted(() => ({ investigateCanonical: vi.fn() }));
+vi.mock("@/lib/copilot/page-adapters", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/copilot/page-adapters")>("@/lib/copilot/page-adapters");
+  return { ...actual, investigateCanonical };
+});
+
 import InventoryPage from "./page";
 
 const envelope = <T,>(data: T) => ({
@@ -70,6 +76,25 @@ const collection = {
 
 describe("Inventory OS tracer", () => {
   beforeEach(() => {
+    investigateCanonical.mockResolvedValue({
+      data: {
+        contract_version: "1",
+        status: "partial",
+        policy_status: "fallback",
+        fallback_reason: "planner_unavailable",
+        selected_specialists: ["inventory_data_health"],
+        selected_tools: ["inventory_resources"],
+        tool_results: [],
+        uncertainty: ["visible subset is incomplete"],
+        coverage: { visible_count: 2, total_count: 120, complete: false },
+        citations: [],
+        thread_id: "thr-0123456789abcdef0123456789abcdef",
+        thread_revision: 1,
+        mutation_authorized: false,
+      },
+      evidence: [],
+      warnings: [],
+    });
     downloadCsv.mockClear();
     os.mockResolvedValue(envelope(collection));
     resources.mockResolvedValue({
@@ -313,6 +338,96 @@ describe("Inventory OS tracer", () => {
     expect(osGroup).toHaveBeenCalledWith("Windows Server|2019", {}, 0, 25);
   });
 
+  it("submits the visible filtered inventory through the canonical drawer", async () => {
+    os.mockResolvedValue({
+      ...envelope(collection),
+      pagination: { offset: 0, limit: 20, total: 120, next_offset: 20 },
+    });
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+
+    fireEvent.change(await screen.findByPlaceholderText("Name or version"), {
+      target: { value: "2099" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ask Copilot about inventory" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Review visible inventory health/ }));
+
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalled());
+    const request = investigateCanonical.mock.calls[0][0];
+    expect(request).toMatchObject({
+      contract_version: "1",
+      requested_scope: {},
+      snapshot: {
+        version: "2",
+        page_kind: "inventory",
+        coverage: { visible_count: 1, total_count: 120, complete: false },
+      },
+      hint: {
+        specialist_id: "inventory_data_health",
+        tool: "inventory_resources",
+      },
+    });
+    expect(request.snapshot.evidence).toHaveLength(1);
+    expect(request.snapshot.evidence[0].data).toMatchObject({
+      os_name: "Windows Server",
+      os_version: "2099-preview",
+    });
+  });
+
+  it("does not expose Copilot while inventory for a new scope is unresolved", async () => {
+    investigateCanonical.mockClear();
+    const scopedInventory = new Promise<never>(() => undefined);
+    os
+      .mockResolvedValueOnce(envelope({
+        ...collection,
+        requested_scope: { subscription: ["sub-a", "sub-b"] },
+      }))
+      .mockReturnValueOnce(scopedInventory);
+
+    render(
+      <ScopeProvider initialScope={{ subscription: ["sub-a", "sub-b"] }}>
+        <InventoryPage />
+      </ScopeProvider>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Ask Copilot about inventory" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Subscription"), {
+      target: { value: "sub-b" },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Ask Copilot about inventory" })).not.toBeInTheDocument();
+    });
+    expect(investigateCanonical).not.toHaveBeenCalled();
+  });
+
+  it("uses the server-derived effective scope when RBAC narrows the browser request", async () => {
+    investigateCanonical.mockClear();
+    os.mockResolvedValue({
+      ...envelope({
+        ...collection,
+        requested_scope: { subscription: ["sub-a"] },
+      }),
+      pagination: { offset: 0, limit: 20, total: 2, next_offset: null },
+    });
+
+    render(
+      <ScopeProvider initialScope={{ subscription: ["sub-a", "sub-b"] }}>
+        <InventoryPage />
+      </ScopeProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Ask Copilot about inventory" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Review visible inventory health/ }));
+
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(1));
+    expect(investigateCanonical.mock.calls[0][0].requested_scope).toEqual({
+      subscription: ["sub-a"],
+    });
+    expect(investigateCanonical.mock.calls[0][1]).toEqual({
+      subscription: ["sub-a"],
+    });
+  });
+
   it("renders canonical installed software and exact linked details", async () => {
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
     fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
@@ -436,6 +551,33 @@ describe("Inventory OS tracer", () => {
       0,
       25,
     );
+  });
+
+  it("submits the raw ARM resource type selected by its friendly label", async () => {
+    investigateCanonical.mockClear();
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Azure Inventory" }));
+    const resourceTypeFilter = await screen.findByDisplayValue("All resource types");
+    expect(resourceTypeFilter).toHaveDisplayValue("All resource types");
+    expect(resourceTypeFilter.querySelector("option[value='microsoft.app/containerapps']"))
+      .toHaveTextContent("Container Apps");
+
+    fireEvent.change(resourceTypeFilter, {
+      target: { value: "microsoft.app/containerapps" },
+    });
+    fireEvent.click(await screen.findByRole("button", {
+      name: "Ask Copilot about inventory",
+    }));
+    fireEvent.click(await screen.findByRole("button", {
+      name: /Review visible inventory health/,
+    }));
+
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(1));
+    expect(
+      investigateCanonical.mock.calls[0][0].snapshot.evidence[0]
+        .data.inventory_context.filters.resource_type,
+    ).toBe("microsoft.app/containerapps");
   });
 
   it("renders the drill-down inline beneath the group row it was opened from", async () => {

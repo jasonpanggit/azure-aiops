@@ -32,6 +32,7 @@ from typing import Any
 from api.evidence import classify_freshness
 from api.scope import Scope, scope_attributes
 from intelligence.predictive.predictive_context_builder import PredictiveContextBuilder
+from intelligence.remediation.action_catalog import EXECUTABLE_ACTION_IDS
 from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
 from operations.defender_configuration import (
     DEFENDER_CONFIGURATION_ACTION_IDS,
@@ -91,6 +92,7 @@ class DefenderRemediationCorrelator:
         dependency_analyzer: DependencyAnalyzer,
         resource_lookup: Iterable[Mapping[str, Any]] = (),
         action_catalog: list[Mapping[str, Any]] | None = None,
+        exposure_read_port: Any | None = None,
         max_cases: int = 1000,
         max_citations_per_case: int = 100,
     ) -> None:
@@ -106,6 +108,7 @@ class DefenderRemediationCorrelator:
         self.dependency_analyzer = dependency_analyzer
         self.max_cases = max_cases
         self.max_citations_per_case = max_citations_per_case
+        self.exposure_read_port = exposure_read_port
         self.resources_by_key: dict[str, dict[str, Any]] = {}
         self.resources: list[dict[str, Any]] = []
         for resource in resource_lookup:
@@ -115,6 +118,104 @@ class DefenderRemediationCorrelator:
             if key:
                 self.resources_by_key[key] = row
         self.action_catalog = [dict(action) for action in action_catalog or ()]
+
+    @classmethod
+    def from_exposure_read_port(
+        cls,
+        read_port: Any,
+        *,
+        max_cases: int = 1000,
+    ) -> DefenderRemediationCorrelator:
+        """Build the read-only Exposure handoff consumer.
+
+        This path deliberately has no patch, Defender configuration, image
+        build, workload mutation, or deployment adapter. It can preserve an
+        already-governed server action declaration, but it cannot invent one,
+        and container findings always stop at review metadata or
+        ``no_safe_action``.
+        """
+        return cls(
+            vulnerability_service=None,
+            dependency_analyzer=DependencyAnalyzer(),
+            exposure_read_port=read_port,
+            max_cases=max_cases,
+        )
+
+    def exposure_cases(self, scope: Scope) -> list[dict[str, Any]]:
+        if self.exposure_read_port is None:
+            return []
+        page = self.exposure_read_port.list_exposures(
+            scope,
+            offset=0,
+            limit=self.max_cases,
+        )
+        generation_id = str(page.get("read_model_generation_id") or "")
+        cases: list[dict[str, Any]] = []
+        for finding in page.get("findings") or ():
+            row = dict(finding)
+            target_kind = str(row.get("target_kind") or "").casefold()
+            action_id = str(row.get("governed_action_id") or "").strip()
+            execution_eligible = (
+                target_kind == "server"
+                and row.get("execution_eligible") is True
+                and action_id in EXECUTABLE_ACTION_IDS
+            )
+            if not execution_eligible:
+                action_id = ""
+            exact_workload = (
+                target_kind == "container_image"
+                and str(row.get("workload_state") or "").casefold()
+                == "observed-exact-digest"
+                and bool(str(row.get("application_id") or "").strip())
+                and bool(str(row.get("business_service_id") or "").strip())
+            )
+            if target_kind == "container_image" and exact_workload:
+                outcome = "review_handoff"
+                outcome_reason = (
+                    "Exact observed digest deployment is available for governed "
+                    "platform-team review; no executable container action is registered."
+                )
+            elif execution_eligible:
+                outcome = "governed_action"
+                outcome_reason = ""
+            else:
+                outcome = "no_safe_action"
+                outcome_reason = (
+                    "No existing governed executable action is evidenced for this finding."
+                )
+            cases.append(
+                {
+                    "case_id": f"exposure-case:{row.get('exposure_id') or ''}",
+                    "exposure_id": str(row.get("exposure_id") or ""),
+                    "resource_key": str(row.get("target_id") or ""),
+                    "weakness_key": str(row.get("weakness_id") or ""),
+                    "target_kind": target_kind,
+                    "source_families": list(row.get("source_families") or ()),
+                    "read_model_generation_id": generation_id,
+                    "completeness": str(row.get("completeness") or ""),
+                    "action_id": action_id,
+                    "direct_execution_supported": execution_eligible,
+                    "outcome": outcome,
+                    "outcome_reason": outcome_reason,
+                    "review_handoff": {
+                        "target_kind": target_kind,
+                        "registry_id": str(row.get("registry_id") or ""),
+                        "repository": str(row.get("image_repository") or ""),
+                        "image_digest": (
+                            str(row.get("target_id") or "")
+                            if target_kind == "container_image"
+                            else ""
+                        ),
+                        "workload_state": str(row.get("workload_state") or ""),
+                        "application_id": str(row.get("application_id") or ""),
+                        "business_service_id": str(
+                            row.get("business_service_id") or ""
+                        ),
+                    },
+                    "read_only": True,
+                }
+            )
+        return cases
 
     def cases(self, scope: Scope | None = None) -> list[dict[str, Any]]:
         groups: dict[tuple[str, str], dict[str, Any]] = {}

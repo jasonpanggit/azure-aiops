@@ -25,10 +25,12 @@
     <set-header name="X-Correlation-ID" exists-action="override">
       <value>@(context.RequestId.ToString())</value>
     </set-header>
-    <!-- This server is authorized solely via its own managed identity roles
-         (Reader / Monitoring Reader), not a downstream governed executor, so
-         no gateway-assertion shared secret or principal impersonation header
-         is forwarded here; only Azure AD JWT validation above gates access. -->
+    <!-- The backend is publicly reachable because APIM has no VNet injection.
+         Prove this request traversed APIM before the bridge can use its
+         subscription-scoped managed identity. -->
+    <set-header name="X-AIOps-Gateway-Assertion" exists-action="override">
+      <value>${gateway_assertion}</value>
+    </set-header>
     <set-header name="Authorization" exists-action="delete" />
     <rate-limit-by-key calls="300" renewal-period="60" counter-key="@((string)context.Variables[&quot;aiopsCallerId&quot;])" />
     <quota-by-key calls="10000" renewal-period="86400" counter-key="@((string)context.Variables[&quot;aiopsCallerId&quot;])" />
@@ -41,7 +43,11 @@
       </when>
     </choose>
   </inbound>
-  <backend><base /></backend>
+  <backend>
+    <!-- Do not inherit the global forward-request policy here. This explicit
+         policy is the sole backend send and applies the bridge-aware budget. -->
+    <forward-request timeout="35" />
+  </backend>
   <outbound><base /></outbound>
   <on-error><base /></on-error>
 </policies>

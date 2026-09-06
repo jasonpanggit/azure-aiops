@@ -32,6 +32,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from operations.specialist_manifest import load_specialist_manifest
+
 _LOGGER = logging.getLogger(__name__)
 
 ENV_PROJECT_ENDPOINT = "FOUNDRY_PROJECT_ENDPOINT"
@@ -45,19 +47,19 @@ ENV_CIRCUIT_RESET_SECONDS = "FOUNDRY_CIRCUIT_BREAKER_RESET_SECONDS"
 # The Foundry "projects (new)" data plane is versioned with the literal string
 # `v1`, not a date. See the Microsoft quickstart sample for prompt agents.
 DEFAULT_API_VERSION = "v1"
-SPECIALIST_IDS = (
-    "network",
-    "vulnerability",
-    "patch",
-    "incident",
-    "change",
-    "governance",
-    "remediation",
-    "executive_summary",
-)
+_SPECIALIST_MANIFEST = load_specialist_manifest()
+SPECIALIST_IDS = _SPECIALIST_MANIFEST.specialist_ids
 DEFAULT_TIMEOUT_SECONDS = 60.0
 SPECIALIST_CONTRACT_VERSION = "network-finding.v1"
 _MUTATION_WORDS = ("delete", "create", "update", "modify", "execute", "apply", "remediate")
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _version_pinning_required() -> bool:
+    return (
+        os.environ.get("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "").strip().casefold()
+        in _TRUE_ENV_VALUES
+    )
 
 # Entra scope for the Foundry data plane. Distinct from the ARM scope: an ARM
 # token is rejected by the agents endpoint.
@@ -176,48 +178,12 @@ class AgentAnswer:
 
 
 def _agent_contract(agent_id: str) -> dict[str, Any]:
-    """Return validation contract for each specialist agent.
-    
-    Base required fields are common to all agents:
-    finding_id, resource_ids, evidence_refs, confidence, uncertainty, freshness, actionable, next_check, summary
-    
-    Agent-specific required fields vary by domain.
-    """
-    contracts = {
-        "network": {
-            "required": {"finding_id", "resource_ids", "check_id", "policy_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
-            "domain_fields": {"topology_gaps", "firewall_rules", "traffic_paths", "blast_radius"},
-        },
-        "vulnerability": {
-            "required": {"finding_id", "resource_ids", "cve_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
-            "domain_fields": {"affected_services", "exploitability_score", "reachability", "remediation_impact"},
-        },
-        "patch": {
-            "required": {"finding_id", "resource_ids", "kb_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
-            "domain_fields": {"patch_priority", "validation_steps", "rollback_plan", "sla_impact"},
-        },
-        "incident": {
-            "required": {"finding_id", "incident_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
-            "domain_fields": {"timeline", "root_causes", "unknowns", "validation_steps"},
-        },
-        "change": {
-            "required": {"finding_id", "resource_ids", "change_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
-            "domain_fields": {"deployment_date", "affected_services", "correlation_confidence", "rollback_available"},
-        },
-        "governance": {
-            "required": {"finding_id", "resource_ids", "owner_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
-            "domain_fields": {"approval_required", "policy_violations", "exceptions", "accountability"},
-        },
-        "remediation": {
-            "required": {"finding_id", "resource_ids", "remediation_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary", "pros", "cons", "urgency_reasoning"},
-            "domain_fields": {"remediation_options", "rollback_plan", "validation_steps", "risk_assessment", "approval_required", "pros", "cons", "urgency_reasoning"},
-        },
-        "executive_summary": {
-            "required": {"finding_id", "evidence_refs", "confidence", "uncertainty", "freshness", "actionable", "next_check", "summary"},
-            "domain_fields": {"business_impact", "priority", "recommended_actions", "affected_domains"},
-        },
-    }
-    return contracts.get(agent_id.casefold(), contracts["network"])
+    """Return the manifest-derived validation contract for one specialist."""
+
+    try:
+        return _SPECIALIST_MANIFEST.output_contracts()[agent_id.casefold()]
+    except KeyError as exc:
+        raise FoundryAgentError(f"unknown specialist {agent_id!r}") from exc
 
 
 def parse_specialist_findings(
@@ -396,6 +362,13 @@ class FoundryPromptAgent:
         agent_name = specialist_name or os.environ.get(ENV_AGENT_NAME, "").strip()
         if not endpoint or not agent_name:
             return None
+        agent_version = (
+            os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
+            if specialist
+            else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
+        )
+        if _version_pinning_required() and not agent_version:
+            return None
         try:
             timeout = float(os.environ.get(ENV_TIMEOUT, "") or DEFAULT_TIMEOUT_SECONDS)
         except ValueError:
@@ -429,11 +402,7 @@ class FoundryPromptAgent:
                 failure_threshold=circuit_threshold, reset_seconds=circuit_reset
             ),
             specialist_id=specialist or "network",
-            agent_version=(
-                os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
-                if specialist
-                else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
-            ),
+            agent_version=agent_version,
         )
 
     def _post_once(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -518,6 +487,8 @@ class FoundryPromptAgent:
             "agent_reference": {"type": "agent_reference", "name": self.agent_name},
             "input": [{"role": "user", "content": prompt}],
         }
+        if self.agent_version:
+            payload["agent_reference"]["version"] = self.agent_version
         if max_output_tokens is not None:
             payload["max_output_tokens"] = max(1, int(max_output_tokens))
         response = self._post("/openai/v1/responses", payload, versioned=False)
@@ -616,6 +587,13 @@ class MicrosoftAgentFrameworkFoundryAgent:
         agent_name = specialist_name or os.environ.get(ENV_AGENT_NAME, "").strip()
         if not endpoint or not agent_name:
             return None
+        agent_version = (
+            os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
+            if specialist
+            else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
+        )
+        if _version_pinning_required() and not agent_version:
+            return None
         try:
             timeout = float(os.environ.get(ENV_TIMEOUT, "") or DEFAULT_TIMEOUT_SECONDS)
         except ValueError:
@@ -623,11 +601,7 @@ class MicrosoftAgentFrameworkFoundryAgent:
         return cls(
             project_endpoint=endpoint,
             agent_name=agent_name,
-            agent_version=(
-                os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
-                if specialist
-                else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
-            ),
+            agent_version=agent_version,
             timeout_seconds=timeout,
             specialist_id=specialist or "operations_copilot",
             agent_factory=agent_factory,
@@ -732,6 +706,35 @@ class MicrosoftAgentFrameworkFoundryAgent:
         )
 
 
+def select_foundry_agent_class(
+    specialist_id: str | None = None,
+    *,
+    prefer_maf: bool,
+    rest_agent_class: type[FoundryPromptAgent] = FoundryPromptAgent,
+    maf_agent_class: type[MicrosoftAgentFrameworkFoundryAgent] = (
+        MicrosoftAgentFrameworkFoundryAgent
+    ),
+) -> type[FoundryPromptAgent | MicrosoftAgentFrameworkFoundryAgent]:
+    """Select a runtime that can enforce the configured immutable version.
+
+    The preview Agent Framework path does not provide a stable wire-level
+    guarantee that the configured provider version is sent on every request.
+    Once Terraform activates an exact provider ID, use the REST client whose
+    outbound ``agent_reference`` includes that ID. Unversioned legacy callers
+    may continue using the preview path while it remains enabled.
+    """
+
+    specialist = (specialist_id or "").strip().casefold()
+    version = (
+        os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
+        if specialist
+        else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
+    )
+    if version:
+        return rest_agent_class
+    return maf_agent_class if prefer_maf else rest_agent_class
+
+
 def _run_awaitable(awaitable: Any) -> Any:
     return asyncio.run(awaitable)
 
@@ -759,8 +762,29 @@ def _build_prompt(
     serialized = json.dumps(context, default=str, ensure_ascii=False)
     if len(serialized) > _MAX_CONTEXT_CHARS:
         serialized = serialized[:_MAX_CONTEXT_CHARS] + "\u2026(truncated)"
+    if specialist_id == "operations_copilot":
+        display_name = "Operations Copilot"
+        purpose = "Coordinate bounded, cited operational analysis."
+        operations_tools = "none (coordinator only)"
+        optional_sources = "foundry"
+    else:
+        specialist = _SPECIALIST_MANIFEST.require(specialist_id)
+        display_name = specialist.display_name
+        purpose = specialist.purpose
+        operations_tools = (
+            ", ".join(specialist.operations_mcp_tools) or "none (aggregation only)"
+        )
+        optional_sources = (
+            ", ".join(specialist.knowledge_policy.optional_sources) or "none"
+        )
     return (
-        f"You are the {specialist_id} specialist. Answer the operator's "
+        f"You are the {display_name} specialist. "
+        f"Purpose: {purpose}\n"
+        f"Governed Operations MCP tools: {operations_tools}.\n"
+        f"Optional enrichment sources: {optional_sources}. When an optional "
+        "source is absent, report it as unavailable and continue with cited "
+        "deterministic evidence; never invent a successful lookup.\n\n"
+        "Answer the operator's "
         "question directly and specifically.\n\n"
         "The operational context below is what the operator currently has on "
         "screen. Treat it as a starting point. When it does not contain the "
@@ -816,20 +840,22 @@ def specialist_catalog() -> list[dict[str, Any]]:
     """Return independent release metadata without claiming unavailable agents exist."""
     endpoint = os.environ.get(ENV_PROJECT_ENDPOINT, "").strip()
     entries: list[dict[str, Any]] = []
-    for specialist in SPECIALIST_IDS:
-        prefix = f"FOUNDRY_{specialist.upper()}_AGENT"
+    for specialist in _SPECIALIST_MANIFEST.specialists:
+        prefix = f"FOUNDRY_{specialist.id.upper()}_AGENT"
         name = os.environ.get(f"{prefix}_NAME", "").strip()
         version = os.environ.get(f"{prefix}_VERSION", "").strip()
-        if not name and specialist == "network":
+        if not name and specialist.id == "network":
             name = os.environ.get(ENV_AGENT_NAME, "").strip()
             version = version or os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
+        configured = bool(endpoint and name and version)
         entries.append(
             {
-                "id": specialist,
-                "name": name,
-                "version": version,
-                "status": "ready" if endpoint and name and version else "unavailable",
-                "configured": bool(endpoint and name and version),
+                "id": specialist.id,
+                "name": name or specialist.foundry.name,
+                "version": version or specialist.foundry.version,
+                "model": specialist.foundry.model,
+                "status": "ready" if configured else "unavailable",
+                "configured": configured,
             }
         )
     return entries

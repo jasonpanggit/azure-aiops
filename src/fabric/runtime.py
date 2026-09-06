@@ -19,7 +19,7 @@ from .config import FabricRuntimeConfig
 from .data_quality import DataQualityValidator
 from .fabric_client import FabricClient
 from .lakehouse_manager import LakehouseManager
-from .sql_endpoint import build_sql_reader
+from .sql_endpoint import build_sql_reader, require_exposure_ready
 from .sync_service import FabricSyncService
 from .workspace_manager import WorkspaceManager
 
@@ -508,29 +508,33 @@ def _remediation_decisions(root: Any) -> list[dict[str, Any]]:
 def _build_lakehouse_sql_reader(
     lakehouse: dict, credential: Any, config: FabricRuntimeConfig
 ):
-    """Build the optional SQL-endpoint read accelerator for this lakehouse.
+    """Build the SQL reader under generic or production Exposure policy.
 
     Fabric returns the SQL analytics endpoint in the lakehouse's
     ``properties.sqlEndpointProperties``. It is provisioned asynchronously,
-    so a freshly created lakehouse may not expose one yet; in that case (and
-    when no ODBC driver is installed) this returns ``None`` and reads fall
-    back to the Delta path.
+    so generic callers and explicit Exposure rollback may receive ``None`` and
+    use Delta. Enabled production Exposure instead requires every SQL
+    prerequisite and raises a sanitized readiness error during startup.
     """
     if not config.sql_endpoint_enabled:
         return None
     properties = (lakehouse.get("properties") or {}).get("sqlEndpointProperties") or {}
     server = str(properties.get("connectionString") or "").strip()
     database = str(properties.get("id") or lakehouse.get("displayName") or "").strip()
-    if not server or not database:
-        return None
-    return build_sql_reader(
+    endpoint = (
         {
             "server": server,
             "database": database,
             "schema": config.table_schema or "dbo",
-        },
-        credential,
+        }
+        if server and database
+        else None
     )
+    if config.exposure.enabled and config.exposure.rollback_mode:
+        return None
+    if config.exposure.enabled and not config.exposure.rollback_mode:
+        return require_exposure_ready(endpoint, credential)
+    return build_sql_reader(endpoint, credential)
 
 
 def _lifecycle_catalog(config: FabricRuntimeConfig) -> tuple[dict[str, Any], ...]:
