@@ -357,4 +357,3 @@ def test_full_cursor_walk_matches_total_without_duplicates_or_omissions() -> Non
     expected = [str(row["exposure_id"]) for row in rows]
     assert seen == expected
     assert len(seen) == len(set(seen)) == EXPECTED_TIED_PRIORITY_ROWS
-

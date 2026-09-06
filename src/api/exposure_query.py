@@ -897,8 +897,9 @@ def _append_filter_predicates(
         if field == "search":
             value = _required_text(item.value, "search filter")
             predicates.append(
-                "(LOWER([target_id]) LIKE ? OR LOWER([weakness_id]) LIKE ? "
-                "OR LOWER([recommendation]) LIKE ?)"
+                "(LOWER([target_id]) LIKE ? ESCAPE '\\' "
+                "OR LOWER([weakness_id]) LIKE ? ESCAPE '\\' "
+                "OR LOWER([recommendation]) LIKE ? ESCAPE '\\')"
             )
             escaped = (
                 value.casefold()

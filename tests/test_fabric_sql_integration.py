@@ -176,6 +176,27 @@ def test_missing_production_reader_fails_closed_without_delta_fallback() -> None
         )
 
 
+def test_search_wildcards_are_bound_and_escaped_as_literal_input() -> None:
+    reader = RecordingReader()
+
+    ExposureQueryService(reader).list_page(
+        _authorization(),
+        generation_id="generation-17",
+        query=ExposureQuery(
+            filters=(ExposureFilter("search", "contains", "CVE_%"),),
+        ),
+    )
+
+    for call in reader.calls:
+        assert "LIKE ? ESCAPE '\\'" in call["sql"]
+        assert "CVE_%" not in call["sql"]
+        assert call["parameters"][-3:] == (
+            "%cve\\_\\%%",
+            "%cve\\_\\%%",
+            "%cve\\_\\%%",
+        )
+
+
 class _BoundedCursor:
     def __init__(self, rows: list[tuple[Any, ...]]) -> None:
         self.rows = rows
