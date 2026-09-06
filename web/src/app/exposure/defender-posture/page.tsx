@@ -386,18 +386,38 @@ function pageCompleteness(
         )
       ? "current"
       : "unknown";
-  const metadata =
-    sections.find(
-      (section) =>
-        section.metadata.expected !== undefined ||
-        section.metadata.represented !== undefined,
-    )?.metadata ?? sections[0].metadata;
+  const metadata = sections
+    .map(connectionCoverage)
+    .find(
+      (coverage) =>
+        coverage.expected !== undefined ||
+        coverage.represented !== undefined,
+    ) ?? sections[0].metadata;
   return {
     state,
     freshness,
     representedConnections: metadata.represented,
     expectedConnections: metadata.expected,
     excludedCount: metadata.excluded,
+  };
+}
+
+function connectionCoverage(
+  section: ExposureSectionResult<unknown>,
+): ExposureSectionResult<unknown>["metadata"] {
+  const data = isRecord(section.data) ? section.data : null;
+  const contract = isRecord(data?.contract) ? data.contract : null;
+  const completeness = isRecord(contract?.completeness)
+    ? contract.completeness
+    : null;
+  return {
+    ...section.metadata,
+    represented:
+      finiteCount(completeness?.represented_connections) ??
+      section.metadata.represented,
+    expected:
+      finiteCount(completeness?.expected_connections) ??
+      section.metadata.expected,
   };
 }
 
@@ -410,6 +430,7 @@ function CommonEvidence<T>({
     section.data?.contract.evidence_refs
       .map((reference) => reference.source_id)
       .filter((value): value is string => Boolean(value)) ?? [];
+  const counts = section.data?.contract.counts;
   return (
     <p className="table-secondary">
       Generation:{" "}
@@ -419,6 +440,15 @@ function CommonEvidence<T>({
       {evidenceIds.length > 0
         ? ` · Evidence: ${evidenceIds.join(", ")}`
         : " · Evidence identifiers unavailable"}
+      {counts
+        ? ` · ${counts.represented.toLocaleString(
+            "en-US",
+          )} represented findings · ${counts.total.toLocaleString(
+            "en-US",
+          )} total findings · ${counts.excluded.toLocaleString(
+            "en-US",
+          )} excluded findings`
+        : ""}
     </p>
   );
 }
@@ -438,6 +468,10 @@ function DefenderSection<T>({
   section: ExposureSectionResult<DefenderSectionData<T>>;
   children: React.ReactNode;
 }) {
+  const presentationState = {
+    ...section,
+    metadata: connectionCoverage(section),
+  };
   return (
     <section id={id} className="card queue-card" aria-labelledby={`${id}-title`}>
       <div className="card-header">
@@ -450,7 +484,7 @@ function DefenderSection<T>({
         <SourceSectionState
           sourceName={sourceName}
           itemLabel={itemLabel}
-          state={section}
+          state={presentationState}
         >
           <CommonEvidence section={section} />
           {children}

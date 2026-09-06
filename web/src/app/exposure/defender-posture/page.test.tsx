@@ -399,6 +399,13 @@ describe("DefenderPosturePage", () => {
     expect(
       screen.getByRole("status", { name: "Defender posture evidence status" }),
     ).toHaveTextContent("Partial operational context");
+    expect(
+      screen.getByRole("status", { name: "Defender posture evidence status" }),
+    ).toHaveTextContent("1 of 2 connections represented");
+    expect(
+      screen.getAllByText(/5 represented findings · 7 total findings · 2 excluded findings/)
+        .length,
+    ).toBeGreaterThan(0);
     expect(screen.getAllByText("Defender West connection unavailable").length).toBeGreaterThan(0);
     expect(screen.getByText(/This is not a full blast radius/)).toBeInTheDocument();
     expect(screen.getByText("Review only. Nothing executes from Exposure.")).toBeInTheDocument();
