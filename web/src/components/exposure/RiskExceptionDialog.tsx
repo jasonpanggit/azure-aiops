@@ -206,10 +206,10 @@ export function RiskExceptionDialog(props: RiskExceptionDialogProps) {
     governance,
     onRefresh,
   } = props;
+  const initialExpiry =
+    props.mode === "record" ? props.record.initialExpiry ?? "" : "";
   const [reason, setReason] = useState("");
-  const [expiry, setExpiry] = useState(
-    props.mode === "record" ? props.record.initialExpiry ?? "" : "",
-  );
+  const [expiry, setExpiry] = useState(initialExpiry);
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -229,7 +229,7 @@ export function RiskExceptionDialog(props: RiskExceptionDialogProps) {
       setFeedback(null);
       setSubmitting(false);
       setReason("");
-      setExpiry(props.mode === "record" ? props.record.initialExpiry ?? "" : "");
+      setExpiry(initialExpiry);
       const initialTarget =
         props.mode === "record" ? reasonRef.current : headingRef.current;
       initialTarget?.focus();
@@ -240,7 +240,7 @@ export function RiskExceptionDialog(props: RiskExceptionDialogProps) {
       queueMicrotask(() => invoker?.focus());
     }
     wasOpenRef.current = open;
-  }, [open, props.mode, returnFocusRef]);
+  }, [initialExpiry, open, props.mode, returnFocusRef]);
 
   useEffect(() => {
     if (feedback?.kind === "error") {
