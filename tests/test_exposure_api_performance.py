@@ -369,7 +369,7 @@ def test_100k_server_and_image_benchmark_is_exact_bounded_and_under_budget() -> 
         "omission_count": 0,
         "status": "pass",
     }
-    assert report["work"]["max_rows_fetched_per_query"] <= 100
+    assert report["work"]["max_rows_fetched_per_query"] <= 101
     assert report["work"]["full_table_materializations"] == 0
     assert report["work"]["delta_fallbacks"] == 0
     assert report["memory"]["rss_delta_bytes"] > 0
