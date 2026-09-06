@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+JOB_TF = ROOT / "infra" / "terraform" / "ontology_discovery_job.tf"
+CONTAINER_APPS_TF = ROOT / "infra" / "terraform" / "container_apps.tf"
+
+
+def _resource(text: str, kind: str, name: str) -> str:
+    marker = f'resource "{kind}" "{name}"'
+    start = text.index(marker)
+    next_resource = text.find('\nresource "', start + len(marker))
+    return text[start:] if next_resource == -1 else text[start:next_resource]
+
+
+def test_ontology_job_is_finite_scheduled_and_uses_the_api_image() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+    job = _resource(terraform, "azurerm_container_app_job", "ontology_discovery")
+
+    assert "schedule_trigger_config" in job
+    assert "cron_expression          = var.ontology_discovery_schedule" in job
+    assert "parallelism              = 1" in job
+    assert "replica_completion_count = 1" in job
+    assert "replica_timeout_in_seconds = 900" in job
+    assert "replica_retry_limit        = 2" in job
+    assert "image  = var.deploy_images ? local.api_image : local.placeholder_image" in job
+    assert '"python"' in job
+    assert '"-m"' in job
+    assert '"ontology_discovery.cli"' in job
+    assert '"run-once"' in job
+
+
+def test_coordinator_identity_is_distinct_and_has_no_publisher_capability() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+    job = _resource(terraform, "azurerm_container_app_job", "ontology_discovery")
+    acr = _resource(
+        terraform,
+        "azurerm_role_assignment",
+        "ontology_coordinator_acr_pull",
+    )
+
+    assert 'resource "azurerm_user_assigned_identity" "ontology_coordinator"' in terraform
+    assert (
+        "identity_ids = [azurerm_user_assigned_identity.ontology_coordinator.id]"
+        in job
+    )
+    assert "identity = azurerm_user_assigned_identity.ontology_coordinator.id" in job
+    assert "azurerm_user_assigned_identity.apps" not in job
+    assert "ontology_publisher" not in job
+    assert "PUBLISHER" not in job
+    assert "stage" not in job.casefold()
+    assert "active_pointer" not in job.casefold()
+    assert 'role_definition_name             = "AcrPull"' in acr
+
+
+def test_api_container_has_no_competing_ontology_schedule() -> None:
+    container_apps = CONTAINER_APPS_TF.read_text(encoding="utf-8")
+
+    assert "ontology_discovery.cli" not in container_apps
+    assert "ontology-discovery" not in container_apps

@@ -1,0 +1,108 @@
+# ---------------------------------------------------------------------------
+# Autonomous ontology discovery coordinator
+#
+# This is a finite, schedule-triggered worker.  It deliberately uses its own
+# managed identity rather than the API identity or the ontology publisher
+# identity, and it owns no authoritative stage or active-pointer role.
+# ---------------------------------------------------------------------------
+
+variable "ontology_discovery_schedule" {
+  description = "Five-field UTC cron expression for the finite ontology discovery coordinator."
+  type        = string
+  default     = "*/15 * * * *"
+
+  validation {
+    condition     = length(split(" ", trimspace(var.ontology_discovery_schedule))) == 5
+    error_message = "ontology_discovery_schedule must be a five-field UTC cron expression."
+  }
+}
+
+resource "azurerm_user_assigned_identity" "ontology_coordinator" {
+  name                = "${local.base}-ontology-coordinator-id"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  tags                = local.tags
+}
+
+resource "azurerm_role_assignment" "ontology_coordinator_acr_pull" {
+  scope                            = azurerm_container_registry.main.id
+  role_definition_name             = "AcrPull"
+  principal_id                     = azurerm_user_assigned_identity.ontology_coordinator.principal_id
+  skip_service_principal_aad_check = true
+}
+
+resource "azurerm_container_app_job" "ontology_discovery" {
+  name                         = "${local.base}-ontology-discovery"
+  resource_group_name          = azurerm_resource_group.main.name
+  location                     = azurerm_resource_group.main.location
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  workload_profile_name        = "Consumption"
+
+  # One bounded pass must terminate before the next ordinary cadence.  The
+  # retry budget is intentionally finite so a poisoned run cannot produce an
+  # unbounded job storm.
+  replica_timeout_in_seconds = 900
+  replica_retry_limit        = 2
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.ontology_coordinator.id]
+  }
+
+  registry {
+    server   = local.registry_server
+    identity = azurerm_user_assigned_identity.ontology_coordinator.id
+  }
+
+  schedule_trigger_config {
+    cron_expression          = var.ontology_discovery_schedule
+    parallelism              = 1
+    replica_completion_count = 1
+  }
+
+  template {
+    container {
+      name   = "ontology-discovery"
+      image  = var.deploy_images ? local.api_image : local.placeholder_image
+      cpu    = var.api_cpu
+      memory = var.api_memory
+
+      command = [
+        "python",
+        "-m",
+        "ontology_discovery.cli",
+      ]
+      args = [
+        "run-once",
+        "--limit",
+        "10",
+      ]
+
+      env {
+        name  = "AIOPS_HOME"
+        value = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops" : "/tmp/aiops"
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_IDENTITY_CLASS"
+        value = "coordinator"
+      }
+
+      env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.ontology_coordinator.client_id
+      }
+
+      env {
+        name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        value = azurerm_application_insights.main.connection_string
+      }
+    }
+  }
+
+  tags = local.tags
+
+  depends_on = [
+    azurerm_role_assignment.ontology_coordinator_acr_pull,
+  ]
+}
