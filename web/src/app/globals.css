@@ -3011,6 +3011,12 @@ body.topology-fullscreen-open {
   padding: 14px;
 }
 
+.topology-drawer-body .callout {
+  flex-wrap: wrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 #policy-assertion-error {
   min-width: 0;
   overflow-wrap: anywhere;
