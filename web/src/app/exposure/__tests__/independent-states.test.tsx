@@ -487,7 +487,34 @@ describe("Exposure independent source states", () => {
       expect(screen.getByText(`${sourceName} row`)).toBeInTheDocument();
     }
   });
-  it.todo(
-    "preserves scoped core truth when CVE or KB enrichment fails [Plan 03.1-25]",
-  );
+  it("preserves scoped core truth when CVE or KB enrichment fails", async () => {
+    function DetailSection({
+      sourceName,
+      fails = false,
+    }: {
+      sourceName: string;
+      fails?: boolean;
+    }) {
+      const section = useExposureSection<Rows>({
+        queryKey: `detail|${sourceName}`,
+        load: () =>
+          fails
+            ? Promise.reject(new Error(`${sourceName} unavailable`))
+            : Promise.resolve(envelope([`${sourceName} row`])),
+      });
+      return <Section sourceName={sourceName} section={section} />;
+    }
+
+    render(
+      <>
+        <DetailSection sourceName="Scoped CVE findings" />
+        <DetailSection sourceName="EPSS enrichment" fails />
+        <DetailSection sourceName="KB metadata" />
+      </>,
+    );
+
+    expect(await screen.findByText("EPSS enrichment is unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Scoped CVE findings row")).toBeInTheDocument();
+    expect(screen.getByText("KB metadata row")).toBeInTheDocument();
+  });
 });
