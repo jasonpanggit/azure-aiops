@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 INVENTORY_DATA_HEALTH_ID = "inventory_data_health"
+ONTOLOGY_CURATOR_ID = "ontology_curator"
 LOCKED_SPECIALIST_IDS = (
     "network",
     "vulnerability",
@@ -26,6 +27,7 @@ LOCKED_SPECIALIST_IDS = (
     "finops",
     "resource_health_observability",
 )
+LOCKED_NON_INTERACTIVE_CONSUMER_IDS = (ONTOLOGY_CURATOR_ID,)
 _DEFAULT_MANIFEST_PATH = Path(__file__).with_name("specialists.v1.json")
 _CREDENTIAL_MARKERS = {
     "access_token",
@@ -48,7 +50,7 @@ _MUTATION_MARKERS = (
     "write",
 )
 _READ_ONLY_EXECUTE_TOOLS = {"arm_execute_query"}
-_LOCKED_POLICY_DIGEST = "38f307f26927ac43919d0a8bd71fee8dc2fcffdae3d49796bb8321ec96edd8bf"
+_LOCKED_POLICY_DIGEST = "a67a7de2d7d017cb985c1838e8a9c85361a5d5262dbac463ebbd2429535c4e30"
 _READ_ONLY_AZURE_MCP_TOOLS = frozenset(
     {
         "advisor_recommendation_list",
@@ -179,6 +181,27 @@ class SpecialistDefinition(ManifestModel):
         return self
 
 
+class NonInteractiveToolConsumer(ManifestModel):
+    """Reviewed tool consumer excluded from interactive specialist projections."""
+
+    id: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]+$")
+    purpose: str = Field(min_length=1, max_length=320)
+    operations_mcp_tools: tuple[str, ...] = Field(min_length=1, max_length=16)
+    read_only: Literal[True]
+
+    @model_validator(mode="after")
+    def validate_unique_read_only_contract(self) -> NonInteractiveToolConsumer:
+        if len(self.operations_mcp_tools) != len(set(self.operations_mcp_tools)):
+            raise ValueError(
+                "non-interactive Operations MCP tools must not contain duplicates"
+            )
+        if any(_is_mutation_tool(tool) for tool in self.operations_mcp_tools):
+            raise ValueError(
+                "non-interactive tool consumers may contain only read-only tools"
+            )
+        return self
+
+
 class SpecialistManifest(ManifestModel):
     """Versioned source contract for reviewed Operations specialists."""
 
@@ -186,6 +209,10 @@ class SpecialistManifest(ManifestModel):
     contract_version: Literal["1.0"]
     runtime_contract_version: Literal["network-finding.v1"]
     legacy_operations_mcp_tools: tuple[str, ...] = Field(min_length=1, max_length=32)
+    non_interactive_tool_consumers: tuple[NonInteractiveToolConsumer, ...] = Field(
+        min_length=1,
+        max_length=16,
+    )
     specialists: tuple[SpecialistDefinition, ...] = Field(min_length=1, max_length=32)
 
     @model_validator(mode="after")
@@ -212,6 +239,39 @@ class SpecialistManifest(ManifestModel):
             set(self.legacy_operations_mcp_tools)
         ):
             raise ValueError("legacy Operations MCP tools must be unique")
+        consumer_ids = [
+            consumer.id for consumer in self.non_interactive_tool_consumers
+        ]
+        if len(consumer_ids) != len(set(consumer_ids)):
+            raise ValueError("non-interactive tool consumer ids must be unique")
+        if tuple(consumer_ids) != LOCKED_NON_INTERACTIVE_CONSUMER_IDS:
+            raise ValueError(
+                "non-interactive tool consumer ids must exactly match the locked portfolio"
+            )
+        if set(consumer_ids) & known:
+            raise ValueError(
+                "non-interactive tool consumer ids must not overlap specialists"
+            )
+        non_interactive_tools = [
+            tool
+            for consumer in self.non_interactive_tool_consumers
+            for tool in consumer.operations_mcp_tools
+        ]
+        if len(non_interactive_tools) != len(set(non_interactive_tools)):
+            raise ValueError(
+                "each non-interactive Operations MCP tool must have one consumer"
+            )
+        interactive_tools = {
+            tool
+            for specialist in self.specialists
+            for tool in specialist.operations_mcp_tools
+        }
+        overlap = interactive_tools & set(non_interactive_tools)
+        if overlap:
+            raise ValueError(
+                "interactive and non-interactive Operations MCP grants overlap: "
+                f"{sorted(overlap)}"
+            )
         executive = self.require("executive_summary")
         if executive.operations_mcp_tools or executive.azure_mcp_tools:
             raise ValueError("executive_summary must remain aggregation-only")
@@ -271,13 +331,26 @@ class SpecialistManifest(ManifestModel):
             for specialist in self.specialists
         }
 
+    def non_interactive_operations_mcp_grants(
+        self,
+    ) -> dict[str, tuple[str, ...]]:
+        """Project exact Operations MCP grants for reviewed non-interactive consumers."""
+
+        return {
+            consumer.id: consumer.operations_mcp_tools
+            for consumer in self.non_interactive_tool_consumers
+        }
+
     def operations_tool_names(self) -> tuple[str, ...]:
         """Return the deterministic union of reviewed Operations tools."""
 
         return _ordered_unique(
             tool
-            for specialist in self.specialists
-            for tool in specialist.operations_mcp_tools
+            for grants in (
+                *self.operations_mcp_grants().values(),
+                *self.non_interactive_operations_mcp_grants().values(),
+            )
+            for tool in grants
         )
 
     def page_mapping_projection(self) -> dict[str, tuple[str, ...]]:
@@ -392,6 +465,11 @@ def load_specialist_manifest(
     missing_tools = set(manifest.operations_tool_names()) - set(TOOL_REGISTRY)
     if missing_tools:
         raise ValueError(f"missing Operations MCP tools: {sorted(missing_tools)}")
+    unassigned_tools = set(TOOL_REGISTRY) - set(manifest.operations_tool_names())
+    if unassigned_tools:
+        raise ValueError(
+            f"unassigned Operations MCP tools: {sorted(unassigned_tools)}"
+        )
     missing_azure_tools = {
         tool
         for grants in manifest.azure_mcp_grants().values()
@@ -413,7 +491,10 @@ def load_specialist_manifest(
 
 __all__ = [
     "INVENTORY_DATA_HEALTH_ID",
+    "LOCKED_NON_INTERACTIVE_CONSUMER_IDS",
     "LOCKED_SPECIALIST_IDS",
+    "ONTOLOGY_CURATOR_ID",
+    "NonInteractiveToolConsumer",
     "SpecialistDefinition",
     "SpecialistManifest",
     "load_specialist_manifest",
