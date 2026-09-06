@@ -49,8 +49,6 @@ import type {
   Envelope,
   ExposureCommonContract,
   ExposureCursorPagination,
-  ExposureEnvelope,
-  ExposureOverview,
 } from "@/lib/types";
 import {
   isDefenderPortalActionKind,
