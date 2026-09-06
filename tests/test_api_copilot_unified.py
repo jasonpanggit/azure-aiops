@@ -1664,12 +1664,13 @@ def test_context_canonical_network_preserves_page_evidence_and_results(
             policy_status="fallback",
             fallback_reason="planner_unavailable",
             selected_specialists=["network"],
-            selected_tools=["network_topology"],
+            selected_tools=["traffic_flow"],
             tool_results=[
                 {
-                    "call_id": "0:0:network:network_topology",
+                    "call_id": "0:0:network:traffic_flow",
                     "specialist_id": "network",
-                    "tool": "network_topology",
+                    "tool": "traffic_flow",
+                    "arguments": {"source": "uat", "destination": "prod"},
                     "status": "ok",
                     "data": {"nodes": [{"id": "vnet-a"}]},
                     "evidence": [
@@ -1880,7 +1881,7 @@ def test_multi_agent_canonical_projection_retains_complete_results(
         ),
         citations=[
             Citation(
-                citation_id="tool:0:0:network:network_topology:0",
+                citation_id="tool:0:0:network:traffic_flow:0",
                 source="azure-resource-graph:resources",
                 status="ok",
             )
@@ -1904,17 +1905,51 @@ def test_multi_agent_canonical_projection_retains_complete_results(
     data = response.json()["data"]
     assert data["selected_agents"][0]["id"] == "network"
     assert data["agent_runs"][0]["agent_id"] == "network"
-    assert data["tool_calls"][0]["call_id"] == "0:0:network:network_topology"
+    assert data["agent_runs"][0]["agent_name"] == "Network"
+    assert data["agent_runs"][0]["findings"]
+    assert data["agent_runs"][0]["evidence"]
+    assert data["agent_runs"][0]["hidden_reasoning_exposed"] is False
+    assert data["tool_calls"][0]["call_id"] == "0:0:network:traffic_flow"
+    assert data["tool_calls"][0]["arguments"] == {
+        "source": "uat",
+        "destination": "prod",
+    }
     assert data["tool_calls"][0]["data"]["nodes"][0]["id"] == "vnet-a"
     assert data["tool_calls"][0]["evidence"][0]["source_engine"] == "azure-resource-graph"
     assert data["findings"][0]["citation_ids"] == [
-        "tool:0:0:network:network_topology:0"
+        "tool:0:0:network:traffic_flow:0"
     ]
     assert data["citations"][0]["citation_id"].startswith("tool:")
     assert data["synthesis"]["policy_status"] == "fallback"
     assert data["synthesis"]["fallback_reason"] == "planner_unavailable"
     assert data["synthesis"]["status"] == "partial"
     assert data["synthesis"]["uncertainty"] == ["visible subset is incomplete"]
+    assert set(data["reconciliation"]) >= {
+        "conflicts",
+        "stale_evidence",
+        "missing_providers",
+        "unsupported_conclusions",
+        "evidence_count",
+        "reconciled_confidence",
+    }
+    assert set(data["synthesis"]) >= {
+        "summary",
+        "recommended_plan",
+        "required_decision",
+        "unresolved_questions",
+        "confidence",
+        "narration",
+        "narrated_by",
+        "llm_calls",
+    }
+    assert set(data["evaluation"]) == {
+        "groundedness",
+        "scope_isolation",
+        "tool_correctness",
+        "convergence",
+        "latency_ms",
+        "cost",
+    }
 
 
 def test_projected_store_ledger_nested_mutations_do_not_touch_store():
@@ -2169,3 +2204,59 @@ def test_unmatched_question_returns_explicit_unsupported_without_tool_io(
     assert result.fallback_reason == "unsupported_intent"
     assert result.selected_specialists == []
     assert calls == []
+
+
+def test_ownership_question_without_subject_is_explicitly_unavailable(
+    monkeypatch,
+):
+    """Required-argument governance tools must never execute with empty args."""
+    from operations.orchestration_service import execute_from_question
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda name, *_args, **_kwargs: calls.append(name),
+    )
+
+    result = execute_from_question(
+        "Who has ownership of this resource?",
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+    )
+
+    assert result.status == "unavailable"
+    assert result.fallback_reason == "missing_required_arguments"
+    assert result.selected_specialists == []
+    assert calls == []
+
+
+def test_incident_terms_take_precedence_over_embedded_network_markers(
+    monkeypatch,
+):
+    """The word breach must not match the network reach marker."""
+    from operations.orchestration_contract import OrchestrationResult
+    from operations.orchestration_service import execute_from_question
+
+    captured: list[InvestigationRequest] = []
+
+    def _execute(self, request, **_kwargs):
+        captured.append(request)
+        return OrchestrationResult(
+            status="unavailable",
+            policy_status="fallback",
+            fallback_reason="planner_unavailable",
+            coverage=request.snapshot.coverage,
+            thread_id="thr-" + "a" * 32,
+            thread_revision=1,
+        )
+
+    monkeypatch.setattr(OrchestrationService, "execute", _execute)
+    execute_from_question(
+        "Investigate the security breach incident",
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+    )
+
+    assert captured[0].snapshot.page_kind == "incident"
