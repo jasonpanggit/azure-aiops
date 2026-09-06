@@ -1643,6 +1643,13 @@ export interface NetworkTopologyRelationship {
   details: Record<string, unknown>;
 }
 
+export interface NetworkTopologyResourceDetails {
+  resource_id: string;
+  detail_type: "rules" | "routes" | "rule_collections" | "";
+  items: Record<string, unknown>[];
+  coverage: CollectionCoverage;
+}
+
 export interface FlowLogProvenance {
   state: "not_ingested" | "ingested_not_analyzed" | "analyzed";
   observed_flow_count: number;

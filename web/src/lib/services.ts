@@ -31,6 +31,7 @@ import type {
   NetworkSeverity,
   NetworkSummary,
   NetworkTopology,
+  NetworkTopologyResourceDetails,
   RuleFinding,
   SearchResult,
   AssetExposure,
@@ -944,6 +945,22 @@ export const networkApi = {
   /** "What depends on the hub?" */
   hubDependents: (vnetId: string) =>
     apiRequest<HubDependents>(`/network/topology/hubs/${encodeURIComponent(vnetId)}/dependents`),
+
+  topologyResourceDetails: (resourceId: string, offset = 0, limit = 50) => {
+    const query = new URLSearchParams({
+      offset: String(offset),
+      limit: String(limit),
+    });
+    const resourcePath = resourceId
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+    return apiRequest<NetworkTopologyResourceDetails>(
+      `/network/topology/resources/${resourcePath}/details`,
+      { query },
+    );
+  },
 
   /** "Which spokes bypass the firewall?" */
   firewallBypass: (scope: ScopeSelection = {}) =>

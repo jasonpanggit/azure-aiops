@@ -1,12 +1,18 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { shortName, type TopologyEdgeData, type TopologyNodeData } from "@/lib/network-graph";
 import { networkApi } from "@/lib/services";
-import type { NetworkGap, RuleFinding } from "@/lib/types";
+import type {
+  Envelope,
+  NetworkGap,
+  NetworkTopologyResourceDetails,
+  RuleFinding,
+} from "@/lib/types";
 
 const KIND_LABEL: Record<string, string> = {
   hub: "Connectivity hub VNet",
@@ -37,26 +43,56 @@ interface TopologyDetailDrawerProps {
   onClose: () => void;
   /** Open gaps/rule findings for the selected node's resource id, so a red/orange
    * badge on the canvas can be explained rather than just colour-coded. */
-  findings?: { gaps: NetworkGap[]; ruleFindings: RuleFinding[] };
+  findings?: DrawerFindingsState;
+  detailLevel?: "summary" | "full";
+  visibleNodeIds?: ReadonlySet<string>;
+}
+
+export interface DrawerFindingsState {
+  gaps: NetworkGap[];
+  ruleFindings: RuleFinding[];
+  gapTotal: number;
+  ruleFindingTotal: number;
+  mapped: number;
+  total: number;
+  truncated: boolean;
+  exhausted: boolean;
+  loading: boolean;
+  error: Error | null;
+  onRetry: () => void;
 }
 
 /**
  * Side drawer describing the element selected on the topology canvas. Hub
  * dependants are fetched lazily so the canvas itself stays cheap to render.
  */
-export function TopologyDetailDrawer({ node, edge, onClose, findings }: TopologyDetailDrawerProps) {
+export function TopologyDetailDrawer({
+  node,
+  edge,
+  onClose,
+  findings,
+  detailLevel = "full",
+  visibleNodeIds,
+}: TopologyDetailDrawerProps) {
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const open = Boolean(node || edge);
+  const selectionId = node?.id ?? edge?.id ?? "";
 
   useEffect(() => {
     if (!open) return undefined;
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onCloseRef.current();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, selectionId]);
 
   if (!open) return null;
 
@@ -82,13 +118,32 @@ export function TopologyDetailDrawer({ node, edge, onClose, findings }: Topology
         </button>
       </div>
       <div className="topology-drawer-body">
-        {node ? <NodeDetail node={node} findings={findings} /> : <EdgeDetail edge={edge!} />}
+        {node ? (
+          <NodeDetail
+            node={node}
+            findings={findings}
+            detailLevel={detailLevel}
+            visibleNodeIds={visibleNodeIds}
+          />
+        ) : (
+          <EdgeDetail edge={edge!} />
+        )}
       </div>
     </aside>
   );
 }
 
-function NodeDetail({ node, findings }: { node: TopologyNodeData; findings?: { gaps: NetworkGap[]; ruleFindings: RuleFinding[] } }) {
+function NodeDetail({
+  node,
+  findings,
+  detailLevel,
+  visibleNodeIds,
+}: {
+  node: TopologyNodeData;
+  findings?: DrawerFindingsState;
+  detailLevel: "summary" | "full";
+  visibleNodeIds?: ReadonlySet<string>;
+}) {
   const heading = node.entityType ? titleize(node.entityType) : node.serviceKind ? titleize(node.serviceKind) : titleize(node.kind);
   return (
     <>
@@ -110,7 +165,7 @@ function NodeDetail({ node, findings }: { node: TopologyNodeData; findings?: { g
           </strong>
           <span>
             {node.peerResolution === "not_ingested"
-              ? "Its subscription is not connected, so topology beyond this point is unknown."
+              ? "Its subscription is not onboarded, so topology beyond this point is unknown."
               : node.peerResolution === "excluded_by_scope"
                 ? "It was ingested and is present in the estate, but the active scope selection excludes it. Widen the scope to see it."
                 : "This response did not say whether the VNet was never ingested or excluded by the current scope."}
@@ -168,9 +223,10 @@ function NodeDetail({ node, findings }: { node: TopologyNodeData; findings?: { g
         </section>
       )}
 
-      <OpenFindings findings={findings} />
+      <OpenFindings node={node} findings={findings} />
 
-      <NodeSpecificDetails node={node} />
+      <PrivateLinkFacts node={node} visibleNodeIds={visibleNodeIds} />
+      <NodeSpecificDetails key={node.id} node={node} detailLevel={detailLevel} />
       {node.kind === "hub" && <HubDependents vnetId={node.id} />}
     </>
   );
@@ -185,65 +241,277 @@ const SEVERITY_TONE: Record<string, "critical" | "warning" | "info"> = {
 
 /** Renders the actual open gap/rule-finding records behind a node's severity
  * badge, so clicking a red-dotted node explains why it is flagged. */
-function OpenFindings({ findings }: { findings?: { gaps: NetworkGap[]; ruleFindings: RuleFinding[] } }) {
+function OpenFindings({
+  node,
+  findings,
+}: {
+  node: TopologyNodeData;
+  findings?: DrawerFindingsState;
+}) {
   const gaps = findings?.gaps ?? [];
   const ruleFindings = findings?.ruleFindings ?? [];
-  if (gaps.length === 0 && ruleFindings.length === 0) return null;
+  const directRuleFindings = ruleFindings.filter(
+    (finding) => finding.control_id.toLowerCase() === node.id.toLowerCase(),
+  );
+  const affectedRuleFindings = ruleFindings.filter(
+    (finding) =>
+      finding.control_id.toLowerCase() !== node.id.toLowerCase() &&
+      (finding.affected_resource_ids ?? []).some(
+        (resourceId) => resourceId.toLowerCase() === node.id.toLowerCase(),
+      ),
+  );
+  const findingCount =
+    gaps.length + directRuleFindings.length + affectedRuleFindings.length;
+  const resourceName = node.label || "the selected resource";
+
+  if (findings?.error) {
+    return (
+      <section className="topology-detail-section">
+        <h3>Open findings</h3>
+        <div className="callout callout-critical" role="alert">
+          <span>
+            Findings are unavailable — {findings.error.message}. This resource
+            is not confirmed clean.
+          </span>
+          <button
+            type="button"
+            className="button button-secondary"
+            aria-label={`Retry loading findings for ${resourceName}`}
+            onClick={findings.onRetry}
+          >
+            Retry
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  if (findingCount === 0 && findings?.loading) {
+    return (
+      <section className="topology-detail-section" aria-busy="true">
+        <h3>Open findings</h3>
+        <span className="muted">Checking open findings…</span>
+      </section>
+    );
+  }
+
+  if (findingCount === 0 && (!findings || findings.truncated || !findings.exhausted)) {
+    return (
+      <section className="topology-detail-section">
+        <h3>Open findings</h3>
+        <div className="callout callout-warning" role="status">
+          Findings for this resource may be incomplete. {findings?.mapped ?? 0}{" "}
+          of {findings?.total ?? 0} findings were loaded. This resource is not
+          confirmed clean.
+        </div>
+      </section>
+    );
+  }
+
+  if (findingCount === 0) {
+    return (
+      <section className="topology-detail-section">
+        <h3>Open findings (0)</h3>
+        <span className="muted">
+          No open findings for this resource. All {findings!.gapTotal} gaps and{" "}
+          {findings!.ruleFindingTotal} rule findings in scope were checked.
+        </span>
+      </section>
+    );
+  }
 
   return (
     <section className="topology-detail-section">
-      <h3>Open findings ({gaps.length + ruleFindings.length})</h3>
+      <h3>Open findings ({findingCount})</h3>
       <div className="topology-finding-list">
-        {gaps.map((gap) => (
-          <article key={gap.gap_id} className="topology-finding-item">
-            <div className="topology-finding-header">
-              <StatusBadge label={titleize(gap.severity)} tone={SEVERITY_TONE[gap.severity] ?? "info"} compact />
-              <strong>{gap.title}</strong>
-            </div>
-            <span>{gap.detail}</span>
-            {gap.recommendation && <small>Recommendation: {gap.recommendation}</small>}
-            {gap.basis && <small className="muted">Basis: {gap.basis}</small>}
-          </article>
-        ))}
-        {ruleFindings.map((finding) => (
-          <article key={finding.finding_id} className="topology-finding-item">
-            <div className="topology-finding-header">
-              <StatusBadge label={titleize(finding.severity)} tone={SEVERITY_TONE[finding.severity] ?? "info"} compact />
-              <strong>{finding.title}</strong>
-            </div>
-            <span>
-              {finding.control} · {finding.rule_name}
-            </span>
-            <small>{finding.detail}</small>
-            {finding.recommendation && <small>Recommendation: {finding.recommendation}</small>}
-          </article>
-        ))}
+        {gaps.length > 0 && (
+          <FindingGroup title="Gaps on this resource">
+            {gaps.map((gap) => (
+              <article key={gap.gap_id} className="topology-finding-item">
+                <div className="topology-finding-header">
+                  <StatusBadge label={titleize(gap.severity)} tone={SEVERITY_TONE[gap.severity] ?? "info"} compact />
+                  <strong>{gap.title}</strong>
+                </div>
+                <span>{gap.detail}</span>
+                {gap.recommendation && <small>Recommendation: {gap.recommendation}</small>}
+                {gap.basis && <small className="muted">Basis: {gap.basis}</small>}
+              </article>
+            ))}
+          </FindingGroup>
+        )}
+        {directRuleFindings.length > 0 && (
+          <FindingGroup title="Findings on this control">
+            {directRuleFindings.map((finding) => (
+              <RuleFindingItem key={finding.finding_id} finding={finding} />
+            ))}
+          </FindingGroup>
+        )}
+        {affectedRuleFindings.length > 0 && (
+          <FindingGroup title="Findings affecting this resource">
+            {affectedRuleFindings.map((finding) => (
+              <RuleFindingItem key={finding.finding_id} finding={finding} />
+            ))}
+          </FindingGroup>
+        )}
       </div>
     </section>
   );
 }
 
-function NodeSpecificDetails({ node }: { node: TopologyNodeData }) {
+function FindingGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <h3>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function RuleFindingItem({ finding }: { finding: RuleFinding }) {
+  return (
+    <article className="topology-finding-item">
+      <div className="topology-finding-header">
+        <StatusBadge label={titleize(finding.severity)} tone={SEVERITY_TONE[finding.severity] ?? "info"} compact />
+        <strong>{finding.title}</strong>
+      </div>
+      <span>
+        {finding.control} · {finding.rule_name}
+      </span>
+      <small>{finding.detail}</small>
+      {finding.recommendation && <small>Recommendation: {finding.recommendation}</small>}
+    </article>
+  );
+}
+
+type DrillDownKind = "rules" | "routes" | "rule_collections";
+
+interface DrillDownDefinition {
+  kind: DrillDownKind;
+  title: string;
+  button: string;
+  loading: string;
+  disclosure: string;
+  empty: string;
+  label: string;
+}
+
+const DRILL_DOWN_BY_ENTITY: Record<string, DrillDownDefinition> = {
+  AzureFirewall: {
+    kind: "rules",
+    title: "Firewall rules",
+    button: "Load rules",
+    loading: "Loading rules…",
+    disclosure: "Rule detail was not loaded at summary detail.",
+    empty: "No firewall rules were observed for this resource.",
+    label: "rules",
+  },
+  NetworkSecurityGroup: {
+    kind: "rules",
+    title: "NSG rules",
+    button: "Load rules",
+    loading: "Loading rules…",
+    disclosure: "Rule detail was not loaded at summary detail.",
+    empty: "No NSG rules were observed for this resource.",
+    label: "rules",
+  },
+  RouteTable: {
+    kind: "routes",
+    title: "Routes",
+    button: "Load routes",
+    loading: "Loading routes…",
+    disclosure: "Route detail was not loaded at summary detail.",
+    empty: "No user-defined routes were observed for this resource.",
+    label: "routes",
+  },
+  FirewallPolicy: {
+    kind: "rule_collections",
+    title: "Rule collections",
+    button: "Load rule collections",
+    loading: "Loading rule collections…",
+    disclosure: "Rule collection detail was not loaded at summary detail.",
+    empty: "No rule collections were observed for this resource.",
+    label: "rule collections",
+  },
+  FirewallRuleCollection: {
+    kind: "rules",
+    title: "Firewall rules",
+    button: "Load rules",
+    loading: "Loading rules…",
+    disclosure: "Rule detail was not loaded at summary detail.",
+    empty: "No rules were observed in this collection.",
+    label: "rules",
+  },
+};
+
+const DETAIL_PAGE_SIZE = 50;
+const PRIVATE_LINK_ENTITY_TYPES = new Set([
+  "PrivateEndpoint",
+  "PrivateLinkService",
+  "PrivateLinkResource",
+  "FabricCapacity",
+  "AIFoundryAccount",
+]);
+const detailCache = new Map<
+  string,
+  Envelope<NetworkTopologyResourceDetails>
+>();
+
+function detailCacheKey(nodeId: string, offset: number): string {
+  return `${nodeId.toLowerCase()}::${offset}`;
+}
+
+function NodeSpecificDetails({
+  node,
+  detailLevel,
+}: {
+  node: TopologyNodeData;
+  detailLevel: "summary" | "full";
+}) {
   const details = node.details ?? {};
-  if (node.entityType === "AzureFirewall") {
-    return <RuleTable title="Firewall rules" items={asRecords(details.rules)} empty="No firewall rules were observed for this firewall." />;
+  if (node.entityType && PRIVATE_LINK_ENTITY_TYPES.has(node.entityType)) {
+    return null;
   }
-  if (node.entityType === "NetworkSecurityGroup") {
-    return <RuleTable title="NSG rules" items={asRecords(details.rules)} empty="No NSG rules were observed." />;
+  const definition = node.entityType
+    ? DRILL_DOWN_BY_ENTITY[node.entityType]
+    : undefined;
+  const detailKey =
+    definition?.kind === "routes"
+      ? "routes"
+      : definition?.kind === "rule_collections"
+        ? "rule_collections"
+        : "rules";
+  const embeddedItems = asRecords(details[detailKey]);
+
+  if (
+    definition &&
+    detailLevel === "summary" &&
+    !Array.isArray(details[detailKey])
+  ) {
+    return <DrillDownSection node={node} definition={definition} />;
   }
-  if (node.entityType === "RouteTable") {
-    return <RuleTable title="Routes" items={asRecords(details.routes)} empty="No user-defined routes were observed." />;
-  }
-  if (node.entityType === "FirewallPolicy") {
+  if (definition) {
     return (
       <>
-        <RuleTable title="Rule collections" items={asRecords(details.rule_collections)} empty="No rule collections were observed." />
-        <FactSection title="Policy facts" details={details} include={["base_policy_id", "threat_intel_mode", "rule_count"]} />
+        <RuleTable
+          title={definition.title}
+          items={embeddedItems}
+          empty={definition.empty}
+        />
+        {node.entityType === "FirewallPolicy" && (
+          <FactSection
+            title="Policy facts"
+            details={details}
+            include={["base_policy_id", "threat_intel_mode", "rule_count"]}
+          />
+        )}
       </>
     );
-  }
-  if (node.entityType === "FirewallRuleCollection") {
-    return <RuleTable title="Firewall rules" items={asRecords(details.rules)} empty="No rules were observed in this collection." />;
   }
   if (node.entityType === "FirewallRule" || node.entityType === "NetworkSecurityRule" || node.entityType === "Route") {
     return <FactSection title={`${titleize(node.entityType)} details`} details={details} />;
@@ -251,13 +519,230 @@ function NodeSpecificDetails({ node }: { node: TopologyNodeData }) {
   if (node.entityType === "Subnet") {
     return <FactSection title="Subnet configuration" details={details} include={["address_prefixes", "nsg_id", "route_table_id", "nat_gateway_id", "service_endpoints"]} />;
   }
-  if (node.entityType === "PrivateEndpoint") {
-    return <FactSection title="Private endpoint configuration" details={details} include={["target_resource_id", "group_ids", "private_ips", "private_dns_zone_ids", "connection_state"]} />;
-  }
   if (node.entityType === "LoadBalancer" || node.entityType === "ApplicationGateway") {
     return <FactSection title={`${titleize(node.entityType)} configuration`} details={details} include={["sku", "frontend_ips", "public_ips", "backend_resource_ids", "waf_enabled"]} />;
   }
   return <FactSection title="Resource details" details={details} collapsed />;
+}
+
+function DrillDownSection({
+  node,
+  definition,
+}: {
+  node: TopologyNodeData;
+  definition: DrillDownDefinition;
+}) {
+  const [page, setPage] = useState(0);
+  const offset = page * DETAIL_PAGE_SIZE;
+  const cacheKey = detailCacheKey(node.id, offset);
+  const [result, setResult] = useState<
+    Envelope<NetworkTopologyResourceDetails> | undefined
+  >(() => detailCache.get(cacheKey));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const load = useCallback(async () => {
+    if (loading) return;
+    const cached = detailCache.get(cacheKey);
+    if (cached) {
+      setResult(cached);
+      setError(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await networkApi.topologyResourceDetails(
+        node.id,
+        offset,
+        DETAIL_PAGE_SIZE,
+      );
+      detailCache.set(cacheKey, response);
+      setResult(response);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason : new Error("Unknown detail error"),
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [cacheKey, loading, node.id, offset]);
+
+  const changePage = useCallback(
+    (nextPage: number) => {
+      const nextOffset = nextPage * DETAIL_PAGE_SIZE;
+      const nextCached = detailCache.get(detailCacheKey(node.id, nextOffset));
+      setPage(nextPage);
+      setResult(nextCached);
+      setError(null);
+      if (!nextCached) {
+        void networkApi
+          .topologyResourceDetails(node.id, nextOffset, DETAIL_PAGE_SIZE)
+          .then((response) => {
+            detailCache.set(detailCacheKey(node.id, nextOffset), response);
+            setResult(response);
+          })
+          .catch((reason) => {
+            setError(
+              reason instanceof Error
+                ? reason
+                : new Error("Unknown detail error"),
+            );
+          });
+      }
+    },
+    [node.id],
+  );
+
+  const resourceName = node.label || "the selected resource";
+  return (
+    <section
+      className="topology-detail-section"
+      aria-busy={loading ? "true" : undefined}
+    >
+      <h3>{definition.title}</h3>
+      {!result && !error && (
+        <>
+          <span className="muted">{definition.disclosure}</span>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => void load()}
+            disabled={loading}
+            aria-busy={loading ? "true" : undefined}
+          >
+            {definition.button}
+          </button>
+          {loading && <span className="muted">{definition.loading}</span>}
+        </>
+      )}
+      {error && (
+        <div className="callout callout-critical">
+          <span>
+            {titleize(definition.label)} could not be loaded — {error.message}.
+            Retry, or open the resource in Azure.
+          </span>
+          <button
+            type="button"
+            className="button button-secondary"
+            aria-label={`Retry loading ${definition.label} for ${resourceName}`}
+            onClick={() => void load()}
+            disabled={loading}
+            aria-busy={loading ? "true" : undefined}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {result && (
+        <>
+          <RuleRows items={result.data.items} empty={definition.empty} />
+          <TablePagination
+            pagination={result.pagination}
+            pageRows={result.data.items.length}
+            page={page}
+            onPageChange={changePage}
+            label={definition.label}
+          />
+        </>
+      )}
+    </section>
+  );
+}
+
+function PrivateLinkFacts({
+  node,
+  visibleNodeIds,
+}: {
+  node: TopologyNodeData;
+  visibleNodeIds?: ReadonlySet<string>;
+}) {
+  const details = node.details ?? {};
+  if (!node.entityType || !PRIVATE_LINK_ENTITY_TYPES.has(node.entityType)) {
+    return null;
+  }
+
+  const targetOutOfScope =
+    details.target_out_of_scope === true ||
+    details.target_resource_out_of_scope === true ||
+    details.target_in_scope === false ||
+    (typeof details.target_resource_id === "string" &&
+      visibleNodeIds !== undefined &&
+      !visibleNodeIds.has(details.target_resource_id.toLowerCase()));
+  const publicAccess = formatValue(details.public_network_access);
+  const publicAccessUnknown = publicAccess === "—";
+
+  return (
+    <>
+      <section className="topology-detail-section">
+        <h3>Private link</h3>
+        <div className="topology-signal-row">
+          <StatusBadge label="Private link candidate" tone="info" compact />
+        </div>
+      </section>
+      <section className="topology-detail-section">
+        <h3>
+          {node.entityType === "PrivateEndpoint"
+            ? "Private endpoint configuration"
+            : node.entityType === "PrivateLinkService"
+              ? "Private link service configuration"
+              : "Private link configuration"}
+        </h3>
+        <dl className="topology-detail-list">
+          {node.entityType === "PrivateEndpoint" && (
+            <>
+              <Fact
+                label="Target resource"
+                value={
+                  targetOutOfScope
+                    ? "Target resource is outside the collected scope."
+                    : formatValue(details.target_resource_id)
+                }
+                mono={!targetOutOfScope}
+              />
+              <Fact
+                label="Connection state"
+                value={formatValue(details.connection_state)}
+              />
+              <Fact
+                label="Subnet"
+                value={formatValue(details.subnet_id)}
+                mono
+              />
+            </>
+          )}
+          {node.entityType === "PrivateLinkService" && (
+            <>
+              <Fact label="Alias" value={formatValue(details.alias)} />
+              <Fact
+                label="Load balancer"
+                value={formatValue(
+                  details.load_balancer_id ?? details.load_balancer_ids,
+                )}
+                mono
+              />
+            </>
+          )}
+          <div className="topology-detail-fact">
+            <dt>Public network access</dt>
+            <dd>
+              <StatusBadge
+                label={publicAccessUnknown ? "Unknown" : publicAccess}
+                tone={
+                  publicAccessUnknown
+                    ? "unknown"
+                    : publicAccess.toLowerCase() === "enabled"
+                      ? "critical"
+                      : "success"
+                }
+                compact
+              />
+            </dd>
+          </div>
+        </dl>
+      </section>
+    </>
+  );
 }
 
 function HubDependents({ vnetId }: { vnetId: string }) {
@@ -413,39 +898,62 @@ function RuleTable({ title, items, empty }: { title: string; items: Record<strin
   return (
     <section className="topology-detail-section">
       <h3>{title}</h3>
-      {items.length === 0 ? (
-        <span className="muted">{empty}</span>
-      ) : (
-        <div className="topology-rule-list">
-          {items.map((item, index) => (
-            <article key={String(item.id ?? item.name ?? index)}>
-              <strong>{formatValue(item.name)}</strong>
-              <span>
-                {[
-                  item.priority ? `Priority ${formatValue(item.priority)}` : "",
-                  item.direction ? formatValue(item.direction) : "",
-                  item.access ?? item.action ? formatValue(item.access ?? item.action) : "",
-                  item.protocol ?? item.protocols ? formatValue(item.protocol ?? item.protocols) : "",
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </span>
-              <small>
-                {[
-                  item.source_address ?? item.source_addresses ? `Source: ${formatValue(item.source_address ?? item.source_addresses)}` : "",
-                  item.destination_address ?? item.destination_addresses ?? item.destination_fqdns
-                    ? `Destination: ${formatValue(item.destination_address ?? item.destination_addresses ?? item.destination_fqdns)}`
-                    : "",
-                  item.destination_port ?? item.destination_ports ? `Ports: ${formatValue(item.destination_port ?? item.destination_ports)}` : "",
-                  item.next_hop_type ? `Next hop: ${formatValue(item.next_hop_type)} ${formatValue(item.next_hop_ip)}` : "",
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </small>
-            </article>
-          ))}
-        </div>
-      )}
+      <RuleRows items={items} empty={empty} />
     </section>
+  );
+}
+
+function RuleRows({
+  items,
+  empty,
+}: {
+  items: Record<string, unknown>[];
+  empty: string;
+}) {
+  if (items.length === 0) {
+    return <span className="muted">{empty}</span>;
+  }
+  return (
+    <div className="topology-rule-list">
+      {items.map((item, index) => (
+        <article key={String(item.id ?? item.name ?? index)}>
+          <strong>{formatValue(item.name)}</strong>
+          <span>
+            {[
+              item.priority ? `Priority ${formatValue(item.priority)}` : "",
+              item.direction ? formatValue(item.direction) : "",
+              item.access ?? item.action
+                ? formatValue(item.access ?? item.action)
+                : "",
+              item.protocol ?? item.protocols
+                ? formatValue(item.protocol ?? item.protocols)
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          <small>
+            {[
+              item.source_address ?? item.source_addresses
+                ? `Source: ${formatValue(item.source_address ?? item.source_addresses)}`
+                : "",
+              item.destination_address ??
+              item.destination_addresses ??
+              item.destination_fqdns
+                ? `Destination: ${formatValue(item.destination_address ?? item.destination_addresses ?? item.destination_fqdns)}`
+                : "",
+              item.destination_port ?? item.destination_ports
+                ? `Ports: ${formatValue(item.destination_port ?? item.destination_ports)}`
+                : "",
+              item.next_hop_type
+                ? `Next hop: ${formatValue(item.next_hop_type)} ${formatValue(item.next_hop_ip)}`
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </small>
+        </article>
+      ))}
+    </div>
   );
 }

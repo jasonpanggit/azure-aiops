@@ -1,10 +1,13 @@
 import cytoscape from "cytoscape";
 import { describe, expect, it } from "vitest";
+import { buildTopologyEnvelope } from "@/test/network-fixtures";
 
 import {
   STYLESHEET,
   applyHoverFocus,
+  buildTopologyExport,
   clearHoverFocus,
+  nextExportIdentity,
   layoutForTransition,
   syncFindingBadge,
 } from "./TopologyGraph";
@@ -168,5 +171,131 @@ describe("topology detail transitions", () => {
   it("keeps existing positions on every payload transition", () => {
     expect(layoutForTransition(40, true)).toMatchObject({ randomize: false });
     expect(layoutForTransition(1_000, true)).toMatchObject({ randomize: false });
+  });
+});
+
+describe("topology export provenance", () => {
+  it("emits the ten declared keys in order with the previous topology nested last", () => {
+    const topology = buildTopologyEnvelope().data.topology;
+    const exportedAt = "2026-09-06T01:02:03.000Z";
+    const payload = buildTopologyExport(
+      topology,
+      {
+        scope: { subscriptions: ["sub-a"] },
+        detailLevel: "summary",
+        coverage: {
+          total: 9,
+          returned: 2,
+          truncated: true,
+          badgePageBudget: 4,
+          badgeFetchExhausted: false,
+          badgeReturned: 2,
+          badgeTotal: 7,
+          renderedNodes: 2,
+          totalNodes: 9,
+          renderedRelationships: 1,
+          totalRelationships: 3,
+          droppedRelationships: 2,
+        },
+        filters: {
+          search: "prod",
+          filterMode: true,
+          showServices: false,
+          showFindings: true,
+        },
+        evidence: [],
+        warnings: ["partial"],
+        knowledgeVersion: "kv-1",
+        graphFreshness: null,
+      },
+      exportedAt,
+    );
+
+    expect(Object.keys(payload)).toEqual([
+      "exported_at",
+      "scope",
+      "detail_level",
+      "coverage",
+      "filters",
+      "evidence",
+      "warnings",
+      "knowledge_version",
+      "graph_freshness",
+      "topology",
+    ]);
+    expect(payload.topology).toEqual(topology);
+    expect(payload.exported_at).toBe(exportedAt);
+    expect(Number.isNaN(Date.parse(payload.exported_at))).toBe(false);
+    expect(payload.coverage).toMatchObject({
+      truncated: true,
+      badge_page_budget: 4,
+      badge_fetch_exhausted: false,
+      nodes: { rendered: 2, total: 9 },
+      relationships: { rendered: 1, total: 3, dropped: 2 },
+    });
+    expect(payload.filters).toEqual({
+      search: "prod",
+      filter_mode: true,
+      show_services: false,
+      show_findings: true,
+    });
+  });
+
+  it("writes absent provenance fields as null rather than omitting them", () => {
+    const topology = buildTopologyEnvelope().data.topology;
+    const payload = buildTopologyExport(
+      topology,
+      {
+        scope: null,
+        detailLevel: "summary",
+        coverage: {
+          total: null,
+          returned: null,
+          truncated: false,
+          badgePageBudget: 4,
+          badgeFetchExhausted: true,
+          badgeReturned: 0,
+          badgeTotal: 0,
+          renderedNodes: 0,
+          totalNodes: null,
+          renderedRelationships: 0,
+          totalRelationships: null,
+          droppedRelationships: 0,
+        },
+        filters: {
+          search: "",
+          filterMode: false,
+          showServices: true,
+          showFindings: true,
+        },
+        evidence: null,
+        warnings: null,
+        knowledgeVersion: null,
+        graphFreshness: null,
+      },
+      "2026-09-06T01:02:03.000Z",
+    );
+
+    expect(payload.scope).toBeNull();
+    expect(payload.evidence).toBeNull();
+    expect(payload.warnings).toBeNull();
+    expect(payload.knowledge_version).toBeNull();
+    expect(payload.graph_freshness).toBeNull();
+  });
+
+  it("creates collision-free JSON and PNG filenames with 15-character timestamp segments", () => {
+    const instant = new Date("2026-09-06T01:02:03.000Z");
+    const json = nextExportIdentity("json", instant);
+    const png = nextExportIdentity("png", instant);
+
+    expect(json.filename).toMatch(
+      /^network-topology-\d{8}-\d{6}\.json$/,
+    );
+    expect(png.filename).toMatch(
+      /^network-topology-\d{8}-\d{6}\.png$/,
+    );
+    expect(json.filename).not.toBe(png.filename.replace(/\.png$/, ".json"));
+    expect(json.filename.match(/\d{8}-\d{6}/)?.[0]).toHaveLength(15);
+    expect(png.filename.match(/\d{8}-\d{6}/)?.[0]).toHaveLength(15);
   });
 });

@@ -3,12 +3,18 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StatePanel } from "@/components/ui/StatePanel";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TopologyDetailDrawer } from "@/components/network/TopologyDetailDrawer";
-import type { TopologyGraphHandle, TopologySelection } from "@/components/network/TopologyGraph";
+import type {
+  TopologyExportContext,
+  TopologyGraphHandle,
+  TopologySelection,
+} from "@/components/network/TopologyGraph";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { buildTopologyGraph } from "@/lib/network-graph";
 import type {
   CollectionCoverage,
+  EvidenceItem,
   NetworkGap,
   NetworkSummary,
   NetworkTopology,
@@ -211,6 +217,14 @@ interface TopologyWorkspaceProps {
   ruleFindings?: RuleFinding[];
   loadGapsPage?: LoadGapPage;
   loadRuleFindingsPage?: LoadRuleFindingPage;
+  findingsLoading?: boolean;
+  findingsError?: Error | null;
+  findingsTruncated?: boolean;
+  onRetryFindings?: () => void;
+  scope?: Record<string, string[]> | null;
+  evidence?: EvidenceItem[] | null;
+  warnings?: string[] | null;
+  knowledgeVersion?: string | null;
   graphFreshness?: string;
 }
 
@@ -226,6 +240,14 @@ export function TopologyWorkspace({
   ruleFindings = EMPTY_RULE_FINDINGS,
   loadGapsPage,
   loadRuleFindingsPage,
+  findingsLoading = false,
+  findingsError = null,
+  findingsTruncated = false,
+  onRetryFindings = () => undefined,
+  scope = null,
+  evidence = null,
+  warnings = null,
+  knowledgeVersion = null,
   graphFreshness,
 }: TopologyWorkspaceProps) {
   const [search, setSearch] = useState("");
@@ -239,6 +261,9 @@ export function TopologyWorkspace({
   const graphHandleRef = useRef<TopologyGraphHandle | null>(null);
   const [badgeGaps, setBadgeGaps] = useState(gaps);
   const [badgeRuleFindings, setBadgeRuleFindings] = useState(ruleFindings);
+  const [badgeLoading, setBadgeLoading] = useState(
+    Boolean(loadGapsPage && loadRuleFindingsPage),
+  );
   const [badgeCoverage, setBadgeCoverage] = useState<BadgeCoverage>({
     mapped: gaps.length + ruleFindings.length,
     total: gaps.length + ruleFindings.length,
@@ -247,6 +272,7 @@ export function TopologyWorkspace({
 
   useEffect(() => {
     if (!loadGapsPage || !loadRuleFindingsPage) {
+      setBadgeLoading(false);
       setBadgeGaps(gaps);
       setBadgeRuleFindings(ruleFindings);
       setBadgeCoverage({
@@ -257,12 +283,14 @@ export function TopologyWorkspace({
       return undefined;
     }
     let cancelled = false;
+    setBadgeLoading(true);
     Promise.all([
       fetchBadgeCollection(loadGapsPage, (data) => data.gaps),
       fetchBadgeCollection(loadRuleFindingsPage, (data) => data.findings),
     ])
       .then(([gapResult, findingResult]) => {
         if (cancelled) return;
+        setBadgeLoading(false);
         setBadgeGaps(gapResult.items as NetworkGap[]);
         setBadgeRuleFindings(findingResult.items as RuleFinding[]);
         setBadgeCoverage({
@@ -273,6 +301,7 @@ export function TopologyWorkspace({
       })
       .catch(() => {
         if (cancelled) return;
+        setBadgeLoading(false);
         // The page-level loaders own unavailable-state disclosure. Retain their
         // last successful rows here and compare them with summary totals rather
         // than presenting a failed badge fetch as complete.
@@ -304,6 +333,13 @@ export function TopologyWorkspace({
   const renderedGraph = useMemo(
     () => (topology ? buildTopologyGraph(topology) : null),
     [topology],
+  );
+  const visibleNodeIds = useMemo(
+    () =>
+      new Set(
+        (renderedGraph?.nodes ?? []).map((node) => node.id.toLowerCase()),
+      ),
+    [renderedGraph],
   );
   const normalizedSearch = search.trim().toLowerCase();
   const matchingNodeIds = useMemo(
@@ -455,6 +491,57 @@ export function TopologyWorkspace({
     return `Snapshot observed ${relativeTime(graphFreshness)} (${formatDateTime(graphFreshness)}).`;
   }, [graphFreshness]);
 
+  const exportContext = useMemo<TopologyExportContext>(() => {
+    const relationshipTotal =
+      typeof topology?.counts.relationships === "number"
+        ? topology.counts.relationships
+        : counts?.relationships ?? null;
+    return {
+      scope,
+      detailLevel,
+      coverage: {
+        total: topology?.coverage?.total ?? counts?.total ?? null,
+        returned: topology?.coverage?.returned ?? counts?.rendered ?? null,
+        truncated: topology?.coverage?.truncated ?? false,
+        badgePageBudget: BADGE_FETCH_MAX_PAGES,
+        badgeFetchExhausted:
+          !badgeLoading && !badgeCoverage.truncated,
+        badgeReturned: badgeCoverage.mapped,
+        badgeTotal: badgeCoverage.total,
+        renderedNodes: counts?.rendered ?? 0,
+        totalNodes: counts?.total ?? null,
+        renderedRelationships: counts?.relationships ?? 0,
+        totalRelationships: relationshipTotal,
+        droppedRelationships: counts?.droppedTotal ?? 0,
+      },
+      filters: {
+        search,
+        filterMode,
+        showServices,
+        showFindings,
+      },
+      evidence,
+      warnings,
+      knowledgeVersion,
+      graphFreshness: graphFreshness ?? null,
+    };
+  }, [
+    badgeCoverage,
+    badgeLoading,
+    counts,
+    detailLevel,
+    evidence,
+    filterMode,
+    graphFreshness,
+    knowledgeVersion,
+    scope,
+    search,
+    showFindings,
+    showServices,
+    topology,
+    warnings,
+  ]);
+
   if (loading) {
     return (
       <StatePanel
@@ -550,12 +637,20 @@ export function TopologyWorkspace({
           <span className="topology-legend-unresolved">Peer VNet not shown</span>
           <span className="topology-legend-unhealthy">Peering not connected</span>
         </div>
+        {topology.coverage?.truncated && (
+          <StatusBadge
+            label={`Partial — ${topology.coverage.returned} of ${topology.coverage.total}`}
+            tone="warning"
+          />
+        )}
         <button
           type="button"
           className="button button-secondary topology-export"
           onClick={() => graphHandleRef.current?.exportPng()}
+          aria-label="Export PNG (image only)"
+          title="The image carries no scope or freshness metadata. Export JSON for an auditable record."
         >
-          Export PNG
+          Export PNG (image only)
         </button>
         <button
           type="button"
@@ -619,6 +714,7 @@ export function TopologyWorkspace({
           selectedId={selectedId}
           onSelect={handleSelection}
           onReady={handleGraphReady}
+          exportContext={exportContext}
           findingSeverityByResource={showFindings ? findingSeverityByResource : undefined}
         />
         <TopologyDetailDrawer
@@ -627,9 +723,26 @@ export function TopologyWorkspace({
           onClose={clearSelection}
           findings={
             selection.node
-              ? findingsByResource.get(selection.node.id.toLowerCase())
+              ? {
+                  ...(findingsByResource.get(selection.node.id.toLowerCase()) ?? {
+                    gaps: [],
+                    ruleFindings: [],
+                  }),
+                  gapTotal: summary?.gap_count ?? gaps.length,
+                  ruleFindingTotal:
+                    summary?.rule_finding_count ?? ruleFindings.length,
+                  mapped: badgeCoverage.mapped,
+                  total: badgeCoverage.total,
+                  truncated: findingsTruncated || badgeCoverage.truncated,
+                  exhausted: !badgeLoading && !badgeCoverage.truncated,
+                  loading: findingsLoading || badgeLoading,
+                  error: findingsError,
+                  onRetry: onRetryFindings,
+                }
               : undefined
           }
+          detailLevel={detailLevel}
+          visibleNodeIds={visibleNodeIds}
         />
       </div>
 

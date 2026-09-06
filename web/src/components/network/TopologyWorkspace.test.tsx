@@ -18,6 +18,7 @@ import type {
   RuleFinding,
 } from "@/lib/types";
 import type { TopologyNodeData } from "@/lib/network-graph";
+import type { TopologyExportContext } from "./TopologyGraph";
 
 const graphProbe = vi.hoisted(() => ({
   props: null as null | {
@@ -30,6 +31,7 @@ const graphProbe = vi.hoisted(() => ({
       string,
       { severity: string; count: number; title?: string }
     >;
+    exportContext?: TopologyExportContext;
   },
 }));
 
@@ -394,6 +396,9 @@ describe("TopologyWorkspace badge coverage", () => {
     expect(screen.getByText("Badges: 2000 of 3000 findings")).toBeInTheDocument();
     expect(loadRuleFindingsPage).toHaveBeenCalledTimes(4);
     expect(loadRuleFindingsPage).toHaveBeenNthCalledWith(4, 1_500, 500);
+    expect(
+      graphProbe.props?.exportContext?.coverage.badgeFetchExhausted,
+    ).toBe(false);
   });
 
   it("loads until exhaustion below the budget and reports equal coverage", async () => {
@@ -408,5 +413,63 @@ describe("TopologyWorkspace badge coverage", () => {
     await waitFor(() => expect(loadRuleFindingsPage).toHaveBeenCalledTimes(2));
     expect(screen.queryByText("Badge coverage is partial.")).not.toBeInTheDocument();
     expect(screen.getByText("Badges: 600 of 600 findings")).toBeInTheDocument();
+  });
+});
+
+describe("TopologyWorkspace export and selection honesty", () => {
+  it("shows a Partial badge beside honest JSON and PNG export controls", () => {
+    const topology = buildTopologyEnvelope().data.topology;
+    topology.coverage = { total: 9, returned: 2, truncated: true };
+
+    renderWorkspace({ topology });
+
+    const png = screen.getByRole("button", {
+      name: "Export PNG (image only)",
+    });
+    const json = screen.getByRole("button", { name: "Export JSON" });
+    expect(png).toHaveAttribute(
+      "title",
+      "The image carries no scope or freshness metadata. Export JSON for an auditable record.",
+    );
+    expect(screen.getByText("Partial — 2 of 9")).toBeInTheDocument();
+    expect(png.closest(".topology-toolbar")).toContainElement(json);
+    expect(png.closest(".topology-toolbar")).toContainElement(
+      screen.getByText("Partial — 2 of 9"),
+    );
+  });
+
+  it("omits the Partial badge for complete coverage", () => {
+    renderWorkspace();
+
+    expect(screen.queryByText(/Partial —/)).not.toBeInTheDocument();
+  });
+
+  it("clears a selected node when a changed filter hides it", async () => {
+    renderWorkspace();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select first graph node" }),
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Filter (hide non-matches)" }),
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", {
+        name: "Highlight topology nodes by name",
+      }),
+      { target: { value: "does-not-match-selected-node" } },
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(
+      screen
+        .getByText(
+          "Selection cleared — the selected resource is hidden by the current filter.",
+        )
+        .closest('[role="status"]'),
+    ).not.toBeNull();
   });
 });
