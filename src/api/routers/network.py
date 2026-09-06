@@ -573,6 +573,8 @@ def preview_policy(
         service.snapshot,
         policy=policy,
         semantic_relationships=service.semantic_relationships,
+        flow_observations=service.flow_observations,
+        peer_resolutions=service.peer_resolutions,
     )
     analysis = preview_service.analyze()
     payload = _policy_payload(policy)[0]

@@ -796,6 +796,73 @@ class TestPolicy:
         assert not any(item["resource_name"] == "kv-foreign" for item in preview_gaps)
         assert captured_relationships[-1], "preview must retain scoped semantic edges"
 
+    def test_policy_preview_preserves_full_derivation_context(
+        self, tmp_path, monkeypatch
+    ):
+        import api.routers.network as network_router
+
+        flow_observation = {
+            "subject_id": PROD_VNET,
+            "object_id": f"{PROD_VNET}/subnets/snet-app",
+            "predicate": "trafficObserved",
+            "attributes": {"dataSource": "traffic_analytics"},
+        }
+        peer_resolutions = {"/subscriptions/peer/vnets/remote": "not_ingested"}
+        base = build_service(network_rows())
+        service = NetworkIntelligenceService(
+            base.snapshot,
+            policy=base.policy,
+            semantic_relationships=(flow_observation,),
+            flow_observations=(flow_observation,),
+            peer_resolutions=peer_resolutions,
+        )
+        captured: list[dict[str, object]] = []
+        original_service = NetworkIntelligenceService
+
+        class RecordingService(original_service):
+            def __init__(
+                self,
+                *args,
+                flow_observations=None,
+                peer_resolutions=None,
+                **kwargs,
+            ):
+                captured.append(
+                    {
+                        "flow_observations": tuple(flow_observations or ()),
+                        "peer_resolutions": dict(peer_resolutions or {}),
+                    }
+                )
+                super().__init__(
+                    *args,
+                    flow_observations=flow_observations,
+                    peer_resolutions=peer_resolutions,
+                    **kwargs,
+                )
+
+        monkeypatch.setattr(
+            network_router,
+            "NetworkIntelligenceService",
+            RecordingService,
+        )
+        client = _client(
+            tmp_path,
+            network_policy_store=NetworkDesignPolicyStore(),
+            network_service=service,
+        )
+
+        response = client.post(
+            "/api/v1/network/policy/preview",
+            headers=_auth(),
+            json={"rules": []},
+        )
+
+        assert response.status_code == 200
+        assert captured[-1] == {
+            "flow_observations": (flow_observation,),
+            "peer_resolutions": peer_resolutions,
+        }
+
     @pytest.mark.parametrize(
         ("path", "collection"),
         (
