@@ -392,6 +392,35 @@ class TestRuleFindings:
         body = client.get("/api/v1/network/rule-findings", headers=_auth()).json()
         assert body["evidence"][0]["confidence"] == "medium"
 
+    def test_analyzed_flow_logs_raise_confidence_and_correct_basis(
+        self,
+        tmp_path,
+    ):
+        base = build_service(network_rows())
+        flow = {
+            "subject_id": "flow:endpoint",
+            "object_id": "/rule/not-present",
+            "predicate": "trafficObserved",
+            "attributes": {"dataSource": "traffic_analytics"},
+        }
+        service = NetworkIntelligenceService(
+            base.snapshot,
+            semantic_relationships=(flow,),
+            flow_observations=(flow,),
+        )
+
+        body = _client(
+            tmp_path,
+            network_service=service,
+        ).get("/api/v1/network/rule-findings", headers=_auth()).json()
+
+        assert body["evidence"][0]["confidence"] == "high"
+        assert all(
+            "flow logs are not ingested"
+            not in str(finding.get("evidence", {}).get("basis", ""))
+            for finding in body["data"]["findings"]
+        )
+
     def test_coverage_and_pagination_are_additive_and_honest(self, client):
         complete = client.get(
             "/api/v1/network/rule-findings",

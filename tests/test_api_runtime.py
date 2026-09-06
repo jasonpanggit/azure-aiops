@@ -33,6 +33,7 @@ from api.runtime import (
     build_context,
 )
 from api.scope import Scope
+from fabric.dataset_mapper import InventoryDatasetMapper
 from intelligence.inventory.normalization import normalize_os_inventory
 from intelligence.remediation.execution_verifier import ExecutionVerifier
 from onboarding.credentials import KeyVaultSecretWriter
@@ -140,6 +141,81 @@ def test_managed_network_provider_analyzes_ingested_flow_observations(
             "object_id": subnet_id.casefold(),
         },
     )
+
+
+def test_managed_network_provider_normalizes_persisted_flow_relationships(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import api.runtime as runtime_module
+    from network.design import NetworkDesignPolicy
+
+    snapshot = tmp_path / "current"
+    (snapshot / "relationships").mkdir(parents=True)
+    (snapshot / "manifest.json").write_text(
+        json.dumps({"startedAt": "2026-09-06T00:00:00Z"}),
+        encoding="utf-8",
+    )
+    rule_id = "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/networkSecurityGroups/nsg/securityRules/allow-web"
+    relationship = {
+        "relationshipId": "flow-1",
+        "subjectId": "flow:endpoint",
+        "objectId": rule_id,
+        "predicate": "trafficObserved",
+        "attributes": {
+            "dataSource": "traffic_analytics",
+            "allowedVsObserved": "allowed_and_observed",
+        },
+    }
+    (snapshot / "relationships" / "relationships.jsonl").write_text(
+        json.dumps(relationship) + "\n",
+        encoding="utf-8",
+    )
+    persisted = InventoryDatasetMapper().load(
+        snapshot,
+        "sync-run",
+    )["silver_resource_relationships"]
+
+    observations = _traffic_analysis_observations(persisted)
+
+    assert observations is not None
+    assert observations[0]["subject_id"] == "flow:endpoint"
+    assert observations[0]["object_id"] == rule_id.casefold()
+    assert observations[0]["attributes"] == relationship["attributes"]
+
+    class _PolicyStore:
+        def read_with_revision_or_raise(self):
+            return NetworkDesignPolicy(), 3
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_load_ontology_rows",
+        lambda: (
+            [
+                {
+                    "entity_type": "VNet",
+                    "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet-a",
+                    "name": "vnet-a",
+                    "payload_json": "{}",
+                }
+            ],
+            persisted,
+            "2026-09-06T00:00:00Z",
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_network_policy_store",
+        lambda: _PolicyStore(),
+    )
+
+    service = _load_network_service()
+
+    assert service is not None
+    assert service.flow_log_provenance == {
+        "state": "analyzed",
+        "observed_flow_count": 1,
+    }
 
 
 def test_azure_patch_runtime_shares_credential_with_execution_verifier(
