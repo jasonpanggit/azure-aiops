@@ -623,14 +623,22 @@ describe("Network page policy round-trip", () => {
 
   it("announces policy form validation failures", async () => {
     const user = userEvent.setup();
+    mocks.updatePolicy.mockRejectedValueOnce(
+      new Error("rule persistence unavailable"),
+    );
     renderPage();
 
     await user.click(await screen.findByRole("tab", { name: "Design policy" }));
     await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Rule ID" }),
+      "rule-save-error",
+    );
+    await user.type(screen.getByRole("textbox", { name: "Name" }), "Rule");
     await user.click(screen.getByRole("button", { name: "Save rule" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Provide a rule id and name",
+      "rule persistence unavailable",
     );
   });
 
