@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import base64
 import json
 from pathlib import Path
@@ -8,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from scripts.validate_ontology_publisher_rbac import (
-    EXPECTED_ROLE_ACTIONS,
+    EXPECTED_CURATOR_TOOLS,
+    EXPECTED_PUBLISHER_ROLE,
     AuthorizationEvidenceError,
     HttpResult,
     ValidationBlocked,
@@ -30,63 +30,52 @@ def _resource(text: str, kind: str, name: str) -> str:
     return text[start:] if next_resource == -1 else text[start:next_resource]
 
 
-def _quoted_items(block: str) -> list[str]:
-    return [
-        ast.literal_eval(line.strip().rstrip(","))
-        for line in block.splitlines()
-        if line.strip().startswith('"')
-    ]
-
-
-def test_publisher_has_a_distinct_identity_and_narrow_custom_role() -> None:
+def test_publisher_uses_the_least_broad_working_fabric_workspace_role() -> None:
     terraform = IDENTITY_TF.read_text(encoding="utf-8")
-    role = _resource(terraform, "azurerm_role_definition", "ontology_publisher")
     assignment = _resource(
         terraform,
-        "azurerm_role_assignment",
+        "fabric_workspace_role_assignment",
         "ontology_publisher",
     )
-    actions = terraform.split(
-        "ontology_publisher_data_actions = [", maxsplit=1
-    )[1].split("]", maxsplit=1)[0]
 
     assert 'resource "azurerm_user_assigned_identity" "ontology_publisher"' in terraform
-    assert _quoted_items(actions) == [
-        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
-        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action",
-        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write",
-        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete",
-    ]
-    assert "data_actions     = local.ontology_publisher_data_actions" in role
-    assert "actions          = []" in role
-    assert "Contributor" not in role
-    assert "Owner" not in role
-    assert "list" not in role.casefold()
-    assert (
-        "principal_id                     = "
-        "azurerm_user_assigned_identity.ontology_publisher.principal_id"
-        in assignment
-    )
+    assert 'role         = "Contributor"' in assignment
+    assert "azurerm_user_assigned_identity.ontology_publisher.principal_id" in assignment
+    assert 'type = "ServicePrincipal"' in assignment
+    assert 'resource "azurerm_role_definition" "ontology_publisher"' not in terraform
+    assert 'resource "azurerm_role_assignment" "ontology_publisher"' not in terraform
+    assert "Admin" not in assignment
+    assert "Member" not in assignment
+    assert "Platform limitation" in terraform
 
 
-def test_api_coordinator_and_curator_do_not_receive_publisher_role_or_credential() -> None:
+def test_no_other_identity_receives_fabric_workspace_contributor() -> None:
     identity = IDENTITY_TF.read_text(encoding="utf-8")
     job = JOB_TF.read_text(encoding="utf-8")
     foundry = FOUNDRY_TF.read_text(encoding="utf-8")
+    fabric = (
+        ROOT / "infra" / "terraform" / "fabric.tf"
+    ).read_text(encoding="utf-8")
     api = _resource(
         CONTAINER_APPS_TF.read_text(encoding="utf-8"),
         "azurerm_container_app",
         "api",
     )
-    assignment = _resource(
+    publisher_assignment = _resource(
         identity,
-        "azurerm_role_assignment",
+        "fabric_workspace_role_assignment",
         "ontology_publisher",
     )
+    api_assignment = _resource(
+        fabric,
+        "fabric_workspace_role_assignment",
+        "apps",
+    )
 
-    assert "ontology_coordinator" not in assignment
-    assert "azurerm_user_assigned_identity.apps" not in assignment
-    assert "azurerm_cognitive_account_project.ops" not in assignment
+    assert 'role         = "Contributor"' in publisher_assignment
+    assert 'role         = "Viewer"' in api_assignment
+    assert "ontology_coordinator" not in fabric
+    assert "azurerm_cognitive_account_project.ops" not in fabric
     assert "ONTOLOGY_PUBLISHER" not in job
     assert "ontology_publisher.client_id" not in job
     assert "ONTOLOGY_PUBLISHER" not in api
@@ -101,22 +90,21 @@ def test_api_coordinator_and_curator_do_not_receive_publisher_role_or_credential
     assert "ONTOLOGY_PUBLISHER" not in curator
 
 
-def test_publisher_has_no_model_or_read_generalization_grant() -> None:
+def test_publisher_has_no_model_or_app_runtime_grant() -> None:
     identity = IDENTITY_TF.read_text(encoding="utf-8")
-    role = _resource(identity, "azurerm_role_definition", "ontology_publisher")
-    assignment = _resource(
-        identity,
-        "azurerm_role_assignment",
-        "ontology_publisher",
+    job = JOB_TF.read_text(encoding="utf-8")
+    validator = _resource(
+        job,
+        "azurerm_container_app_job",
+        "ontology_rbac_validation",
     )
-    effective_grant = role + assignment
 
-    assert "Cognitive Services" not in effective_grant
-    assert "Foundry" not in effective_grant
-    assert "OpenAI" not in effective_grant
-    assert "Reader" not in assignment
-    assert "Contributor" not in assignment
-    assert "list" not in effective_grant.casefold()
+    assert "Cognitive Services" not in identity
+    assert "Foundry" not in identity
+    assert "OpenAI" not in identity
+    assert "ontology_publisher" in validator
+    assert "AIOPS_HOME" not in validator
+    assert "AIOPS_RUNTIME_MODE" not in validator
 
 
 def _token(client_id: str, object_id: str) -> str:
@@ -145,15 +133,23 @@ def _config() -> dict:
         ("api", "coordinator", "curator", "publisher"), start=1
     ):
         identities[identity_class] = {
-            "mode": "managed_identity",
-            "client_id": f"00000000-0000-0000-0000-{index:012d}",
             "object_id": f"10000000-0000-0000-0000-{index:012d}",
         }
+        if identity_class != "curator":
+            identities[identity_class].update(
+                {
+                    "mode": "managed_identity",
+                    "client_id": f"00000000-0000-0000-0000-{index:012d}",
+                }
+            )
     return {
         "non_production": True,
         "workspace_id": "20000000-0000-0000-0000-000000000001",
         "lakehouse_id": "30000000-0000-0000-0000-000000000001",
-        "publisher_role_actions": list(EXPECTED_ROLE_ACTIONS),
+        "publisher_role": dict(EXPECTED_PUBLISHER_ROLE),
+        "foundry_project_endpoint": "https://example.services.ai.azure.com/api/projects/test",
+        "curator_agent_name": "aiops-ontology-curator-agent",
+        "curator_prompt_sha256": "a" * 64,
         "identities": identities,
     }
 
@@ -163,6 +159,7 @@ class _MatrixTransport:
         self._identities = {
             entry["client_id"]: identity_class
             for identity_class, entry in config["identities"].items()
+            if "client_id" in entry
         }
         self.ambiguous = ambiguous
         self.leaked = leaked
@@ -178,12 +175,47 @@ class _MatrixTransport:
         headers: dict[str, str],
         body: bytes = b"",
     ) -> HttpResult:
-        claims = json.loads(
-            base64.urlsafe_b64decode(token.split(".")[1] + "==")
-        )
+        claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
         identity_class = self._identities[claims["appid"]]
         self.calls.append((identity_class, method, url))
         correlation = {"x-ms-request-id": f"request-{len(self.calls)}"}
+        if "api.fabric.microsoft.com" in url:
+            assignments = [
+                {
+                    "principal": {
+                        "id": self._config["identities"]["publisher"]["object_id"]
+                    },
+                    "role": "Contributor",
+                },
+                {
+                    "principal": {
+                        "id": self._config["identities"]["api"]["object_id"]
+                    },
+                    "role": "Viewer",
+                },
+            ]
+            return HttpResult(
+                200,
+                correlation,
+                json.dumps({"value": assignments}).encode(),
+            )
+        if "/agents/aiops-ontology-curator-agent/versions" in url:
+            definition = {
+                "model": "gpt-5.4-mini",
+                "instructions_sha256": "a" * 64,
+                "tools": [
+                    {
+                        "type": "mcp",
+                        "server_label": "operations-mcp",
+                        "allowed_tools": list(EXPECTED_CURATOR_TOOLS),
+                    }
+                ],
+            }
+            return HttpResult(
+                200,
+                correlation,
+                json.dumps({"value": [{"version": "7", "definition": definition}]}).encode(),
+            )
         if identity_class != "publisher":
             if self.leaked:
                 return HttpResult(201, {**correlation, "etag": '"leaked"'})
@@ -204,9 +236,10 @@ def _credentials(config: dict):
     return factory
 
 
-def test_live_matrix_requires_six_denials_and_publisher_stage_cas_rollback_cleanup() -> None:
+def test_live_matrix_combines_four_denials_with_curator_structural_evidence() -> None:
     config = _config()
     transport = _MatrixTransport(config)
+    transport._config = config
 
     report = validate_live_authorization(
         config,
@@ -221,8 +254,20 @@ def test_live_matrix_requires_six_denials_and_publisher_stage_cas_rollback_clean
         (row["identity_class"], row["operation"]) for row in denied
     } == {
         (identity, operation)
-        for identity in ("api", "coordinator", "curator")
+        for identity in ("api", "coordinator")
         for operation in ("stage_create_only", "pointer_cas")
+    }
+    curator = [
+        row
+        for row in evidence
+        if row["identity_class"] == "curator"
+    ]
+    assert {
+        (row["evidence_kind"], row["operation"], row["result"])
+        for row in curator
+    } == {
+        ("structural_live", "workspace_writer_role", "absent"),
+        ("structural_live", "deployed_tool_allowlist", "read_only"),
     }
     publisher_operations = {
         row["operation"]
@@ -259,6 +304,7 @@ def test_nonpublisher_result_must_be_an_unambiguous_denial(status_kind: str) -> 
         ambiguous=status_kind == "ambiguous",
         leaked=status_kind == "write_succeeded",
     )
+    transport._config = config
 
     with pytest.raises(AuthorizationEvidenceError, match="unambiguous denial"):
         validate_live_authorization(
@@ -279,9 +325,7 @@ def test_validator_rejects_missing_identity_role_drift_and_token_mismatch() -> N
         validate_live_authorization(missing, transport=_MatrixTransport(_config()))
 
     drifted = _config()
-    drifted["publisher_role_actions"].append(
-        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/list/action"
-    )
+    drifted["publisher_role"]["role"] = "Admin"
     with pytest.raises(AuthorizationEvidenceError, match="does not match"):
         validate_live_authorization(drifted, transport=_MatrixTransport(drifted))
 
@@ -308,3 +352,72 @@ def test_cli_fails_closed_when_live_configuration_is_missing(
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "blocked"
     assert report["evidence"] == []
+
+
+def test_curator_structural_evidence_fails_on_writer_role_or_extra_tool() -> None:
+    config = _config()
+
+    class UnsafeTransport(_MatrixTransport):
+        def request(self, method, url, *, token, headers, body=b""):
+            result = super().request(
+                method,
+                url,
+                token=token,
+                headers=headers,
+                body=body,
+            )
+            if "api.fabric.microsoft.com" in url:
+                assignments = json.loads(result.body)["value"]
+                assignments.append(
+                    {
+                        "principal": {
+                            "id": config["identities"]["curator"]["object_id"]
+                        },
+                        "role": "Contributor",
+                    }
+                )
+                return HttpResult(
+                    200,
+                    result.headers,
+                    json.dumps({"value": assignments}).encode(),
+                )
+            return result
+
+    role_transport = UnsafeTransport(config)
+    role_transport._config = config
+    with pytest.raises(AuthorizationEvidenceError, match="curator.*writer role"):
+        validate_live_authorization(
+            config,
+            transport=role_transport,
+            credential_factory=_credentials(config),
+        )
+
+    class ExtraToolTransport(_MatrixTransport):
+        def request(self, method, url, *, token, headers, body=b""):
+            result = super().request(
+                method,
+                url,
+                token=token,
+                headers=headers,
+                body=body,
+            )
+            if "/agents/" in url:
+                payload = json.loads(result.body)
+                payload["value"][0]["definition"]["tools"][0]["allowed_tools"].append(
+                    "publish_ontology"
+                )
+                return HttpResult(
+                    200,
+                    result.headers,
+                    json.dumps(payload).encode(),
+                )
+            return result
+
+    tool_transport = ExtraToolTransport(config)
+    tool_transport._config = config
+    with pytest.raises(AuthorizationEvidenceError, match="tool allowlist"):
+        validate_live_authorization(
+            config,
+            transport=tool_transport,
+            credential_factory=_credentials(config),
+        )

@@ -39,6 +39,17 @@ def test_curator_is_a_separately_versioned_gpt_54_mini_prompt_agent() -> None:
     assert "FOUNDRY_AGENT_SPECIALIST_ID" in resource
     assert '= "ontology_curator"' in resource
     assert "local.ontology_curator_prompt" in resource
+    assert "var.enable_ontology_curator_agent" in resource
+    assert "enable_foundry_specialist_candidate_publish" not in resource
+
+    variables = (
+        ROOT / "infra" / "terraform" / "variables.tf"
+    ).read_text(encoding="utf-8")
+    curator_flag = variables.split(
+        'variable "enable_ontology_curator_agent"', maxsplit=1
+    )[1].split("}", maxsplit=1)[0]
+    assert "type        = bool" in curator_flag
+    assert "default     = false" in curator_flag
 
 
 def test_curator_has_exactly_four_read_only_operations_mcp_tools() -> None:

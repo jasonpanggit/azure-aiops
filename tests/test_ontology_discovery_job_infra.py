@@ -59,3 +59,38 @@ def test_api_container_has_no_competing_ontology_schedule() -> None:
 
     assert "ontology_discovery.cli" not in container_apps
     assert "ontology-discovery" not in container_apps
+
+
+def test_rbac_validator_job_is_manual_only_and_selects_exactly_three_uais() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+    job = _resource(
+        terraform,
+        "azurerm_container_app_job",
+        "ontology_rbac_validation",
+    )
+
+    assert "manual_trigger_config" in job
+    assert "schedule_trigger_config" not in job
+    assert "replica_timeout_in_seconds = 600" in job
+    assert "replica_retry_limit        = 0" in job
+    assert "azurerm_user_assigned_identity.apps.id" in job
+    assert "azurerm_user_assigned_identity.ontology_coordinator.id" in job
+    assert "azurerm_user_assigned_identity.ontology_publisher.id" in job
+    assert "azurerm_cognitive_account_project.ops" not in job
+    assert '"/app/scripts/validate_ontology_publisher_rbac.py"' in job
+    assert '"--non-production"' in job
+    assert '"--fail-on-missing-evidence"' in job
+    assert "AIOPS_ONTOLOGY_API_CLIENT_ID" in job
+    assert "AIOPS_ONTOLOGY_COORDINATOR_CLIENT_ID" in job
+    assert "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID" in job
+    assert "FOUNDRY_PROJECT_ENDPOINT" in job
+    assert "ONTOLOGY_CURATOR_OBJECT_ID" in job
+
+
+def test_validator_script_is_packaged_in_the_api_image() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert (
+        "COPY scripts/validate_ontology_publisher_rbac.py "
+        "/app/scripts/validate_ontology_publisher_rbac.py"
+    ) in dockerfile
