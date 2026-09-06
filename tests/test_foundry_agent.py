@@ -93,6 +93,16 @@ def test_unversioned_runtime_may_use_preview_maf(monkeypatch) -> None:
     assert selected is MicrosoftAgentFrameworkFoundryAgent
 
 
+def test_version_pinning_required_disables_unversioned_legacy_agent(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "network-agent")
+    monkeypatch.delenv("FOUNDRY_NETWORK_AGENT_VERSION", raising=False)
+    monkeypatch.setenv("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "true")
+
+    assert FoundryPromptAgent.from_env("network") is None
+    assert MicrosoftAgentFrameworkFoundryAgent.from_env("network") is None
+
+
 def test_legacy_foundry_configuration_is_a_compatible_network_fallback(monkeypatch) -> None:
     monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
     monkeypatch.setenv("FOUNDRY_AGENT_NAME", "operations-copilot")

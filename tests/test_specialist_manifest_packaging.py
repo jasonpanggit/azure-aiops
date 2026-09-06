@@ -602,6 +602,76 @@ def test_foundry_rollout_retriggers_for_promotion_path_and_gate_implementation()
     assert triggers.count("filesha256(") >= 2
 
 
+def test_candidate_publication_is_explicitly_staged_and_safe_by_default():
+    variables = _read("infra/terraform/variables.tf")
+    foundry = _read("infra/terraform/foundry.tf")
+
+    publish = _hcl_block(
+        variables, 'variable "enable_foundry_specialist_candidate_publish"'
+    )
+    verified = _hcl_block(
+        variables, 'variable "foundry_version_pinning_runtime_verified"'
+    )
+    assert re.search(r"default\s*=\s*false", publish)
+    assert re.search(r"default\s*=\s*false", verified)
+
+    rollout = foundry[
+        foundry.index('resource "terraform_data" "foundry_agent"') :
+        foundry.index(PROMOTION_GATE_RESOURCE)
+    ]
+    assert (
+        "var.create_foundry_agent && var.enable_foundry_specialist_candidate_publish"
+        in rollout
+    )
+    assert "var.foundry_version_pinning_runtime_verified" in rollout
+    assert "azurerm_container_app.api" in rollout
+
+
+def test_activation_selector_supports_validated_active_and_rollback_maps():
+    variables = _read("infra/terraform/variables.tf")
+    foundry = _read("infra/terraform/foundry.tf")
+
+    selector = _hcl_block(
+        variables, 'variable "foundry_specialist_activation_target"'
+    )
+    assert '"legacy"' in selector
+    assert '"active"' in selector
+    assert '"rollback"' in selector
+    assert re.search(r'default\s*=\s*"legacy"', selector)
+
+    activation = _local_block(foundry, "foundry_specialist_activation")
+    assert "foundry_specialist_activation_target" in activation
+    assert "foundry_promoted_agents" in activation
+    assert "foundry_rollback_agents" in activation
+    assert "provider_version_id" in activation
+
+    for local_name in (
+        "foundry_rollback_ids_ok",
+        "foundry_rollback_ids_complete",
+        "foundry_rollback_no_candidate_ids",
+        "foundry_rollback_validated",
+        "foundry_activation_selection_valid",
+    ):
+        assert f"  {local_name} = " in foundry
+
+
+def test_legacy_migration_does_not_send_synthetic_versions():
+    foundry = _read("infra/terraform/foundry.tf")
+    container_apps = _read("infra/terraform/container_apps.tf")
+
+    activation = _local_block(foundry, "foundry_specialist_activation")
+    assert 'version = ""' in activation
+    assert "legacy_unversioned" in activation
+    assert "foundry_specialist_agent_versions" not in activation
+
+    version_env = container_apps[
+        container_apps.index('name  = "FOUNDRY_${upper(env.key)}_AGENT_VERSION"') - 180 :
+        container_apps.index('name  = "FOUNDRY_${upper(env.key)}_AGENT_VERSION"') + 180
+    ]
+    assert 'if agent.version != ""' in version_env
+    assert "AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED" in container_apps
+
+
 # ---------------------------------------------------------------------------
 # Actual immutable provider IDs captured from create/version responses
 # ---------------------------------------------------------------------------
