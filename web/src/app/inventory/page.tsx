@@ -168,17 +168,14 @@ function uniqueOptions(values: string[]): Array<{ value: string; label: string }
     .map((value) => ({ value, label: value }));
 }
 
-function scopesMatch(
-  left: Record<string, string[] | undefined>,
-  right: Record<string, string[] | undefined>,
-): boolean {
-  const dimensions = new Set([...Object.keys(left), ...Object.keys(right)]);
-  return Array.from(dimensions).every((dimension) => {
-    const leftValues = [...(left[dimension] ?? [])].sort();
-    const rightValues = [...(right[dimension] ?? [])].sort();
-    return leftValues.length === rightValues.length
-      && leftValues.every((value, index) => value === rightValues[index]);
-  });
+async function withRequestFingerprint<T>(
+  request: Promise<Envelope<T>>,
+  requestFingerprint: string,
+): Promise<Envelope<T> & { requestFingerprint: string }> {
+  return {
+    ...await request,
+    requestFingerprint,
+  };
 }
 
 function optionLabel(value: string, label: string): { value: string; label: string } {
@@ -359,14 +356,50 @@ export default function InventoryPage() {
     [scope, subscriptionFilter],
   );
   const scopeKey = useMemo(() => JSON.stringify(effectiveScope), [effectiveScope]);
-  const inventory = useApi(() => inventoryApi.os(effectiveScope, osPage * osPageSize, osPageSize), [scopeKey, refreshKey, osPage, osPageSize]);
-  const softwareInventory = useApi(() => inventoryApi.software(effectiveScope, softwarePage * softwarePageSize, softwarePageSize), [scopeKey, refreshKey, softwarePage, softwarePageSize]);
+  const inventoryRequestFingerprint = JSON.stringify({
+    scope: scopeKey,
+    refreshKey,
+    page: osPage,
+    pageSize: osPageSize,
+  });
+  const softwareRequestFingerprint = JSON.stringify({
+    scope: scopeKey,
+    refreshKey,
+    page: softwarePage,
+    pageSize: softwarePageSize,
+  });
+  const azureRequestFingerprint = JSON.stringify({
+    scope: scopeKey,
+    refreshKey,
+    page: azurePage,
+    pageSize: azurePageSize,
+  });
+  const inventory = useApi(
+    () => withRequestFingerprint(
+      inventoryApi.os(effectiveScope, osPage * osPageSize, osPageSize),
+      inventoryRequestFingerprint,
+    ),
+    [inventoryRequestFingerprint],
+  );
+  const softwareInventory = useApi(
+    () => withRequestFingerprint(
+      inventoryApi.software(effectiveScope, softwarePage * softwarePageSize, softwarePageSize),
+      softwareRequestFingerprint,
+    ),
+    [softwareRequestFingerprint],
+  );
   const narrative = useApi(() => inventoryApi.narrative(effectiveScope), [scopeKey, refreshKey]);
   const mappings = useApi(
     () => inventoryApi.mappings(effectiveScope),
     [scopeKey, refreshKey],
   );
-  const azureInventory = useApi(() => inventoryApi.paas(effectiveScope, azurePage * azurePageSize, azurePageSize), [scopeKey, refreshKey, azurePage, azurePageSize]);
+  const azureInventory = useApi(
+    () => withRequestFingerprint(
+      inventoryApi.paas(effectiveScope, azurePage * azurePageSize, azurePageSize),
+      azureRequestFingerprint,
+    ),
+    [azureRequestFingerprint],
+  );
 
   const azureGroups = useMemo(() => azureInventory.data?.data.groups ?? [], [azureInventory.data]);
   const azureProviders = useMemo(
@@ -374,7 +407,12 @@ export default function InventoryPage() {
     [azureGroups],
   );
   const azureTypeOptions = useMemo(
-    () => uniqueOptions(azureGroups.map((group) => resourceTypeLabel(group.resource_type))),
+    () => Array.from(new Set(azureGroups.map((group) => group.resource_type)))
+      .map((resourceType) => ({
+        value: resourceType,
+        label: resourceTypeLabel(resourceType),
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label)),
     [azureGroups],
   );
   const azureSkuOptions = useMemo(
@@ -388,7 +426,7 @@ export default function InventoryPage() {
       return (
         haystack.includes(azureSearch.toLowerCase()) &&
         (azureProviderFilter === "all" || providerLabel(group.resource_type) === azureProviderFilter) &&
-        (azureTypeFilter === "all" || resourceTypeLabel(group.resource_type) === azureTypeFilter) &&
+        (azureTypeFilter === "all" || group.resource_type === azureTypeFilter) &&
         (azureSkuFilter === "all" || skuTier === azureSkuFilter)
       );
     }),
@@ -464,6 +502,17 @@ export default function InventoryPage() {
   );
   const softwarePartialSource = Object.values(softwareSourceStates).find((source) => source.state !== "ready");
   const mappingItems: SoftwareMapping[] = mappings.data?.data.mappings ?? [];
+  const activeCopilotState = tab === "software"
+    ? softwareInventory
+    : tab === "azure"
+      ? azureInventory
+      : inventory;
+  const activeCopilotRequestFingerprint = tab === "software"
+    ? softwareRequestFingerprint
+    : tab === "azure"
+      ? azureRequestFingerprint
+      : inventoryRequestFingerprint;
+  const activeCopilotScope = activeCopilotState.data?.data.requested_scope;
   const copilotContext = useMemo(() => {
     let records: InventoryCopilotRecord[];
     let totalCount: number;
@@ -555,7 +604,7 @@ export default function InventoryPage() {
     }
 
     return buildInventoryCopilotContext({
-      scope: effectiveScope,
+      scope: activeCopilotScope ?? {},
       tab,
       filters,
       records,
@@ -576,7 +625,7 @@ export default function InventoryPage() {
     azureSelectedKey,
     azureSkuFilter,
     azureTypeFilter,
-    effectiveScope,
+    activeCopilotScope,
     filteredAzureGroups,
     filteredGroups,
     filteredSoftwareGroups,
@@ -599,17 +648,11 @@ export default function InventoryPage() {
     subscriptionFilter,
     tab,
   ]);
-  const activeCopilotState = tab === "software"
-    ? softwareInventory
-    : tab === "azure"
-      ? azureInventory
-      : inventory;
-  const activeCopilotScope = activeCopilotState.data?.data.requested_scope;
   const copilotReady = Boolean(
     activeCopilotScope
     && !activeCopilotState.loading
     && !activeCopilotState.error
-    && scopesMatch(effectiveScope, activeCopilotScope),
+    && activeCopilotState.data?.requestFingerprint === activeCopilotRequestFingerprint,
   );
 
   useEffect(() => {

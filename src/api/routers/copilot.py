@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
@@ -43,10 +44,18 @@ from operations.orchestration_contract import (
 from operations.orchestration_policy import PolicyViolation
 from operations.orchestration_service import OrchestrationService
 from operations.page_context import PageSnapshot
+from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
+from operations.tools import (
+    STATUS_EMPTY,
+    STATUS_OK,
+    STATUS_UNAVAILABLE,
+    ToolResult,
+    call_tool,
+)
 
 from ..dependencies import Context, CurrentPrincipal, ReadScope
 from ..errors import ApiError, ErrorCode
-from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
+from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope, scope_attributes
 
 logger = logging.getLogger("aiops.api.copilot")
@@ -121,7 +130,265 @@ class CanonicalInvestigationPayload(CanonicalInvestigationRequest):
     hint: CanonicalPlanHint | None = None
 
 
+class CanonicalInventorySelector(BaseModel):
+    """Bounded server selector derived from untrusted Inventory page context."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    family: Literal["os", "software", "paas"]
+    resource_selector: str | None = Field(default=None, min_length=1, max_length=240)
+
+    def tool_arguments(self) -> dict[str, str]:
+        arguments = {"family": self.family}
+        if self.resource_selector:
+            arguments["resource_type"] = self.resource_selector
+        return arguments
+
+
 _HIDDEN = object()
+
+_INVENTORY_SOURCE_TABS = {
+    "inventory/os_observations": "os",
+    "inventory/software_observations": "software",
+    "inventory/resource_observations": "azure",
+}
+_INVENTORY_PAGE_TABS = {
+    "inventory:os": "os",
+    "inventory:software": "software",
+    "inventory:azure": "azure",
+}
+_MAX_SERVER_EVIDENCE = 255
+
+
+def _bounded_selector_text(
+    value: Any,
+    *,
+    field: str,
+    max_length: int = 120,
+) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > max_length or any(
+        character in text for character in ("\x00", "\r", "\n")
+    ):
+        raise ValueError(f"invalid inventory selector {field}")
+    return text
+
+
+def _inventory_selector(snapshot: Any) -> CanonicalInventorySelector:
+    """Derive a bounded selector without treating browser rows as evidence."""
+
+    page_tab = _INVENTORY_PAGE_TABS.get(snapshot.page_id)
+    inferred_tabs: set[str] = set()
+    selected_rows: list[Mapping[str, Any]] = []
+    filters: dict[str, str] | None = None
+
+    for item in snapshot.evidence:
+        inferred_tab = _INVENTORY_SOURCE_TABS.get(item.source)
+        if inferred_tab is None:
+            raise ValueError("unsupported inventory evidence source")
+        inferred_tabs.add(inferred_tab)
+        data = item.data
+        raw_context = data.get("inventory_context")
+        if not isinstance(raw_context, Mapping):
+            raise TypeError("inventory evidence is missing bounded page context")
+        claimed_tab = raw_context.get("tab")
+        if claimed_tab != inferred_tab:
+            raise ValueError("inventory tab conflicts with evidence shape")
+        raw_filters = raw_context.get("filters")
+        if not isinstance(raw_filters, Mapping) or len(raw_filters) > 16:
+            raise ValueError("inventory filters are invalid")
+        normalized_filters = {
+            _bounded_selector_text(key, field="filter name", max_length=64):
+            _bounded_selector_text(value, field=f"filter {key}", max_length=160)
+            for key, value in raw_filters.items()
+        }
+        if filters is not None and filters != normalized_filters:
+            raise ValueError("inventory evidence carries conflicting filters")
+        filters = normalized_filters
+        if data.get("selected") is True:
+            selected_rows.append(data)
+
+    if len(inferred_tabs) > 1 or len(selected_rows) > 1:
+        raise ValueError("inventory selector is ambiguous")
+    inferred_tab = next(iter(inferred_tabs), None)
+    if page_tab and inferred_tab and page_tab != inferred_tab:
+        raise ValueError("inventory page conflicts with evidence shape")
+    tab = page_tab or inferred_tab
+    if tab is None:
+        raise ValueError("inventory selector cannot be inferred")
+
+    selector: str | None = None
+    selected = selected_rows[0] if selected_rows else None
+    active_filters = filters or {}
+    if tab == "os":
+        os_name = selected.get("os_name") if selected else active_filters.get("os_name")
+        os_version = selected.get("os_version") if selected else active_filters.get("os_version")
+        if os_name and os_version and os_name != "all" and os_version != "all":
+            selector = "group:" + "|".join((
+                _bounded_selector_text(os_name, field="os_name"),
+                _bounded_selector_text(os_version, field="os_version"),
+            ))
+        family = "os"
+    elif tab == "software":
+        software_name = (
+            selected.get("software_name")
+            if selected
+            else active_filters.get("software")
+        )
+        software_version = selected.get("software_version") if selected else None
+        if (
+            software_name
+            and software_version
+            and software_name != "all"
+            and software_version != "all"
+        ):
+            selector = "group:" + "|".join((
+                _bounded_selector_text(software_name, field="software_name"),
+                _bounded_selector_text(software_version, field="software_version"),
+            ))
+        family = "software"
+    else:
+        if selected:
+            selector = "group:" + "|".join((
+                _bounded_selector_text(
+                    selected.get("resource_type"),
+                    field="resource_type",
+                    max_length=160,
+                ).replace("/", ":"),
+                _bounded_selector_text(selected.get("sku") or "Unknown", field="sku"),
+                _bounded_selector_text(selected.get("tier") or "Unknown", field="tier"),
+            ))
+        else:
+            resource_type = active_filters.get("resource_type")
+            if resource_type and resource_type != "all":
+                selector = "type:" + _bounded_selector_text(
+                    resource_type,
+                    field="resource_type",
+                    max_length=160,
+                )
+        family = "paas"
+
+    return CanonicalInventorySelector(
+        family=family,
+        resource_selector=selector,
+    )
+
+
+def _server_inventory_result(result: Mapping[str, Any] | None) -> ToolResult:
+    if result is None:
+        return ToolResult(status=STATUS_EMPTY)
+    raw_evidence = [
+        item
+        for item in result.get("evidence", [])
+        if isinstance(item, Mapping)
+    ]
+    evidence = tuple(
+        Evidence(
+            source_engine=str(item.get("source_engine") or "InventoryService"),
+            source_table=str(item.get("source_table") or ""),
+            timestamp=str(item.get("timestamp") or ""),
+            resource_id=str(item.get("resource_id") or ""),
+            confidence=str(item.get("confidence") or CONFIDENCE_HIGH),
+        )
+        for item in raw_evidence[:_MAX_SERVER_EVIDENCE]
+    )
+    warnings = [
+        str(item).strip()
+        for item in result.get("warnings", [])
+        if str(item).strip()
+    ]
+    if len(raw_evidence) > _MAX_SERVER_EVIDENCE:
+        warnings.append(
+            "Server evidence truncated to "
+            f"{_MAX_SERVER_EVIDENCE} of {len(raw_evidence)} records"
+        )
+    total = int(result.get("total") or 0)
+    raw_data = result.get("data")
+    data = (
+        {**raw_data, "total": total}
+        if isinstance(raw_data, Mapping)
+        else {"items": raw_data, "total": total}
+    )
+    return ToolResult(
+        status=STATUS_OK if total else STATUS_EMPTY,
+        data=data,
+        evidence=evidence,
+        warning="; ".join(warnings),
+    )
+
+
+def _inventory_executor(
+    selector: CanonicalInventorySelector,
+):
+    """Execute only the policy-approved inventory call with server-side scope."""
+
+    derived_arguments = selector.tool_arguments()
+
+    def execute(
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        context: Any,
+        scope: Scope,
+    ) -> ToolResult:
+        if name != "inventory_resources":
+            return call_tool(name, arguments, context=context, scope=scope)
+        effective_arguments = dict(arguments) or derived_arguments
+        validated = CanonicalInventorySelector(
+            family=effective_arguments.get("family"),
+            resource_selector=effective_arguments.get("resource_type"),
+        )
+        resource_selector = validated.resource_selector or ""
+        if validated.family in {"os", "paas"} and not resource_selector.startswith("group:"):
+            tool_arguments: dict[str, str] = {"family": validated.family}
+            if resource_selector.startswith("type:"):
+                tool_arguments["resource_type"] = resource_selector.removeprefix("type:")
+            return call_tool(
+                name,
+                tool_arguments,
+                context=context,
+                scope=scope,
+            )
+
+        try:
+            service = context.resolve_provider("inventory")
+            if validated.family == "software":
+                if resource_selector.startswith("group:"):
+                    name_value, version = resource_selector.removeprefix("group:").split("|", 1)
+                    result = service.software_detail(
+                        name_value,
+                        version,
+                        scope,
+                        offset=0,
+                        limit=25,
+                    )
+                else:
+                    result = service.software_collection(scope, offset=0, limit=25)
+            elif validated.family == "os":
+                result = service.detail(
+                    resource_selector.removeprefix("group:"),
+                    scope,
+                    offset=0,
+                    limit=25,
+                )
+            else:
+                result = service.paas_detail(
+                    resource_selector.removeprefix("group:"),
+                    scope,
+                    offset=0,
+                    limit=25,
+                )
+            return _server_inventory_result(result)
+        except ApiError as exc:
+            return ToolResult(status=STATUS_UNAVAILABLE, warning=exc.message)
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+            logger.warning("canonical_inventory_provider_failed error=%s", exc)
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                warning="The scoped inventory provider failed to answer",
+            )
+
+    return execute
 
 
 def _filter_scoped(value: Any, scope: Scope) -> Any:
@@ -396,6 +663,14 @@ def investigate_canonical(
         payload.model_dump(exclude={"hint"})
     )
     browser_snapshot = request.snapshot
+    try:
+        selector = _inventory_selector(browser_snapshot)
+    except (TypeError, ValueError) as exc:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            str(exc),
+            details={"field": "snapshot.evidence"},
+        ) from exc
     request = request.model_copy(
         update={
             "snapshot": browser_snapshot.model_copy(
@@ -414,28 +689,45 @@ def investigate_canonical(
             )
         }
     )
-    planner = None
-    if payload.hint is not None:
-        citation_ids = [item.evidence_id for item in request.snapshot.evidence]
-        planner = lambda _request: CandidatePlan(
-            steps=[
-                SpecialistStep(
-                    specialist_id=payload.hint.specialist_id,
-                    tool_calls=[
-                        ToolCallCandidate(
-                            tool=payload.hint.tool,
-                            arguments=payload.hint.arguments,
-                            citation_ids=citation_ids or [COVERAGE_CITATION_ID],
-                        )
-                    ],
-                )
-            ],
-            estimated_tokens=0,
-            max_wall_seconds=5,
-        )
+    specialist_id = (
+        payload.hint.specialist_id
+        if payload.hint is not None
+        else INVENTORY_DATA_HEALTH_ID
+    )
+    tool = payload.hint.tool if payload.hint is not None else "inventory_resources"
+    derived_arguments = selector.tool_arguments()
+    hint_arguments = dict(payload.hint.arguments) if payload.hint is not None else {}
+    selector_conflict = any(
+        key in hint_arguments and hint_arguments[key] != value
+        for key, value in derived_arguments.items()
+    )
+    candidate_arguments = {
+        **hint_arguments,
+        **derived_arguments,
+        **({"selector_conflict": True} if selector_conflict else {}),
+    }
+    planner = lambda _request: CandidatePlan(
+        steps=[
+            SpecialistStep(
+                specialist_id=specialist_id,
+                tool_calls=[
+                    ToolCallCandidate(
+                        tool=tool,
+                        arguments=candidate_arguments,
+                        citation_ids=[COVERAGE_CITATION_ID],
+                    )
+                ],
+            )
+        ],
+        estimated_tokens=0,
+        max_wall_seconds=5,
+    )
 
     try:
-        result = OrchestrationService(planner=planner).execute(
+        result = OrchestrationService(
+            planner=planner,
+            executor=_inventory_executor(selector),
+        ).execute(
             request,
             context=context,
             principal_subject=principal.subject,
@@ -454,8 +746,14 @@ def investigate_canonical(
             details={"field": "thread_id"},
         ) from exc
 
+    result_data = result.model_dump(mode="json")
+    result_data["citations"] = [
+        citation
+        for citation in result_data["citations"]
+        if citation["citation_id"].startswith("tool:")
+    ]
     return envelope(
-        result.model_dump(mode="json"),
+        result_data,
         scope=scope.to_dict(),
         warnings=list(result.uncertainty),
     )

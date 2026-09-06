@@ -93,26 +93,77 @@ function uniqueWarnings(...groups: Array<string[] | undefined>): string[] {
 const THREAD_STORAGE_PREFIX = "aiops.copilot.thread.";
 const OPAQUE_THREAD_PATTERN = /^thr-[a-f0-9]{32}$/;
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).sort().join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function stableToken(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 function isCanonicalSnapshot(
   snapshot: CopilotDrawerProps["snapshot"],
 ): snapshot is CopilotEvidenceSnapshotV2 {
   return snapshot?.version === "2";
 }
 
-function readStoredThread(pageKind: string | undefined): string | null {
+function threadStorageKey(pageKind: string, contextFingerprint: string): string {
+  return `${THREAD_STORAGE_PREFIX}${pageKind}.${stableToken(contextFingerprint)}`;
+}
+
+function readStoredThread(
+  pageKind: string | undefined,
+  contextFingerprint: string,
+): string | null {
   if (!pageKind || typeof window === "undefined") return null;
-  const value = window.sessionStorage.getItem(`${THREAD_STORAGE_PREFIX}${pageKind}`);
+  const value = window.sessionStorage.getItem(
+    threadStorageKey(pageKind, contextFingerprint),
+  );
   return value && OPAQUE_THREAD_PATTERN.test(value) ? value : null;
 }
 
-function storeThread(pageKind: string, threadId: string): void {
+function storeThread(
+  pageKind: string,
+  contextFingerprint: string,
+  threadId: string,
+): void {
   if (typeof window === "undefined" || !OPAQUE_THREAD_PATTERN.test(threadId)) return;
-  window.sessionStorage.setItem(`${THREAD_STORAGE_PREFIX}${pageKind}`, threadId);
+  window.sessionStorage.setItem(
+    threadStorageKey(pageKind, contextFingerprint),
+    threadId,
+  );
 }
 
-function clearStoredThread(pageKind: string): void {
+function clearStoredThread(pageKind: string, contextFingerprint: string): void {
   if (typeof window === "undefined") return;
-  window.sessionStorage.removeItem(`${THREAD_STORAGE_PREFIX}${pageKind}`);
+  window.sessionStorage.removeItem(threadStorageKey(pageKind, contextFingerprint));
+}
+
+function pruneStoredThreads(pageKind: string, contextFingerprint: string): void {
+  if (typeof window === "undefined") return;
+  const retainedKey = threadStorageKey(pageKind, contextFingerprint);
+  const prefix = `${THREAD_STORAGE_PREFIX}${pageKind}.`;
+  const staleKeys = Array.from(
+    { length: window.sessionStorage.length },
+    (_, index) => window.sessionStorage.key(index),
+  ).filter((key): key is string => Boolean(
+    key && key.startsWith(prefix) && key !== retainedKey,
+  ));
+  staleKeys.forEach((key) => window.sessionStorage.removeItem(key));
 }
 
 export function CopilotDrawer({
@@ -124,8 +175,15 @@ export function CopilotDrawer({
   requestedScope,
 }: CopilotDrawerProps) {
   const { scope } = useScope();
+  const effectiveRequestedScope = requestedScope ?? scope;
+  const canonicalSnapshot = isCanonicalSnapshot(snapshot) ? snapshot : null;
+  const contextFingerprint = stableJson({
+    scope: effectiveRequestedScope,
+    snapshot: snapshot ?? null,
+  });
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [transcriptFingerprint, setTranscriptFingerprint] = useState(contextFingerprint);
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<"idle" | "loading" | "partial" | "fallback" | "error">("idle");
   const [lastSnapshot, setLastSnapshot] = useState<CopilotDrawerProps["snapshot"] | null>(null);
@@ -133,8 +191,13 @@ export function CopilotDrawer({
   const [width, setWidth] = useState(MIN_WIDTH);
   const sessionId = useRef(`drawer-${Math.random().toString(36).slice(2)}-${Date.now()}`);
   const canonicalThreadId = useRef(
-    readStoredThread(isCanonicalSnapshot(snapshot) ? snapshot.page_kind : undefined),
+    readStoredThread(canonicalSnapshot?.page_kind, contextFingerprint),
   );
+  const contextFingerprintRef = useRef(contextFingerprint);
+  const canonicalPageKindRef = useRef(canonicalSnapshot?.page_kind);
+  const requestGeneration = useRef(0);
+  const requestInFlight = useRef(false);
+  const activeRequestFingerprint = useRef<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const resizing = useRef(false);
 
@@ -166,6 +229,35 @@ export function CopilotDrawer({
     };
   }, []);
 
+  useEffect(() => {
+    if (canonicalSnapshot?.page_kind) {
+      pruneStoredThreads(canonicalSnapshot.page_kind, contextFingerprint);
+    }
+    if (contextFingerprintRef.current === contextFingerprint) return;
+    if (canonicalPageKindRef.current) {
+      clearStoredThread(
+        canonicalPageKindRef.current,
+        contextFingerprintRef.current,
+      );
+    }
+    requestGeneration.current += 1;
+    contextFingerprintRef.current = contextFingerprint;
+    canonicalPageKindRef.current = canonicalSnapshot?.page_kind;
+    canonicalThreadId.current = readStoredThread(
+      canonicalSnapshot?.page_kind,
+      contextFingerprint,
+    );
+    requestInFlight.current = false;
+    activeRequestFingerprint.current = null;
+    setTurns([]);
+    setTranscriptFingerprint(contextFingerprint);
+    setQuestion("");
+    setLastSnapshot(null);
+    setLastQuestion("");
+    setLoading(false);
+    setStage("idle");
+  }, [canonicalSnapshot?.page_kind, contextFingerprint]);
+
   async function ask(
     value: string,
     tool?: string,
@@ -173,11 +265,19 @@ export function CopilotDrawer({
     specialistId?: string,
   ) {
     const nextQuestion = value.trim();
-    if (!nextQuestion) return;
+    if (!nextQuestion || requestInFlight.current) return;
+    requestInFlight.current = true;
     setQuestion("");
     setLoading(true);
     setStage("loading");
-    const canonicalSnapshot = isCanonicalSnapshot(snapshot) ? snapshot : null;
+    setTranscriptFingerprint(contextFingerprint);
+    const submittedContextFingerprint = contextFingerprint;
+    const submittedGeneration = requestGeneration.current;
+    activeRequestFingerprint.current = submittedContextFingerprint;
+    const requestIsCurrent = () => (
+      requestGeneration.current === submittedGeneration
+      && contextFingerprintRef.current === submittedContextFingerprint
+    );
     setLastQuestion(nextQuestion);
     try {
       if (canonicalSnapshot) {
@@ -186,7 +286,7 @@ export function CopilotDrawer({
             {
               contract_version: "1",
               question: nextQuestion,
-              requested_scope: requestedScope ?? scope,
+              requested_scope: effectiveRequestedScope,
               snapshot: canonicalSnapshot,
               ...(canonicalThreadId.current ? { thread_id: canonicalThreadId.current } : {}),
               ...(specialistId && tool
@@ -199,11 +299,16 @@ export function CopilotDrawer({
                   }
                 : {}),
             },
-            requestedScope ?? scope,
+            effectiveRequestedScope,
           );
+        if (!requestIsCurrent()) return;
         const result = envelope.data;
         canonicalThreadId.current = result.thread_id;
-        storeThread(canonicalSnapshot.page_kind, result.thread_id);
+        storeThread(
+          canonicalSnapshot.page_kind,
+          submittedContextFingerprint,
+          result.thread_id,
+        );
         setTurns((current) => [
           ...current,
           {
@@ -238,6 +343,7 @@ export function CopilotDrawer({
       const envelope = legacySnapshot
         ? await copilotApi.investigateContext(submittedSnapshot)
         : await copilotApi.investigate(nextQuestion, scope, { sessionId: sessionId.current, tool, toolArguments });
+      if (!requestIsCurrent()) return;
       const result = envelope.data as typeof envelope.data & {
         answer?: CopilotAnswer | null;
         synthesis?: {
@@ -276,6 +382,7 @@ export function CopilotDrawer({
       ]);
       setStage(synthesisMode === "deterministic" ? "fallback" : result.findings?.some((finding) => finding.status !== "verified") ? "partial" : "idle");
     } catch (reason) {
+      if (!requestIsCurrent()) return;
       if (
         canonicalSnapshot
         && reason instanceof ApiError
@@ -284,7 +391,10 @@ export function CopilotDrawer({
         && reason.details?.field === "thread_id"
       ) {
         canonicalThreadId.current = null;
-        clearStoredThread(canonicalSnapshot.page_kind);
+        clearStoredThread(
+          canonicalSnapshot.page_kind,
+          submittedContextFingerprint,
+        );
       }
       setTurns((current) => [
         ...current,
@@ -292,11 +402,19 @@ export function CopilotDrawer({
       ]);
       setStage("error");
     } finally {
-      setLoading(false);
+      if (requestIsCurrent()) {
+        requestInFlight.current = false;
+        activeRequestFingerprint.current = null;
+        setLoading(false);
+      }
     }
   }
 
   if (!open) return null;
+  const visibleTurns = transcriptFingerprint === contextFingerprint ? turns : [];
+  const visibleLoading = loading
+    && activeRequestFingerprint.current === contextFingerprint;
+  const visibleStage = transcriptFingerprint === contextFingerprint ? stage : "idle";
 
   return (
     <>
@@ -343,7 +461,7 @@ export function CopilotDrawer({
         </div>
 
         <div className="copilot-drawer-body">
-          {turns.length === 0 && (
+          {visibleTurns.length === 0 && (
             <div className="copilot-drawer-welcome">
               <p>Ask about this view. Answers stay scoped, grounded, and reviewable.</p>
               <div className="copilot-prompts">
@@ -352,6 +470,7 @@ export function CopilotDrawer({
                     type="button"
                     key={prompt.label}
                     onClick={() => ask(prompt.label, prompt.tool, prompt.toolArguments, prompt.specialistId)}
+                    disabled={visibleLoading}
                   >
                     {prompt.label}
                     <span>→</span>
@@ -362,12 +481,12 @@ export function CopilotDrawer({
           )}
 
           <div className="copilot-live-status" role="status" aria-live="polite">
-            {loading && "Gathering the visible page evidence and checking governed sources…"}
-            {!loading && stage === "fallback" && "Deterministic evidence is available; Foundry narration was not produced."}
-            {!loading && stage === "partial" && "Partial evidence: review freshness and source warnings before relying on this result."}
-            {!loading && stage === "error" && "The request failed. Retry the same bounded page snapshot."}
+            {visibleLoading && "Gathering the visible page evidence and checking governed sources…"}
+            {!visibleLoading && visibleStage === "fallback" && "Deterministic evidence is available; Foundry narration was not produced."}
+            {!visibleLoading && visibleStage === "partial" && "Partial evidence: review freshness and source warnings before relying on this result."}
+            {!visibleLoading && visibleStage === "error" && "The request failed. Retry the same bounded page snapshot."}
           </div>
-          {turns.map((turn, index) => (
+          {visibleTurns.map((turn, index) => (
             <div className="copilot-turn" key={`${turn.question}-${index}`}>
               <div className="copilot-question"><span>You</span><p>{turn.question}</p></div>
               <div className={`copilot-answer${turn.error ? " copilot-answer-error" : ""}`}>
@@ -458,15 +577,16 @@ export function CopilotDrawer({
               </div>
             </div>
           ))}
-          {loading && <div className="copilot-thinking"><span /><span /><span /> Correlating evidence and validating sources</div>}
+          {visibleLoading && <div className="copilot-thinking"><span /><span /><span /> Correlating evidence and validating sources</div>}
         </div>
 
         <div className="copilot-drawer-composer">
           <textarea
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
+            disabled={visibleLoading}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
+              if (event.key === "Enter" && !event.shiftKey && !visibleLoading) {
                 event.preventDefault();
                 ask(question);
               }
@@ -474,11 +594,11 @@ export function CopilotDrawer({
             placeholder="Ask about this record's impact, ownership, or recommended action"
             rows={2}
           />
-          <button type="button" className="button button-primary" onClick={() => ask(question)} disabled={loading || !question.trim()}>
+          <button type="button" className="button button-primary" onClick={() => ask(question)} disabled={visibleLoading || !question.trim()}>
             Send
           </button>
-          {stage === "error" && lastSnapshot && (
-            <button type="button" className="button" onClick={() => ask(lastQuestion)} disabled={loading}>
+          {visibleStage === "error" && lastSnapshot && (
+            <button type="button" className="button" onClick={() => ask(lastQuestion)} disabled={visibleLoading}>
               Retry
             </button>
           )}

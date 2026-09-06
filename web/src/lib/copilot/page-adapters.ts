@@ -31,7 +31,7 @@ export interface CopilotSnapshotEvidence {
 export interface CopilotEvidenceSnapshotV2 {
   version: "2";
   page_kind: "inventory";
-  page_id: "inventory";
+  page_id: "inventory" | `inventory:${InventoryCopilotAdapterInput["tab"]}`;
   coverage: CopilotSnapshotCoverage;
   freshness: CopilotSnapshotFreshness[];
   evidence: CopilotSnapshotEvidence[];
@@ -203,7 +203,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     snapshot: {
       version: "2",
       page_kind: "inventory",
-      page_id: "inventory",
+      page_id: `inventory:${input.tab}`,
       coverage: {
         visible_count: evidence.length,
         total_count: totalCount,

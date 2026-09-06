@@ -46,7 +46,7 @@ describe("inventory Copilot page adapter", () => {
     expect(context.snapshot).toMatchObject({
       version: "2",
       page_kind: "inventory",
-      page_id: "inventory",
+      page_id: "inventory:os",
       coverage: { visible_count: 2, total_count: 4, complete: false },
     });
     const selected = context.snapshot.evidence.find((item) => item.data.selected);

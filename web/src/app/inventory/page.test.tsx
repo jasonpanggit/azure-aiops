@@ -400,6 +400,34 @@ describe("Inventory OS tracer", () => {
     expect(investigateCanonical).not.toHaveBeenCalled();
   });
 
+  it("uses the server-derived effective scope when RBAC narrows the browser request", async () => {
+    investigateCanonical.mockClear();
+    os.mockResolvedValue({
+      ...envelope({
+        ...collection,
+        requested_scope: { subscription: ["sub-a"] },
+      }),
+      pagination: { offset: 0, limit: 20, total: 2, next_offset: null },
+    });
+
+    render(
+      <ScopeProvider initialScope={{ subscription: ["sub-a", "sub-b"] }}>
+        <InventoryPage />
+      </ScopeProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Ask Copilot about inventory" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Review visible inventory health/ }));
+
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(1));
+    expect(investigateCanonical.mock.calls[0][0].requested_scope).toEqual({
+      subscription: ["sub-a"],
+    });
+    expect(investigateCanonical.mock.calls[0][1]).toEqual({
+      subscription: ["sub-a"],
+    });
+  });
+
   it("renders canonical installed software and exact linked details", async () => {
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
     fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
@@ -523,6 +551,33 @@ describe("Inventory OS tracer", () => {
       0,
       25,
     );
+  });
+
+  it("submits the raw ARM resource type selected by its friendly label", async () => {
+    investigateCanonical.mockClear();
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Azure Inventory" }));
+    const resourceTypeFilter = await screen.findByDisplayValue("All resource types");
+    expect(resourceTypeFilter).toHaveDisplayValue("All resource types");
+    expect(resourceTypeFilter.querySelector("option[value='microsoft.app/containerapps']"))
+      .toHaveTextContent("Container Apps");
+
+    fireEvent.change(resourceTypeFilter, {
+      target: { value: "microsoft.app/containerapps" },
+    });
+    fireEvent.click(await screen.findByRole("button", {
+      name: "Ask Copilot about inventory",
+    }));
+    fireEvent.click(await screen.findByRole("button", {
+      name: /Review visible inventory health/,
+    }));
+
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(1));
+    expect(
+      investigateCanonical.mock.calls[0][0].snapshot.evidence[0]
+        .data.inventory_context.filters.resource_type,
+    ).toBe("microsoft.app/containerapps");
   });
 
   it("renders the drill-down inline beneath the group row it was opened from", async () => {

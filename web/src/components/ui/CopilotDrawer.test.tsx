@@ -29,6 +29,52 @@ const snapshot = {
 };
 
 describe("CopilotDrawer", () => {
+  function canonicalSnapshot(tab: "os" | "software" | "azure") {
+    return {
+      version: "2" as const,
+      page_kind: "inventory" as const,
+      page_id: "inventory" as const,
+      coverage: { visible_count: 1, total_count: 1, complete: true },
+      freshness: [],
+      evidence: [{
+        evidence_id: `inventory:${tab}:context`,
+        source: `inventory/${tab}_observations`,
+        status: "ok" as const,
+        observed_at: "2026-08-25T10:00:00Z",
+        resource_id: `inventory://${tab}/context`,
+        data: { inventory_context: { tab, filters: {} } },
+      }],
+    };
+  }
+
+  function canonicalResult(threadId: string, citationId: string) {
+    return {
+      data: {
+        contract_version: "1" as const,
+        status: "ok" as const,
+        policy_status: "accepted" as const,
+        fallback_reason: "",
+        selected_specialists: ["inventory_data_health"],
+        selected_tools: ["inventory_resources"],
+        tool_results: [],
+        uncertainty: [],
+        coverage: { visible_count: 1, total_count: 1, complete: true },
+        citations: [{
+          citation_id: citationId,
+          source: "inventory/server",
+          status: "ok",
+          observed_at: "2026-08-25T10:00:00Z",
+          resource_id: "",
+        }],
+        thread_id: threadId,
+        thread_revision: 1,
+        mutation_authorized: false as const,
+      },
+      evidence: [],
+      warnings: [],
+    };
+  }
+
   it("submits the exact typed page snapshot and renders deterministic citations", async () => {
     investigateContext.mockResolvedValue({
       data: {
@@ -255,7 +301,9 @@ describe("CopilotDrawer", () => {
     first.unmount();
 
     expect(window.sessionStorage).toHaveLength(1);
-    expect(window.sessionStorage.getItem("aiops.copilot.thread.inventory")).toBe(threadId);
+    const storedKey = window.sessionStorage.key(0);
+    expect(storedKey).toMatch(/^aiops\.copilot\.thread\.inventory\./);
+    expect(window.sessionStorage.getItem(storedKey!)).toBe(threadId);
 
     render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
@@ -265,9 +313,38 @@ describe("CopilotDrawer", () => {
 
   it("clears an expired opaque thread so retry starts a new server thread", async () => {
     investigateCanonical.mockClear();
+    window.sessionStorage.clear();
     const expiredThread = "thr-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const replacementThread = "thr-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    window.sessionStorage.setItem("aiops.copilot.thread.inventory", expiredThread);
+    const inventorySnapshot = {
+      version: "2" as const,
+      page_kind: "inventory" as const,
+      page_id: "inventory" as const,
+      coverage: { visible_count: 0, total_count: 0, complete: true },
+      freshness: [],
+      evidence: [],
+    };
+    const props = {
+      open: true,
+      onClose: vi.fn(),
+      contextLabel: "Inventory",
+      requestedScope: { subscription: ["sub-a"] },
+      snapshot: inventorySnapshot,
+      starterQuestions: [{ label: "Review inventory health" }],
+    };
+    investigateCanonical.mockResolvedValueOnce({
+      ...canonicalResult(expiredThread, "server:seed"),
+      data: {
+        ...canonicalResult(expiredThread, "server:seed").data,
+        citations: [],
+      },
+    });
+    const seeded = render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+    fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
+    await waitFor(() => expect(window.sessionStorage).toHaveLength(1));
+    seeded.unmount();
+
+    investigateCanonical.mockReset();
     investigateCanonical
       .mockRejectedValueOnce(new ApiError(
         404,
@@ -294,34 +371,147 @@ describe("CopilotDrawer", () => {
         evidence: [],
         warnings: [],
       });
-    const inventorySnapshot = {
-      version: "2" as const,
-      page_kind: "inventory" as const,
-      page_id: "inventory" as const,
-      coverage: { visible_count: 0, total_count: 0, complete: true },
-      freshness: [],
-      evidence: [],
-    };
 
     render(
       <ScopeProvider>
-        <CopilotDrawer
-          open
-          onClose={vi.fn()}
-          contextLabel="Inventory"
-          requestedScope={{ subscription: ["sub-a"] }}
-          snapshot={inventorySnapshot}
-          starterQuestions={[{ label: "Review inventory health" }]}
-        />
+        <CopilotDrawer {...props} />
       </ScopeProvider>,
     );
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
     expect(await screen.findByText("Investigation thread not found")).toBeInTheDocument();
-    expect(window.sessionStorage.getItem("aiops.copilot.thread.inventory")).toBeNull();
+    expect(window.sessionStorage).toHaveLength(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
     expect(investigateCanonical.mock.calls[1][0]).not.toHaveProperty("thread_id");
-    expect(window.sessionStorage.getItem("aiops.copilot.thread.inventory")).toBe(replacementThread);
+    expect(window.sessionStorage).toHaveLength(1);
+    expect(window.sessionStorage.getItem(window.sessionStorage.key(0)!)).toBe(replacementThread);
+  });
+
+  it("redacts transcript and thread when scope narrows", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    investigateCanonical.mockResolvedValue(
+      canonicalResult("thr-11111111111111111111111111111111", "server:wide"),
+    );
+    const props = {
+      open: true,
+      onClose: vi.fn(),
+      contextLabel: "Inventory",
+      requestedScope: { subscription: ["sub-a", "sub-b"] },
+      snapshot: canonicalSnapshot("os"),
+      starterQuestions: [{ label: "Review inventory" }],
+    };
+    const view = render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+
+    fireEvent.click(screen.getByRole("button", { name: /Review inventory/ }));
+    expect(await screen.findByText("server:wide")).toBeInTheDocument();
+    expect(window.sessionStorage).toHaveLength(1);
+
+    view.rerender(
+      <ScopeProvider>
+        <CopilotDrawer
+          {...props}
+          requestedScope={{ subscription: ["sub-a"] }}
+        />
+      </ScopeProvider>,
+    );
+
+    expect(screen.queryByText("server:wide")).not.toBeInTheDocument();
+    await waitFor(() => expect(window.sessionStorage).toHaveLength(0));
+    expect(screen.getByText(/Answers stay scoped/)).toBeInTheDocument();
+  });
+
+  it("redacts transcript and thread when the inventory tab changes", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    investigateCanonical.mockResolvedValue(
+      canonicalResult("thr-22222222222222222222222222222222", "server:os"),
+    );
+    const props = {
+      open: true,
+      onClose: vi.fn(),
+      contextLabel: "Inventory",
+      requestedScope: { subscription: ["sub-a"] },
+      snapshot: canonicalSnapshot("os"),
+      starterQuestions: [{ label: "Review inventory" }],
+    };
+    const view = render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+
+    fireEvent.click(screen.getByRole("button", { name: /Review inventory/ }));
+    expect(await screen.findByText("server:os")).toBeInTheDocument();
+
+    view.rerender(
+      <ScopeProvider>
+        <CopilotDrawer {...props} snapshot={canonicalSnapshot("software")} />
+      </ScopeProvider>,
+    );
+
+    expect(screen.queryByText("server:os")).not.toBeInTheDocument();
+    await waitFor(() => expect(window.sessionStorage).toHaveLength(0));
+  });
+
+  it("ignores an in-flight response from the previous context", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    let resolveRequest: ((value: ReturnType<typeof canonicalResult>) => void) | undefined;
+    investigateCanonical.mockReturnValue(new Promise((resolve) => {
+      resolveRequest = resolve;
+    }));
+    const props = {
+      open: true,
+      onClose: vi.fn(),
+      contextLabel: "Inventory",
+      requestedScope: { subscription: ["sub-a"] },
+      snapshot: canonicalSnapshot("os"),
+      starterQuestions: [{ label: "Review inventory" }],
+    };
+    const view = render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+
+    fireEvent.click(screen.getByRole("button", { name: /Review inventory/ }));
+    expect(screen.getByText(/Gathering the visible page evidence/)).toBeInTheDocument();
+    view.rerender(
+      <ScopeProvider>
+        <CopilotDrawer {...props} snapshot={canonicalSnapshot("azure")} />
+      </ScopeProvider>,
+    );
+    resolveRequest?.(
+      canonicalResult("thr-33333333333333333333333333333333", "server:stale"),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Gathering the visible page evidence/)).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText("server:stale")).not.toBeInTheDocument();
+    expect(window.sessionStorage).toHaveLength(0);
+  });
+
+  it("serializes requests within the same context", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    investigateCanonical.mockReturnValue(new Promise(() => undefined));
+    const props = {
+      open: true,
+      onClose: vi.fn(),
+      contextLabel: "Inventory",
+      requestedScope: { subscription: ["sub-a"] },
+      snapshot: canonicalSnapshot("os"),
+      starterQuestions: [{ label: "Review inventory" }],
+    };
+    render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+
+    const starter = screen.getByRole("button", { name: /Review inventory/ });
+    fireEvent.click(starter);
+    fireEvent.click(starter);
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Concurrent question" },
+    });
+    fireEvent.keyDown(screen.getByRole("textbox"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    expect(investigateCanonical).toHaveBeenCalledTimes(1);
+    expect(starter).toBeDisabled();
   });
 });
