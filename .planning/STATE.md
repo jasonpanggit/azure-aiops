@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 03.1-19 not started (18/25 sequential complete; 22/25 total summaries)
+current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
-stopped_at: Completed 03.1-22-PLAN.md
-last_updated: "2026-09-06T16:07:19.561Z"
+stopped_at: Completed 03.1-25-PLAN.md
+last_updated: "2026-09-06T16:35:45.198Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 130
+  completed_plans: 131
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -20,8 +20,8 @@ current_phase_name: Exposure Reliability and Scale
 
 **Active Phase:** Phase 03.1 (Exposure Reliability and Scale)
 **Wave:** Next eligible plan<br>
-**Current Plan:** 03.1-19 not started (18/25 sequential complete; 22/25 total summaries)
-**Status:** Planning — Plans 03.1-21 through 03.1-24 are complete out of sequence; Plan 03.1-19 remains next; Phase 11 snapshot v2, Phase 12, remediation, and network behavior preserved
+**Current Plan:** 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
+**Status:** Planning — Plans 03.1-21 through 03.1-25 are complete out of sequence; Plan 03.1-19 remains next; Phase 11 snapshot v2, Phase 12, remediation, and network behavior preserved
 
 ## Completed Plans (This Session)
 
@@ -48,6 +48,7 @@ current_phase_name: Exposure Reliability and Scale
 - **03.1-22** COMPLETE — Native Exposure navigation, lean Overview composition, six independent source states, conservative completeness, and unknown-safe metrics
 - **03.1-18** COMPLETE — Low-cardinality Exposure telemetry, one-cycle Azure Monitor alerts, and generation-bound semantic shadow reconciliation
 - **03.1-24** COMPLETE — Conservative shared evidence primitives, opaque cursor pagination, and governed Fluent UI risk-exception feedback
+- **03.1-25** COMPLETE — Independent CVE/KB detail states, canonical origin/query/row/scroll continuity, and governed risk-exception feedback
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
 - **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
 - **03.6-03** COMPLETE — Fail-safe `selectedPatchIds: string[] | null` patch-selection model (fixes CR-07 deselect-all-then-widens-to-all bug) and bounded/backoff client polling (`usePollingBackoff`, capped at 40 requests or 600000ms) with independently-testable ceilings
@@ -169,6 +170,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P16 | 15min | 2 tasks | 7 files |
 | Phase 03.1 P17 | 41 min | 2 tasks | 9 files |
 | Phase 03.1 P22 | 10min | 2 tasks | 9 files |
+| Phase 03.1 P25 | 25 min | 3 tasks | 13 files |
 
 ## Decisions
 
@@ -278,11 +280,15 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: Plan 03.1-22: Each Overview source owns an independent common-contract and source request so failures and retries cannot gate healthy siblings.
 - [Phase 03.1]: Plan 03.1-22: Common completeness owns trust and connection coverage while source envelopes own loaded and total item counts.
 - [Phase 03.1]: Plan 03.1-22: Whole-page unavailability appears only when all six authorized sections are unavailable.
+- [Phase 03.1]: Keep existing CVE and KB [id] routes; exact internal origin allowlisting and authorized query parsing govern every detail return. — Prevents open redirects and URL-based scope widening while preserving collection context.
+- [Phase 03.1]: Use canonical Exposure item pages for detail finding totals and durable enrichment source records for local NVD, EPSS, KEV, and MSRC trust states. — Keeps pagination and completeness server-owned while allowing enrichment sections to fail independently.
+- [Phase 03.1]: Treat absent durable enrichment status as unavailable rather than rendering compatibility defaults as observed zero. — Avoids false healthy or zero claims when a feed has no proven result.
+- [Phase 03.1]: Use authenticated session identity in the shared risk dialog and expose revoke only when the server projects can_revoke. — Keeps attribution and transition authority out of browser-entered fields.
 
 ## Session
 
-**Last session:** 2026-09-06T16:07:19.545Z
-**Stopped at:** Completed 03.1-22-PLAN.md
+**Last session:** 2026-09-06T16:35:45.182Z
+**Stopped at:** Completed 03.1-25-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context
