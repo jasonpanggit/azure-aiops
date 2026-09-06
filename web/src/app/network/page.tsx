@@ -262,7 +262,12 @@ export default function NetworkPage() {
       )}
 
       {gaps.data && findings.data && (gapCoverage?.truncated || findingCoverage?.truncated) && (
-        <div className="callout callout-warning topology-coverage">
+        <div
+          className="callout callout-warning topology-coverage"
+          role="status"
+          aria-live="polite"
+          aria-label="Incomplete network analysis results"
+        >
           <strong>Results are incomplete.</strong>
           <span>
             Showing {gapCoverage?.returned ?? gaps.data?.data.gaps.length ?? 0} of{" "}

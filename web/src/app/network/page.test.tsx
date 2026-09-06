@@ -200,7 +200,11 @@ describe("Network page honest totals and server pagination", () => {
     expect(metric).not.toBeNull();
     expect(within(metric!).getByText("620")).toBeInTheDocument();
     expect(within(metric!).getByText("340 structural or design gaps")).toBeInTheDocument();
-    expect(screen.getByText("Results are incomplete.")).toBeInTheDocument();
+    const incomplete = screen.getByRole("status", {
+      name: "Incomplete network analysis results",
+    });
+    expect(incomplete).toHaveAttribute("aria-live", "polite");
+    expect(within(incomplete).getByText("Results are incomplete.")).toBeInTheDocument();
     expect(
       screen.getByText(
         "Showing 100 of 340 inspection gaps and 100 of 620 rule findings. Metric totals are complete; the lists below are not.",
