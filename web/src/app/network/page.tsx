@@ -178,12 +178,16 @@ export default function NetworkPage() {
     ...(findings.data?.evidence ?? []),
     ...(bypass.data?.evidence ?? []),
   ];
-  const warnings = [
+  const topologyWarnings = Array.from(new Set([
     ...(topology.data?.warnings ?? []),
+    ...(topology.data?.data.topology.warnings ?? []),
+  ]));
+  const warnings = Array.from(new Set([
+    ...topologyWarnings,
     ...(gaps.data?.warnings ?? []),
     ...(findings.data?.warnings ?? []),
     ...(bypass.data?.warnings ?? []),
-  ];
+  ]));
   const bypassGaps = bypass.data?.data.gaps ?? [];
   const networkCopilotRecords = [
     {
@@ -334,7 +338,7 @@ export default function NetworkPage() {
               }
               scope={scope}
               evidence={topology.data?.evidence ?? null}
-              warnings={topology.data?.warnings ?? null}
+              warnings={topologyWarnings.length > 0 ? topologyWarnings : null}
               knowledgeVersion={topology.data?.knowledge_version ?? null}
               graphFreshness={topology.data?.graph_freshness}
             />

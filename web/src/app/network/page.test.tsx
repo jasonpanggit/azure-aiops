@@ -212,6 +212,22 @@ describe("Network page honest totals and server pagination", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders server-authored topology integrity warnings", async () => {
+    const topology = buildTopologyEnvelope();
+    topology.data.topology.warnings = [
+      "2 topology relationships were omitted because their endpoints were outside this scope",
+    ];
+    mocks.topology.mockResolvedValue(topology);
+
+    renderPage();
+
+    expect(
+      await screen.findByText(
+        "2 topology relationships were omitted because their endpoints were outside this scope",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("uses an unknown placeholder rather than zero while totals are loading", () => {
     mocks.topology.mockReturnValue(new Promise(() => undefined));
     mocks.gaps.mockReturnValue(new Promise(() => undefined));

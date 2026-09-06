@@ -1685,6 +1685,8 @@ export interface NetworkTopology {
   connection_ids: string[];
   counts: Record<string, number | Record<string, number>>;
   coverage?: TopologyCoverage;
+  /** Server-authored integrity warnings produced while projecting the graph. */
+  warnings?: string[];
   /** Whether flow-log evidence exists and whether rule analysis consumed it. */
   flow_log_provenance?: FlowLogProvenance;
 }
