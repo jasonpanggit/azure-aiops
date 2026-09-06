@@ -462,21 +462,25 @@ def test_alert_windows_are_exactly_one_cycle_and_evaluate_no_slower() -> None:
     variables = Path("infra/terraform/variables.tf").read_text(
         encoding="utf-8"
     )
+    compact_alerting = " ".join(alerting.split())
+    compact_variables = " ".join(variables.split())
 
     assert "exposure_ingestion_cadence_minutes" in variables
     assert "exposure_alert_evaluation_minutes" in variables
-    assert "var.exposure_alert_evaluation_minutes <= " in variables
-    assert "var.exposure_ingestion_cadence_minutes" in variables
+    assert (
+        "var.exposure_alert_evaluation_minutes <= "
+        "var.exposure_ingestion_cadence_minutes"
+    ) in compact_variables
     assert (
         "exposure_ingestion_cycle_window = "
-        'local.exposure_alert_iso8601_minutes['
-        "var.exposure_ingestion_cadence_minutes]"
-    ) in alerting
+        'local.exposure_alert_iso8601_minutes[ '
+        "tostring(var.exposure_ingestion_cadence_minutes) ]"
+    ) in compact_alerting
     assert (
         "exposure_alert_evaluation_frequency = "
-        'local.exposure_alert_iso8601_minutes['
-        "var.exposure_alert_evaluation_minutes]"
-    ) in alerting
+        'local.exposure_alert_iso8601_minutes[ '
+        "tostring(var.exposure_alert_evaluation_minutes) ]"
+    ) in compact_alerting
     assert "minimum_failing_periods_to_trigger_alert = 2" not in alerting
     assert "number_of_evaluation_periods             = 2" not in alerting
 
