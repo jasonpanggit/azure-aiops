@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 
 import pytest
@@ -347,3 +348,72 @@ def test_unknown_workload_coverage_creates_no_deployment_edge() -> None:
     assert json.loads(coverage[0]["unknown_reason_counts_json"]) == {
         "source_unavailable": 1
     }
+
+
+def test_identical_digest_values_remain_distinct_across_subscription_scopes() -> None:
+    products = fabric_products()
+    second_registry_id = f"{REGISTRY_ID}:subscription-2"
+    second_logical_id = f"{LOGICAL_IMAGE_ID}:subscription-2"
+    second_digest_id = f"{IMAGE_DIGEST_ID}:subscription-2"
+    second_observation_id = f"{OBSERVATION_ID}:subscription-2"
+
+    registry = deepcopy(products["silver_container_registries"][0])
+    registry.update(
+        {
+            "subscription_id": "subscription-2",
+            "resource_id": second_registry_id,
+            "registry_id": second_registry_id,
+            "registry_resource_id": registry["registry_resource_id"].replace(
+                "subscription-1",
+                "subscription-2",
+            ),
+        }
+    )
+    logical = deepcopy(products["silver_container_logical_images"][0])
+    logical.update(
+        {
+            "subscription_id": "subscription-2",
+            "resource_id": second_logical_id,
+            "logical_image_id": second_logical_id,
+            "registry_id": second_registry_id,
+            "registry_resource_id": registry["registry_resource_id"],
+        }
+    )
+    digest = deepcopy(products["silver_container_image_digests"][0])
+    digest.update(
+        {
+            "subscription_id": "subscription-2",
+            "resource_id": second_digest_id,
+            "image_digest_id": second_digest_id,
+            "logical_image_ids": [second_logical_id],
+            "registry_ids": [second_registry_id],
+        }
+    )
+    observation = deepcopy(
+        products["silver_container_vulnerability_observations"][0]
+    )
+    observation.update(
+        {
+            "subscription_id": "subscription-2",
+            "resource_id": second_observation_id,
+            "vulnerability_observation_id": second_observation_id,
+            "registry_id": second_registry_id,
+            "logical_image_id": second_logical_id,
+            "image_digest_id": second_digest_id,
+        }
+    )
+    products["silver_container_registries"].append(registry)
+    products["silver_container_logical_images"].append(logical)
+    products["silver_container_image_digests"].append(digest)
+    products["silver_container_vulnerability_observations"].append(observation)
+
+    graph = GranularExposureOntologyMapper().project(
+        products,
+        ontology_generation_id="ontology-generation-multi-scope",
+    )
+
+    image_digests = [
+        row for row in graph.entities if row["entity_type"] == "ImageDigest"
+    ]
+    assert len(image_digests) == 2
+    assert len({row["resource_id"] for row in image_digests}) == 2
