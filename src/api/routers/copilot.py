@@ -37,9 +37,12 @@ from operations.investigation_thread_store import ThreadNotFound
 from operations.maf_orchestrator import canonical_orchestration_enabled
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
+    AzureEntityRef,
     CandidatePlan,
     EvidenceSnapshotV2,
     SnapshotCoverage,
+    SnapshotEvidence,
+    SnapshotFreshness,
     SpecialistStep,
     ToolCallCandidate,
 )
@@ -75,6 +78,12 @@ NARRATION_ENGINE = "operations.FoundryPromptAgent"
 # tool call + narration). A question that cannot be answered inside this
 # budget is reported as partial rather than left to hang the request.
 INVESTIGATION_TIMEOUT_SECONDS = 20.0
+
+# Page kinds that have a valid mapping in the canonical EvidenceSnapshotV2
+# contract.  Only these may route through _run_context_via_canonical; all
+# others fall through to the legacy adapter to avoid masquerading as a
+# different page.
+CANONICAL_CONTEXT_PAGE_KINDS = frozenset({"inventory", "connections", "connections_fabric"})
 
 # `SemanticEngine.search` returns its hits under `items`. `results` is accepted
 # too so the route keeps working if the engine is ever normalized to the name
@@ -704,48 +713,64 @@ def _run_context_via_canonical(
 ) -> dict[str, Any]:
     """Thin canonical adapter: route a context investigation through OrchestrationService.
 
-    Builds a synthetic ``InvestigationRequest`` (the v2 snapshot contract only
-    accepts inventory/connections page kinds, so the adapter uses ``inventory``
-    as a bridge) and delegates to the single governed orchestration path.  The
-    result is projected back to the legacy context-ledger dict shape so
-    existing consumers see the same wire contract.
+    Translates the PageSnapshot's actual page kind, submitted evidence,
+    freshness, and selected resources into the canonical v2 contract when the
+    page kind has a valid canonical mapping.  Selects specialists through the
+    canonical proposal→policy→execution loop rather than hardcoding a single
+    specialist.  Projects a complete legacy ledger preserving canonical
+    findings, evidence, citations, status, and warnings.
 
-    Non-canonical and shadow/rollback modes bypass this function entirely and
-    continue to use :func:`run_context_investigation`.
+    Only called when ``snapshot.page_kind in CANONICAL_CONTEXT_PAGE_KINDS``;
+    unsupported page kinds are routed through ``run_context_investigation``
+    by the caller.
     """
 
+    # Translate PageSnapshot evidence rows into canonical SnapshotEvidence
+    canonical_evidence = [
+        SnapshotEvidence(
+            evidence_id=row.evidence_id,
+            source=row.section,
+            status=row.status if row.status in ("ok", "empty", "unavailable", "denied") else "ok",
+            observed_at=getattr(row, "observed_at", ""),
+            resource_id=getattr(row, "resource_id", ""),
+            data=getattr(row, "data", {}),
+        )
+        for row in snapshot.evidence
+    ]
+
+    # Translate PageSnapshot freshness into canonical SnapshotFreshness
+    canonical_freshness = [
+        SnapshotFreshness(
+            source=rec.source,
+            observed_at=rec.observed_at,
+            status=rec.status,
+        )
+        for rec in snapshot.freshness
+    ]
+
+    # Translate selected resources into Azure entity references
+    canonical_entities = [
+        AzureEntityRef(type="azure", resource_id=res.resource_id)
+        for res in snapshot.selected_resources
+    ]
+
     canonical_snapshot = EvidenceSnapshotV2(
-        page_kind="inventory",
+        page_kind=snapshot.page_kind,
         page_id=snapshot.page_id,
         coverage=SnapshotCoverage(
             visible_count=len(snapshot.evidence),
             total_count=len(snapshot.evidence),
             complete=False,
         ),
+        evidence=canonical_evidence,
+        freshness=canonical_freshness,
+        selected_entities=canonical_entities,
     )
     request = CanonicalInvestigationRequest(
         question=snapshot.question,
         requested_scope=scope.to_dict(),
         snapshot=canonical_snapshot,
     )
-
-    def _context_planner(_req: Any) -> CandidatePlan:
-        return CandidatePlan(
-            steps=[
-                SpecialistStep(
-                    specialist_id=INVENTORY_DATA_HEALTH_ID,
-                    tool_calls=[
-                        ToolCallCandidate(
-                            tool="inventory_resources",
-                            arguments={},
-                            citation_ids=[COVERAGE_CITATION_ID],
-                        )
-                    ],
-                )
-            ],
-            estimated_tokens=0,
-            max_wall_seconds=5,
-        )
 
     def _safe_executor(
         name: str,
@@ -762,8 +787,8 @@ def _run_context_via_canonical(
                 warning="Tool unavailable in context canonical mode",
             )
 
+    # Canonical proposal→policy→execution loop (no hardcoded planner)
     result = OrchestrationService(
-        planner=_context_planner,
         executor=_safe_executor,
     ).execute(
         request,
@@ -794,13 +819,39 @@ def _run_context_via_canonical(
             {
                 "tool": tr["tool"],
                 "status": tr["status"],
+                "data": tr.get("data", {}),
                 "warning": tr.get("warning", ""),
+                "specialist_id": tr.get("specialist_id", ""),
+                "evidence": tr.get("evidence", []),
                 "operation": "delegate",
             }
             for tr in result.tool_results
         ],
-        "findings": [],
-        "synthesis": {"mode": "canonical", "narration": ""},
+        "findings": [
+            {
+                "tool": tr["tool"],
+                "specialist_id": tr.get("specialist_id", ""),
+                "status": tr["status"],
+                "data": tr.get("data", {}),
+            }
+            for tr in result.tool_results
+            if tr.get("data")
+        ],
+        "synthesis": {
+            "mode": "canonical",
+            "status": result.status,
+            "policy_status": result.policy_status,
+            "coverage": result.coverage.model_dump(mode="json"),
+        },
+        "citations": [
+            {
+                "citation_id": c.citation_id,
+                "source": c.source,
+                "status": c.status,
+                "observed_at": c.observed_at,
+            }
+            for c in result.citations
+        ],
         "warnings": list(result.uncertainty),
         "stop_reason": "reassessed",
         "human_controls": {
@@ -836,7 +887,10 @@ def investigate_context(
             str(exc),
             details={"field": "snapshot.scope"},
         ) from exc
-    if canonical_orchestration_enabled():
+    if (
+        canonical_orchestration_enabled()
+        and snapshot.page_kind in CANONICAL_CONTEXT_PAGE_KINDS
+    ):
         ledger = _run_context_via_canonical(
             snapshot,
             context=context,

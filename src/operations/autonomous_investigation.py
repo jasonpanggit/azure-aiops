@@ -9,6 +9,7 @@ human decisions, and evaluation metrics into an auditable task ledger.
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import logging
 import re
 import time
@@ -108,12 +109,14 @@ def agent_catalog() -> list[dict[str, Any]]:
 def project_legacy_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     """Project an old ledger without contract_version with defaults on read.
 
-    Always returns a **shallow copy** so callers cannot mutate the persisted
-    record through the projected reference.  Key *presence* (not truthiness)
-    determines whether the ledger is already versioned — an explicit falsy
-    value such as ``""`` is preserved, not replaced.
+    Always returns a **deep copy** so callers cannot mutate the persisted
+    record through the projected reference — including nested structures such
+    as ``decisions``, ``approvals``, ``agent_runs``, ``synthesis``, and
+    ``human_controls``.  Key *presence* (not truthiness) determines whether
+    the ledger is already versioned — an explicit falsy value such as ``""``
+    is preserved, not replaced.
     """
-    projected = {**ledger}
+    projected = copy.deepcopy(ledger)
     if "contract_version" not in ledger:
         projected["contract_version"] = CONTRACT_VERSION
     return projected

@@ -1079,11 +1079,13 @@ def test_multi_agent_old_ledger_readable_via_get(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_investigate_context_canonical_invokes_service_not_legacy(
+def test_investigate_context_canonical_unsupported_page_uses_legacy(
     tmp_path, monkeypatch
 ):
-    """CR-01/CR-04: In canonical mode /copilot/investigate-context must route
-    through OrchestrationService and must NOT call run_context_investigation."""
+    """CR-01/CR-04 (updated): In canonical mode, /copilot/investigate-context
+    must route unsupported page kinds (e.g. 'network') through the legacy
+    adapter rather than masquerading them as inventory through the canonical
+    service.  Only pages in CANONICAL_CONTEXT_PAGE_KINDS use the service."""
     monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
 
     legacy_calls: list[object] = []
@@ -1138,15 +1140,14 @@ def test_investigate_context_canonical_invokes_service_not_legacy(
     )
 
     assert response.status_code == 200
-    assert not legacy_calls, (
-        "Legacy run_context_investigation must not be called in canonical mode"
+    assert legacy_calls, (
+        "Unsupported page kind must route through legacy adapter in canonical mode"
     )
-    assert service_calls, (
-        "Canonical OrchestrationService.execute must be invoked"
+    assert not service_calls, (
+        "OrchestrationService must NOT execute unsupported pages under false identity"
     )
     data = response.json()["data"]
     assert data.get("contract_version") == "1"
-    assert data.get("thread_id", "").startswith("thr-")
 
 
 def test_action_on_old_ledger_projects_version_in_canonical_mode(

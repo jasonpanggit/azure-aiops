@@ -548,13 +548,13 @@ variable "foundry_model_deployment_name_override" {
 }
 
 variable "agent_orchestration_mode" {
-  description = "Operations Copilot orchestration mode. Defaults to 'maf' for Microsoft Agent Framework question-first delegation; set to 'deterministic' for the legacy page-anchored rollback path."
+  description = "Operations Copilot orchestration mode. Defaults to 'maf' for Microsoft Agent Framework question-first delegation; set to 'deterministic' for the legacy page-anchored rollback path or 'canonical' to route every surface through the governed OrchestrationService."
   type        = string
   default     = "maf"
 
   validation {
-    condition     = contains(["maf", "deterministic"], lower(var.agent_orchestration_mode))
-    error_message = "agent_orchestration_mode must be 'maf' or 'deterministic'."
+    condition     = contains(["maf", "deterministic", "canonical"], lower(var.agent_orchestration_mode))
+    error_message = "agent_orchestration_mode must be 'maf', 'deterministic', or 'canonical'."
   }
 }
 
