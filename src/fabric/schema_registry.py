@@ -352,6 +352,74 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("provenance_json", pa.string(), nullable=False),
         ]
     ),
+    "gold_container_exposure_current": pa.schema(
+        [
+            *_BASE,
+            pa.field("container_exposure_id", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field("target_kind", pa.string(), nullable=False),
+            pa.field("registry_id", pa.string(), nullable=False),
+            pa.field("logical_image_id", pa.string(), nullable=False),
+            pa.field("image_digest_id", pa.string(), nullable=False),
+            pa.field("image_digest", pa.string(), nullable=False),
+            pa.field("cve_id", pa.string(), nullable=False),
+            pa.field(
+                "vulnerability_observation_ids",
+                pa.list_(pa.string()),
+                nullable=False,
+            ),
+            pa.field("severity", pa.string(), nullable=False),
+            pa.field("risk_score", pa.float64(), nullable=False),
+            pa.field("impact_score", pa.float64(), nullable=False),
+            pa.field("priority_score", pa.float64(), nullable=False),
+            pa.field("deployment_state", pa.string(), nullable=False),
+            pa.field("workload_ids", pa.list_(pa.string()), nullable=False),
+            pa.field(
+                "workload_checkpoint_generations",
+                pa.list_(pa.string()),
+                nullable=False,
+            ),
+            pa.field(
+                "represented_workload_count",
+                pa.int64(),
+                nullable=False,
+            ),
+            pa.field("total_workload_count", pa.int64(), nullable=False),
+            pa.field("unknown_workload_count", pa.int64(), nullable=False),
+            pa.field(
+                "unknown_reason_counts_json",
+                pa.string(),
+                nullable=False,
+            ),
+            pa.field(
+                "business_service_ids",
+                pa.list_(pa.string()),
+                nullable=False,
+            ),
+            pa.field("server_patch_eligible", pa.bool_(), nullable=False),
+            pa.field("source_generations", pa.list_(pa.string()), nullable=False),
+            pa.field("observed_at", pa.string(), nullable=False),
+        ]
+    ),
+    "gold_container_exposure_coverage": pa.schema(
+        [
+            *_BASE,
+            pa.field("coverage_id", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field(
+                "represented_workload_count",
+                pa.int64(),
+                nullable=False,
+            ),
+            pa.field("total_workload_count", pa.int64(), nullable=False),
+            pa.field("unknown_workload_count", pa.int64(), nullable=False),
+            pa.field(
+                "unknown_reason_counts_json",
+                pa.string(),
+                nullable=False,
+            ),
+        ]
+    ),
     "silver_exposure_observations": pa.schema(
         [
             *_BASE,

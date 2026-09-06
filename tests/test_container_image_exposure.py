@@ -925,7 +925,12 @@ def test_granular_container_pipeline_round_trips_and_projects_exact_impact(
     repeated = writer.publish(reread)
     projected_again = project_container_exposure(reread)
     assert projected_again == projection
-    assert all(result.skipped for result in repeated.values())
+    assert all(
+        result.rows_added == 0
+        and result.rows_changed == 0
+        and result.rows_removed == 0
+        for result in repeated.values()
+    ), {table: result for table, result in repeated.items()}
 
 
 def test_container_projection_preserves_unknown_coverage_without_inference(
