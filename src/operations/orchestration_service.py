@@ -52,6 +52,23 @@ Executor = Callable[..., ToolResult]
 _MAX_LEGACY_SESSIONS = 2_000
 _legacy_session_lock = threading.Lock()
 _legacy_session_threads: OrderedDict[tuple[str, str], str] = OrderedDict()
+_STABLE_QUESTION_ROUTES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "vulnerability",
+        "vulnerability",
+        ("cve", "vulnerab", "exploit", "exposure", "attack path"),
+    ),
+    (
+        "governance",
+        "governance",
+        ("owner", "ownership", "governance", "approv", "policy", "compliance"),
+    ),
+    (
+        "network",
+        "network",
+        ("network", "traffic", "firewall", "nsg", "route", "reach", "topology"),
+    ),
+)
 
 
 class PlannerUnavailableError(RuntimeError):
@@ -101,6 +118,11 @@ def _question_route(
             if hint_tool in specialist.operations_mcp_tools:
                 return _preferred_page_kind(specialist), specialist
 
+    lowered = question.casefold()
+    for page_kind, specialist_id, markers in _STABLE_QUESTION_ROUTES:
+        if any(marker in lowered for marker in markers):
+            return page_kind, manifest.require(specialist_id)
+
     catalog = tuple(
         type(
             "_CatalogEntry",
@@ -116,10 +138,10 @@ def _question_route(
         catalog=catalog,
         limit=1,
     )
-    if decision.selected_ids:
+    if decision.selected_ids and decision.strategy != "page_fallback":
         specialist = manifest.require(decision.selected_ids[0])
         return _preferred_page_kind(specialist), specialist
-    return "investigate", None
+    return "copilot", None
 
 
 def _legacy_session_thread(
@@ -239,6 +261,7 @@ class OrchestrationService:
                         "call_id": call_id,
                         "specialist_id": step.specialist_id,
                         "tool": call.tool,
+                        "arguments": dict(call.arguments),
                         **result.to_dict(),
                     }
                 )
@@ -289,7 +312,50 @@ class OrchestrationService:
             thread.thread_id,
             principal_subject,
             requested_scope,
-            result.model_dump(mode="json"),
+            {
+                "question": request.question,
+                **result.model_dump(mode="json"),
+            },
+        )
+        return result.model_copy(update={"thread_revision": updated.revision})
+
+    def unsupported(
+        self,
+        request: InvestigationRequest,
+        *,
+        principal_subject: str,
+        effective_scope: Scope,
+        reason: str = "unsupported_intent",
+    ) -> OrchestrationResult:
+        """Persist an explicitly unsupported no-I/O turn."""
+
+        requested_scope = self.policy.validate_request(request, effective_scope)
+        if request.thread_id:
+            thread = self.thread_store.authorize(
+                request.thread_id,
+                principal_subject,
+                requested_scope,
+            )
+        else:
+            thread = self.thread_store.create(principal_subject, requested_scope)
+        result = OrchestrationResult(
+            status=STATUS_UNAVAILABLE,
+            policy_status="fallback",
+            fallback_reason=reason,
+            uncertainty=["No supported specialist intent matched the question."],
+            coverage=request.snapshot.coverage,
+            citations=self._snapshot_citations(request),
+            thread_id=thread.thread_id,
+            thread_revision=thread.revision + 1,
+        )
+        updated = self.thread_store.append(
+            thread.thread_id,
+            principal_subject,
+            requested_scope,
+            {
+                "question": request.question,
+                **result.model_dump(mode="json"),
+            },
         )
         return result.model_copy(update={"thread_revision": updated.revision})
 
@@ -486,17 +552,8 @@ def execute_from_question(
         ),
     )
     planner: Planner | None = None
-    if hint_tool:
-        manifest = load_specialist_manifest()
-        specialist_id = (
-            hinted_specialist.id
-            if hinted_specialist is not None
-            else next(
-                specialist_id
-                for specialist_id in manifest.page_mapping_projection()[page_kind]
-                if specialist_id != "executive_summary"
-            )
-        )
+    if hint_tool and hinted_specialist is not None:
+        specialist_id = hinted_specialist.id
 
         def _hint_planner(_request: InvestigationRequest) -> CandidatePlan:
             return CandidatePlan(
@@ -520,21 +577,28 @@ def execute_from_question(
         planner = _hint_planner
 
     service = OrchestrationService(planner=planner, executor=_safe_executor)
-    try:
-        result = service.execute(
-            request,
+
+    def _execute(active_request: InvestigationRequest) -> OrchestrationResult:
+        if hinted_specialist is None and (not hint_tool or page_kind == "copilot"):
+            reason = "unsupported_tool_hint" if hint_tool else "unsupported_intent"
+            return service.unsupported(
+                active_request,
+                principal_subject=principal_subject,
+                effective_scope=scope,
+                reason=reason,
+            )
+        return service.execute(
+            active_request,
             context=context,
             principal_subject=principal_subject,
             effective_scope=scope,
         )
+
+    try:
+        result = _execute(request)
     except ThreadNotFound:
         _forget_legacy_session_thread(session_id, principal_subject)
-        result = service.execute(
-            request.model_copy(update={"thread_id": None}),
-            context=context,
-            principal_subject=principal_subject,
-            effective_scope=scope,
-        )
+        result = _execute(request.model_copy(update={"thread_id": None}))
         result = result.model_copy(
             update={
                 "uncertainty": [

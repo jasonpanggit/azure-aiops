@@ -21,6 +21,7 @@ from operations.orchestration_service import execute_from_question
 from ..dependencies import Context, CurrentPrincipal, ReadScope
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
+from ..scope import Scope
 
 router = APIRouter(prefix="/api/v1/agents", tags=["multi-agent-investigation"])
 
@@ -52,6 +53,30 @@ def _respond(data: dict[str, Any], scope: ReadScope) -> dict[str, Any]:
         evidence=_evidence(str(data.get("ledger_id") or "")),
         scope=scope.to_dict(),
         warnings=list(data.get("warnings") or ()),
+    )
+
+
+def _ledger_is_visible_in_scope(
+    ledger: dict[str, Any],
+    current_scope: Scope,
+) -> bool:
+    """Require the entire immutable ledger scope to remain authorized."""
+
+    stored_scope = Scope.from_mapping(ledger.get("scope"))
+    if current_scope.is_unrestricted():
+        return True
+    for dimension, allowed in current_scope.dimensions.items():
+        stored_values = stored_scope.values(dimension)
+        if not stored_values or not stored_values <= allowed:
+            return False
+    return True
+
+
+def _not_found(ledger_id: str) -> ApiError:
+    return ApiError(
+        ErrorCode.NOT_FOUND,
+        "Investigation ledger not found",
+        details={"ledger_id": ledger_id},
     )
 
 
@@ -242,8 +267,8 @@ def get_investigation(
     principal: CurrentPrincipal,
 ) -> dict[str, Any]:
     ledger = ledger_store().get(ledger_id, principal.subject)
-    if ledger is None:
-        raise ApiError(ErrorCode.NOT_FOUND, "Investigation ledger not found", details={"ledger_id": ledger_id})
+    if ledger is None or not _ledger_is_visible_in_scope(ledger, scope):
+        raise _not_found(ledger_id)
     if canonical_orchestration_enabled():
         ledger = project_legacy_ledger(ledger)
     return _respond(ledger, scope)
@@ -257,14 +282,14 @@ def apply_action(
     scope: ReadScope,
     principal: CurrentPrincipal,
 ) -> dict[str, Any]:
+    ledger = ledger_store().get(ledger_id, principal.subject)
+    if ledger is None or not _ledger_is_visible_in_scope(ledger, scope):
+        raise _not_found(ledger_id)
     ledger = ledger_store().record_decision(
-        ledger_id,
-        principal.subject,
-        payload.action,
-        payload.payload,
+        ledger_id, principal.subject, payload.action, payload.payload
     )
     if ledger is None:
-        raise ApiError(ErrorCode.NOT_FOUND, "Investigation ledger not found", details={"ledger_id": ledger_id})
+        raise _not_found(ledger_id)
     if canonical_orchestration_enabled():
         ledger = project_legacy_ledger(ledger)
     return _respond(ledger, scope)

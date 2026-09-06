@@ -596,7 +596,7 @@ def _investigate_via_canonical(
         "tool_calls": [
             {
                 "tool": tr["tool"],
-                "arguments": {},
+                "arguments": dict(tr.get("arguments") or {}),
                 "status": tr["status"],
                 "data": tr.get("data"),
                 "evidence": list(tr.get("evidence", ())),
