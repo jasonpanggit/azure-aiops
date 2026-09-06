@@ -29,6 +29,7 @@ export interface ExposureSectionMetadata {
   freshnessState: string;
   freshnessSourceFamily: string;
   freshnessThresholdSeconds?: number;
+  safeErrorMessage: string;
 }
 
 export interface ExposureSectionPresentation {
@@ -78,6 +79,7 @@ const EMPTY_METADATA: ExposureSectionMetadata = {
   observedAt: "",
   freshnessState: "unknown",
   freshnessSourceFamily: "",
+  safeErrorMessage: "",
 };
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -134,6 +136,7 @@ function metadataFrom<T>(
   const contract = contractFrom(envelope);
   const completeness = completenessFrom(envelope);
   const freshness = freshnessFrom(envelope);
+  const safeError = record(contract?.safe_error);
   const firstThreshold = Array.isArray(freshness.thresholds)
     ? freshness.thresholds[0]
     : undefined;
@@ -169,6 +172,7 @@ function metadataFrom<T>(
     freshnessThresholdSeconds:
       finiteNumber(freshness.threshold_seconds) ??
       finiteNumber(firstThreshold?.threshold_seconds),
+    safeErrorMessage: stringValue(safeError?.message),
   };
 }
 
@@ -194,14 +198,38 @@ function successfulStatus<T>(
   const completenessState = stringValue(completeness.state).toLowerCase();
   const freshnessState = stringValue(freshness.state).toLowerCase();
   const safeError = record(contract?.safe_error);
+  const empty = isEmpty(envelope.data);
 
-  if (completenessState === "unavailable") return "unavailable";
-  if (completenessState === "partial" || safeError) return "partial";
-  if (completenessState === "stale" || freshnessState === "stale") return "stale";
-  if (completenessState === "healthy-empty" || isEmpty(envelope.data)) {
+  if (completenessState === "unavailable") {
+    return empty ? "unavailable" : "partial";
+  }
+  if (
+    completenessState === "partial" ||
+    freshnessState === "partial" ||
+    safeError
+  ) {
+    return "partial";
+  }
+  if (
+    completenessState === "stale" ||
+    freshnessState === "stale" ||
+    freshnessState === "aging"
+  ) {
+    return empty ? "unavailable" : "stale";
+  }
+  if (
+    empty &&
+    (completenessState === "healthy-empty" ||
+      (completenessState === "complete" &&
+        ["current", "fresh", "reported"].includes(freshnessState)))
+  ) {
     return "healthy-empty";
   }
-  return "current";
+  if (empty) return "unavailable";
+  return completenessState === "complete" &&
+    ["current", "fresh", "reported"].includes(freshnessState)
+    ? "current"
+    : "partial";
 }
 
 function errorValue(error: unknown): Error {

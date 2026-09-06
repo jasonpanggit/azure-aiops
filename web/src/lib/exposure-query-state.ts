@@ -114,7 +114,7 @@ function normalizedValues(values: readonly string[] | undefined): string[] {
   return Array.from(
     new Set((values ?? []).map((value) => value.trim()).filter(Boolean)),
   )
-    .sort((left, right) => left.localeCompare(right));
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
 }
 
 function normalizedScope(scope: ReadonlyScope): ScopeSelection {
@@ -346,7 +346,7 @@ function stableEntries(value: Record<string, unknown>): string {
   return JSON.stringify(
     Object.entries(value)
       .filter(([, item]) => item !== undefined && item !== "")
-      .sort(([left], [right]) => left.localeCompare(right)),
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
   );
 }
 

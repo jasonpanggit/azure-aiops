@@ -29,7 +29,9 @@ export function formatExposureValue(
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   switch (unit) {
     case "count":
-      return `${value.toLocaleString("en-US")} ${label}`;
+      return `${value.toLocaleString("en-US")} ${
+        value === 1 && label.endsWith("s") ? label.slice(0, -1) : label
+      }`;
     case "seconds":
       return `${value.toLocaleString("en-US")} seconds`;
     case "percent":
@@ -142,7 +144,7 @@ export function SourceSectionState({
     return (
       <StatePanel
         title={`${sourceName} is unavailable`}
-        message={`${sourceName} is unavailable. Other Exposure data remains available. Retry ${sourceName}, or review the last successful checkpoint if one exists.${restartCopy}`}
+        message={`${sourceName} is unavailable. Other Exposure data remains available. ${state.error?.message || state.metadata.safeErrorMessage || "No safe provider detail was returned."} Last attempt: ${observedCopy(state.metadata.observedAt)}. Retry ${sourceName}, or review the last successful checkpoint if one exists.${restartCopy}`}
         tone="error"
         action={retry}
         live="assertive"
@@ -161,9 +163,9 @@ export function SourceSectionState({
     state.status === "current" ? "success" : "warning";
   const stateMessage =
     state.status === "stale"
-      ? `Showing last successful ${sourceName} data from ${observedCopy(state.metadata.observedAt)}. The latest refresh failed, so do not treat missing rows as resolved.`
+      ? `Showing last successful ${sourceName} data from ${observedCopy(state.metadata.observedAt)}. The latest refresh failed${state.error?.message ? `: ${state.error.message}` : ""}, so do not treat missing rows as resolved.`
       : state.status === "partial"
-        ? `Showing ${state.metadata.represented ?? "—"} of ${state.metadata.expected ?? "—"} connections represented. Results and totals exclude unavailable connections.`
+        ? `Showing ${state.metadata.represented ?? "—"} of ${state.metadata.expected ?? "—"} connections represented. Results and totals exclude unavailable connections.${state.metadata.safeErrorMessage ? ` ${state.metadata.safeErrorMessage}` : ""}`
         : `${sourceName} is current.`;
 
   return (

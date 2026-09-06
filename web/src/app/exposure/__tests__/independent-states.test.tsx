@@ -32,7 +32,7 @@ function deferred<T>() {
 function envelope(
   ids: string[],
   options: {
-    state?: "complete" | "healthy-empty" | "partial" | "stale" | "unavailable";
+    state?: "complete" | "healthy-empty" | "partial" | "stale" | "unavailable" | "unknown";
     represented?: number;
     expected?: number;
     total?: number;
@@ -201,6 +201,25 @@ describe("Exposure independent source states", () => {
     expect(result.current.data?.items[0].id).toBe("retained-row");
   });
 
+  it("treats zero rows as healthy-empty only when source success proves it", async () => {
+    const healthy = renderHook(() =>
+      useExposureSection<Rows>({
+        queryKey: "sub-a|healthy-empty",
+        load: () => Promise.resolve(envelope([], { state: "healthy-empty" })),
+      }),
+    );
+    const unknown = renderHook(() =>
+      useExposureSection<Rows>({
+        queryKey: "sub-a|unknown-empty",
+        load: () => Promise.resolve(envelope([], { state: "unknown" })),
+      }),
+    );
+
+    await waitFor(() => expect(healthy.result.current.status).toBe("healthy-empty"));
+    await waitFor(() => expect(unknown.result.current.status).toBe("unavailable"));
+    expect(unknown.result.current.data?.total_count).toBe(0);
+  });
+
   it("clears retained rows synchronously when the authorized scope/query key changes", async () => {
     const nextScope = deferred<Envelope<Rows, ExposureCursorPagination>>();
     const load = vi.fn(({ signal }: { signal: AbortSignal }) => {
@@ -299,6 +318,7 @@ describe("Exposure independent source states", () => {
         observedAt: "",
         freshnessState: "unknown",
         freshnessSourceFamily: "",
+        safeErrorMessage: "",
       },
       restart: { required: false, reason: "", generation: "" },
       retry,
@@ -359,6 +379,7 @@ describe("Exposure independent source states", () => {
             freshnessState: "current",
             freshnessSourceFamily: "aum",
             freshnessThresholdSeconds: 3600,
+            safeErrorMessage: "",
           },
         }}
       >
@@ -421,6 +442,7 @@ describe("Exposure independent source states", () => {
     expect(formatExposureValue(null, { unit: "seconds" })).toBe("—");
     expect(formatExposureValue(undefined, { unit: "count", label: "findings" })).toBe("—");
     expect(formatExposureValue(90, { unit: "seconds" })).toBe("90 seconds");
+    expect(formatExposureValue(1, { unit: "count", label: "findings" })).toBe("1 finding");
     expect(formatExposureValue(1234, { unit: "count", label: "findings" })).toBe("1,234 findings");
     expect(formatExposureValue(0.25, { unit: "percent", ratio: true })).toBe("25.0%");
     expect(formatExposureValue(87, { unit: "risk" })).toBe("Risk score 87/100");
