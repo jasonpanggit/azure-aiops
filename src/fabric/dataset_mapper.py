@@ -447,7 +447,16 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     ("SubscriptionConnection", "mapped_to", "Environment"),
     ("SubscriptionConnection", "supports", "BusinessService"),
     ("SubscriptionConnection", "runs", "Application"),
-    *(("ResourceGroup", "contains", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
+    *(
+        ("ResourceGroup", "contains", asset)
+        for asset in (
+            "Resource",
+            "VirtualMachine",
+            "ArcServer",
+            "KubernetesCluster",
+            *sorted(PAAS_ENTITY_TYPES),
+        )
+    ),
     *((asset, "member_of", "Application") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *(("Application", "hosted_on", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *((asset, "belongs_to", "BusinessService") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
