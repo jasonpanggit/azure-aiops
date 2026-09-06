@@ -431,6 +431,7 @@ def test_parentless_virtual_network_link_warns_without_dangling_edge(caplog) -> 
         for warning in graph.warnings
     )
     assert "dns_links_skipped_missing_zone count=1" in caplog.text
+    assert "/subscriptions/" not in caplog.text.casefold()
     assert ZONE_ID.casefold() not in caplog.text
     assert VNET_ID.casefold() not in caplog.text
 
