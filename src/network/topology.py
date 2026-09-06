@@ -635,7 +635,7 @@ class NetworkTopology:
             "shared_services": [
                 serialized_shared_service(service)
                 for service in self.shared_services
-                if service.resource_id.casefold() in resource_ids
+                if service.provider_resource_id.casefold() in resource_ids
             ],
             "relationships": [
                 relationship
