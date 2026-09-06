@@ -92,6 +92,7 @@ from operations.defender_configuration import (
 from operations.foundry_agent import (
     SPECIALIST_IDS,
     FoundryPromptAgent,
+    MicrosoftAgentFrameworkFoundryAgent,
     select_foundry_agent_class,
 )
 from operations.maf_orchestrator import maf_mode_enabled
@@ -1771,6 +1772,8 @@ def _load_foundry_agent() -> FoundryPromptAgent | None:
         # before it ever delegates.
         agent_class = select_foundry_agent_class(
             prefer_maf=maf_mode_enabled(),
+            rest_agent_class=FoundryPromptAgent,
+            maf_agent_class=MicrosoftAgentFrameworkFoundryAgent,
         )
         candidate = agent_class.from_env()
         if candidate is not None:
@@ -1802,6 +1805,8 @@ def _load_foundry_specialist_agent(specialist_id: str) -> FoundryPromptAgent | N
         agent_class = select_foundry_agent_class(
             specialist_id,
             prefer_maf=maf_mode_enabled(),
+            rest_agent_class=FoundryPromptAgent,
+            maf_agent_class=MicrosoftAgentFrameworkFoundryAgent,
         )
         candidate = agent_class.from_env(specialist_id)
         if candidate is None:

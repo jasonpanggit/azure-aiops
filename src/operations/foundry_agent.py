@@ -710,6 +710,10 @@ def select_foundry_agent_class(
     specialist_id: str | None = None,
     *,
     prefer_maf: bool,
+    rest_agent_class: type[FoundryPromptAgent] = FoundryPromptAgent,
+    maf_agent_class: type[MicrosoftAgentFrameworkFoundryAgent] = (
+        MicrosoftAgentFrameworkFoundryAgent
+    ),
 ) -> type[FoundryPromptAgent | MicrosoftAgentFrameworkFoundryAgent]:
     """Select a runtime that can enforce the configured immutable version.
 
@@ -727,8 +731,8 @@ def select_foundry_agent_class(
         else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
     )
     if version:
-        return FoundryPromptAgent
-    return MicrosoftAgentFrameworkFoundryAgent if prefer_maf else FoundryPromptAgent
+        return rest_agent_class
+    return maf_agent_class if prefer_maf else rest_agent_class
 
 
 def _run_awaitable(awaitable: Any) -> Any:
