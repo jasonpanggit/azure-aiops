@@ -186,6 +186,18 @@ describe("inventory Copilot page adapter", () => {
         claimType: "os_group",
       }),
     ).toBe("evidence:5a5a89948c9154eb1044111a3cc48a88");
+    expect(
+      canonicalEvidenceStableId({
+        source: "inventory/resource_observations",
+        sourceKey: "ẞ",
+        entity: {
+          type: "azure",
+          resource_id:
+            "/subscriptions/SUB-A/resourceGroups/Straße/providers/Microsoft.Test/widgets/ẞ",
+        },
+        claimType: "azure_group",
+      }),
+    ).toBe("evidence:691f8afa04ab5d7e4dd94f41aade18e1");
   });
 
   it("keeps stable keys and serialization unchanged across reorder and refresh", () => {
@@ -325,6 +337,30 @@ describe("inventory Copilot page adapter", () => {
         observed_at: "2026-08-25T10:00:00Z",
       },
     ]);
+
+    const uppercase = {
+      ...records[0],
+      identity: "KEY",
+      source: "INVENTORY/OS_OBSERVATIONS",
+      data: { value: true },
+    };
+    const lowercase = {
+      ...records[0],
+      identity: "key",
+      source: "inventory/os_observations",
+      data: { value: true },
+    };
+    const buildCaseVariants = (items: InventoryCopilotRecord[]) =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        records: items,
+        selectedIdentity: null,
+        totalCount: 1,
+      }).snapshot.evidence;
+
+    expect(buildCaseVariants([uppercase, lowercase])).toEqual(
+      buildCaseVariants([lowercase, uppercase]),
+    );
   });
 
   it("rejects invalid coverage and every server-side size bound", () => {

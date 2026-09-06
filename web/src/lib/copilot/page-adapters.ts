@@ -265,11 +265,11 @@ function sha256(value: string): string {
   return Array.from(hash, (part) => part.toString(16).padStart(8, "0")).join("");
 }
 
-function normalizedIdentityPart(value: string): string {
-  const compact = value.trim().split(/\s+/).filter(Boolean).join(" ");
-  return Array.from(compact, (character) => {
+function unicodeCaseFold(value: string): string {
+  return Array.from(value, (character) => {
     const codePoint = character.codePointAt(0) ?? 0;
     if (codePoint === 0x0131) return character;
+    if (codePoint === 0x1e9e) return "ss";
     if (
       (codePoint >= 0x13a0 && codePoint <= 0x13ef)
       || (codePoint >= 0x13f0 && codePoint <= 0x13f5)
@@ -286,6 +286,11 @@ function normalizedIdentityPart(value: string): string {
   }).join("");
 }
 
+function normalizedIdentityPart(value: string): string {
+  const compact = value.trim().split(/\s+/).filter(Boolean).join(" ");
+  return unicodeCaseFold(compact);
+}
+
 function canonicalResourceId(resourceId: string): string {
   const trimmed = resourceId.trim();
   const parts = trimmed.split("/").filter(Boolean);
@@ -296,7 +301,14 @@ function canonicalResourceId(resourceId: string): string {
   ) {
     throw new Error("Azure entities require canonical ARM resource IDs");
   }
-  return `/${parts.map((part) => part.toLowerCase()).join("/")}`;
+  if (Array.from(trimmed).length > 512) {
+    throw new Error("Azure resource ID exceeds limit of 512");
+  }
+  const canonical = `/${parts.map(unicodeCaseFold).join("/")}`;
+  if (Array.from(canonical).length > 512) {
+    throw new Error("canonical Azure resource ID exceeds limit of 512");
+  }
+  return canonical;
 }
 
 function entityKey(entity: CopilotEntityRef): string {
@@ -407,8 +419,11 @@ function mergeDuplicateEvidence(
   current: InventorySnapshotEvidence,
   incoming: InventorySnapshotEvidence,
 ): InventorySnapshotEvidence {
+  const currentIdentity = stableJson([current.source, current.source_key, current.entity]);
+  const incomingIdentity = stableJson([incoming.source, incoming.source_key, incoming.entity]);
+  const base = compareCodePoints(currentIdentity, incomingIdentity) <= 0 ? current : incoming;
   return {
-    ...current,
+    ...base,
     status: STATUS_WARNING_PRIORITY[current.status] >= STATUS_WARNING_PRIORITY[incoming.status]
       ? current.status
       : incoming.status,
@@ -454,9 +469,6 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     const sourceKey = boundedSourceKey(record.identity);
     const observedAt = record.observedAt ?? input.observedAt ?? "";
     if (observedAt) boundedString("evidence observation time", observedAt, 1, 128);
-    if (record.resourceId && Array.from(record.resourceId.trim()).length > 512) {
-      throw new Error("Azure resource ID exceeds limit of 512");
-    }
     const entity = recordEntity({ ...record, identity: sourceKey });
     const claimType = record.kind;
     const stableId = canonicalEvidenceStableId({
