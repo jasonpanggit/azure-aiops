@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.1-14 not started (13/25 complete)
 status: planning
-stopped_at: Completed 13-01-PLAN.md; Phase 03.1 remains the active workstream
-last_updated: "2026-09-06T10:45:19.913Z"
+stopped_at: Completed 13-03 and 13-11; Phase 03.1 remains the active workstream
+last_updated: "2026-09-06T14:22:32.225Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 110
+  completed_plans: 113
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -25,6 +25,9 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-02** COMPLETE — Durable run identity, CAS claims, renewable leases/fences, bounded lifecycle controls, enqueue-only Manual Sync, and finite run-once CLI
+- **13-03** COMPLETE — Five-way incremental discovery, exact 50/200/40 evidence bounds, and restart-durable pending edges and batches
+- **13-11** COMPLETE — Content-addressed immutable EvaluationSnapshots, CAS latest pointer, and fail-closed freshness reconstruction
 - **13-01** COMPLETE — Independent Phase 10/12 evidence preflight, non-authoritative shadow/fenced-pointer tracer, and 35-scenario synthetic Wave 0 corpus
 - **12-01..12-11** COMPLETE — Scope-safe topology projection, private-link/Fabric/Foundry semantics, bounded summary/detail contracts, policy refresh, truthful provenance, accessible graph/drawer/export UX, downstream compatibility, representative scale gates, and final review remediation
 - **03.1-01** COMPLETE — Wave 0 deterministic Exposure fixture, explicit backend/web pending gates, 100k correctness harness, and exhaustive fail-closed Fabric SQL readiness probe
@@ -149,6 +152,9 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P12 | 31min | 2 tasks | 6 files |
 | Phase 03.1 P13 | 26 min | 3 tasks | 9 files |
 | Phase 13 P01 | 18min | 2 tasks | 6 files |
+| Phase 13 P02 | 9min | 2 tasks | 10 files |
+| Phase 13 P03 | 7min | 2 tasks | 8 files |
+| Phase 13 P11 | 7min | 2 tasks | 3 files |
 
 ## Decisions
 
@@ -235,8 +241,8 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Session
 
-**Last session:** 2026-09-06T10:45:19.877Z
-**Stopped at:** Completed 13-01-PLAN.md; Phase 03.1 remains the active workstream
+**Last session:** 2026-09-06T14:22:32.225Z
+**Stopped at:** Completed 13-03 and 13-11; Phase 03.1 remains the active workstream
 **Resume file:** None
 
 ## Accumulated Context
