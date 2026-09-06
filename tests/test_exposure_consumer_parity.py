@@ -22,7 +22,6 @@ from fabric_pipelines.vulnerability_pipeline import publish_exposure_page
 from intelligence.remediation.action_catalog import EXECUTABLE_ACTION_IDS
 from intelligence.vulnerability.exposure_contracts import (
     EXPOSURE_CONTRACT_VERSION,
-    ExposureApiPage,
     exposure_catalog,
     exposure_page_from_read_port,
 )

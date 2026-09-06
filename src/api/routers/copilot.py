@@ -556,6 +556,7 @@ def investigate(
         question,
         context=context,
         scope=scope,
+        principal=principal,
         hint_tool=payload.tool or None,
         hint_args=payload.tool_arguments,
     )
