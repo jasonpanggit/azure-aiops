@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 
 import pytest
@@ -98,6 +99,33 @@ def test_server_vulnerability_traversal_excludes_typed_image_vertices() -> None:
     assert query.server_vulnerability_impact("CVE-2026-4242") == []
 
 
+def test_spoofed_evidence_identity_is_excluded_instead_of_traversed() -> None:
+    graph = GranularExposureOntologyMapper().project(
+        fabric_products(),
+        ontology_generation_id="ontology-generation-3",
+    )
+    affects = next(
+        row
+        for row in graph.relationships
+        if row["subject_type"] == "VulnerabilityObservation"
+        and row["predicate"] == "affects"
+        and row["object_type"] == "ImageDigest"
+    )
+    evidence = json.loads(affects["payload_json"])
+    evidence["evidence_identity"] = "mutable-tag:latest"
+    affects["payload_json"] = json.dumps(evidence, sort_keys=True)
+
+    result = OntologyQueryService(
+        graph.entities,
+        graph.relationships,
+    ).image_vulnerability_impact("CVE-2026-4242")
+
+    assert result["represented_count"] == 0
+    assert result["total_count"] == 1
+    assert result["items"] == []
+    assert result["excluded_reasons"] == {"invalid_exact_evidence": 1}
+
+
 class _PartiallyFailingManager:
     def __init__(self, active_definition: dict) -> None:
         self.active_definition = deepcopy(active_definition)
@@ -111,9 +139,12 @@ class _PartiallyFailingManager:
 
     def update_definition(self, _ontology_id: str, definition: dict) -> dict:
         self.update_calls.append(deepcopy(definition))
-        self.active_definition = deepcopy(definition)
         if len(self.update_calls) == 1:
+            self.active_definition = {
+                "parts": deepcopy(definition.get("parts", [])[:1])
+            }
             raise RuntimeError("Fabric interrupted after partial replacement")
+        self.active_definition = deepcopy(definition)
         return {"id": "ontology-1"}
 
 

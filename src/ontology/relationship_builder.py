@@ -397,13 +397,7 @@ class RelationshipBuilder:
                 if source_families
                 else "exposure"
             )
-            details = {
-                "read_model_generation_id": str(
-                    payload.get("read_model_generation_id") or ""
-                ),
-                "source_families": source_families,
-                "completeness": str(payload.get("completeness") or ""),
-            }
+            details = _exposure_details(payload)
             connect(observation, "affects", target, source, details)
             connect(observation, "identifies", weakness, source, details)
             connect(target, "hasVulnerabilityObservation", observation, source, details)

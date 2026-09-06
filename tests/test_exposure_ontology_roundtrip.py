@@ -161,8 +161,10 @@ def fabric_products(*, completeness: str = "complete") -> dict[str, list[dict]]:
                 "tag": "2026.09",
                 "attempted_generation": ATTEMPTED_GENERATION,
                 "effective_generation": EFFECTIVE_GENERATION,
-                "lkg_source_generation": EFFECTIVE_GENERATION,
-                "carried_forward": True,
+                "lkg_source_generation": (
+                    EFFECTIVE_GENERATION if completeness == "stale" else ""
+                ),
+                "carried_forward": completeness == "stale",
                 "unknown_reason": "",
                 "provenance_json": json.dumps(
                     {
