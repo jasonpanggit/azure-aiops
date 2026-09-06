@@ -102,6 +102,20 @@ if [[ -n "${FOUNDRY_SPECIALISTS_JSON:-}" ]]; then
     candidate_record="$(mktemp)"
   fi
 
+  if [[ -n "${promotion_record}" && -f "${promotion_record}" ]]; then
+    if ! PROMOTION_RECORD="${promotion_record}" python3 -c '
+import json, os
+
+with open(os.environ["PROMOTION_RECORD"], encoding="utf-8") as handle:
+    payload = json.load(handle)
+if not isinstance(payload, dict):
+    raise TypeError("promotion artifact must contain a JSON object")
+' >/dev/null 2>&1; then
+      echo "create-foundry-agent: existing promotion artifact is unreadable; refusing to publish or overwrite it" >&2
+      exit 1
+    fi
+  fi
+
   specialist_count=$(FOUNDRY_SPECIALISTS_JSON="$FOUNDRY_SPECIALISTS_JSON" python3 -c '
 import json, os
 print(len(json.loads(os.environ["FOUNDRY_SPECIALISTS_JSON"])))
@@ -334,15 +348,12 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
     ROLLBACK_ROTATION="${FOUNDRY_ROLLBACK_ROTATION:-}" \
     RECORD_PATH="${promotion_record}" \
     python3 -c '
-import json, os, pathlib
+import json, os, pathlib, tempfile
 
 promotion_record_path = pathlib.Path(os.environ["RECORD_PATH"])
 previous = {}
 if promotion_record_path.exists():
-    try:
-        previous = json.loads(promotion_record_path.read_text(encoding="utf-8"))
-    except ValueError:
-        previous = {}
+    previous = json.loads(promotion_record_path.read_text(encoding="utf-8"))
 
 candidate = json.loads(
     pathlib.Path(os.environ["CANDIDATE_RECORD"]).read_text(encoding="utf-8")
@@ -366,10 +377,12 @@ if promotion == "promoted":
         rollback = previous_agents
         rollback_coordinator = previous_coordinator
         rollback_manifest_digest = previous.get("manifest_digest", "")
+        rollback_status = previous.get("status", "")
     else:
         rollback = previous.get("rollback_target") or {}
         rollback_coordinator = previous.get("rollback_coordinator") or {}
         rollback_manifest_digest = previous.get("rollback_manifest_digest", "")
+        rollback_status = previous.get("rollback_status", "")
     manifest_digest = os.environ["MANIFEST_DIGEST"]
     release = os.environ["RELEASE_STAMP"]
     rollback_rotation = requested_rotation if rotate_rollback else previous_rotation
@@ -381,6 +394,7 @@ else:
     rollback = previous.get("rollback_target") or {}
     rollback_coordinator = previous.get("rollback_coordinator") or {}
     rollback_manifest_digest = previous.get("rollback_manifest_digest", "")
+    rollback_status = previous.get("rollback_status", "")
     manifest_digest = previous.get("manifest_digest", "")
     release = previous.get("release", "")
     rollback_rotation = previous_rotation
@@ -402,6 +416,7 @@ record = {
     "rollback_target": rollback,
     "rollback_coordinator": rollback_coordinator,
     "rollback_manifest_digest": rollback_manifest_digest,
+    "rollback_status": rollback_status,
     "rollback_rotation": rollback_rotation,
     "candidate": {
         "promotion": promotion,
@@ -412,9 +427,24 @@ record = {
         "coordinator": candidate_coordinator,
     },
 }
-promotion_record_path.write_text(
-    json.dumps(record, indent=2, sort_keys=True), encoding="utf-8"
-)
+temporary_path = None
+try:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=promotion_record_path.parent,
+        prefix=f".{promotion_record_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temporary_path = pathlib.Path(handle.name)
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary_path, promotion_record_path)
+finally:
+    if temporary_path is not None and temporary_path.exists():
+        temporary_path.unlink()
 '
   fi
 

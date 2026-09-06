@@ -381,12 +381,20 @@ locals {
     local.foundry_coordinator_validated
   )
 
-  foundry_rollback_ids_ok = sort(keys(local.foundry_rollback_agents)) == sort(keys(local.specialists_by_id))
+  foundry_rollback_status_ok = try(local.foundry_promotion_artifact.rollback_status, "") == "validated"
+  foundry_rollback_digest_ok = try(local.foundry_promotion_artifact.rollback_manifest_digest, "") != ""
+  foundry_rollback_ids_ok = (
+    length(local.foundry_rollback_agents) > 0 &&
+    alltrue([
+      for id in keys(local.foundry_rollback_agents) :
+      can(regex("^[a-z0-9_]+$", id))
+    ])
+  )
 
   foundry_rollback_ids_complete = alltrue([
     for id, entry in local.foundry_rollback_agents :
     try(entry.provider_version_id, "") != "" &&
-    try(entry.agent_name, "") == try(local.foundry_specialist_agent_names[id], "")
+    try(entry.agent_name, "") != ""
   ])
 
   foundry_rollback_no_candidate_ids = alltrue([
@@ -395,14 +403,14 @@ locals {
   ])
 
   foundry_rollback_coordinator_validated = (
-    try(local.foundry_rollback_coordinator.agent_name, "") == var.foundry_agent_name &&
+    try(local.foundry_rollback_coordinator.agent_name, "") != "" &&
     try(local.foundry_rollback_coordinator.provider_version_id, "") != ""
   )
 
   foundry_rollback_validated = (
     local.foundry_promotion_artifact_present &&
-    local.foundry_promotion_status_ok &&
-    try(local.foundry_promotion_artifact.rollback_manifest_digest, "") == local.specialist_manifest_digest &&
+    local.foundry_rollback_status_ok &&
+    local.foundry_rollback_digest_ok &&
     local.foundry_rollback_ids_ok &&
     local.foundry_rollback_ids_complete &&
     local.foundry_rollback_no_candidate_ids &&
@@ -1066,33 +1074,53 @@ resource "terraform_data" "foundry_specialist_promotion_gate" {
 
   lifecycle {
     precondition {
-      condition     = lower(var.foundry_specialist_activation_target) == "legacy" || local.foundry_promotion_status_ok
+      condition     = lower(var.foundry_specialist_activation_target) != "active" || local.foundry_promotion_status_ok
       error_message = "Specialist promotion artifact is present but its status is not \"validated\"; it was produced by a held or failed parity gate and must not be activated."
     }
 
     precondition {
-      condition     = lower(var.foundry_specialist_activation_target) == "legacy" || local.foundry_promotion_digest_ok
+      condition     = lower(var.foundry_specialist_activation_target) != "active" || local.foundry_promotion_digest_ok
       error_message = "Specialist promotion artifact was validated against a different manifest digest than src/operations/specialists.v1.json; re-run the create -> validate stage before promoting."
     }
 
     precondition {
-      condition     = lower(var.foundry_specialist_activation_target) == "legacy" || local.foundry_promotion_ids_ok
+      condition     = lower(var.foundry_specialist_activation_target) != "active" || local.foundry_promotion_ids_ok
       error_message = "Specialist promotion artifact must map exactly the twelve manifest specialist IDs -- no missing specialist and no extra key."
     }
 
     precondition {
-      condition     = lower(var.foundry_specialist_activation_target) == "legacy" || local.foundry_promotion_ids_complete
+      condition     = lower(var.foundry_specialist_activation_target) != "active" || local.foundry_promotion_ids_complete
       error_message = "Every promoted specialist must carry a non-empty provider_version_id and the agent_name this manifest projects for it."
     }
 
     precondition {
-      condition     = lower(var.foundry_specialist_activation_target) == "legacy" || local.foundry_promotion_no_candidate_ids
+      condition     = lower(var.foundry_specialist_activation_target) != "active" || local.foundry_promotion_no_candidate_ids
       error_message = "A promoted provider_version_id restates a synthetic candidate release stamp; only actual Foundry-returned version IDs may be activated."
     }
 
     precondition {
       condition     = local.foundry_activation_selection_valid
       error_message = "The requested specialist activation target does not have an exact validated provider-ID mapping."
+    }
+
+    precondition {
+      condition     = lower(var.foundry_specialist_activation_target) != "rollback" || local.foundry_rollback_status_ok
+      error_message = "Rollback activation requires a rollback mapping captured from a validated promotion."
+    }
+
+    precondition {
+      condition     = lower(var.foundry_specialist_activation_target) != "rollback" || local.foundry_rollback_digest_ok
+      error_message = "Rollback activation requires the persisted digest of the manifest that produced the rollback mapping."
+    }
+
+    precondition {
+      condition     = lower(var.foundry_specialist_activation_target) != "rollback" || local.foundry_rollback_ids_complete
+      error_message = "Every rollback specialist must carry a non-empty agent_name and provider_version_id."
+    }
+
+    precondition {
+      condition     = lower(var.foundry_specialist_activation_target) != "rollback" || local.foundry_rollback_coordinator_validated
+      error_message = "Rollback activation requires a pinned Operations Copilot coordinator provider version."
     }
 
     precondition {

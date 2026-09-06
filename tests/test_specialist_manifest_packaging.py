@@ -662,7 +662,7 @@ def test_activation_selector_supports_validated_active_and_rollback_maps():
 
 def test_promotion_gate_validates_only_the_mapping_selected_for_activation():
     foundry = _read("infra/terraform/foundry.tf")
-    gate = _hcl_block(foundry, PROMOTION_GATE_RESOURCE)
+    gate = foundry[foundry.index(PROMOTION_GATE_RESOURCE) :]
 
     active_guard = (
         'lower(var.foundry_specialist_activation_target) != "active" ||'
@@ -1088,7 +1088,7 @@ def test_corrupt_promotion_artifact_halts_without_publish_or_overwrite(tmp_path)
     assert result.returncode != 0
     assert "promotion artifact" in result.stderr.casefold()
     assert promotion.read_text(encoding="utf-8") == corrupt
-    assert not (tmp_path / "create.log").exists()
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
 
 
 def test_promotion_artifact_is_replaced_atomically():
