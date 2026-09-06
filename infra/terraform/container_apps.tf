@@ -263,7 +263,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED"
-        value = "true"
+        value = tostring(local.foundry_version_pinning_required)
       }
 
       env {
@@ -309,7 +309,15 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "FOUNDRY_AGENT_NAME"
-        value = var.foundry_agent_name
+        value = local.foundry_coordinator_activation.name
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_coordinator_activation.version == "" ? [] : [local.foundry_coordinator_activation.version]
+        content {
+          name  = "FOUNDRY_AGENT_VERSION"
+          value = env.value
+        }
       }
 
       env {

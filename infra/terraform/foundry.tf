@@ -336,8 +336,10 @@ locals {
     ? jsondecode(file(local.foundry_promotion_artifact_path))
     : null
   )
-  foundry_promoted_agents = try(local.foundry_promotion_artifact.agents, {})
-  foundry_rollback_agents = try(local.foundry_promotion_artifact.rollback_target, {})
+  foundry_promoted_agents      = try(local.foundry_promotion_artifact.agents, {})
+  foundry_promoted_coordinator = try(local.foundry_promotion_artifact.coordinator, {})
+  foundry_rollback_agents      = try(local.foundry_promotion_artifact.rollback_target, {})
+  foundry_rollback_coordinator = try(local.foundry_promotion_artifact.rollback_coordinator, {})
 
   # The parity gate wrote "validated" only after an exact live comparison.
   foundry_promotion_status_ok = try(local.foundry_promotion_artifact.status, "") == "validated"
@@ -364,13 +366,19 @@ locals {
     !contains(values(local.foundry_specialist_agent_versions), try(entry.provider_version_id, ""))
   ])
 
+  foundry_coordinator_validated = (
+    try(local.foundry_promoted_coordinator.agent_name, "") == var.foundry_agent_name &&
+    try(local.foundry_promoted_coordinator.provider_version_id, "") != ""
+  )
+
   foundry_promotion_validated = (
     local.foundry_promotion_artifact_present &&
     local.foundry_promotion_status_ok &&
     local.foundry_promotion_digest_ok &&
     local.foundry_promotion_ids_ok &&
     local.foundry_promotion_ids_complete &&
-    local.foundry_promotion_no_candidate_ids
+    local.foundry_promotion_no_candidate_ids &&
+    local.foundry_coordinator_validated
   )
 
   foundry_rollback_ids_ok = sort(keys(local.foundry_rollback_agents)) == sort(keys(local.specialists_by_id))
@@ -386,13 +394,19 @@ locals {
     !contains(values(local.foundry_specialist_agent_versions), try(entry.provider_version_id, ""))
   ])
 
+  foundry_rollback_coordinator_validated = (
+    try(local.foundry_rollback_coordinator.agent_name, "") == var.foundry_agent_name &&
+    try(local.foundry_rollback_coordinator.provider_version_id, "") != ""
+  )
+
   foundry_rollback_validated = (
     local.foundry_promotion_artifact_present &&
     local.foundry_promotion_status_ok &&
     try(local.foundry_promotion_artifact.rollback_manifest_digest, "") == local.specialist_manifest_digest &&
     local.foundry_rollback_ids_ok &&
     local.foundry_rollback_ids_complete &&
-    local.foundry_rollback_no_candidate_ids
+    local.foundry_rollback_no_candidate_ids &&
+    local.foundry_rollback_coordinator_validated
   )
 
   foundry_activation_selection_valid = (
@@ -430,6 +444,28 @@ locals {
     : lower(var.foundry_specialist_activation_target) == "rollback" && local.foundry_rollback_validated
     ? "validated_rollback"
     : "legacy_unversioned"
+  )
+
+  foundry_coordinator_activation = lower(var.foundry_specialist_activation_target) == "active" && local.foundry_promotion_validated ? {
+    name    = local.foundry_promoted_coordinator.agent_name
+    version = local.foundry_promoted_coordinator.provider_version_id
+    source  = "validated_promotion"
+    } : lower(var.foundry_specialist_activation_target) == "rollback" && local.foundry_rollback_validated ? {
+    name    = local.foundry_rollback_coordinator.agent_name
+    version = local.foundry_rollback_coordinator.provider_version_id
+    source  = "validated_rollback"
+    } : {
+    name    = var.foundry_agent_name
+    version = ""
+    source  = "legacy_unversioned"
+  }
+
+  # Before staged adoption the legacy runtime may remain unversioned. Setting
+  # runtime_verified deploys the fail-closed pinning boundary before candidate
+  # publication; active and rollback revisions always require provider IDs.
+  foundry_version_pinning_required = (
+    var.foundry_version_pinning_runtime_verified ||
+    lower(var.foundry_specialist_activation_target) != "legacy"
   )
 
   # Model deployment name handed to the live parity gate so the deployed
@@ -947,6 +983,7 @@ resource "terraform_data" "foundry_agent" {
     rollout_script     = filesha256("${path.module}/../scripts/create-foundry-agent.sh")
     parity_validator   = filesha256("${path.module}/../../scripts/validate_specialist_parity.py")
     runtime_verified   = var.foundry_version_pinning_runtime_verified
+    rollback_rotation  = var.foundry_specialist_rollback_rotation
   }
 
   lifecycle {
@@ -987,6 +1024,7 @@ resource "terraform_data" "foundry_agent" {
       OPERATIONS_MCP_SERVER_URL          = local.foundry_mcp_server_url == null ? "" : local.foundry_mcp_server_url
       AZURE_MCP_SERVER_URL               = local.foundry_azure_mcp_server_url == null ? "" : local.foundry_azure_mcp_server_url
       MCP_APIM_AUDIENCE                  = local.apim_audience
+      FOUNDRY_ROLLBACK_ROTATION          = var.foundry_specialist_rollback_rotation
     }
   }
 
@@ -1022,6 +1060,7 @@ resource "terraform_data" "foundry_specialist_promotion_gate" {
     activation_source = local.foundry_specialist_activation_source
     manifest_digest   = local.specialist_manifest_digest
     activated         = sha256(jsonencode(local.foundry_specialist_activation))
+    coordinator       = sha256(jsonencode(local.foundry_coordinator_activation))
     specialist_count  = length(local.foundry_specialist_activation)
   }
 

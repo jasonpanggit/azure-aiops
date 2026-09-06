@@ -503,6 +503,12 @@ variable "foundry_version_pinning_runtime_verified" {
   default     = false
 }
 
+variable "foundry_specialist_rollback_rotation" {
+  description = "Optional operator-chosen rotation epoch. A new non-empty value advances the immutable rollback target once during the next successful promotion; reusing the value leaves it stable."
+  type        = string
+  default     = ""
+}
+
 variable "foundry_model_deployment_name_override" {
   description = <<-EOT
     Optional explicit Azure model deployment name handed to the live parity

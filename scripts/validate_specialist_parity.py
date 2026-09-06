@@ -629,7 +629,9 @@ def _live_failure(error: Exception, *, service: str) -> dict[str, Any]:
     )
 
 
-def _candidate_agents(path: str) -> dict[str, dict[str, str]]:
+def _candidate_mapping(
+    path: str,
+) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
     """Load exact provider IDs emitted by the candidate rollout."""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -651,7 +653,19 @@ def _candidate_agents(path: str) -> dict[str, dict[str, str]]:
             "agent_name": agent_name.strip(),
             "provider_version_id": provider_version_id.strip(),
         }
-    return result
+    coordinator = payload.get("coordinator")
+    if not isinstance(coordinator, dict):
+        raise TypeError("candidate mapping has no coordinator")
+    coordinator_name = coordinator.get("agent_name")
+    coordinator_version = coordinator.get("provider_version_id")
+    if not isinstance(coordinator_name, str) or not coordinator_name.strip():
+        raise ValueError("candidate coordinator has no agent name")
+    if not isinstance(coordinator_version, str) or not coordinator_version.strip():
+        raise ValueError("candidate coordinator has no provider version id")
+    return result, {
+        "agent_name": coordinator_name.strip(),
+        "provider_version_id": coordinator_version.strip(),
+    }
 
 
 def _entry_provider_version_id(entry: dict[str, Any]) -> str:
@@ -700,7 +714,9 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
     api_version = env.get("FOUNDRY_API_VERSION", "v1")
 
     try:
-        candidate_agents = _candidate_agents(env["FOUNDRY_CANDIDATE_MAPPING"])
+        candidate_agents, candidate_coordinator = _candidate_mapping(
+            env["FOUNDRY_CANDIDATE_MAPPING"]
+        )
     except (OSError, ValueError, TypeError) as error:
         failure = _failure(
             "candidate_mapping_unreadable",
@@ -775,6 +791,60 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
 
     failures: list[dict[str, Any]] = []
     observed: list[dict[str, Any]] = []
+    deployment_model = env.get("FOUNDRY_MODEL_DEPLOYMENT_NAME", "").strip()
+    coordinator_name = candidate_coordinator["agent_name"]
+    coordinator_version = candidate_coordinator["provider_version_id"]
+    try:
+        coordinator_versions = _get_json(
+            f"{endpoint}/agents/{coordinator_name}/versions?api-version={api_version}",
+            {"Authorization": "Bearer " + foundry_token},
+        )
+        coordinator_entries = (coordinator_versions or {}).get("value", []) or []
+        coordinator_pinned = next(
+            (
+                entry
+                for entry in coordinator_entries
+                if isinstance(entry, dict)
+                and _entry_provider_version_id(entry) == coordinator_version
+            ),
+            None,
+        )
+        if coordinator_pinned is None:
+            failures.append(
+                _failure(
+                    "pinned_version_missing",
+                    specialist="operations_copilot",
+                    server=FOUNDRY_SERVICE,
+                    provider_version_id=coordinator_version,
+                )
+            )
+        else:
+            coordinator_definition = coordinator_pinned.get("definition") or {}
+            if (
+                deployment_model
+                and coordinator_definition.get("model") != deployment_model
+            ):
+                failures.append(
+                    _failure(
+                        "deployed_model_mismatch",
+                        specialist="operations_copilot",
+                        server=FOUNDRY_SERVICE,
+                    )
+                )
+            observed.append(
+                {
+                    "specialist": "operations_copilot",
+                    "provider_version_id": coordinator_version,
+                    "version_count": len(coordinator_entries),
+                    "operations_grant_count": 0,
+                    "azure_grant_count": 0,
+                }
+            )
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        failure = _live_failure(error, service=FOUNDRY_SERVICE)
+        failure["specialist"] = "operations_copilot"
+        failures.append(failure)
+
     for specialist_id in sorted(set(manifest.specialist_ids) - set(candidate_agents)):
         failures.append(
             _failure(
@@ -785,7 +855,6 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             )
         )
 
-    deployment_model = env.get("FOUNDRY_MODEL_DEPLOYMENT_NAME", "").strip()
     for specialist in manifest.specialists:
         candidate = candidate_agents.get(specialist.id)
         if candidate is None:

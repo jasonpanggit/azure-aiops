@@ -628,18 +628,6 @@ def test_candidate_publication_is_explicitly_staged_and_safe_by_default():
     assert "azurerm_container_app.api" in rollout
 
 
-def test_candidate_publication_is_suspended_while_rollback_is_selected():
-    foundry = _read("infra/terraform/foundry.tf")
-
-    rollout = foundry[
-        foundry.index('resource "terraform_data" "foundry_agent"') :
-        foundry.index(PROMOTION_GATE_RESOURCE)
-    ]
-    assert (
-        'lower(var.foundry_specialist_activation_target) != "rollback"' in rollout
-    )
-
-
 def test_activation_selector_supports_validated_active_and_rollback_maps():
     variables = _read("infra/terraform/variables.tf")
     foundry = _read("infra/terraform/foundry.tf")
@@ -659,13 +647,42 @@ def test_activation_selector_supports_validated_active_and_rollback_maps():
     assert "provider_version_id" in activation
 
     for local_name in (
+        "foundry_promoted_coordinator",
+        "foundry_coordinator_validated",
         "foundry_rollback_ids_ok",
         "foundry_rollback_ids_complete",
         "foundry_rollback_no_candidate_ids",
+        "foundry_rollback_coordinator_validated",
         "foundry_rollback_validated",
         "foundry_activation_selection_valid",
+        "foundry_coordinator_activation",
     ):
         assert f"  {local_name} = " in foundry
+
+
+def test_pinned_activation_emits_the_validated_shared_coordinator_version():
+    foundry = _read("infra/terraform/foundry.tf")
+    container_apps = _read("infra/terraform/container_apps.tf")
+
+    coordinator = _local_block(foundry, "foundry_coordinator_activation")
+    assert "foundry_promoted_coordinator" in coordinator
+    assert "foundry_rollback_coordinator" in coordinator
+    assert "provider_version_id" in coordinator
+    assert 'version = ""' in coordinator
+    assert 'name  = "FOUNDRY_AGENT_VERSION"' in container_apps
+    assert "local.foundry_coordinator_activation.version" in container_apps
+
+
+def test_rollback_rotation_uses_an_explicit_stable_epoch():
+    variables = _read("infra/terraform/variables.tf")
+    foundry = _read("infra/terraform/foundry.tf")
+
+    rotate = _hcl_block(
+        variables, 'variable "foundry_specialist_rollback_rotation"'
+    )
+    assert re.search(r'default\s*=\s*""', rotate)
+    assert "FOUNDRY_ROLLBACK_ROTATION" in foundry
+    assert "rollback_rotation" in foundry
 
 
 def test_legacy_migration_does_not_send_synthetic_versions():
@@ -906,6 +923,10 @@ def test_rollout_validates_and_promotes_only_actual_provider_ids(tmp_path):
                 "promotion": "promoted",
                 "manifest_digest": "digest-old",
                 "agents": previous,
+                "coordinator": {
+                    "agent_name": "operations-copilot",
+                    "provider_version_id": "old-coordinator",
+                },
             }
         ),
         encoding="utf-8",
@@ -925,12 +946,15 @@ def test_rollout_validates_and_promotes_only_actual_provider_ids(tmp_path):
         entry["provider_version_id"].startswith("prov-") for entry in mapping.values()
     )
     assert len({entry["provider_version_id"] for entry in mapping.values()}) == 12
+    assert live["mapping"]["coordinator"]["provider_version_id"].startswith("prov-")
 
     record = json.loads(promotion.read_text(encoding="utf-8"))
     assert record["status"] == "validated"
     assert record["promotion"] == "promoted"
     assert record["manifest_digest"] == "digest-abc"
     assert sorted(record["agents"]) == sorted(LOCKED_SPECIALIST_IDS)
+    assert record["coordinator"]["agent_name"] == "operations-copilot"
+    assert record["coordinator"]["provider_version_id"].startswith("prov-")
     assert all(
         entry["provider_version_id"].startswith("prov-")
         for entry in record["agents"].values()
@@ -942,7 +966,120 @@ def test_rollout_validates_and_promotes_only_actual_provider_ids(tmp_path):
     )
     # The previously promoted mapping is retained as the rollback target.
     assert record["rollback_target"] == previous
+    assert record["rollback_coordinator"]["provider_version_id"] == "old-coordinator"
     assert record["rollback_manifest_digest"] == "digest-old"
+
+
+def test_later_publications_do_not_advance_rollback_without_explicit_rotation(
+    tmp_path,
+):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    promotion = tmp_path / "promotion.json"
+    stable_rollback = {
+        specialist_id: {
+            "agent_name": f"aiops-{specialist_id}-agent",
+            "provider_version_id": f"rollback-{specialist_id}",
+        }
+        for specialist_id in LOCKED_SPECIALIST_IDS
+    }
+    stable_coordinator = {
+        "agent_name": "operations-copilot",
+        "provider_version_id": "rollback-coordinator",
+    }
+    current_active = {
+        specialist_id: {
+            "agent_name": f"aiops-{specialist_id}-agent",
+            "provider_version_id": f"active-{specialist_id}",
+        }
+        for specialist_id in LOCKED_SPECIALIST_IDS
+    }
+    current_coordinator = {
+        "agent_name": "operations-copilot",
+        "provider_version_id": "active-coordinator",
+    }
+    promotion.write_text(
+        json.dumps(
+            {
+                "status": "validated",
+                "promotion": "promoted",
+                "manifest_digest": "digest-abc",
+                "agents": current_active,
+                "coordinator": current_coordinator,
+                "rollback_target": stable_rollback,
+                "rollback_coordinator": stable_coordinator,
+                "rollback_manifest_digest": "digest-abc",
+            }
+        ),
+        encoding="utf-8",
+    )
+    env["FOUNDRY_PROMOTION_RECORD"] = str(promotion)
+
+    first = _run_rollout(env, tmp_path)
+    second = _run_rollout(env, tmp_path)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    record = json.loads(promotion.read_text(encoding="utf-8"))
+    assert record["rollback_target"] == stable_rollback
+    assert record["rollback_coordinator"] == stable_coordinator
+
+
+def test_new_rotation_epoch_advances_rollback_once(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    promotion = tmp_path / "promotion.json"
+    active = {
+        specialist_id: {
+            "agent_name": f"aiops-{specialist_id}-agent",
+            "provider_version_id": f"active-{specialist_id}",
+        }
+        for specialist_id in LOCKED_SPECIALIST_IDS
+    }
+    coordinator = {
+        "agent_name": "operations-copilot",
+        "provider_version_id": "active-coordinator",
+    }
+    promotion.write_text(
+        json.dumps(
+            {
+                "status": "validated",
+                "promotion": "promoted",
+                "manifest_digest": "digest-abc",
+                "agents": active,
+                "coordinator": coordinator,
+                "rollback_target": {},
+                "rollback_coordinator": {},
+                "rollback_manifest_digest": "",
+            }
+        ),
+        encoding="utf-8",
+    )
+    env.update(
+        {
+            "FOUNDRY_PROMOTION_RECORD": str(promotion),
+            "FOUNDRY_ROLLBACK_ROTATION": "epoch-2",
+        }
+    )
+
+    first = _run_rollout(env, tmp_path)
+    after_first = json.loads(promotion.read_text(encoding="utf-8"))
+    second = _run_rollout(env, tmp_path)
+    after_second = json.loads(promotion.read_text(encoding="utf-8"))
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert after_first["rollback_target"] == active
+    assert after_first["rollback_coordinator"] == coordinator
+    assert after_first["rollback_rotation"] == "epoch-2"
+    assert after_second["rollback_target"] == active
+    assert after_second["rollback_coordinator"] == coordinator
 
 
 def test_blocked_live_parity_holds_promotion_and_preserves_the_validated_mapping(
@@ -969,6 +1106,10 @@ def test_blocked_live_parity_holds_promotion_and_preserves_the_validated_mapping
                 "promotion": "promoted",
                 "manifest_digest": "digest-old",
                 "agents": previous,
+                "coordinator": {
+                    "agent_name": "operations-copilot",
+                    "provider_version_id": "old-coordinator",
+                },
             }
         ),
         encoding="utf-8",
@@ -1061,7 +1202,7 @@ def test_unavailable_validator_does_not_republish_versions_on_re_run(tmp_path):
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
-    assert creates_after_first == 12
+    assert creates_after_first == 13
     # No publication churn: the same unvalidated candidate set is not
     # republished while the validator stays unavailable.
     assert creates_after_second == creates_after_first
@@ -1099,7 +1240,11 @@ def _candidate_mapping_file(tmp_path, provider_id="prov-1") -> str:
                         "provider_version_id": provider_id,
                     }
                     for specialist in manifest.specialists
-                }
+                },
+                "coordinator": {
+                    "agent_name": "operations-copilot",
+                    "provider_version_id": provider_id,
+                },
             }
         ),
         encoding="utf-8",
@@ -1339,6 +1484,51 @@ def test_live_parity_fails_when_the_pinned_version_is_absent(tmp_path, monkeypat
     assert missing["provider_version_id"] == "prov-1"
 
 
+def test_live_parity_requires_the_pinned_shared_coordinator(tmp_path, monkeypatch):
+    module = _parity_module()
+    manifest = load_specialist_manifest()
+    entries = [
+        {
+            "version": "prov-1",
+            "definition": {
+                "tools": [
+                    {
+                        "type": "mcp",
+                        "server_label": "operations-mcp",
+                        "allowed_tools": list(manifest.specialists[0].operations_mcp_tools),
+                    },
+                    {
+                        "type": "mcp",
+                        "server_label": "azure-mcp",
+                        "allowed_tools": list(manifest.specialists[0].azure_mcp_tools),
+                    },
+                ]
+            },
+        }
+    ]
+
+    def fake_get(url, headers):
+        if "/agents/operations-copilot/" in url:
+            return {"value": []}
+        return {"value": entries}
+
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_live_tool_catalog", lambda url, token: ())
+    monkeypatch.setattr(module, "_get_json", fake_get)
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+        )
+    )
+
+    assert any(
+        failure.get("specialist") == "operations_copilot"
+        and failure["kind"] == "pinned_version_missing"
+        for failure in report["failures"]
+    )
+
+
 def test_live_parity_fails_when_a_specialist_is_absent_from_the_mapping(
     tmp_path, monkeypatch
 ):
@@ -1346,10 +1536,23 @@ def test_live_parity_fails_when_a_specialist_is_absent_from_the_mapping(
     _live_module_with_versions(monkeypatch, module, [])
 
     path = tmp_path / "partial.json"
-    path.write_text(json.dumps({"agents": {"network": {
-        "agent_name": "aiops-network-agent",
-        "provider_version_id": "prov-1",
-    }}}), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "network": {
+                        "agent_name": "aiops-network-agent",
+                        "provider_version_id": "prov-1",
+                    }
+                },
+                "coordinator": {
+                    "agent_name": "operations-copilot",
+                    "provider_version_id": "prov-1",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     report = module.run_live(env=_live_env(FOUNDRY_CANDIDATE_MAPPING=str(path)))
 

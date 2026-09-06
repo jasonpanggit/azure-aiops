@@ -149,11 +149,13 @@ try:
 except (OSError, ValueError):
     sys.exit(1)
 agents = record.get("agents") or {}
+coordinator = record.get("coordinator") or {}
 ok = (
     record.get("manifest_digest", "") == os.environ["EXPECTED_DIGEST"]
     and record.get("release", "") == os.environ["EXPECTED_RELEASE"]
     and len(agents) == int(os.environ["EXPECTED_COUNT"])
     and all(entry.get("provider_version_id") for entry in agents.values())
+    and coordinator.get("provider_version_id")
 )
 sys.exit(0 if ok else 1)
 ' && already_published=1 || already_published=0
@@ -189,6 +191,15 @@ sys.exit(0 if ok else 1)
   # ---------------------------------------------------------------------------
   version_record="$(mktemp)"
   trap 'rm -f "${version_record}"' EXIT
+
+  # The shared Operations Copilot narrator is versioned alongside the page
+  # specialists. Active and rollback revisions pin it through the same
+  # validated artifact rather than resolving its name to "latest".
+  FOUNDRY_AGENT_SPECIALIST_ID="operations_copilot" \
+  FOUNDRY_AGENT_VERSION="${release_stamp:+${release_stamp}.}coordinator" \
+  FOUNDRY_AGENT_VERSION_RECORD="${version_record}" \
+  FOUNDRY_SPECIALISTS_JSON="" \
+  "$0"
 
   while IFS=$'\t' read -r specialist_id specialist_name specialist_version specialist_model specialist_prompt_b64 specialist_tools_b64; do
     [[ -z "${specialist_name}" ]] && continue
@@ -227,17 +238,22 @@ for specialist_id, v in d.items():
 import json, os, pathlib
 
 agents = {}
+coordinator = {}
 for line in pathlib.Path(os.environ["VERSION_RECORD"]).read_text(encoding="utf-8").splitlines():
     if not line.strip():
         continue
     specialist_id, name, provider_version_id, candidate_version = (
         line.split("\t") + ["", "", "", ""]
     )[:4]
-    agents[specialist_id or name] = {
+    entry = {
         "agent_name": name,
         "provider_version_id": provider_version_id,
         "candidate_version": candidate_version,
     }
+    if specialist_id == "operations_copilot":
+        coordinator = entry
+    else:
+        agents[specialist_id or name] = entry
 
 pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
     json.dumps(
@@ -249,6 +265,7 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
             "release": os.environ["RELEASE_STAMP"],
             "agent_count": len(agents),
             "agents": agents,
+            "coordinator": coordinator,
         },
         indent=2,
         sort_keys=True,
@@ -314,6 +331,7 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
     CANDIDATE_RECORD="${candidate_record}" \
     MANIFEST_DIGEST="${manifest_digest}" \
     RELEASE_STAMP="${release_stamp}" \
+    ROLLBACK_ROTATION="${FOUNDRY_ROLLBACK_ROTATION:-}" \
     RECORD_PATH="${promotion_record}" \
     python3 -c '
 import json, os, pathlib
@@ -330,29 +348,45 @@ candidate = json.loads(
     pathlib.Path(os.environ["CANDIDATE_RECORD"]).read_text(encoding="utf-8")
 )
 candidate_agents = candidate.get("agents") or {}
+candidate_coordinator = candidate.get("coordinator") or {}
 previous_agents = previous.get("agents") or {}
+previous_coordinator = previous.get("coordinator") or {}
 promotion = os.environ["PROMOTION_STATUS"]
 reason = os.environ["PROMOTION_REASON"]
+requested_rotation = os.environ.get("ROLLBACK_ROTATION", "")
+previous_rotation = previous.get("rollback_rotation", "")
+rotate_rollback = bool(requested_rotation) and requested_rotation != previous_rotation
 
 if promotion == "promoted":
     # The gate passed against these exact provider IDs: they become the
     # activated mapping and the previous one becomes the rollback target.
     agents = candidate_agents
-    rollback = previous_agents
-    rollback_manifest_digest = previous.get("manifest_digest", "")
+    coordinator = candidate_coordinator
+    if rotate_rollback or not previous.get("rollback_target"):
+        rollback = previous_agents
+        rollback_coordinator = previous_coordinator
+        rollback_manifest_digest = previous.get("manifest_digest", "")
+    else:
+        rollback = previous.get("rollback_target") or {}
+        rollback_coordinator = previous.get("rollback_coordinator") or {}
+        rollback_manifest_digest = previous.get("rollback_manifest_digest", "")
     manifest_digest = os.environ["MANIFEST_DIGEST"]
     release = os.environ["RELEASE_STAMP"]
+    rollback_rotation = requested_rotation if rotate_rollback else previous_rotation
 else:
     # A held rollout never moves candidates into the activated position and
     # never destroys the mapping the running revision depends on.
     agents = previous_agents
+    coordinator = previous_coordinator
     rollback = previous.get("rollback_target") or {}
+    rollback_coordinator = previous.get("rollback_coordinator") or {}
     rollback_manifest_digest = previous.get("rollback_manifest_digest", "")
     manifest_digest = previous.get("manifest_digest", "")
     release = previous.get("release", "")
+    rollback_rotation = previous_rotation
 
 record = {
-    "status": "validated" if agents else "held",
+    "status": "validated" if agents and coordinator else "held",
     "promotion": promotion,
     "reason": reason,
     "manifest_digest": manifest_digest,
@@ -362,16 +396,20 @@ record = {
         "live": os.environ["PARITY_LIVE"],
     },
     "agents": agents,
+    "coordinator": coordinator,
     "agent_count": len(agents),
     "previous_version": previous_agents,
     "rollback_target": rollback,
+    "rollback_coordinator": rollback_coordinator,
     "rollback_manifest_digest": rollback_manifest_digest,
+    "rollback_rotation": rollback_rotation,
     "candidate": {
         "promotion": promotion,
         "reason": reason,
         "manifest_digest": candidate.get("manifest_digest", ""),
         "release": candidate.get("release", ""),
         "agents": candidate_agents,
+        "coordinator": candidate_coordinator,
     },
 }
 promotion_record_path.write_text(

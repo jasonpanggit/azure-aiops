@@ -103,16 +103,21 @@ def test_version_pinning_required_disables_unversioned_legacy_agent(monkeypatch)
     assert MicrosoftAgentFrameworkFoundryAgent.from_env("network") is None
 
 
-def test_version_pinning_required_preserves_unversioned_shared_coordinator(
+def test_version_pinning_required_accepts_pinned_shared_coordinator(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
     monkeypatch.setenv("FOUNDRY_AGENT_NAME", "operations-copilot")
-    monkeypatch.delenv("FOUNDRY_AGENT_VERSION", raising=False)
+    monkeypatch.setenv("FOUNDRY_AGENT_VERSION", "provider-coordinator-42")
     monkeypatch.setenv("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "true")
 
-    assert FoundryPromptAgent.from_env() is not None
-    assert MicrosoftAgentFrameworkFoundryAgent.from_env() is not None
+    rest = FoundryPromptAgent.from_env()
+    maf = MicrosoftAgentFrameworkFoundryAgent.from_env()
+
+    assert rest is not None
+    assert maf is not None
+    assert rest.agent_version == "provider-coordinator-42"
+    assert maf.agent_version == "provider-coordinator-42"
 
 
 def test_legacy_foundry_configuration_is_a_compatible_network_fallback(monkeypatch) -> None:
