@@ -13,6 +13,7 @@ from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.exposure_query import (
     MAX_EXPOSURE_PAGE_SIZE,
+    MAX_EXPOSURE_QUERY_TIMEOUT_SECONDS,
     ExposureAuthorization,
     ExposureCursorError,
     ExposureQuery,
@@ -92,6 +93,14 @@ def test_page_size_is_rejected_before_query(page_size: int) -> None:
         )
 
     assert reader.calls == []
+
+
+def test_query_service_rejects_unbounded_statement_timeout() -> None:
+    reader = PageReader()
+    reader.timeout_seconds = MAX_EXPOSURE_QUERY_TIMEOUT_SECONDS + 1
+
+    with pytest.raises(ValueError, match="query timeout"):
+        ExposureQueryService(reader)
 
 
 class ApiExposureService:
@@ -364,6 +373,7 @@ def test_100k_server_and_image_benchmark_is_exact_bounded_and_under_budget() -> 
     assert report["work"]["full_table_materializations"] == 0
     assert report["work"]["delta_fallbacks"] == 0
     assert report["memory"]["rss_delta_bytes"] > 0
+    assert report["memory"]["under_budget"] is True
     assert report["environment"]["python"]
     assert {
         "server_scoped_first_page",

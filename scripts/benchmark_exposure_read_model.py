@@ -59,6 +59,7 @@ DEFAULT_WARMUPS = 5
 DEFAULT_MEASUREMENTS = 20
 DEFAULT_PAGE_SIZE = 50
 SLO_MILLISECONDS = 2_000.0
+RSS_BUDGET_BYTES = 256 * 1024 * 1024
 
 REQUIRED_GOLD_SCHEMA = REQUIRED_EXPOSURE_SCHEMA
 
@@ -411,9 +412,15 @@ def run_local_benchmark(
         for kind in ("container_image", "server")
     }
     rss_after = _rss_bytes()
+    rss_delta = max(0, rss_after - rss_before)
+    memory_under_budget = rss_delta <= RSS_BUDGET_BYTES
     return {
         "schema_version": "1.0.0",
-        "status": "pass" if under_budget else "fail",
+        "status": (
+            "pass"
+            if under_budget and memory_under_budget
+            else "fail"
+        ),
         "adapter": {
             "adapter_id": adapter.adapter_id,
             "selected_production_adapter": PRODUCTION_ADAPTER_ID,
@@ -446,7 +453,9 @@ def run_local_benchmark(
         "memory": {
             "rss_before_bytes": rss_before,
             "rss_after_bytes": rss_after,
-            "rss_delta_bytes": max(0, rss_after - rss_before),
+            "rss_delta_bytes": rss_delta,
+            "budget_bytes": RSS_BUDGET_BYTES,
+            "under_budget": memory_under_budget,
         },
         "environment": {
             "python": platform.python_version(),
@@ -619,11 +628,13 @@ def run_fabric_sql_benchmark(
         instrumented.max_rows_fetched_per_query <= page_size + 1
     )
     rss_after = _rss_bytes()
+    rss_delta = max(0, rss_after - rss_before)
+    memory_under_budget = rss_delta <= RSS_BUDGET_BYTES
     return {
         "schema_version": "1.0.0",
         "status": (
             "pass"
-            if exact and under_budget and bounded
+            if exact and under_budget and bounded and memory_under_budget
             else "fail"
         ),
         "adapter": {
@@ -657,7 +668,9 @@ def run_fabric_sql_benchmark(
         "memory": {
             "rss_before_bytes": rss_before,
             "rss_after_bytes": rss_after,
-            "rss_delta_bytes": max(0, rss_after - rss_before),
+            "rss_delta_bytes": rss_delta,
+            "budget_bytes": RSS_BUDGET_BYTES,
+            "under_budget": memory_under_budget,
         },
         "environment": {
             "python": platform.python_version(),
@@ -668,7 +681,12 @@ def run_fabric_sql_benchmark(
         "slo": {
             "target_p95_ms": SLO_MILLISECONDS,
             "observed_under_target": under_budget,
-            "production_certified": exact and under_budget and bounded,
+            "production_certified": (
+                exact
+                and under_budget
+                and bounded
+                and memory_under_budget
+            ),
         },
     }
 

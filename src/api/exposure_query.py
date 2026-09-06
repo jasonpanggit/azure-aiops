@@ -30,6 +30,7 @@ MAX_EXPOSURE_PAGE_SIZE = 100
 MAX_EXPOSURE_FILTER_VALUES = 50
 MAX_EXPOSURE_FACETS = 8
 MAX_FACET_ROWS = 1_000
+MAX_EXPOSURE_QUERY_TIMEOUT_SECONDS = 30
 CURSOR_TTL_SECONDS = 15 * 60
 CURSOR_KEY_OVERLAP_SECONDS = 30 * 60
 CURSOR_VERSION = 1
@@ -552,6 +553,16 @@ class ExposureQueryService:
         generation_window: Any | None = None,
         authorization_resolver: Any | None = None,
     ) -> None:
+        timeout = getattr(reader, "timeout_seconds", None)
+        if timeout is not None and (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, int)
+            or not 1 <= timeout <= MAX_EXPOSURE_QUERY_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "Fabric SQL Exposure query timeout must be between 1 and "
+                f"{MAX_EXPOSURE_QUERY_TIMEOUT_SECONDS} seconds"
+            )
         self._reader = reader
         self._cursor_codec = cursor_codec
         self._generation_window = generation_window
@@ -1173,6 +1184,7 @@ __all__ = [
     "CURSOR_KEY_OVERLAP_SECONDS",
     "CURSOR_TTL_SECONDS",
     "MAX_EXPOSURE_PAGE_SIZE",
+    "MAX_EXPOSURE_QUERY_TIMEOUT_SECONDS",
     "ExposureAuthorization",
     "ExposureCursorCodec",
     "ExposureCursorError",
