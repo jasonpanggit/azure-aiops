@@ -510,9 +510,13 @@ if not isinstance(payload, dict):
 # fully-qualified resource id last.
 for key in ("version", "agentVersion", "agent_version", "versionId", "version_id", "id"):
     value = payload.get(key)
-    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", value.strip()):
-        print(value.strip())
-        sys.exit(0)
+    if isinstance(value, str):
+        normalized = value.strip()
+        if key == "id":
+            normalized = normalized.rstrip("/").rsplit("/", 1)[-1]
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", normalized):
+            print(normalized)
+            sys.exit(0)
 sys.exit(3)
 '
     )
