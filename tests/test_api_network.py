@@ -27,7 +27,10 @@ from api.providers import ProviderRuntime, ProviderSpec
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
-from network.design import NetworkDesignPolicyStore
+from network.design import (
+    NetworkDesignPolicyStore,
+    NetworkDesignPolicyValidationError,
+)
 from network.models import NetworkSnapshot
 from network.rule_engine import SUPPORTED_OPERATORS, SUPPORTED_TARGET_NAMES
 from network.service import NetworkIntelligenceService, build_service
@@ -37,6 +40,23 @@ from storage.onelake_documents import OneLakeDocumentStore
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
 SCOPED_TOKEN = "scoped-token-0123456789abcdef"
 SCOPED_ADMIN_TOKEN = "scoped-admin-token-0123456789abcdef"
+
+
+class _PolicyDocuments:
+    def __init__(self, payload):
+        self.payload = payload
+        self.write_calls = []
+
+    def read(self, name):
+        del name
+        return dict(self.payload)
+
+    def read_or_raise(self, name):
+        return self.read(name)
+
+    def write(self, name, payload, *, expected_revision):
+        self.write_calls.append((name, payload, expected_revision))
+        self.payload = dict(payload)
 
 
 def _principals() -> dict[str, Principal]:
@@ -500,6 +520,119 @@ class TestAuthentication:
 
 
 class TestPolicy:
+    @pytest.mark.parametrize(
+        "corrupt_document",
+        [
+            {"revision": 8, "policy": "corrupt"},
+            {"revision": 8, "policy": []},
+            {"revision": 8},
+        ],
+    )
+    def test_management_paths_reject_corrupt_policy_without_persisting(
+        self,
+        corrupt_document,
+    ):
+        documents = _PolicyDocuments(corrupt_document)
+        store = NetworkDesignPolicyStore(documents)
+
+        for operation in (
+            store.read,
+            lambda: store.preview({"description": "operator edit"}),
+            lambda: store.update(
+                {"description": "operator edit"},
+                expected_revision=8,
+            ),
+        ):
+            with pytest.raises(NetworkDesignPolicyValidationError, match="policy"):
+                operation()
+
+        assert documents.write_calls == []
+
+    @pytest.mark.parametrize(
+        ("document", "description", "revision"),
+        [
+            ({}, "", 0),
+            (
+                {
+                    "revision": 8,
+                    "policy": {
+                        "description": "governed",
+                        "require_private_dns_zone_link": False,
+                    },
+                },
+                "governed",
+                8,
+            ),
+        ],
+    )
+    def test_management_paths_allow_absent_or_valid_policy(
+        self,
+        document,
+        description,
+        revision,
+    ):
+        documents = _PolicyDocuments(document)
+        store = NetworkDesignPolicyStore(documents)
+
+        assert store.read().description == description
+        preview = store.preview({"name": "Preview only"})
+        assert preview.name == "Preview only"
+        assert preview.description == description
+        assert documents.write_calls == []
+
+        updated = store.update({"name": "Saved"}, expected_revision=revision)
+
+        assert updated.name == "Saved"
+        assert updated.description == description
+        assert len(updated.rules) == 2
+        assert len(documents.write_calls) == 1
+        _, written, expected_revision = documents.write_calls[0]
+        assert expected_revision == revision
+        assert written["revision"] == revision + 1
+        assert (
+            written["policy"]["require_private_dns_zone_link"]
+            is (revision == 0)
+        )
+
+    @pytest.mark.parametrize(
+        "corrupt_document",
+        [
+            {"revision": 8, "policy": "corrupt"},
+            {"revision": 8, "policy": []},
+            {"revision": 8},
+        ],
+    )
+    def test_policy_api_fails_closed_for_corrupt_policy_without_persisting(
+        self,
+        tmp_path,
+        corrupt_document,
+    ):
+        documents = _PolicyDocuments(corrupt_document)
+        client = _client(
+            tmp_path,
+            network_policy_store=NetworkDesignPolicyStore(documents),
+        )
+
+        responses = (
+            client.get("/api/v1/network/policy", headers=_auth()),
+            client.post(
+                "/api/v1/network/policy/preview",
+                headers=_auth(),
+                json={"description": "operator edit"},
+            ),
+            client.patch(
+                "/api/v1/network/policy",
+                headers=_auth(),
+                json={"description": "operator edit"},
+            ),
+        )
+
+        assert [response.status_code for response in responses] == [503, 503, 503]
+        assert {
+            response.json()["error"]["code"] for response in responses
+        } == {"provider_unavailable"}
+        assert documents.write_calls == []
+
     def test_read_additively_publishes_the_rule_engine_contract(self, tmp_path):
         client = _client(tmp_path, network_policy_store=NetworkDesignPolicyStore())
         data = client.get("/api/v1/network/policy", headers=_auth()).json()["data"]
