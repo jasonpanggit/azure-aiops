@@ -82,6 +82,30 @@ const AI_SERVICES =
   "/subscriptions/sub-a/resourceGroups/rg-workloads/providers/Microsoft.CognitiveServices/accounts/foundry-tools";
 
 describe("buildTopologyGraph", () => {
+  it("creates one unknown-subscription group for resources without subscription metadata", () => {
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({
+            id: "inventory:vnet-1",
+            entity_type: "VNet",
+            subscription_id: "",
+          }),
+        ],
+      }),
+    );
+
+    expect(graph.nodes).toHaveLength(1);
+    expect(graph.nodes[0].parent).toBe("subscription:unknown");
+    expect(graph.groups).toEqual([
+      {
+        id: "subscription:unknown",
+        label: "Unknown subscription",
+        kind: "subscription",
+      },
+    ]);
+  });
+
   it("classifies VNets by role and groups them by subscription", () => {
     const graph = buildTopologyGraph(
       topologyOf({
