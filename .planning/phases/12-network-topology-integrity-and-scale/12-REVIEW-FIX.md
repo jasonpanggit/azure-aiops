@@ -1,15 +1,112 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-fixed_at: 2026-09-06T06:48:10Z
+fixed_at: 2026-09-06T07:06:02Z
 review_path: .planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md
-iteration: 3
-findings_in_scope: 8
-fixed: 8
+iteration: consolidated
+review_observations: 52
+findings_in_scope: 49
+fixed: 49
+non_actionable: 3
 skipped: 0
 status: all_fixed
+verified_source_head: c2020d1f
 ---
 
-# Phase 12: Code Review Fix Report
+# Phase 12: Consolidated Code Review Fix Report
+
+**Closed at:** 2026-09-06T07:06:02Z
+**Source review:** `.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`
+**Iterations represented:** implementation review, supplemental review, and two independent post-fix verification iterations
+
+**Authoritative summary:**
+- Review observations adjudicated: **52**
+- Actionable findings in scope: **49**
+- Fixed or resolved with commit evidence: **49**
+- Adjudicated non-actionable: **3**
+- Skipped or open: **0**
+- Final status: **all resolved**
+
+Later verification intentionally re-opened some earlier fixes, so these are
+observation counts rather than deduplicated defect counts. The historical
+iteration sections below retain their point-in-time counts; this frontmatter
+and the following ledger are the authoritative final state.
+
+## Consolidated Disposition Ledger
+
+### Implementation review — 10/10 fixed
+
+| ID | Resolution | Commit evidence |
+|---|---|---|
+| CR-01 | Preserve active scope in drawer requests and cache keys | `543c9be4`, `99c03223` |
+| CR-02 | Clear prior-scope `useApi` records on dependency changes | `dadf80ce` |
+| CR-03 | Retain populated canvas during refetch | `0bc94e7c` |
+| CR-04 | Render private-link-only topologies | `e910226a` |
+| CR-05 | Publish the projected full graph size | `dca12bd2` |
+| CR-06 | Reset pagination on scope changes | `c71bb46a` |
+| CR-07 | Clear selection when scope/detail graph changes | `12d62358` |
+| CR-08 | Order, deduplicate, and clean up drill-down requests | `2a0ac8ba`, `43efb950` |
+| WR-01 | Settle failed post-policy refresh state | `d44467c8` |
+| WR-02 | Exercise retained-canvas behavior through the real workspace | `0bc94e7c` |
+
+### Supplemental review against `eafdf47f` — 22/22 adjudicated
+
+| ID | Resolution | Commit evidence / reason |
+|---|---|---|
+| CR-01 | Complete summary payload is byte- and canvas-bounded | `9dc901f3`, `c45f75ea`, `949bf4b1`, `93501a4b`, `1624765e`, `2f0359fa` |
+| CR-02 | Nested agent payloads use recursive bounds and disclosure | `1944e0fa` |
+| CR-03 | Unreadable/corrupt/newer policy state retains the last-good provider | `69b446ac`, `232cd91a`, `e9113df0`, `18e0fa74` |
+| WR-01 | Scope-filter flow observations | `ed8895e1` |
+| WR-02 | Make analyzed flow provenance reachable with persisted rows | `4c08d698`, `495cb79a`, `48a42db8` |
+| WR-03 | Validate and normalize observation timestamps | `578b0c21`, `f6c7c196` |
+| WR-04 | Preserve active scope in detail requests | `543c9be4`, `99c03223` |
+| WR-05 | Scope, bound, and invalidate the detail cache; clean in-flight entries | `543c9be4`, `2a0ac8ba`, `43efb950`, `30832b47` |
+| WR-06 | Serialize drill-down paging and ignore stale completions | `2a0ac8ba`, `43efb950` |
+| WR-07 | Settle policy refresh failures with explicit feedback | `d44467c8` |
+| WR-08 | Resolve legacy shared-service IDs case-insensitively | `fc79e096` |
+| WR-09 | Bind scale tests to production constants | `c14c43dc` |
+| WR-10 | Surface bounded, identifier-free normalization diagnostics | `b4e644ef`, `09b1ba08`, `f67d55f1` |
+| WR-11 | Type, render, and export server-authored topology warnings | `1f5cd472` |
+| WR-12 | Keep audit time real and suffix only colliding filenames | `a85715bb`, `1634f68e` |
+| WR-13 | Export authoritative relationship coverage | `949bf4b1`, `93501a4b` |
+| WR-14 | Announce incomplete-result callouts | `04203af9`, `86b5bd05`, `7a802531` |
+| WR-15 | Preserve flow and peer derivation context in policy preview | `5ed9cd3a` |
+| WR-16 | Reconcile validation state with all eleven completed plans | `9dc5d8c9`, `c66a5c5b` |
+| IN-01 | No source change | Non-actionable for this phase: pre-existing behavior explicitly retained by UI-SPEC C-10; all Phase 12 canvas signals have DOM-text equivalents, while a full Cytoscape keyboard model is not a surgical fix. |
+| IN-02 | No source change | Intentional non-disclosure: the uniform empty response avoids revealing whether an unknown resource exists outside the caller's scope. |
+| IN-03 | No source change | Latent only: current private-link candidate types cannot collide with first-class `Microsoft.Network/*` nodes. |
+
+### Independent post-fix verification
+
+- Iteration 2: **11/11 fixed**, commits `211a116e` through `7a802531`
+  as itemized in the historical section below.
+- Iteration 3: **8/8 fixed**, commits `1624765e`, `2f0359fa`,
+  `495cb79a`, `48a42db8`, `e9113df0`, `18e0fa74`, `f0b25410`,
+  `f6c7c196`, `09b1ba08`, `f67d55f1`, `afb333c3`, and `5d8916bd`.
+
+## Final Verification
+
+Verification ran in the assigned Phase 12 checkout
+`/Users/jasonmba/workspace/copilot-worktrees/azure-aiops/jasonpanggit-potential-broccoli`
+after all source commits were integrated:
+
+- Full backend: **2,720 passed, 33 skipped** in 111.19s.
+- Full web: **43 files passed; 347 tests passed; 15 pre-existing todo** in 8.71s.
+- Ruff: passed.
+- TypeScript (`tsc --noEmit`): passed with zero diagnostics.
+- Next.js ESLint: passed with zero warnings or errors.
+- Supplemental WR-05 cache lifecycle: **46 web tests passed across 2 files**.
+- Supplemental WR-10 normalization diagnostics: **15 backend tests passed**;
+  the identifier-redaction follow-up passed its focused regression.
+- Supplemental WR-11 topology warning rendering: **27 web page tests passed**.
+- Supplemental WR-15 policy preview parity: **3 focused backend tests passed**.
+- Supplemental WR-16 validation reconciliation: all eleven summary statuses,
+  Wave-0 artifacts, both manual evidence artifacts, and Markdown diff checks passed.
+- Additional per-finding counts for the independent iterations are retained
+  in their historical sections below.
+
+---
+
+## Historical Fix Iteration 1 — Supplemental Blockers
 
 **Fixed at:** 2026-09-06T05:16:29Z
 **Source review:** `.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`
@@ -72,9 +169,11 @@ The final full gates ran after fast-forwarding the atomic fixes and integrating 
 
 The four finding commits were retained unchanged. Integration is recorded by merge commit `58cc3f9a`.
 
-## Out-of-Scope Review Findings
+## Supplemental Findings Deferred at Iteration 1
 
-The requested fix scope did not include `WR-01`–`WR-08`, `WR-10`–`WR-16`, or `IN-01`–`IN-03`; they were not modified or marked resolved by this report.
+At this point only the blockers and WR-09 were in scope. `WR-01`–`WR-08`,
+`WR-10`–`WR-16`, and `IN-01`–`IN-03` were subsequently adjudicated in the
+authoritative ledger above.
 
 ---
 
@@ -84,7 +183,7 @@ _Iteration: 1_
 
 ---
 
-# Phase 12: Code Review Fix Report — Iteration 2
+## Historical Fix Iteration 2
 
 **Fixed at:** 2026-09-06T06:02:30Z
 **Source review:** `.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`
@@ -220,7 +319,7 @@ _Iteration: 2_
 
 ---
 
-# Phase 12: Code Review Fix Report — Iteration 3
+## Historical Fix Iteration 3
 
 **Fixed at:** 2026-09-06T06:48:10Z
 **Source review:** `.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`
@@ -332,3 +431,84 @@ None.
 _Fixed: 2026-09-06T06:48:10Z_
 _Fixer: the agent (gsd-code-fixer)_
 _Iteration: 3_
+
+---
+
+## Final Fix — CR-01 Policy Management Fail-Closed
+
+**Fixed at:** 2026-09-06T07:06:02Z
+**Source review:** `.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`
+**Status:** Fixed — requires human verification
+
+### CR-01: Reject malformed governed policy bodies on every management path
+
+**Files modified:** `src/network/design.py`, `src/api/routers/network.py`,
+`tests/test_api_network.py`
+
+**Commits:**
+
+- `8b502206` — failing-first read, preview, update/PATCH no-persist, valid, and
+  absent-document regressions.
+- `c2020d1f` — centralized strict policy decoding and fail-closed API mapping.
+
+**Applied fix:** Added `NetworkDesignPolicyDocumentError` to distinguish an
+invalid persisted body from an invalid operator request. `read()`,
+`read_with_revision_or_raise()`, `preview()`, and `update()` now share one
+strict decoder. Only the genuinely absent `{}` document produces revision-zero
+defaults; present string, list, or missing-policy bodies raise before merge and
+before the document store's `write()` can run. GET, preview, and PATCH map the
+persisted-state error to `503 provider_unavailable`. Valid policy updates still
+merge against the governed body and write with its current revision, preserving
+optimistic CAS behavior. Provider construction uses the same decoder, so its
+existing degraded last-good behavior remains intact.
+
+### Adversarial Probe
+
+The exact pre-fix probe from the final review reproduced:
+
+```text
+read_description= ''
+preview_rule_count= 2
+write_expected_revision= 8
+written_revision= 9
+written_description= 'operator edit'
+written_rule_count= 2
+```
+
+After `c2020d1f`, the equivalent probe produced:
+
+```text
+read_error= Network policy document policy must be an object
+preview_error= Network policy document policy must be an object
+update_error= Network policy document policy must be an object
+write_calls= []
+```
+
+### Verification
+
+Verification ran in the isolated review-fix worktree
+`/Users/jasonmba/workspace/azure-aiops/.github/worktrees/rf-12-78052-1788678016`
+using the assigned Phase 12 checkout's Python environment:
+
+- Failing-first regression slice: **6 failed, 2 passed** before implementation,
+  proving read, preview, and all three API document shapes remained vulnerable.
+- Finding-focused policy/provider regression slice: **13 passed**.
+- Focused policy/provider/API suite
+  (`test_api_network.py`, `test_api_providers.py`, `test_api_runtime.py`):
+  **110 passed**.
+- G-4 and downstream contract slice: **21 passed**.
+- Full backend: **2,728 passed, 33 skipped** (**2,761 collected**).
+- Ruff (`src`, `tests`): **passed**.
+- Python AST parsing of all modified Python files: **passed**.
+- `git diff --check c66a5c5b..c2020d1f`: **passed**.
+- Both source commits contain the required Copilot co-author trailer and were
+  created with repository hooks enabled.
+
+No source or test changes were rolled back or skipped. `STATE.md`,
+`ROADMAP.md`, `REQUIREMENTS.md`, and `12-VALIDATION.md` were not modified.
+
+---
+
+_Fixed: 2026-09-06T07:06:02Z_
+_Fixer: the agent (gsd-code-fixer)_
+_Iteration: final blocker_

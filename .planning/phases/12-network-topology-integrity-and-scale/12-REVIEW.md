@@ -1,9 +1,10 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-reviewed: 2026-09-06T06:13:43Z
+reviewed: 2026-09-06T07:06:02Z
 depth: deep
 diff_base: d57f6137d747c344c56028d7e6211811927d0b43
-diff_head: 76b31dd3b6c401bd9f23684bf983c7d395b7a68a
+diff_head: c2020d1f
+verified_source_head: c2020d1f
 files_reviewed: 49
 files_reviewed_list:
   - src/api/providers.py
@@ -56,321 +57,197 @@ files_reviewed_list:
   - web/src/lib/types.ts
   - web/src/test/network-fixtures.ts
 findings:
-  critical: 5
-  warning: 3
+  critical: 0
+  warning: 0
   info: 0
-  total: 8
-status: resolved
-resolution:
-  fixed: 8
-  skipped: 0
-  verification: automated_passed_human_logic_review_recommended
+  total: 0
+resolved_findings: 1
+status: clean
 ---
 
-# Phase 12: Final Independent Deep Code Review
+# Phase 12: Final Deep Code Review Report
 
-**Reviewed:** 2026-09-06T06:13:43Z
+**Reviewed:** 2026-09-06T07:06:02Z
 **Depth:** deep
-**Diff:** `d57f6137d747c344c56028d7e6211811927d0b43..76b31dd3b6c401bd9f23684bf983c7d395b7a68a`
+**Implementation range:** `d57f6137d747c344c56028d7e6211811927d0b43..c2020d1f`
 **Files Reviewed:** 49
-**Status:** resolved
+**Status:** clean
 
 ## Summary
 
-At review time, the Phase 12 implementation was **not clean after the two fix
-iterations**. The focused committed suites passed, and most original findings
-were closed, but independent probes found five remaining correctness blockers
-and three warnings. Iteration 3 has now resolved all eight. The original probes
-found:
+The final review re-read the complete Phase 12 source diff, the historical
+review iterations, and `12-REVIEW-FIX.md`; traced the backend and browser
+identity, scope, policy, provider, evidence, and asynchronous-error paths; and
+reran the focused backend/web gates.
 
-- summary budgeting still disagrees with the browser about the synthetic
-  `subscription:unknown` group and can render 1,501 Cytoscape node elements
-  under a 1,500-element limit;
-- the newly wired production flow-observation path does not understand the
-  persisted ontology relationship shape and, on a partially adapted row, does
-  not recognize `object_id`;
-- two policy failure modes still defeat the documented last-good-provider
-  behavior;
-- the drawer can call an in-scope target “outside the collected scope” merely
-  because summary truncation withheld its node.
+All specifically requested closure probes pass at current HEAD:
 
-The OneLake remote ETag precondition, local inter-process lock plus atomic
-replace, export filename sequencing/audit timestamp separation, legacy
-shared-service casefolding, scoped flow filtering, top-level edge truncation,
-and the incomplete-results live region were independently traced and found
-present.
+- unknown-subscription resources reserve the browser's one synthetic group,
+  so the summary boundary is 1,499 resources plus one group;
+- persisted `InventoryDatasetMapper` Traffic Analytics rows decode to
+  canonical `subject_id`/`object_id` values and reach analyzed provenance;
+- strict provider construction rejects corrupt governed policy bodies and
+  keeps the last-good provider degraded;
+- a known newer but unreadable revision leaves the stale provider servable
+  with one failed refresh attempt and retry backoff;
+- a summary-withheld private endpoint target is not called out-of-scope;
+- invalid and timezone-naive live timestamps remain unknown;
+- missing-zone logs contain only a count/reason code and no ARM identifier;
+- drill-down, policy-save, and policy-form asynchronous critical errors use
+  `role="alert"`.
 
-## Iteration 3 Resolution Status
+The resolved history and commit ledger remain in `12-REVIEW-FIX.md`.
 
-All five blockers and three warnings were fixed and regression-covered on
-2026-09-06. Identity budgeting, persisted ontology normalization, governed
-policy retention, provider lifecycle, scope/truncation semantics, and timestamp
-handling remain marked as requiring human logic verification even though all
-automated gates pass.
-
-| Finding | Status | Resolution evidence |
-|---|---|---|
-| CR-01 | Fixed — human verification recommended | `1624765e`, `2f0359fa`; resource nodes with no subscription now reserve the browser's single `subscription:unknown` compound node, keeping the rendered resource-plus-group total at or below 1,500 with authoritative group coverage and a browser regression. |
-| CR-02 | Fixed — human verification recommended | `495cb79a`, `48a42db8`; persisted mapper rows decode `payload_json.attributes`, canonical `subject_id`/`object_id` are preserved, the analyzer accepts `object_id`, and route confidence/basis follows analyzed flow provenance with a full mapper integration regression. |
-| CR-03 | Fixed — human verification recommended | `e9113df0`; strict policy reads reject malformed string/list bodies and present documents missing `policy`, retaining the governed provider as degraded while still allowing a genuinely absent revision-zero document. |
-| CR-04 | Fixed — human verification recommended | `18e0fa74`; a failed refresh against a known newer cache key explicitly marks the retained provider stale/degraded, serves it, and respects retry backoff instead of retrying twice in one request. |
-| CR-05 | Fixed — human verification recommended | `f0b25410`; private-endpoint copy uses only authoritative server scope facts for exclusion and identifies an absent summary target as potentially withheld. |
-| WR-01 | Fixed — human verification recommended | `f6c7c196`; live ARG timestamps use the loader's aware-UTC parser, invalid/naive values remain unknown, and valid offsets normalize to UTC. |
-| WR-02 | Fixed | `09b1ba08`, `f67d55f1`; missing-zone diagnostics retain count/reason only and the regression proves no subscription path or full ARM identifier reaches logs. |
-| WR-03 | Fixed | `afb333c3`, `5d8916bd`; asynchronous drill-down, policy-save, and policy-form critical errors are mounted as live alerts with accessibility regressions. |
-
-## Structural Findings (fallow)
-
-No structural pre-pass was supplied.
+The final policy-management blocker is resolved. Strict policy document
+decoding now covers read, preview, and update as well as provider construction;
+present malformed bodies return a provider-unavailable response and PATCH
+cannot persist generated defaults. Genuinely absent revision-zero documents
+still bootstrap defaults.
 
 ## Narrative Findings (AI reviewer)
 
 ## Critical Issues
 
-### CR-01 [BLOCKER] [RESOLVED]: Server and browser disagree on the unknown-subscription group, allowing 1,501 canvas elements under the 1,500 cap
+### CR-01 [RESOLVED]: Policy management fails open on a corrupt governed body and can overwrite it with defaults
 
-**File:** `src/network/topology.py:81-127,524-584`
-**Also affected:** `web/src/lib/network-graph.ts:211-217,517-525`;
-`tests/test_network_scale.py:78-91`
+**File:** `src/network/design.py:464-468,528-566`
+**Also affected:** `src/api/routers/network.py:444-453,489-608`
 
-**Issue:** The browser assigns every resource with an empty
-`subscription_id` to the compound parent `subscription:unknown`.
-`_summary_canvas_identity()` instead omits a group when neither the explicit
-subscription field nor a parseable ARM subscription segment exists. Its test
-helper repeats the server behavior rather than the browser behavior.
+**Issue:** `read_with_revision_or_raise()` now correctly rejects a present
+document whose `policy` is missing or not an object. The management methods do
+not use that strict path:
 
-An executed 1,500-resource probe using valid model objects with non-ARM IDs and
-empty subscription metadata returned all 1,500 resources, reported zero
-groups, set top-level `coverage.truncated` to `false`, and would make the
-browser instantiate 1,501 Cytoscape node elements (1,500 resources plus
-`subscription:unknown`). This breaks both exact client/server identity and the
-hard canvas bound.
+- `read()` converts every non-object policy to `{}` and returns a default
+  policy;
+- `preview()` calls `_merge_changes()`, which falls back through that same
+  fail-open `read()`;
+- `update()` uses non-strict `_read_document()`, converts a malformed policy to
+  `{}`, merges the operator's partial change into defaults, and writes the
+  result as the next revision.
 
-**Fix:** Share or exactly duplicate the browser grouping rule on the server:
-resource nodes with no subscription must contribute
-`subscription:unknown`; unresolved nodes should retain their current
-conditional grouping behavior. Update the scale helper and add a 1,500-node
-missing-subscription regression that compares `resources + groups` with the
-actual browser graph.
+The API therefore tells operators that generated defaults are the current
+policy while the network provider is serving a different last-good governed
+policy in degraded state. Worse, the next ordinary PATCH can permanently
+replace the corrupt revision with defaults plus the small requested delta,
+discarding all custom governed rules and settings that remain available in
+the last-good provider.
 
-### CR-02 [BLOCKER] [RESOLVED]: Production Traffic Analytics observations are not consumed, and canonical `object_id` observations are mis-attributed
-
-**File:** `src/api/runtime.py:638-665,1928-1937,2881-2893`
-**Also affected:** `src/fabric/dataset_mapper.py:884-908`;
-`src/network/tightening.py:695-707`; `src/api/routers/network.py:344-367`
-
-**Issue:** `_load_ontology_rows()` supplies rows produced by
-`InventoryDatasetMapper._relationship_row()`. Those rows expose
-`subject_id`, `object_id`, and `payload_json`; they do **not** expose
-`attributes` at the top level. `_traffic_analysis_observations()` requires a
-top-level `attributes.dataSource`, so it returns `None` for real persisted
-Traffic Analytics relationships. The production `analyzed` state therefore
-remains unreachable on the managed path.
-
-There is a second schema mismatch: if a caller does provide top-level
-`attributes` with the canonical `object_id`, `ObservedTrafficAnalyzer` accepts
-only `objectId` or `object`. It marks live data present but records no matched
-rule IDs, which can falsely classify every allow rule as unobserved. The
-rule-findings route still stamps fixed medium confidence and claims no flow
-logs are ingested even when the service reports analyzed observations.
-
-Executed probe:
+An executed current-HEAD probe against
+`{"revision": 8, "policy": "corrupt"}` produced:
 
 ```text
-extracted_from_mapper_shape = None
-has_live = True
-matched_rule_ids = set()
+read_description= ''
+preview_rule_count= 2
+write_expected_revision= 8
+written_revision= 9
+written_description= 'operator edit'
+written_rule_count= 2
 ```
 
-**Fix:** Normalize ontology relationships once at the runtime boundary:
-decode the preserved `payload_json.attributes`, retain canonical
-`subject_id`/`object_id`, and pass that canonical shape to the analyzer.
-Teach `ObservedTrafficAnalyzer` to read `object_id` as well as legacy
-`objectId`/`object`. Derive route confidence and basis copy from
-`service.flow_log_provenance`. Add an integration test using the actual
-`InventoryDatasetMapper` output, not a hand-written relationship with
-top-level attributes.
+This proves the read and preview fabricate the seed policy and a partial
+update persists that fabricated state rather than refusing the corrupt base.
+It is a policy data-loss and governance-weakening path.
 
-### CR-03 [BLOCKER] [RESOLVED]: A schema-corrupt policy body is accepted as an empty default and published as healthy
+**Fix:** Centralize strict document/schema decoding and use it for every
+persisted-policy operation. `update()` and `preview()` must call a strict
+read that rejects present documents with a missing/non-mapping `policy`
+member before merging; no write may occur after that rejection. The GET route
+should either return the actual retained provider policy with explicit
+degraded/stale metadata, or return a provider-unavailable/corrupt-policy error
+instead of claiming defaults are current. Add regressions for string, list,
+and missing-policy documents proving:
 
-**File:** `src/network/design.py:470-488`
-**Also affected:** `src/api/runtime.py:655-665`;
-`src/api/providers.py:223-273`
-
-**Issue:** `read_with_revision_or_raise()` is strict only about transport and
-JSON-object decoding. If a revisioned document contains a missing or non-object
-`policy` member, it silently calls `NetworkDesignPolicy.from_mapping({})`.
-The runtime then replaces the last-good governed provider with the default
-policy and marks it `ready`.
-
-Executed provider probe:
-
-```text
-before: description="governed", state=ready
-stored document: {"revision": 8, "policy": "corrupt"}
-after: description="", state=ready
+```python
+with pytest.raises(NetworkDesignPolicyValidationError):
+    store.update({"description": "operator edit"})
+assert documents.write_calls == []
 ```
 
-This reintroduces the exact failure mode the last-good fix was intended to
-close, except through schema corruption rather than a transport exception.
+Apply the same fail-closed assertion to `read()`/`preview()` or introduce
+explicit strict management variants used by all three API routes. Preserve
+the genuinely absent revision-zero bootstrap behavior.
 
-**Fix:** In the strict read path, allow an absent document at revision zero,
-but reject a present/revisioned document whose `policy` is absent or is not a
-mapping. Let that exception reach `ProviderRuntime` so the prior provider
-remains published and health becomes degraded. Add malformed-string,
-malformed-list, and missing-policy-at-nonzero-revision regressions.
-
-### CR-04 [BLOCKER] [RESOLVED]: A known newer revision plus a body-read outage makes the retained provider unservable
-
-**File:** `src/api/providers.py:301-366`
-**Also affected:** `src/network/design.py:505-519`
-
-**Issue:** When the policy revision cache already knows revision 8 but the
-strict body read fails, `_refresh_provider()` correctly leaves the revision-7
-instance in `_instances` and marks it degraded. `get()` nevertheless rejects
-that retained instance because `_cache_keys[name]` is still revision 7 while
-the current cache key is revision 8. It retries the failing load twice in one
-request and raises `ProviderUnavailableError`.
-
-Executed probe:
-
-```text
-initial p7
-observed key ('network-policy', 8)
-ProviderUnavailableError: The network provider is degraded
-loaded=true, state=degraded, retry.attempts=2
-```
-
-That contradicts `ProviderRuntime`'s documented guarantee that failed
-refreshes continue serving the last completed provider.
-
-**Fix:** Track “last-good but stale relative to known key” explicitly. After a
-failed refresh, return the retained instance with degraded/stale policy
-metadata rather than requiring key equality; do not relabel the old instance
-as revision 8. Also avoid the duplicate immediate retry and add a regression
-where the revision cache advances before the body transport fails.
-
-### CR-05 [BLOCKER] [RESOLVED]: Summary truncation is misreported as an authorization exclusion in private-endpoint facts
-
-**File:** `web/src/components/network/TopologyDetailDrawer.tsx:723-742`
-
-**Issue:** `PrivateLinkFacts` declares a target out of scope whenever its ID is
-absent from `visibleNodeIds`. At summary detail, an in-scope target can be
-absent simply because the 1,500-node/2 MB budget withheld it. The drawer then
-asserts “Target resource is outside the collected scope,” turning payload
-truncation into a false authorization statement.
-
-**Fix:** Use only explicit server facts (`target_out_of_scope`,
-`target_resource_out_of_scope`, or `target_in_scope === false`) for the
-out-of-scope claim. If the target is absent from the rendered summary without
-an authoritative reason, say that it is not present in this topology response
-and may have been withheld, or add a server-provided target-resolution enum.
-Cover an in-scope target omitted by summary truncation.
-
-## Warnings
-
-### WR-01 [WARNING] [RESOLVED]: Invalid live observation timestamps are rewritten as “now”
-
-**File:** `src/network/service.py:293-299`
-
-**Issue:** `from_arg_rows()` initializes the normalization timestamp to the
-current clock and silently keeps it when `observed_at` is malformed. The later
-loader validation therefore sees a newly generated valid timestamp and reports
-fresh evidence instead of ignoring the invalid source value. An executed probe
-with `observed_at="not-a-date"` produced the current UTC timestamp.
-
-**Fix:** Parse with the same aware-UTC helper used by
-`NetworkSnapshotLoader`; preserve unknown/empty freshness when a supplied
-timestamp is invalid or timezone-naive. If live query time is intended as a
-fallback, pass it as a separate trusted value rather than deriving freshness
-from rejected input.
-
-### WR-02 [WARNING] [RESOLVED]: Missing-zone normalization logs full ARM identifiers
-
-**File:** `src/onboarding/graph_normalize.py:764-778`
-
-**Issue:** The new missing-parent diagnostic embeds and logs both `zone_id`
-and `vnet_id`. A missing parent commonly means the zone is outside the synced
-scope, so this records cross-scope resource identifiers despite the phase rule
-that new diagnostics contain counts/predicate names, not ARM IDs.
-
-**Fix:** Log a count and predicate/reason code only, or hash/redact the IDs.
-Keep detailed identifiers in a properly authorized diagnostic surface if they
-are operationally required.
-
-### WR-03 [WARNING] [RESOLVED]: Several dynamic critical errors are not announced as live alerts
-
-**File:** `web/src/components/network/TopologyDetailDrawer.tsx:689-705`
-**Also affected:** `web/src/app/network/page.tsx:1149,1167`
-
-**Issue:** The findings-unavailable callout correctly uses `role="alert"`, but
-the asynchronous drill-down error and policy save/form errors are plain
-critical `<div>` elements. Keyboard and screen-reader users may not be
-notified when these failures appear after an action, despite the UI contract's
-live-region requirement.
-
-**Fix:** Add `role="alert"` to newly rendered critical error regions, ensuring
-only the active error is mounted at a time. Add assertions that the
-drill-down and policy mutation failures are announced.
+**Resolution:** Fixed by failing-first regression commit `8b502206` and source
+commit `c2020d1f`. `NetworkDesignPolicyStore` now decodes every management
+operation through one strict body path. String, list, and missing-policy
+documents raise `NetworkDesignPolicyDocumentError` (a
+`NetworkDesignPolicyValidationError`) before merge or write; the three HTTP
+management routes map that persisted-state fault to `503
+provider_unavailable`. Valid documents preserve their governed fields and CAS
+revision, absent `{}` documents retain revision-zero defaults, and provider
+construction continues to retain its last-good instance on corruption.
 
 ## Resolved History
 
-The detailed implementation and two fix-series histories remain in
-`12-REVIEW-FIX.md`. Independent HEAD verification found the following:
+`12-REVIEW-FIX.md` remains the authoritative ledger for the earlier review
+iterations and fixes, including WR-05, WR-10, WR-11, WR-15, and WR-16. Those
+fixes were re-inspected at current HEAD:
 
-| Prior review area | Final status |
-|---|---|
-| Original scope leak and semantic-relationship loss | Closed |
-| Private-link node projection and Fabric per-capacity gap suppression | Closed |
-| Gap/finding pagination and metric totals | Closed |
-| Additive summary/full LOD and drill-down scope enforcement | Closed, except CR-01 and CR-05 above |
-| Policy refetch and declarative-rule authoring | Closed |
-| Casefolded relationship projection and dropped-edge diagnostics | Closed |
-| OneLake CAS | Closed: remote ETag preconditions plus create-if-absent; local inter-process lock plus atomic replace |
-| Iteration-1 recursive agent bounds and disclosure | Closed |
-| Iteration-1 revision-read failure retention | Closed for an unavailable cache-key read; CR-03/CR-04 remain |
-| Iteration-2 exact resource/shared-service identity | Closed for resource nodes; unknown subscription compound identity remains open in CR-01 |
-| Iteration-2 complete summary byte bound | Closed for the serialized topology object; dense-mesh probe was 1,999,772 bytes |
-| Iteration-2 node/group/relationship coverage | Closed for covered fixtures; unknown-subscription group coverage remains open in CR-01 |
-| Iteration-2 scoped flow filtering | Closed for canonical in-memory observations |
-| Iteration-2 production flow analysis | Not closed; see CR-02 |
-| Iteration-2 timestamp normalization | Closed at `NetworkSnapshotLoader`; live ARG fallback remains open in WR-01 |
-| Iteration-2 export filenames and audit time | Closed: suffix affects filename only; `exported_at` uses the supplied real instant |
-| Iteration-2 legacy shared-service casefolding | Closed |
-| Iteration-2 incomplete-results live region | Closed |
+- the detail cache is scope-keyed, capped at 64 entries, generation-invalidated
+  on topology/scope/detail changes, and ignores stale in-flight completions;
+- normalization warnings are surfaced while log diagnostics are
+  identifier-free;
+- nested topology integrity warnings are typed, deduplicated, rendered, and
+  exported;
+- policy preview preserves semantic relationships, flow observations, and peer
+  resolutions;
+- validation counts are reconciled at the current docs-only HEAD.
+
+No previously resolved blocker or warning was reproduced by the focused
+regression suites. CR-01 above is a distinct management-path gap exposed by
+tracing the final strict-provider fix through all callers.
 
 ## Verification Evidence
 
-Commands were executed against
-`76b31dd3b6c401bd9f23684bf983c7d395b7a68a`.
+Commands were run in the assigned Phase 12 checkout. The test/lint runs
+verified source head `f67d55f1`; current HEAD `c66a5c5b` adds only the
+Phase 12 validation-count documentation update.
 
-- Focused backend Phase 12 suite: **264 passed**.
-- Focused web suite: **7 files, 161 tests passed**.
+- Focused Phase 12 backend suite: **279 passed**.
+- Finding-specific backend probes: **9 passed**.
+- Focused Phase 12 web suite: **7 files, 165 tests passed**.
+- Requested UI probe slice: **3 files, 115 tests passed**.
 - TypeScript: **passed** (`npx --no-install tsc --noEmit`).
-- ESLint: **passed with zero warnings/errors**.
-- Ruff over all changed Python source/tests: **passed**.
+- Next.js ESLint: **passed with zero warnings/errors**.
+- Ruff over all Phase 12 Python source and tests: **passed**.
 - `git diff --check d57f6137..HEAD`: **passed**.
-- Dense 40-VNet mesh: topology object **1,999,772 bytes**;
-  compact complete API envelope **1,911,510 bytes**; relationship coverage
-  remained truncated and top-level truncation remained true.
-- Unknown-subscription boundary probe: **1,500 resources + 1 browser group**,
-  while server coverage reported **0 groups** and `truncated=false`.
-- Persisted-flow-shape probe:
-  `_traffic_analysis_observations(...) -> None`; canonical
-  `object_id` probe set `_has_live_data=True` but matched **0** rule IDs.
-- Malformed-policy probe: governed revision 7 was replaced at revision 8 by
-  the empty default policy while provider state remained `ready`.
-- Advanced-revision/body-outage probe: retained provider remained present and
-  degraded internally, but `get("network")` raised
-  `ProviderUnavailableError` after two failed load attempts.
-- Invalid-live-timestamp probe: `"not-a-date"` became a current UTC
-  `snapshot.observed_at`.
+- Unknown-subscription regression: **1,499 returned resources + 1 returned
+  `subscription:unknown` group = 1,500**, with server group coverage
+  `{total: 1, returned: 1, truncated: false}` and matching browser group
+  construction.
+- Persisted-flow regression uses a real `InventoryDatasetMapper` row and
+  verifies canonical lower-cased `object_id`, decoded Traffic Analytics
+  attributes, and `flow_log_provenance.state == "analyzed"`.
+- Corrupt-provider regressions cover string, list, and missing-policy bodies;
+  all retain the governed provider and report degraded health.
+- Newer-unreadable revision regression returns the same provider identity,
+  reports `cache_key_stale: true`, and records one failed refresh/retry.
+- Invalid/naive timestamp, identifier-free diagnostic, withheld-target, and
+  live-alert regressions all passed.
+- Independent adversarial policy-management probe: **failed the release
+  criterion**, demonstrating the default-policy overwrite described in CR-01.
 
-The pre-existing untracked `.gsd/` directory was not modified. No source,
-test, `STATE.md`, or `ROADMAP.md` file was changed by this review.
+### CR-01 Resolution Verification
+
+Verification ran in the isolated review-fix worktree against `c2020d1f`:
+
+- Exact adversarial probe before the fix reproduced the review output,
+  including revision 9 being written from corrupt revision 8.
+- The same probe after the fix raised on read, preview, and update and reported
+  `write_calls= []`.
+- Failing-first regressions: **6 failed, 2 passed** before the implementation.
+- Finding-focused policy/provider regressions: **13 passed**.
+- Focused policy/provider/API files: **110 passed**.
+- G-4 and downstream contracts: **21 passed**.
+- Full backend: **2,728 passed, 33 skipped** (**2,761 collected**).
+- Ruff over `src` and `tests`: **passed**.
+- Python AST checks and `git diff --check c66a5c5b..c2020d1f`: **passed**.
+
+No `STATE.md`, `ROADMAP.md`, `REQUIREMENTS.md`, or `12-VALIDATION.md` file was
+modified by this resolution.
 
 ---
 
-_Reviewed: 2026-09-06T06:13:43Z_
+_Reviewed: 2026-09-06T07:06:02Z_
 _Reviewer: the agent (gsd-code-reviewer)_
 _Depth: deep_
