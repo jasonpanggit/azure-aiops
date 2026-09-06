@@ -74,16 +74,54 @@ Final checks:
 
 | Check | Result |
 |---|---|
+| Warning-specific CSS source contracts | **PASS — 3 selected backend tests** |
+| Warning-specific affected Vitest files | **PASS — 4 files, 84 tests** |
 | Targeted Phase-12 frontend suite | **PASS — 9 files, 188 tests** |
 | Complete web Vitest suite | **PASS — 43 files, 354 passed, 15 todo** |
 | TypeScript `npx --no-install tsc --noEmit` | **PASS — zero diagnostics** |
 | Next.js ESLint `npm run lint` | **PASS — zero warnings/errors** |
 | Phase-12 UI hygiene/source contracts | **PASS — 8 selected tests** |
+| Scoped Phase-12 backend contract suite | **PASS — 298 tests, 9 deprecation warnings** |
 | `git diff --check` across both source commits | **PASS** |
 | Protected planning artifacts | **PASS — no changes to STATE, ROADMAP, REQUIREMENTS, VALIDATION, VERIFICATION, or SECURITY** |
 
 The full web run retains the existing non-failing Vite CJS notice. No source,
 test, TypeScript, ESLint, hygiene, or diff failure remains.
+
+All final verification commands ran in the user-supplied isolated worktree
+`/Users/jasonmba/workspace/copilot-worktrees/azure-aiops/jasonpanggit-potential-broccoli`
+against source HEAD `207c7c78`.
+
+### Exact final verification commands
+
+```bash
+.venv/bin/python -m pytest tests/test_network_downstream_contracts.py \
+  -k 'ui_review_responsive_contract or ui_review_policy_labels_use_permitted_weight or ui_review_private_link_legend_matches_canvas_treatment' -q
+
+cd web && npx vitest run \
+  src/app/network/page.test.tsx \
+  src/components/network/TopologyGraph.test.tsx \
+  src/components/network/TopologyWorkspace.test.tsx \
+  src/components/ui/StatusBadge.test.tsx
+
+cd web && npx vitest run
+cd web && npx --no-install tsc --noEmit
+cd web && npm run lint
+
+.venv/bin/python -m pytest -o addopts='' \
+  tests/test_network_analysis.py \
+  tests/test_network_downstream_scope.py \
+  tests/test_network_topology_links_regression.py \
+  tests/test_api_network.py \
+  tests/test_api_providers.py \
+  tests/test_api_runtime.py \
+  tests/test_onelake_documents.py \
+  tests/test_network_scale.py \
+  tests/test_network_prephase_baseline.py \
+  tests/test_network_downstream_contracts.py \
+  tests/test_network_topology.py \
+  tests/test_operations_tools.py -q
+```
 
 ## Files Changed by the Remediation
 
