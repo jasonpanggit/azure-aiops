@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 MAX_CHANGED_ENTITIES = 50
 MAX_CANDIDATE_PAIRS = 200
@@ -237,3 +237,78 @@ def _bounded(name: str, actual: int, maximum: int) -> None:
 def edge_ids(edges: Iterable[RelationshipEdge]) -> tuple[str, ...]:
     """Return deterministic edge IDs for fixture assertions."""
     return tuple(sorted(edge.edge_id for edge in edges))
+
+
+def candidate_membership_hash(candidate: CandidateGeneration) -> str:
+    """Hash exact ordered candidate membership for immutable fixture assertions."""
+    payload = json.dumps(
+        list(candidate.edge_ids),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def normalized_fixture_hash(case: Mapping[str, Any]) -> str:
+    """Hash a fixture bundle without its self-referential hash field."""
+    normalized = {key: value for key, value in case.items() if key != "fixture_hash"}
+    payload = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def materialize_fixture_batch(case: Mapping[str, Any]) -> EvidenceBatch:
+    """Expand one compact synthetic fixture descriptor into exact protocol input."""
+    scenario_id = str(case["scenario_id"])
+    inputs = case["input"]
+    if not isinstance(inputs, Mapping):
+        raise TypeError("fixture input must be an object")
+    entity_count = _fixture_count(inputs, "entity_count")
+    pair_count = _fixture_count(inputs, "candidate_pair_count")
+    evidence_count = _fixture_count(inputs, "evidence_count")
+    deterministic_count = _fixture_count(inputs, "deterministic_pair_count")
+    if entity_count < 2:
+        raise ValueError("fixture requires at least two entities")
+    if deterministic_count > pair_count:
+        raise ValueError("deterministic pair count exceeds candidate pair count")
+
+    entities = tuple(
+        f"/subscriptions/synthetic-sub/resourceGroups/wave0/providers/"
+        f"Microsoft.Test/resources/{scenario_id}-entity-{index:03d}"
+        for index in range(entity_count)
+    )
+    evidence = tuple(
+        f"{scenario_id}-evidence-{index:03d}" for index in range(evidence_count)
+    )
+    pairs = tuple(
+        RelationshipEdge(
+            edge_id=f"{scenario_id}-edge-{index:03d}",
+            subject_id=entities[index % entity_count],
+            subject_type="SyntheticResource",
+            predicate="depends_on",
+            object_id=entities[(index + 1) % entity_count],
+            object_type="SyntheticResource",
+            source="deterministic" if index < deterministic_count else "model",
+            evidence_refs=(evidence[index % evidence_count],) if evidence else (),
+        )
+        for index in range(pair_count)
+    )
+    return EvidenceBatch(
+        batch_id=f"batch-{scenario_id}",
+        scope=str(case["scope"]),
+        source_generation=str(case["source_generation"]),
+        entity_ids=entities,
+        candidate_pairs=pairs,
+        evidence_ids=evidence,
+    )
+
+
+def _fixture_count(inputs: Mapping[str, Any], field: str) -> int:
+    value = inputs[field]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field} must be a non-negative integer")
+    return value
