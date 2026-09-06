@@ -2,16 +2,30 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
+from api.app import create_app
+from api.auth import StaticTokenAuthenticator
+from api.dependencies import ApiContext
 from api.exposure_query import (
     MAX_EXPOSURE_PAGE_SIZE,
     ExposureAuthorization,
+    ExposureCursorError,
     ExposureQuery,
+    ExposureQueryPage,
     ExposureQueryService,
+    ExposureRestartConflict,
 )
+from api.rbac import Authorizer, Grant, Principal
+from api.scope import Scope
+from api.telemetry import ApiTelemetry
+from onboarding.service import SubscriptionOnboardingService
+from scripts.benchmark_exposure_read_model import run_local_benchmark
 
 
 class PageReader:
@@ -79,3 +93,283 @@ def test_page_size_is_rejected_before_query(page_size: int) -> None:
         )
 
     assert reader.calls == []
+
+
+class ApiExposureService:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    def authorization_for(
+        self,
+        principal: Principal,
+        scope: Any,
+    ) -> ExposureAuthorization:
+        assert principal.subject == "exposure-reader@example.com"
+        assert scope.to_dict() == {"subscription": ["subscription-scale"]}
+        return ExposureAuthorization(
+            subject=principal.subject,
+            tenant_id="tenant-scale",
+            connection_ids=("connection-scale",),
+            scope={
+                "subscription": ("subscription-scale",),
+                "subscription_connection": ("connection-scale",),
+            },
+        )
+
+    def list_page(self, authorization: ExposureAuthorization, **values: Any):
+        if self.error is not None:
+            raise self.error
+        self.calls.append({"authorization": authorization, **values})
+        return ExposureQueryPage(
+            items=(
+                {
+                    "exposure_id": "exposure-1",
+                    "target_kind": "server",
+                    "severity": "critical",
+                },
+            ),
+            total_count=100_000,
+            facets={
+                "severity": [{"value": "critical", "count": 75_000}],
+                "target_kind": [{"value": "server", "count": 100_000}],
+            },
+            generation="generation-100k",
+            applied_scope=authorization.canonical_scope(),
+            applied_filters=(
+                {"field": "severity", "operator": "eq", "value": "critical"},
+            ),
+            applied_sort={"field": "priority_score", "direction": "desc"},
+            next_position=(100.0, "exposure-1"),
+            next_cursor="signed-next-cursor",
+            completeness={"state": "complete"},
+            freshness={
+                "state": "reported",
+                "as_of": "2026-09-06T08:00:00+00:00",
+            },
+        )
+
+
+@pytest.fixture
+def exposure_api(tmp_path: Path) -> tuple[TestClient, ApiExposureService]:
+    token = "exposure-api-token-0123456789"
+    service = ApiExposureService()
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(
+            {
+                token: Principal(
+                    subject="exposure-reader@example.com",
+                    grants=(
+                        Grant(
+                            "reader",
+                            Scope.from_mapping(
+                                {"subscription": ["subscription-scale"]}
+                            ),
+                        ),
+                    ),
+                )
+            }
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+    )
+    context.exposure_query_provider = lambda: service
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    client.headers["Authorization"] = f"Bearer {token}"
+    return client, service
+
+
+def test_exposure_list_endpoint_returns_cursor_envelope(
+    exposure_api: tuple[TestClient, ApiExposureService],
+) -> None:
+    client, service = exposure_api
+
+    response = client.get(
+        "/api/v1/vulnerabilities/exposure/items",
+        params={
+            "subscription": "subscription-scale",
+            "severity": "critical",
+            "facet": ["severity", "target_kind"],
+            "page_size": 25,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["data"] == {
+        "total_count": 100_000,
+        "items": [
+            {
+                "exposure_id": "exposure-1",
+                "target_kind": "server",
+                "severity": "critical",
+            }
+        ],
+        "next_cursor": "signed-next-cursor",
+        "generation": "generation-100k",
+        "applied": {
+            "scope": {
+                "subscription": ["subscription-scale"],
+                "subscription_connection": ["connection-scale"],
+            },
+            "filters": [
+                {"field": "severity", "operator": "eq", "value": "critical"}
+            ],
+            "sort": {"field": "priority_score", "direction": "desc"},
+        },
+        "completeness": {"state": "complete"},
+        "freshness": {
+            "state": "reported",
+            "as_of": "2026-09-06T08:00:00+00:00",
+        },
+    }
+    assert body["scope"] == {"subscription": ["subscription-scale"]}
+    assert body["pagination"] == {
+        "limit": 25,
+        "total": 100_000,
+        "next_cursor": "signed-next-cursor",
+    }
+    assert body["evidence"][0]["source_engine"] == "fabric_sql"
+    assert service.calls[0]["query"].facets == ("severity", "target_kind")
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_keys"),
+    [
+        (
+            "/api/v1/vulnerabilities/exposure/overview",
+            {
+                "total_count",
+                "generation",
+                "completeness",
+                "freshness",
+                "applied",
+            },
+        ),
+        (
+            "/api/v1/vulnerabilities/exposure/facets",
+            {
+                "total_count",
+                "facets",
+                "generation",
+                "completeness",
+                "freshness",
+                "applied",
+            },
+        ),
+    ],
+)
+def test_exposure_overview_and_facet_endpoints_use_shared_contract(
+    exposure_api: tuple[TestClient, ApiExposureService],
+    path: str,
+    expected_keys: set[str],
+) -> None:
+    client, _service = exposure_api
+
+    response = client.get(
+        path,
+        params={"subscription": "subscription-scale"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert set(response.json()["data"]) == expected_keys
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "code", "reason"),
+    [
+        (
+            ExposureCursorError(
+                "exposure_cursor_invalid",
+                "Exposure cursor signature is invalid",
+            ),
+            400,
+            "invalid_request",
+            "exposure_cursor_invalid",
+        ),
+        (
+            ExposureRestartConflict(
+                "exposure_generation_evicted",
+                generation="generation-old",
+            ),
+            409,
+            "conflict",
+            "exposure_generation_evicted",
+        ),
+    ],
+)
+def test_exposure_endpoint_maps_cursor_failures_to_safe_errors(
+    tmp_path: Path,
+    error: Exception,
+    status: int,
+    code: str,
+    reason: str,
+) -> None:
+    token = "exposure-api-token-0123456789"
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(
+            {
+                token: Principal(
+                    subject="exposure-reader@example.com",
+                    grants=(Grant("reader"),),
+                )
+            }
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+    )
+    service = ApiExposureService(error)
+    context.exposure_query_provider = lambda: service
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/vulnerabilities/exposure/items",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == status
+    body = response.json()["error"]
+    assert body["code"] == code
+    assert body["details"]["reason_code"] == reason
+    assert "key" not in response.text.casefold()
+
+
+def test_100k_server_and_image_benchmark_is_exact_bounded_and_under_budget() -> None:
+    report = run_local_benchmark(
+        row_count=100_000,
+        seed=31_001,
+        page_size=100,
+        warmups=2,
+        measurements=5,
+    )
+
+    assert report["status"] == "pass"
+    assert report["dataset"]["row_count"] == 100_000
+    assert report["dataset"]["target_kind_counts"] == {
+        "container_image": 20_000,
+        "server": 80_000,
+    }
+    assert report["full_walk"] == {
+        **report["full_walk"],
+        "expected_total": 100_000,
+        "returned_count": 100_000,
+        "unique_count": 100_000,
+        "duplicate_count": 0,
+        "omission_count": 0,
+        "status": "pass",
+    }
+    assert report["work"]["max_rows_fetched_per_query"] <= 100
+    assert report["work"]["full_table_materializations"] == 0
+    assert report["work"]["delta_fallbacks"] == 0
+    assert report["memory"]["rss_delta_bytes"] > 0
+    assert report["environment"]["python"]
+    assert {
+        "server_scoped_first_page",
+        "image_scoped_first_page",
+    } <= set(report["timings"])
+    assert all(
+        timing["p95_ms"] < 2_000
+        for timing in report["timings"].values()
+    )
