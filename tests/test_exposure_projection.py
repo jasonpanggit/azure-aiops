@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -10,6 +11,7 @@ from intelligence.vulnerability.connector import enrichment_provenance_hash
 from intelligence.vulnerability.exposure_projection import (
     EXPOSURE_GOLD_TABLES,
     project_exposure_gold,
+    reconcile_exposure_gold,
 )
 
 GENERATION = "gold-generation-12"
@@ -466,3 +468,16 @@ def test_untrusted_enrichment_is_isolated_and_never_flows_to_gold_payloads() -> 
     assert {row["source"] for row in projection.evidence} == {"nvd", "epss"}
     assert projection.reconciliation["invalid_enrichment_count"] == 1
     assert "<script>" not in json.dumps(projection.as_tables())
+
+
+def test_reconciliation_detects_missing_generation_pinned_fact() -> None:
+    datasets = _datasets()
+    projection = project_exposure_gold(
+        datasets,
+        generation_id=GENERATION,
+        projected_at=PROJECTED_AT,
+    )
+    tampered = replace(projection, facts=projection.facts[:-1])
+
+    with pytest.raises(ValueError, match="exact reconciliation failed"):
+        reconcile_exposure_gold(datasets, tampered)
