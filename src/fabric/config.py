@@ -30,6 +30,61 @@ class PipelineToggleRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class SourceFreshnessThresholds:
+    """Typed freshness policy for the five governed Exposure families."""
+
+    aum: int = 1800
+    defender: int = 21600
+    images: int = 86400
+    workloads: int = 900
+    enrichment: int = 86400
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "aum": self.aum,
+            "defender": self.defender,
+            "images": self.images,
+            "workloads": self.workloads,
+            "enrichment": self.enrichment,
+        }
+
+    def threshold_for(self, source_family: str) -> int:
+        return self.to_dict()[freshness_source_family(source_family)]
+
+
+def freshness_source_family(source_family: str) -> str:
+    """Map detailed provider families onto one governed freshness family."""
+
+    value = str(source_family or "").strip().casefold().replace("-", "_")
+    if value in {"aum", "defender", "images", "workloads", "enrichment"}:
+        return value
+    if value.startswith("defender") and "image" in value:
+        return "images"
+    if value.startswith(("azure_update_manager", "aum_")):
+        return "aum"
+    if any(
+        marker in value
+        for marker in (
+            "workload",
+            "kube_pod",
+            "container_inventory",
+            "container_image_inventory",
+        )
+    ):
+        return "workloads"
+    if "image" in value:
+        return "images"
+    if any(
+        marker in value
+        for marker in ("enrichment", "msrc", "nvd", "epss", "kev")
+    ):
+        return "enrichment"
+    if value.startswith("defender"):
+        return "defender"
+    raise ValueError(f"Unknown Exposure freshness source family {source_family!r}")
+
+
+@dataclass(frozen=True)
 class ExposureRuntimeConfig:
     """Production Exposure serving policy.
 
@@ -41,6 +96,9 @@ class ExposureRuntimeConfig:
     enabled: bool = False
     adapter: str = "fabric_sql"
     rollback_mode: bool = False
+    freshness_threshold_seconds: SourceFreshnessThresholds = field(
+        default_factory=SourceFreshnessThresholds
+    )
 
 
 @dataclass(frozen=True)
@@ -225,6 +283,9 @@ class FabricRuntimeConfig:
             raise TypeError("fabric.exposure.adapter must be a string")
         if exposure_adapter != "fabric_sql":
             raise ValueError("fabric.exposure.adapter must be fabric_sql")
+        source_freshness = _source_freshness_thresholds(
+            exposure_payload.get("freshness_threshold_seconds", {})
+        )
         sql_endpoint_enabled = fabric.get("sql_endpoint_enabled", True)
         if not isinstance(sql_endpoint_enabled, bool):
             raise TypeError("fabric.sql_endpoint_enabled must be boolean")
@@ -337,6 +398,7 @@ class FabricRuntimeConfig:
                 enabled=exposure_enabled,
                 adapter=exposure_adapter,
                 rollback_mode=exposure_rollback_mode,
+                freshness_threshold_seconds=source_freshness,
             ),
             ontology=OntologyRuntimeConfig(
                 enabled=bool(ontology_payload.get("enabled", True)),
@@ -613,3 +675,29 @@ def _strict_section_int(
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"fabric.{section}.{name} must be an integer")
     return value
+
+
+def _source_freshness_thresholds(value: object) -> SourceFreshnessThresholds:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise TypeError(
+            "fabric.exposure.freshness_threshold_seconds must be a mapping"
+        )
+    defaults = SourceFreshnessThresholds().to_dict()
+    unknown = sorted(set(value) - set(defaults))
+    if unknown:
+        raise ValueError(
+            "fabric.exposure.freshness_threshold_seconds has unknown families: "
+            + ",".join(unknown)
+        )
+    resolved: dict[str, int] = {}
+    for family, default in defaults.items():
+        threshold = value.get(family, default)
+        qualified = f"fabric.exposure.freshness_threshold_seconds.{family}"
+        if isinstance(threshold, bool) or not isinstance(threshold, int):
+            raise TypeError(f"{qualified} must be an integer")
+        if threshold < 1:
+            raise ValueError(f"{qualified} must be positive")
+        resolved[family] = threshold
+    return SourceFreshnessThresholds(**resolved)

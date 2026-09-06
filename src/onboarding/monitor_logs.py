@@ -61,6 +61,37 @@ Perf
 | summarize arg_max(TimeGenerated, CounterValue) by _ResourceId, CounterName
 | project _ResourceId, CounterName, CounterValue
 """.strip()
+
+KUBE_POD_INVENTORY_QUERY = """
+KubePodInventory
+| where TimeGenerated > ago(15m)
+| project TimeGenerated, ClusterId, Namespace, ControllerKind, ControllerName,
+          Name, PodUid, ContainerID, ContainerName, _SubscriptionId
+| order by TimeGenerated desc
+| take 25000
+""".strip()
+
+CONTAINER_INVENTORY_QUERY = """
+ContainerInventory
+| where TimeGenerated > ago(15m)
+| project TimeGenerated, ContainerID, Image, ImageID, Repository, Name, _SubscriptionId
+| order by TimeGenerated desc
+| take 25000
+""".strip()
+
+CONTAINER_IMAGE_INVENTORY_QUERY = """
+ContainerImageInventory
+| where TimeGenerated > ago(15m)
+| project TimeGenerated, ImageID, Repository, Tag, _SubscriptionId
+| order by TimeGenerated desc
+| take 25000
+""".strip()
+
+CONTAINER_INSIGHTS_QUERIES = {
+    "kube_pod_inventory": KUBE_POD_INVENTORY_QUERY,
+    "container_inventory": CONTAINER_INVENTORY_QUERY,
+    "container_image_inventory": CONTAINER_IMAGE_INVENTORY_QUERY,
+}
 _WORKSPACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -136,6 +167,29 @@ class AzureMonitorLogsClient:
             elif counter == "% Free Space":
                 bucket["disk_free_percent"] = float(value)
         return by_resource
+
+    def query_kube_pod_inventory(self, workspace_id: str) -> list[dict[str, Any]]:
+        return self._execute(
+            workspace_id,
+            KUBE_POD_INVENTORY_QUERY,
+            "KubePodInventory",
+        )
+
+    def query_container_inventory(self, workspace_id: str) -> list[dict[str, Any]]:
+        return self._execute(
+            workspace_id,
+            CONTAINER_INVENTORY_QUERY,
+            "ContainerInventory",
+        )
+
+    def query_container_image_inventory(
+        self, workspace_id: str
+    ) -> list[dict[str, Any]]:
+        return self._execute(
+            workspace_id,
+            CONTAINER_IMAGE_INVENTORY_QUERY,
+            "ContainerImageInventory",
+        )
 
     def _execute(
         self, workspace_id: str, query: str, label: str

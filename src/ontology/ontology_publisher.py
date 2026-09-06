@@ -54,11 +54,18 @@ class OntologyPublisher:
                 return {**item, "action": "unchanged"}
             try:
                 self.manager.update_definition(str(item["id"]), definition)
-            except Exception:
-                if _definitions_equal(
-                    self.manager.get_definition(str(item["id"])), definition
-                ):
+            except Exception as update_error:
+                try:
+                    observed = self.manager.get_definition(str(item["id"]))
+                except Exception:  # noqa: BLE001 - rollback still uses captured definition.
+                    observed = {}
+                if _definitions_equal(observed, definition):
                     return {**item, "action": "updated-reconciled"}
+                self._restore_definition(
+                    str(item["id"]),
+                    current,
+                    update_error=update_error,
+                )
                 raise
             return {**item, "action": "updated"}
         try:
@@ -71,6 +78,35 @@ class OntologyPublisher:
                 return {**recovered, "action": "created-reconciled"}
             raise
         return {**created, "action": "created"}
+
+    def _restore_definition(
+        self,
+        ontology_id: str,
+        previous: dict[str, Any],
+        *,
+        update_error: Exception,
+    ) -> None:
+        """Restore the prior active definition after a partial Fabric update."""
+
+        try:
+            self.manager.update_definition(ontology_id, previous)
+            restored = self.manager.get_definition(ontology_id)
+        except Exception as rollback_error:
+            try:
+                restored = self.manager.get_definition(ontology_id)
+            except Exception:  # noqa: BLE001 - verify whether rollback landed.
+                restored = {}
+            if _definitions_equal(restored, previous):
+                return
+            raise RuntimeError(
+                "Ontology update failed and the previous active definition "
+                "could not be restored"
+            ) from rollback_error
+        if not _definitions_equal(restored, previous):
+            raise RuntimeError(
+                "Ontology update failed and rollback verification did not "
+                "restore the previous active definition"
+            ) from update_error
 
     def build_definition(
         self,

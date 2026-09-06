@@ -54,7 +54,14 @@ class RelationshipBuilder:
         ) -> None:
             if not subject or not obj or subject["resource_id"] == obj["resource_id"]:
                 return
-            relationship_id = _relationship_id(subject["resource_id"], predicate, obj["resource_id"])
+            evidence = details or {}
+            relationship_id = _relationship_id(
+                subject["resource_id"],
+                predicate,
+                obj["resource_id"],
+                evidence_identity=str(evidence.get("evidence_identity") or ""),
+                event_interval=evidence.get("event_interval"),
+            )
             if (
                 relationship_id not in relationships
                 and len(relationships) >= self.max_relationships
@@ -74,7 +81,7 @@ class RelationshipBuilder:
                 "object_type": obj["entity_type"],
                 "confidence": compute_confidence(source),
                 "source": source,
-                "payload_json": json.dumps(details or {}, sort_keys=True),
+                "payload_json": json.dumps(evidence, sort_keys=True),
                 "lineage_json": json.dumps(
                     {"source_entity_ids": [subject["resource_id"], obj["resource_id"]]},
                     sort_keys=True,
@@ -390,13 +397,7 @@ class RelationshipBuilder:
                 if source_families
                 else "exposure"
             )
-            details = {
-                "read_model_generation_id": str(
-                    payload.get("read_model_generation_id") or ""
-                ),
-                "source_families": source_families,
-                "completeness": str(payload.get("completeness") or ""),
-            }
+            details = _exposure_details(payload)
             connect(observation, "affects", target, source, details)
             connect(observation, "identifies", weakness, source, details)
             connect(target, "hasVulnerabilityObservation", observation, source, details)
@@ -409,13 +410,19 @@ class RelationshipBuilder:
                 "exposure:defender",
                 _exposure_details(payload),
             )
-            connect(
-                image,
-                "hasDigest",
-                by_id.get(str(payload.get("digest_entity_id") or "").casefold()),
-                "exposure:defender",
-                _exposure_details(payload),
+            digest_entity_ids = payload.get("digest_entity_ids") or (
+                [payload["digest_entity_id"]]
+                if payload.get("digest_entity_id")
+                else []
             )
+            for digest_entity_id in digest_entity_ids:
+                connect(
+                    image,
+                    "hasDigest",
+                    by_id.get(str(digest_entity_id).casefold()),
+                    "exposure:defender",
+                    _exposure_details(payload),
+                )
         for deployment in by_type["WorkloadDeployment"]:
             payload = _payload(deployment)
             details = _exposure_details(payload)
@@ -731,8 +738,23 @@ class RelationshipBuilder:
                 connect(ref(managed_resource_id), "hosts", balancer, "network", {"source": "tags"})
 
 
-def _relationship_id(subject: str, predicate: str, obj: str) -> str:
-    return "relationship://" + stable_version([subject.casefold(), predicate, obj.casefold()])[:40]
+def _relationship_id(
+    subject: str,
+    predicate: str,
+    obj: str,
+    *,
+    evidence_identity: str = "",
+    event_interval: Any = None,
+) -> str:
+    identity = [subject.casefold(), predicate, obj.casefold()]
+    if evidence_identity or event_interval:
+        identity.extend(
+            [
+                evidence_identity,
+                event_interval if isinstance(event_interval, Mapping) else {},
+            ]
+        )
+    return "relationship://" + stable_version(identity)[:40]
 
 
 def _lineage(row: dict[str, Any]) -> list[str]:
@@ -816,7 +838,7 @@ def _payload(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _exposure_details(payload: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    details = {
         "read_model_generation_id": str(
             payload.get("read_model_generation_id") or ""
         ),
@@ -829,6 +851,19 @@ def _exposure_details(payload: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "completeness": str(payload.get("completeness") or ""),
     }
+    for field_name in (
+        "evidence_identity",
+        "source_generation",
+        "attempted_generation",
+        "effective_generation",
+        "event_interval",
+        "provenance",
+        "target_kind",
+    ):
+        value = payload.get(field_name)
+        if value not in (None, "", [], {}):
+            details[field_name] = value
+    return details
 
 
 def _pick(source: Mapping[str, Any], *keys: str) -> dict[str, Any]:

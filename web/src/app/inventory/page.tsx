@@ -2,6 +2,8 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -13,6 +15,10 @@ import { DEFAULT_PAGE_SIZE } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { downloadCsv, serializeCsv } from "@/lib/csv";
 import { formatDateTime } from "@/lib/format";
+import {
+  buildInventoryCopilotContext,
+  type InventoryCopilotRecord,
+} from "@/lib/copilot/page-adapters";
 import { useScope } from "@/lib/scope-context";
 import { inventoryApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
@@ -162,6 +168,16 @@ function uniqueOptions(values: string[]): Array<{ value: string; label: string }
     .map((value) => ({ value, label: value }));
 }
 
+async function withRequestFingerprint<T>(
+  request: Promise<Envelope<T>>,
+  requestFingerprint: string,
+): Promise<Envelope<T> & { requestFingerprint: string }> {
+  return {
+    ...await request,
+    requestFingerprint,
+  };
+}
+
 function optionLabel(value: string, label: string): { value: string; label: string } {
   return { value, label };
 }
@@ -284,6 +300,7 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
 
 export default function InventoryPage() {
   const { scope } = useScope();
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const [tab, setTab] = useState<InventoryTab>("os");
   const [subscriptionFilter, setSubscriptionFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -339,14 +356,50 @@ export default function InventoryPage() {
     [scope, subscriptionFilter],
   );
   const scopeKey = useMemo(() => JSON.stringify(effectiveScope), [effectiveScope]);
-  const inventory = useApi(() => inventoryApi.os(effectiveScope, osPage * osPageSize, osPageSize), [scopeKey, refreshKey, osPage, osPageSize]);
-  const softwareInventory = useApi(() => inventoryApi.software(effectiveScope, softwarePage * softwarePageSize, softwarePageSize), [scopeKey, refreshKey, softwarePage, softwarePageSize]);
+  const inventoryRequestFingerprint = JSON.stringify({
+    scope: scopeKey,
+    refreshKey,
+    page: osPage,
+    pageSize: osPageSize,
+  });
+  const softwareRequestFingerprint = JSON.stringify({
+    scope: scopeKey,
+    refreshKey,
+    page: softwarePage,
+    pageSize: softwarePageSize,
+  });
+  const azureRequestFingerprint = JSON.stringify({
+    scope: scopeKey,
+    refreshKey,
+    page: azurePage,
+    pageSize: azurePageSize,
+  });
+  const inventory = useApi(
+    () => withRequestFingerprint(
+      inventoryApi.os(effectiveScope, osPage * osPageSize, osPageSize),
+      inventoryRequestFingerprint,
+    ),
+    [inventoryRequestFingerprint],
+  );
+  const softwareInventory = useApi(
+    () => withRequestFingerprint(
+      inventoryApi.software(effectiveScope, softwarePage * softwarePageSize, softwarePageSize),
+      softwareRequestFingerprint,
+    ),
+    [softwareRequestFingerprint],
+  );
   const narrative = useApi(() => inventoryApi.narrative(effectiveScope), [scopeKey, refreshKey]);
   const mappings = useApi(
     () => inventoryApi.mappings(effectiveScope),
     [scopeKey, refreshKey],
   );
-  const azureInventory = useApi(() => inventoryApi.paas(effectiveScope, azurePage * azurePageSize, azurePageSize), [scopeKey, refreshKey, azurePage, azurePageSize]);
+  const azureInventory = useApi(
+    () => withRequestFingerprint(
+      inventoryApi.paas(effectiveScope, azurePage * azurePageSize, azurePageSize),
+      azureRequestFingerprint,
+    ),
+    [azureRequestFingerprint],
+  );
 
   const azureGroups = useMemo(() => azureInventory.data?.data.groups ?? [], [azureInventory.data]);
   const azureProviders = useMemo(
@@ -354,7 +407,12 @@ export default function InventoryPage() {
     [azureGroups],
   );
   const azureTypeOptions = useMemo(
-    () => uniqueOptions(azureGroups.map((group) => resourceTypeLabel(group.resource_type))),
+    () => Array.from(new Set(azureGroups.map((group) => group.resource_type)))
+      .map((resourceType) => ({
+        value: resourceType,
+        label: resourceTypeLabel(resourceType),
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label)),
     [azureGroups],
   );
   const azureSkuOptions = useMemo(
@@ -368,7 +426,7 @@ export default function InventoryPage() {
       return (
         haystack.includes(azureSearch.toLowerCase()) &&
         (azureProviderFilter === "all" || providerLabel(group.resource_type) === azureProviderFilter) &&
-        (azureTypeFilter === "all" || resourceTypeLabel(group.resource_type) === azureTypeFilter) &&
+        (azureTypeFilter === "all" || group.resource_type === azureTypeFilter) &&
         (azureSkuFilter === "all" || skuTier === azureSkuFilter)
       );
     }),
@@ -410,7 +468,10 @@ export default function InventoryPage() {
       .reduce((total, group) => total + group.machine_count, 0);
   const expiredCount = machinesInBucket("expired");
   const expiringCount = machinesInBucket("expiring");
-  const sourceStates: Record<string, InventorySourceStatus> = inventory.data?.data.source_status ?? {};
+  const sourceStates: Record<string, InventorySourceStatus> = useMemo(
+    () => inventory.data?.data.source_status ?? {},
+    [inventory.data],
+  );
   const partialSource = Object.values(sourceStates).find((source) => source.state !== "ready");
   const softwareGroups = useMemo(() => softwareInventory.data?.data.groups ?? [], [softwareInventory.data]);
   const softwareNameOptions = useMemo(
@@ -435,10 +496,168 @@ export default function InventoryPage() {
   );
   const softwareTotal = filteredSoftwareGroups.reduce((total, group) => total + group.install_count, 0);
   const unlinkedSoftware = filteredSoftwareGroups.reduce((total, group) => total + group.unlinked_count, 0);
-  const softwareSourceStates: Record<string, InventorySourceStatus> =
-    softwareInventory.data?.data.source_status ?? {};
+  const softwareSourceStates: Record<string, InventorySourceStatus> = useMemo(
+    () => softwareInventory.data?.data.source_status ?? {},
+    [softwareInventory.data],
+  );
   const softwarePartialSource = Object.values(softwareSourceStates).find((source) => source.state !== "ready");
   const mappingItems: SoftwareMapping[] = mappings.data?.data.mappings ?? [];
+  const activeCopilotState = tab === "software"
+    ? softwareInventory
+    : tab === "azure"
+      ? azureInventory
+      : inventory;
+  const activeCopilotRequestFingerprint = tab === "software"
+    ? softwareRequestFingerprint
+    : tab === "azure"
+      ? azureRequestFingerprint
+      : inventoryRequestFingerprint;
+  const activeCopilotScope = activeCopilotState.data?.data.requested_scope;
+  const copilotContext = useMemo(() => {
+    let records: InventoryCopilotRecord[];
+    let totalCount: number;
+    let observedAt: string | undefined;
+    let selectedIdentity: string | null;
+    let sourceStatus: Record<string, InventorySourceStatus>;
+    let filters: Record<string, string>;
+
+    if (tab === "software") {
+      records = filteredSoftwareGroups.map((group) => ({
+        identity: group.key,
+        kind: "software_group",
+        source: "inventory/software_observations",
+        data: {
+          software_name: group.software_name,
+          software_version: group.software_version,
+          install_count: group.install_count,
+          linked_count: group.linked_count,
+          unlinked_count: group.unlinked_count,
+          source_types: group.source_types,
+          publishers: group.publishers,
+        },
+      }));
+      totalCount = softwareInventory.data?.pagination?.total ?? softwareGroups.length;
+      observedAt = softwareInventory.data?.data.observed_at;
+      selectedIdentity = selectedKey;
+      sourceStatus = softwareSourceStates;
+      filters = {
+        tab,
+        search: softwareSearch,
+        source: softwareSourceFilter,
+        software: softwareNameFilter,
+        publisher: softwarePublisherFilter,
+        subscription: subscriptionFilter,
+      };
+    } else if (tab === "azure") {
+      records = filteredAzureGroups.map((group) => ({
+        identity: group.key,
+        kind: "azure_group",
+        source: "inventory/resource_observations",
+        data: {
+          resource_type: group.resource_type,
+          sku: group.sku,
+          tier: group.tier,
+          resource_count: group.resource_count,
+        },
+      }));
+      totalCount = azureInventory.data?.pagination?.total ?? azureGroups.length;
+      observedAt = azureInventory.data?.data.observed_at;
+      selectedIdentity = azureSelectedKey;
+      sourceStatus = azureInventory.data?.data.source_status ?? {};
+      filters = {
+        tab,
+        search: azureSearch,
+        provider: azureProviderFilter,
+        resource_type: azureTypeFilter,
+        sku: azureSkuFilter,
+        subscription: subscriptionFilter,
+      };
+    } else {
+      records = filteredGroups.map((group) => ({
+        identity: group.key,
+        kind: "os_group",
+        source: "inventory/os_observations",
+        data: {
+          os_name: group.os_name,
+          os_version: group.os_version,
+          machine_count: group.machine_count,
+          source_types: group.source_types,
+          lifecycle_status: group.lifecycle_status,
+          support_end: group.support_end,
+          days_remaining: group.days_remaining,
+          review_required: group.review_required,
+        },
+      }));
+      totalCount = inventory.data?.pagination?.total ?? groups.length;
+      observedAt = inventory.data?.data.observed_at;
+      selectedIdentity = selectedKey;
+      sourceStatus = sourceStates;
+      filters = {
+        tab,
+        search,
+        source: sourceFilter,
+        lifecycle: lifecycleFilter,
+        os_name: osNameFilter,
+        os_version: osVersionFilter,
+        subscription: subscriptionFilter,
+      };
+    }
+
+    return buildInventoryCopilotContext({
+      scope: activeCopilotScope ?? {},
+      tab,
+      filters,
+      records,
+      selectedIdentity,
+      totalCount,
+      observedAt,
+      sourceStatuses: Object.entries(sourceStatus).map(([source, status]) => ({
+        source,
+        observedAt: status.observed_at || observedAt,
+        status: status.state,
+      })),
+    });
+  }, [
+    azureGroups.length,
+    azureInventory.data,
+    azureProviderFilter,
+    azureSearch,
+    azureSelectedKey,
+    azureSkuFilter,
+    azureTypeFilter,
+    activeCopilotScope,
+    filteredAzureGroups,
+    filteredGroups,
+    filteredSoftwareGroups,
+    groups.length,
+    inventory.data,
+    lifecycleFilter,
+    osNameFilter,
+    osVersionFilter,
+    search,
+    selectedKey,
+    softwareGroups.length,
+    softwareInventory.data,
+    softwareNameFilter,
+    softwarePublisherFilter,
+    softwareSearch,
+    softwareSourceFilter,
+    sourceFilter,
+    sourceStates,
+    softwareSourceStates,
+    subscriptionFilter,
+    tab,
+  ]);
+  const copilotReady = Boolean(
+    activeCopilotScope
+    && !activeCopilotState.loading
+    && !activeCopilotState.error
+    && activeCopilotState.data?.requestFingerprint === activeCopilotRequestFingerprint,
+  );
+
+  useEffect(() => {
+    if (!copilotReady) setCopilotOpen(false);
+  }, [copilotReady]);
 
   const loadOsGroup = useCallback(async (key: string, page: number) => {
     setDetailError(null);
@@ -761,6 +980,9 @@ export default function InventoryPage() {
         eyebrow="Inventory"
         title="Inventory"
         description="Find authorized operating-system, installed-software, and Azure resource coverage across native Azure VMs, Arc-enabled servers, and platform services."
+        actions={copilotReady
+          ? <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about inventory" />
+          : undefined}
         metadata={
           inventory.data && (
             <EvidenceBar
@@ -1664,6 +1886,14 @@ export default function InventoryPage() {
           )}
         </section>
       )}
+      <CopilotDrawer
+        open={copilotOpen && copilotReady}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Inventory and data health"
+        requestedScope={copilotContext.requestedScope}
+        snapshot={copilotContext.snapshot}
+        starterQuestions={copilotContext.starterQuestions}
+      />
     </main>
   );
 }
