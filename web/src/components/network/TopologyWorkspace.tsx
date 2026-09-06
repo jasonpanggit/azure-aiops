@@ -12,6 +12,7 @@ import type {
 } from "@/components/network/TopologyGraph";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { buildTopologyGraph } from "@/lib/network-graph";
+import type { ScopeSelection } from "@/lib/scope";
 import type {
   CollectionCoverage,
   EvidenceItem,
@@ -221,7 +222,7 @@ interface TopologyWorkspaceProps {
   findingsError?: Error | null;
   findingsTruncated?: boolean;
   onRetryFindings?: () => void;
-  scope?: Record<string, string[]> | null;
+  scope?: ScopeSelection | null;
   evidence?: EvidenceItem[] | null;
   warnings?: string[] | null;
   knowledgeVersion?: string | null;
@@ -743,6 +744,7 @@ export function TopologyWorkspace({
           }
           detailLevel={detailLevel}
           visibleNodeIds={visibleNodeIds}
+          scope={scope ?? {}}
         />
       </div>
 

@@ -943,14 +943,21 @@ export const networkApi = {
     apiRequest<NetworkSummary>("/network/summary", { query: scopeToSearchParams(scope) }),
 
   /** "What depends on the hub?" */
-  hubDependents: (vnetId: string) =>
-    apiRequest<HubDependents>(`/network/topology/hubs/${encodeURIComponent(vnetId)}/dependents`),
+  hubDependents: (vnetId: string, scope: ScopeSelection = {}) =>
+    apiRequest<HubDependents>(
+      `/network/topology/hubs/${encodeURIComponent(vnetId)}/dependents`,
+      { query: scopeToSearchParams(scope) },
+    ),
 
-  topologyResourceDetails: (resourceId: string, offset = 0, limit = 50) => {
-    const query = new URLSearchParams({
-      offset: String(offset),
-      limit: String(limit),
-    });
+  topologyResourceDetails: (
+    resourceId: string,
+    scope: ScopeSelection = {},
+    offset = 0,
+    limit = 50,
+  ) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
     const resourcePath = resourceId
       .split("/")
       .filter(Boolean)

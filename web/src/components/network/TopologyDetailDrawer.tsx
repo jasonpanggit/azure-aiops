@@ -6,6 +6,7 @@ import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { shortName, type TopologyEdgeData, type TopologyNodeData } from "@/lib/network-graph";
+import { scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import { networkApi } from "@/lib/services";
 import type {
   Envelope,
@@ -46,6 +47,7 @@ interface TopologyDetailDrawerProps {
   findings?: DrawerFindingsState;
   detailLevel?: "summary" | "full";
   visibleNodeIds?: ReadonlySet<string>;
+  scope?: ScopeSelection;
 }
 
 export interface DrawerFindingsState {
@@ -73,6 +75,7 @@ export function TopologyDetailDrawer({
   findings,
   detailLevel = "full",
   visibleNodeIds,
+  scope = {},
 }: TopologyDetailDrawerProps) {
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -124,6 +127,7 @@ export function TopologyDetailDrawer({
             findings={findings}
             detailLevel={detailLevel}
             visibleNodeIds={visibleNodeIds}
+            scope={scope}
           />
         ) : (
           <EdgeDetail edge={edge!} />
@@ -138,11 +142,13 @@ function NodeDetail({
   findings,
   detailLevel,
   visibleNodeIds,
+  scope,
 }: {
   node: TopologyNodeData;
   findings?: DrawerFindingsState;
   detailLevel: "summary" | "full";
   visibleNodeIds?: ReadonlySet<string>;
+  scope: ScopeSelection;
 }) {
   const heading = node.entityType ? titleize(node.entityType) : node.serviceKind ? titleize(node.serviceKind) : titleize(node.kind);
   return (
@@ -226,8 +232,13 @@ function NodeDetail({
       <OpenFindings node={node} findings={findings} />
 
       <PrivateLinkFacts node={node} visibleNodeIds={visibleNodeIds} />
-      <NodeSpecificDetails key={node.id} node={node} detailLevel={detailLevel} />
-      {node.kind === "hub" && <HubDependents vnetId={node.id} />}
+      <NodeSpecificDetails
+        key={`${node.id}:${scopeCacheKey(scope)}`}
+        node={node}
+        detailLevel={detailLevel}
+        scope={scope}
+      />
+      {node.kind === "hub" && <HubDependents vnetId={node.id} scope={scope} />}
     </>
   );
 }
@@ -462,16 +473,28 @@ const detailCache = new Map<
   Envelope<NetworkTopologyResourceDetails>
 >();
 
-function detailCacheKey(nodeId: string, offset: number): string {
-  return `${nodeId.toLowerCase()}::${offset}`;
+function scopeCacheKey(scope: ScopeSelection): string {
+  const query = scopeToSearchParams(scope);
+  query.sort();
+  return query.toString();
+}
+
+function detailCacheKey(
+  nodeId: string,
+  scope: ScopeSelection,
+  offset: number,
+): string {
+  return `${nodeId.toLowerCase()}::${scopeCacheKey(scope)}::${offset}`;
 }
 
 function NodeSpecificDetails({
   node,
   detailLevel,
+  scope,
 }: {
   node: TopologyNodeData;
   detailLevel: "summary" | "full";
+  scope: ScopeSelection;
 }) {
   const details = node.details ?? {};
   if (node.entityType && PRIVATE_LINK_ENTITY_TYPES.has(node.entityType)) {
@@ -493,7 +516,7 @@ function NodeSpecificDetails({
     detailLevel === "summary" &&
     !Array.isArray(details[detailKey])
   ) {
-    return <DrillDownSection node={node} definition={definition} />;
+    return <DrillDownSection node={node} definition={definition} scope={scope} />;
   }
   if (definition) {
     return (
@@ -528,13 +551,15 @@ function NodeSpecificDetails({
 function DrillDownSection({
   node,
   definition,
+  scope,
 }: {
   node: TopologyNodeData;
   definition: DrillDownDefinition;
+  scope: ScopeSelection;
 }) {
   const [page, setPage] = useState(0);
   const offset = page * DETAIL_PAGE_SIZE;
-  const cacheKey = detailCacheKey(node.id, offset);
+  const cacheKey = detailCacheKey(node.id, scope, offset);
   const [result, setResult] = useState<
     Envelope<NetworkTopologyResourceDetails> | undefined
   >(() => detailCache.get(cacheKey));
@@ -554,6 +579,7 @@ function DrillDownSection({
     try {
       const response = await networkApi.topologyResourceDetails(
         node.id,
+        scope,
         offset,
         DETAIL_PAGE_SIZE,
       );
@@ -566,20 +592,26 @@ function DrillDownSection({
     } finally {
       setLoading(false);
     }
-  }, [cacheKey, loading, node.id, offset]);
+  }, [cacheKey, loading, node.id, offset, scope]);
 
   const changePage = useCallback(
     (nextPage: number) => {
       const nextOffset = nextPage * DETAIL_PAGE_SIZE;
-      const nextCached = detailCache.get(detailCacheKey(node.id, nextOffset));
+      const nextCacheKey = detailCacheKey(node.id, scope, nextOffset);
+      const nextCached = detailCache.get(nextCacheKey);
       setPage(nextPage);
       setResult(nextCached);
       setError(null);
       if (!nextCached) {
         void networkApi
-          .topologyResourceDetails(node.id, nextOffset, DETAIL_PAGE_SIZE)
+          .topologyResourceDetails(
+            node.id,
+            scope,
+            nextOffset,
+            DETAIL_PAGE_SIZE,
+          )
           .then((response) => {
-            detailCache.set(detailCacheKey(node.id, nextOffset), response);
+            detailCache.set(nextCacheKey, response);
             setResult(response);
           })
           .catch((reason) => {
@@ -591,7 +623,7 @@ function DrillDownSection({
           });
       }
     },
-    [node.id],
+    [node.id, scope],
   );
 
   const resourceName = node.label || "the selected resource";
@@ -745,8 +777,18 @@ function PrivateLinkFacts({
   );
 }
 
-function HubDependents({ vnetId }: { vnetId: string }) {
-  const dependents = useApi(() => networkApi.hubDependents(vnetId), [vnetId]);
+function HubDependents({
+  vnetId,
+  scope,
+}: {
+  vnetId: string;
+  scope: ScopeSelection;
+}) {
+  const scopeKey = scopeCacheKey(scope);
+  const dependents = useApi(
+    () => networkApi.hubDependents(vnetId, scope),
+    [vnetId, scopeKey],
+  );
 
   return (
     <section className="topology-detail-section">
