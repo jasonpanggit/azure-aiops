@@ -7,7 +7,7 @@ from fabric_pipelines.topology_fabric_contracts import (
     TOPOLOGY_ENTITIES_CONTRACT,
 )
 
-SCHEMA_VERSION = "2.4.0"
+SCHEMA_VERSION = "2.5.0"
 
 _BASE = [
     pa.field("tenant_id", pa.string(), nullable=False),
@@ -447,6 +447,27 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("payload_fingerprint", pa.string(), nullable=False),
             pa.field("payload_json", pa.string(), nullable=False),
             pa.field("title", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_exposure_enrichment": pa.schema(
+        [
+            *_BASE,
+            pa.field("enrichment_key", pa.string(), nullable=False),
+            pa.field("source", pa.string(), nullable=False),
+            pa.field("identifier", pa.string(), nullable=False),
+            pa.field("payload_json", pa.string(), nullable=False),
+            pa.field("payload_version", pa.string(), nullable=False),
+            pa.field("provenance_hash", pa.string(), nullable=False),
+            pa.field("request_hash", pa.string(), nullable=False),
+            pa.field("attempted_at", pa.string(), nullable=False),
+            pa.field("succeeded_at", pa.string(), nullable=True),
+            pa.field("source_at", pa.string(), nullable=True),
+            pa.field("enriched_at", pa.string(), nullable=True),
+            pa.field("refresh_after", pa.string(), nullable=False),
+            pa.field("stale_after", pa.string(), nullable=True),
+            pa.field("status", pa.string(), nullable=False),
+            pa.field("stale", pa.bool_(), nullable=False),
+            pa.field("safe_error_code", pa.string(), nullable=False),
         ]
     ),
     "gold_exposure_current": pa.schema(

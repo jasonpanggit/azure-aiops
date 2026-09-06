@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from fabric.schema_registry import schema_for
+from intelligence.vulnerability.connector import NvdCveEnrichmentConnector
 from intelligence.vulnerability.enrichment_cache import EnrichmentCache
 from intelligence.vulnerability.enrichment_worker import (
     EnrichmentTarget,
@@ -112,6 +113,7 @@ def _worker(
     cache = EnrichmentCache(
         document,
         store=OneLakeDocumentStore(tmp_path),
+        clock=lambda: clock.now.timestamp(),
     )
     worker = EnrichmentWorker(
         cache,
@@ -207,14 +209,40 @@ def test_records_and_failed_lkg_survive_restart(tmp_path) -> None:
     clock.advance(seconds=61)
     nvd.fail_ids.add("CVE-2026-0001")
     worker.refresh((target,))
-    before = cache.get_record("nvd", "CVE-2026-0001")
+    before = cache.get_record("nvd", "CVE-2026-0001", now=clock.now)
 
     restarted = EnrichmentCache(
         "enrichment/items.json",
         store=OneLakeDocumentStore(tmp_path),
+        clock=lambda: clock.now.timestamp(),
     )
 
     assert restarted.get_record("nvd", "cve-2026-0001", now=clock.now) == before
+
+
+def test_independent_cache_instances_merge_sibling_item_checkpoints(tmp_path) -> None:
+    clock = _Clock()
+    first_worker, first_cache = _worker(tmp_path, clock)
+    second_worker, second_cache = _worker(tmp_path, clock)
+    assert first_cache.records(now=clock.now) == ()
+    assert second_cache.records(now=clock.now) == ()
+
+    first_worker.refresh((EnrichmentTarget("nvd", "CVE-2026-0001"),))
+    second_worker.refresh((EnrichmentTarget("epss", "CVE-2026-0002"),))
+
+    restarted = EnrichmentCache(
+        "enrichment/items.json",
+        store=OneLakeDocumentStore(tmp_path),
+        clock=lambda: clock.now.timestamp(),
+    )
+    identities = {
+        (record["source"], record["identifier"])
+        for record in restarted.records(now=clock.now)
+    }
+    assert identities == {
+        ("nvd", "CVE-2026-0001"),
+        ("epss", "CVE-2026-0002"),
+    }
 
 
 def test_refresh_after_boundary_is_due_and_stale_not_early(tmp_path) -> None:
@@ -294,6 +322,30 @@ def test_provenance_and_request_hashes_are_deterministic_and_content_bound(
     assert changed["provenance_hash"] != first["provenance_hash"]
 
 
+def test_restart_rejects_a_payload_that_no_longer_matches_its_provenance(
+    tmp_path,
+) -> None:
+    clock = _Clock()
+    worker, _cache = _worker(tmp_path, clock)
+    worker.refresh((EnrichmentTarget("nvd", "CVE-2026-0001"),))
+    store = OneLakeDocumentStore(tmp_path)
+    document = store.read("enrichment/items.json")
+    document["records"]["nvd|CVE-2026-0001"]["payload"]["severity"] = "CRITICAL"
+    document["revision"] += 1
+    store.write(
+        "enrichment/items.json",
+        document,
+        expected_revision=document["revision"] - 1,
+    )
+
+    restarted = EnrichmentCache(
+        "enrichment/items.json",
+        store=OneLakeDocumentStore(tmp_path),
+        clock=lambda: clock.now.timestamp(),
+    )
+    assert restarted.get_record("nvd", "CVE-2026-0001") is None
+
+
 def test_worker_enforces_a_total_item_bound_before_calling_providers(tmp_path) -> None:
     clock = _Clock()
     nvd = _Nvd()
@@ -310,6 +362,33 @@ def test_worker_enforces_a_total_item_bound_before_calling_providers(tmp_path) -
     assert len(outcomes) == 2
     assert len(nvd.calls) == 2
     assert cache.get_record("nvd", "CVE-2026-0003") is None
+
+
+def test_nvd_rate_limit_is_a_failed_item_not_a_successful_empty_payload(
+    tmp_path,
+) -> None:
+    class _RateLimitedResponse:
+        status_code = 429
+
+        def raise_for_status(self) -> None:
+            raise AssertionError("strict adapter handles 429 before raise_for_status")
+
+        def json(self) -> dict:
+            raise AssertionError("strict adapter handles 429 before decoding")
+
+    clock = _Clock()
+    connector = NvdCveEnrichmentConnector(
+        api_key="",
+        http_get=lambda *args, **kwargs: _RateLimitedResponse(),
+    )
+    worker, cache = _worker(tmp_path, clock, nvd=connector)
+
+    outcome = worker.refresh((EnrichmentTarget("nvd", "CVE-2026-0001"),))[0]
+    record = cache.get_record("nvd", "CVE-2026-0001")
+
+    assert outcome.status == "failed"
+    assert record["safe_error_code"] == "rate_limited"
+    assert record["payload"] is None
 
 
 def test_enrichment_schema_is_additive_and_preserves_remediation_role_identity() -> None:
