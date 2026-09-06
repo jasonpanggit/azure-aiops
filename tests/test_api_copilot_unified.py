@@ -1853,12 +1853,13 @@ def test_multi_agent_canonical_projection_retains_complete_results(
         policy_status="fallback",
         fallback_reason="planner_unavailable",
         selected_specialists=["network"],
-        selected_tools=["network_topology"],
+        selected_tools=["traffic_flow"],
         tool_results=[
             {
-                "call_id": "0:0:network:network_topology",
+                "call_id": "0:0:network:traffic_flow",
                 "specialist_id": "network",
-                "tool": "network_topology",
+                "tool": "traffic_flow",
+                "arguments": {"source": "uat", "destination": "prod"},
                 "status": "ok",
                 "data": {"nodes": [{"id": "vnet-a"}]},
                 "evidence": [
@@ -1905,7 +1906,7 @@ def test_multi_agent_canonical_projection_retains_complete_results(
     data = response.json()["data"]
     assert data["selected_agents"][0]["id"] == "network"
     assert data["agent_runs"][0]["agent_id"] == "network"
-    assert data["agent_runs"][0]["agent_name"] == "Network"
+    assert data["agent_runs"][0]["agent_name"] == "Network Agent"
     assert data["agent_runs"][0]["findings"]
     assert data["agent_runs"][0]["evidence"]
     assert data["agent_runs"][0]["hidden_reasoning_exposed"] is False
@@ -2146,7 +2147,6 @@ def test_canonical_history_retains_question_and_validated_tool_arguments(
     [
         ("Which servers are vulnerable?", "vulnerability"),
         ("Summarize vulnerabilities by severity", "vulnerability"),
-        ("Who has ownership of this resource?", "governance"),
         ("Which route can reach production?", "network"),
     ],
 )
@@ -2228,6 +2228,7 @@ def test_ownership_question_without_subject_is_explicitly_unavailable(
     assert result.status == "unavailable"
     assert result.fallback_reason == "missing_required_arguments"
     assert result.selected_specialists == []
+    assert result.citations[0].source == "page_snapshot:governance:coverage"
     assert calls == []
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -21,6 +22,7 @@ from operations.maf_orchestrator import (
     build_deterministic_fallback,
     select_specialists_for_turn,
 )
+from operations.mcp_server import validate_tool_arguments
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     CandidatePlan,
@@ -54,19 +56,50 @@ _legacy_session_lock = threading.Lock()
 _legacy_session_threads: OrderedDict[tuple[str, str], str] = OrderedDict()
 _STABLE_QUESTION_ROUTES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
+        "incident",
+        "incident",
+        (
+            r"\bincident(?:s)?\b",
+            r"\boutage(?:s)?\b",
+            r"\balert(?:s)?\b",
+            r"\broot cause\b",
+            r"\btimeline\b",
+        ),
+    ),
+    (
         "vulnerability",
         "vulnerability",
-        ("cve", "vulnerab", "exploit", "exposure", "attack path"),
+        (
+            r"\bcve(?:s)?\b",
+            r"\bvulnerab\w*\b",
+            r"\bexploit\w*\b",
+            r"\bexposure\b",
+            r"\battack path\b",
+        ),
     ),
     (
         "governance",
         "governance",
-        ("owner", "ownership", "governance", "approv", "policy", "compliance"),
+        (
+            r"\bowner(?:s|ship)?\b",
+            r"\bgovernance\b",
+            r"\bapprov\w*\b",
+            r"\bpolicy\b",
+            r"\bcompliance\b",
+        ),
     ),
     (
         "network",
         "network",
-        ("network", "traffic", "firewall", "nsg", "route", "reach", "topology"),
+        (
+            r"\bnetwork\b",
+            r"\btraffic\b",
+            r"\bfirewall\b",
+            r"\bnsg\b",
+            r"\broute(?:s|d|ing)?\b",
+            r"\breach(?:able|ability)?\b",
+            r"\btopology\b",
+        ),
     ),
 )
 
@@ -119,8 +152,8 @@ def _question_route(
                 return _preferred_page_kind(specialist), specialist
 
     lowered = question.casefold()
-    for page_kind, specialist_id, markers in _STABLE_QUESTION_ROUTES:
-        if any(marker in lowered for marker in markers):
+    for page_kind, specialist_id, patterns in _STABLE_QUESTION_ROUTES:
+        if any(re.search(pattern, lowered) for pattern in patterns):
             return page_kind, manifest.require(specialist_id)
 
     catalog = tuple(
@@ -578,6 +611,15 @@ def execute_from_question(
 
     service = OrchestrationService(planner=planner, executor=_safe_executor)
 
+    def _supports_empty_arguments(specialist: SpecialistDefinition) -> bool:
+        for tool in specialist.operations_mcp_tools:
+            try:
+                validate_tool_arguments(tool, {})
+            except ValueError:
+                continue
+            return True
+        return False
+
     def _execute(active_request: InvestigationRequest) -> OrchestrationResult:
         if hinted_specialist is None and (not hint_tool or page_kind == "copilot"):
             reason = "unsupported_tool_hint" if hint_tool else "unsupported_intent"
@@ -586,6 +628,17 @@ def execute_from_question(
                 principal_subject=principal_subject,
                 effective_scope=scope,
                 reason=reason,
+            )
+        if (
+            not hint_tool
+            and hinted_specialist is not None
+            and not _supports_empty_arguments(hinted_specialist)
+        ):
+            return service.unsupported(
+                active_request,
+                principal_subject=principal_subject,
+                effective_scope=scope,
+                reason="missing_required_arguments",
             )
         return service.execute(
             active_request,
