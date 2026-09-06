@@ -472,6 +472,10 @@ const detailCache = new Map<
   string,
   Envelope<NetworkTopologyResourceDetails>
 >();
+const detailRequests = new Map<
+  string,
+  Promise<Envelope<NetworkTopologyResourceDetails>>
+>();
 
 function scopeCacheKey(scope: ScopeSelection): string {
   const query = scopeToSearchParams(scope);
@@ -485,6 +489,33 @@ function detailCacheKey(
   offset: number,
 ): string {
   return `${nodeId.toLowerCase()}::${scopeCacheKey(scope)}::${offset}`;
+}
+
+function requestDetailPage(
+  nodeId: string,
+  scope: ScopeSelection,
+  offset: number,
+): Promise<Envelope<NetworkTopologyResourceDetails>> {
+  const key = detailCacheKey(nodeId, scope, offset);
+  const cached = detailCache.get(key);
+  if (cached) return Promise.resolve(cached);
+  const pending = detailRequests.get(key);
+  if (pending) return pending;
+
+  let request!: Promise<Envelope<NetworkTopologyResourceDetails>>;
+  request = networkApi
+    .topologyResourceDetails(nodeId, scope, offset, DETAIL_PAGE_SIZE)
+    .then((response) => {
+      detailCache.set(key, response);
+      return response;
+    })
+    .finally(() => {
+      if (detailRequests.get(key) === request) {
+        detailRequests.delete(key);
+      }
+    });
+  detailRequests.set(key, request);
+  return request;
 }
 
 function NodeSpecificDetails({
@@ -565,65 +596,46 @@ function DrillDownSection({
   >(() => detailCache.get(cacheKey));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const currentRequestKeyRef = useRef(cacheKey);
+  currentRequestKeyRef.current = cacheKey;
 
-  const load = useCallback(async () => {
-    if (loading) return;
-    const cached = detailCache.get(cacheKey);
+  const loadPage = useCallback(async (nextPage: number) => {
+    const nextOffset = nextPage * DETAIL_PAGE_SIZE;
+    const nextKey = detailCacheKey(node.id, scope, nextOffset);
+    currentRequestKeyRef.current = nextKey;
+    setPage(nextPage);
+    const cached = detailCache.get(nextKey);
     if (cached) {
       setResult(cached);
       setError(null);
+      setLoading(false);
       return;
     }
+    setResult(undefined);
     setLoading(true);
     setError(null);
     try {
-      const response = await networkApi.topologyResourceDetails(
-        node.id,
-        scope,
-        offset,
-        DETAIL_PAGE_SIZE,
-      );
-      detailCache.set(cacheKey, response);
-      setResult(response);
-    } catch (reason) {
-      setError(
-        reason instanceof Error ? reason : new Error("Unknown detail error"),
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [cacheKey, loading, node.id, offset, scope]);
-
-  const changePage = useCallback(
-    (nextPage: number) => {
-      const nextOffset = nextPage * DETAIL_PAGE_SIZE;
-      const nextCacheKey = detailCacheKey(node.id, scope, nextOffset);
-      const nextCached = detailCache.get(nextCacheKey);
-      setPage(nextPage);
-      setResult(nextCached);
-      setError(null);
-      if (!nextCached) {
-        void networkApi
-          .topologyResourceDetails(
-            node.id,
-            scope,
-            nextOffset,
-            DETAIL_PAGE_SIZE,
-          )
-          .then((response) => {
-            detailCache.set(nextCacheKey, response);
-            setResult(response);
-          })
-          .catch((reason) => {
-            setError(
-              reason instanceof Error
-                ? reason
-                : new Error("Unknown detail error"),
-            );
-          });
+      const response = await requestDetailPage(node.id, scope, nextOffset);
+      if (currentRequestKeyRef.current === nextKey) {
+        setResult(response);
       }
-    },
-    [node.id, scope],
+    } catch (reason) {
+      if (currentRequestKeyRef.current === nextKey) {
+        setError(
+          reason instanceof Error ? reason : new Error("Unknown detail error"),
+        );
+      }
+    } finally {
+      if (currentRequestKeyRef.current === nextKey) {
+        setLoading(false);
+      }
+    }
+  }, [node.id, scope]);
+
+  const load = useCallback(() => loadPage(page), [loadPage, page]);
+  const changePage = useCallback(
+    (nextPage: number) => void loadPage(nextPage),
+    [loadPage],
   );
 
   const resourceName = node.label || "the selected resource";

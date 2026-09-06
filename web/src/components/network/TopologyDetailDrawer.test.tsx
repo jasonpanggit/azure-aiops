@@ -377,6 +377,62 @@ describe("TopologyDetailDrawer on-demand facts", () => {
     ).toBeInTheDocument();
   });
 
+  it("serializes page changes and deduplicates an in-flight page request", async () => {
+    let resolveNext!: (
+      value: Awaited<ReturnType<typeof networkApi.topologyResourceDetails>>,
+    ) => void;
+    const nextPage = new Promise<
+      Awaited<ReturnType<typeof networkApi.topologyResourceDetails>>
+    >((resolve) => {
+      resolveNext = resolve;
+    });
+    const request = vi
+      .spyOn(networkApi, "topologyResourceDetails")
+      .mockResolvedValueOnce({
+        data: {
+          resource_id: `${NODE_ID}/ordered-pages`,
+          detail_type: "rules",
+          items: [{ id: "rule-0", name: "rule-0" }],
+          coverage: { total: 51, returned: 1, truncated: true },
+        },
+        evidence: [],
+        scope: {},
+        pagination: { offset: 0, limit: 50, total: 51, next_offset: 50 },
+      })
+      .mockReturnValueOnce(nextPage);
+    renderDrawer(node({ id: `${NODE_ID}/ordered-pages` }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Load rules" }));
+    await screen.findByText("rule-0");
+    const next = screen.getByRole("button", { name: "Next page" });
+    fireEvent.click(next);
+    fireEvent.click(next);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenLastCalledWith(
+      `${NODE_ID}/ordered-pages`,
+      {},
+      50,
+      50,
+    );
+    expect(screen.getByText("Loading rules…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load rules" })).toBeDisabled();
+
+    resolveNext({
+      data: {
+        resource_id: `${NODE_ID}/ordered-pages`,
+        detail_type: "rules",
+        items: [{ id: "rule-50", name: "rule-50" }],
+        coverage: { total: 51, returned: 1, truncated: false },
+      },
+      evidence: [],
+      scope: {},
+      pagination: { offset: 50, limit: 50, total: 51, next_offset: null },
+    });
+    expect(await screen.findByText("rule-50")).toBeInTheDocument();
+    expect(screen.getByText("Showing 51–51 of 51 rules")).toBeInTheDocument();
+  });
+
   it("keeps the drawer open on failure with a unique R-6 Retry", async () => {
     const request = vi
       .spyOn(networkApi, "topologyResourceDetails")
