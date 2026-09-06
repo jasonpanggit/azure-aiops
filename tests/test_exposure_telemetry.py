@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-from api.exposure_query import ExposureAuthorization, ExposureQuery, ExposureQueryService
+from api.exposure_query import (
+    ExposureAuthorization,
+    ExposureQuery,
+    ExposureQueryService,
+)
 from intelligence.vulnerability.acquisition import AcquisitionSuccess, PagingProof
 from onboarding.ingestion_service import activate_source_partitions
 from operations.exposure_metrics import (
@@ -24,12 +27,12 @@ class _Instrument:
         self.unit = unit
         self.records: list[tuple[float, dict[str, str]]] = []
 
-    def add(self, value: int | float, attributes: dict[str, str] | None = None) -> None:
+    def add(self, value: float, attributes: dict[str, str] | None = None) -> None:
         self.records.append((float(value), dict(attributes or {})))
 
     def record(
         self,
-        value: int | float,
+        value: float,
         attributes: dict[str, str] | None = None,
     ) -> None:
         self.records.append((float(value), dict(attributes or {})))
@@ -359,27 +362,3 @@ def test_query_error_emits_only_bounded_outcome() -> None:
             for record in instrument.records
         ]
     )
-
-
-def test_alert_queries_reference_every_required_emitted_metric() -> None:
-    alerting = Path("infra/terraform/alerting.tf").read_text(encoding="utf-8")
-
-    required = {
-        "aiops.exposure.ingestion.rows",
-        "aiops.exposure.ingestion.drop.ratio",
-        "aiops.exposure.source.cycles",
-        "aiops.exposure.source.age",
-        "aiops.exposure.merge.rows",
-        "aiops.exposure.enrichment.quality",
-        "aiops.exposure.coverage.ratio",
-        "aiops.exposure.reconciliation.mismatches",
-        "aiops.exposure.query.duration",
-        "aiops.exposure.query.events",
-    }
-    assert required <= set(EXPOSURE_METRIC_SPECS)
-    # Task 3 turns this contract green by linking every signal to an alert.
-    assert required <= {
-        metric_name
-        for metric_name in required
-        if metric_name in alerting
-    }

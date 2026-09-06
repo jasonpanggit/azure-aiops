@@ -14,6 +14,7 @@ import hmac
 import json
 import os
 import re
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -24,6 +25,7 @@ from intelligence.vulnerability.exposure_contracts import (
     ExposureCursorError,
     ExposureRestartConflict,
 )
+from operations.exposure_metrics import ExposureMetrics
 
 EXPOSURE_FACTS_TABLE = "gold_exposure_facts"
 MAX_EXPOSURE_PAGE_SIZE = 100
@@ -552,6 +554,8 @@ class ExposureQueryService:
         cursor_codec: ExposureCursorCodec | None = None,
         generation_window: Any | None = None,
         authorization_resolver: Any | None = None,
+        metrics: ExposureMetrics | None = None,
+        clock: Any = time.monotonic,
     ) -> None:
         timeout = getattr(reader, "timeout_seconds", None)
         if timeout is not None and (
@@ -567,6 +571,8 @@ class ExposureQueryService:
         self._cursor_codec = cursor_codec
         self._generation_window = generation_window
         self._authorization_resolver = authorization_resolver
+        self._metrics = metrics or ExposureMetrics()
+        self._clock = clock
 
     def authorization_for(
         self,
@@ -647,17 +653,35 @@ class ExposureQueryService:
                 raise ExposureQueryUnavailableError(
                     "Exposure generation retention state is unavailable"
                 )
-            cursor_state = self._cursor_codec.decode(
-                cursor,
-                authorization=authorization,
-                query=query,
-                expected_generation_id=generation_id,
-                now=current,
-            )
-            generation = window.require_readable(
-                cursor_state.generation,
-                now=current,
-            )
+            try:
+                cursor_state = self._cursor_codec.decode(
+                    cursor,
+                    authorization=authorization,
+                    query=query,
+                    expected_generation_id=generation_id,
+                    now=current,
+                )
+                generation = window.require_readable(
+                    cursor_state.generation,
+                    now=current,
+                )
+            except ExposureRestartConflict:
+                self._metrics.record_query_event(
+                    operation="cursor",
+                    outcome="restart",
+                )
+                raise
+            except ExposureCursorError:
+                self._metrics.record_query_event(
+                    operation="cursor",
+                    outcome="error",
+                )
+                raise
+            else:
+                self._metrics.record_query_event(
+                    operation="cursor",
+                    outcome="ok",
+                )
             after = cursor_state.position
         else:
             selected_generation = (
@@ -688,38 +712,84 @@ class ExposureQueryService:
                 "dbo",
             ),
         )
-        count_rows = self._reader.query(
-            compiled.count_sql,
-            compiled.parameters,
-            max_rows=1,
-        )
+        count_started = self._clock()
+        try:
+            count_rows = self._reader.query(
+                compiled.count_sql,
+                compiled.parameters,
+                max_rows=1,
+            )
+        except Exception:
+            self._metrics.record_query(
+                operation="count",
+                duration_ms=(self._clock() - count_started) * 1000.0,
+                rows_returned=0,
+                outcome="error",
+            )
+            raise
         total_count = (
             max(0, int(count_rows[0].get("total_count") or 0))
             if count_rows
             else 0
         )
         count_row = count_rows[0] if count_rows else {}
+        self._metrics.record_query(
+            operation="count",
+            duration_ms=(self._clock() - count_started) * 1000.0,
+            rows_returned=total_count,
+            outcome="ok",
+        )
         completeness = _completeness_payload(
             total_count,
             count_row.get("all_complete"),
         )
         freshness = _freshness_payload(count_row.get("freshest_at"))
-        facet_rows = (
-            self._reader.query(
-                compiled.facet_sql,
-                compiled.parameters,
-                max_rows=MAX_FACET_ROWS,
+        facet_rows: list[dict[str, Any]] = []
+        if compiled.facet_sql:
+            facet_started = self._clock()
+            try:
+                facet_rows = self._reader.query(
+                    compiled.facet_sql,
+                    compiled.parameters,
+                    max_rows=MAX_FACET_ROWS,
+                )
+            except Exception:
+                self._metrics.record_query(
+                    operation="facet",
+                    duration_ms=(self._clock() - facet_started) * 1000.0,
+                    rows_returned=0,
+                    outcome="error",
+                )
+                raise
+            self._metrics.record_query(
+                operation="facet",
+                duration_ms=(self._clock() - facet_started) * 1000.0,
+                rows_returned=len(facet_rows),
+                outcome="ok",
             )
-            if compiled.facet_sql
-            else []
-        )
-        raw_page = self._reader.query(
-            compiled.page_sql,
-            compiled.page_parameters,
-            max_rows=compiled.page_limit,
-        )
+        page_started = self._clock()
+        try:
+            raw_page = self._reader.query(
+                compiled.page_sql,
+                compiled.page_parameters,
+                max_rows=compiled.page_limit,
+            )
+        except Exception:
+            self._metrics.record_query(
+                operation="page",
+                duration_ms=(self._clock() - page_started) * 1000.0,
+                rows_returned=0,
+                outcome="error",
+            )
+            raise
         has_more = len(raw_page) > query.page_size
         selected = raw_page[: query.page_size]
+        self._metrics.record_query(
+            operation="page",
+            duration_ms=(self._clock() - page_started) * 1000.0,
+            rows_returned=len(selected),
+            outcome="ok",
+        )
         next_position: tuple[Any, str] | None = None
         if has_more and selected:
             last = selected[-1]

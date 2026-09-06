@@ -21,6 +21,7 @@ from intelligence.vulnerability.workload_inventory import (
     acquire_workload_inventory,
     activate_workload_partitions,
 )
+from operations.exposure_metrics import ExposureMetrics
 from storage.datasets import DatasetStore as GenerationDatasetStore
 from storage.locking import RunLock
 
@@ -54,6 +55,7 @@ def activate_source_partitions(
     completed_at: str,
     previous_partition_rows: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
     previous_statuses: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+    metrics: ExposureMetrics | None = None,
 ) -> SourcePartitionProjection:
     """Select each connection/family/scope partition without false clears.
 
@@ -148,6 +150,18 @@ def activate_source_partitions(
                     completeness="healthy-empty" if row_count == 0 else "complete",
                 )
             )
+            _record_source_partition_metrics(
+                metrics,
+                source_family=partition_outcomes[0].source_family,
+                attempted_rows=row_count,
+                effective_rows=row_count,
+                previous_effective_rows=int(
+                    (prior_status or {}).get("row_count") or len(prior_rows)
+                ),
+                source_age_seconds=0,
+                outcome="succeeded",
+                completeness="healthy-empty" if row_count == 0 else "complete",
+            )
             continue
 
         failure = failures[0]
@@ -178,6 +192,21 @@ def activate_source_partitions(
                     ),
                 )
             )
+            _record_source_partition_metrics(
+                metrics,
+                source_family=partition_outcomes[0].source_family,
+                attempted_rows=0,
+                effective_rows=len(prior_rows),
+                previous_effective_rows=int(
+                    (prior_status or {}).get("row_count") or len(prior_rows)
+                ),
+                source_age_seconds=_age_seconds(
+                    last_success_at,
+                    completed_at,
+                ),
+                outcome="partial",
+                completeness="stale",
+            )
             continue
 
         statuses.append(
@@ -194,11 +223,56 @@ def activate_source_partitions(
                 failure=failure,
             )
         )
+        _record_source_partition_metrics(
+            metrics,
+            source_family=partition_outcomes[0].source_family,
+            attempted_rows=0,
+            effective_rows=0,
+            previous_effective_rows=0,
+            source_age_seconds=0,
+            outcome="unavailable",
+            completeness="unavailable",
+        )
 
     return SourcePartitionProjection(
         rows_by_query=rows_by_query,
         partition_rows=tuple(effective_rows),
         statuses=tuple(statuses),
+    )
+
+
+def _record_source_partition_metrics(
+    metrics: ExposureMetrics | None,
+    *,
+    source_family: str,
+    attempted_rows: int,
+    effective_rows: int,
+    previous_effective_rows: int,
+    source_age_seconds: int,
+    outcome: str,
+    completeness: str,
+) -> None:
+    if metrics is None or source_family not in {
+        "azure_update_manager_missing",
+        "defender_subassessment",
+        "defender_image",
+        "workloads",
+        "enrichment",
+    }:
+        return
+    metrics.record_ingestion_cycle(
+        source_family=source_family,
+        target_kind=(
+            "container_image"
+            if source_family in {"defender_image", "workloads"}
+            else "server"
+        ),
+        attempted_rows=attempted_rows,
+        effective_rows=effective_rows,
+        previous_effective_rows=previous_effective_rows,
+        source_age_seconds=source_age_seconds,
+        outcome=outcome,
+        completeness=completeness,
     )
 
 
@@ -355,6 +429,7 @@ class IngestionService:
         cost_source: CostActualsSource | None = None,
         logs_client: AzureMonitorLogsClient | None = None,
         inventory_read_port: Any = None,
+        metrics: ExposureMetrics | None = None,
     ) -> None:
         self.config = config
         self.clock = clock or (lambda: datetime.now(UTC))
@@ -380,6 +455,7 @@ class IngestionService:
         # Left None otherwise -- no runtime behavior changes for the default
         # "arg" source until 08-03's operator-gated cutover explicitly flips it.
         self.inventory_read_port = inventory_read_port
+        self.metrics = metrics or ExposureMetrics()
 
     def run(self) -> dict:
         with RunLock(self.config.output_dir):
@@ -455,6 +531,7 @@ class IngestionService:
                 previous_statuses=self.store.read_dataset(
                     "situations/source_status"
                 ),
+                metrics=self.metrics,
             )
             query_results = source_projection.rows_by_query
         for spec in specs:
