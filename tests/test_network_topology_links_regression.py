@@ -7,7 +7,7 @@ from network_scale_fixtures import small_estate
 import network.service as network_service_module
 from api.evidence import classify_freshness
 from fabric_pipelines.topology_pipeline import derive_edges, to_topology_edge_row
-from network import NetworkIntelligenceService
+from network import NetworkIntelligenceService, load_network_snapshot
 from network.models import NetworkSnapshot, PrivateDnsZone
 from onboarding.graph_normalize import Normalizer
 from onboarding.query_catalog import NETWORK_RESOURCE_TYPES
@@ -470,6 +470,39 @@ def test_flow_observations_are_forwarded_and_provenance_is_three_state(
         "state": "analyzed",
         "observed_flow_count": 1,
     }
+
+
+def test_loader_ignores_invalid_timestamps_and_compares_normalized_instants() -> None:
+    rows = [
+        {
+            "entity_type": "VNet",
+            "resource_id": "/subscriptions/a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/a",
+            "name": "a",
+            "observed_at": "not-a-date",
+            "payload_json": "{}",
+        },
+        {
+            "entity_type": "VNet",
+            "resource_id": "/subscriptions/a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/b",
+            "name": "b",
+            "observed_at": "2026-09-06T02:00:00+01:00",
+            "payload_json": "{}",
+        },
+        {
+            "entity_type": "VNet",
+            "resource_id": "/subscriptions/a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/c",
+            "name": "c",
+            "observed_at": "2026-09-06T00:30:00Z",
+            "payload_json": "{}",
+        },
+    ]
+
+    snapshot = load_network_snapshot(
+        rows,
+        observed_at="also-not-a-date",
+    )
+
+    assert snapshot.observed_at == "2026-09-06T01:00:00Z"
 
 
 def _observed_datetime():

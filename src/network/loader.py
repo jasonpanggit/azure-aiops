@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from .models import (
@@ -217,15 +218,16 @@ class NetworkSnapshotLoader:
         # carry no entity type at all. Without this the estate's Private Link
         # candidates would be invisible to gap analysis.
         private_link_rows: list[Mapping[str, Any]] = []
-        observed = str(observed_at or "")
+        observed = _parse_observed_at(observed_at)
         for row in rows:
             entity_type = _entity_type(row)
             if entity_type:
                 buckets.setdefault(entity_type, []).append(row)
             if _resource_type(row) in PRIVATE_LINK_RESOURCE_TYPES:
                 private_link_rows.append(row)
-            seen = _observed_at(row)
-            observed = max(observed, seen)
+            seen = _parse_observed_at(_observed_at(row))
+            if seen is not None and (observed is None or seen > observed):
+                observed = seen
 
         nsg_rules = [self._nsg_rule(row) for row in buckets.get("NetworkSecurityRule", [])]
         rules_by_nsg: dict[str, list[NetworkSecurityRule]] = {}
@@ -283,7 +285,7 @@ class NetworkSnapshotLoader:
             private_link_resources=tuple(
                 self._private_link_resource(row) for row in private_link_rows
             ),
-            observed_at=observed,
+            observed_at=_format_observed_at(observed),
         )
 
     def _vnet(self, row: Mapping[str, Any]) -> VNet:
@@ -576,6 +578,26 @@ def _observed_at(row: Mapping[str, Any]) -> str:
         )
         or ""
     )
+
+
+def _parse_observed_at(value: Any) -> datetime | None:
+    """Parse an external observation stamp into an aware UTC instant."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _format_observed_at(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def load_network_snapshot(
