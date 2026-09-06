@@ -117,6 +117,36 @@ def test_operations_mcp_and_registry_grants_are_exact_and_read_only():
     assert "business_service" in schemas["defender_remediation_cases"]["properties"]
 
 
+def test_ontology_curator_is_an_exact_non_interactive_tool_consumer():
+    manifest = load_specialist_manifest()
+    curator_tools = (
+        "list_changed_entities",
+        "get_entity_evidence",
+        "get_ontology_vocabulary",
+        "search_relationship_history",
+    )
+
+    assert manifest.non_interactive_operations_mcp_grants() == {
+        "ontology_curator": curator_tools
+    }
+    assert reviewed_tools_for_specialist("ontology_curator") == curator_tools
+    assert "ontology_curator" not in manifest.specialist_ids
+    assert "ontology_curator" not in {
+        specialist_id
+        for specialist_ids in manifest.page_mapping_projection().values()
+        for specialist_id in specialist_ids
+    }
+    interactive_tools = {
+        tool
+        for grants in manifest.operations_mcp_grants().values()
+        for tool in grants
+    }
+    assert interactive_tools.isdisjoint(curator_tools)
+    assert set(manifest.operations_tool_names()) == interactive_tools | set(
+        curator_tools
+    )
+
+
 def test_azure_mcp_projection_is_exact_and_contains_no_mutation_grants():
     manifest = load_specialist_manifest()
 
