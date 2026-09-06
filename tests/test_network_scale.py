@@ -5,15 +5,23 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from itertools import combinations
 from time import perf_counter
 
 import pytest
 
 import network.topology as topology_module
-from network.models import NetworkSnapshot
-from network.topology import build_topology
+from network.models import NetworkSnapshot, VNetPeering
+from network.topology import (
+    SUMMARY_BYTE_CEILING,
+    SUMMARY_MIN_NODES,
+    SUMMARY_NODE_CAP,
+    build_topology,
+)
 from tests.network_scale_fixtures import (
+    EstateShape,
+    build_estate,
     enterprise_estate,
     g4_baseline_estate,
     mid_estate,
@@ -187,6 +195,38 @@ def test_g2_enterprise_summary_payload_budget() -> None:
     assert payload["coverage"]["total"] > G2_NODE_CAP
     assert payload["coverage"]["returned"] == len(payload["resources"])
     assert payload["coverage"]["truncated"] is True
+
+
+def test_dense_mesh_summary_bounds_the_complete_serialized_payload() -> None:
+    """A dense peering mesh keeps useful nodes while every collection is bounded."""
+    snapshot = build_estate(EstateShape(100, 3, 200, 20, 10_000))
+    peerings = tuple(
+        VNetPeering(
+            resource_id=(
+                f"{local.resource_id}/virtualNetworkPeerings/to-{remote.name}"
+            ),
+            name=f"{local.name}-to-{remote.name}",
+            subscription_id=local.subscription_id,
+            resource_group=local.resource_group,
+            connection_id=local.connection_id,
+            local_vnet_id=local.resource_id,
+            remote_vnet_id=remote.resource_id,
+            peering_state="Connected",
+        )
+        for local, remote in combinations(snapshot.vnets, 2)
+    )
+    snapshot = replace(snapshot, peerings=peerings)
+
+    payload = build_topology(snapshot).to_dict(detail="summary")
+    serialized_bytes = len(json.dumps(payload).encode())
+    link_coverage = payload["coverage"]["collections"]["links"]
+
+    assert len(peerings) == 4_950
+    assert SUMMARY_MIN_NODES <= len(payload["resources"]) <= SUMMARY_NODE_CAP
+    assert serialized_bytes <= SUMMARY_BYTE_CEILING
+    assert link_coverage["total"] == len(peerings)
+    assert 0 < link_coverage["returned"] < link_coverage["total"]
+    assert payload["coverage"]["collections"]["relationships"]["returned"] > 0
 
 
 def test_topology_projection_is_computed_once_per_response(monkeypatch) -> None:

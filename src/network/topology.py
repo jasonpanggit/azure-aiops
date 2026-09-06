@@ -60,6 +60,7 @@ SUMMARY_NODE_CAP = 1_500
 SUMMARY_SMALL_NODE_CAP = 200
 SUMMARY_SMALL_BYTE_CEILING = 250_000
 SUMMARY_BYTE_CEILING = 2_000_000
+SUMMARY_MIN_NODES = 1
 _SUMMARY_OMITTED_ENTITY_TYPES = frozenset(
     {"NetworkSecurityRule", "Route", "FirewallRule"}
 )
@@ -235,29 +236,68 @@ class NetworkTopology:
             "dropped_relationships": dict(sorted(dropped_relationships.items())),
         }
 
-        def serialize(resources: list[dict[str, Any]]) -> dict[str, Any]:
+        def serialize(
+            resources: list[dict[str, Any]],
+            *,
+            bounded_collections: dict[str, list[Any]] | None = None,
+            collection_totals: dict[str, int] | None = None,
+            byte_ceiling: int | None = None,
+        ) -> dict[str, Any]:
             resource_ids = {
                 str(resource["id"]).casefold() for resource in resources
             }
-            visible_relationships = [
-                relationship
-                for relationship in relationships
-                if relationship["source"] in resource_ids
-                and relationship["target"] in resource_ids
-            ]
-            payload: dict[str, Any] = {
-                "hubs": [hub.to_dict() for hub in self.hubs],
-                "spokes": [spoke.to_dict() for spoke in self.spokes],
-                "isolated": [item.to_dict() for item in self.isolated],
-                "links": [link.to_dict() for link in self.links],
-                "shared_services": [
+            if bounded_collections is None:
+                serialized_hubs = [hub.to_dict() for hub in self.hubs]
+                serialized_spokes = [spoke.to_dict() for spoke in self.spokes]
+                serialized_isolated = [
+                    item.to_dict() for item in self.isolated
+                ]
+                serialized_links = [link.to_dict() for link in self.links]
+                serialized_shared_services = [
                     service.to_dict() for service in self.shared_services
-                ],
+                ]
+                visible_relationships = [
+                    relationship
+                    for relationship in relationships
+                    if relationship["source"] in resource_ids
+                    and relationship["target"] in resource_ids
+                ]
+                serialized_unresolved_ids = list(
+                    self.unresolved_peer_vnet_ids
+                )
+                serialized_unresolved_peers = [
+                    dict(item) for item in self.unresolved_peers
+                ]
+                serialized_connection_ids = list(self.connection_ids)
+            else:
+                serialized_hubs = bounded_collections["hubs"]
+                serialized_spokes = bounded_collections["spokes"]
+                serialized_isolated = bounded_collections["isolated"]
+                serialized_links = bounded_collections["links"]
+                serialized_shared_services = bounded_collections[
+                    "shared_services"
+                ]
+                visible_relationships = bounded_collections["relationships"]
+                serialized_unresolved_ids = bounded_collections[
+                    "unresolved_peer_vnet_ids"
+                ]
+                serialized_unresolved_peers = bounded_collections[
+                    "unresolved_peers"
+                ]
+                serialized_connection_ids = bounded_collections[
+                    "connection_ids"
+                ]
+            payload: dict[str, Any] = {
+                "hubs": serialized_hubs,
+                "spokes": serialized_spokes,
+                "isolated": serialized_isolated,
+                "links": serialized_links,
+                "shared_services": serialized_shared_services,
                 "resources": resources,
                 "relationships": visible_relationships,
-                "unresolved_peer_vnet_ids": list(self.unresolved_peer_vnet_ids),
-                "unresolved_peers": [dict(item) for item in self.unresolved_peers],
-                "connection_ids": list(self.connection_ids),
+                "unresolved_peer_vnet_ids": serialized_unresolved_ids,
+                "unresolved_peers": serialized_unresolved_peers,
+                "connection_ids": serialized_connection_ids,
                 "counts": counts,
                 "flow_log_provenance": dict(self.flow_log_provenance),
             }
@@ -267,6 +307,20 @@ class NetworkTopology:
                     "returned": len(resources),
                     "truncated": len(resources) < len(all_resources),
                 }
+                if collection_totals is not None:
+                    payload["coverage"]["collections"] = {
+                        name: {
+                            "total": collection_totals[name],
+                            "returned": len(bounded_collections[name]),
+                            "truncated": (
+                                len(bounded_collections[name])
+                                < collection_totals[name]
+                            ),
+                        }
+                        for name in bounded_collections
+                    }
+                if byte_ceiling is not None:
+                    payload["coverage"]["byte_ceiling"] = byte_ceiling
             if dropped_relationships:
                 total = sum(dropped_relationships.values())
                 breakdown = ", ".join(
@@ -286,28 +340,200 @@ class NetworkTopology:
         if detail == "full":
             return serialize(all_resources)
 
-        resources = all_resources[:SUMMARY_NODE_CAP]
-        payload = serialize(resources)
         byte_ceiling = (
             SUMMARY_SMALL_BYTE_CEILING
             if len(all_resources) <= SUMMARY_SMALL_NODE_CAP
             else SUMMARY_BYTE_CEILING
         )
-        if len(json.dumps(payload).encode()) <= byte_ceiling:
-            return payload
+        collection_totals = {
+            "hubs": len(self.hubs),
+            "spokes": len(self.spokes),
+            "isolated": len(self.isolated),
+            "links": len(self.links),
+            "shared_services": len(self.shared_services),
+            "relationships": len(relationships),
+            "unresolved_peer_vnet_ids": len(
+                self.unresolved_peer_vnet_ids
+            ),
+            "unresolved_peers": len(self.unresolved_peers),
+            "connection_ids": len(self.connection_ids),
+        }
+        empty_collections: dict[str, list[Any]] = {
+            name: [] for name in collection_totals
+        }
 
-        # The node ceiling normally satisfies the byte budget. Keep the byte
-        # ceiling authoritative if unusually large non-collection details
-        # arrive by finding the largest stable prefix that fits.
-        low, high = 0, len(resources)
+        def serialized_size(payload: dict[str, Any]) -> int:
+            return len(json.dumps(payload).encode())
+
+        def resource_payload(count: int) -> dict[str, Any]:
+            return serialize(
+                all_resources[:count],
+                bounded_collections=empty_collections,
+                collection_totals=collection_totals,
+                byte_ceiling=byte_ceiling,
+            )
+
+        # Reserve one third of the complete envelope for relationships and
+        # the legacy topology summaries. Without this reservation a dense
+        # mesh can spend the entire budget on nodes and return no edges.
+        resource_byte_budget = byte_ceiling * 2 // 3
+        low, high = 0, min(len(all_resources), SUMMARY_NODE_CAP)
         while low < high:
             candidate = (low + high + 1) // 2
-            candidate_payload = serialize(resources[:candidate])
-            if len(json.dumps(candidate_payload).encode()) <= byte_ceiling:
+            if serialized_size(resource_payload(candidate)) <= resource_byte_budget:
                 low = candidate
             else:
                 high = candidate - 1
-        return serialize(resources[:low])
+        resource_count = low
+        if (
+            all_resources
+            and resource_count < SUMMARY_MIN_NODES
+            and serialized_size(resource_payload(SUMMARY_MIN_NODES))
+            <= byte_ceiling
+        ):
+            resource_count = SUMMARY_MIN_NODES
+        resources = all_resources[:resource_count]
+        resource_ids = {
+            str(resource["id"]).casefold() for resource in resources
+        }
+
+        candidate_links = [
+            link
+            for link in self.links
+            if link.local_vnet_id.casefold() in resource_ids
+            and (
+                link.remote_vnet_id.casefold() in resource_ids
+                or not link.remote_vnet_observed
+            )
+        ]
+        unresolved_link_ids = {
+            link.remote_vnet_id.casefold()
+            for link in candidate_links
+            if not link.remote_vnet_observed
+        }
+        visible_connection_ids = {
+            str(resource.get("connection_id") or "")
+            for resource in resources
+            if resource.get("connection_id")
+        }
+
+        def serialized_shared_service(service: SharedService) -> dict[str, Any]:
+            item = service.to_dict()
+            item["consumer_vnet_ids"] = [
+                consumer_id
+                for consumer_id in item.get("consumer_vnet_ids", [])
+                if str(consumer_id).casefold() in resource_ids
+            ]
+            return item
+
+        candidates: dict[str, list[Any]] = {
+            "hubs": [
+                hub.to_dict()
+                for hub in self.hubs
+                if hub.vnet_id.casefold() in resource_ids
+            ],
+            "spokes": [
+                spoke.to_dict()
+                for spoke in self.spokes
+                if spoke.vnet_id.casefold() in resource_ids
+            ],
+            "isolated": [
+                item.to_dict()
+                for item in self.isolated
+                if item.vnet_id.casefold() in resource_ids
+            ],
+            "links": [link.to_dict() for link in candidate_links],
+            "shared_services": [
+                serialized_shared_service(service)
+                for service in self.shared_services
+                if service.resource_id.casefold() in resource_ids
+            ],
+            "relationships": [
+                relationship
+                for relationship in relationships
+                if relationship["source"] in resource_ids
+                and relationship["target"] in resource_ids
+            ],
+            "unresolved_peer_vnet_ids": [
+                peer_id
+                for peer_id in self.unresolved_peer_vnet_ids
+                if peer_id.casefold() in unresolved_link_ids
+            ],
+            "unresolved_peers": [
+                dict(peer)
+                for peer in self.unresolved_peers
+                if str(peer.get("vnet_id") or "").casefold()
+                in unresolved_link_ids
+            ],
+            "connection_ids": [
+                connection_id
+                for connection_id in self.connection_ids
+                if connection_id in visible_connection_ids
+            ],
+        }
+        bounded: dict[str, list[Any]] = {
+            name: [] for name in collection_totals
+        }
+
+        def bounded_payload(
+            selected: dict[str, list[Any]],
+        ) -> dict[str, Any]:
+            return serialize(
+                resources,
+                bounded_collections=selected,
+                collection_totals=collection_totals,
+                byte_ceiling=byte_ceiling,
+            )
+
+        def fill_collection(name: str, target_bytes: int) -> None:
+            items = candidates[name]
+            low = len(bounded[name])
+            high = len(items)
+            while low < high:
+                candidate = (low + high + 1) // 2
+                selection = {
+                    **bounded,
+                    name: items[:candidate],
+                }
+                if serialized_size(bounded_payload(selection)) <= target_bytes:
+                    low = candidate
+                else:
+                    high = candidate - 1
+            bounded[name] = items[:low]
+
+        # Give each non-empty collection a fair first share, then use any
+        # remainder in graph-usefulness order. Every fit decision serializes
+        # the complete payload, so no unbounded sibling collection can hide
+        # outside the byte ceiling.
+        nonempty = [name for name, items in candidates.items() if items]
+        payload = bounded_payload(bounded)
+        fair_share = (
+            max(0, byte_ceiling - serialized_size(payload)) // len(nonempty)
+            if nonempty
+            else 0
+        )
+        for name in nonempty:
+            fill_collection(
+                name,
+                min(
+                    byte_ceiling,
+                    serialized_size(bounded_payload(bounded)) + fair_share,
+                ),
+            )
+        for name in (
+            "relationships",
+            "links",
+            "hubs",
+            "spokes",
+            "isolated",
+            "shared_services",
+            "unresolved_peer_vnet_ids",
+            "unresolved_peers",
+            "connection_ids",
+        ):
+            fill_collection(name, byte_ceiling)
+
+        return bounded_payload(bounded)
 
 
 class TopologyBuilder:
