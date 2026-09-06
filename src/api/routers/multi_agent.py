@@ -108,6 +108,7 @@ def _create_investigation_canonical(
         scope=scope,
         context=context,
         principal_subject=principal.subject,
+        max_wall_seconds=payload.timeout_seconds,
     )
     now = datetime.now(UTC).isoformat(timespec="seconds")
     catalog_by_id = {
@@ -224,7 +225,14 @@ def _create_investigation_canonical(
     unsupported_conclusions = [
         finding for finding in findings if finding["unsupported"]
     ]
-    confidence = "medium" if findings else "unknown"
+    evidence_count = sum(
+        len(tool_result.get("evidence", ()))
+        for tool_result in result.tool_results
+    )
+    evidence_backed_count = sum(
+        finding["evidence_count"] > 0 for finding in findings
+    )
+    confidence = "medium" if evidence_count else "unknown"
     ledger: dict[str, Any] = {
         "contract_version": result.contract_version,
         "ledger_id": f"mai-{_uuid.uuid4().hex[:12]}",
@@ -250,7 +258,7 @@ def _create_investigation_canonical(
             "stale_evidence": [],
             "missing_providers": missing_providers,
             "unsupported_conclusions": unsupported_conclusions,
-            "evidence_count": len(citations),
+            "evidence_count": evidence_count,
             "confidence": confidence,
             "reconciled_confidence": confidence,
             "coverage": result.coverage.model_dump(mode="json"),
@@ -264,7 +272,7 @@ def _create_investigation_canonical(
             "coverage": result.coverage.model_dump(mode="json"),
             "uncertainty": list(result.uncertainty),
             "summary": (
-                f"Canonical investigation produced {len(findings)} "
+                f"Canonical investigation produced {evidence_backed_count} "
                 "evidence-backed finding(s)."
             ),
             "recommended_plan": (

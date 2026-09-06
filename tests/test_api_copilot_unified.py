@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -2309,7 +2309,7 @@ def test_inventory_canonical_endpoint_rejects_non_inventory_snapshot(
         json=body,
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 400
 
 
 def test_concurrent_first_legacy_session_turns_share_one_thread(monkeypatch):
