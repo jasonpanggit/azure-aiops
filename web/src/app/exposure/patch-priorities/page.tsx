@@ -19,7 +19,7 @@ import {
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { PageHeader, type PageHeaderCompleteness } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
-import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
@@ -275,7 +275,7 @@ export default function PatchPrioritiesPage() {
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const revokeInvokerRef = useRef<HTMLButtonElement>(null);
   const page = section.data;
-  const rows = page?.items ?? [];
+  const rows = useMemo(() => page?.items ?? [], [page?.items]);
   const exceptionRows = riskExceptions.data?.data ?? [];
   const selectedExceptionRows = exceptionRows.filter((exception) =>
     selectedExceptions.has(exception.exception_id),

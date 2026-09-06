@@ -14,7 +14,6 @@ import {
   DEFAULT_EXPOSURE_SORT,
   exposureQueryKey,
   exposureRetentionKey,
-  updateExposureQueryState,
   type ExposureQueryState,
 } from "@/lib/exposure-query-state";
 import type { ScopeSelection } from "@/lib/scope";
