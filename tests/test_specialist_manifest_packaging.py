@@ -582,6 +582,26 @@ def test_container_app_revision_depends_on_the_promotion_gate():
     assert "local.foundry_specialist_activation_source" in container_apps
 
 
+def test_foundry_rollout_retriggers_for_promotion_path_and_gate_implementation():
+    foundry = _read("infra/terraform/foundry.tf")
+    rollout = foundry[
+        foundry.index('resource "terraform_data" "foundry_agent"') :
+        foundry.index(PROMOTION_GATE_RESOURCE)
+    ]
+    triggers = rollout[
+        rollout.index("triggers_replace = {") :
+        rollout.index("\n  }", rollout.index("triggers_replace = {"))
+    ]
+
+    assert "promotion_artifact" in triggers
+    assert "local.foundry_promotion_artifact_path" in triggers
+    assert "rollout_script" in triggers
+    assert "create-foundry-agent.sh" in triggers
+    assert "parity_validator" in triggers
+    assert "validate_specialist_parity.py" in triggers
+    assert triggers.count("filesha256(") >= 2
+
+
 # ---------------------------------------------------------------------------
 # Actual immutable provider IDs captured from create/version responses
 # ---------------------------------------------------------------------------
