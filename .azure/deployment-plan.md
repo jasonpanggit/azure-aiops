@@ -1,6 +1,6 @@
 # Azure Deployment Plan
 
-Status: Ready for Validation
+Status: Validated
 
 ## Objective
 
@@ -699,3 +699,39 @@ or existing Container Apps.
 - Live RBAC remains least privilege: `AcrPull` on ACR, `Reader` and
   `Monitoring Reader` on the onboarded subscription; no write role added.
 - Post-apply targeted Terraform plan reports no changes.
+
+## Validation Proof (Phase 13 ontology discovery — pre-apply)
+
+- Phase 13 dependency preflight passed against completed and verified Phases 10
+  and 12.
+- `uv run python -m compileall -q src scripts` passed.
+- Plan 13-07 infrastructure, identity, and curator tests passed (26 tests).
+- `terraform -chdir=infra/terraform fmt -check` and `terraform validate`
+  passed.
+- The reviewed targeted plan contains 12 additive resources, 0 updates, and 0
+  destroys. It excludes existing Container Apps, APIM, the Foundry
+  account/project, production Fabric workspace/lakehouse/roles, Exposure jobs,
+  the legacy specialist provisioner, and later Phase 13 resources.
+- A new immutable API image is required before apply because the currently
+  deployed image predates the coordinator CLI and validator script.
+- Live authorization evidence remains a post-apply gate; no authoritative
+  ontology publication is enabled by this deployment.
+
+## Role Assignment Verification (Phase 13 ontology discovery)
+
+- Status: Verified statically; live verification remains required after apply.
+- Coordinator identity: `AcrPull` on the existing registry and Fabric
+  Contributor only in the dedicated non-production discovery-state workspace.
+- Publisher identity: Fabric Contributor only in the separate non-production
+  RBAC-validation workspace. Fabric exposes Contributor as its least broad
+  Lakehouse write/delete role; Admin and Member are not granted.
+- API/web identity: unchanged in the production workspace and receives no role
+  in either Phase 13 workspace.
+- Curator/Foundry project identity: receives no Fabric workspace role and only
+  the exact four reviewed read-only ontology MCP tools.
+- Validation runtime: manual-only ACA Job with API, coordinator, and publisher
+  identities attached solely to prove two denials and one positive
+  stage/CAS/rollback path in the isolated validation workspace.
+- Issues fixed: removed the ineffective Azure resource-group custom data role,
+  decoupled curator deployment from Phase 11 specialist-candidate publication,
+  and eliminated the premature production API Contributor-to-Viewer cutover.
