@@ -77,17 +77,25 @@ def _client_node_ids(payload: dict) -> set[str]:
 
 def _client_group_ids(payload: dict, node_ids: set[str]) -> set[str]:
     """Mirror the subscription compound nodes created by the web client."""
-    subscription_ids = {
-        str(resource.get("subscription_id") or "").casefold()
+    resource_node_ids = {
+        str(resource.get("id") or "").casefold()
         for resource in payload.get("resources", [])
         if str(resource.get("id") or "").casefold() in node_ids
-        and resource.get("subscription_id")
     }
-    for node_id in node_ids:
+    group_ids = {
+        "subscription:"
+        + (
+            str(resource.get("subscription_id") or "").casefold()
+            or "unknown"
+        )
+        for resource in payload.get("resources", [])
+        if str(resource.get("id") or "").casefold() in node_ids
+    }
+    for node_id in node_ids - resource_node_ids:
         segments = node_id.strip("/").split("/")
         if len(segments) > 1 and segments[0] == "subscriptions":
-            subscription_ids.add(segments[1])
-    return {f"subscription:{subscription_id}" for subscription_id in subscription_ids}
+            group_ids.add(f"subscription:{segments[1]}")
+    return group_ids
 
 
 def _measure_payload(
@@ -284,6 +292,33 @@ def test_summary_node_budget_includes_unresolved_and_group_nodes() -> None:
     assert payload["coverage"]["collections"]["unresolved_peer_vnet_ids"][
         "truncated"
     ] is True
+
+
+def test_summary_node_budget_includes_unknown_subscription_group() -> None:
+    """Resources without subscription metadata still create one client group."""
+    snapshot = NetworkSnapshot(
+        vnets=tuple(
+            VNet(
+                resource_id=f"synthetic-vnet-{index}",
+                name=f"synthetic-vnet-{index}",
+            )
+            for index in range(SUMMARY_NODE_CAP)
+        )
+    )
+
+    payload = build_topology(snapshot).to_dict(detail="summary")
+    node_ids = _client_node_ids(payload)
+    group_ids = _client_group_ids(payload, node_ids)
+
+    assert "subscription:unknown" in group_ids
+    assert len(node_ids) + len(group_ids) <= SUMMARY_NODE_CAP
+    assert len(payload["resources"]) == SUMMARY_NODE_CAP - 1
+    assert payload["coverage"]["groups"] == {
+        "total": 1,
+        "returned": 1,
+        "truncated": False,
+    }
+    assert payload["coverage"]["truncated"] is True
 
 
 def test_dense_mesh_summary_bounds_the_complete_serialized_payload() -> None:

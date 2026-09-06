@@ -81,17 +81,21 @@ SHARED_SERVICE_KINDS: dict[str, str] = {
 def _subscription_group_id(
     resource_id: str,
     subscription_id: str = "",
+    *,
+    unknown_fallback: bool = False,
 ) -> str:
     """Return the compound-node identity used by the browser, if any."""
     resolved = str(subscription_id or "").strip().casefold()
-    if not resolved:
+    if not resolved and not unknown_fallback:
         segments = str(resource_id or "").strip("/").split("/")
         if (
             len(segments) > 1
             and segments[0].casefold() == "subscriptions"
         ):
             resolved = segments[1].casefold()
-    return f"subscription:{resolved}" if resolved else ""
+    if resolved:
+        return f"subscription:{resolved}"
+    return "subscription:unknown" if unknown_fallback else ""
 
 
 def _summary_canvas_identity(
@@ -116,6 +120,7 @@ def _summary_canvas_identity(
             group_id := _subscription_group_id(
                 str(resource.get("id") or ""),
                 str(resource.get("subscription_id") or ""),
+                unknown_fallback=True,
             )
         )
     }
