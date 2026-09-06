@@ -14,7 +14,11 @@ from api.exposure_query import (
     ExposureQueryService,
 )
 from intelligence.vulnerability.acquisition import AcquisitionSuccess, PagingProof
-from onboarding.ingestion_service import activate_source_partitions
+from intelligence.vulnerability.workload_inventory import WorkloadProjection
+from onboarding.ingestion_service import (
+    _record_workload_projection_metrics,
+    activate_source_partitions,
+)
 from operations.exposure_metrics import (
     EXPOSURE_METRIC_SPECS,
     ExposureMetrics,
@@ -249,6 +253,68 @@ def test_source_activation_emits_attempted_effective_drop_and_source_quality() -
     assert _records(meter, "aiops.exposure.ingestion.rows")
     assert _records(meter, "aiops.exposure.source.age")
     assert _records(meter, "aiops.exposure.source.cycles")
+
+
+def test_workload_cycle_emits_lkg_and_unknown_coverage_without_workspace_ids() -> None:
+    meter = _Meter()
+    exposure = ExposureMetrics(meter=meter, environment="test")
+    workload = WorkloadProjection(
+        observations=({"observation_id": "sensitive-observation"},),
+        deployments=({"deployment_id": "sensitive-deployment"},),
+        checkpoints=(
+            {
+                "checkpoint_key": "sensitive-checkpoint",
+                "workspace_id": "sensitive-workspace",
+                "status": "stale",
+                "completeness": "stale",
+                "row_count": 2,
+                "last_success_at": "2026-09-05T00:00:00Z",
+            },
+        ),
+        unknown_reasons=("source_unavailable",),
+    )
+
+    _record_workload_projection_metrics(
+        exposure,
+        workload,
+        completed_at="2026-09-05T00:01:00Z",
+        previous_checkpoints=(
+            {
+                "checkpoint_key": "sensitive-checkpoint",
+                "row_count": 2,
+            },
+        ),
+    )
+
+    source_cycles = _records(meter, "aiops.exposure.source.cycles")
+    assert source_cycles == [
+        (
+            1.0,
+            {
+                "environment": "test",
+                "source_family": "workloads",
+                "target_kind": "container_image",
+                "outcome": "partial",
+                "completeness": "stale",
+                "operation": "source",
+            },
+        )
+    ]
+    assert _records(meter, "aiops.exposure.source.age")[0][0] == 60
+    assert {
+        attributes["outcome"]: value
+        for value, attributes in _records(
+            meter,
+            "aiops.exposure.coverage.resources",
+        )
+    } == {"represented": 1, "total": 2, "unknown": 1}
+    assert "sensitive-workspace" not in repr(
+        [
+            record
+            for instrument in meter.instruments.values()
+            for record in instrument.records
+        ]
+    )
 
 
 class _Reader:
