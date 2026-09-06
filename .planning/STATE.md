@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 03.1-15 not started (14/25 sequential complete; 18/25 total summaries)
+current_plan: 03.1-16 not started (15/25 sequential complete; 19/25 total summaries)
 status: planning
-stopped_at: Completed 03.1-24-PLAN.md
-last_updated: "2026-09-06T11:48:28.080Z"
+stopped_at: Completed 03.1-15-PLAN.md
+last_updated: "2026-09-06T14:44:35.336Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 118
+  completed_plans: 120
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -20,8 +20,8 @@ current_phase_name: Exposure Reliability and Scale
 
 **Active Phase:** Phase 03.1 (Exposure Reliability and Scale)
 **Wave:** Next eligible plan<br>
-**Current Plan:** 03.1-15 not started (14/25 sequential complete; 18/25 total summaries)
-**Status:** Planning — Plans 03.1-18 and 03.1-24 complete out of sequence; Plan 03.1-15 remains next; Phase 12 behavior preserved
+**Current Plan:** 03.1-16 not started (15/25 sequential complete; 19/25 total summaries)
+**Status:** Planning — Plans 03.1-18 and 03.1-24 complete out of sequence; Plan 03.1-16 remains next; Phase 11 snapshot v2, Phase 12, remediation, and network behavior preserved
 
 ## Completed Plans (This Session)
 
@@ -39,6 +39,7 @@ current_phase_name: Exposure Reliability and Scale
 - **03.1-12** COMPLETE — Scoped generation-pinned Gold facts/facets/summaries/evidence, exact pre-activation reconciliation, and retained-pointer rollback
 - **03.1-13** COMPLETE — Scope-first Fabric SQL queries, managed signed cursors, authenticated Exposure APIs, and the duplicate-free 100k gate
 - **03.1-14** COMPLETE — Unified authenticated Exposure consumers, handoff-only container policy, and evidence-bound immutable audit
+- **03.1-15** COMPLETE — Scope-safe canonical Exposure query state, typed cursor APIs, same-query LKG retention, abort/race protection, and accessible independent source states
 - **03.1-18** COMPLETE — Low-cardinality Exposure telemetry, one-cycle Azure Monitor alerts, and generation-bound semantic shadow reconciliation
 - **03.1-24** COMPLETE — Conservative shared evidence primitives, opaque cursor pagination, and governed Fluent UI risk-exception feedback
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
@@ -154,6 +155,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P14 | 41 min | 3 tasks | 17 files |
 | Phase 03.1 P18 | 22min | 3 tasks | 10 files |
 | Phase 03.1 P24 | 10 min | 3 tasks | 9 files |
+| Phase 03.1 P15 | 18 min | 2 tasks | 10 files |
 
 ## Decisions
 
@@ -246,11 +248,14 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: Cursor tokens remain parent-owned; TablePagination receives only exact server facts and validated history availability.
 - [Phase 03.1]: Risk exception mutations pass the full existing remediation governance objects through unchanged.
 - [Phase 03.1]: Missing per-item revoke outcomes are treated as not attempted and remain selected for retry.
+- [Phase 03.1]: URL scope remains observational and may only narrow the current authorized browser scope. — This prevents forged or stale deep links from broadening Exposure API authority.
+- [Phase 03.1]: Exposure request identity is separate from its LKG retention boundary. — Cursor moves retain current rows while scope, filter, sort, page-size, or generation changes clear them immediately.
+- [Phase 03.1]: Healthy-empty requires explicit successful source evidence. — Unknown zero-row responses must remain unavailable instead of becoming false proof of no exposure.
 
 ## Session
 
-**Last session:** 2026-09-06T11:48:28.065Z
-**Stopped at:** Completed 03.1-24-PLAN.md
+**Last session:** 2026-09-06T14:44:35.321Z
+**Stopped at:** Completed 03.1-15-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context
