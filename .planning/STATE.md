@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.6 complete (6/6 plans) - ready for next phase
 status: executing
-stopped_at: Completed 03.1-12-PLAN.md
-last_updated: "2026-09-06T08:21:49.147Z"
+stopped_at: Completed 03.1-13-PLAN.md
+last_updated: "2026-09-06T08:53:25.064Z"
 progress:
   total_phases: 17
   completed_phases: 9
   total_plans: 158
-  completed_plans: 103
+  completed_plans: 104
 current_phase_name: Remediation Workflow Safety and Operator Guidance
 ---
 
@@ -145,6 +145,7 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 | Phase 03.1 P11 | 1h 57m | 2 tasks | 7 files |
 | Phase 03.1 P23 | 28min | 2 tasks | 14 files |
 | Phase 03.1 P12 | 31min | 2 tasks | 6 files |
+| Phase 03.1 P13 | 26 min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -223,11 +224,14 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 - [Phase 03.1]: Plan 03.1-12: Secure score is sum(current)/sum(max)*100 over authorized subscription scopes; unknown deployment impact remains excluded from represented counts.
 - [Phase 03.1]: Plan 03.1-12: Only validated Plan 23 durable enrichment enters Gold; malformed items are isolated and no provider calls occur in projection or publication.
 - [Phase 03.1]: Plan 03.1-12: Exact reconciliation gates a CAS-readable generation pointer; retained generation rows support pointer-only rollback.
+- [Phase 03.1]: Exposure authorization is resolved server-side and must exactly match the authenticated principal and effective request scope before SQL compilation.
+- [Phase 03.1]: Exposure cursors use canonical HMAC-SHA256 payloads with a 15-minute TTL and managed previous-key verification limited to the 30-minute overlap.
+- [Phase 03.1]: The deterministic SQL-contract benchmark remains distinct from live Fabric certification; the live canary requires readiness and explicit benchmark scope.
 
 ## Session
 
-**Last session:** 2026-09-06T08:21:49.132Z
-**Stopped at:** Completed 03.1-12-PLAN.md
+**Last session:** 2026-09-06T08:53:25.048Z
+**Stopped at:** Completed 03.1-13-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context
