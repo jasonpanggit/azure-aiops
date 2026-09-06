@@ -221,6 +221,34 @@ describe("buildTopologyGraph", () => {
     expect(graph.nodes.find((node) => node.id === service.resource_id)?.icon).toBe("/azure-icons/firewall.svg");
   });
 
+  it("resolves legacy shared-service consumers case-insensitively", () => {
+    const service: SharedServiceSummary = {
+      resource_id: "/subscriptions/sub-a/providers/Microsoft.Network/azureFirewalls/fw/sharedservice",
+      name: "hub-fw",
+      service_kind: "firewall",
+      hub_vnet_id: HUB,
+      consumer_vnet_ids: [HUB.toUpperCase()],
+      connection_id: "conn-1",
+      subscription_id: "sub-a",
+      environment: "prod",
+    };
+
+    const graph = buildTopologyGraph(
+      topologyOf({
+        hubs: [vnet({ vnet_id: HUB, role: "hub" })],
+        shared_services: [service],
+      }),
+    );
+
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        source: service.resource_id,
+        target: HUB,
+        kind: "service",
+      }),
+    );
+  });
+
   it("labels one-way and cross-subscription peerings", () => {
     const graph = buildTopologyGraph(
       topologyOf({

@@ -355,6 +355,7 @@ export function buildTopologyGraph(topology: NetworkTopology): TopologyGraph {
   }
   for (const service of topology.shared_services) {
     nodes.set(service.resource_id, serviceNode(service));
+    nodeIds.set(service.resource_id.toLowerCase(), service.resource_id);
   }
 
   const edges = new Map<string, TopologyEdgeData>();
@@ -400,16 +401,18 @@ export function buildTopologyGraph(topology: NetworkTopology): TopologyGraph {
 
   for (const service of topology.shared_services) {
     for (const consumerId of service.consumer_vnet_ids) {
-      if (!nodes.has(consumerId)) continue;
-      const id = `serves:${service.resource_id}::${consumerId}`;
+      const resolvedConsumerId = resolveNodeId(nodeIds, consumerId);
+      if (!resolvedConsumerId) continue;
+      const id = `serves:${service.resource_id}::${resolvedConsumerId}`;
       edges.set(id, {
         id,
         source: service.resource_id,
-        target: consumerId,
+        target: resolvedConsumerId,
         kind: "service",
         label: "",
         bidirectional: false,
-        crossSubscription: subscriptionOf(consumerId) !== service.subscription_id,
+        crossSubscription:
+          subscriptionOf(resolvedConsumerId) !== service.subscription_id,
         allowForwardedTraffic: false,
         allowGatewayTransit: false,
         useRemoteGateways: false,
