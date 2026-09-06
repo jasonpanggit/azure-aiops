@@ -1233,3 +1233,221 @@ def test_project_legacy_ledger_mutation_does_not_reach_original():
     assert original == snapshot, (
         "Mutations on projected must not propagate to the original"
     )
+
+
+# ---------------------------------------------------------------------------
+# Review fix: canonical mode must invoke OrchestrationService, not legacy
+# planners (acceptance violations V1 and V2)
+# ---------------------------------------------------------------------------
+
+
+def test_investigate_canonical_invokes_service_not_legacy_planner(
+    tmp_path, monkeypatch
+):
+    """V1: In canonical mode /copilot/investigate must route through
+    OrchestrationService.execute and must NOT call run_investigation."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+
+    legacy_calls: list[object] = []
+    service_calls: list[object] = []
+
+    def _spy_legacy(*args, **kwargs):
+        legacy_calls.append(True)
+        from operations.investigation import Investigation
+
+        return Investigation(
+            question="q", calls=(), answer=None,
+            fact_status="empty", warnings=(),
+        )
+
+    monkeypatch.setattr(
+        "api.routers.copilot.run_investigation", _spy_legacy
+    )
+
+    _orig_execute = OrchestrationService.execute
+
+    def _spy_execute(self, *args, **kwargs):
+        service_calls.append(True)
+        return _orig_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _spy_execute)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        json={"question": "Show inventory resources", "session_id": ""},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert not legacy_calls, (
+        "Legacy run_investigation must not be called in canonical mode"
+    )
+    assert service_calls, (
+        "OrchestrationService.execute must be invoked in canonical mode"
+    )
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+    assert data.get("question") == "Show inventory resources"
+    assert "fact_status" in data
+    assert "tool_calls" in data
+    assert "thread_id" in data
+
+
+def test_investigate_non_canonical_preserves_legacy_planner(
+    tmp_path, monkeypatch
+):
+    """V1 preserve: /copilot/investigate must still use run_investigation
+    when canonical mode is not enabled."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "maf")
+
+    legacy_calls: list[object] = []
+    service_calls: list[object] = []
+
+    import operations.investigation as _inv_mod
+
+    _orig_run = _inv_mod.run_investigation
+
+    def _spy_legacy(*args, **kwargs):
+        legacy_calls.append(True)
+        return _orig_run(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "api.routers.copilot.run_investigation", _spy_legacy
+    )
+
+    _orig_execute = OrchestrationService.execute
+
+    def _spy_execute(self, *args, **kwargs):
+        service_calls.append(True)
+        return _orig_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _spy_execute)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        json={"question": "Show inventory resources", "session_id": ""},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert legacy_calls, (
+        "Legacy run_investigation must be called in non-canonical mode"
+    )
+    assert not service_calls, (
+        "OrchestrationService.execute must not be called in non-canonical mode"
+    )
+
+
+def test_multi_agent_canonical_invokes_service_not_legacy_loop(
+    tmp_path, monkeypatch
+):
+    """V2: In canonical mode POST /agents/investigations must route through
+    OrchestrationService.execute and must NOT call run_autonomous_investigation."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+
+    legacy_calls: list[object] = []
+    service_calls: list[object] = []
+
+    def _spy_legacy(*args, **kwargs):
+        legacy_calls.append(True)
+        return {
+            "contract_version": "1",
+            "ledger_id": "mai-fake001",
+            "objective": args[0] if args else "obj",
+            "scope": {}, "created_by": "", "created_at": "",
+            "updated_at": "", "status": "synthesized",
+            "selected_agents": [], "agent_runs": [],
+            "reconciliation": {}, "synthesis": {},
+            "human_controls": {"available_actions": []},
+            "decisions": [], "approvals": [], "outcome": "",
+            "stop_reason": "", "evaluation": {}, "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        "api.routers.multi_agent.run_autonomous_investigation", _spy_legacy
+    )
+
+    _orig_execute = OrchestrationService.execute
+
+    def _spy_execute(self, *args, **kwargs):
+        service_calls.append(True)
+        return _orig_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _spy_execute)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Investigate inventory health", "timeout_seconds": 3},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert not legacy_calls, (
+        "Legacy run_autonomous_investigation must not be called in canonical mode"
+    )
+    assert service_calls, (
+        "OrchestrationService.execute must be invoked in canonical mode"
+    )
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+    assert "ledger_id" in data
+    assert data["objective"] == "Investigate inventory health"
+    assert data.get("scope") == {"subscription": ["sub-a"]}
+    assert "thread_id" in data
+
+
+def test_multi_agent_non_canonical_preserves_legacy_loop(
+    tmp_path, monkeypatch
+):
+    """V2 preserve: POST /agents/investigations must still use
+    run_autonomous_investigation when canonical mode is not enabled."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "maf")
+
+    legacy_calls: list[object] = []
+    service_calls: list[object] = []
+
+    import operations.autonomous_investigation as _auto_mod
+
+    _orig_run = _auto_mod.run_autonomous_investigation
+
+    def _spy_legacy(*args, **kwargs):
+        legacy_calls.append(True)
+        return _orig_run(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "api.routers.multi_agent.run_autonomous_investigation", _spy_legacy
+    )
+
+    _orig_execute = OrchestrationService.execute
+
+    def _spy_execute(self, *args, **kwargs):
+        service_calls.append(True)
+        return _orig_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _spy_execute)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Investigate inventory health", "timeout_seconds": 3},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert legacy_calls, (
+        "Legacy run_autonomous_investigation must be called in non-canonical mode"
+    )
+    assert not service_calls, (
+        "OrchestrationService.execute must not be called in non-canonical mode"
+    )
