@@ -17,6 +17,10 @@ variable "ontology_discovery_schedule" {
   }
 }
 
+locals {
+  ontology_discovery_image = var.ontology_discovery_image_tag != "" ? "${local.registry_server}/${var.api_image_repository}:${var.ontology_discovery_image_tag}" : local.api_image
+}
+
 resource "azurerm_user_assigned_identity" "ontology_coordinator" {
   name                = "${local.base}-ontology-coordinator-id"
   resource_group_name = azurerm_resource_group.main.name
@@ -63,7 +67,7 @@ resource "azurerm_container_app_job" "ontology_discovery" {
   template {
     container {
       name   = "ontology-discovery"
-      image  = var.deploy_images ? local.api_image : local.placeholder_image
+      image  = var.deploy_images ? local.ontology_discovery_image : local.placeholder_image
       cpu    = var.api_cpu
       memory = var.api_memory
 
@@ -153,7 +157,7 @@ resource "azurerm_container_app_job" "ontology_rbac_validation" {
   template {
     container {
       name   = "ontology-rbac-validation"
-      image  = var.deploy_images ? local.api_image : local.placeholder_image
+      image  = var.deploy_images ? local.ontology_discovery_image : local.placeholder_image
       cpu    = var.api_cpu
       memory = var.api_memory
 
