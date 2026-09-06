@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 03.1-14 not started (13/25 complete)
+current_plan: 03.1-15 not started (14/25 sequential complete; 18/25 total summaries)
 status: planning
-stopped_at: Completed 13-03 and 13-11; Phase 03.1 remains the active workstream
+stopped_at: Completed 03.1-24-PLAN.md
 last_updated: "2026-09-06T14:22:32.225Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 113
+  completed_plans: 116
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -20,8 +20,8 @@ current_phase_name: Exposure Reliability and Scale
 
 **Active Phase:** Phase 03.1 (Exposure Reliability and Scale)
 **Wave:** Next eligible plan<br>
-**Current Plan:** 03.1-14 not started (13/25 complete)
-**Status:** Planning — Phase 12 complete and integrated
+**Current Plan:** 03.1-15 not started (14/25 sequential complete; 18/25 total summaries)
+**Status:** Planning — Plans 03.1-18 and 03.1-24 complete out of sequence; Plan 03.1-15 remains next; Phase 12 behavior preserved
 
 ## Completed Plans (This Session)
 
@@ -41,6 +41,10 @@ current_phase_name: Exposure Reliability and Scale
 - **03.1-10** COMPLETE — Versioned registry/logical-image/digest/CVE evidence, exact workload impact, honest unknown coverage, and fail-closed container target typing
 - **03.1-23** COMPLETE — Durable per-item MSRC/NVD/EPSS/KEV refresh, bounded scheduled/manual trigger, and provider-call-free API reads
 - **03.1-12** COMPLETE — Scoped generation-pinned Gold facts/facets/summaries/evidence, exact pre-activation reconciliation, and retained-pointer rollback
+- **03.1-13** COMPLETE — Scope-first Fabric SQL queries, managed signed cursors, authenticated Exposure APIs, and the duplicate-free 100k gate
+- **03.1-14** COMPLETE — Unified authenticated Exposure consumers, handoff-only container policy, and evidence-bound immutable audit
+- **03.1-18** COMPLETE — Low-cardinality Exposure telemetry, one-cycle Azure Monitor alerts, and generation-bound semantic shadow reconciliation
+- **03.1-24** COMPLETE — Conservative shared evidence primitives, opaque cursor pagination, and governed Fluent UI risk-exception feedback
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
 - **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
 - **03.6-03** COMPLETE — Fail-safe `selectedPatchIds: string[] | null` patch-selection model (fixes CR-07 deselect-all-then-widens-to-all bug) and bounded/backoff client polling (`usePollingBackoff`, capped at 40 requests or 600000ms) with independently-testable ceilings
@@ -155,6 +159,9 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 13 P02 | 9min | 2 tasks | 10 files |
 | Phase 13 P03 | 7min | 2 tasks | 8 files |
 | Phase 13 P11 | 7min | 2 tasks | 3 files |
+| Phase 03.1 P14 | 41 min | 3 tasks | 17 files |
+| Phase 03.1 P18 | 22min | 3 tasks | 10 files |
+| Phase 03.1 P24 | 10 min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -238,11 +245,22 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: The deterministic SQL-contract benchmark remains distinct from live Fabric certification; the live canary requires readiness and explicit benchmark scope.
 - [Phase 13]: Dependency authorization requires roadmap, requirements, complete summaries, Nyquist validation, and passed verification; STATE.md alone is never sufficient.
 - [Phase 13]: Wave 0 remains test-only and non-authoritative; reviewed model edges are excluded in shadow mode and pointer changes require fresh fences.
+- [Phase 03.1]: Use a nested versioned Exposure semantic contract while retaining legacy response aliases during shadow rollout.
+- [Phase 03.1]: Derive Fabric SQL tenant and connection authorization only from authenticated principal scope and active connection metadata.
+- [Phase 03.1]: Container findings may create only evidence-qualified non-executable review handoffs or no_safe_action outcomes.
+- [Phase 03.1]: Sensitive Exposure transitions must append an immutable evidence-bound audit event before acceptance.
+- [Phase 03.1]: Plan 03.1-18: Exposure metrics accept only finite low-cardinality dimensions and values; scoped identities, queries, cursors, vulnerability IDs, URLs, and raw errors are rejected rather than hashed.
+- [Phase 03.1]: Plan 03.1-18: Shadow comparison is symmetric and generation-bound; default cutover tolerance is zero, with only explicitly documented time-varying enrichment changes treated as expected.
+- [Phase 03.1]: Plan 03.1-18: Exposure alerts use exactly one configurable ingestion-cycle window, evaluate no slower than ingestion, and fire after one failing period.
+- [Phase 03.1]: Only explicit complete/current PageHeader evidence renders a live signal; omitted evidence makes no live claim.
+- [Phase 03.1]: Cursor tokens remain parent-owned; TablePagination receives only exact server facts and validated history availability.
+- [Phase 03.1]: Risk exception mutations pass the full existing remediation governance objects through unchanged.
+- [Phase 03.1]: Missing per-item revoke outcomes are treated as not attempted and remain selected for retry.
 
 ## Session
 
-**Last session:** 2026-09-06T14:22:32.225Z
-**Stopped at:** Completed 13-03 and 13-11; Phase 03.1 remains the active workstream
+**Last session:** 2026-09-06T11:48:28.065Z
+**Stopped at:** Completed 03.1-24-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context

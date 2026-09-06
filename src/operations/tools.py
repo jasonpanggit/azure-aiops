@@ -31,7 +31,12 @@ from typing import Any
 
 from api.errors import ApiError
 from api.evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence
+from api.exposure_query import ExposureFilter, ExposureQuery, ExposureSort
 from api.scope import Scope, scope_attributes
+from intelligence.vulnerability.exposure_contracts import (
+    ExposureApiPage,
+    exposure_page_from_read_port,
+)
 from network.flow import FlowQuery
 from network.service import NetworkScope
 
@@ -163,6 +168,7 @@ class ToolContext:
 
     context: Any
     scope: Scope
+    principal: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -517,6 +523,116 @@ def _tool_firewall_nsg_gaps(tool_context: ToolContext, args: Mapping[str, Any]) 
 def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     """CVE/KB exposure, optionally narrowed to a business service."""
     business_service = str(args.get("business_service") or "").strip().casefold()
+    query_provider = getattr(
+        tool_context.context, "exposure_query_provider", None
+    )
+    query_service = None
+    if callable(query_provider):
+        try:
+            query_service = query_provider()
+        except (LookupError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            _LOGGER.warning("exposure_query_provider_failed error=%s", exc)
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                warning="The authoritative Exposure query failed to answer",
+            )
+    if query_service is not None:
+        if tool_context.principal is None:
+            return ToolResult(
+                status=STATUS_DENIED,
+                warning="Exposure query requires an authenticated principal",
+            )
+        try:
+            filters = tuple(
+                ExposureFilter(field, operator, value)
+                for field, operator, value in (
+                    (
+                        "target_kind",
+                        "eq",
+                        str(args.get("target_kind") or "").strip(),
+                    ),
+                    (
+                        "severity",
+                        "eq",
+                        str(args.get("severity") or "").strip(),
+                    ),
+                    (
+                        "source_family",
+                        "eq",
+                        str(args.get("source_family") or "").strip(),
+                    ),
+                    (
+                        "search",
+                        "contains",
+                        str(args.get("query") or "").strip(),
+                    ),
+                )
+                if value
+            )
+            query = ExposureQuery(
+                filters=filters,
+                sort=ExposureSort(
+                    str(args.get("sort_by") or "priority_score"),
+                    str(args.get("sort_direction") or "desc"),
+                ),
+                page_size=_MAX_ITEMS,
+            )
+            authorization = query_service.authorization_for(
+                tool_context.principal,
+                tool_context.scope,
+            )
+            page = query_service.list_page(
+                authorization,
+                generation_id=(
+                    str(args.get("generation") or "").strip() or None
+                ),
+                query=query,
+            )
+            contract = ExposureApiPage(
+                total_count=page.total_count,
+                items=page.items,
+                next_cursor=page.next_cursor,
+                generation=page.generation,
+                applied_scope=page.applied_scope,
+                applied_filters=page.applied_filters,
+                applied_sort=page.applied_sort,
+                facets=page.facets,
+                completeness=page.completeness,
+                freshness=page.freshness,
+            )
+            payload = contract.list_data()
+            payload.update(
+                {
+                    "findings": payload["items"],
+                    "read_model_generation_id": page.generation,
+                    "returned_count": len(page.items),
+                    "source_attribution": _source_attribution(page.items),
+                }
+            )
+            return ToolResult(
+                status=STATUS_OK if page.items else STATUS_EMPTY,
+                data=_bound(payload),
+                evidence=(
+                    Evidence(
+                        source_engine="api.ExposureQueryService",
+                        source_table="gold_exposure_facts",
+                        timestamp=str(page.freshness.get("as_of") or ""),
+                        confidence=CONFIDENCE_HIGH,
+                    ),
+                ),
+            )
+        except PermissionError:
+            return ToolResult(
+                status=STATUS_DENIED,
+                warning="Exposure query is outside the authenticated scope",
+            )
+        except (LookupError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            _LOGGER.warning("exposure_query_failed error=%s", exc)
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                warning="The authoritative Exposure query failed to answer",
+            )
+
     read_port_provider = getattr(
         tool_context.context, "exposure_read_port_provider", None
     )
@@ -542,9 +658,27 @@ def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> To
         if not page["findings"]:
             return ToolResult(status=STATUS_EMPTY)
         generation_id = str(page.get("read_model_generation_id") or "")
+        common_page = exposure_page_from_read_port(
+            page,
+            scope=tool_context.scope,
+            filters=(
+                ExposureFilter(
+                    "search",
+                    "contains",
+                    business_service,
+                ),
+            )
+            if business_service
+            else (),
+            sort={"field": "exposure_id", "direction": "asc"},
+        )
+        payload = {
+            **page,
+            "contract": common_page.contract_data(),
+        }
         return ToolResult(
             status=STATUS_OK,
-            data=_bound(page),
+            data=_bound(payload),
             evidence=(
                 Evidence(
                     source_engine="intelligence.vulnerability.ExposureReadPort",
@@ -579,6 +713,27 @@ def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> To
         )
 
     return _provider_result(tool_context, "vulnerability", run)
+
+
+def _source_attribution(
+    rows: tuple[dict[str, Any], ...],
+) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        raw_families = row.get("source_families")
+        families = (
+            raw_families
+            if isinstance(raw_families, list | tuple)
+            else (row.get("source_family"),)
+        )
+        for raw_family in families:
+            family = str(raw_family or "")
+            if family:
+                counts[family] = counts.get(family, 0) + 1
+    return [
+        {"source_family": family, "finding_count": count}
+        for family, count in sorted(counts.items())
+    ]
 
 
 def _tool_cve_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
@@ -1029,8 +1184,22 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         ),
         ToolSpec(
             name="cve_exposure",
-            description="CVE/KB exposure, optionally narrowed to a business service.",
-            parameters={"business_service": "Optional business service name to narrow results"},
+            description=(
+                "Scoped generation-pinned CVE/KB Exposure query with common "
+                "evidence and completeness metadata."
+            ),
+            parameters={
+                "business_service": (
+                    "Legacy optional business service name during shadow rollout"
+                ),
+                "generation": "Optional retained Exposure generation",
+                "target_kind": "Optional server or container_image target kind",
+                "severity": "Optional severity filter",
+                "source_family": "Optional source-family filter",
+                "query": "Optional bounded search text",
+                "sort_by": "Server-owned Exposure sort field",
+                "sort_direction": "Sort direction: asc or desc",
+            },
             handler=_tool_cve_exposure,
         ),
         ToolSpec(
@@ -1130,7 +1299,14 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
 }
 
 
-def call_tool(name: str, args: Mapping[str, Any], *, context: Any, scope: Scope) -> ToolResult:
+def call_tool(
+    name: str,
+    args: Mapping[str, Any],
+    *,
+    context: Any,
+    scope: Scope,
+    principal: Any | None = None,
+) -> ToolResult:
     """Invoke one governed tool by name.
 
     Unknown tool names are treated as a denial rather than an error: the agent
@@ -1140,7 +1316,11 @@ def call_tool(name: str, args: Mapping[str, Any], *, context: Any, scope: Scope)
     spec = TOOL_REGISTRY.get(name)
     if spec is None:
         return ToolResult(status=STATUS_DENIED, warning=f"Unknown tool {name!r}")
-    tool_context = ToolContext(context=context, scope=scope)
+    tool_context = ToolContext(
+        context=context,
+        scope=scope,
+        principal=principal,
+    )
     try:
         return spec.handler(tool_context, args)
     except (LookupError, ValueError, RuntimeError, TypeError, AttributeError) as exc:

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from opentelemetry import metrics
 
+from operations.exposure_metrics import ExposureMetrics
+
 
 class FabricMetrics:
     def __init__(self, meter=None) -> None:
         meter = meter or metrics.get_meter("aiops.operations_graph.fabric", "0.1.0")
+        self.exposure = ExposureMetrics(meter=meter)
         self.duration = meter.create_histogram("fabric.ingestion.duration", unit="s")
         self.rows_processed = meter.create_counter("fabric.ingestion.rows.processed")
         self.rows_added = meter.create_counter("fabric.ingestion.rows.added")

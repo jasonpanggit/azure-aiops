@@ -120,3 +120,345 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "provider_health" {
 
   tags = local.tags
 }
+
+# Exposure one-cycle alerts
+#
+# The evaluation frequency is never slower than ingestion, and every window is
+# exactly one configured ingestion cycle. All rules trigger on the first
+# failing period. Quality/latency signals are intentionally aggregated across
+# the one cycle rather than persisted across multiple cycles: this preserves
+# noise resistance while still surfacing the first bad cycle.
+locals {
+  exposure_alert_iso8601_minutes = {
+    "5"  = "PT5M"
+    "10" = "PT10M"
+    "15" = "PT15M"
+    "30" = "PT30M"
+  }
+  exposure_ingestion_cycle_window = local.exposure_alert_iso8601_minutes[
+    tostring(var.exposure_ingestion_cadence_minutes)
+  ]
+  exposure_alert_evaluation_frequency = local.exposure_alert_iso8601_minutes[
+    tostring(var.exposure_alert_evaluation_minutes)
+  ]
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_zero" {
+  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
+  name                 = "${local.base}-exposure-row-zero"
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  evaluation_frequency = local.exposure_alert_evaluation_frequency
+  window_duration      = local.exposure_ingestion_cycle_window
+  scopes               = [azurerm_application_insights.main.id]
+  severity             = 0
+  description          = "Exposure effective rows reached the configured false-clear floor in one ingestion cycle."
+
+  criteria {
+    query = <<-KQL
+      AppMetrics
+      | where Name == "aiops.exposure.ingestion.rows"
+      | where tostring(Properties.environment) == "${var.environment}"
+      | where tostring(Properties.outcome) == "effective"
+      | summarize EffectiveRows=max(Max)
+      | where EffectiveRows < ${var.exposure_alert_min_effective_rows}
+    KQL
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.ops[0].id]
+  }
+
+  tags = local.tags
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_drop" {
+  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
+  name                 = "${local.base}-exposure-row-drop"
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  evaluation_frequency = local.exposure_alert_evaluation_frequency
+  window_duration      = local.exposure_ingestion_cycle_window
+  scopes               = [azurerm_application_insights.main.id]
+  severity             = 0
+  description          = "Exposure effective-row drop exceeded the configured last-known-good ratio in one ingestion cycle."
+
+  criteria {
+    query = <<-KQL
+      AppMetrics
+      | where Name == "aiops.exposure.ingestion.drop.ratio"
+      | where tostring(Properties.environment) == "${var.environment}"
+      | summarize DropRatio=max(Max)
+      | where DropRatio > ${var.exposure_alert_max_drop_ratio}
+    KQL
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.ops[0].id]
+  }
+
+  tags = local.tags
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_source_health" {
+  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
+  name                 = "${local.base}-exposure-source-health"
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  evaluation_frequency = local.exposure_alert_evaluation_frequency
+  window_duration      = local.exposure_ingestion_cycle_window
+  scopes               = [azurerm_application_insights.main.id]
+  severity             = 1
+  description          = "An Exposure source failed, became unavailable, or exceeded its allowed age in one ingestion cycle."
+
+  criteria {
+    query = <<-KQL
+      let FailedCycles = AppMetrics
+        | where Name == "aiops.exposure.source.cycles"
+        | where tostring(Properties.environment) == "${var.environment}"
+        | where tostring(Properties.outcome) in ("failed", "partial", "unavailable")
+        | summarize Signal=sum(Sum)
+        | where Signal > 0;
+      let StaleSources = AppMetrics
+        | where Name == "aiops.exposure.source.age"
+        | where tostring(Properties.environment) == "${var.environment}"
+        | summarize Signal=max(Max)
+        | where Signal > ${var.exposure_alert_source_max_age_seconds};
+      union FailedCycles, StaleSources
+    KQL
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.ops[0].id]
+  }
+
+  tags = local.tags
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_merge_conflict" {
+  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
+  name                 = "${local.base}-exposure-merge-conflict"
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  evaluation_frequency = local.exposure_alert_evaluation_frequency
+  window_duration      = local.exposure_ingestion_cycle_window
+  scopes               = [azurerm_application_insights.main.id]
+  severity             = 0
+  description          = "Exposure Gold merge or generation activation reported a conflict."
+
+  criteria {
+    query = <<-KQL
+      AppMetrics
+      | where Name == "aiops.exposure.merge.rows"
+      | where tostring(Properties.environment) == "${var.environment}"
+      | where tostring(Properties.outcome) == "conflict"
+      | summarize Conflicts=sum(Sum)
+      | where Conflicts > 0
+    KQL
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.ops[0].id]
+  }
+
+  tags = local.tags
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_enrichment_quality" {
+  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
+  name                 = "${local.base}-exposure-enrichment-quality"
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  evaluation_frequency = local.exposure_alert_evaluation_frequency
+  window_duration      = local.exposure_ingestion_cycle_window
+  scopes               = [azurerm_application_insights.main.id]
+  severity             = 2
+  description          = "Exposure enrichment success ratio degraded below its one-cycle quality threshold."
+
+  criteria {
+    query = <<-KQL
+      AppMetrics
+      | where Name == "aiops.exposure.enrichment.quality"
+      | where tostring(Properties.environment) == "${var.environment}"
+      | summarize Quality=min(Min)
+      | where Quality < ${var.exposure_alert_min_enrichment_quality}
+    KQL
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.ops[0].id]
+  }
+
+  tags = local.tags
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_coverage_ratio" {
+  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
+  name                 = "${local.base}-exposure-coverage-ratio"
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  evaluation_frequency = local.exposure_alert_evaluation_frequency
+  window_duration      = local.exposure_ingestion_cycle_window
+  scopes               = [azurerm_application_insights.main.id]
+  severity             = 1
+  description          = "Exposure represented-to-total coverage degraded below its one-cycle threshold."
+
+  criteria {
+    query = <<-KQL
+      AppMetrics
+      | where Name == "aiops.exposure.coverage.ratio"
+      | where tostring(Properties.environment) == "${var.environment}"
+      | summarize RepresentedRatio=min(Min)
+      | where RepresentedRatio < ${var.exposure_alert_min_represented_ratio}
+    KQL
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.ops[0].id]
+  }
+
+  tags = local.tags
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_reconciliation_drift" {
+  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
+  name                 = "${local.base}-exposure-reconciliation-drift"
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  evaluation_frequency = local.exposure_alert_evaluation_frequency
+  window_duration      = local.exposure_ingestion_cycle_window
+  scopes               = [azurerm_application_insights.main.id]
+  severity             = 0
+  description          = "Exposure old/new semantic reconciliation exceeded its exact mismatch policy."
+
+  criteria {
+    query = <<-KQL
+      let MismatchCount = AppMetrics
+        | where Name == "aiops.exposure.reconciliation.mismatches"
+        | where tostring(Properties.environment) == "${var.environment}"
+        | where tostring(Properties.outcome) == "unexpected_drift"
+        | summarize Signal=sum(Sum)
+        | where Signal > ${var.exposure_alert_max_reconciliation_mismatches};
+      let DriftRatio = AppMetrics
+        | where Name == "aiops.exposure.reconciliation.drift.ratio"
+        | where tostring(Properties.environment) == "${var.environment}"
+        | where tostring(Properties.outcome) == "unexpected_drift"
+        | summarize Signal=max(Max)
+        | where Signal > ${var.exposure_alert_max_reconciliation_ratio};
+      union MismatchCount, DriftRatio
+    KQL
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.ops[0].id]
+  }
+
+  tags = local.tags
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_query_slo" {
+  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
+  name                 = "${local.base}-exposure-query-slo"
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  evaluation_frequency = local.exposure_alert_evaluation_frequency
+  window_duration      = local.exposure_ingestion_cycle_window
+  scopes               = [azurerm_application_insights.main.id]
+  severity             = 1
+  description          = "Exposure scoped query latency or error count exceeded its one-cycle budget."
+
+  criteria {
+    query = <<-KQL
+      let SlowQueries = AppMetrics
+        | where Name == "aiops.exposure.query.duration"
+        | where tostring(Properties.environment) == "${var.environment}"
+        | summarize Signal=percentile(Max, 95)
+        | where Signal > ${var.exposure_alert_query_p95_ms};
+      let QueryErrors = AppMetrics
+        | where Name == "aiops.exposure.query.events"
+        | where tostring(Properties.environment) == "${var.environment}"
+        | where tostring(Properties.outcome) == "error"
+        | summarize Signal=sum(Sum)
+        | where Signal > ${var.exposure_alert_max_query_errors};
+      union SlowQueries, QueryErrors
+    KQL
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.ops[0].id]
+  }
+
+  tags = local.tags
+}

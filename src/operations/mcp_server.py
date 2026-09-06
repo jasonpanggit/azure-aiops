@@ -64,6 +64,12 @@ class ToolArguments(BaseModel):
     resource_type: str | None = Field(default=None, min_length=1, max_length=256)
     family: str | None = Field(default=None, min_length=1, max_length=64)
     query: str | None = Field(default=None, min_length=1, max_length=512)
+    generation: str | None = Field(default=None, min_length=1, max_length=256)
+    target_kind: str | None = Field(default=None, min_length=1, max_length=64)
+    severity: str | None = Field(default=None, min_length=1, max_length=64)
+    source_family: str | None = Field(default=None, min_length=1, max_length=64)
+    sort_by: str | None = Field(default=None, min_length=1, max_length=64)
+    sort_direction: str | None = Field(default=None, min_length=1, max_length=8)
 
 
 _REQUIRED: dict[str, tuple[str, ...]] = {
@@ -85,7 +91,16 @@ _REQUIRED: dict[str, tuple[str, ...]] = {
 # Optional (non-required) arguments per tool, kept separate from _REQUIRED so
 # a tool can accept a field without forcing the caller to supply it.
 _OPTIONAL: dict[str, tuple[str, ...]] = {
-    "cve_exposure": ("business_service",),
+    "cve_exposure": (
+        "business_service",
+        "generation",
+        "target_kind",
+        "severity",
+        "source_family",
+        "query",
+        "sort_by",
+        "sort_direction",
+    ),
     "defender_remediation_cases": ("business_service",),
     "incidents": ("incident_id",),
     "inventory_resources": ("resource_type", "family"),
@@ -311,7 +326,13 @@ class MCPServer:
         # while the governed registry is itself being imported.
         from operations.tools import STATUS_DENIED, ToolResult, call_tool
 
-        result: ToolResult = call_tool(name, args, context=context, scope=scope)
+        result: ToolResult = call_tool(
+            name,
+            args,
+            context=context,
+            scope=scope,
+            principal=principal,
+        )
         output = result.to_dict()
         if not _safe_size(output, MAX_RESPONSE_BYTES):
             result = ToolResult(status=STATUS_DENIED, warning="Tool response exceeded the MCP response budget")
