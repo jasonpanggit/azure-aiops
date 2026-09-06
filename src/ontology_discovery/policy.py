@@ -315,7 +315,10 @@ def _release_matches(
     release: Mapping[str, Any] | None,
     triple: tuple[str, str, str],
 ) -> bool:
-    if release is None or str(release.get("status") or "") != "enabled":
+    if (
+        release is None
+        or str(release.get("status") or "").strip().casefold() != "enabled"
+    ):
         return False
     return (
         str(release.get("subject_type") or ""),

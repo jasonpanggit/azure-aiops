@@ -464,6 +464,9 @@ class OntologyRunStore:
     ) -> dict[str, Any]:
         """Exercise the future activation CAS only in explicit synthetic tests."""
 
+        from .contracts import AdmissionEvaluationSnapshot
+        from .policy import evaluate_release_eligibility
+
         if not self._allow_pair_release_testing:
             raise PairReleaseDisabled(
                 "pair release activation is disabled for Phase 13"
@@ -490,6 +493,18 @@ class OntologyRunStore:
                 raise PairReleaseConflict(record)
             if not record["eligible"]:
                 raise PairReleaseDisabled("pair release evidence is not eligible")
+            snapshot = AdmissionEvaluationSnapshot.model_validate_json(
+                json.dumps(record["snapshot"], sort_keys=True)
+            )
+            eligibility = evaluate_release_eligibility(snapshot)
+            if (
+                eligibility.status != "ELIGIBLE"
+                or snapshot.snapshot_id != record["snapshot_id"]
+                or snapshot.pair_key != record["pair_key"]
+            ):
+                raise PairReleaseDisabled(
+                    "pair release snapshot no longer passes immutable gates"
+                )
             record["status"] = "ENABLED"
             record["revision"] += 1
             record["activated_by"] = owner

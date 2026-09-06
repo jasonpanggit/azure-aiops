@@ -532,6 +532,17 @@ def test_pair_release_is_disabled_by_default_and_scoped_revocation_is_immediate(
         actor="release-owner",
         now=NOW,
     )
+    admitted = ProposalPolicy(
+        shadow_mode=False,
+        allow_pair_release_testing=True,
+        now=lambda: NOW,
+    ).evaluate(
+        _proposal(),
+        review_status="accepted",
+        admission_release=enabled,
+        **_policy_inputs(),
+    )
+    assert admitted.admitted is True
     second_snapshot = _eligible_snapshot(
         subject_type="Application",
         predicate="depends_on",
