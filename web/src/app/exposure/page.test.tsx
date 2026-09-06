@@ -281,6 +281,17 @@ describe("ExposurePage Defender posture", () => {
     expect(screen.getByText("Defender recommendations")).toBeInTheDocument();
   });
 
+  it("keeps the Overview lean and does not render the full patch inventory", async () => {
+    render(
+      <ScopeProvider>
+        <ExposurePage />
+      </ScopeProvider>
+    );
+
+    expect(await screen.findByRole("heading", { name: "Patch priorities →" })).toBeInTheDocument();
+    expect(screen.queryByText("Patch inventory")).not.toBeInTheDocument();
+  });
+
   it("renders SLA metrics as placeholders when compliance data is null", async () => {
     render(
       <ScopeProvider>
