@@ -453,13 +453,21 @@ function boundedSelectorText(
   return text;
 }
 
+function validateAssembledSelector(value: string): void {
+  if (Array.from(value).length > 240) {
+    throw new Error("inventory resource selector exceeds limit of 240");
+  }
+}
+
 function validateSelectedInventorySelector(record: InventoryCopilotRecord): void {
   if (record.kind === "os_group") {
     const osName = record.data.os_name;
     const osVersion = record.data.os_version;
     if (osName && osVersion && osName !== "all" && osVersion !== "all") {
-      boundedSelectorText("os_name", osName);
-      boundedSelectorText("os_version", osVersion);
+      validateAssembledSelector(`group:${[
+        boundedSelectorText("os_name", osName),
+        boundedSelectorText("os_version", osVersion),
+      ].join("|")}`);
     }
     return;
   }
@@ -472,14 +480,44 @@ function validateSelectedInventorySelector(record: InventoryCopilotRecord): void
       && softwareName !== "all"
       && softwareVersion !== "all"
     ) {
-      boundedSelectorText("software_name", softwareName);
-      boundedSelectorText("software_version", softwareVersion);
+      validateAssembledSelector(`group:${[
+        boundedSelectorText("software_name", softwareName),
+        boundedSelectorText("software_version", softwareVersion),
+      ].join("|")}`);
     }
     return;
   }
-  boundedSelectorText("resource_type", record.data.resource_type, 160);
-  boundedSelectorText("sku", record.data.sku || "Unknown");
-  boundedSelectorText("tier", record.data.tier || "Unknown");
+  validateAssembledSelector(`group:${[
+    boundedSelectorText("resource_type", record.data.resource_type, 160)
+      .replaceAll("/", ":"),
+    boundedSelectorText("sku", record.data.sku || "Unknown"),
+    boundedSelectorText("tier", record.data.tier || "Unknown"),
+  ].join("|")}`);
+}
+
+function validateActiveInventoryFilters(
+  tab: InventoryCopilotAdapterInput["tab"],
+  filters: Record<string, string>,
+): void {
+  if (tab === "os") {
+    const osName = filters.os_name;
+    const osVersion = filters.os_version;
+    if (osName && osVersion && osName !== "all" && osVersion !== "all") {
+      validateAssembledSelector(`group:${[
+        boundedSelectorText("os_name", osName),
+        boundedSelectorText("os_version", osVersion),
+      ].join("|")}`);
+    }
+    return;
+  }
+  if (tab === "azure") {
+    const resourceType = filters.resource_type;
+    if (resourceType && resourceType !== "all") {
+      validateAssembledSelector(
+        `type:${boundedSelectorText("resource_type", resourceType, 160)}`,
+      );
+    }
+  }
 }
 
 function assertEvidenceRowBound(data: Record<string, unknown>): void {
@@ -549,6 +587,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
       ])
       .sort(([left], [right]) => compareCodePoints(left, right)),
   );
+  validateActiveInventoryFilters(input.tab, filterContext);
   const sortContext = Object.fromEntries(
     Object.entries(input.sort ?? {}).sort(([left], [right]) => compareCodePoints(left, right)),
   );

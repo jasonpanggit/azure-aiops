@@ -497,5 +497,30 @@ describe("inventory Copilot page adapter", () => {
         }],
       }),
     ).toThrow(/inventory selector os_name/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        filters: {
+          os_name: "x".repeat(117),
+          os_version: "y".repeat(117),
+        },
+      }),
+    ).toThrow(/resource selector/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        tab: "azure",
+        records: [{
+          ...records[1],
+          data: {
+            resource_type: `microsoft.test/${"x".repeat(100)}`,
+            sku: "s".repeat(60),
+            tier: "t".repeat(60),
+          },
+        }],
+        selectedIdentity: "vm-1",
+        totalCount: 1,
+      }),
+    ).toThrow(/resource selector/i);
   });
 });
