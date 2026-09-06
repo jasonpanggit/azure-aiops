@@ -21,17 +21,18 @@ provides:
   - Shared execute_from_question canonical adapter for question-only routes
 affects: [11-05, 11-06, 11-07, 11-08, 11-09, 11-10, 11-11, 11-12, 11-14, 11-15, 11-16]
 actuals:
-  tokens: 13199
+  tokens: 17163
   tasks: 2
-  commits: 10
+  commits: 12
 tech-stack:
   added: []
   patterns:
     - Deterministic keyword fallback passes the same policy validator as model-proposed candidates
     - Canonical/shadow/rollback seam controlled by AIOPS_AGENT_ORCHESTRATION_MODE env var
     - Legacy planners retained; retirement requires zero v1 traffic and separate review
-    - Old ledgers projected on read without bulk rewrite
+    - Old ledgers projected on read without bulk rewrite via deep copy
     - Shared execute_from_question adapter builds synthetic inventory snapshot with incomplete coverage for question-only routes
+    - CANONICAL_CONTEXT_PAGE_KINDS gate prevents unsupported page kinds from masquerading as inventory
 key-files:
   created: []
   modified:
@@ -41,6 +42,7 @@ key-files:
     - src/operations/autonomous_investigation.py
     - src/api/routers/copilot.py
     - src/api/routers/multi_agent.py
+    - infra/terraform/variables.tf
     - tests/test_orchestration_policy.py
     - tests/test_api_copilot_unified.py
 key-decisions:
@@ -49,9 +51,13 @@ key-decisions:
   - "Contract version is stamped unconditionally on new ledger writes; old ledgers are projected on read without mutation."
   - "Legacy planner code retained through Phase 11; retirement requires zero v1 traffic for 30 days plus separate review."
   - "Shared execute_from_question adapter uses inventory page_kind with incomplete coverage; non-inventory questions receive honest unavailable/partial results rather than bridging to incorrect page context."
+  - "Unsupported page kinds (those not in EvidenceSnapshotV2 Literal) route through legacy adapter — never masquerade as inventory."
+  - "project_legacy_ledger uses copy.deepcopy for full nested-structure isolation."
+  - "Terraform accepts canonical mode; shadow deliberately excluded (no runtime support)."
 patterns-established:
   - "Mode-controlled seam: canonical_orchestration_enabled() gates canonical vs legacy routing at each surface."
-  - "project_legacy_ledger provides read-time version injection without bulk data migration."
+  - "CANONICAL_CONTEXT_PAGE_KINDS gate prevents unsupported page kinds from entering the canonical service."
+  - "project_legacy_ledger provides read-time version injection via deep copy without bulk data migration."
   - "execute_from_question provides shared canonical request building and safe execution for question-only routes."
 requirements-completed: [COP-01, COP-05]
 coverage:
@@ -90,11 +96,11 @@ status: complete
 
 ## Performance
 
-- **Duration:** 18 min
+- **Duration:** 18 min + review fix cycle
 - **Started:** 2026-09-06T11:35:20Z
-- **Completed:** 2026-09-06T14:46:00Z
-- **Tasks:** 2 (TDD: RED→GREEN each, plus review-fix RED→GREEN cycle)
-- **Files modified:** 8
+- **Completed:** 2026-09-06T15:12:00Z
+- **Tasks:** 2 (TDD: RED→GREEN each, plus two review-fix RED→GREEN cycles)
+- **Files modified:** 9
 
 ## Accomplishments
 
@@ -123,6 +129,13 @@ status: complete
 - Removed unused `canonicalize_investigation` import from `copilot.py`.
 - Non-canonical/shadow/rollback modes retain legacy `run_investigation` and `run_autonomous_investigation` without change.
 
+### Review fix: Blocker A/B/C — context fidelity, deep-copy, Terraform (BLOCKER)
+
+- **BLOCKER-A fixed:** `_run_context_via_canonical` no longer hardcodes `page_kind="inventory"`, `INVENTORY_DATA_HEALTH_ID` specialist, or `inventory_resources` tool. Now translates the actual PageSnapshot page kind, submitted evidence, freshness, and selected resources into the canonical `EvidenceSnapshotV2` contract; uses the canonical proposal→policy→execution loop (no hardcoded planner); projects a complete legacy ledger preserving canonical tool data, findings, citations, status, and warnings. Added `CANONICAL_CONTEXT_PAGE_KINDS` gate in `investigate_context` so unsupported page kinds (e.g. `network`) route through `run_context_investigation` legacy adapter — never masquerade as inventory. Updated existing CR-01/CR-04 test to verify unsupported-page legacy routing.
+- **BLOCKER-B fixed:** `project_legacy_ledger` changed from `{**ledger}` (shallow copy) to `copy.deepcopy(ledger)` so nested mutations to `decisions`, `approvals`, `agent_runs`, `synthesis`, and `human_controls` in projected copies never propagate to the original store record. Explicit falsy `contract_version` key preserved.
+- **BLOCKER-C fixed:** `infra/terraform/variables.tf` `agent_orchestration_mode` validation now accepts `"canonical"` (runtime support exists via `MODE_CANONICAL`). `"shadow"` deliberately excluded — no runtime support. Description and error message updated.
+- Added 5 new tests: unsupported page routes to legacy (not inventory masquerade), supported page translates actual kind/evidence/findings, deep-copy nested mutation isolation, falsy contract_version preservation, Terraform mode contract.
+
 ## Task Commits
 
 1. **Task 1 RED** — `805c672f` test(11-03): 5 failing policy/fallback tests
@@ -135,17 +148,20 @@ status: complete
 8. **V1/V2 RED** — `fd6ff07e` test(11-03): Failing tests for canonical service routing in investigate and multi-agent routes
 9. **V1/V2 GREEN** — `4a69073e` fix(11-03): Canonical mode routes /copilot/investigate and /agents/investigations through OrchestrationService
 10. **V1/V2 lint** — `fd71ad04` fix(11-03): Remove unused canonicalize_investigation import after canonical branch refactor
+11. **Blocker A/B/C RED** — `4aefc3e3` test(11-03): Failing tests for blocker A/B/C review fixes
+12. **Blocker A/B/C GREEN** — `7801de64` fix(11-03): Canonical context fidelity, deep-copy ledger, Terraform mode
 
 ## Files Modified
 
 - `src/operations/maf_orchestrator.py` — `build_deterministic_fallback`, `canonical_orchestration_enabled`, `MODE_CANONICAL`
 - `src/operations/orchestration_service.py` — Generalized `_fallback_candidate` delegation, shared `execute_from_question` canonical adapter
 - `src/operations/investigation.py` — `canonicalize_investigation`, `CONTRACT_VERSION`
-- `src/operations/autonomous_investigation.py` — `project_legacy_ledger`, `CONTRACT_VERSION`, stamped on new ledger writes
-- `src/api/routers/copilot.py` — Canonical mode branch in `/copilot/investigate` via `_investigate_via_canonical`; canonical context adapter `_run_context_via_canonical`
+- `src/operations/autonomous_investigation.py` — `project_legacy_ledger` (deep copy), `CONTRACT_VERSION`, stamped on new ledger writes
+- `src/api/routers/copilot.py` — `CANONICAL_CONTEXT_PAGE_KINDS` gate, `_run_context_via_canonical` rewrite (actual page kind, evidence translation, canonical loop, complete ledger projection), `_investigate_via_canonical`
 - `src/api/routers/multi_agent.py` — Canonical mode branch in POST `/agents/investigations` via `_create_investigation_canonical`; imports for `execute_from_question`, `uuid`, `datetime`
+- `infra/terraform/variables.tf` — `agent_orchestration_mode` accepts `canonical`; description and error updated
 - `tests/test_orchestration_policy.py` — 5 new keyword fallback and policy tests
-- `tests/test_api_copilot_unified.py` — 10 new compatibility adapter tests (6 contract/projection + 4 service-routing spy tests)
+- `tests/test_api_copilot_unified.py` — 15 new tests (6 contract/projection + 4 service-routing + 5 blocker A/B/C)
 
 ## Decisions Made
 
@@ -153,15 +169,20 @@ status: complete
 - Contract version stamping is unconditional on new writes — the mode switch controls routing, not versioning. This ensures every new ledger is self-describing regardless of the active mode.
 - Legacy planners are retained in full through Phase 11; the `AIOPS_AGENT_ORCHESTRATION_MODE` env var provides three positions: `deterministic` (page-anchored rollback), `maf` (existing MAF behavior), and `canonical` (canonical service routing).
 - Shared `execute_from_question` adapter uses `page_kind="inventory"` with incomplete coverage; questions that don't map to inventory page specialists receive honest `partial`/`unavailable` results through the standard uncertainty mechanism, not incorrect page bridging.
+- `_run_context_via_canonical` translates the actual page kind and submitted evidence into the canonical contract; only page kinds in `CANONICAL_CONTEXT_PAGE_KINDS` (`inventory`, `connections`, `connections_fabric`) are permitted — all others route through the legacy adapter.
+- `project_legacy_ledger` upgraded from shallow `{**ledger}` to `copy.deepcopy(ledger)` to guarantee full nested-structure isolation for `decisions`, `approvals`, `agent_runs`, `synthesis`, and `human_controls`.
+- Terraform `agent_orchestration_mode` validation extended to accept `canonical`; `shadow` deliberately excluded because no runtime code path processes it.
 
 ## Verification Evidence
 
 - `python3 -m pytest tests/test_orchestration_policy.py tests/test_context_specialist_routing.py` — **32 passed**
-- `python3 -m pytest tests/test_api_copilot_unified.py tests/test_api_copilot_investigation.py tests/test_api_copilot_snapshot.py tests/test_api_multi_agent.py` — **70 passed**
+- `python3 -m pytest tests/test_api_copilot_unified.py tests/test_api_copilot_investigation.py tests/test_api_copilot_snapshot.py tests/test_api_multi_agent.py` — **75 passed**
 - `python3 -m pytest tests/test_foundry_agent.py tests/test_mcp_tools.py tests/test_mcp_protocol.py tests/test_orchestration_parity.py` — **64 passed**
 - `python3 -m ruff check` on all changed files — **passed**
 - `python3 -m compileall -q` on all changed source files — **passed**
 - `git diff --check` — **passed**
+- `terraform fmt -check` — **passed**
+- `terraform validate` — **skipped** (provider plugins not cached locally; HCL syntax verified by fmt)
 
 ## Deviations from Plan
 
@@ -173,6 +194,13 @@ status: complete
 - **Fix:** Removed the import; the canonical branch uses `execute_from_question` directly
 - **Files modified:** `src/api/routers/copilot.py`
 - **Commit:** `fd71ad04`
+
+**2. [Rule 1 - Bug] Updated existing CR-01/CR-04 test for corrected routing**
+- **Found during:** Blocker A implementation
+- **Issue:** `test_investigate_context_canonical_invokes_service_not_legacy` sent `page_kind="network"` (unsupported) and expected canonical service routing — this was the original bug's test, now incorrect
+- **Fix:** Updated test to `test_investigate_context_canonical_unsupported_page_uses_legacy` verifying unsupported pages route through legacy
+- **Files modified:** `tests/test_api_copilot_unified.py`
+- **Commit:** `7801de64`
 
 ## Known Stubs
 
