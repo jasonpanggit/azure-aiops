@@ -63,3 +63,17 @@ def test_keyring_rejects_short_duplicate_or_partial_managed_keys() -> None:
             previous_key=b"b" * 48,
             loaded_at=loaded_at,
         )
+
+
+def test_keyring_repr_never_discloses_managed_key_values() -> None:
+    keyring = ExposureCursorKeyRing(
+        active_kid="active",
+        active_key=b"active-secret-value-that-is-long-enough",
+        previous_kid="previous",
+        previous_key=b"previous-secret-value-that-is-long-enough",
+        loaded_at=datetime(2026, 9, 6, tzinfo=UTC),
+    )
+
+    rendered = repr(keyring)
+    assert "active-secret" not in rendered
+    assert "previous-secret" not in rendered
