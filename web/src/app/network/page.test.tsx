@@ -635,11 +635,17 @@ describe("Network page policy round-trip", () => {
         {},
       ),
     );
-    expect(
-      await screen.findByText(
-        "Preview found 0 gaps under this rule. The saved policy is unchanged.",
-      ),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole("status")
+          .some((status) =>
+            status.textContent?.includes(
+              "Preview found 0 gaps under this rule. The saved policy is unchanged.",
+            ),
+          ),
+      ).toBe(true),
+    );
 
     await user.click(screen.getByRole("button", { name: "Save rule" }));
     await waitFor(() =>
