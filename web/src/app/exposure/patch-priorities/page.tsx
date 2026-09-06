@@ -551,11 +551,22 @@ export default function PatchPrioritiesPage() {
                             className="table-primary-link"
                             href={itemDetailHref(item, queryState, 0)}
                             onClick={(event) => {
-                              event.currentTarget.href = itemDetailHref(
-                                item,
-                                queryState,
-                                Math.max(0, Math.round(window.scrollY)),
-                              );
+                              if (
+                                event.button === 0 &&
+                                !event.metaKey &&
+                                !event.ctrlKey &&
+                                !event.shiftKey &&
+                                !event.altKey
+                              ) {
+                                event.preventDefault();
+                                router.push(
+                                  itemDetailHref(
+                                    item,
+                                    queryState,
+                                    Math.max(0, Math.round(window.scrollY)),
+                                  ),
+                                );
+                              }
                             }}
                           >
                             {item.weakness_id}

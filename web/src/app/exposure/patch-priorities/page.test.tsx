@@ -5,6 +5,7 @@ import { ApiError } from "@/lib/types";
 
 const navigation = vi.hoisted(() => ({
   replace: vi.fn(),
+  push: vi.fn(),
   params: new URLSearchParams(
     "subscription=sub-1&q=kernel&severity=critical&page_size=25&sort_by=severity&sort_direction=asc&target=server-1&drawer=evidence&generation=generation-17",
   ),
@@ -22,7 +23,7 @@ const api = vi.hoisted(() => ({
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/exposure/patch-priorities",
-  useRouter: () => ({ replace: navigation.replace }),
+  useRouter: () => ({ replace: navigation.replace, push: navigation.push }),
   useSearchParams: () => navigation.params,
 }));
 
@@ -283,6 +284,18 @@ describe("Patch priorities", () => {
     expect(url.searchParams.get("return_focus")).toBe(
       "exposure-server-1-kb600001",
     );
+
+    const detail = screen.getByRole("link", { name: "KB600001" });
+    const detailUrl = new URL(detail.getAttribute("href")!, "https://example.test");
+    expect(detailUrl.pathname).toBe("/exposure/kbs/KB600001");
+    expect(detailUrl.searchParams.get("origin")).toBe(
+      "/exposure/patch-priorities",
+    );
+    expect(detailUrl.searchParams.get("row")).toBe(
+      "exposure-server-1-kb600001",
+    );
+    expect(detailUrl.searchParams.get("generation")).toBe("generation-17");
+    expect(detailUrl.searchParams.has("cursor")).toBe(false);
   });
 
   it("keeps current rows while a canonical server filter request is pending", async () => {

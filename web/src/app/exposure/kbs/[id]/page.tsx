@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { CvssRadarChart } from "@/components/ui/CvssRadarChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -17,7 +17,6 @@ import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import {
   advanceExposureCursor,
-  encodeExposureQueryState,
   exposureDetailHref,
   exposureDetailParentLabel,
   exposureDetailReturnHref,
@@ -63,11 +62,6 @@ const TARGET_KIND_OPTIONS = [
   { value: "server", label: "Servers" },
   { value: "container_image", label: "Container images" },
 ];
-
-function canonicalPath(pathname: string, state: ExposureQueryState): string {
-  const encoded = encodeExposureQueryState(state).toString();
-  return encoded ? `${pathname}?${encoded}` : pathname;
-}
 
 function cursorEnvelope<T>(
   promise: Promise<Envelope<T>>,
@@ -226,7 +220,6 @@ function Section({
 export default function KbDetailPage({ params }: { params: { id: string } }) {
   const kbId = decodeURIComponent(params.id);
   const { scope } = useScope();
-  const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryState = useMemo(
@@ -300,6 +293,12 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
   );
   const parentLabel = exposureDetailParentLabel(detailContext.origin);
   const backHref = exposureDetailReturnHref(queryState, detailContext);
+  const currentDetailHref = exposureDetailHref(
+    "kbs",
+    kbId,
+    queryState,
+    detailContext,
+  );
   const findingPage = findings.data;
   const first = rows.length ? (findingState.page - 1) * findingState.pageSize + 1 : 0;
   const last = rows.length ? first + rows.length - 1 : 0;
@@ -331,7 +330,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                 href={`/remediation?kb=${encodeURIComponent(data.kb_id)}&cve=${encodeURIComponent(
                   data.cve_ids[0] || "",
                 )}&generation=${encodeURIComponent(findingState.generation)}&return_to=${encodeURIComponent(
-                  canonicalPath(pathname, queryState),
+                  currentDetailHref,
                 )}`}
               >
                 Open governed remediation
@@ -362,9 +361,15 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
             type="button"
             className="button"
             onClick={() =>
-              router.replace(canonicalPath(pathname, restartExposureQuery(queryState)), {
-                scroll: false,
-              })
+              router.replace(
+                exposureDetailHref(
+                  "kbs",
+                  kbId,
+                  restartExposureQuery(queryState),
+                  detailContext,
+                ),
+                { scroll: false },
+              )
             }
           >
             Restart results
