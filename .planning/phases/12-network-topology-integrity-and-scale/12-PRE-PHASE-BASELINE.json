@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "phase_base_commit": "d57f6137d747c344c56028d7e6211811927d0b43",
+  "phase_change_head": "5f7da1d02604346f3d82b6ae0b76a440c20b5049",
   "recording_environment": {
     "git_mode": "detached_worktree",
     "head_commit": "d57f6137d747c344c56028d7e6211811927d0b43",
@@ -201,6 +202,36 @@
         "projected_full_node_count"
       ],
       "introduced_by": "12-REVIEW-CR-05"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["evidence", "*", "freshness_threshold_seconds"],
+      "introduced_by": "03.1-main-integration"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["evidence", "*", "freshness_source_family"],
+      "introduced_by": "03.1-main-integration"
+    },
+    {
+      "endpoint": "gaps",
+      "path": ["evidence", "*", "freshness_threshold_seconds"],
+      "introduced_by": "03.1-main-integration"
+    },
+    {
+      "endpoint": "gaps",
+      "path": ["evidence", "*", "freshness_source_family"],
+      "introduced_by": "03.1-main-integration"
+    },
+    {
+      "endpoint": "rule_findings",
+      "path": ["evidence", "*", "freshness_threshold_seconds"],
+      "introduced_by": "03.1-main-integration"
+    },
+    {
+      "endpoint": "rule_findings",
+      "path": ["evidence", "*", "freshness_source_family"],
+      "introduced_by": "03.1-main-integration"
     }
   ],
   "canvas_interactivity": {

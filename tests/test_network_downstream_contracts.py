@@ -90,6 +90,36 @@ EXPECTED_ADDITIVE_KEYS = {
         ("data", "summary", "projected_full_node_count"),
         "12-REVIEW-CR-05",
     ),
+    (
+        "topology",
+        ("evidence", "*", "freshness_threshold_seconds"),
+        "03.1-main-integration",
+    ),
+    (
+        "topology",
+        ("evidence", "*", "freshness_source_family"),
+        "03.1-main-integration",
+    ),
+    (
+        "gaps",
+        ("evidence", "*", "freshness_threshold_seconds"),
+        "03.1-main-integration",
+    ),
+    (
+        "gaps",
+        ("evidence", "*", "freshness_source_family"),
+        "03.1-main-integration",
+    ),
+    (
+        "rule_findings",
+        ("evidence", "*", "freshness_threshold_seconds"),
+        "03.1-main-integration",
+    ),
+    (
+        "rule_findings",
+        ("evidence", "*", "freshness_source_family"),
+        "03.1-main-integration",
+    ),
 }
 EXPECTED_EXPORT_KEYS = (
     "exported_at",
@@ -328,12 +358,17 @@ def phase_diff(
     paths: tuple[str, ...] = (),
     unified: int | None = None,
 ) -> str:
-    """Return a proven non-empty phase diff anchored to the frozen base."""
+    """Return the isolated Phase 12 diff, excluding later parallel main work."""
     baseline = load_baseline(baseline_path)
     phase_base_commit = str(baseline.get("phase_base_commit") or "")
+    phase_change_head = str(baseline.get("phase_change_head") or "")
     if not _FULL_SHA.fullmatch(phase_base_commit):
         raise PhaseDiffRangeError(
             "phase_base_commit is not a full lowercase 40-character SHA"
+        )
+    if not _FULL_SHA.fullmatch(phase_change_head):
+        raise PhaseDiffRangeError(
+            "phase_change_head is not a full lowercase 40-character SHA"
         )
     resolved = _git(
         "rev-parse",
@@ -345,16 +380,27 @@ def phase_diff(
         raise PhaseDiffRangeError(
             f"phase_base_commit does not resolve: {phase_base_commit}"
         )
-    changed = _git("diff", "--name-only", f"{phase_base_commit}..HEAD").stdout
+    resolved_head = _git(
+        "rev-parse",
+        "--verify",
+        f"{phase_change_head}^{{commit}}",
+        check=False,
+    )
+    if resolved_head.returncode != 0:
+        raise PhaseDiffRangeError(
+            f"phase_change_head does not resolve: {phase_change_head}"
+        )
+    diff_range = f"{phase_base_commit}..{phase_change_head}"
+    changed = _git("diff", "--name-only", diff_range).stdout
     if not changed.strip():
         raise PhaseDiffRangeError(
-            f"phase diff range is empty: {phase_base_commit}..HEAD"
+            f"phase diff range is empty: {diff_range}"
         )
 
     args = ["diff"]
     if unified is not None:
         args.append(f"-U{unified}")
-    args.append(f"{phase_base_commit}..HEAD")
+    args.append(diff_range)
     if paths:
         args.extend(("--", *paths))
     return _git(*args).stdout

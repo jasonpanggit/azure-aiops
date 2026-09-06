@@ -11,6 +11,9 @@ verified_source_head: 207c7c78b4b90dfa9561054fdd9c840be74c8764
 docs_head_at_verification: fccddfa803ed5bf65f7a809ffeaa8da3afa4f379
 source_matches_requested_head: true
 full_suites_rerun_in_this_worktree: true
+integrated_main_head: 6eda2f06
+integration_merge_head: c0716f5d
+integration_verified: true
 re_verification:
   previous_status: passed
   previous_score: 5/5
@@ -33,6 +36,9 @@ gates:
   ui_review: "24/24 / 100/100 / 0 warnings"
   nyquist_compliant: true
   a39_360px: pass
+  merged_backend: "2,989 passed / 11 skipped / 3,000 collected / 0 failed"
+  merged_web: "369 passed / 15 todo / 44 files / 0 failed"
+  merged_build: clean
 ---
 
 # Phase 12: Network Topology Integrity and Scale — Final Verification
@@ -52,6 +58,24 @@ ingestion through API, web, agents, MCP, and export.
 closure.
 
 ## Verification Boundary
+
+### Main-Branch Integration
+
+After phase verification, current `main` (`6eda2f06`) was merged into the
+Phase 12 branch at `c0716f5d`. The only textual conflict was `STATE.md`; its
+merged `completed_plans: 108` is derived from the 108 checked plan entries in
+the merged roadmap, preserving both workstreams.
+
+The combined tree exposed two expected contract updates rather than product
+regressions: Phase 03.1 added evidence freshness metadata, and unrelated main
+work changed dependency manifests after the Phase 12 base. The frozen baseline
+now registers only those two freshness fields for each endpoint as additive,
+while phase hygiene evaluates the isolated Phase 12 range
+`d57f6137..5f7da1d0`. The focused baseline/downstream suite passes.
+
+The complete combined backend suite then passed **2,989 tests with 11 skipped**
+(**3,000 collected**). The combined web suite passed **44 files / 369 tests
+with 15 todo**; TypeScript, ESLint, and the production build are clean.
 
 Documentation HEAD is `fccddfa8`. Every commit after source commit `207c7c78`
 is documentation-only, touching no application code:

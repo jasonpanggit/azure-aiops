@@ -57,6 +57,7 @@ def test_baseline_is_recorded_and_self_consistent(tmp_path: Path) -> None:
     )
     assert baseline["topology"]["collection_counts"]
     assert re.fullmatch(r"[0-9a-f]{40}", baseline["phase_base_commit"])
+    assert re.fullmatch(r"[0-9a-f]{40}", baseline["phase_change_head"])
     assert baseline["recording_environment"]["git_mode"] == "detached_worktree"
     assert (
         baseline["recording_environment"]["head_commit"]
@@ -110,6 +111,36 @@ def test_baseline_is_recorded_and_self_consistent(tmp_path: Path) -> None:
             "endpoint": "rule_findings",
             "path": ["data", "summary", "projected_full_node_count"],
             "introduced_by": "12-REVIEW-CR-05",
+        },
+        {
+            "endpoint": "topology",
+            "path": ["evidence", "*", "freshness_threshold_seconds"],
+            "introduced_by": "03.1-main-integration",
+        },
+        {
+            "endpoint": "topology",
+            "path": ["evidence", "*", "freshness_source_family"],
+            "introduced_by": "03.1-main-integration",
+        },
+        {
+            "endpoint": "gaps",
+            "path": ["evidence", "*", "freshness_threshold_seconds"],
+            "introduced_by": "03.1-main-integration",
+        },
+        {
+            "endpoint": "gaps",
+            "path": ["evidence", "*", "freshness_source_family"],
+            "introduced_by": "03.1-main-integration",
+        },
+        {
+            "endpoint": "rule_findings",
+            "path": ["evidence", "*", "freshness_threshold_seconds"],
+            "introduced_by": "03.1-main-integration",
+        },
+        {
+            "endpoint": "rule_findings",
+            "path": ["evidence", "*", "freshness_source_family"],
+            "introduced_by": "03.1-main-integration",
         },
     ]
 

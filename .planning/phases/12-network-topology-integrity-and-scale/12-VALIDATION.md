@@ -7,6 +7,8 @@ wave_0_complete: true
 created: 2026-09-03
 executed: 2026-09-06
 verified_source_head: 207c7c78
+integrated_main_head: 6eda2f06
+integration_merge_head: c0716f5d
 ---
 
 # Phase 12 — Validation Strategy
@@ -112,6 +114,9 @@ No framework installation is required.
 - All eleven `12-01` through `12-11` summary artifacts report `status: complete`.
 - Latest full backend gate (after UI review remediation): **2,739 passed, 33 skipped** (**2,772 collected**).
 - Latest full web gate (after UI review remediation): **43 files passed; 354 tests passed; 15 pre-existing todo**.
+- After merging current `main`, the combined backend suite passed **2,989 tests with 11 skipped** (**3,000 collected**), and the combined web suite passed **44 files / 369 tests with 15 todo**.
+- The combined web TypeScript, ESLint, and production build gates are clean.
+- G-4 accepts only the two documented Phase 03.1 freshness fields added in parallel on `main`; Phase 12 dependency hygiene remains anchored to its isolated change head `5f7da1d0`.
 - Python Ruff, TypeScript (`tsc --noEmit`), and Next.js ESLint gates are clean.
 - The Phase 12 G-1 through G-6/downstream closure suites passed in the Plan 12-11 closeout and again during review remediation.
 - The Fabric private-link checkpoint is recorded as complete in `12-FABRIC-PRIVATE-LINK-DECISION.md`.
