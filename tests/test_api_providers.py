@@ -91,6 +91,46 @@ def test_cache_key_read_failure_retains_last_good_provider():
     assert attempts == 1
 
 
+def test_known_newer_key_with_failed_body_serves_last_good_once():
+    attempts = 0
+    revision = 7
+    body_available = True
+    first = SnapshotProvider(
+        version="policy-v7",
+        freshness="2026-08-22T00:00:00Z",
+    )
+
+    def load():
+        nonlocal attempts
+        attempts += 1
+        if not body_available:
+            raise OSError("policy body unavailable")
+        return first
+
+    runtime = ProviderRuntime(
+        {
+            "network": ProviderSpec(
+                load,
+                cache_key=lambda: ("network-policy", revision),
+            )
+        },
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+        monotonic=lambda: 0.0,
+    )
+    runtime.refresh(force=True)
+    revision = 8
+    body_available = False
+
+    assert runtime.get("network") is first
+
+    health = runtime.health(refresh=False)["providers"]["network"]
+    assert attempts == 2
+    assert health["state"] == DEGRADED
+    assert health["loaded"] is True
+    assert health["cache_key_stale"] is True
+    assert health["retry"]["attempts"] == 1
+
+
 def test_cache_key_is_never_resolved_while_state_lock_is_held():
     lock_observations: list[bool] = []
     runtime_holder: dict[str, ProviderRuntime] = {}

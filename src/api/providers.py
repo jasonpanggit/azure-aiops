@@ -59,6 +59,7 @@ class ProviderState:
     last_attempt_at: str = ""
     last_success_at: str = ""
     degraded_reason: str = ""
+    cache_key_stale: bool = False
     retry_attempts: int = 0
     next_retry_at: str = ""
 
@@ -76,6 +77,7 @@ class ProviderState:
             "last_attempt_at": self.last_attempt_at,
             "last_success_at": self.last_success_at,
             "degraded_reason": self.degraded_reason,
+            "cache_key_stale": self.cache_key_stale,
             "retry": {
                 "attempts": self.retry_attempts,
                 "next_retry_at": self.next_retry_at,
@@ -269,6 +271,7 @@ class ProviderRuntime:
                 state.loaded_at = now_iso
                 state.last_success_at = now_iso
                 state.degraded_reason = value.degraded_reason
+                state.cache_key_stale = False
                 state.retry_attempts = 0
                 state.next_retry_at = ""
         except Exception as exc:
@@ -280,6 +283,12 @@ class ProviderRuntime:
                 state.state = DEGRADED if state.loaded else UNAVAILABLE
                 state.degraded_reason = (
                     f"{name} refresh failed ({exc.__class__.__name__})"
+                )
+                state.cache_key_stale = bool(
+                    state.loaded
+                    and spec.cache_key is not None
+                    and cache_key_before is not _CACHE_KEY_UNAVAILABLE
+                    and self._cache_keys.get(name) != cache_key_before
                 )
             _LOGGER.exception("provider_refresh_failed provider=%s", name)
 
@@ -305,10 +314,19 @@ class ProviderRuntime:
         current = self._read_cache_key(name, spec)
         if current is _CACHE_KEY_UNAVAILABLE:
             return
+        now = self.clock().astimezone(UTC)
         with self._state_lock:
             loaded = name in self._instances
             unchanged = loaded and self._cache_keys.get(name) == current
-        if not loaded or unchanged:
+            state = self._states[name]
+            retry_at = _parse(state.next_retry_at)
+            retry_pending = (
+                loaded
+                and state.cache_key_stale
+                and retry_at is not None
+                and now < retry_at
+            )
+        if not loaded or unchanged or retry_pending:
             return
 
         with self._refresh_lock:
@@ -345,8 +363,8 @@ class ProviderRuntime:
         self._refresh_changed_cache_key(name)
         self.refresh(blocking=False)
         # A revision can advance while the ordinary refresh is loading. Check
-        # once more so this request never receives a provider labelled with a
-        # cache key older than the policy it is about to report against.
+        # once more, but retain an explicitly degraded last-good instance when
+        # the newer body cannot be loaded.
         self._refresh_changed_cache_key(name)
         spec = self.specs.get(name)
         current_cache_key = self._read_cache_key(name, spec)
@@ -358,9 +376,16 @@ class ProviderRuntime:
                 or current_cache_key is _CACHE_KEY_UNAVAILABLE
                 or self._cache_keys.get(name) == current_cache_key
             )
-            if instance is not None and cache_key_matches:
-                return instance
             state = self._states.get(name)
+            serving_last_good = bool(
+                state is not None
+                and state.state == DEGRADED
+                and state.cache_key_stale
+            )
+            if instance is not None and (
+                cache_key_matches or serving_last_good
+            ):
+                return instance
             if optional or state is None or not state.configured:
                 return None
             raise ProviderUnavailableError(name, state)
