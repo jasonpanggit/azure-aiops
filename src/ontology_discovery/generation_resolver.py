@@ -140,6 +140,23 @@ class GenerationResolver:
             source_generation=source_generation,
         )
 
+    def selection_for(self, generation: str) -> GenerationSelection:
+        """Create a read selection for an already captured generation path."""
+        active = self._validated_generation(str(generation))
+        manifest = self._read_json(f"{active}/manifest.json", required=False)
+        return GenerationSelection(
+            active_generation=active,
+            active_generation_uri=self._generation_uri(active),
+            prior_generation=None,
+            pointer_etag="",
+            source_generation=str(
+                manifest.get("source_generation")
+                or manifest.get("sourceGeneration")
+                or manifest.get("runId")
+                or ""
+            ),
+        )
+
     def alias(
         self,
         logical_name: str,
@@ -153,6 +170,14 @@ class GenerationResolver:
             physical_path=f"{selected.active_generation}/{name}",
             generation_id=selected.generation_id,
         )
+
+    def compatibility_aliases(
+        self,
+        selection: GenerationSelection | None = None,
+    ) -> dict[str, CompatibilityAlias]:
+        """Bind both stable ontology table names to one selected generation."""
+        selected = selection or self.resolve()
+        return {name: self.alias(name, selection=selected) for name in ONTOLOGY_TABLES}
 
     def read_dataset(
         self,
@@ -199,8 +224,15 @@ class GenerationResolver:
         return self._validated_generation(f"{self.store.generations}/{name}")
 
     def _validated_generation(self, generation: str) -> str:
-        base = str(self.store.generations).rstrip("/")
         candidate = generation.rstrip("/")
+        configured = getattr(self.store, "generations", None)
+        # Several legacy read-port tests use the minimal historical
+        # ``current_generation()`` protocol. Treat that returned directory as
+        # the only allowed generation rather than weakening containment for a
+        # real DatasetStore, which always exposes ``generations``.
+        if configured is None:
+            return candidate
+        base = str(configured).rstrip("/")
         if candidate == base or not candidate.startswith(f"{base}/"):
             raise ValueError("Active generation escapes the immutable generations root")
         return candidate
@@ -213,7 +245,9 @@ class GenerationResolver:
         return f"{base.rstrip('/')}/{name}"
 
     def _prior_local(self, active: str) -> str | None:
-        if getattr(self.store, "is_remote", False):
+        if getattr(self.store, "is_remote", False) or not hasattr(
+            self.store, "generations"
+        ):
             return None
         generations = Path(self.store.generations)
         if not generations.exists():

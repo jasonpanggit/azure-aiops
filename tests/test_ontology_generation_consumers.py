@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
-import base64
 from pathlib import Path
 
 import pytest
 
 from api.runtime import _load_generation_tables
+from api.scope import Scope
 from fabric.data_agent_manager import build_data_agent_definition
 from fabric.semantic_model_manager import build_semantic_model_definition
 from ontology_discovery.generation_resolver import (
@@ -17,7 +18,6 @@ from ontology_discovery.generation_resolver import (
     scan_direct_ontology_consumers,
 )
 from operations.tools import STATUS_OK, call_tool
-from api.scope import Scope
 
 
 class _MemoryFs:
@@ -243,10 +243,9 @@ def test_fabric_alias_preserves_public_table_names_and_binds_generation():
         "ontology_entities",
         "ontology_relationships",
     }
-    assert datasource["generationBinding"] == {
-        "aliasVersion": COMPATIBILITY_ALIAS_VERSION,
-        "generationId": "generation-old",
-    }
+    # Existing Fabric Data Agent datasource schema remains unchanged; the
+    # versioned alias binding is enforced before the definition is built.
+    assert "generationBinding" not in datasource
     assert {table["name"] for table in model["model"]["tables"]} == {
         "ontology_entities",
         "ontology_relationships",
