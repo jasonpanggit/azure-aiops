@@ -441,6 +441,47 @@ function boundedSourceKey(value: string): string {
   return sourceKey;
 }
 
+function boundedSelectorText(
+  field: string,
+  value: unknown,
+  maximum = 120,
+): string {
+  const text = boundedString(`inventory selector ${field}`, String(value ?? ""), 1, maximum);
+  if (/[\0\r\n]/.test(text)) {
+    throw new Error(`inventory selector ${field} contains an invalid control character`);
+  }
+  return text;
+}
+
+function validateSelectedInventorySelector(record: InventoryCopilotRecord): void {
+  if (record.kind === "os_group") {
+    const osName = record.data.os_name;
+    const osVersion = record.data.os_version;
+    if (osName && osVersion && osName !== "all" && osVersion !== "all") {
+      boundedSelectorText("os_name", osName);
+      boundedSelectorText("os_version", osVersion);
+    }
+    return;
+  }
+  if (record.kind === "software_group") {
+    const softwareName = record.data.software_name;
+    const softwareVersion = record.data.software_version;
+    if (
+      softwareName
+      && softwareVersion
+      && softwareName !== "all"
+      && softwareVersion !== "all"
+    ) {
+      boundedSelectorText("software_name", softwareName);
+      boundedSelectorText("software_version", softwareVersion);
+    }
+    return;
+  }
+  boundedSelectorText("resource_type", record.data.resource_type, 160);
+  boundedSelectorText("sku", record.data.sku || "Unknown");
+  boundedSelectorText("tier", record.data.tier || "Unknown");
+}
+
 function assertEvidenceRowBound(data: Record<string, unknown>): void {
   const bytes = new TextEncoder().encode(asciiJson(data)).length + numericValueCount(data);
   assertBound("evidence row", bytes, COPILOT_SNAPSHOT_LIMITS.evidenceRowBytes);
@@ -496,10 +537,16 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     throw new Error("total count is outside the server bounds");
   }
 
+  const populatedFilters = Object.entries(input.filters)
+    .map(([key, value]) => [key, value.trim()] as const)
+    .filter(([, value]) => Boolean(value));
+  assertBound("inventory filters", populatedFilters.length, 16);
   const filterContext = Object.fromEntries(
-    Object.entries(input.filters)
-      .map(([key, value]) => [key, value.trim()])
-      .filter(([, value]) => Boolean(value))
+    populatedFilters
+      .map(([key, value]) => [
+        boundedSelectorText("filter name", key, 64),
+        boundedSelectorText(`filter ${key}`, value, 160),
+      ])
       .sort(([left], [right]) => compareCodePoints(left, right)),
   );
   const sortContext = Object.fromEntries(
@@ -526,6 +573,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
       && normalizedIdentityPart(record.identity)
         === normalizedIdentityPart(input.selectedIdentity),
     );
+    if (selected) validateSelectedInventorySelector(record);
     const stableId = canonicalEvidenceStableId({
       source,
       sourceKey,

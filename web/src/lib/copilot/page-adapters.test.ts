@@ -471,5 +471,31 @@ describe("inventory Copilot page adapter", () => {
         records: [{ ...records[0], identity: "x".repeat(257) }],
       }),
     ).toThrow(/source key/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        filters: Object.fromEntries(
+          Array.from({ length: 17 }, (_, index) => [`filter-${index}`, "value"]),
+        ),
+      }),
+    ).toThrow(/inventory filters/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        filters: { search: "x".repeat(161) },
+      }),
+    ).toThrow(/inventory selector filter search/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        records: [{
+          ...records[0],
+          data: {
+            ...records[0].data,
+            os_name: "x".repeat(121),
+          },
+        }],
+      }),
+    ).toThrow(/inventory selector os_name/i);
   });
 });
