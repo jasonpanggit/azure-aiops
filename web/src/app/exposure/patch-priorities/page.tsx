@@ -1,448 +1,490 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useMemo, useState } from "react";
-import { useApi } from "@/hooks/useApi";
-import { useScope } from "@/lib/scope-context";
-import { vulnerabilityApi } from "@/lib/services";
-import { PageHeader } from "@/components/ui/PageHeader";
-import { StatePanel } from "@/components/ui/StatePanel";
-import { MetricCard } from "@/components/ui/MetricCard";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+
+import { SourceSectionState } from "@/components/exposure/SourceSectionState";
+import { PageHeader, type PageHeaderCompleteness } from "@/components/ui/PageHeader";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
-import { useColumnFilters } from "@/lib/table-column-filters";
-import { useTablePagination } from "@/lib/use-table-pagination";
-import type { PatchPriority, RiskException, VulnerabilityExposure } from "@/lib/types";
+import { useExposureSection } from "@/hooks/useExposureSection";
+import {
+  advanceExposureCursor,
+  createExposureSearchCommitter,
+  encodeExposureQueryState,
+  exposureQueryKey,
+  exposureRetentionKey,
+  parseExposureQueryState,
+  restartExposureQuery,
+  retreatExposureCursor,
+  updateExposureQueryState,
+  type ExposureQueryState,
+} from "@/lib/exposure-query-state";
+import { useScope } from "@/lib/scope-context";
+import { vulnerabilityApi } from "@/lib/services";
+import type {
+  ExposureEnvelope,
+  ExposureFinding,
+  ExposurePage,
+  ExposureSort,
+} from "@/lib/types";
 
-/** Focused page for patch remediation: SLA compliance, patch inventory, CVE exposure, risk exceptions. */
+export interface PatchExposureFinding extends ExposureFinding {
+  weakness_kind?: string;
+  source_family?: string;
+  source_state?: string;
+  current_state?: string;
+  severity?: string;
+  priority_score?: number | null;
+  recommendation?: string;
+  sla_state?: string;
+  sla_age_seconds?: number | null;
+  sla_target_seconds?: number | null;
+  sla_due_at?: string | null;
+  sla_overdue?: boolean | null;
+  detail_path?: string;
+  governed_action_id?: string;
+  execution_eligible?: boolean;
+  package_name?: string;
+  package_version?: string;
+  evidence_refs?: Array<{ source_id?: string; source_family?: string }>;
+}
+
+const TARGET_KIND_OPTIONS = [
+  { value: "server", label: "Servers" },
+  { value: "container_image", label: "Container images" },
+];
+
+function displayDate(value: string | null | undefined): string {
+  if (!value) return "Due date unknown";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Due date unknown";
+  return `Due ${new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(parsed)}`;
+}
+
+function durationCopy(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "SLA age unknown";
+  }
+  const days = Math.floor(value / 86_400);
+  if (days >= 1) return `SLA age ${days.toLocaleString("en-US")} ${days === 1 ? "day" : "days"}`;
+  const hours = Math.floor(value / 3_600);
+  if (hours >= 1) return `SLA age ${hours.toLocaleString("en-US")} ${hours === 1 ? "hour" : "hours"}`;
+  return `SLA age ${Math.max(0, Math.floor(value / 60)).toLocaleString("en-US")} minutes`;
+}
+
+function priorityCopy(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "Priority score unknown";
+  }
+  return `Priority score ${value.toLocaleString("en-US")}/100`;
+}
+
+function targetKindCopy(value: PatchExposureFinding["target_kind"]): string {
+  return value === "container_image" ? "Container image" : "Server";
+}
+
+function itemDetailHref(item: PatchExposureFinding): string {
+  if (item.detail_path?.startsWith("/exposure/")) return item.detail_path;
+  const segment = item.weakness_kind === "kb" ? "kbs" : "cves";
+  return `/exposure/${segment}/${encodeURIComponent(item.weakness_id)}`;
+}
+
+function headerCompleteness(
+  page: ExposurePage<PatchExposureFinding> | null,
+): PageHeaderCompleteness | undefined {
+  const completeness = page?.contract.completeness ?? page?.completeness;
+  if (!completeness) return undefined;
+  const state =
+    completeness.state === "complete" ||
+    completeness.state === "partial" ||
+    completeness.state === "stale" ||
+    completeness.state === "unavailable"
+      ? completeness.state
+      : "unavailable";
+  const freshnessValue = String(
+    page?.contract.freshness.state ?? page?.freshness.state ?? "unknown",
+  ).toLowerCase();
+  return {
+    state,
+    freshness:
+      freshnessValue === "current" || freshnessValue === "fresh"
+        ? "current"
+        : freshnessValue === "stale" || freshnessValue === "aging"
+          ? "stale"
+          : "unknown",
+    representedConnections: completeness.represented_connections,
+    expectedConnections: completeness.expected_connections,
+    excludedCount:
+      completeness.excluded ?? completeness.excluded_count,
+  };
+}
+
+function canonicalPath(pathname: string, state: ExposureQueryState): string {
+  const encoded = encodeExposureQueryState(state).toString();
+  return encoded ? `${pathname}?${encoded}` : pathname;
+}
+
+function remediationHref(
+  item: PatchExposureFinding,
+  pathname: string,
+  state: ExposureQueryState,
+): string {
+  const boundState = {
+    ...state,
+    target: item.target_id,
+    generation: item.read_model_generation_id || state.generation,
+  };
+  const params = new URLSearchParams();
+  params.set("resource_key", item.target_id);
+  params.set("generation", boundState.generation);
+  params.set("return_to", canonicalPath(pathname, boundState));
+  params.set("return_focus", item.exposure_id);
+  if (item.subscription_id) params.append("subscription", item.subscription_id);
+  if (item.weakness_kind === "kb") {
+    params.append("kb", item.weakness_id);
+  } else {
+    params.append("cve", item.weakness_id);
+  }
+  return `/remediation?${params.toString()}`;
+}
+
+function nextSort(current: ExposureSort): ExposureSort {
+  if (current.field !== "priority_score") {
+    return { field: "priority_score", direction: "desc" };
+  }
+  return {
+    field: "priority_score",
+    direction: current.direction === "desc" ? "asc" : "desc",
+  };
+}
+
+/** Server-backed patch priorities over the canonical scoped Exposure read model. */
 export default function PatchPrioritiesPage() {
   const { scope } = useScope();
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedExceptions, setSelectedExceptions] = useState<Set<string>>(new Set());
-  const [bulkRevoking, setBulkRevoking] = useState(false);
-  const [exceptionsToken, setExceptionsToken] = useState(0);
-
-  const patchPriorities = useApi(() => vulnerabilityApi.patchPriorities(scope), [scope]);
-  const slaCompliance = useApi(() => vulnerabilityApi.slaCompliance(scope), [scope]);
-  const exposures = useApi(() => vulnerabilityApi.exposures(scope), [scope]);
-  const riskExceptions = useApi(() => vulnerabilityApi.riskExceptions(scope), [scope, exceptionsToken]);
-
-  const allLoading = useMemo(
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const queryState = useMemo(
     () =>
-      patchPriorities.loading ||
-      slaCompliance.loading ||
-      exposures.loading ||
-      riskExceptions.loading,
-    [patchPriorities.loading, slaCompliance.loading, exposures.loading, riskExceptions.loading]
+      parseExposureQueryState(new URLSearchParams(searchParams.toString()), {
+        authorizedScope: scope,
+      }),
+    [scope, searchParams],
   );
-
-  const anyError = useMemo(
-    () =>
-      patchPriorities.error ||
-      slaCompliance.error ||
-      exposures.error ||
-      riskExceptions.error,
-    [patchPriorities.error, slaCompliance.error, exposures.error, riskExceptions.error]
+  const [searchDraft, setSearchDraft] = useState(
+    queryState.filters.search ?? "",
   );
+  const searchStateRef = useRef(queryState);
+  searchStateRef.current = queryState;
 
-  const patchRows = useMemo(() => (patchPriorities.data?.data as PatchPriority[]) ?? [], [patchPriorities.data]);
-  const filteredPatches = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return patchRows;
-    return patchRows.filter((p) =>
-      [
-        p.priority_id,
-        p.kb_id,
-        p.source_label,
-        p.recommended_action,
-        ...p.cve_ids,
-        ...(p.software_observations ?? []),
-        ...(p.defender_recommendations ?? []),
-      ].some((value) => value?.toLowerCase().includes(query))
-    );
-  }, [patchRows, searchQuery]);
-  const {
-    filteredRows: columnFilteredPatches,
-    filters: patchFilters,
-    resetFilters: resetPatchFilters,
-  } = useColumnFilters(filteredPatches, [
-    { id: "overdue", label: "Overdue", getValues: (patch) => (patch.overdue_count > 0 ? "Overdue" : "On track") },
-  ]);
-  const patchPaging = useTablePagination(columnFilteredPatches);
-
-  const exposureRows = useMemo(() => (exposures.data?.data as VulnerabilityExposure[]) ?? [], [exposures.data]);
-  const {
-    filteredRows: columnFilteredExposures,
-    filters: exposureFilters,
-    resetFilters: resetExposureFilters,
-  } = useColumnFilters(exposureRows, [
-    { id: "severity", label: "Severity", getValues: (exposure) => exposure.severity },
-  ]);
-  const exposurePaging = useTablePagination(columnFilteredExposures);
-
-  const exceptionRows = useMemo(() => (riskExceptions.data?.data as RiskException[]) ?? [], [riskExceptions.data]);
-
-  const revokeException = useCallback(
-    async (exceptionId: string) => {
-      try {
-        await vulnerabilityApi.revokeRiskException(exceptionId);
-        setExceptionsToken((token) => token + 1);
-        setSelectedExceptions((prev) => {
-          const next = new Set(prev);
-          next.delete(exceptionId);
-          return next;
-        });
-      } catch (err) {
-        console.error("Failed to revoke exception:", err);
-      }
+  const commitQuery = useCallback(
+    (next: ExposureQueryState) => {
+      router.replace(canonicalPath(pathname, next), { scroll: false });
     },
-    []
+    [pathname, router],
   );
+  const commitQueryRef = useRef(commitQuery);
+  commitQueryRef.current = commitQuery;
+  const searchCommitterRef = useRef<ReturnType<
+    typeof createExposureSearchCommitter
+  > | null>(null);
+  if (searchCommitterRef.current === null) {
+    searchCommitterRef.current = createExposureSearchCommitter((value) => {
+      const current = searchStateRef.current;
+      if (value === (current.filters.search ?? "")) return;
+      commitQueryRef.current(
+        updateExposureQueryState(current, {
+          filters: { ...current.filters, search: value || undefined },
+        }),
+      );
+    });
+  }
+  const searchCommitter = searchCommitterRef.current;
 
-  const revokeBulk = useCallback(async () => {
-    setBulkRevoking(true);
-    for (const id of Array.from(selectedExceptions)) {
-      await revokeException(id);
-    }
-    setBulkRevoking(false);
-  }, [selectedExceptions, revokeException]);
+  useEffect(() => () => searchCommitter.dispose(), [searchCommitter]);
+  useEffect(() => {
+    setSearchDraft(queryState.filters.search ?? "");
+  }, [queryState.filters.search]);
+
+  const section = useExposureSection<ExposurePage<PatchExposureFinding>>({
+    queryKey: exposureQueryKey(queryState),
+    retentionKey: exposureRetentionKey(queryState),
+    load: ({ signal }) =>
+      vulnerabilityApi.exposureItems(queryState, { signal }) as Promise<
+        ExposureEnvelope<ExposurePage<PatchExposureFinding>>
+      >,
+    isEmpty: (page) => page.items.length === 0,
+  });
+  const page = section.data;
+  const rows = page?.items ?? [];
+  const represented =
+    page?.contract.counts.represented ??
+    page?.contract.completeness.represented ??
+    page?.total_count ??
+    0;
+  const total =
+    page?.contract.counts.total ??
+    page?.contract.completeness.total ??
+    page?.total_count ??
+    0;
+  const excluded =
+    page?.contract.counts.excluded ??
+    page?.contract.completeness.excluded ??
+    0;
+  const first = rows.length === 0 ? 0 : (queryState.page - 1) * queryState.pageSize + 1;
+  const last = rows.length === 0 ? 0 : first + rows.length - 1;
+  const targetKind = queryState.filters.target_kind ?? "all";
+
+  const updateFilter = useCallback(
+    (field: "target_kind", value: string) => {
+      commitQuery(
+        updateExposureQueryState(queryState, {
+          filters: {
+            ...queryState.filters,
+            [field]: value === "all" ? undefined : value,
+          },
+        }),
+      );
+    },
+    [commitQuery, queryState],
+  );
 
   return (
-    <div className="page-container">
+    <div className="page-container exposure-patch-priorities">
       <PageHeader
+        eyebrow="Exposure management"
         title="Patch priorities"
-        description="Manage patch remediation queue, track SLA compliance, and review CVE exposure."
+        description="Review server-backed patch and vulnerability evidence, SLA state, and governed next actions."
+        completeness={headerCompleteness(page)}
       />
 
-      {allLoading && <StatePanel title="Loading" message="Loading patch data…" tone="loading" />}
-      {anyError && <StatePanel title="Error" message="Failed to load patch data" tone="error" />}
+      <SourceSectionState
+        sourceName="Patch priority evidence"
+        itemLabel="findings"
+        state={section}
+      >
+        {section.restart.required && (
+          <div className="callout callout-warning" role="alert">
+            <p>The retained Exposure generation expired. Restart from the first page to continue safely.</p>
+            <button
+              type="button"
+              className="button"
+              onClick={() => commitQuery(restartExposureQuery(queryState))}
+            >
+              Restart results
+            </button>
+          </div>
+        )}
 
-      {!allLoading && !anyError && (
-        <>
-          {slaCompliance.data?.data && (
-            <section className="card">
-              <div className="card-header">
-                <h2>Patch SLA status</h2>
-              </div>
-              <div className="card-body">
-                <div className="metric-grid">
-                  <MetricCard
-                    label="Total patches pending"
-                    value={Object.keys(slaCompliance.data.data).length || 0}
-                    detail="In remediation queue"
-                    tone="default"
-                  />
-                </div>
-              </div>
-            </section>
-          )}
-
-          <section className="card queue-card">
-            <div className="card-header">
-              <div>
-                <h2>Patch and vulnerability priorities</h2>
-                <p>{filteredPatches.length} AUM patch or Defender CVE priorities in the remediation queue</p>
-              </div>
+        <section className="card queue-card" aria-labelledby="patch-priority-heading">
+          <div className="card-header">
+            <div>
+              <h2 id="patch-priority-heading">Patch and vulnerability priorities</h2>
+              <p>
+                {represented.toLocaleString("en-US")} represented findings ·{" "}
+                {total.toLocaleString("en-US")} total findings ·{" "}
+                {excluded.toLocaleString("en-US")} excluded findings
+              </p>
             </div>
-            <div className="card-body">
+          </div>
+
+          <div className="card-body">
+            <label className="form-field" htmlFor="patch-exposure-search">
+              <span>Search exposure</span>
               <input
-                type="text"
-                placeholder="Search by KB ID, source, software, action, or CVE…"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "0.5rem",
-                  marginBottom: "1rem",
-                  border: "1px solid var(--border-color)",
-                  borderRadius: "4px",
+                id="patch-exposure-search"
+                type="search"
+                value={searchDraft}
+                onChange={(event) => {
+                  setSearchDraft(event.target.value);
+                  searchCommitter.schedule(event.target.value);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    searchCommitter.submit(event.currentTarget.value);
+                  }
                 }}
               />
-            </div>
-            {columnFilteredPatches.length === 0 ? (
-              <div className="card-body">
-                <p className="muted">No patches match the current filters.</p>
-              </div>
-            ) : (
-              <>
-                <TableColumnFilters
-                  filters={patchFilters}
-                  onReset={resetPatchFilters}
-                  resultCount={columnFilteredPatches.length}
-                  totalCount={filteredPatches.length}
-                />
-                <div className="table-scroll">
-                  <table className="operations-table exposure-table">
-                    <thead>
-                      <tr>
-                        <th>Priority</th>
-                        <th>Priority</th>
-                        <th>CVEs / software</th>
-                        <th>Reachability</th>
-                        <th>Business impact</th>
-                        <th>Risk reduction</th>
-                        <th aria-label="Open" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {patchPaging.pageRows.map((patch, index) => {
-                        const isKbPriority = patch.priority_type !== "defender_cve" && Boolean(patch.kb_id);
-                        const rowLabel = isKbPriority ? patch.kb_id : patch.cve_ids[0] ?? patch.priority_id;
-                        const detailHref = isKbPriority
-                          ? `/exposure/kbs/${encodeURIComponent(patch.kb_id)}`
-                          : `/exposure/cves/${encodeURIComponent(rowLabel)}`;
-                        return (
-                        <tr key={patch.priority_id || patch.kb_id}>
-                          <td>
-                            <span className="rank-number">
-                              {String(patchPaging.page * patchPaging.pageSize + index + 1).padStart(2, "0")}
-                            </span>
-                          </td>
-                          <td>
-                            <Link className="table-primary-link" href={detailHref}>
-                              {rowLabel}
-                            </Link>
-                            <div className="table-secondary">
-                              {isKbPriority ? "KB-backed patch" : "Defender CVE/software finding"} · {patch.source_label}
-                            </div>
-                            <div className="table-secondary">{patch.recommended_action}</div>
-                          </td>
-                          <td>
-                            <strong>{patch.cve_ids?.length || 0}</strong>
-                            <div className="table-secondary">
-                              {patch.cve_ids?.length ? (
-                                patch.cve_ids.slice(0, 3).map((cveId, i) => (
-                                  <span key={cveId}>
-                                    {i > 0 && ", "}
-                                    <Link className="table-primary-link" href={`/exposure/cves/${encodeURIComponent(cveId)}`}>
-                                      {cveId}
-                                    </Link>
-                                  </span>
-                                ))
-                              ) : (
-                                "Advisory-only KB"
-                              )}
-                            </div>
-                            {patch.software_observations?.length ? (
-                              <div className="table-secondary">Software: {patch.software_observations.slice(0, 2).join(", ")}</div>
-                            ) : null}
-                          </td>
-                          <td>
-                            <StatusBadge
-                              label={patch.reachable_server_count ? "Reachable" : "No path observed"}
-                              tone={patch.reachable_server_count ? "warning" : "neutral"}
-                            />
-                            <div className="table-secondary">{patch.reachable_server_count} reachable servers</div>
-                          </td>
-                          <td>
-                            <strong>{patch.affected_business_service_count} business services</strong>
-                            <div className="table-secondary">
-                              {patch.affected_application_count} apps · {patch.affected_server_count} servers
-                            </div>
-                          </td>
-                          <td>
-                            <strong>{Math.round(patch.expected_risk_reduction)}</strong>
-                            <div className="risk-bar">
-                              <span style={{ width: `${Math.min(100, Math.max(0, patch.expected_risk_reduction))}%` }} />
-                            </div>
-                          </td>
-                          <td>
-                            <Link
-                              className="table-secondary"
-                              href={isKbPriority ? `/remediation?kb=${encodeURIComponent(patch.kb_id)}` : "/remediation"}
-                              style={{ marginRight: "0.75rem" }}
-                            >
-                              Remediate
-                            </Link>
-                            <Link
-                              className="table-open-link"
-                              href={detailHref}
-                              aria-label={`Open ${rowLabel}`}
-                            >
-                              →
-                            </Link>
-                          </td>
-                        </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
-            <TablePagination
-              total={patchPaging.total}
-              pageRows={patchPaging.pageRows.length}
-              page={patchPaging.page}
-              onPageChange={patchPaging.setPage}
-              pageSize={patchPaging.pageSize}
-              onPageSizeChange={patchPaging.setPageSize}
-              label="KBs"
-            />
-          </section>
+            </label>
+          </div>
 
-          <section className="card queue-card">
-            <div className="card-header">
-              <div>
-                <h2>CVE exposure</h2>
-                <p>{exposureRows.length} CVEs mapped to open findings</p>
-              </div>
-            </div>
-            {columnFilteredExposures.length === 0 ? (
-              <div className="card-body">
-                <p className="muted">No CVEs match the current filters.</p>
-              </div>
-            ) : (
-              <>
-                <TableColumnFilters
-                  filters={exposureFilters}
-                  onReset={resetExposureFilters}
-                  resultCount={columnFilteredExposures.length}
-                  totalCount={exposureRows.length}
-                />
-                <div className="table-scroll">
-                  <table className="operations-table exposure-table">
-                    <thead>
-                      <tr>
-                        <th>CVE</th>
-                        <th>Severity</th>
-                        <th>Affected servers</th>
-                        <th>Patch KB</th>
-                        <th aria-label="Open" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {exposurePaging.pageRows.map((exposure) => (
-                        <tr key={exposure.cve_id}>
-                          <td>
-                            <Link className="table-primary-link" href={`/exposure/cves/${encodeURIComponent(exposure.cve_id)}`}>
-                              {exposure.cve_id}
-                            </Link>
-                          </td>
-                          <td>
-                            <StatusBadge label={exposure.severity} tone={statusTone(exposure.severity)} compact />
-                          </td>
-                          <td>{exposure.affected_server_count}</td>
-                          <td>
-                            {exposure.missing_kb ? (
-                              <Link className="table-primary-link" href={`/exposure/kbs/${encodeURIComponent(exposure.missing_kb)}`}>
-                                {exposure.missing_kb}
-                              </Link>
-                            ) : (
-                              <span>No KB mapped</span>
-                            )}
-                          </td>
-                          <td>
-                            <Link
-                              className="table-open-link"
-                              href={`/exposure/cves/${encodeURIComponent(exposure.cve_id)}`}
-                              aria-label={`Open ${exposure.cve_id}`}
-                            >
-                              →
-                            </Link>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
-            <TablePagination
-              total={exposurePaging.total}
-              pageRows={exposurePaging.pageRows.length}
-              page={exposurePaging.page}
-              onPageChange={exposurePaging.setPage}
-              pageSize={exposurePaging.pageSize}
-              onPageSizeChange={exposurePaging.setPageSize}
-              label="CVEs"
-            />
-          </section>
+          <TableColumnFilters
+            filters={[
+              {
+                id: "target_kind",
+                label: "Target kind",
+                value: targetKind,
+                options: TARGET_KIND_OPTIONS,
+                onChange: (value) => updateFilter("target_kind", value),
+              },
+            ]}
+            resultCount={rows.length}
+            totalCount={page?.total_count ?? 0}
+            onReset={() => updateFilter("target_kind", "all")}
+          />
 
-          {exceptionRows.length > 0 && (
-            <section className="card">
-              <div className="card-header">
-                <h2>Risk exceptions</h2>
-                <p>{selectedExceptions.size} selected</p>
-              </div>
-              <div className="card-body">
-                {selectedExceptions.size > 0 && (
-                  <div style={{ marginBottom: "1rem" }}>
-                    <button
-                      onClick={revokeBulk}
-                      disabled={bulkRevoking}
-                      style={{
-                        padding: "0.5rem 1rem",
-                        backgroundColor: "var(--danger-color)",
-                        color: "white",
-                        border: "none",
-                        borderRadius: "4px",
-                        cursor: bulkRevoking ? "not-allowed" : "pointer",
-                        opacity: bulkRevoking ? 0.5 : 1,
-                      }}
+          {rows.length > 0 && (
+            <div
+              className="table-scroll exposure-responsive-table"
+              role="region"
+              aria-label="Patch priorities table"
+              tabIndex={0}
+            >
+              <p className="table-scroll-hint">Scroll horizontally to see all columns</p>
+              <table className="operations-table exposure-table">
+                <caption>Scoped patch and vulnerability priorities</caption>
+                <thead>
+                  <tr>
+                    <th>Rank</th>
+                    <th>Finding</th>
+                    <th>Target</th>
+                    <th>Evidence</th>
+                    <th>SLA</th>
+                    <th
+                      aria-sort={
+                        queryState.sort.field === "priority_score"
+                          ? queryState.sort.direction === "desc"
+                            ? "descending"
+                            : "ascending"
+                          : "none"
+                      }
                     >
-                      {bulkRevoking ? "Revoking…" : `Revoke ${selectedExceptions.size} selected`}
-                    </button>
-                  </div>
-                )}
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr style={{ borderBottom: "1px solid var(--border-color)" }}>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>
-                          <input
-                            type="checkbox"
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedExceptions(new Set(exceptionRows.map((ex) => ex.exception_id)));
-                              } else {
-                                setSelectedExceptions(new Set());
-                              }
-                            }}
-                            checked={selectedExceptions.size === exceptionRows.length && exceptionRows.length > 0}
+                      <button
+                        type="button"
+                        className="table-sort-button"
+                        aria-label="Sort by operational priority"
+                        onClick={() =>
+                          commitQuery(
+                            updateExposureQueryState(queryState, {
+                              sort: nextSort(queryState.sort),
+                            }),
+                          )
+                        }
+                      >
+                        Operational priority
+                      </button>
+                    </th>
+                    <th>Governed action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((item, index) => {
+                    const rank = first + index;
+                    const isServer = item.target_kind === "server";
+                    return (
+                      <tr key={item.exposure_id} id={item.exposure_id} tabIndex={-1}>
+                        <td data-label="Rank">Rank {rank.toLocaleString("en-US")}</td>
+                        <td data-label="Finding">
+                          <Link className="table-primary-link" href={itemDetailHref(item)}>
+                            {item.weakness_id}
+                          </Link>
+                          <div className="table-secondary">
+                            {item.recommendation || "Recommendation unavailable"}
+                          </div>
+                        </td>
+                        <td data-label="Target">
+                          <StatusBadge label={targetKindCopy(item.target_kind)} tone="neutral" />
+                          <div className="table-secondary exposure-long-value">{item.target_id}</div>
+                        </td>
+                        <td data-label="Evidence">
+                          <strong>
+                            {(item.source_families ?? [item.source_family].filter(Boolean)).join(", ") ||
+                              "Unknown source"}
+                          </strong>
+                          <div className="table-secondary">
+                            {item.package_name
+                              ? `${item.package_name}${item.package_version ? ` ${item.package_version}` : ""}`
+                              : `${item.weakness_kind?.toUpperCase() || "Weakness"} evidence`}
+                          </div>
+                        </td>
+                        <td data-label="SLA">
+                          <StatusBadge
+                            label={item.sla_state || "indeterminate"}
+                            tone={item.sla_overdue ? "critical" : "neutral"}
                           />
-                        </th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>Server</th>
-                        <th style={{ padding: "0.5rem", textAlign: "left" }}>CVE</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {exceptionRows.map((exception) => (
-                        <tr key={exception.exception_id} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                          <td style={{ padding: "0.5rem" }}>
-                            <input
-                              type="checkbox"
-                              checked={selectedExceptions.has(exception.exception_id)}
-                              onChange={(e) => {
-                                setSelectedExceptions((prev) => {
-                                  const next = new Set(prev);
-                                  if (e.target.checked) {
-                                    next.add(exception.exception_id);
-                                  } else {
-                                    next.delete(exception.exception_id);
-                                  }
-                                  return next;
-                                });
-                              }}
-                            />
-                          </td>
-                          <td style={{ padding: "0.5rem" }}>{exception.server_id || "N/A"}</td>
-                          <td style={{ padding: "0.5rem", fontSize: "0.875rem" }}>
-                            <Link className="table-primary-link" href={`/exposure/cves/${encodeURIComponent(exception.cve_id)}`}>
-                              {exception.cve_id}
+                          <div className="table-secondary">{durationCopy(item.sla_age_seconds)}</div>
+                          <div className="table-secondary">{displayDate(item.sla_due_at)}</div>
+                        </td>
+                        <td data-label="Operational priority">
+                          <strong>{priorityCopy(item.priority_score)}</strong>
+                        </td>
+                        <td data-label="Governed action">
+                          {isServer && item.execution_eligible ? (
+                            <Link
+                              className="button button-primary"
+                              href={remediationHref(item, pathname, queryState)}
+                            >
+                              Open governed remediation for {item.weakness_id}
                             </Link>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </section>
+                          ) : (
+                            <span className="table-secondary">
+                              {item.target_kind === "container_image"
+                                ? "Governed container review required"
+                                : "No safe action available"}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
-        </>
-      )}
+
+          {page && (
+            <TablePagination
+              mode="cursor"
+              cursor={{
+                total: page.total_count,
+                returnedCount: rows.length,
+                first,
+                last,
+                hasMore: Boolean(page.next_cursor),
+                hasPrevious: queryState.page > 1,
+                historyDepth: queryState.cursorHistory.length,
+                representedCount: represented,
+              }}
+              busy={section.refreshing}
+              pageSize={queryState.pageSize}
+              onPageSizeChange={(pageSize) =>
+                commitQuery(updateExposureQueryState(queryState, { pageSize }))
+              }
+              onPreviousCursor={() =>
+                commitQuery(retreatExposureCursor(queryState))
+              }
+              onNextCursor={() => {
+                if (page.next_cursor) {
+                  commitQuery(
+                    advanceExposureCursor(
+                      {
+                        ...queryState,
+                        generation: page.generation,
+                      },
+                      page.next_cursor,
+                    ),
+                  );
+                }
+              }}
+              label="findings"
+            />
+          )}
+        </section>
+      </SourceSectionState>
     </div>
   );
 }

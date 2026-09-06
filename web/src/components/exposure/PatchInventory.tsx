@@ -1,261 +1,433 @@
 "use client";
 
-import { Fragment, useCallback, useMemo, useState } from "react";
 import Link from "next/link";
+import { useMemo, useState } from "react";
+
+import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
+import { useExposureSection } from "@/hooks/useExposureSection";
+import {
+  DEFAULT_EXPOSURE_SORT,
+  exposureQueryKey,
+  exposureRetentionKey,
+  updateExposureQueryState,
+  type ExposureQueryState,
+} from "@/lib/exposure-query-state";
 import type { ScopeSelection } from "@/lib/scope";
-import { patchingApi } from "@/lib/services";
-import { useColumnFilters } from "@/lib/table-column-filters";
-import type { PatchTarget } from "@/lib/types";
-import { useTablePagination } from "@/lib/use-table-pagination";
+import { patchingApi, vulnerabilityApi } from "@/lib/services";
+import type {
+  ExposureEnvelope,
+  ExposureFinding,
+  ExposurePage,
+  PatchRun,
+} from "@/lib/types";
 
 interface PatchInventoryProps {
   scope: ScopeSelection;
-  /** Free-text filter shared with the rest of the exposure workspace. */
+  /** Free-text filter shared with the rest of the Exposure workspace. */
   query?: string;
 }
 
-function stateTone(state: string): "critical" | "warning" | "success" | "neutral" {
+interface PatchInventoryFinding extends ExposureFinding {
+  weakness_kind?: string;
+  source_family?: string;
+  source_state?: string;
+  current_state?: string;
+  severity?: string;
+  priority_score?: number | null;
+  recommendation?: string;
+  sla_state?: string;
+  sla_age_seconds?: number | null;
+  sla_due_at?: string | null;
+  package_name?: string;
+  package_version?: string;
+  detail_path?: string;
+  execution_eligible?: boolean;
+  governed_action_id?: string;
+  evidence_refs?: Array<{ source_id?: string; source_family?: string }>;
+  review_handoff?: {
+    outcome?: "review_handoff" | "no_safe_action";
+    href?: string;
+    reason?: string;
+  };
+}
+
+const TARGET_KIND_OPTIONS = [
+  { value: "server", label: "Servers" },
+  { value: "container_image", label: "Container images" },
+];
+
+function dateCopy(value: string | null | undefined): string {
+  if (!value) return "Due date unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Due date unknown";
+  return `Due ${new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date)}`;
+}
+
+function ageCopy(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "SLA age unknown";
+  }
+  const days = Math.floor(value / 86_400);
+  if (days >= 1) return `SLA age ${days} ${days === 1 ? "day" : "days"}`;
+  return `SLA age ${Math.floor(value / 3_600)} hours`;
+}
+
+function detailHref(row: PatchInventoryFinding): string {
+  if (row.detail_path?.startsWith("/exposure/")) return row.detail_path;
+  return `/exposure/${
+    row.weakness_kind === "kb" ? "kbs" : "cves"
+  }/${encodeURIComponent(row.weakness_id)}`;
+}
+
+function governedHref(row: PatchInventoryFinding): string {
+  if (
+    row.target_kind === "container_image" &&
+    row.review_handoff?.outcome === "review_handoff" &&
+    row.review_handoff.href?.startsWith("/remediation?")
+  ) {
+    return row.review_handoff.href;
+  }
+  const params = new URLSearchParams();
+  params.set("resource_key", row.target_id);
+  params.set("generation", row.read_model_generation_id);
+  params.set("return_focus", row.exposure_id);
+  if (row.subscription_id) params.append("subscription", row.subscription_id);
+  if (row.weakness_kind === "kb") {
+    params.append("kb", row.weakness_id);
+  } else {
+    params.append("cve", row.weakness_id);
+  }
+  return `/remediation?${params.toString()}`;
+}
+
+function runTone(state: string): "critical" | "warning" | "success" | "neutral" {
   if (state === "failed" || state === "rejected") return "critical";
   if (state === "succeeded") return "success";
   if (state === "submitted" || state === "running") return "warning";
   return "neutral";
 }
 
-function remediationHref(target: PatchTarget, selected: string[]): string {
-  const params = new URLSearchParams();
-  params.set("resource_key", target.target_id);
-  if (target.subscription_id) params.set("subscription", target.subscription_id);
-  const patchIds = selected.length > 0
-    ? selected
-    : target.available_patches.map((patch) => patch.patch_id);
-  for (const patchId of patchIds) params.append("kb", patchId);
-  if (target.business_service) params.set("business_service", target.business_service);
-  return `/remediation?${params.toString()}`;
+function RunHistory({ runs }: { runs: PatchRun[] }) {
+  if (runs.length === 0) {
+    return (
+      <StatePanel
+        title="No historical patch runs"
+        message="No governed patch runs are recorded for this authorized scope."
+        tone="empty"
+      />
+    );
+  }
+  return (
+    <div
+      className="table-scroll exposure-responsive-table"
+      role="region"
+      aria-label="Historical patch runs table"
+      tabIndex={0}
+    >
+      <table className="operations-table">
+        <caption>Historical governed patch runs</caption>
+        <thead>
+          <tr>
+            <th>Run</th>
+            <th>Target</th>
+            <th>Updates</th>
+            <th>State</th>
+            <th>Requested by</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => (
+            <tr key={run.run_id}>
+              <td data-label="Run">
+                <code>{run.run_id}</code>
+                <div className="table-secondary">{run.created_at}</div>
+              </td>
+              <td data-label="Target">
+                <strong>{run.target_id}</strong>
+                <div className="table-secondary">{run.operation}</div>
+              </td>
+              <td data-label="Updates">{run.patch_ids.join(", ") || "—"}</td>
+              <td data-label="State">
+                <StatusBadge label={run.state} tone={runTone(run.state)} />
+                <div className="table-secondary">{run.message || run.provider || ""}</div>
+              </td>
+              <td data-label="Requested by">{run.requested_by}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 /**
- * Read-only patch readiness inventory.
+ * Read-only inventory over the canonical Exposure collection.
  *
- * Patch selection is context for a governed remediation handoff only. This
- * component deliberately has no mutation client: approval, immutable snapshot
- * capture, and execution all happen in the remediation workspace.
+ * Server findings may link to the existing governed server workflow. Container
+ * findings remain review-only/no-safe-action and this component owns no
+ * execution or infrastructure mutation client.
  */
 export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
-  const targets = useApi(() => patchingApi.targets(scope), [scope]);
+  const [targetKind, setTargetKind] = useState("all");
+  const [page, setPage] = useState(1);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [cursorHistory, setCursorHistory] = useState<string[]>([]);
+  const [pageSize, setPageSize] = useState<25 | 50 | 100>(50);
+  const queryState = useMemo<ExposureQueryState>(
+    () => ({
+      scope,
+      filters: {
+        search: query.trim() || undefined,
+        target_kind: targetKind === "all" ? undefined : targetKind,
+      },
+      sort: DEFAULT_EXPOSURE_SORT,
+      pageSize,
+      cursor,
+      cursorHistory,
+      page,
+      target: "",
+      drawer: "",
+      generation: "",
+    }),
+    [cursor, cursorHistory, page, pageSize, query, scope, targetKind],
+  );
+  const findings = useExposureSection<ExposurePage<PatchInventoryFinding>>({
+    queryKey: exposureQueryKey(queryState),
+    retentionKey: exposureRetentionKey(queryState),
+    load: ({ signal }) =>
+      vulnerabilityApi.exposureItems(queryState, { signal }) as Promise<
+        ExposureEnvelope<ExposurePage<PatchInventoryFinding>>
+      >,
+    isEmpty: (response) => response.items.length === 0,
+  });
   const runs = useApi(() => patchingApi.runs(scope), [scope]);
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [selection, setSelection] = useState<Record<string, string[]>>({});
+  const rows = findings.data?.items ?? [];
+  const total = findings.data?.total_count ?? 0;
+  const first = rows.length ? (page - 1) * pageSize + 1 : 0;
+  const last = rows.length ? first + rows.length - 1 : 0;
+  const represented =
+    findings.data?.contract.counts.represented ??
+    findings.metadata.represented;
 
-  const filteredTargets = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    const rows = targets.data?.data ?? [];
-    if (!normalized) return rows;
-    return rows.filter((target) =>
-      [target.name, target.target_id, target.inventory_kind, target.business_service, target.environment].some(
-        (value) => String(value ?? "").toLowerCase().includes(normalized)
-      )
-    );
-  }, [query, targets.data]);
+  const resetPaging = () => {
+    setCursor(null);
+    setCursorHistory([]);
+    setPage(1);
+  };
 
-  const { filteredRows: visibleTargets, filters, resetFilters } = useColumnFilters(filteredTargets, [
-    { id: "inventory", label: "Inventory", getValues: (target) => target.inventory_kind },
-    { id: "service", label: "Service", getValues: (target) => target.business_service || "Unassigned service" },
-    { id: "environment", label: "Environment", getValues: (target) => target.environment || "Unknown" },
-    { id: "operation", label: "Operation", getValues: (target) => target.operation === "node_image_upgrade" ? "Node image upgrade" : "Install patches" },
-  ]);
-  const paging = useTablePagination(visibleTargets);
-
-  const togglePatch = useCallback((target: PatchTarget, patchId: string) => {
-    setSelection((current) => {
-      const selected = current[target.target_id] ?? [];
-      if (target.operation === "node_image_upgrade") {
-        return { ...current, [target.target_id]: selected.includes(patchId) ? [] : [patchId] };
-      }
-      return {
-        ...current,
-        [target.target_id]: selected.includes(patchId)
-          ? selected.filter((item) => item !== patchId)
-          : [...selected, patchId],
-      };
-    });
-  }, []);
-
-  if (targets.loading) {
-    return <StatePanel title="Loading patchable inventory" message="Reading patch readiness and governed handoff context." tone="loading" />;
-  }
-  if (targets.error) {
-    return <StatePanel title="Patchable inventory unavailable" message={targets.error.message || "The request failed."} tone="error" />;
-  }
-
-  const recentRuns = runs.data?.data ?? [];
   return (
     <section className="card queue-card" data-testid="patch-inventory">
       <div className="card-header">
         <div>
           <h2>Patch and node image readiness</h2>
           <p>
-            Inspect available updates here, then open governed remediation to review business impact,
-            capture approval, and execute the server-owned patch snapshot.
+            Common Exposure evidence supplies target kind, weakness, package,
+            SLA, freshness, completeness, and governed next-action context.
           </p>
         </div>
       </div>
 
-      {(targets.data?.warnings ?? []).map((warning) => (
-        <div className="card-body" key={warning}>
-          <p className="muted" role="status">{warning}</p>
-        </div>
-      ))}
+      <SourceSectionState
+        sourceName="Patch inventory"
+        itemLabel="findings"
+        state={findings}
+      >
+        <TableColumnFilters
+          filters={[
+            {
+              id: "target_kind",
+              label: "Target kind",
+              value: targetKind,
+              options: TARGET_KIND_OPTIONS,
+              onChange: (value) => {
+                setTargetKind(value);
+                resetPaging();
+              },
+            },
+          ]}
+          resultCount={rows.length}
+          totalCount={total}
+          onReset={() => {
+            setTargetKind("all");
+            resetPaging();
+          }}
+        />
 
-      <div className="card-body">
-        <p className="callout callout-warning">
-          Direct patch submission is disabled. Inventory selections are handed to the governed remediation workspace as review context only.
-        </p>
-      </div>
-
-      {filteredTargets.length === 0 ? (
-        <div className="card-body"><p className="muted">No patchable servers match the current filters.</p></div>
-      ) : (
-        <>
-          <TableColumnFilters
-            filters={filters}
-            onReset={resetFilters}
-            resultCount={visibleTargets.length}
-            totalCount={filteredTargets.length}
-          />
-          <div className="table-scroll">
+        {rows.length > 0 && (
+          <div
+            className="table-scroll exposure-responsive-table"
+            role="region"
+            aria-label="Patch inventory table"
+            tabIndex={0}
+          >
+            <p className="table-scroll-hint">Scroll horizontally to see all columns</p>
             <table className="operations-table exposure-table">
+              <caption>Scoped patch, package, and container vulnerability inventory</caption>
               <thead>
                 <tr>
-                  <th>Server</th>
-                  <th>Inventory</th>
-                  <th>Scope</th>
-                  <th>Open findings</th>
-                  <th>Available updates</th>
+                  <th>Rank</th>
+                  <th>Finding</th>
+                  <th>Target kind</th>
+                  <th>Package evidence</th>
+                  <th>SLA</th>
+                  <th>Source state</th>
                   <th>Governed action</th>
                 </tr>
               </thead>
               <tbody>
-                {paging.pageRows.map((target) => {
-                  const selected = selection[target.target_id] ?? [];
-                  const isOpen = expanded === target.target_id;
+                {rows.map((row, index) => {
+                  const isContainer = row.target_kind === "container_image";
+                  const canReviewContainer =
+                    isContainer &&
+                    row.review_handoff?.outcome === "review_handoff" &&
+                    Boolean(row.review_handoff.href);
+                  const canExecuteServer =
+                    !isContainer &&
+                    row.execution_eligible === true &&
+                    Boolean(row.governed_action_id);
                   return (
-                    <Fragment key={target.target_id}>
-                      <tr>
-                        <td>
-                          <strong>{target.name || target.target_id}</strong>
-                          <div className="table-secondary">{target.target_id}</div>
-                        </td>
-                        <td>
-                          <StatusBadge label={target.inventory_kind} tone="neutral" />
-                          <div className="table-secondary">
-                            {target.operation === "node_image_upgrade" ? "Node image upgrade" : "Install patches"}
-                          </div>
-                        </td>
-                        <td>
-                          <strong>{target.business_service || "Unassigned service"}</strong>
-                          <div className="table-secondary">
-                            {[target.environment, target.region, target.owner].filter(Boolean).join(" · ") || "No scope metadata"}
-                          </div>
-                        </td>
-                        <td>
-                          <strong>{target.cve_count} CVEs</strong>
-                          <div className="table-secondary">{target.critical_count} critical · {target.overdue_count} overdue</div>
-                        </td>
-                        <td>
-                          <strong>{target.available_patches.length} available</strong>
-                          <div className="table-secondary">{selected.length > 0 ? `${selected.length} selected` : "All shown for review"}</div>
-                        </td>
-                        <td>
-                          <button
-                            type="button"
-                            className="button button-quiet"
-                            onClick={() => setExpanded(isOpen ? null : target.target_id)}
-                            aria-expanded={isOpen}
-                          >
-                            {isOpen ? "Hide updates" : "Choose updates"}
-                          </button>
-                          <Link className="button button-primary" href={remediationHref(target, selected)}>
+                    <tr key={row.exposure_id} id={row.exposure_id} tabIndex={-1}>
+                      <td data-label="Rank">Rank {first + index}</td>
+                      <td data-label="Finding">
+                        <Link className="table-primary-link" href={detailHref(row)}>
+                          {row.weakness_id}
+                        </Link>
+                        <div className="table-secondary">
+                          {row.recommendation || "Recommendation unavailable"}
+                        </div>
+                      </td>
+                      <td data-label="Target kind">
+                        <StatusBadge
+                          label={isContainer ? "Container image" : "Server"}
+                          tone="neutral"
+                        />
+                        <div className="table-secondary exposure-long-value">
+                          {row.target_id}
+                        </div>
+                      </td>
+                      <td data-label="Package evidence">
+                        {row.package_name
+                          ? `${row.package_name}${row.package_version ? ` ${row.package_version}` : ""}`
+                          : "Package evidence unavailable"}
+                      </td>
+                      <td data-label="SLA">
+                        <div>{ageCopy(row.sla_age_seconds)}</div>
+                        <div className="table-secondary">{dateCopy(row.sla_due_at)}</div>
+                      </td>
+                      <td data-label="Source state">
+                        <StatusBadge
+                          label={row.completeness || "unknown"}
+                          tone={row.completeness === "complete" ? "success" : "warning"}
+                        />
+                        <div className="table-secondary">
+                          {(row.source_families ?? [row.source_family].filter(Boolean)).join(", ") ||
+                            "Unknown source"}
+                        </div>
+                      </td>
+                      <td data-label="Governed action">
+                        {canExecuteServer ? (
+                          <Link className="button button-primary" href={governedHref(row)}>
                             Open governed remediation
                           </Link>
-                        </td>
-                      </tr>
-                      {isOpen && (
-                        <tr className="detail-row">
-                          <td colSpan={6}>
-                            {!target.patchable ? (
-                              <p className="muted">{target.blocked_reason || "This target is not currently patchable."}</p>
-                            ) : target.available_patches.length === 0 ? (
-                              <p className="muted">No updates are currently known for this target.</p>
-                            ) : (
-                              <div className="patch-selection">
-                                <ul className="patch-option-list">
-                                  {target.available_patches.map((patch) => (
-                                    <li key={patch.patch_id}>
-                                      <label className="patch-option">
-                                        <input
-                                          type={target.operation === "node_image_upgrade" ? "radio" : "checkbox"}
-                                          name={`patch-${target.target_id}`}
-                                          checked={selected.includes(patch.patch_id)}
-                                          onChange={() => togglePatch(target, patch.patch_id)}
-                                        />
-                                        <span><strong>{patch.patch_id}</strong>{patch.title ? ` — ${patch.title}` : ""}</span>
-                                      </label>
-                                      <div className="table-secondary">
-                                        {[patch.classification, patch.severity, patch.reboot_required ? "reboot required" : "", patch.cve_ids.slice(0, 3).join(", "), `source: ${patch.source}`].filter(Boolean).join(" · ")}
-                                      </div>
-                                    </li>
-                                  ))}
-                                </ul>
-                                <p className="muted">Selection narrows review context only; the server creates the authoritative executable snapshot.</p>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
+                        ) : canReviewContainer ? (
+                          <Link className="button button-primary" href={governedHref(row)}>
+                            Open governed container review
+                          </Link>
+                        ) : (
+                          <span className="table-secondary">
+                            {row.review_handoff?.reason ||
+                              (isContainer
+                                ? "No safe container action"
+                                : "No safe governed action")}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
-          <TablePagination
-            total={paging.total}
-            pageRows={paging.pageRows.length}
-            page={paging.page}
-            onPageChange={paging.setPage}
-            pageSize={paging.pageSize}
-            onPageSizeChange={paging.setPageSize}
-            label="targets"
-          />
-        </>
-      )}
+        )}
 
-      {recentRuns.length > 0 && (
-        <div className="card-body">
-          <h3>Historical patch runs</h3>
-          <div className="table-scroll">
-            <table className="operations-table">
-              <thead><tr><th>Run</th><th>Target</th><th>Updates</th><th>State</th><th>Requested by</th></tr></thead>
-              <tbody>
-                {recentRuns.map((run) => (
-                  <tr key={run.run_id}>
-                    <td><code>{run.run_id}</code><div className="table-secondary">{run.created_at}</div></td>
-                    <td><strong>{run.target_id}</strong><div className="table-secondary">{run.operation}</div></td>
-                    <td>{run.patch_ids.join(", ") || "—"}</td>
-                    <td><StatusBadge label={run.state} tone={stateTone(run.state)} /><div className="table-secondary">{run.message || run.provider || ""}</div></td>
-                    <td>{run.requested_by}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {findings.data && (
+          <TablePagination
+            mode="cursor"
+            cursor={{
+              total,
+              returnedCount: rows.length,
+              first,
+              last,
+              hasMore: Boolean(findings.data.next_cursor),
+              hasPrevious: page > 1,
+              historyDepth: cursorHistory.length,
+              representedCount: represented,
+            }}
+            busy={findings.refreshing}
+            pageSize={pageSize}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              resetPaging();
+            }}
+            onPreviousCursor={() => {
+              const history = [...cursorHistory];
+              setCursor(history.pop() ?? null);
+              setCursorHistory(history);
+              setPage((value) => Math.max(1, value - 1));
+            }}
+            onNextCursor={() => {
+              const next = findings.data?.next_cursor;
+              if (!next) return;
+              if (cursor) setCursorHistory((history) => [...history, cursor]);
+              setCursor(next);
+              setPage((value) => value + 1);
+            }}
+            label="findings"
+          />
+        )}
+      </SourceSectionState>
+
+      <section aria-labelledby="historical-patch-runs-heading">
+        <div className="card-header">
+          <h3 id="historical-patch-runs-heading">Historical patch runs</h3>
         </div>
-      )}
+        {runs.loading ? (
+          <StatePanel
+            title="Loading Historical patch runs"
+            message="Loading Historical patch runs. Current Exposure findings remain available."
+            tone="loading"
+            busy
+          />
+        ) : runs.error ? (
+          <StatePanel
+            title="Historical patch runs is unavailable"
+            message={`${runs.error.message || "No safe provider detail was returned."} Current Exposure findings remain available.`}
+            tone="error"
+            action={
+              <button
+                type="button"
+                className="button"
+                onClick={runs.refetch}
+                aria-label="Retry Historical patch runs"
+              >
+                Retry Historical patch runs
+              </button>
+            }
+          />
+        ) : (
+          <RunHistory runs={runs.data?.data ?? []} />
+        )}
+      </section>
     </section>
   );
 }

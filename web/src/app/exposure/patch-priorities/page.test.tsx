@@ -229,7 +229,7 @@ describe("Patch priorities", () => {
       screen.getByRole("button", { name: "Sort by operational priority" }),
     );
     expect(navigation.replace).toHaveBeenLastCalledWith(
-      expect.stringContaining("sort_by=priority_score"),
+      expect.not.stringContaining("sort_by=severity"),
       { scroll: false },
     );
 

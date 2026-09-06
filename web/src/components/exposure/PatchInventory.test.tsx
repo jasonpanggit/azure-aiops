@@ -1,5 +1,4 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { exposureItems, targets, runs } = vi.hoisted(() => ({
@@ -24,8 +23,6 @@ const envelope = <T,>(data: T, warnings: string[] = []) => ({
 });
 
 const VM_ID = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1";
-const AKS_ID = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ContainerService/managedClusters/aks1";
-
 function commonEnvelope(
   items: Record<string, unknown>[],
   options: { state?: string; nextCursor?: string | null } = {},
@@ -132,54 +129,6 @@ function exposure(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function patch(overrides: Record<string, unknown> = {}) {
-  return {
-    patch_id: "KB600001",
-    title: "Cumulative security update",
-    classification: "Security",
-    severity: "Critical",
-    cve_ids: ["CVE-2026-0001"],
-    reboot_required: true,
-    published_at: "2026-01-01T00:00:00Z",
-    source: "derived:open-findings",
-    node_pool: "",
-    current_version: "",
-    target_version: "",
-    ...overrides,
-  };
-}
-
-function target(overrides: Record<string, unknown> = {}) {
-  return {
-    target_id: VM_ID,
-    name: "vm1",
-    inventory_kind: "Azure VM",
-    resource_type: "microsoft.compute/virtualmachines",
-    subscription_id: "sub-1",
-    subscription_connection: "",
-    resource_group: "rg",
-    environment: "prod",
-    business_service: "Payments",
-    application: "",
-    owner: "",
-    region: "eastus",
-    criticality: "",
-    os_family: "Windows",
-    reachable: true,
-    internet_exposed: false,
-    cve_count: 3,
-    critical_count: 1,
-    overdue_count: 1,
-    max_days_open: 40,
-    available_patches: [patch()],
-    patchable: true,
-    blocked_reason: "",
-    requires_node_pool: false,
-    operation: "install_patches",
-    ...overrides,
-  };
-}
-
 describe("PatchInventory", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -188,8 +137,6 @@ describe("PatchInventory", () => {
   });
 
   it("renders patch inventory from the common server envelope and never loads the legacy target aggregate", async () => {
-    targets.mockResolvedValue(envelope([target()]));
-
     render(<PatchInventory scope={{}} />);
 
     expect(await screen.findByText("KB600001")).toBeInTheDocument();
