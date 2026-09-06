@@ -1,10 +1,10 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-reviewed: 2026-09-06T05:29:34Z
+reviewed: 2026-09-06T06:13:43Z
 depth: deep
 diff_base: d57f6137d747c344c56028d7e6211811927d0b43
-diff_head: 97114a32
-files_reviewed: 48
+diff_head: 76b31dd3b6c401bd9f23684bf983c7d395b7a68a
+files_reviewed: 49
 files_reviewed_list:
   - src/api/providers.py
   - src/api/routers/network.py
@@ -24,6 +24,7 @@ files_reviewed_list:
   - tests/network_scale_fixtures.py
   - tests/test_api_network.py
   - tests/test_api_providers.py
+  - tests/test_api_runtime.py
   - tests/test_network_analysis.py
   - tests/test_network_downstream_contracts.py
   - tests/test_network_downstream_scope.py
@@ -56,317 +57,320 @@ files_reviewed_list:
   - web/src/test/network-fixtures.ts
 findings:
   critical: 5
-  warning: 6
+  warning: 3
   info: 0
-  total: 11
+  total: 8
 status: resolved
 resolution:
-  fixed: 11
+  fixed: 8
   skipped: 0
   verification: automated_passed_human_logic_review_recommended
 ---
 
-# Phase 12: Independent Post-Fix Deep Code Review
+# Phase 12: Final Independent Deep Code Review
 
-**Reviewed:** 2026-09-06T05:29:34Z
+**Reviewed:** 2026-09-06T06:13:43Z
 **Depth:** deep
-**Diff:** `d57f6137d747c344c56028d7e6211811927d0b43..97114a32`
-**Files Reviewed:** 48
+**Diff:** `d57f6137d747c344c56028d7e6211811927d0b43..76b31dd3b6c401bd9f23684bf983c7d395b7a68a`
+**Files Reviewed:** 49
 **Status:** resolved
 
 ## Summary
 
-This was a fresh review of the current Phase 12 HEAD after both review-fix
-series. I read the Phase 12 plans, summaries, research, UI/validation
-contracts, pre-phase review, both post-implementation review states, and
-`12-REVIEW-FIX.md`; then traced the current backend, API, agent, and browser
-call chains independently.
+At review time, the Phase 12 implementation was **not clean after the two fix
+iterations**. The focused committed suites passed, and most original findings
+were closed, but independent probes found five remaining correctness blockers
+and three warnings. Iteration 3 has now resolved all eight. The original probes
+found:
 
-The first review's scope, stale-state, pagination, selection, and drill-down
-fixes remain present. Iteration 2 fixed all five blockers and six warnings
-identified by this independent review, with failing-first regressions and
-atomic commits for each finding.
+- summary budgeting still disagrees with the browser about the synthetic
+  `subscription:unknown` group and can render 1,501 Cytoscape node elements
+  under a 1,500-element limit;
+- the newly wired production flow-observation path does not understand the
+  persisted ontology relationship shape and, on a partially adapted row, does
+  not recognize `object_id`;
+- two policy failure modes still defeat the documented last-good-provider
+  behavior;
+- the drawer can call an in-scope target “outside the collected scope” merely
+  because summary truncation withheld its node.
 
-Review-time focused verification completed:
+The OneLake remote ETag precondition, local inter-process lock plus atomic
+replace, export filename sequencing/audit timestamp separation, legacy
+shared-service casefolding, scoped flow filtering, top-level edge truncation,
+and the incomplete-results live region were independently traced and found
+present.
 
-- Backend post-fix slice: **121 passed**
-- Web post-fix slice: **74 passed**
-- TypeScript: **passed**
-- Ruff over post-fix Python scope: **passed**
-- `git diff --check` over Phase 12 source: **passed**
+## Iteration 3 Resolution Status
 
-Before the iteration 2 fixes, the then-passing tests did not cover the failing
-estate shapes below. Executed probes against the reviewed HEAD reproduced:
-
-- **3,000 rendered graph nodes** from a summary response whose declared cap is
-  1,500, while the payload stayed just under 2 MB.
-- A 40-VNet mesh with all **820/820 resources returned**, but only **549/780
-  links** and **629/1,560 relationships**, while top-level
-  `coverage.truncated` incorrectly remained `false`.
-- A policy document body read failure replacing a last-known-good governed
-  policy with an empty default policy while provider health remained `ready`.
-- `projected_full_node_count=1,336` for a graph that the current resource
-  client renders as 1,330 nodes.
-
-## Iteration 2 Resolution Status
-
-All five blockers and six warnings were fixed on 2026-09-06. The topology
-identity, summary budgeting, coverage, provider lifecycle, CAS, scoping, and
-timestamp findings remain marked as requiring human logic verification even
-though all automated gates pass.
+All five blockers and three warnings were fixed and regression-covered on
+2026-09-06. Identity budgeting, persisted ontology normalization, governed
+policy retention, provider lifecycle, scope/truncation semantics, and timestamp
+handling remain marked as requiring human logic verification even though all
+automated gates pass.
 
 | Finding | Status | Resolution evidence |
 |---|---|---|
-| CR-01 | Fixed — human verification recommended | `211a116e`; full-node projection now follows resource-client identity and excludes non-rendered synthetic shared-service IDs. |
-| CR-02 | Fixed — human verification recommended | `c45f75ea`; summary budgeting covers resource, unresolved-peer, client-added, and subscription-group nodes under the 1,500-node and byte ceilings. |
-| CR-03 | Fixed — human verification recommended | `949bf4b1`, `93501a4b`; top-level and nested node/group/relationship coverage now disclose every truncated collection and retain valid shared-service metadata. |
-| CR-04 | Fixed — human verification recommended | `232cd91a`; provider construction uses one strict policy+revision read and preserves the last-good provider as degraded on body-read failure. |
-| CR-05 | Fixed — human verification recommended | `ae8cb456`; OneLake writes use ETag preconditions, local writes use an inter-process lock plus atomic replacement, and mutation reads fail closed. |
-| WR-01 | Fixed — human verification recommended | `ed8895e1`; scoped services filter flow observations by surviving endpoints. |
-| WR-02 | Fixed — human verification recommended | `4c08d698`; managed, Fabric, and hybrid constructors now pass ingested traffic-analysis observations to rule analysis. |
-| WR-03 | Fixed — human verification recommended | `578b0c21`; loader timestamps are parsed, UTC-normalized, and compared as instants while invalid values are ignored. |
-| WR-04 | Fixed | `a85715bb`, `1634f68e`; audit timestamps remain the real clock value and only colliding filenames gain a sequence suffix. |
-| WR-05 | Fixed | `fc79e096`; legacy shared-service IDs and consumers resolve through the folded identity index. |
-| WR-06 | Fixed | `04203af9`, `86b5bd05`, `7a802531`; incomplete-results warnings are polite named live regions and policy status tests remain unambiguous. |
+| CR-01 | Fixed — human verification recommended | `1624765e`, `2f0359fa`; resource nodes with no subscription now reserve the browser's single `subscription:unknown` compound node, keeping the rendered resource-plus-group total at or below 1,500 with authoritative group coverage and a browser regression. |
+| CR-02 | Fixed — human verification recommended | `495cb79a`, `48a42db8`; persisted mapper rows decode `payload_json.attributes`, canonical `subject_id`/`object_id` are preserved, the analyzer accepts `object_id`, and route confidence/basis follows analyzed flow provenance with a full mapper integration regression. |
+| CR-03 | Fixed — human verification recommended | `e9113df0`; strict policy reads reject malformed string/list bodies and present documents missing `policy`, retaining the governed provider as degraded while still allowing a genuinely absent revision-zero document. |
+| CR-04 | Fixed — human verification recommended | `18e0fa74`; a failed refresh against a known newer cache key explicitly marks the retained provider stale/degraded, serves it, and respects retry backoff instead of retrying twice in one request. |
+| CR-05 | Fixed — human verification recommended | `f0b25410`; private-endpoint copy uses only authoritative server scope facts for exclusion and identifies an absent summary target as potentially withheld. |
+| WR-01 | Fixed — human verification recommended | `f6c7c196`; live ARG timestamps use the loader's aware-UTC parser, invalid/naive values remain unknown, and valid offsets normalize to UTC. |
+| WR-02 | Fixed | `09b1ba08`, `f67d55f1`; missing-zone diagnostics retain count/reason only and the regression proves no subscription path or full ARM identifier reaches logs. |
+| WR-03 | Fixed | `afb333c3`, `5d8916bd`; asynchronous drill-down, policy-save, and policy-form critical errors are mounted as live alerts with accessibility regressions. |
 
-Post-fix verification:
+## Structural Findings (fallow)
 
-- Targeted backend regression slice: **240 passed**
-- Targeted web regression slice: **129 passed**
-- G-1/G-2/G-3/G-6 modules: **19 passed**
-- G-4/G-5 and downstream contracts: **16 passed**
-- Downstream scope tracer: **4 passed**
-- Full backend suite: **2,708 passed, 33 skipped**
-- Full web suite: **340 passed, 15 todo**
-- TypeScript, ESLint, Ruff, and committed `git diff --check`: passed
-
-## Prior Review-Fix Verification
-
-| Prior finding | Independent HEAD result |
-|---|---|
-| Original CR-01 — drill-down scope loss | **Closed.** Scope is threaded through both clients, drawer calls, and cache keys. |
-| Original CR-02 — old-scope `useApi` records retained | **Closed.** Dependency changes clear data; manual refetch retains it. |
-| Original CR-03 — populated canvas unmounted on refetch | **Closed.** Loading takeover is limited to the no-data state. |
-| Original CR-04 — private-link-only topology shown empty | **Closed.** Empty state follows the rendered graph. |
-| Original CR-05 — exact full graph count | **Not closed.** See CR-01 below. |
-| Original CR-06 — pagination survives scope changes | **Closed.** Effective page and size synchronously fall back to page 0/default until state resets. |
-| Original CR-07 — stale topology selection | **Closed.** Scope/detail and graph-membership changes clear selection. |
-| Original CR-08 — duplicate/out-of-order drill-down | **Closed.** Requests are keyed, shared in flight, and stale completions are ignored. |
-| Original WR-01 — policy refresh never settles on failure | **Closed.** The error branch clears pending state and emits warning feedback. |
-| Original WR-02 — retained-canvas test mocked away the bug | **Closed.** Direct real-workspace coverage exists and passes. |
-| Later CR-01 — complete summary payload bounding | **Partial/regressed.** Byte bounding improved, but node and completeness contracts remain broken; see CR-02 and CR-03. |
-| Later CR-02 — recursively bounded agent lists | **Closed.** `_bound()` now recurses and the nested-list regression passes. |
-| Later CR-03 — revision read failure behavior | **Partial.** Cache-key failures retain the provider, but policy body failures still publish an empty policy; see CR-04. |
-| Later WR-09 — tests bound to production constants | **Closed.** The constants are imported and compared directly. |
+No structural pre-pass was supplied.
 
 ## Narrative Findings (AI reviewer)
 
 ## Critical Issues
 
-### CR-01 [BLOCKER] [RESOLVED]: The “exact” projected full-node count does not match the client graph
+### CR-01 [BLOCKER] [RESOLVED]: Server and browser disagree on the unknown-subscription group, allowing 1,501 canvas elements under the 1,500 cap
 
-**File:** `src/network/topology.py:218-233`
-**Also affected:** `web/src/lib/network-graph.ts:439-500`,
-`web/src/components/network/TopologyWorkspace.tsx:435-449`
+**File:** `src/network/topology.py:81-127,524-584`
+**Also affected:** `web/src/lib/network-graph.ts:211-217,517-525`;
+`tests/test_network_scale.py:78-91`
 
-**Issue:** `projected_full_node_count()` adds every synthetic
-`shared_services[].resource_id`. The active client path for any payload with
-`resources` is `buildResourceTopologyGraph()`, which builds nodes from
-`topology.resources` and unresolved peers but does not add
-`topology.shared_services`. Those synthetic IDs therefore inflate the count.
+**Issue:** The browser assigns every resource with an empty
+`subscription_id` to the compound parent `subscription:unknown`.
+`_summary_canvas_identity()` instead omits a group when neither the explicit
+subscription field nor a parseable ARM subscription segment exists. Its test
+helper repeats the server behavior rather than the browser behavior.
 
-The committed small fixture reproduces the mismatch: the resource graph has
-1,330 nodes, while the server publishes 1,336 because it adds six
-non-rendered shared-service IDs. Around the 1,500 threshold this creates an
-unnecessary confirmation gate and means original CR-05's requested exact
-count is not closed.
+An executed 1,500-resource probe using valid model objects with non-ARM IDs and
+empty subscription metadata returned all 1,500 resources, reported zero
+groups, set top-level `coverage.truncated` to `false`, and would make the
+browser instantiate 1,501 Cytoscape node elements (1,500 resources plus
+`subscription:unknown`). This breaks both exact client/server identity and the
+hard canvas bound.
 
-**Fix:** Define one server-side client-node identity projection matching
-`buildResourceTopologyGraph()` exactly, or render the synthetic shared-service
-nodes in that client path. Add a contract test comparing the published count
-to `buildTopologyGraph(payload).nodes.length`, including shared services and
-unresolved peers.
+**Fix:** Share or exactly duplicate the browser grouping rule on the server:
+resource nodes with no subscription must contribute
+`subscription:unknown`; unresolved nodes should retain their current
+conditional grouping behavior. Update the scale helper and add a 1,500-node
+missing-subscription regression that compares `resources + groups` with the
+actual browser graph.
 
-### CR-02 [BLOCKER] [RESOLVED]: Summary responses can render twice the 1,500-node canvas cap
+### CR-02 [BLOCKER] [RESOLVED]: Production Traffic Analytics observations are not consumed, and canonical `object_id` observations are mis-attributed
 
-**File:** `src/network/topology.py:397-554`
-**Also affected:** `web/src/lib/network-graph.ts:453-500`,
-`tests/test_network_scale.py:162-231`
+**File:** `src/api/runtime.py:638-665,1928-1937,2881-2893`
+**Also affected:** `src/fabric/dataset_mapper.py:884-908`;
+`src/network/tightening.py:695-707`; `src/api/routers/network.py:344-367`
 
-**Issue:** The summary cap applies only to `resources`. The client additionally
-materializes unresolved remote VNet nodes from `unresolved_peer_vnet_ids`,
-`unresolved_peers`, and returned links. Those node-producing collections are
-byte-bounded but not included in the node budget.
+**Issue:** `_load_ontology_rows()` supplies rows produced by
+`InventoryDatasetMapper._relationship_row()`. Those rows expose
+`subject_id`, `object_id`, and `payload_json`; they do **not** expose
+`attributes` at the top level. `_traffic_analysis_observations()` requires a
+top-level `attributes.dataSource`, so it returns `None` for real persisted
+Traffic Analytics relationships. The production `analyzed` state therefore
+remains unreachable on the managed path.
 
-An executed 1,600-VNet/1,600-unresolved-peering probe returned 1,500 resources,
-1,500 unresolved IDs, and 1,014 links. The client-equivalent ID union contains
-**3,000 nodes**, despite `SUMMARY_NODE_CAP == 1_500`; payload size was
-1,999,990 bytes. This bypasses the measured canvas safety ceiling on the
-default web path.
+There is a second schema mismatch: if a caller does provide top-level
+`attributes` with the canonical `object_id`, `ObservedTrafficAnalyzer` accepts
+only `objectId` or `object`. It marks live data present but records no matched
+rule IDs, which can falsely classify every allow rule as unobserved. The
+rule-findings route still stamps fixed medium confidence and claims no flow
+logs are ingested even when the service reports analyzed observations.
 
-The scale tests only assert `len(payload["resources"])`, not the number of
-nodes the browser builds.
-
-**Fix:** Budget a single de-duplicated set of all client node identities:
-resource IDs plus unresolved remote IDs introduced by returned links/peer
-collections. Stop adding unresolved entries once the union reaches
-`SUMMARY_NODE_CAP`. Change G-1/G-2 tests to build the client graph and assert
-its node count, with a production-shaped unresolved-peer fixture.
-
-### CR-03 [BLOCKER] [RESOLVED]: Summary top-level coverage claims completeness while edges are truncated
-
-**File:** `src/network/topology.py:322-340,492-554`
-**Also affected:** `web/src/components/network/TopologyWorkspace.tsx:480-543`
-
-**Issue:** Top-level `coverage.truncated` is computed only as
-`len(resources) < len(all_resources)`. The new bounding algorithm can truncate
-links, relationships, classifications, shared services, unresolved peers, or
-connection IDs while returning every resource. The UI's Partial badge and
-export's top-level completeness flag read only this false top-level value.
-
-Executed proof with a 40-VNet full mesh:
+Executed probe:
 
 ```text
-resources:     820 / 820   (top-level truncated=false)
-links:         549 / 780   (truncated=true)
-relationships: 629 / 1560  (truncated=true)
-payload:       1,999,886 bytes
+extracted_from_mapper_shape = None
+has_live = True
+matched_rule_ids = set()
 ```
 
-The canvas and exported audit artifact therefore present a materially
-incomplete topology as complete.
+**Fix:** Normalize ontology relationships once at the runtime boundary:
+decode the preserved `payload_json.attributes`, retain canonical
+`subject_id`/`object_id`, and pass that canonical shape to the analyzer.
+Teach `ObservedTrafficAnalyzer` to read `object_id` as well as legacy
+`objectId`/`object`. Derive route confidence and basis copy from
+`service.flow_log_provenance`. Add an integration test using the actual
+`InventoryDatasetMapper` output, not a hand-written relationship with
+top-level attributes.
 
-**Fix:** Set top-level truncation to the OR of resource truncation and every
-collection's truncation. Publish graph-node and relationship totals with clear
-semantics, type the nested collection coverage in the client, and make the UI
-and export consume those authoritative totals. Add a sub-1,500-resource dense
-mesh test where only edge collections truncate.
+### CR-03 [BLOCKER] [RESOLVED]: A schema-corrupt policy body is accepted as an empty default and published as healthy
 
-### CR-04 [BLOCKER] [RESOLVED]: A policy body read failure can replace the last-good provider with an empty policy
+**File:** `src/network/design.py:470-488`
+**Also affected:** `src/api/runtime.py:655-665`;
+`src/api/providers.py:223-273`
 
-**File:** `src/api/runtime.py:638-646`
-**Also affected:** `src/network/design.py:463-501`,
-`src/api/providers.py:207-265`,
-`src/storage/onelake_documents.py:89-145`
+**Issue:** `read_with_revision_or_raise()` is strict only about transport and
+JSON-object decoding. If a revisioned document contains a missing or non-object
+`policy` member, it silently calls `NetworkDesignPolicy.from_mapping({})`.
+The runtime then replaces the last-good governed provider with the default
+policy and marks it `ready`.
 
-**Issue:** The revision cache key now uses strict `revision_or_raise()`, but
-`_load_network_service()` still loads the actual policy through fail-open
-`store.read()`. `OneLakeDocumentStore.read()` converts transport, parse, and
-HTTP failures to `{}`. If strict revision reads succeed while the separate
-policy body read fails, the cache key remains unchanged and
-`ProviderRuntime` publishes a newly built service using the empty default
-policy, marks it `ready`, and discards the governed last-good instance.
+Executed provider probe:
 
-The executed probe changed policy description from `"governed"` to `""`,
-changed provider identity, and reported `state: ready`, with revision still 7.
-The added regression only tests a failing revision read, so this second read
-path is uncovered.
+```text
+before: description="governed", state=ready
+stored document: {"revision": 8, "policy": "corrupt"}
+after: description="", state=ready
+```
 
-**Fix:** Load the policy body through a strict read for provider construction,
-so failure raises and `_refresh_provider()` retains the last-good instance as
-degraded. Prefer one atomic `read_with_revision_or_raise()` result so the
-policy and cache key cannot come from different reads. Add a test where
-`read_or_raise()` returns revision 7 but the policy body read fails.
+This reintroduces the exact failure mode the last-good fix was intended to
+close, except through schema corruption rather than a transport exception.
 
-### CR-05 [BLOCKER] [RESOLVED]: OneLake “compare-and-swap” is not atomic across replicas
+**Fix:** In the strict read path, allow an absent document at revision zero,
+but reject a present/revisioned document whose `policy` is absent or is not a
+mapping. Let that exception reach `ProviderRuntime` so the prior provider
+remains published and health becomes degraded. Add malformed-string,
+malformed-list, and missing-policy-at-nonzero-revision regressions.
 
-**File:** `src/storage/onelake_documents.py:151-178`
+### CR-04 [BLOCKER] [RESOLVED]: A known newer revision plus a body-read outage makes the retained provider unservable
 
-**Issue:** `write()` protects only threads in one process. Two replicas can
-both read revision N, both pass the comparison, and both call
-`upload_data(..., overwrite=True)` with revision N+1. The second upload silently
-clobbers the first. No ETag, lease, conditional request, or atomic create is
-used, despite the docstring claiming cross-replica safety. A transient
-fail-open read can also return `{}`, causing the same path to compare against
-revision 0 before overwriting.
+**File:** `src/api/providers.py:301-366`
+**Also affected:** `src/network/design.py:505-519`
 
-This is a lost-update/data-integrity risk for network policy and every other
-document using this store.
+**Issue:** When the policy revision cache already knows revision 8 but the
+strict body read fails, `_refresh_provider()` correctly leaves the revision-7
+instance in `_instances` and marks it degraded. `get()` nevertheless rejects
+that retained instance because `_cache_keys[name]` is still revision 7 while
+the current cache key is revision 8. It retries the failing load twice in one
+request and raises `ProviderUnavailableError`.
 
-**Fix:** Use OneLake/ADLS conditional writes with the ETag from the read
-(`If-Match`/match condition), or a supported lease/transaction mechanism.
-Treat read failures as errors on mutation paths. For local storage, use an
-inter-process lock plus atomic temporary-file replacement. Add a two-writer
-test whose second stale write is rejected at the storage boundary.
+Executed probe:
+
+```text
+initial p7
+observed key ('network-policy', 8)
+ProviderUnavailableError: The network provider is degraded
+loaded=true, state=degraded, retry.attempts=2
+```
+
+That contradicts `ProviderRuntime`'s documented guarantee that failed
+refreshes continue serving the last completed provider.
+
+**Fix:** Track “last-good but stale relative to known key” explicitly. After a
+failed refresh, return the retained instance with degraded/stale policy
+metadata rather than requiring key equality; do not relabel the old instance
+as revision 8. Also avoid the duplicate immediate retry and add a regression
+where the revision cache advances before the body transport fails.
+
+### CR-05 [BLOCKER] [RESOLVED]: Summary truncation is misreported as an authorization exclusion in private-endpoint facts
+
+**File:** `web/src/components/network/TopologyDetailDrawer.tsx:723-742`
+
+**Issue:** `PrivateLinkFacts` declares a target out of scope whenever its ID is
+absent from `visibleNodeIds`. At summary detail, an in-scope target can be
+absent simply because the 1,500-node/2 MB budget withheld it. The drawer then
+asserts “Target resource is outside the collected scope,” turning payload
+truncation into a false authorization statement.
+
+**Fix:** Use only explicit server facts (`target_out_of_scope`,
+`target_resource_out_of_scope`, or `target_in_scope === false`) for the
+out-of-scope claim. If the target is absent from the rendered summary without
+an authoritative reason, say that it is not present in this topology response
+and may have been withheld, or add a server-provided target-resolution enum.
+Cover an in-scope target omitted by summary truncation.
 
 ## Warnings
 
-### WR-01 [WARNING] [RESOLVED]: Scoped services retain estate-wide flow observations
+### WR-01 [WARNING] [RESOLVED]: Invalid live observation timestamps are rewritten as “now”
 
-**File:** `src/network/service.py:397-405`
+**File:** `src/network/service.py:293-299`
 
-**Issue:** Snapshot collections and semantic relationships are scoped, but
-`flow_observations=self.flow_observations` is passed through unchanged.
-`flow_log_provenance.observed_flow_count` can therefore disclose and report an
-estate-wide count in a subscription-scoped response once flow ingestion is
-wired.
+**Issue:** `from_arg_rows()` initializes the normalization timestamp to the
+current clock and silently keeps it when `observed_at` is malformed. The later
+loader validation therefore sees a newly generated valid timestamp and reports
+fresh evidence instead of ignoring the invalid source value. An executed probe
+with `observed_at="not-a-date"` produced the current UTC timestamp.
 
-**Fix:** Scope flow observations to surviving endpoints/resources using the
-same endpoint-membership rule as semantic relationships, or omit provenance
-when an observation cannot be attributed safely.
+**Fix:** Parse with the same aware-UTC helper used by
+`NetworkSnapshotLoader`; preserve unknown/empty freshness when a supplied
+timestamp is invalid or timezone-naive. If live query time is intended as a
+fallback, pass it as a separate trusted value rather than deriving freshness
+from rejected input.
 
-### WR-02 [WARNING] [RESOLVED]: The advertised `analyzed` flow-log state is unreachable in production
+### WR-02 [WARNING] [RESOLVED]: Missing-zone normalization logs full ARM identifiers
 
-**File:** `src/api/runtime.py:638-646,2855-2862`
+**File:** `src/onboarding/graph_normalize.py:764-778`
 
-**Issue:** Production constructors do not pass `flow_observations`; the only
-uses are internal to `NetworkIntelligenceService`. Consequently the UI's
-three-state contract has an unreachable `analyzed` branch.
+**Issue:** The new missing-parent diagnostic embeds and logs both `zone_id`
+and `vnet_id`. A missing parent commonly means the zone is outside the synced
+scope, so this records cross-scope resource identifiers despite the phase rule
+that new diagnostics contain counts/predicate names, not ARM IDs.
 
-**Fix:** Wire the flow-log ingestion result into both managed and hybrid
-network constructors, or remove/defer the state until a producer exists.
+**Fix:** Log a count and predicate/reason code only, or hash/redact the IDs.
+Keep detailed identifiers in a properly authorized diagnostic surface if they
+are operationally required.
 
-### WR-03 [WARNING] [RESOLVED]: Unvalidated observation timestamps can poison API evidence
+### WR-03 [WARNING] [RESOLVED]: Several dynamic critical errors are not announced as live alerts
 
-**File:** `src/network/loader.py:212-228`
+**File:** `web/src/components/network/TopologyDetailDrawer.tsx:689-705`
+**Also affected:** `web/src/app/network/page.tsx:1149,1167`
 
-**Issue:** External `observed_at` is accepted as any string and combined with
-row timestamps using lexicographic `max`. An invalid value such as
-`"not-a-date"` can win and is then emitted as evidence freshness. The web
-degrades it to unknown, but API, agent, and MCP consumers still receive the
-invalid provenance value.
+**Issue:** The findings-unavailable callout correctly uses `role="alert"`, but
+the asynchronous drill-down error and policy save/form errors are plain
+critical `<div>` elements. Keyboard and screen-reader users may not be
+notified when these failures appear after an action, despite the UI contract's
+live-region requirement.
 
-**Fix:** Parse and normalize timestamps at the loader boundary; reject or
-ignore invalid values and compare parsed datetimes rather than raw strings.
+**Fix:** Add `role="alert"` to newly rendered critical error regions, ensuring
+only the active error is mounted at a time. Add assertions that the
+drill-down and policy mutation failures are announced.
 
-### WR-04 [WARNING] [RESOLVED]: Rapid exports fabricate future `exported_at` timestamps
+## Resolved History
 
-**File:** `web/src/components/network/TopologyGraph.tsx:379-401`
+The detailed implementation and two fix-series histories remain in
+`12-REVIEW-FIX.md`. Independent HEAD verification found the following:
 
-**Issue:** Filename collision avoidance increments the timestamp itself.
-Multiple exports in one second therefore claim to have been exported in future
-seconds, corrupting the audit provenance field.
+| Prior review area | Final status |
+|---|---|
+| Original scope leak and semantic-relationship loss | Closed |
+| Private-link node projection and Fabric per-capacity gap suppression | Closed |
+| Gap/finding pagination and metric totals | Closed |
+| Additive summary/full LOD and drill-down scope enforcement | Closed, except CR-01 and CR-05 above |
+| Policy refetch and declarative-rule authoring | Closed |
+| Casefolded relationship projection and dropped-edge diagnostics | Closed |
+| OneLake CAS | Closed: remote ETag preconditions plus create-if-absent; local inter-process lock plus atomic replace |
+| Iteration-1 recursive agent bounds and disclosure | Closed |
+| Iteration-1 revision-read failure retention | Closed for an unavailable cache-key read; CR-03/CR-04 remain |
+| Iteration-2 exact resource/shared-service identity | Closed for resource nodes; unknown subscription compound identity remains open in CR-01 |
+| Iteration-2 complete summary byte bound | Closed for the serialized topology object; dense-mesh probe was 1,999,772 bytes |
+| Iteration-2 node/group/relationship coverage | Closed for covered fixtures; unknown-subscription group coverage remains open in CR-01 |
+| Iteration-2 scoped flow filtering | Closed for canonical in-memory observations |
+| Iteration-2 production flow analysis | Not closed; see CR-02 |
+| Iteration-2 timestamp normalization | Closed at `NetworkSnapshotLoader`; live ARG fallback remains open in WR-01 |
+| Iteration-2 export filenames and audit time | Closed: suffix affects filename only; `exported_at` uses the supplied real instant |
+| Iteration-2 legacy shared-service casefolding | Closed |
+| Iteration-2 incomplete-results live region | Closed |
 
-**Fix:** Keep `exported_at` equal to the real clock value and add a filename-only
-sequence suffix (for example `-2`, `-3`) for collisions.
+## Verification Evidence
 
-### WR-05 [WARNING] [RESOLVED]: Legacy shared-service edges still use case-sensitive IDs
+Commands were executed against
+`76b31dd3b6c401bd9f23684bf983c7d395b7a68a`.
 
-**File:** `web/src/lib/network-graph.ts:346-358,401-408`
+- Focused backend Phase 12 suite: **264 passed**.
+- Focused web suite: **7 files, 161 tests passed**.
+- TypeScript: **passed** (`npx --no-install tsc --noEmit`).
+- ESLint: **passed with zero warnings/errors**.
+- Ruff over all changed Python source/tests: **passed**.
+- `git diff --check d57f6137..HEAD`: **passed**.
+- Dense 40-VNet mesh: topology object **1,999,772 bytes**;
+  compact complete API envelope **1,911,510 bytes**; relationship coverage
+  remained truncated and top-level truncation remained true.
+- Unknown-subscription boundary probe: **1,500 resources + 1 browser group**,
+  while server coverage reported **0 groups** and `truncated=false`.
+- Persisted-flow-shape probe:
+  `_traffic_analysis_observations(...) -> None`; canonical
+  `object_id` probe set `_has_live_data=True` but matched **0** rule IDs.
+- Malformed-policy probe: governed revision 7 was replaced at revision 8 by
+  the empty default policy while provider state remained `ready`.
+- Advanced-revision/body-outage probe: retained provider remained present and
+  degraded internally, but `get("network")` raised
+  `ProviderUnavailableError` after two failed load attempts.
+- Invalid-live-timestamp probe: `"not-a-date"` became a current UTC
+  `snapshot.observed_at`.
 
-**Issue:** In the legacy no-`resources` path, shared services are added after
-the folded-ID index is built, and consumer lookup uses `nodes.has(consumerId)`.
-Mixed ARM casing silently drops service-to-consumer edges.
-
-**Fix:** Register shared-service IDs in the folded index and resolve consumer
-IDs through `resolveNodeId()` before creating edges. Add a mixed-case legacy
-payload regression.
-
-### WR-06 [WARNING] [RESOLVED]: The dynamic incomplete-results warning is not announced
-
-**File:** `web/src/app/network/page.tsx:264-273`
-
-**Issue:** The safety-critical callout appears after bounded loaders resolve
-but has neither `role="status"` nor an `aria-live` region, unlike the workspace
-coverage callouts. Screen-reader users may never be told that the displayed
-security findings are incomplete.
-
-**Fix:** Add `role="status"` (or an appropriate polite live region) and retain
-the visible copy.
+The pre-existing untracked `.gsd/` directory was not modified. No source,
+test, `STATE.md`, or `ROADMAP.md` file was changed by this review.
 
 ---
 
-_Reviewed: 2026-09-06T05:29:34Z_
+_Reviewed: 2026-09-06T06:13:43Z_
 _Reviewer: the agent (gsd-code-reviewer)_
 _Depth: deep_
-_Scope: read-only; no source or tracking files modified_

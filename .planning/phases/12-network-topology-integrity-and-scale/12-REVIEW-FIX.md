@@ -1,10 +1,10 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-fixed_at: 2026-09-06T06:02:30Z
+fixed_at: 2026-09-06T06:48:10Z
 review_path: .planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md
-iteration: 2
-findings_in_scope: 11
-fixed: 11
+iteration: 3
+findings_in_scope: 8
+fixed: 8
 skipped: 0
 status: all_fixed
 ---
@@ -217,3 +217,118 @@ None.
 _Fixed: 2026-09-06T06:02:30Z_
 _Fixer: the agent (gsd-code-fixer)_
 _Iteration: 2_
+
+---
+
+# Phase 12: Code Review Fix Report — Iteration 3
+
+**Fixed at:** 2026-09-06T06:48:10Z
+**Source review:** `.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`
+**Iteration:** 3
+
+**Summary:**
+- Findings in scope: 8
+- Fixed: 8
+- Skipped: 0
+
+Logic, lifecycle, identity, scope, and timestamp fixes are marked **fixed:
+requires human verification** because syntax and automated tests cannot alone
+prove every distributed or asynchronous execution order.
+
+## Fixed Issues
+
+### CR-01: Unknown-subscription compound nodes share the canvas budget
+
+**Status:** Fixed — requires human verification
+**Files modified:** `src/network/topology.py`, `tests/test_network_scale.py`, `web/src/lib/network-graph.test.ts`
+**Commits:** `1624765e`, `2f0359fa`
+**Applied fix:** Mirrored the browser's resource grouping rule on the server so every resource without usable subscription metadata contributes the single `subscription:unknown` group. The boundary regression starts from 1,500 such resources and proves the summary returns 1,499 resources plus one group, with correct group and top-level truncation coverage.
+
+### CR-02: Persisted Traffic Analytics relationships reach rule analysis
+
+**Status:** Fixed — requires human verification
+**Files modified:** `src/api/runtime.py`, `src/network/tightening.py`, `src/api/routers/network.py`, `tests/test_api_runtime.py`, `tests/test_network_analysis.py`, `tests/test_api_network.py`
+**Commits:** `495cb79a`, `48a42db8`
+**Applied fix:** Normalized the production mapper shape by decoding `payload_json.attributes` while retaining canonical `subject_id` and `object_id`; taught the analyzer to consume canonical `object_id`; and made route confidence and basis copy reflect analyzed flow provenance. The integration regression runs an actual `InventoryDatasetMapper` output row through provider construction.
+
+### CR-03: Schema-corrupt policy bodies cannot replace governed state
+
+**Status:** Fixed — requires human verification
+**Files modified:** `src/network/design.py`, `tests/test_api_network.py`
+**Commit:** `e9113df0`
+**Applied fix:** Strict policy construction now permits only a genuinely absent revision-zero document to default. Present documents with string/list policy values or no policy member raise validation errors, leaving the governed last-good provider published with degraded health.
+
+### CR-04: A retained provider remains servable after a newer body outage
+
+**Status:** Fixed — requires human verification
+**Files modified:** `src/api/providers.py`, `tests/test_api_providers.py`
+**Commit:** `18e0fa74`
+**Applied fix:** Provider health now records `cache_key_stale` when a known newer key cannot be loaded. `get()` serves that explicitly degraded last-good instance without relabeling its cache key, and changed-key refreshes respect retry backoff so one request does not perform duplicate failing loads.
+
+### CR-05: Summary withholding is distinct from scope exclusion
+
+**Status:** Fixed — requires human verification
+**Files modified:** `web/src/components/network/TopologyDetailDrawer.tsx`, `web/src/components/network/TopologyDetailDrawer.test.tsx`
+**Commit:** `f0b25410`
+**Applied fix:** Private endpoint facts now claim out-of-scope only from explicit server facts. An in-scope target missing from the rendered summary is described as absent from this response and potentially withheld by summary limits.
+
+### WR-01: Invalid live timestamps remain unknown
+
+**Status:** Fixed — requires human verification
+**Files modified:** `src/network/service.py`, `tests/test_network_analysis.py`
+**Commit:** `f6c7c196`
+**Applied fix:** Live ARG construction now uses the loader's aware-UTC timestamp parser and formatter. Invalid and timezone-naive inputs are not replaced by the wall clock, generated normalizer stamps are cleared from evidence, and valid offsets normalize to UTC.
+
+### WR-02: Missing-zone diagnostics contain no ARM identifiers
+
+**Status:** Fixed
+**Files modified:** `src/onboarding/graph_normalize.py`, `tests/test_network_topology_links_regression.py`
+**Commits:** `09b1ba08`, `f67d55f1`
+**Applied fix:** The post-review branch already contained the atomic redaction fix: missing-zone diagnostics retain only a bounded count and reason code. The strengthened regression proves no subscription path and neither the zone nor VNet ARM identifier is logged.
+
+### WR-03: Asynchronous critical UI errors are live alerts
+
+**Status:** Fixed
+**Files modified:** `web/src/components/network/TopologyDetailDrawer.tsx`, `web/src/components/network/TopologyDetailDrawer.test.tsx`, `web/src/app/network/page.tsx`, `web/src/app/network/page.test.tsx`
+**Commits:** `afb333c3`, `5d8916bd`
+**Applied fix:** Drill-down load failures, policy-save failures, and policy-form validation failures now mount as `role="alert"` regions; regressions select the active asynchronous message by its alert semantics.
+
+## Verification
+
+Verification ran in two locations:
+
+- **Isolated review-fix worktree:** all failing-first backend probes, targeted
+  backend regressions, G-1 through G-6 and downstream contracts/scope, full
+  backend, Ruff, Python parsing, and committed diff checks.
+- **Main Phase 12 checkout after fast-forward:** web regressions/full suite,
+  TypeScript, ESLint, and final cross-tree diff checks.
+
+Results recorded before worktree cleanup:
+
+- Finding-focused backend regression slice, including G/downstream gates:
+  **216 passed**
+- G-1 through G-6 and downstream scope/contracts: **37 passed**
+- Full backend: **2,753 collected; 2,720 passed, 33 skipped**
+- Ruff: passed
+- Python AST parsing: passed
+- Committed `git diff --check`: passed
+
+- Targeted web regression slice: **3 files, 115 passed**
+- Full web: **43 files passed; 347 tests passed; 15 todo**
+- TypeScript: passed with zero diagnostics
+- ESLint: passed with zero warnings or errors
+- Final main-checkout Ruff and diff checks: passed
+
+## Skipped Issues
+
+None.
+
+## Unresolved Items
+
+None.
+
+---
+
+_Fixed: 2026-09-06T06:48:10Z_
+_Fixer: the agent (gsd-code-fixer)_
+_Iteration: 3_
