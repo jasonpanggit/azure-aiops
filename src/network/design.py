@@ -391,6 +391,10 @@ class NetworkDesignPolicyValidationError(ValueError):
     """Raised when a policy update would leave the policy unusable."""
 
 
+class NetworkDesignPolicyDocumentError(NetworkDesignPolicyValidationError):
+    """Raised when a present persisted policy document is structurally invalid."""
+
+
 class NetworkDesignPolicyRevisionConflict(RuntimeError):
     """Raised when a policy writer targets a superseded revision."""
 
@@ -438,10 +442,10 @@ class NetworkDesignPolicyStore:
     """Reads and writes the UI-editable network design policy document.
 
     Same shape as :class:`~intelligence.governance.settings.EnterpriseSettingsStore`:
-    a single revision-checked document, defaulted on read, validated on
-    write, with an in-memory fallback when no document store is configured
-    (correct for a single-process local run, never reached in a deployed
-    replica with OneLake configured).
+    a single revision-checked document, defaulted only when genuinely absent,
+    validated on read and write, with an in-memory fallback when no document
+    store is configured (correct for a single-process local run, never reached
+    in a deployed replica with OneLake configured).
     """
 
     def __init__(
@@ -463,9 +467,8 @@ class NetworkDesignPolicyStore:
 
     def read(self) -> NetworkDesignPolicy:
         with self._lock:
-            payload = self._read_document()
-        stored = payload.get("policy")
-        return NetworkDesignPolicy.from_mapping(stored if isinstance(stored, dict) else {})
+            policy, _revision = self._read_policy_document()
+            return policy
 
     def read_with_revision_or_raise(
         self,
@@ -477,18 +480,7 @@ class NetworkDesignPolicyStore:
         healthy when OneLake fails between those operations.
         """
         with self._lock:
-            payload = self._read_document(strict=True)
-            revision = int(payload.get("revision") or 0)
-            stored = payload.get("policy")
-            if payload and "policy" not in payload:
-                raise NetworkDesignPolicyValidationError(
-                    "Network policy document is missing policy"
-                )
-            if "policy" in payload and not isinstance(stored, dict):
-                raise NetworkDesignPolicyValidationError(
-                    "Network policy document policy must be an object"
-                )
-            policy = NetworkDesignPolicy.from_mapping(stored or {})
+            policy, revision = self._read_policy_document()
             self._cached_revision = revision
             self._revision_checked_at = self._monotonic()
             return policy, revision
@@ -534,17 +526,12 @@ class NetworkDesignPolicyStore:
         """Applies a partial update and returns the full effective policy."""
         validate_policy_update(changes)
         with self._lock:
-            payload = self._read_document()
-            revision = int(payload.get("revision") or 0)
+            current, revision = self._read_policy_document()
             if expected_revision is not None and expected_revision != revision:
                 raise NetworkDesignPolicyRevisionConflict(
                     expected_revision,
                     revision,
                 )
-            stored = payload.get("policy")
-            current = NetworkDesignPolicy.from_mapping(
-                stored if isinstance(stored, dict) else {}
-            )
             merged = self._merge_changes(changes, current=current)
             document = {"policy": merged, "revision": revision + 1}
             if self._documents is None:
@@ -563,7 +550,27 @@ class NetworkDesignPolicyStore:
         """Returns the effective policy for changes without persisting them."""
         validate_policy_update(changes)
         with self._lock:
-            return NetworkDesignPolicy.from_mapping(self._merge_changes(changes))
+            current, _revision = self._read_policy_document()
+            return NetworkDesignPolicy.from_mapping(
+                self._merge_changes(changes, current=current)
+            )
+
+    def _read_policy_document(self) -> tuple[NetworkDesignPolicy, int]:
+        """Decode one authoritative body, defaulting only a missing document."""
+        payload = self._read_document(strict=True)
+        if not payload:
+            return NetworkDesignPolicy(), 0
+        if "policy" not in payload:
+            raise NetworkDesignPolicyDocumentError(
+                "Network policy document is missing policy"
+            )
+        stored = payload["policy"]
+        if not isinstance(stored, dict):
+            raise NetworkDesignPolicyDocumentError(
+                "Network policy document policy must be an object"
+            )
+        revision = int(payload.get("revision") or 0)
+        return NetworkDesignPolicy.from_mapping(stored), revision
 
     def _read_document(self, *, strict: bool = False) -> dict[str, Any]:
         if self._documents is None:
@@ -578,9 +585,9 @@ class NetworkDesignPolicyStore:
         self,
         changes: dict[str, Any],
         *,
-        current: NetworkDesignPolicy | None = None,
+        current: NetworkDesignPolicy,
     ) -> dict[str, Any]:
-        current_payload = (current or self.read()).to_dict()
+        current_payload = current.to_dict()
         merged = {**current_payload, **changes}
         # Rules replace by rule_id rather than requiring the whole list to be
         # resubmitted, so a UI toggling one rule's ``enabled`` flag does not

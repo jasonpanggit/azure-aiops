@@ -15,7 +15,11 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Query
 
-from network.design import NetworkDesignPolicy, NetworkDesignPolicyValidationError
+from network.design import (
+    NetworkDesignPolicy,
+    NetworkDesignPolicyDocumentError,
+    NetworkDesignPolicyValidationError,
+)
 from network.flow import FlowQuery
 from network.gaps import NetworkGapAnalyzer
 from network.rule_engine import (
@@ -450,7 +454,10 @@ def read_policy(context: Context, scope: ReadScope) -> dict[str, Any]:
     usable policy rather than an empty one.
     """
     store = context.network_policy_store
-    policy = store.read() if store is not None else NetworkDesignPolicy()
+    try:
+        policy = store.read() if store is not None else NetworkDesignPolicy()
+    except NetworkDesignPolicyDocumentError as exc:
+        raise _corrupt_policy_error() from exc
     # Whether a rule is actually inspected is a property of the analyzer, not
     # of the stored policy. Surfacing it here stops the UI from claiming a
     # custom rule is enforced when nothing evaluates it.
@@ -485,6 +492,14 @@ def read_policy(context: Context, scope: ReadScope) -> dict[str, Any]:
             if invalid
             else []
         ),
+    )
+
+
+def _corrupt_policy_error() -> ApiError:
+    return ApiError(
+        ErrorCode.PROVIDER_UNAVAILABLE,
+        "Stored network policy is unavailable because its document is invalid",
+        {"capability": "network_policy", "provider_state": "degraded"},
     )
 
 
@@ -543,6 +558,8 @@ def update_policy(
         )
     try:
         policy = store.update(changes)
+    except NetworkDesignPolicyDocumentError as exc:
+        raise _corrupt_policy_error() from exc
     except NetworkDesignPolicyValidationError as exc:
         raise ApiError(
             ErrorCode.INVALID_REQUEST, str(exc), {"section": sorted(changes)}
@@ -575,6 +592,8 @@ def preview_policy(
         )
     try:
         policy = store.preview(changes)
+    except NetworkDesignPolicyDocumentError as exc:
+        raise _corrupt_policy_error() from exc
     except NetworkDesignPolicyValidationError as exc:
         raise ApiError(ErrorCode.INVALID_REQUEST, str(exc), {"section": sorted(changes)}) from exc
     service = _service(context, scope)
