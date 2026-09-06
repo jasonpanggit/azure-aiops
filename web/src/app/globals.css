@@ -2691,6 +2691,15 @@ textarea:focus-visible {
   gap: 12px;
 }
 
+.topology-coverage {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .topology-search {
   min-width: 220px;
   max-width: 320px;
@@ -2996,8 +3005,15 @@ body.topology-fullscreen-open {
 }
 
 .topology-drawer-body {
+  overflow-x: hidden;
   overflow-y: auto;
+  min-width: 0;
   padding: 14px;
+}
+
+#policy-assertion-error {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .topology-drawer-verdict {

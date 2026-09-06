@@ -198,7 +198,7 @@ export default function NetworkPage() {
       )}
 
       {gaps.data && findings.data && (gapCoverage?.truncated || findingCoverage?.truncated) && (
-        <div className="callout callout-warning">
+        <div className="callout callout-warning topology-coverage">
           <strong>Results are incomplete.</strong>
           <span>
             Showing {gapCoverage?.returned ?? gaps.data?.data.gaps.length ?? 0} of{" "}

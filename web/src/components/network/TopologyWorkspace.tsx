@@ -670,7 +670,7 @@ export function TopologyWorkspace({
       </div>
 
       {fullDetailPending && (
-        <div className="callout callout-warning" role="status">
+        <div className="callout callout-warning topology-coverage" role="status">
           <strong>
             Full detail renders about {projectedFullNodeCount} nodes and may make
             the canvas slow to interact with.
@@ -689,7 +689,7 @@ export function TopologyWorkspace({
       )}
 
       {badgeCoverage.truncated && (
-        <div className="callout callout-warning" role="status">
+        <div className="callout callout-warning topology-coverage" role="status">
           <strong>Badge coverage is partial.</strong>
           <span>
             {badgeCoverage.mapped} of {badgeCoverage.total} findings were loaded,
