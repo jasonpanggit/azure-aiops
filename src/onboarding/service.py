@@ -25,6 +25,7 @@ from ontology.subscription_connection import (
     SubscriptionConnection,
     SyncState,
 )
+from ontology_discovery.store import OntologyRunStore
 from storage.fs import resolve_root
 
 from .credentials import (
@@ -100,6 +101,7 @@ class SubscriptionOnboardingService:
         resolver: CredentialResolver | None = None,
         secret_writer: SecretWriter | None = None,
         health_evaluator: HealthEvaluator | None = None,
+        ontology_run_store: OntologyRunStore | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.output_dir = resolve_root(str(output_dir))
@@ -111,6 +113,9 @@ class SubscriptionOnboardingService:
         self.resolver = resolver or CredentialResolver()
         self.secret_writer = secret_writer
         self.health = health_evaluator or HealthEvaluator(clock=clock)
+        self.ontology_run_store = ontology_run_store or OntologyRunStore(
+            self.output_dir / "state" / "ontology_discovery_runs.json"
+        )
         self.clock = clock or (lambda: datetime.now(UTC))
         self._reconcile_orphaned_syncs()
 
@@ -549,6 +554,73 @@ class SubscriptionOnboardingService:
             "run_id": identifier,
             "status": "running",
             "sync_state": saved.sync_state.to_dict(),
+        }
+
+    def enqueue_ontology_refresh(
+        self,
+        connection_id: str,
+        *,
+        mode: str = "manual",
+        source_generation_id: str | None = None,
+        requested_by: str = "system",
+    ) -> dict[str, Any]:
+        """Record a durable ontology refresh without starting local work.
+
+        This is the compatibility seam used by the existing Sync route.
+        Inventory ingestion callers may continue to use :meth:`sync` or
+        :meth:`sync_async`; ontology refresh itself is never submitted to the
+        process-local executor.
+        """
+        connection = self.registry.get(connection_id)
+        if mode not in {"initial", "scheduled", "manual"}:
+            raise OnboardingError("sync mode must be initial, scheduled, or manual")
+        if not connection.is_active:
+            raise OnboardingError(
+                f"Connection '{connection_id}' is disabled; enable it before syncing"
+            )
+        previous = connection.sync_state or SyncState()
+        generation = str(
+            source_generation_id
+            or previous.run_id
+            or previous.source_version
+            or "pending"
+        ).strip()
+        run, created = self.ontology_run_store.get_or_create_run(
+            connection_id=connection_id,
+            source_generation_id=generation,
+            trigger=mode,
+            requested_by=requested_by,
+            now=self.clock(),
+        )
+        compatibility_state = SyncState(
+            status="running",
+            last_synced_at=previous.last_synced_at,
+            last_successful_sync_at=previous.last_successful_sync_at,
+            last_failed_at=previous.last_failed_at,
+            run_id=run["run_id"],
+            started_at=run["created_at"],
+            source_version=previous.source_version,
+            record_count=previous.record_count,
+            attempts=previous.attempts,
+            message=f"{mode} sync queued",
+            stage="queued",
+            stage_message=f"{mode} sync queued",
+            progress_pct=0,
+        )
+        return {
+            "connection_id": connection_id,
+            "run_id": run["run_id"],
+            "status": "running",
+            "mode": mode,
+            "sync_state": compatibility_state.to_dict(),
+            "durable_run": {
+                "run_id": run["run_id"],
+                "status": run["status"],
+                "revision": run["revision"],
+                "source_generation_id": run["source_generation_id"],
+                "checkpoint": run["checkpoint"]["name"],
+                "created": created,
+            },
         }
 
     def _run_sync_job(self, connection_id: str, mode: str, run_id: str) -> None:

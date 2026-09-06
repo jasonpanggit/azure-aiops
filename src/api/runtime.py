@@ -89,6 +89,10 @@ from onboarding.runtime import (
 )
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
+from ontology_discovery.generation_resolver import (
+    GenerationResolver,
+    GenerationSelection,
+)
 from operations.autonomous_investigation import configure_ledger_store
 from operations.defender_configuration import (
     AzureArmDefenderConfigurationAdapter,
@@ -479,9 +483,11 @@ def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
     for connection in connections:
         connection_root = _connection_dataset_dir(root, connection.connection_id)
         store = DatasetStore(connection_root)
-        snapshot_dir = store.current_generation()
-        if snapshot_dir is None:
+        try:
+            selection = GenerationResolver(store).resolve()
+        except (LookupError, OSError, TypeError, ValueError):
             continue  # connection registered but never synced
+        snapshot_dir = selection.active_generation
         manifest_path = f"{snapshot_dir}/manifest.json"
         if store.is_remote:
             if not store.fs.exists(manifest_path):
@@ -557,7 +563,12 @@ def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
                 continue
         run_id = str(manifest.get("runId") or connection.connection_id)
         try:
-            tables = mapper.load(snapshot_dir, run_id, fs=store.fs if store.is_remote else None)
+            tables, _selection = _load_generation_tables(
+                store,
+                mapper,
+                run_id,
+                selection=selection,
+            )
         except Exception as exc:  # noqa: BLE001 - isolate malformed connection snapshots.
             failed_at = datetime.now(UTC).isoformat()
             tables_by_connection.append(
@@ -582,6 +593,23 @@ def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
     result = (tables_by_connection, freshness or failure_freshness)
     _snapshot_tables_cache[cache_key] = (now, result)
     return result
+
+
+def _load_generation_tables(
+    store: Any,
+    mapper: InventoryDatasetMapper,
+    run_id: str,
+    *,
+    selection: GenerationSelection | None = None,
+) -> tuple[dict[str, list[dict]], GenerationSelection]:
+    """Map one pointer selection without re-reading it between table reads."""
+    selected = selection or GenerationResolver(store).resolve()
+    tables = mapper.load(
+        selected.active_generation,
+        run_id,
+        fs=store.fs if store.is_remote else None,
+    )
+    return tables, selected
 
 
 _DEFENDER_SOURCE_FAMILIES = (
