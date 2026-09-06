@@ -543,7 +543,7 @@ export function TopologyWorkspace({
     warnings,
   ]);
 
-  if (loading) {
+  if (loading && !topology) {
     return (
       <StatePanel
         title="Building cross-subscription topology"
@@ -570,6 +570,7 @@ export function TopologyWorkspace({
     <section
       className={`network-workspace topology-workspace${expanded ? " topology-workspace-expanded" : ""}`}
       aria-label="Network topology"
+      aria-busy={loading}
     >
       <div className="topology-toolbar">
         <input

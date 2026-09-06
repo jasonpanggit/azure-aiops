@@ -179,6 +179,18 @@ describe("TopologyWorkspace detail level", () => {
     expect(FULL_DETAIL_GUARD_NODES).toBe(1_500);
     expect(FULL_DETAIL_GUARD_NODES).toBeLessThanOrEqual(1_500);
   });
+
+  it("keeps a populated real workspace mounted during a refetch", () => {
+    renderWorkspace({ loading: true });
+
+    expect(screen.getByTestId("topology-graph")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Building cross-subscription topology"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Network topology" }),
+    ).toHaveAttribute("aria-busy", "true");
+  });
 });
 
 describe("TopologyWorkspace badge coverage", () => {
