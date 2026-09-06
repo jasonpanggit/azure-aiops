@@ -14,6 +14,7 @@ from operations.foundry_agent import FoundryAgentError
 from operations.investigation_thread_store import (
     InvestigationThreadStore,
     ThreadNotFound,
+    ThreadStoreUnavailable,
 )
 from operations.orchestration_contract import (
     CandidatePlan,
@@ -1842,6 +1843,100 @@ def test_investigate_canonical_session_continuity_and_stale_hint(
     )
     assert history_response.status_code == 200
     assert len(history_response.json()["data"]["turns"]) == 2
+
+
+def test_canonical_investigate_projects_thread_storage_outage_as_unavailable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.copilot.execute_from_question",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        headers=HEADERS,
+        json={
+            "question": "Show inventory health",
+            "session_id": "outage-session",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+def test_canonical_history_projects_thread_storage_outage_as_unavailable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.copilot.legacy_session_history",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/copilot/history/outage-session?subscription=sub-a",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+def test_legacy_adapter_does_not_reset_thread_on_storage_outage(monkeypatch):
+    from operations.orchestration_service import execute_from_question
+
+    calls = 0
+
+    def _execute(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise ThreadStoreUnavailable()
+
+    monkeypatch.setattr(OrchestrationService, "execute", _execute)
+    monkeypatch.setattr(
+        "operations.orchestration_service._legacy_session_thread_for_execution",
+        lambda *_args, **_kwargs: "thr-" + "a" * 32,
+    )
+
+    with pytest.raises(ThreadStoreUnavailable):
+        execute_from_question(
+            "Show inventory health",
+            scope=Scope({"subscription": ["sub-a"]}),
+            context=object(),
+            principal_subject="operator@example.com",
+            session_id="outage-session",
+        )
+
+    assert calls == 1
+
+
+def test_legacy_history_does_not_hide_thread_storage_outage(monkeypatch):
+    from operations.orchestration_service import legacy_session_history
+
+    class UnavailableStore:
+        def history(self, *_args, **_kwargs):
+            raise ThreadStoreUnavailable()
+
+    monkeypatch.setattr(
+        "operations.orchestration_service._legacy_session_thread",
+        lambda *_args, **_kwargs: "thr-" + "a" * 32,
+    )
+    monkeypatch.setattr(
+        "operations.orchestration_service.investigation_thread_store",
+        UnavailableStore,
+    )
+
+    with pytest.raises(ThreadStoreUnavailable):
+        legacy_session_history(
+            "outage-session",
+            principal_subject="operator@example.com",
+            scope=Scope({"subscription": ["sub-a"]}),
+        )
 
 
 def test_multi_agent_canonical_projection_retains_complete_results(

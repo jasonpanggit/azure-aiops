@@ -415,6 +415,18 @@ def test_ledger_store_configuration_also_wires_thread_durability() -> None:
         configure_ledger_store(None)
 
 
+def test_ledger_store_configuration_rejects_adapter_without_thread_cas() -> None:
+    class LedgerOnlyDocuments:
+        def read(self, name: str) -> dict[str, Any]:
+            return {}
+
+        def put(self, name: str, payload: dict[str, Any]) -> None:
+            return None
+
+    with pytest.raises(TypeError, match="thread compare-and-swap"):
+        configure_ledger_store(LedgerOnlyDocuments())
+
+
 def test_history_returns_fresh_state_after_one_persistence_conflict() -> None:
     documents = FakeDocuments()
     store = InvestigationThreadStore(documents=documents)
@@ -427,16 +439,14 @@ def test_history_returns_fresh_state_after_one_persistence_conflict() -> None:
     assert [item["snapshot_id"] for item in history] == ["snap-one"]
 
 
-def test_authorize_downgrades_after_sustained_touch_contention() -> None:
+def test_authorize_fails_closed_after_sustained_touch_contention() -> None:
     documents = FakeDocuments()
     store = InvestigationThreadStore(documents=documents)
     thread = store.create("operator-a", SUB_A)
     documents.conflict_writes = 2
 
-    authorized = store.authorize(thread.thread_id, "operator-a", SUB_A)
-
-    assert authorized.thread_id == thread.thread_id
-    assert authorized.durability == "memory_only"
+    with pytest.raises(ThreadRevisionConflict):
+        store.authorize(thread.thread_id, "operator-a", SUB_A)
 
 
 def test_legacy_session_binding_survives_replica_restart() -> None:
@@ -475,6 +485,38 @@ def test_legacy_session_binding_is_first_writer_wins_across_replicas() -> None:
     )
 
     assert observed == winner == first_thread.thread_id
+
+
+def test_legacy_binding_read_outage_fails_closed() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    documents.fail_reads = True
+
+    with pytest.raises(ThreadStoreUnavailable):
+        store.resolve_legacy_binding("legacy-session", "operator-a")
+
+
+def test_legacy_binding_write_outage_does_not_return_local_candidate() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    thread = store.create("operator-a", SUB_A)
+    documents.fail_writes = True
+
+    with pytest.raises(ThreadStoreUnavailable):
+        store.bind_legacy_session("legacy-session", "operator-a", thread.thread_id)
+
+    documents.fail_writes = False
+    assert store.resolve_legacy_binding("legacy-session", "operator-a") is None
+
+
+def test_legacy_binding_unresolved_cross_replica_conflict_fails_closed() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    thread = store.create("operator-a", SUB_A)
+    documents.conflict_writes = 1
+
+    with pytest.raises(ThreadRevisionConflict):
+        store.bind_legacy_session("legacy-session", "operator-a", thread.thread_id)
 
 
 def test_expired_legacy_binding_can_be_replaced() -> None:
