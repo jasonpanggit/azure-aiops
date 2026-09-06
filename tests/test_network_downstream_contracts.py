@@ -246,8 +246,13 @@ def assert_export_contract(path: Path, expected_keys: tuple[str, ...]) -> None:
     )
     assert (
         'extension: "json" | "png"' in source
-        and "filename: `network-topology-${segment}.${extension}`" in source
-    ), "browser export filename no longer matches network-topology-YYYYMMDD-HHmmss"
+        and "filename: `network-topology-${segment}${" in source
+        and "exportSequence > 1" in source
+        and "}.${extension}`" in source
+    ), (
+        "browser export filename no longer matches "
+        "network-topology-YYYYMMDD-HHmmss[-sequence]"
+    )
 
 
 def assert_collection_coverage(response: dict[str, Any], collection: str) -> None:
