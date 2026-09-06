@@ -1,13 +1,14 @@
 # Plan 13-07 Targeted Deployment Review
 
-**Generated:** 2026-09-06T16:50Z
+**Generated:** 2026-09-06T17:08Z
 **Status:** Reviewed plan only — **do not apply yet**  
 **State source:** canonical local state from the main checkout  
 **Variables:** canonical main `terraform.tfvars`, canonical deployment environment,
-`image_tag=azure-mcp-timeout-20260906-1454`, and
+global app image preserved at deployed `azure-mcp-timeout-20260906-1454`,
+`ontology_discovery_image_tag=phase13-ontology-20260906-165556`, and
 `enable_ontology_curator_agent=true`  
 **Planning mode:** `-refresh=false -lock=false` with explicit targets  
-**Result:** 12 creates, 0 updates, 0 destroys
+**Result:** 12 creates, 0 updates, 0 destroys, 0 output changes
 
 ## Exact Targets
 
@@ -48,6 +49,10 @@ the Exposure enrichment Job, all existing Container App revisions, the legacy
 Foundry account/project, the production `fabric_workspace.ops`,
 `fabric_lakehouse.context_graph`, and
 `fabric_workspace_role_assignment.apps`, and all later Phase 13 resources.
+Both new Jobs use only
+`aiops-api:phase13-ontology-20260906-165556`; existing API/web resources and
+their `api_image`/`web_image` outputs remain on
+`azure-mcp-timeout-20260906-1454`.
 
 ## Authorization Evidence Design
 
@@ -84,11 +89,9 @@ isolation, and rollback remain mandatory defense in depth.
 
 ## Remaining Blockers Before Apply
 
-1. **Image artifact:** the reviewed plan still references
-   `azure-mcp-timeout-20260906-1454`. That existing image does not contain the
-   newly packaged validator script. Build and publish a new immutable API image,
-   then regenerate this same targeted plan with that tag. Do not apply the
-   current saved plan.
+1. **Image artifact:** build and publish the dedicated immutable API image
+   `phase13-ontology-20260906-165556` before apply. Existing applications stay
+   pinned to `azure-mcp-timeout-20260906-1454`.
 2. **Live evidence:** after the targeted apply, manually start only
    `aiops-dev-ontology-rbac-check` and retain its sanitized report. Plan 13-07
    remains incomplete until all four evidence classes pass.
@@ -97,6 +100,12 @@ isolation, and rollback remain mandatory defense in depth.
    Runtime roles cannot list agent versions, validation must block. Do not
    broaden the API or validator Job to Foundry Project Manager merely to make
    the check pass.
+4. **Canonical tfvars drift:** the supplied main `terraform.tfvars` currently
+   records `remediation-final-20260905-0035`, while canonical state and the
+   deployed apps use `azure-mcp-timeout-20260906-1454`. The reviewed plan
+   preserved the deployed global tag explicitly to prove zero output changes.
+   Reconcile that external, gitignored tfvars value before apply or retain the
+   same state-preserving value on the apply command.
 
 The plan artifact is `/tmp/13-07-targeted.tfplan` with mode `0600`; it is
 ephemeral, contains deployment inputs, and must not be committed or applied.

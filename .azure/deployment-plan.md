@@ -105,10 +105,15 @@ or existing Container Apps.
   agent `azd` deployment.
 - Apply only the targets and actions recorded in
   `.planning/phases/13-autonomous-ontology-discovery-and-fabric-synchronization/13-07-TARGETED-PLAN.md`.
-  The reviewed target set is 12 creates, 0 updates, and 0 destroys. The current
-  `azure-mcp-timeout-20260906-1454` image does not contain
-  the validator script, so a new immutable API image and regenerated targeted
-  plan are required before apply.
+  The reviewed target set is 12 creates, 0 updates, 0 destroys, and 0 output
+  changes. Both ontology Jobs select the dedicated
+  `phase13-ontology-20260906-165556` API image through
+  `ontology_discovery_image_tag`; existing API/web resources and outputs remain
+  pinned to `azure-mcp-timeout-20260906-1454`.
+- The supplied main `terraform.tfvars` currently contains an older global image
+  tag than canonical state. Reconcile that external gitignored value, or
+  explicitly preserve `azure-mcp-timeout-20260906-1454`, before applying the
+  targeted plan. Never set the global `image_tag` to the Phase 13 Job image.
 
 ## Configuration
 
