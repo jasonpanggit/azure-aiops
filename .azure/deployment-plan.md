@@ -67,16 +67,25 @@ or existing Container Apps.
 - Create the ontology-discovery ACA scheduled Job in the existing Container Apps
   environment with finite execution, `parallelism = 1`, bounded timeout/retry,
   and the existing application image.
-- Create distinct coordinator and publisher user-assigned identities; only the
-  publisher may stage immutable ontology generations or conditionally change the
-  active pointer.
-- Update the existing code-first Foundry prompt-agent provisioning map with the
-  ontology curator and exactly four scoped read-only MCP tools.
+- Create distinct coordinator and publisher user-assigned identities. Fabric's
+  workspace Contributor role is the least broad role that can write/delete
+  Lakehouse data, so grant it only to the publisher, reduce the shared API/web
+  identity to Viewer, and leave coordinator/curator without a workspace writer
+  role.
+- Independently enable the code-first Foundry ontology curator without turning
+  on the complete specialist candidate-publish flow. The curator uses
+  `gpt-5.4-mini` and exactly four scoped read-only Operations MCP tools.
+- Create a manual-only, bounded ACA validation Job with only the API,
+  coordinator, and publisher UAIs attached. It has no schedule, ingress, or
+  AIOps runtime role.
 - Apply no API/web image rollout in this step unless Terraform proves the
   existing image is insufficient for the scheduled Job command.
 - Run `scripts/validate_ontology_publisher_rbac.py --non-production
-  --fail-on-missing-evidence` after provisioning. Three non-publisher identities
-  must be denied and the publisher must complete stage/CAS/rollback cleanup.
+  --fail-on-missing-evidence` through the manual validation Job after
+  provisioning. API and coordinator must each be denied actual stage and
+  pointer writes, publisher must complete stage/CAS/rollback cleanup, and
+  curator denial must be proven structurally by live workspace-role absence
+  plus its exact deployed four-tool read-only definition.
 - Keep the live model relationship path in shadow mode. Plan 13-08 remains the
   blocking approval gate before any authoritative publication work.
 
@@ -91,6 +100,12 @@ or existing Container Apps.
   `microsoft.foundry` extension. This deployment therefore uses the repository's
   existing Terraform and `create-foundry-agent.sh` prompt-agent path, not hosted
   agent `azd` deployment.
+- Apply only the targets and actions recorded in
+  `.planning/phases/13-autonomous-ontology-discovery-and-fabric-synchronization/13-07-TARGETED-PLAN.md`.
+  The reviewed target set is 7 creates, 1 in-place role reduction, and 0
+  destroys. The current `azure-mcp-timeout-20260906-1454` image does not contain
+  the validator script, so a new immutable API image and regenerated targeted
+  plan are required before apply.
 
 ## Configuration
 
