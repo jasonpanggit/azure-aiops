@@ -19,7 +19,6 @@ from ontology_discovery.incremental import (
     split_evidence_batches,
 )
 
-
 OBSERVED_AT = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
 
 
