@@ -1332,8 +1332,72 @@ textarea:focus-visible {
   background: #ffffff;
 }
 
+.state-stale,
+.state-partial {
+  background: var(--color-warning-subtle);
+  border-color: #dcc77d;
+}
+
+.state-stale .state-symbol,
+.state-partial .state-symbol {
+  color: var(--color-warning);
+  background: var(--color-surface);
+}
+
 .state-action {
   margin-top: 14px;
+}
+
+.source-section-state {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.source-section-stale,
+.source-section-partial {
+  background: var(--color-warning-subtle);
+  border-color: #dcc77d;
+}
+
+.source-section-state-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+
+.source-section-coverage,
+.source-section-freshness,
+.source-section-exclusions {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.source-section-exclusions {
+  display: grid;
+  gap: 4px;
+  padding-left: 20px;
+}
+
+.source-section-content {
+  min-width: 0;
+}
+
+@media (width <= 820px) {
+  .source-section-state {
+    padding: 12px;
+  }
+
+  .source-section-state .button {
+    min-height: 44px;
+  }
 }
 
 .structured-data {

@@ -1091,7 +1091,10 @@ export const vulnerabilityApi = {
     apiRequest<ExposureOverview, import("./types").ExposureCursorPagination>(
       "/vulnerabilities/exposure/overview",
       {
-        query: toExposureApiSearchParams(queryState),
+        query: toExposureApiSearchParams(queryState, {
+          includePagination: false,
+          includeSort: false,
+        }),
         signal: options.signal,
       },
     ),
@@ -1100,7 +1103,10 @@ export const vulnerabilityApi = {
     facets: Array<"severity" | "target_kind" | "source_family" | "completeness"> = [],
     options: { signal?: AbortSignal } = {},
   ): Promise<ExposureEnvelope<ExposureFacets>> => {
-    const query = toExposureApiSearchParams(queryState);
+    const query = toExposureApiSearchParams(queryState, {
+      includePagination: false,
+      includeSort: false,
+    });
     for (const facet of facets) query.append("facet", facet);
     return apiRequest<ExposureFacets, import("./types").ExposureCursorPagination>(
       "/vulnerabilities/exposure/facets",

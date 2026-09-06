@@ -1,5 +1,4 @@
 import type {
-  ExposureQueryFilterField,
   ExposureSort,
   ExposureSortField,
 } from "./types";
@@ -374,6 +373,14 @@ function cursorBindingKey(state: ExposureQueryState): string {
   });
 }
 
+/** Identity used for retained rows while an opaque next/previous page loads. */
+export function exposureRetentionKey(state: ExposureQueryState): string {
+  return JSON.stringify({
+    binding: cursorBindingKey(state),
+    generation: state.generation,
+  });
+}
+
 export function updateExposureQueryState(
   state: ExposureQueryState,
   patch: ExposureQueryPatch,
@@ -443,6 +450,10 @@ export function restartExposureQuery(
 
 export function toExposureApiSearchParams(
   state: ExposureQueryState,
+  {
+    includePagination = true,
+    includeSort = true,
+  }: { includePagination?: boolean; includeSort?: boolean } = {},
 ): URLSearchParams {
   const params = scopeToSearchParams(state.scope);
   if (state.filters.search) params.set("q", state.filters.search);
@@ -450,10 +461,14 @@ export function toExposureApiSearchParams(
     const value = state.filters[key];
     if (value !== undefined && value !== "") params.set(key, String(value));
   }
-  params.set("sort_by", state.sort.field);
-  params.set("sort_direction", state.sort.direction);
-  params.set("page_size", String(state.pageSize));
-  if (state.cursor) params.set("cursor", state.cursor);
+  if (includeSort) {
+    params.set("sort_by", state.sort.field);
+    params.set("sort_direction", state.sort.direction);
+  }
+  if (includePagination) {
+    params.set("page_size", String(state.pageSize));
+    if (state.cursor) params.set("cursor", state.cursor);
+  }
   return params;
 }
 

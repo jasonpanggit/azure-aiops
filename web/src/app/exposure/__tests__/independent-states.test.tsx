@@ -144,11 +144,11 @@ describe("Exposure independent source states", () => {
     const unavailable = deferred<Envelope<Rows, ExposureCursorPagination>>();
 
     function Harness() {
-      const healthySection = useExposureSection({
+      const healthySection = useExposureSection<Rows>({
         queryKey: "sub-a|healthy",
         load: () => healthy.promise,
       });
-      const unavailableSection = useExposureSection({
+      const unavailableSection = useExposureSection<Rows>({
         queryKey: "sub-a|unavailable",
         load: () => unavailable.promise,
       });
@@ -179,7 +179,7 @@ describe("Exposure independent source states", () => {
       .mockReturnValueOnce(refresh.promise);
     const { result, rerender } = renderHook(
       ({ refreshKey }) =>
-        useExposureSection({
+        useExposureSection<Rows>({
           queryKey: "sub-a|severity=critical",
           refreshKey,
           load,
@@ -209,7 +209,7 @@ describe("Exposure independent source states", () => {
       return nextScope.promise;
     });
     const { result, rerender } = renderHook(
-      ({ queryKey }) => useExposureSection({ queryKey, load }),
+      ({ queryKey }) => useExposureSection<Rows>({ queryKey, load }),
       { initialProps: { queryKey: "sub-a|all" } },
     );
 
@@ -225,6 +225,34 @@ describe("Exposure independent source states", () => {
     await waitFor(() => expect(result.current.data?.items[0].id).toBe("sub-b-row"));
   });
 
+  it("retains the current page while a cursor changes inside the same query boundary", async () => {
+    const nextPage = deferred<Envelope<Rows, ExposureCursorPagination>>();
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(envelope(["page-one"]))
+      .mockReturnValueOnce(nextPage.promise);
+    const { result, rerender } = renderHook(
+      ({ queryKey }) =>
+        useExposureSection<Rows>({
+          queryKey,
+          retentionKey: "sub-a|severity=critical|generation-1",
+          load,
+        }),
+      { initialProps: { queryKey: "query|cursor=first" } },
+    );
+
+    await waitFor(() => expect(result.current.data?.items[0].id).toBe("page-one"));
+    rerender({ queryKey: "query|cursor=opaque-next" });
+
+    expect(result.current.data?.items[0].id).toBe("page-one");
+    expect(result.current.refreshing).toBe(true);
+
+    await act(async () => {
+      nextPage.resolve(envelope(["page-two"]));
+    });
+    await waitFor(() => expect(result.current.data?.items[0].id).toBe("page-two"));
+  });
+
   it("aborts the previous request and rejects its late response after a key change", async () => {
     const first = deferred<Envelope<Rows, ExposureCursorPagination>>();
     const second = deferred<Envelope<Rows, ExposureCursorPagination>>();
@@ -234,7 +262,7 @@ describe("Exposure independent source states", () => {
       return signals.length === 1 ? first.promise : second.promise;
     });
     const { result, rerender } = renderHook(
-      ({ queryKey }) => useExposureSection({ queryKey, load }),
+      ({ queryKey }) => useExposureSection<Rows>({ queryKey, load }),
       { initialProps: { queryKey: "scope-a" } },
     );
 
@@ -264,7 +292,14 @@ describe("Exposure independent source states", () => {
       error: null,
       loading: false,
       refreshing: false,
+      retrying: false,
       retained: false,
+      metadata: {
+        excludedReasons: [],
+        observedAt: "",
+        freshnessState: "unknown",
+        freshnessSourceFamily: "",
+      },
       restart: { required: false, reason: "", generation: "" },
       retry,
     };
@@ -285,7 +320,6 @@ describe("Exposure independent source states", () => {
         state={{
           ...base,
           status: "healthy-empty",
-          envelope: envelope([], { state: "healthy-empty" }),
         }}
       />,
     );
@@ -299,8 +333,6 @@ describe("Exposure independent source states", () => {
           ...base,
           status: "stale",
           retained: true,
-          data: envelope(["retained"]).data,
-          envelope: envelope(["retained"], { state: "stale" }),
           error: new Error("Latest refresh failed"),
         }}
       >
@@ -317,22 +349,17 @@ describe("Exposure independent source states", () => {
         state={{
           ...base,
           status: "partial",
-          data: envelope(["represented"], {
-            state: "partial",
+          metadata: {
             represented: 1,
             expected: 2,
             total: 4,
             excluded: 3,
             excludedReasons: ["connection-west unavailable"],
-          }).data,
-          envelope: envelope(["represented"], {
-            state: "partial",
-            represented: 1,
-            expected: 2,
-            total: 4,
-            excluded: 3,
-            excludedReasons: ["connection-west unavailable"],
-          }),
+            observedAt: "2026-09-06T08:00:00Z",
+            freshnessState: "current",
+            freshnessSourceFamily: "aum",
+            freshnessThresholdSeconds: 3600,
+          },
         }}
       >
         <p>represented</p>
@@ -368,7 +395,7 @@ describe("Exposure independent source states", () => {
       .mockReturnValueOnce(recovered.promise);
 
     function Harness() {
-      const section = useExposureSection({
+      const section = useExposureSection<Rows>({
         queryKey: "sub-a|aum",
         load,
       });
