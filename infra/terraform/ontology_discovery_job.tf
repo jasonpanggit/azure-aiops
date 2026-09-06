@@ -80,7 +80,7 @@ resource "azurerm_container_app_job" "ontology_discovery" {
 
       env {
         name  = "AIOPS_HOME"
-        value = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops" : "/tmp/aiops"
+        value = var.enable_fabric ? "abfss://${fabric_workspace.ontology_discovery_state[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.ontology_discovery_state[0].id}/Files/aiops" : "/tmp/aiops"
       }
 
       env {
@@ -104,6 +104,7 @@ resource "azurerm_container_app_job" "ontology_discovery" {
 
   depends_on = [
     azurerm_role_assignment.ontology_coordinator_acr_pull,
+    fabric_workspace_role_assignment.ontology_coordinator_state,
   ]
 }
 
@@ -202,7 +203,7 @@ resource "azurerm_container_app_job" "ontology_rbac_validation" {
 
       env {
         name  = "AIOPS_ONTOLOGY_WORKSPACE_ID"
-        value = fabric_workspace.ops[0].id
+        value = fabric_workspace.ontology_rbac_validation[0].id
       }
 
       env {
@@ -212,7 +213,7 @@ resource "azurerm_container_app_job" "ontology_rbac_validation" {
 
       env {
         name  = "AIOPS_ONTOLOGY_LAKEHOUSE_ID"
-        value = fabric_lakehouse.context_graph[0].id
+        value = fabric_lakehouse.ontology_rbac_validation[0].id
       }
 
       env {
@@ -241,7 +242,6 @@ resource "azurerm_container_app_job" "ontology_rbac_validation" {
 
   depends_on = [
     azurerm_role_assignment.ontology_coordinator_acr_pull,
-    fabric_workspace_role_assignment.apps,
     fabric_workspace_role_assignment.ontology_publisher,
     terraform_data.foundry_ontology_curator_agent,
   ]

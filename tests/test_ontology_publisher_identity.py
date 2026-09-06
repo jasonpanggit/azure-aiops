@@ -141,7 +141,8 @@ def test_nonproduction_workspaces_reuse_capacity_and_have_explicit_descriptions(
     )
 
     for workspace in (state_workspace, validation_workspace):
-        assert "capacity_id = data.fabric_capacity.main[0].id" in workspace
+        assert "capacity_id" in workspace
+        assert "= data.fabric_capacity.main[0].id" in workspace
         assert "non-production" in workspace.casefold()
     for lakehouse in (state_lakehouse, validation_lakehouse):
         assert "non-production" in lakehouse.casefold()

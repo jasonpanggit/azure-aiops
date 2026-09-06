@@ -7,10 +7,9 @@
 # Platform limitation: Fabric workspace roles are currently the authorization
 # boundary for OneLake Lakehouse write/delete operations. Fabric does not
 # expose path-level custom roles for these operations; Contributor is the least
-# broad role that can write/delete Lakehouse data. Admin and Member are never
-# granted. Application fencing, create-only writes, conditional ETags, and
-# canary-only validation provide the narrower operation boundary above this
-# platform grant.
+# broad role that can write/delete Lakehouse data. Plan 13-07 therefore creates
+# two isolated non-production workspaces on the existing capacity rather than
+# changing the production workspace or granting Admin/Member.
 #
 # The live non-production authorization matrix remains a deployment gate:
 # Terraform declares the candidate grant here, while
@@ -25,10 +24,56 @@ resource "azurerm_user_assigned_identity" "ontology_publisher" {
   tags                = local.tags
 }
 
+# Durable coordinator state is isolated from both production and RBAC canaries.
+resource "fabric_workspace" "ontology_discovery_state" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name = "${local.base}-ontology-state"
+  description  = "Non-production workspace for Phase 13 ontology discovery run state and evidence batches."
+  capacity_id  = data.fabric_capacity.main[0].id
+}
+
+resource "fabric_lakehouse" "ontology_discovery_state" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name = "ontology_discovery_state"
+  description  = "Non-production Lakehouse for durable ontology coordinator state; never authoritative ontology output."
+  workspace_id = fabric_workspace.ontology_discovery_state[0].id
+}
+
+resource "fabric_workspace_role_assignment" "ontology_coordinator_state" {
+  count = var.enable_fabric ? 1 : 0
+
+  workspace_id = fabric_workspace.ontology_discovery_state[0].id
+  role         = "Contributor"
+
+  principal = {
+    id   = azurerm_user_assigned_identity.ontology_coordinator.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+# Authorization canaries run in a second disposable non-production boundary.
+resource "fabric_workspace" "ontology_rbac_validation" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name = "${local.base}-ontology-rbac-validation"
+  description  = "Non-production workspace reserved for Phase 13 authorization canaries."
+  capacity_id  = data.fabric_capacity.main[0].id
+}
+
+resource "fabric_lakehouse" "ontology_rbac_validation" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name = "ontology_rbac_validation"
+  description  = "Non-production Lakehouse for create, pointer CAS, rollback, and cleanup authorization evidence."
+  workspace_id = fabric_workspace.ontology_rbac_validation[0].id
+}
+
 resource "fabric_workspace_role_assignment" "ontology_publisher" {
   count = var.enable_fabric ? 1 : 0
 
-  workspace_id = fabric_workspace.ops[0].id
+  workspace_id = fabric_workspace.ontology_rbac_validation[0].id
   role         = "Contributor"
 
   principal = {

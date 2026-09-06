@@ -83,14 +83,14 @@ resource "fabric_lakehouse" "context_graph" {
   # instead (bronze_/silver_/ontology_).
 }
 
-# The API/web identity is read-only in Fabric. Authoritative ontology writes
-# are isolated to fabric_workspace_role_assignment.ontology_publisher; keeping
-# Contributor here would make a live denied-write check for the API meaningless.
+# The production API/web identity retains its existing Contributor role until
+# Plan 13-10 migrates legacy writes. Plan 13-07 proves separation only in its
+# dedicated non-production state and RBAC-validation workspaces.
 resource "fabric_workspace_role_assignment" "apps" {
   count = var.enable_fabric ? 1 : 0
 
   workspace_id = fabric_workspace.ops[0].id
-  role         = "Viewer"
+  role         = "Contributor"
 
   principal = {
     id   = azurerm_user_assigned_identity.apps.principal_id
