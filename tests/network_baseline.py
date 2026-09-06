@@ -198,7 +198,16 @@ def load_baseline(path: Path = BASELINE_PATH) -> dict[str, Any]:
         raise BaselineArtifactMissingError(
             f"Pre-phase baseline artifact is missing: {path}"
         )
-    artifact = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BaselineArtifactInvalidError(
+            f"Pre-phase baseline artifact could not be read: {path}"
+        ) from exc
+    if not isinstance(artifact, dict):
+        raise BaselineArtifactInvalidError(
+            "Pre-phase baseline artifact must contain a JSON object"
+        )
     phase_base_commit = str(artifact.get("phase_base_commit") or "")
     if not _FULL_SHA.fullmatch(phase_base_commit):
         raise BaselineArtifactInvalidError(
