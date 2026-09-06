@@ -354,13 +354,16 @@ describe("inventory Copilot page adapter", () => {
       buildInventoryCopilotContext({
         ...baseInput,
         records: items,
-        selectedIdentity: null,
+        selectedIdentity: "KEY",
         totalCount: 1,
       }).snapshot.evidence;
 
     expect(buildCaseVariants([uppercase, lowercase])).toEqual(
       buildCaseVariants([lowercase, uppercase]),
     );
+    expect(buildCaseVariants([uppercase, lowercase])).toMatchObject([
+      { selected: true, data: { selected: true } },
+    ]);
   });
 
   it("rejects invalid coverage and every server-side size bound", () => {
@@ -394,6 +397,18 @@ describe("inventory Copilot page adapter", () => {
                 COPILOT_SNAPSHOT_LIMITS.evidenceRowBytes + 1,
               ),
             },
+          },
+        ],
+        totalCount: 1,
+      }),
+    ).toThrow(/evidence row/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        records: [
+          {
+            ...records[0],
+            data: { values: Array.from({ length: 1_500 }, () => 1e-7) },
           },
         ],
         totalCount: 1,

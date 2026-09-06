@@ -143,6 +143,17 @@ const STATUS_WARNING_PRIORITY: Record<CopilotSnapshotStatusV2, number> = {
   denied: 4,
 };
 
+const PYTHON_312_UNCASED_CODE_POINTS = new Set([
+  0x1c89,
+  0xa7cb,
+  0xa7cc,
+  0xa7ce,
+  0xa7d2,
+  0xa7d4,
+  0xa7da,
+  0xa7dc,
+]);
+
 /** Returns the reviewed Copilot integration disposition for a route. */
 export function copilotPageDisposition(pathname: string): CopilotPageDisposition {
   return PAGE_DISPOSITIONS[pathname as keyof typeof PAGE_DISPOSITIONS] ?? "deferred";
@@ -268,6 +279,13 @@ function sha256(value: string): string {
 function unicodeCaseFold(value: string): string {
   return Array.from(value, (character) => {
     const codePoint = character.codePointAt(0) ?? 0;
+    if (
+      PYTHON_312_UNCASED_CODE_POINTS.has(codePoint)
+      || (codePoint >= 0x10d50 && codePoint <= 0x10d65)
+      || (codePoint >= 0x16ea0 && codePoint <= 0x16eb8)
+    ) {
+      return character;
+    }
     if (codePoint === 0x0131) return character;
     if (codePoint === 0x1e9e) return "ss";
     if (
@@ -411,8 +429,22 @@ function boundedSourceKey(value: string): string {
 }
 
 function assertEvidenceRowBound(data: Record<string, unknown>): void {
-  const bytes = new TextEncoder().encode(asciiJson(data)).length;
+  const bytes = new TextEncoder().encode(asciiJson(data)).length + numericValueCount(data);
   assertBound("evidence row", bytes, COPILOT_SNAPSHOT_LIMITS.evidenceRowBytes);
+}
+
+function numericValueCount(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return 1;
+  if (Array.isArray(value)) {
+    return value.reduce((total, item) => total + numericValueCount(item), 0);
+  }
+  if (value && typeof value === "object") {
+    return Object.values(value).reduce(
+      (total, item) => total + numericValueCount(item),
+      0,
+    );
+  }
+  return 0;
 }
 
 function mergeDuplicateEvidence(
@@ -471,6 +503,11 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     if (observedAt) boundedString("evidence observation time", observedAt, 1, 128);
     const entity = recordEntity({ ...record, identity: sourceKey });
     const claimType = record.kind;
+    const selected = Boolean(
+      input.selectedIdentity
+      && normalizedIdentityPart(record.identity)
+        === normalizedIdentityPart(input.selectedIdentity),
+    );
     const stableId = canonicalEvidenceStableId({
       source,
       sourceKey,
@@ -480,7 +517,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     const data = {
       ...record.data,
       inventory_context: inventoryContext,
-      selected: record.identity === input.selectedIdentity,
+      selected,
     };
     assertEvidenceRowBound(data);
     const evidenceId = `browser:${sha256(asciiJson([stableId, stableJson(data)])).slice(0, 32)}`;
@@ -494,7 +531,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
       entity,
       claim_type: claimType,
       citations: [],
-      selected: record.identity === input.selectedIdentity,
+      selected,
       direct: true,
       actionable: false,
       severity: "unknown",
@@ -564,7 +601,8 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
   };
   assertBound(
     "snapshot",
-    new TextEncoder().encode(serializeCopilotSnapshot(snapshot)).length,
+    new TextEncoder().encode(serializeCopilotSnapshot(snapshot)).length
+      + numericValueCount(snapshot),
     COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
   );
 
