@@ -346,7 +346,7 @@ def test_snapshot_identity_is_retained_per_turn() -> None:
     store.append(thread.thread_id, "operator-a", SUB_A, _turn("alpha"))
 
     restarted = InvestigationThreadStore(documents=FakeDocuments())
-    restarted._threads.clear()  # noqa: SLF001 - restart is the point of the test
+    restarted._threads.clear()
     history = store.history(thread.thread_id, "operator-a", SUB_A)
 
     assert history[0]["snapshot_id"] == "snap-alpha"

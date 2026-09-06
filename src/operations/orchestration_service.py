@@ -14,8 +14,10 @@ from pydantic import ValidationError
 from api.scope import Scope
 from operations.foundry_agent import FoundryAgentError
 from operations.investigation_thread_store import (
+    InvestigationThread,
     InvestigationThreadStore,
     ThreadNotFound,
+    ThreadRevisionConflict,
     investigation_thread_store,
 )
 from operations.maf_orchestrator import (
@@ -204,16 +206,47 @@ def _legacy_session_thread_for_execution(
     with _legacy_session_lock:
         thread_id = _legacy_session_threads.get(key)
         if thread_id is None:
-            thread_id = investigation_thread_store().create(
+            thread_id = _adopt_or_create_thread(
+                session_id,
                 principal_subject,
                 scope,
-            ).thread_id
+            )
             _legacy_session_threads[key] = thread_id
             while len(_legacy_session_threads) > _MAX_LEGACY_SESSIONS:
                 _legacy_session_threads.popitem(last=False)
         else:
             _legacy_session_threads.move_to_end(key)
         return thread_id
+
+
+def _adopt_or_create_thread(
+    session_id: str,
+    principal_subject: str,
+    scope: Scope,
+) -> str:
+    """Adopt an active legacy conversation, or start an empty thread.
+
+    The import is opportunistic: an operator who is mid-conversation when the
+    canonical path takes over keeps their context instead of silently starting
+    over. The legacy store is only read -- its turns are copied and stamped
+    historical -- so old records stay byte-for-byte as they were written.
+    """
+
+    try:
+        from operations.investigation import conversation_store
+
+        legacy_turns = conversation_store().history(session_id, principal_subject)
+    except Exception:  # noqa: BLE001 - continuity import is never load-bearing.
+        legacy_turns = []
+    if legacy_turns:
+        imported = investigation_thread_store().import_legacy_turns(
+            principal_subject,
+            scope,
+            legacy_turns,
+        )
+        if imported is not None:
+            return imported.thread_id
+    return investigation_thread_store().create(principal_subject, scope).thread_id
 
 
 def _remember_legacy_session_thread(
@@ -370,16 +403,13 @@ class OrchestrationService:
             thread_id=thread.thread_id,
             thread_revision=thread.revision + 1,
         )
-        updated = self.thread_store.append(
-            thread.thread_id,
-            principal_subject,
-            requested_scope,
-            {
-                "question": request.question,
-                **result.model_dump(mode="json"),
-            },
+        return self._record_turn(
+            thread,
+            principal_subject=principal_subject,
+            requested_scope=requested_scope,
+            question=request.question,
+            result=result,
         )
-        return result.model_copy(update={"thread_revision": updated.revision})
 
     def unsupported(
         self,
@@ -410,15 +440,58 @@ class OrchestrationService:
             thread_id=thread.thread_id,
             thread_revision=thread.revision + 1,
         )
-        updated = self.thread_store.append(
-            thread.thread_id,
-            principal_subject,
-            requested_scope,
-            {
-                "question": request.question,
-                **result.model_dump(mode="json"),
-            },
+        return self._record_turn(
+            thread,
+            principal_subject=principal_subject,
+            requested_scope=requested_scope,
+            question=request.question,
+            result=result,
         )
+
+    def _record_turn(
+        self,
+        thread: InvestigationThread,
+        *,
+        principal_subject: str,
+        requested_scope: Scope,
+        question: str,
+        result: OrchestrationResult,
+    ) -> OrchestrationResult:
+        """Append one turn under optimistic concurrency and report the outcome.
+
+        Two tabs on the same thread are a normal thing for an operator to do,
+        so a superseded revision is reconciled once against the current record
+        rather than failing the turn. The reconciliation is stated in
+        ``uncertainty`` so the caller knows its revision was not the one it
+        read.
+        """
+
+        payload = {"question": question, **result.model_dump(mode="json")}
+        try:
+            updated = self.thread_store.append(
+                thread.thread_id,
+                principal_subject,
+                requested_scope,
+                payload,
+                expected_revision=thread.revision,
+            )
+        except ThreadRevisionConflict as conflict:
+            updated = self.thread_store.append(
+                thread.thread_id,
+                principal_subject,
+                requested_scope,
+                payload,
+                expected_revision=conflict.current_revision,
+            )
+            return result.model_copy(
+                update={
+                    "thread_revision": updated.revision,
+                    "uncertainty": [
+                        *result.uncertainty,
+                        "A concurrent turn superseded this thread revision.",
+                    ],
+                }
+            )
         return result.model_copy(update={"thread_revision": updated.revision})
 
     def _resolve_candidate(
