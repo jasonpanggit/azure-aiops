@@ -77,7 +77,10 @@ import {
 } from "./TopologyWorkspace";
 
 function summaryWithProjectedNodes(projectedNodes: number): NetworkSummary {
-  return buildNetworkSummary({ resource_counts: { projected: projectedNodes } });
+  return buildNetworkSummary({
+    projected_full_node_count: projectedNodes,
+    resource_counts: { private_endpoints: Math.floor(projectedNodes / 2) },
+  });
 }
 
 function renderWorkspace(

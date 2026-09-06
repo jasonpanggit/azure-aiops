@@ -400,20 +400,14 @@ export function TopologyWorkspace({
     selection.node,
   ]);
 
-  const projectedFullNodeCount = useMemo(
-    () =>
-      Object.values(summary?.resource_counts ?? {}).reduce(
-        (total, count) => total + count,
-        0,
-      ),
-    [summary],
-  );
+  const projectedFullNodeCount = summary?.projected_full_node_count;
 
   const chooseDetailLevel = useCallback(
     (nextDetail: TopologyDetailLevel) => {
       if (
         nextDetail === "full" &&
-        projectedFullNodeCount > FULL_DETAIL_GUARD_NODES
+        (projectedFullNodeCount === undefined ||
+          projectedFullNodeCount > FULL_DETAIL_GUARD_NODES)
       ) {
         setFullDetailPending(true);
         return;
@@ -674,8 +668,9 @@ export function TopologyWorkspace({
       {fullDetailPending && (
         <div className="callout callout-warning topology-coverage" role="status">
           <strong>
-            Full detail renders about {projectedFullNodeCount} nodes and may make
-            the canvas slow to interact with.
+            {projectedFullNodeCount === undefined
+              ? "Full-detail size is unavailable and may make the canvas slow to interact with."
+              : `Full detail renders about ${projectedFullNodeCount} nodes and may make the canvas slow to interact with.`}
           </strong>
           <button
             type="button"

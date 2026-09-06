@@ -214,6 +214,24 @@ class NetworkTopology:
                 return peer
         return ""
 
+    def projected_full_node_count(self) -> int:
+        """Return the exact number of nodes the full client graph will render."""
+        node_ids = {
+            str(resource["id"]).casefold()
+            for resource in _topology_resources(self, detail="full")
+        }
+        node_ids.update(
+            service.resource_id.casefold()
+            for service in self.shared_services
+            if service.resource_id
+        )
+        node_ids.update(
+            peer_id.casefold()
+            for peer_id in self.unresolved_peer_vnet_ids
+            if peer_id
+        )
+        return len(node_ids)
+
     def to_dict(self, *, detail: TopologyDetail = "full") -> dict[str, Any]:
         """Serialize the topology at the requested additive detail level.
 

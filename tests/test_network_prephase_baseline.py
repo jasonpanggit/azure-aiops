@@ -96,6 +96,21 @@ def test_baseline_is_recorded_and_self_consistent(tmp_path: Path) -> None:
             "path": ["data", "findings", "*", "affected_resource_ids"],
             "introduced_by": "12-07",
         },
+        {
+            "endpoint": "topology",
+            "path": ["data", "summary", "projected_full_node_count"],
+            "introduced_by": "12-REVIEW-CR-05",
+        },
+        {
+            "endpoint": "gaps",
+            "path": ["data", "summary", "projected_full_node_count"],
+            "introduced_by": "12-REVIEW-CR-05",
+        },
+        {
+            "endpoint": "rule_findings",
+            "path": ["data", "summary", "projected_full_node_count"],
+            "introduced_by": "12-REVIEW-CR-05",
+        },
     ]
 
     copied = tmp_path / "baseline.json"

@@ -82,6 +82,7 @@ export function buildNetworkSummary(
     rule_findings_by_category: {},
     intended_design_declared: true,
     resource_counts: { vnets: 2 },
+    projected_full_node_count: 2,
     ...overrides,
   };
 }
