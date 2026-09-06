@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { FluentProvider, webLightTheme } from "@fluentui/react-components";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -17,6 +18,10 @@ const recordDetails = {
   sessionApprover: "approver@example.com",
 };
 
+function renderDialog(node: React.ReactNode) {
+  return render(<FluentProvider theme={webLightTheme}>{node}</FluentProvider>);
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -29,7 +34,7 @@ function deferred<T>() {
 
 describe("RiskExceptionDialog record mode", () => {
   it("names exact scope and effects, owns approver identity, and focuses the required reason", async () => {
-    render(
+    renderDialog(
       <RiskExceptionDialog
         open
         mode="record"
@@ -80,7 +85,7 @@ describe("RiskExceptionDialog record mode", () => {
       },
     } as unknown as RiskExceptionGovernanceContext;
 
-    render(
+    renderDialog(
       <RiskExceptionDialog
         open
         mode="record"
@@ -124,7 +129,7 @@ describe("RiskExceptionDialog record mode", () => {
   it("focuses an explicit failure alert and keeps entered values retryable", async () => {
     const user = userEvent.setup();
     const onRecord = vi.fn().mockRejectedValue(new Error("Audit service unavailable"));
-    render(
+    renderDialog(
       <RiskExceptionDialog
         open
         mode="record"
@@ -148,7 +153,7 @@ describe("RiskExceptionDialog record mode", () => {
   it("preserves recorded truth when refreshing counts fails and focuses the audit result", async () => {
     const user = userEvent.setup();
     const onRefresh = vi.fn().mockRejectedValue(new Error("refresh unavailable"));
-    render(
+    renderDialog(
       <RiskExceptionDialog
         open
         mode="record"
@@ -202,7 +207,7 @@ describe("RiskExceptionDialog record mode", () => {
       );
     }
 
-    render(<Harness />);
+    renderDialog(<Harness />);
     const invoker = screen.getByRole("button", { name: "Open risk exception" });
     await user.click(invoker);
     await waitFor(() => expect(screen.getByLabelText("Reason")).toHaveFocus());
@@ -220,7 +225,7 @@ describe("RiskExceptionDialog revoke mode", () => {
   ];
 
   it("confirms page-bounded selection, represented scope, and metric impact", async () => {
-    render(
+    renderDialog(
       <RiskExceptionDialog
         open
         mode="revoke"
@@ -258,7 +263,7 @@ describe("RiskExceptionDialog revoke mode", () => {
       ],
     };
 
-    render(
+    renderDialog(
       <RiskExceptionDialog
         open
         mode="revoke"
