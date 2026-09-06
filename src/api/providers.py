@@ -20,6 +20,8 @@ UNAVAILABLE = "unavailable"
 DISABLED = "disabled"
 LOADING = "loading"
 
+_CACHE_KEY_UNAVAILABLE = object()
+
 
 @dataclass(frozen=True)
 class ProviderValue:
@@ -205,7 +207,16 @@ class ProviderRuntime:
             if retry_at is not None and now < retry_at:
                 return
 
-        cache_key_before = spec.cache_key() if spec.cache_key is not None else None
+        cache_key_before = self._read_cache_key(name, spec)
+        if cache_key_before is _CACHE_KEY_UNAVAILABLE:
+            with self._state_lock:
+                loaded = name in self._instances
+            if loaded:
+                _LOGGER.warning(
+                    "provider_refresh_skipped_cache_key_unavailable provider=%s",
+                    name,
+                )
+                return
         with self._state_lock:
             state.last_attempt_at = now_iso
         try:
@@ -232,7 +243,16 @@ class ProviderRuntime:
                 freshness, now=now, stale_after_hours=self.stale_after_hours
             ):
                 lifecycle = STALE
-            cache_key_after = spec.cache_key() if spec.cache_key is not None else None
+            cache_key_after = self._read_cache_key(name, spec)
+            if cache_key_after is _CACHE_KEY_UNAVAILABLE:
+                with self._state_lock:
+                    loaded = name in self._instances
+                if loaded:
+                    _LOGGER.warning(
+                        "provider_publish_skipped_cache_key_unavailable provider=%s",
+                        name,
+                    )
+                    return
             with self._state_lock:
                 self._instances[name] = value.instance
                 if spec.cache_key is not None:
@@ -263,11 +283,28 @@ class ProviderRuntime:
                 )
             _LOGGER.exception("provider_refresh_failed provider=%s", name)
 
+    @staticmethod
+    def _read_cache_key(name: str, spec: ProviderSpec | None) -> Any:
+        """Resolve a cache key without turning freshness I/O into an outage."""
+        if spec is None or spec.cache_key is None:
+            return None
+        try:
+            return spec.cache_key()
+        except Exception:
+            _LOGGER.warning(
+                "provider_cache_key_unavailable provider=%s",
+                name,
+                exc_info=True,
+            )
+            return _CACHE_KEY_UNAVAILABLE
+
     def _refresh_changed_cache_key(self, name: str) -> None:
         spec = self.specs.get(name)
         if spec is None or spec.cache_key is None or not spec.configured:
             return
-        current = spec.cache_key()
+        current = self._read_cache_key(name, spec)
+        if current is _CACHE_KEY_UNAVAILABLE:
+            return
         with self._state_lock:
             loaded = name in self._instances
             unchanged = loaded and self._cache_keys.get(name) == current
@@ -275,7 +312,9 @@ class ProviderRuntime:
             return
 
         with self._refresh_lock:
-            current = spec.cache_key()
+            current = self._read_cache_key(name, spec)
+            if current is _CACHE_KEY_UNAVAILABLE:
+                return
             with self._state_lock:
                 if (
                     name in self._instances
@@ -309,13 +348,15 @@ class ProviderRuntime:
         # once more so this request never receives a provider labelled with a
         # cache key older than the policy it is about to report against.
         self._refresh_changed_cache_key(name)
+        spec = self.specs.get(name)
+        current_cache_key = self._read_cache_key(name, spec)
         with self._state_lock:
             instance = self._instances.get(name)
-            spec = self.specs.get(name)
             cache_key_matches = (
                 spec is None
                 or spec.cache_key is None
-                or self._cache_keys.get(name) == spec.cache_key()
+                or current_cache_key is _CACHE_KEY_UNAVAILABLE
+                or self._cache_keys.get(name) == current_cache_key
             )
             if instance is not None and cache_key_matches:
                 return instance

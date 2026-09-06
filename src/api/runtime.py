@@ -2210,7 +2210,12 @@ def _build_provider_runtime(
             configured=True,
             required=(name in core_readiness_providers and not bootstrap),
             cache_key=(
-                (lambda: ("network-policy", _network_policy_store().revision))
+                (
+                    lambda: (
+                        "network-policy",
+                        _network_policy_store().revision_or_raise(),
+                    )
+                )
                 if name == "network"
                 else None
             ),

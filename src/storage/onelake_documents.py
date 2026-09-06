@@ -112,7 +112,20 @@ class OneLakeDocumentStore:
         with self._lock:
             return self._read_locked(name)
 
-    def _read_locked(self, name: str) -> dict[str, Any]:
+    def read_or_raise(self, name: str) -> dict[str, Any]:
+        """Return a document while preserving missing-vs-unreadable semantics."""
+        with self._lock:
+            return self._read_locked(name, suppress_errors=False)
+
+    def _read_locked(
+        self,
+        name: str,
+        *,
+        suppress_errors: bool = True,
+    ) -> dict[str, Any]:
+        # Validate containment before the fail-open transport boundary. An
+        # invalid caller-supplied name is a programming error, not a missing
+        # or temporarily unreadable document.
         path = self._path(name)
         try:
             if self.is_remote:
@@ -128,8 +141,14 @@ class OneLakeDocumentStore:
                     return {}
                 payload = json.loads(local_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, HttpResponseError):
+            if suppress_errors:
+                return {}
+            raise
+        if isinstance(payload, dict):
+            return payload
+        if suppress_errors:
             return {}
-        return payload if isinstance(payload, dict) else {}
+        raise ValueError(f"Document {name} must contain a JSON object")
 
     def write(self, name: str, payload: dict[str, Any], *, expected_revision: int) -> None:
         """Persist ``payload`` if the stored revision still matches.

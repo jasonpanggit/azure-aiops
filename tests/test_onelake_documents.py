@@ -53,6 +53,15 @@ def test_corrupt_document_reads_as_empty(tmp_path):
     assert OneLakeDocumentStore(tmp_path).read("state/registry.json") == {}
 
 
+def test_strict_read_surfaces_a_corrupt_document(tmp_path):
+    target = tmp_path / "state" / "registry.json"
+    target.parent.mkdir(parents=True)
+    target.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        OneLakeDocumentStore(tmp_path).read_or_raise("state/registry.json")
+
+
 def test_put_is_last_writer_wins_and_bumps_revision(tmp_path):
     store = OneLakeDocumentStore(tmp_path)
     store.put("cache/feed.json", {"entries": {"a": 1}})

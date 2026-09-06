@@ -641,6 +641,58 @@ class TestPolicy:
             for gap in after.json()["data"]["gaps"]
         )
 
+    def test_revision_store_error_preserves_last_good_network_provider(self):
+        now = [0.0]
+
+        class FlakyRevisionDocuments:
+            failing = False
+
+            def read(self, name):
+                if self.failing:
+                    return {}
+                return {"revision": 7, "policy": {}}
+
+            def read_or_raise(self, name):
+                if self.failing:
+                    raise OSError("OneLake revision read failed")
+                return {"revision": 7, "policy": {}}
+
+        documents = FlakyRevisionDocuments()
+        store = NetworkDesignPolicyStore(
+            documents,
+            revision_cache_seconds=1.0,
+            monotonic=lambda: now[0],
+        )
+        loaded = object()
+        load_count = 0
+
+        def load_network():
+            nonlocal load_count
+            load_count += 1
+            store.read()
+            return loaded
+
+        runtime = ProviderRuntime(
+            {
+                "network": ProviderSpec(
+                    loader=load_network,
+                    cache_key=lambda: (
+                        "network-policy",
+                        store.revision_or_raise(),
+                    ),
+                )
+            },
+            refresh_interval_seconds=30,
+            monotonic=lambda: 0.0,
+        )
+        runtime.refresh(force=True)
+        documents.failing = True
+        now[0] = 2.0
+
+        assert runtime.get("network") is loaded
+        assert store.revision == 7
+        assert load_count == 1
+
     def test_scoped_preview_matches_gaps_without_foreign_resources(
         self, tmp_path, monkeypatch
     ):

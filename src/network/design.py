@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -442,10 +444,22 @@ class NetworkDesignPolicyStore:
     replica with OneLake configured).
     """
 
-    def __init__(self, documents: Any = None) -> None:
+    def __init__(
+        self,
+        documents: Any = None,
+        *,
+        revision_cache_seconds: float = 1.0,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if revision_cache_seconds < 0:
+            raise ValueError("revision_cache_seconds cannot be negative")
         self._documents = documents
         self._memory: dict[str, Any] = {}
         self._lock = threading.RLock()
+        self._revision_cache_seconds = revision_cache_seconds
+        self._monotonic = monotonic
+        self._cached_revision: int | None = None
+        self._revision_checked_at = float("-inf")
 
     def read(self) -> NetworkDesignPolicy:
         with self._lock:
@@ -455,9 +469,35 @@ class NetworkDesignPolicyStore:
 
     @property
     def revision(self) -> int:
-        """Return the current policy revision for derived-analysis cache keys."""
+        """Return the last known revision, preserving the fail-open read API."""
+        try:
+            return self.revision_or_raise()
+        # Credential and transport SDKs do not share one stable exception
+        # base; this compatibility accessor must preserve the last known key.
+        except Exception:  # noqa: BLE001
+            with self._lock:
+                return (
+                    self._cached_revision
+                    if self._cached_revision is not None
+                    else 0
+                )
+
+    def revision_or_raise(self) -> int:
+        """Return a short-lived revision, surfacing store read failures."""
         with self._lock:
-            return int(self._read_document().get("revision") or 0)
+            now = self._monotonic()
+            if (
+                self._cached_revision is not None
+                and now - self._revision_checked_at
+                < self._revision_cache_seconds
+            ):
+                return self._cached_revision
+            revision = int(
+                self._read_document(strict=True).get("revision") or 0
+            )
+            self._cached_revision = revision
+            self._revision_checked_at = now
+            return revision
 
     def update(
         self,
@@ -489,6 +529,8 @@ class NetworkDesignPolicyStore:
                     document,
                     expected_revision=revision,
                 )
+            self._cached_revision = revision + 1
+            self._revision_checked_at = self._monotonic()
         return NetworkDesignPolicy.from_mapping(merged)
 
     def preview(self, changes: dict[str, Any]) -> NetworkDesignPolicy:
@@ -497,9 +539,13 @@ class NetworkDesignPolicyStore:
         with self._lock:
             return NetworkDesignPolicy.from_mapping(self._merge_changes(changes))
 
-    def _read_document(self) -> dict[str, Any]:
+    def _read_document(self, *, strict: bool = False) -> dict[str, Any]:
         if self._documents is None:
             return self._memory
+        if strict:
+            strict_reader = getattr(self._documents, "read_or_raise", None)
+            if callable(strict_reader):
+                return strict_reader(POLICY_DOCUMENT)
         return self._documents.read(POLICY_DOCUMENT)
 
     def _merge_changes(
