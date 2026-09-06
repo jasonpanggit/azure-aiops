@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -199,10 +199,10 @@ class _Connection:
     def __init__(self, cursor: _BoundedCursor) -> None:
         self._cursor = cursor
 
-    def __enter__(self) -> _Connection:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_args: Any) -> None:
+    def __exit__(self, *_args: object) -> None:
         return None
 
     def cursor(self) -> _BoundedCursor:
@@ -223,4 +223,3 @@ def test_fabric_reader_enforces_fetch_bound_and_statement_timeout() -> None:
 
     assert cursor.timeout == 7
     assert cursor.fetchall_called is False
-
