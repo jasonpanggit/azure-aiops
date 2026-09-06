@@ -33,25 +33,76 @@ SQL_SCOPE = "https://database.windows.net/.default"
 FABRIC_SQL_ADAPTER_ID = "fabric_sql"
 REQUIRED_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
 REQUIRED_EXPOSURE_SCHEMA: dict[str, frozenset[str]] = {
-    "gold_exposure_read_model": frozenset(
+    "gold_exposure_facts": frozenset(
         {
+            "fact_id",
+            "scope_key",
             "exposure_id",
             "read_model_generation_id",
             "tenant_id",
             "subscription_id",
             "connection_id",
+            "active",
+            "completeness",
+            "current_state",
+            "deployment_state",
+            "detail_path",
+            "evidence_count",
+            "image_digest",
+            "image_digest_id",
+            "logical_image_id",
+            "recommendation",
+            "registry_id",
+            "severity",
+            "sla_age_seconds",
+            "sla_due_at",
+            "sla_overdue",
+            "sla_state",
+            "sla_target_seconds",
+            "source_state",
+            "source_status",
             "target_id",
             "target_kind",
             "source_family",
             "priority_score",
+            "represented_workload_count",
+            "timestamp",
+            "total_workload_count",
+            "unknown_workload_count",
+            "weakness_id",
+            "weakness_kind",
+            "ordering_priority_score",
+            "ordering_severity_rank",
+            "ordering_target_id",
         }
     ),
-    "gold_exposure_summary": frozenset(
+    "gold_exposure_facets": frozenset(
         {
             "read_model_generation_id",
             "tenant_id",
             "subscription_id",
-            "total_count",
+            "scope_key",
+            "dimension_name",
+            "dimension_value",
+            "exposure_count",
+        }
+    ),
+    "gold_exposure_summaries": frozenset(
+        {
+            "read_model_generation_id",
+            "tenant_id",
+            "subscription_id",
+            "scope_key",
+            "connection_id",
+            "exposure_count",
+        }
+    ),
+    "metadata_exposure_gold_generations": frozenset(
+        {
+            "read_model_generation_id",
+            "reconciliation_status",
+            "published_at",
+            "retain_until",
         }
     ),
 }
@@ -146,6 +197,10 @@ class FabricSqlReadinessError(RuntimeError):
         )
 
 
+class FabricSqlQueryLimitError(RuntimeError):
+    """Raised before a query can materialize more rows than its contract."""
+
+
 class FabricSqlReader:
     """Executes read-only queries against the Lakehouse SQL endpoint."""
 
@@ -185,13 +240,40 @@ class FabricSqlReader:
             attrs_before={_SQL_COPT_SS_ACCESS_TOKEN: packed},
         )
 
-    def query(self, sql: str, parameters: Iterable[Any] = ()) -> list[dict[str, Any]]:
-        """Run ``sql`` and return rows as dicts. Parameters are always bound."""
+    def query(
+        self,
+        sql: str,
+        parameters: Iterable[Any] = (),
+        *,
+        max_rows: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run ``sql`` and return rows as dicts.
+
+        Values are always bound.  Production query paths additionally provide
+        ``max_rows`` so an accidentally broadened SQL statement cannot
+        materialize the full table in the API process.
+        """
+        if max_rows is not None and (
+            isinstance(max_rows, bool)
+            or not isinstance(max_rows, int)
+            or max_rows < 1
+        ):
+            raise ValueError("max_rows must be a positive integer")
         with self._connection() as connection:
             cursor = connection.cursor()
+            if hasattr(cursor, "timeout"):
+                cursor.timeout = self.timeout_seconds
             cursor.execute(sql, *parameters)
             columns = [column[0] for column in cursor.description or []]
-            return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+            if max_rows is None:
+                rows = cursor.fetchall()
+            else:
+                rows = cursor.fetchmany(max_rows + 1)
+                if len(rows) > max_rows:
+                    raise FabricSqlQueryLimitError(
+                        f"Fabric SQL query exceeded the {max_rows}-row limit"
+                    )
+            return [dict(zip(columns, row, strict=False)) for row in rows]
 
     def table_exists(self, table: str) -> bool:
         rows = self.query(
@@ -490,7 +572,7 @@ def _evaluate_exposure_readiness(
         try:
             qualified = (
                 f"{_quote_identifier(validated_endpoint.schema)}."
-                f"{_quote_identifier('gold_exposure_read_model')}"
+                f"{_quote_identifier('gold_exposure_facts')}"
             )
             probe_generation = "__readiness_probe__"
             probe_subscription = "00000000-0000-0000-0000-000000000000"
@@ -500,12 +582,12 @@ def _evaluate_exposure_readiness(
                 (probe_generation, probe_subscription),
             )
             reader.query(
-                "SELECT TOP (1) [exposure_id], [priority_score] "
+                "SELECT TOP (1) [exposure_id], [ordering_priority_score] "
                 f"FROM {qualified} "
                 "WHERE [read_model_generation_id] = ? AND [subscription_id] = ? "
-                "AND ([priority_score] < ? OR "
-                "([priority_score] = ? AND [exposure_id] > ?)) "
-                "ORDER BY [priority_score] DESC, [exposure_id] ASC",
+                "AND ([ordering_priority_score] < ? OR "
+                "([ordering_priority_score] = ? AND [exposure_id] > ?)) "
+                "ORDER BY [ordering_priority_score] DESC, [exposure_id] ASC",
                 (probe_generation, probe_subscription, 0, 0, ""),
             )
             bounded_query_ready = True
@@ -580,6 +662,7 @@ __all__ = [
     "REQUIRED_EXPOSURE_SCHEMA",
     "REQUIRED_ODBC_DRIVER",
     "SQL_SCOPE",
+    "FabricSqlQueryLimitError",
     "FabricSqlReader",
     "FabricSqlReadinessCheck",
     "FabricSqlReadinessError",
