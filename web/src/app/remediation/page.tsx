@@ -876,6 +876,16 @@ function RemediationContent() {
         },
         effectiveScope,
       );
+      if (
+        response.data.execution_transition !== false ||
+        response.data.direct_execution_supported !== false ||
+        response.data.target_kind !== "container_image"
+      ) {
+        setHandoffError(
+          "The server response did not confirm a non-executable container review handoff.",
+        );
+        return;
+      }
       setHandoffResult(
         response.data.handoff_id ||
           response.data.exposure_id,

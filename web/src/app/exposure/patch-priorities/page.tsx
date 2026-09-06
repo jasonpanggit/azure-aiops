@@ -381,24 +381,27 @@ export default function PatchPrioritiesPage() {
         completeness={headerCompleteness(page)}
       />
 
+      {section.restart.required && (
+        <div className="callout callout-warning" role="alert">
+          <p>
+            The retained Exposure generation expired. Restart from the first
+            page to continue safely.
+          </p>
+          <button
+            type="button"
+            className="button"
+            onClick={() => commitQuery(restartExposureQuery(queryState))}
+          >
+            Restart results
+          </button>
+        </div>
+      )}
+
       <SourceSectionState
         sourceName="Patch priority evidence"
         itemLabel="findings"
         state={section}
       >
-        {section.restart.required && (
-          <div className="callout callout-warning" role="alert">
-            <p>The retained Exposure generation expired. Restart from the first page to continue safely.</p>
-            <button
-              type="button"
-              className="button"
-              onClick={() => commitQuery(restartExposureQuery(queryState))}
-            >
-              Restart results
-            </button>
-          </div>
-        )}
-
         <section className="card queue-card" aria-labelledby="patch-priority-heading">
           <div className="card-header">
             <div>
