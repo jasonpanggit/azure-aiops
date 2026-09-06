@@ -14,17 +14,16 @@ from operations.investigation_thread_store import (
     InvestigationThreadStore,
     investigation_thread_store,
 )
+from operations.maf_orchestrator import build_deterministic_fallback
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     CandidatePlan,
     Citation,
     InvestigationRequest,
     OrchestrationResult,
-    SpecialistStep,
-    ToolCallCandidate,
 )
 from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
-from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
+from operations.specialist_manifest import load_specialist_manifest
 from operations.tools import (
     STATUS_DENIED,
     STATUS_EMPTY,
@@ -57,25 +56,13 @@ def _default_executor(
 
 
 def _fallback_candidate(request: InvestigationRequest) -> CandidatePlan:
-    citation_ids = [item.evidence_id for item in request.snapshot.evidence]
-    if not citation_ids:
-        citation_ids = [COVERAGE_CITATION_ID]
-    return CandidatePlan(
-        steps=[
-            SpecialistStep(
-                specialist_id=INVENTORY_DATA_HEALTH_ID,
-                tool_calls=[
-                    ToolCallCandidate(
-                        tool="inventory_resources",
-                        arguments={},
-                        citation_ids=citation_ids,
-                    )
-                ],
-            )
-        ],
-        estimated_tokens=0,
-        max_wall_seconds=5,
-    )
+    """Construct a keyword-selected deterministic fallback.
+
+    Delegates to ``build_deterministic_fallback`` so the same keyword
+    selection and page-constraint logic produces a candidate that passes
+    the identical policy validator applied to model-proposed plans.
+    """
+    return build_deterministic_fallback(request, load_specialist_manifest())
 
 
 class OrchestrationService:

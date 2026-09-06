@@ -4,7 +4,8 @@ MAF is the default orchestration contract: Operations Copilot coordinates
 page-drawer turns and selects specialists from the user's question first, rather
 than letting the page own the conversation. Set
 ``AIOPS_AGENT_ORCHESTRATION_MODE=deterministic`` to use the legacy
-page-anchored rollback path.
+page-anchored rollback path, or ``canonical`` to route every surface through
+the governed ``OrchestrationService``.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import Any
 ENV_AGENT_ORCHESTRATION_MODE = "AIOPS_AGENT_ORCHESTRATION_MODE"
 MODE_DETERMINISTIC = "deterministic"
 MODE_MAF = "maf"
+MODE_CANONICAL = "canonical"
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,12 @@ def maf_mode_enabled() -> bool:
     """Return whether the MAF orchestration route is enabled."""
 
     return os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold() != MODE_DETERMINISTIC
+
+
+def canonical_orchestration_enabled() -> bool:
+    """Return whether all surfaces route through the canonical OrchestrationService."""
+
+    return os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold() == MODE_CANONICAL
 
 
 def _maf_runtime_label() -> str:
@@ -106,4 +114,107 @@ def select_specialists_for_turn(
         strategy="page_fallback",
         runtime=_maf_runtime_label(),
         reason="no specialist intent matched; used the current page as context",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deterministic keyword fallback for the canonical OrchestrationService
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class _ManifestCatalogEntry:
+    """Lightweight catalog entry for ``select_specialists_for_turn``."""
+
+    id: str
+    keywords: tuple[str, ...]
+
+
+def build_deterministic_fallback(
+    request: Any,
+    manifest: Any,
+) -> Any:
+    """Construct a keyword-selected CandidatePlan that passes the same policy.
+
+    Uses ``select_specialists_for_turn`` for keyword matching, constrained to
+    specialists whose ``page_mappings`` include the request's page_kind and
+    whose catalogued tools are all read-only reviewed grants.  The candidate
+    is structurally identical to a model-proposed plan so the deterministic
+    policy validates it without special-casing.
+
+    Imported types are resolved at call time to avoid a top-level import
+    cycle between ``maf_orchestrator`` and the contract/manifest modules.
+    """
+    from operations.orchestration_contract import (
+        COVERAGE_CITATION_ID,
+        CandidatePlan,
+        SpecialistStep,
+        ToolCallCandidate,
+    )
+
+    page_kind: str = request.snapshot.page_kind
+    page_mapping = manifest.page_mapping_projection()
+
+    catalog = [
+        _ManifestCatalogEntry(id=spec.id, keywords=spec.intent_examples)
+        for spec in manifest.specialists
+    ]
+
+    decision = select_specialists_for_turn(
+        page_kind=page_kind,
+        question=request.question,
+        page_specialists=page_mapping,
+        catalog=catalog,
+        limit=4,
+    )
+
+    # Keep only specialists that map to this page and have at least one tool.
+    valid_ids: list[str] = []
+    for sid in decision.selected_ids:
+        try:
+            spec = manifest.require(sid)
+        except ValueError:
+            continue
+        if page_kind in spec.page_mappings and spec.operations_mcp_tools:
+            valid_ids.append(sid)
+
+    # If keyword selection found nothing for this page, use the page default.
+    if not valid_ids:
+        for spec in manifest.specialists:
+            if (
+                spec.id != "executive_summary"
+                and page_kind in spec.page_mappings
+                and spec.operations_mcp_tools
+            ):
+                valid_ids.append(spec.id)
+                break
+
+    citation_ids = [item.evidence_id for item in request.snapshot.evidence]
+    if not citation_ids:
+        citation_ids = [COVERAGE_CITATION_ID]
+
+    steps: list[SpecialistStep] = []
+    for sid in valid_ids:
+        spec = manifest.require(sid)
+        steps.append(
+            SpecialistStep(
+                specialist_id=sid,
+                tool_calls=[
+                    ToolCallCandidate(
+                        tool=spec.operations_mcp_tools[0],
+                        arguments={},
+                        citation_ids=citation_ids,
+                    )
+                ],
+            )
+        )
+
+    if not steps:
+        # Absolute guard — should never be reached for a valid manifest.
+        raise ValueError("no page-compatible specialist with tools found")
+
+    return CandidatePlan(
+        steps=steps,
+        estimated_tokens=0,
+        max_wall_seconds=5,
+        mutation_intent=False,
     )
