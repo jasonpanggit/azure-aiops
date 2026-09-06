@@ -42,6 +42,8 @@ import type {
   DefenderOverview,
   DefenderSecureScore,
   DefenderSecureScoreControl,
+  CanonicalCopilotRequest,
+  CanonicalCopilotResult,
   SemanticContext,
   SubscriptionConnection,
   CveDetail,
@@ -444,6 +446,18 @@ export function buildCopilotSnapshot(input: CopilotPageSnapshotInput): CopilotPa
     scope: { declared: input.scope, authorized: true }, evidence: (input.evidence ?? []).map(validatedCopilotEvidence).slice(0, 200),
     question: input.question?.trim() || "Summarize the visible page evidence.", rechecks: input.rechecks ?? [],
   };
+}
+
+/** Submits a versioned request through the authenticated canonical API. */
+export function investigateCanonical(
+  request: CanonicalCopilotRequest,
+  scope: ScopeSelection,
+): Promise<Envelope<CanonicalCopilotResult>> {
+  return apiRequest<CanonicalCopilotResult>("/copilot/investigations", {
+    method: "POST",
+    query: scopeToSearchParams(scope),
+    body: request,
+  });
 }
 
 export function copilotEvidenceRows(
