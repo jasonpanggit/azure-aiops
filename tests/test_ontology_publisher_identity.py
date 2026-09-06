@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import uuid
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,9 @@ from scripts.validate_ontology_publisher_rbac import (
     EXPECTED_PUBLISHER_ROLE,
     AuthorizationEvidenceError,
     HttpResult,
+    UrllibTransport,
     ValidationBlocked,
+    _correlation,
     main,
     validate_live_authorization,
 )
@@ -225,7 +228,14 @@ def _config() -> dict:
 
 
 class _MatrixTransport:
-    def __init__(self, config: dict, *, ambiguous: bool = False, leaked: bool = False):
+    def __init__(
+        self,
+        config: dict,
+        *,
+        ambiguous: bool = False,
+        leaked: bool = False,
+        server_correlation: bool = True,
+    ):
         self._config = config
         self._identities = {
             entry["client_id"]: identity_class
@@ -234,7 +244,9 @@ class _MatrixTransport:
         }
         self.ambiguous = ambiguous
         self.leaked = leaked
+        self.server_correlation = server_correlation
         self.calls: list[tuple[str, str, str]] = []
+        self.client_request_ids: list[str] = []
         self.etag = 0
 
     def request(
@@ -249,7 +261,13 @@ class _MatrixTransport:
         claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
         identity_class = self._identities[claims["appid"]]
         self.calls.append((identity_class, method, url))
-        correlation = {"x-ms-request-id": f"request-{len(self.calls)}"}
+        client_request_id = str(uuid.uuid4())
+        self.client_request_ids.append(client_request_id)
+        correlation = (
+            {"x-ms-request-id": f"request-{len(self.calls)}"}
+            if self.server_correlation
+            else {}
+        )
         if "api.fabric.microsoft.com" in url:
             assignments = [
                 {
@@ -269,6 +287,7 @@ class _MatrixTransport:
                 200,
                 correlation,
                 json.dumps({"value": assignments}).encode(),
+                client_request_id,
             )
         if "/agents/aiops-ontology-curator-agent/versions" in url:
             definition = {
@@ -286,17 +305,38 @@ class _MatrixTransport:
                 200,
                 correlation,
                 json.dumps({"value": [{"version": "7", "definition": definition}]}).encode(),
+                client_request_id,
             )
         if identity_class != "publisher":
             if self.leaked:
-                return HttpResult(201, {**correlation, "etag": '"leaked"'})
-            return HttpResult(404 if self.ambiguous else 403, correlation)
+                return HttpResult(
+                    201,
+                    {**correlation, "etag": '"leaked"'},
+                    client_request_id=client_request_id,
+                )
+            return HttpResult(
+                404 if self.ambiguous else 403,
+                correlation,
+                client_request_id=client_request_id,
+            )
         if method == "DELETE":
             if any(name in url for name in ("api-stage", "coordinator-stage", "curator-stage")):
-                return HttpResult(404, correlation)
-            return HttpResult(202, correlation)
+                return HttpResult(
+                    404,
+                    correlation,
+                    client_request_id=client_request_id,
+                )
+            return HttpResult(
+                202,
+                correlation,
+                client_request_id=client_request_id,
+            )
         self.etag += 1
-        return HttpResult(201, {**correlation, "etag": f'"etag-{self.etag}"'})
+        return HttpResult(
+            201,
+            {**correlation, "etag": f'"etag-{self.etag}"'},
+            client_request_id=client_request_id,
+        )
 
 
 def _credentials(config: dict):
@@ -364,6 +404,106 @@ def test_live_matrix_combines_four_denials_with_curator_structural_evidence() ->
     assert all(
         row["correlation_evidence"].startswith("sha256:") for row in evidence
     )
+
+
+def test_missing_server_correlation_uses_unique_hashed_client_request_ids() -> None:
+    config = _config()
+    transport = _MatrixTransport(config, server_correlation=False)
+
+    report = validate_live_authorization(
+        config,
+        transport=transport,
+        credential_factory=_credentials(config),
+    )
+
+    correlations = [row["correlation_evidence"] for row in report["evidence"]]
+    assert report["status"] == "passed"
+    assert len(transport.client_request_ids) == len(set(transport.client_request_ids))
+    assert len(set(correlations)) == len(correlations)
+    assert all(value.startswith("sha256:") for value in correlations)
+    serialized = json.dumps(report)
+    assert all(value not in serialized for value in transport.client_request_ids)
+
+
+@pytest.mark.parametrize("client_request_id", ["", "constant", "not-a-uuid"])
+def test_correlation_rejects_missing_or_malformed_operation_context(
+    client_request_id: str,
+) -> None:
+    with pytest.raises(
+        AuthorizationEvidenceError,
+        match="operation lacks correlation evidence",
+    ):
+        _correlation(
+            HttpResult(
+                status=403,
+                headers={},
+                client_request_id=client_request_id,
+            )
+        )
+
+
+def test_transport_sends_unique_client_request_id_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_headers: list[dict[str, str]] = []
+
+    class Response:
+        status = 200
+
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit: int) -> bytes:
+            return b"{}"
+
+    def urlopen(request, *, timeout):
+        assert timeout == 30
+        observed_headers.append(dict(request.header_items()))
+        return Response()
+
+    monkeypatch.setattr(
+        "scripts.validate_ontology_publisher_rbac.urllib.request.urlopen",
+        urlopen,
+    )
+    transport = UrllibTransport()
+    first = transport.request(
+        "GET",
+        "https://example.test/first",
+        token="secret-token",
+        headers={},
+    )
+    second = transport.request(
+        "GET",
+        "https://example.test/second",
+        token="secret-token",
+        headers={},
+    )
+
+    assert uuid.UUID(first.client_request_id).version == 4
+    assert uuid.UUID(second.client_request_id).version == 4
+    assert first.client_request_id != second.client_request_id
+    assert observed_headers[0]["X-ms-client-request-id"] == first.client_request_id
+    assert observed_headers[1]["X-ms-client-request-id"] == second.client_request_id
+    assert observed_headers[0]["X-ms-return-client-request-id"] == "true"
+    assert _correlation(first).startswith("sha256:")
+
+
+def test_server_correlation_is_preferred_over_client_request_id() -> None:
+    result = HttpResult(
+        status=403,
+        headers={"x-ms-request-id": "server-request"},
+        client_request_id=str(uuid.uuid4()),
+    )
+
+    assert _correlation(result) == "sha256:" + hashlib.sha256(
+        b"server-request"
+    ).hexdigest()
 
 
 @pytest.mark.parametrize("status_kind", ["ambiguous", "write_succeeded"])

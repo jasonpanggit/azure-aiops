@@ -89,6 +89,7 @@ class HttpResult:
     status: int
     headers: dict[str, str]
     body: bytes = b""
+    client_request_id: str = ""
 
 
 class HttpTransport(Protocol):
@@ -117,12 +118,15 @@ class UrllibTransport:
     ) -> HttpResult:
         if urllib.parse.urlsplit(url).scheme != "https":
             raise ValidationBlocked("validation target must use HTTPS")
+        client_request_id = str(uuid.uuid4())
         request_headers = {
             "Authorization": f"Bearer {token}",
             "x-ms-version": API_VERSION,
             "x-ms-date": datetime.now(UTC).strftime("%a, %d %b %Y %H:%M:%S GMT"),
             "Content-Length": str(len(body)),
             **headers,
+            "x-ms-client-request-id": client_request_id,
+            "x-ms-return-client-request-id": "true",
         }
         request = urllib.request.Request(
             url,
@@ -141,6 +145,7 @@ class UrllibTransport:
                     status=response.status,
                     headers={key.casefold(): value for key, value in response.headers.items()},
                     body=response_body,
+                    client_request_id=client_request_id,
                 )
         except urllib.error.HTTPError as exc:
             # Bodies can contain tenant, path, and policy details.  Discard
@@ -148,6 +153,7 @@ class UrllibTransport:
             return HttpResult(
                 status=exc.code,
                 headers={key.casefold(): value for key, value in exc.headers.items()},
+                client_request_id=client_request_id,
             )
         except (OSError, TimeoutError) as exc:
             raise AuthorizationEvidenceError("live authorization request failed") from exc
@@ -376,7 +382,16 @@ def _correlation(result: HttpResult) -> str:
     ]
     evidence = "|".join(value for value in values if value)
     if not evidence:
-        raise AuthorizationEvidenceError("operation lacks correlation evidence")
+        candidate = result.client_request_id.strip()
+        try:
+            parsed = uuid.UUID(candidate)
+        except (AttributeError, ValueError) as exc:
+            raise AuthorizationEvidenceError(
+                "operation lacks correlation evidence"
+            ) from exc
+        if parsed.version != 4 or str(parsed) != candidate.casefold():
+            raise AuthorizationEvidenceError("operation lacks correlation evidence")
+        evidence = candidate
     return "sha256:" + hashlib.sha256(evidence.encode()).hexdigest()
 
 
