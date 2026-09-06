@@ -486,3 +486,49 @@ def test_reconciliation_detects_missing_generation_pinned_fact() -> None:
 
     with pytest.raises(ValueError, match="exact reconciliation failed"):
         reconcile_exposure_gold(datasets, tampered)
+
+
+def test_healthy_empty_scope_keeps_a_zero_summary_for_authorized_scope() -> None:
+    datasets = {
+        "gold_exposure_current": [],
+        "silver_exposure_observations": [],
+        "gold_container_exposure_current": [],
+        "silver_container_vulnerability_observations": [],
+        "silver_exposure_enrichment": [],
+        "silver_defender_secure_scores": [],
+        "metadata_source_status": [
+            {
+                "tenant_id": "tenant-a",
+                "subscription_id": "sub-a",
+                "connection_id": "connection-a",
+                "source_family": "defender_subassessment",
+                "status": "succeeded",
+                "availability": "available",
+                "completeness": "complete",
+                "attempted_at": PROJECTED_AT,
+            }
+        ],
+    }
+
+    projection = project_exposure_gold(
+        datasets,
+        generation_id=GENERATION,
+        projected_at=PROJECTED_AT,
+    )
+    manifest = reconcile_exposure_gold(datasets, projection)
+
+    assert projection.facts == ()
+    assert {
+        (
+            row["scope_kind"],
+            row["subscription_id"],
+            row["connection_id"],
+            row["exposure_count"],
+        )
+        for row in projection.summaries
+    } == {
+        ("tenant", "", "", 0),
+        ("subscription", "sub-a", "", 0),
+        ("connection", "sub-a", "connection-a", 0),
+    }
+    assert manifest["status"] == "reconciled"
