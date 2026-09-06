@@ -35,7 +35,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fabric", "src/fabric_pipelines", "src/storage", "src/ontology", "src/semantic", "src/agents", "src/operations", "src/intelligence", "src/onboarding", "src/api"]
+packages = ["src/fabric", "src/fabric_pipelines", "src/storage", "src/ontology", "src/ontology_discovery", "src/semantic", "src/agents", "src/operations", "src/intelligence", "src/onboarding", "src/api"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills/operational-context-graph/SKILL.md" = "skills/operational-context-graph/SKILL.md"

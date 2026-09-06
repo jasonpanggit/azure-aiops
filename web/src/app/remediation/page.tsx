@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  RiskExceptionDialog,
+  type RiskExceptionRecordRequest,
+  type RiskExceptionRecordResult,
+} from "@/components/exposure/RiskExceptionDialog";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
@@ -11,13 +16,19 @@ import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
 import { relativeTime, titleize } from "@/lib/format";
+import {
+  encodeExposureQueryState,
+  parseExposureQueryState,
+} from "@/lib/exposure-query-state";
 import type { ScopeSelection } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import {
   operationsApi,
   remediationApi,
+  vulnerabilityApi,
 } from "@/lib/services";
 import type {
+  ExposureRemediationCase,
   RemediationApprovalDecision,
   RemediationApprovalRequirement,
   RemediationAvailablePatch,
@@ -260,6 +271,187 @@ function actionSummary(workflow: RemediationWorkflow): string {
   return `${snapshot.operation}: ${snapshot.patch_ids.join(", ")}`;
 }
 
+function safeExposureReturnPath(
+  value: string,
+  authorizedScope: ScopeSelection,
+): string {
+  const fallback = "/exposure/patch-priorities";
+  if (!value || value.startsWith("//")) return fallback;
+  try {
+    const parsed = new URL(value, "https://aiops.invalid");
+    if (
+      parsed.origin !== "https://aiops.invalid" ||
+      !/^\/exposure(?:\/|$)/.test(parsed.pathname)
+    ) {
+      return fallback;
+    }
+    const canonicalState = parseExposureQueryState(parsed.searchParams, {
+      authorizedScope,
+    });
+    const canonicalQuery = encodeExposureQueryState(canonicalState).toString();
+    return canonicalQuery
+      ? `${parsed.pathname}?${canonicalQuery}`
+      : parsed.pathname;
+  } catch {
+    return fallback;
+  }
+}
+
+function ContainerReviewHandoff({
+  handoff,
+  loading,
+  error,
+  submitting,
+  result,
+  onSubmit,
+  returnTo,
+}: {
+  handoff: ExposureRemediationCase | null;
+  loading: boolean;
+  error: Error | null;
+  submitting: boolean;
+  result: string;
+  onSubmit: (reason: string) => Promise<void>;
+  returnTo: string;
+}) {
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [reason, setReason] = useState("");
+  const [localError, setLocalError] = useState("");
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  const successRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (localError) errorRef.current?.focus();
+  }, [localError]);
+  useEffect(() => {
+    if (result) successRef.current?.focus();
+  }, [result]);
+
+  if (loading) {
+    return (
+      <StatePanel
+        title="Loading governed container review"
+        message="Revalidating the server-owned handoff against current evidence."
+        tone="loading"
+        busy
+      />
+    );
+  }
+  if (error) {
+    return (
+      <StatePanel
+        title="Container review is unavailable"
+        message={error.message}
+        tone="error"
+        action={<Link className="button" href={returnTo}>Back to exposure</Link>}
+      />
+    );
+  }
+  if (!handoff) {
+    return (
+      <StatePanel
+        title="No safe container action"
+        message="The requested handoff is not present in the current authorized Exposure generation."
+        tone="error"
+        action={<Link className="button" href={returnTo}>Back to exposure</Link>}
+      />
+    );
+  }
+  const canCreate =
+    handoff.target_kind === "container_image" &&
+    handoff.outcome === "review_handoff" &&
+    handoff.direct_execution_supported === false;
+  if (!canCreate) {
+    return (
+      <section className="card remediation-container-review">
+        <div className="card-header">
+          <h2>No safe container action</h2>
+        </div>
+        <div className="card-body">
+          <p>{handoff.outcome_reason || "No safe governed handoff is available for this evidence."}</p>
+          <p>Container rebuild, base-image change, workload mutation, and deployment remain unavailable from Exposure.</p>
+          <Link className="button" href={returnTo}>Back to exposure</Link>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card remediation-container-review">
+      <div className="card-header">
+        <div>
+          <span className="eyebrow">From Exposure</span>
+          <h2>Governed container review</h2>
+          <p>No executable container action is available. This creates an audited review record only.</p>
+        </div>
+      </div>
+      <div className="card-body">
+        <dl className="remediation-review-facts">
+          <div>
+            <dt>Finding</dt>
+            <dd>{handoff.weakness_key}</dd>
+          </div>
+          <div>
+            <dt>Generation</dt>
+            <dd><code>{handoff.read_model_generation_id}</code></dd>
+          </div>
+          <div className="remediation-review-fact-wide">
+            <dt>Image digest</dt>
+            <dd className="exposure-long-value">{handoff.review_handoff.image_digest || handoff.resource_key}</dd>
+          </div>
+        </dl>
+        <p>{handoff.outcome_reason}</p>
+        {result ? (
+          <div ref={successRef} className="callout" role="status" tabIndex={-1}>
+            <h3>Container review handoff recorded</h3>
+            <p>Audit ID: <code>{result}</code></p>
+          </div>
+        ) : (
+          <>
+            <label className="form-field">
+              <span>Review handoff reason</span>
+              <textarea
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+                required
+              />
+            </label>
+            <label className="remediation-handoff-acknowledgement">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(event) => setAcknowledged(event.target.checked)}
+              />
+              <span>I acknowledge this is a non-executable review handoff</span>
+            </label>
+            {localError && (
+              <p ref={errorRef} className="callout callout-warning" role="alert" tabIndex={-1}>
+                {localError}
+              </p>
+            )}
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={submitting || !acknowledged || !reason.trim()}
+              onClick={() => {
+                if (!acknowledged || !reason.trim()) {
+                  setLocalError("A reason and explicit acknowledgement are required.");
+                  return;
+                }
+                setLocalError("");
+                void onSubmit(reason.trim());
+              }}
+            >
+              {submitting ? "Creating review handoff…" : "Create governed review handoff"}
+            </button>
+          </>
+        )}
+        <Link className="button button-quiet" href={returnTo}>Back to exposure</Link>
+      </div>
+    </section>
+  );
+}
+
 /** Five-step, approval-gated remediation workflow. */
 export default function RemediationPage() {
   return (
@@ -295,6 +487,9 @@ function RemediationContent() {
   const fromCve = searchParams.get("cve") ?? "";
   const fromKb = searchParams.get("kb") ?? "";
   const fromIncident = searchParams.get("incident") ?? "";
+  const fromGeneration = searchParams.get("generation") ?? "";
+  const requestedHandoff = searchParams.get("handoff") ?? "";
+  const requestedReturnFocus = searchParams.get("return_focus") ?? "";
   const effectiveScope = useMemo<ScopeSelection>(() => {
     const scoped: ScopeSelection = { ...scope };
     const subscriptions = searchParams.getAll("subscription").filter(Boolean);
@@ -304,9 +499,34 @@ function RemediationContent() {
     return scoped;
   }, [scope, searchParams]);
   const scopeKey = JSON.stringify(effectiveScope);
+  const returnTo = useMemo(
+    () =>
+      safeExposureReturnPath(
+        searchParams.get("return_to") ?? "",
+        effectiveScope,
+      ),
+    [effectiveScope, searchParams],
+  );
   const plans = useApi(
     () => operationsApi.remediationPlans(effectiveScope, 0, 100, requestedResource),
     [scopeKey, requestedResource],
+  );
+  const handoffs = useApi(
+    () =>
+      requestedHandoff
+        ? remediationApi.exposureHandoffs(effectiveScope)
+        : Promise.resolve({
+            data: {
+              cases: [],
+              read_only: true as const,
+              execution_transition: false as const,
+            },
+            evidence: [],
+            warnings: [],
+            scope: effectiveScope,
+            knowledge_version: "",
+          }),
+    [requestedHandoff, scopeKey],
   );
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [activeStep, setActiveStep] = useState<WorkflowStep>("select");
@@ -324,6 +544,11 @@ function RemediationContent() {
   const [confirmRun, setConfirmRun] = useState(false);
   const [selectedPatchIds, setSelectedPatchIds] = useState<string[] | null>(null);
   const [patchSelectionRefusal, setPatchSelectionRefusal] = useState("");
+  const [riskDialogOpen, setRiskDialogOpen] = useState(false);
+  const [handoffSubmitting, setHandoffSubmitting] = useState(false);
+  const [handoffResult, setHandoffResult] = useState("");
+  const [handoffError, setHandoffError] = useState("");
+  const riskInvokerRef = useRef<HTMLButtonElement>(null);
   const requestId = useRef(0);
 
   // Phase 03.5 CR-05 fix: a decision attests exactly one required role
@@ -528,6 +753,29 @@ function RemediationContent() {
     setSubmitting(true);
     setActionError("");
     try {
+      const revalidated = await remediationApi.workflow(
+        planId,
+        effectiveScope,
+        selectedPatchIds ?? [],
+      );
+      const latest = revalidated.data;
+      setWorkflow(latest);
+      if (
+        !latest.action.executable ||
+        !latest.action.can_operate ||
+        !latest.approval.current ||
+        !latest.preview?.execution_snapshot ||
+        !latest.plan.executable ||
+        !businessEvidenceReady(latest)
+      ) {
+        setConfirmRun(false);
+        setActionError(
+          latest.action.operate_ineligible_reason ||
+            latest.plan.ineligibility_reason ||
+            "The server no longer considers this exact snapshot eligible to run.",
+        );
+        return;
+      }
       const response = await remediationApi.execute(planId, effectiveScope);
       setWorkflow((current) => (
         current ? withExecution(current, response.data) : current
@@ -599,6 +847,12 @@ function RemediationContent() {
 
   const selectedEvidence = workflow?.evidence ?? [];
   const audit = workflow?.audit ?? { decisions: [], executions: [] };
+  const handoffCase =
+    handoffs.data?.data.cases.find(
+      (row) =>
+        row.handoff_id === requestedHandoff ||
+        row.exposure_id === requestedHandoff,
+    ) ?? null;
   const canRun = Boolean(
     workflow?.action.executable
     && workflow.approval.current
@@ -607,6 +861,97 @@ function RemediationContent() {
     && businessEvidenceReady(workflow),
   );
   const pageError = plans.error && planRows.length === 0 ? plans.error : null;
+
+  const createContainerReview = async (reason: string) => {
+    if (!handoffCase || handoffSubmitting) return;
+    setHandoffSubmitting(true);
+    setHandoffError("");
+    try {
+      const response = await remediationApi.createExposureHandoff(
+        {
+          exposure_id: handoffCase.exposure_id,
+          reason,
+          risk_acknowledged: true,
+          risk_exception_id: "",
+        },
+        effectiveScope,
+      );
+      if (
+        response.data.execution_transition !== false ||
+        response.data.direct_execution_supported !== false ||
+        response.data.target_kind !== "container_image"
+      ) {
+        setHandoffError(
+          "The server response did not confirm a non-executable container review handoff.",
+        );
+        return;
+      }
+      setHandoffResult(
+        response.data.handoff_id ||
+          response.data.exposure_id,
+      );
+    } catch (error) {
+      setHandoffError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setHandoffSubmitting(false);
+    }
+  };
+
+  const recordRiskException = async (
+    request: RiskExceptionRecordRequest,
+  ): Promise<RiskExceptionRecordResult> => {
+    try {
+      const response = await vulnerabilityApi.acceptRisk({
+        cve_id: request.cveId,
+        server_id: requestedResource || undefined,
+        reason: request.reason,
+        expires_at: request.expiresAt || undefined,
+      });
+      return {
+        status: "success",
+        auditId: response.data.exception_id,
+        effectiveScope: request.targetScope,
+        expiresAt: response.data.expires_at || null,
+        canRevoke: true,
+        governance: request.governance,
+      };
+    } catch (error) {
+      return {
+        status: "failure",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+
+  if (requestedHandoff) {
+    return (
+      <div className="page-container remediation-center">
+        <PageHeader
+          eyebrow="Governed remediation"
+          title="Container review handoff"
+          description="Review exact Exposure evidence and create an audited, non-executable platform-team handoff."
+          metadata={
+            <>
+              <span>Review-only container path</span>
+              <span>Execution transition disabled</span>
+            </>
+          }
+        />
+        {handoffError && (
+          <p className="callout callout-warning" role="alert">{handoffError}</p>
+        )}
+        <ContainerReviewHandoff
+          handoff={handoffCase}
+          loading={handoffs.loading}
+          error={handoffs.error}
+          submitting={handoffSubmitting}
+          result={handoffResult}
+          onSubmit={createContainerReview}
+          returnTo={returnTo}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="page-container remediation-center">
@@ -629,15 +974,44 @@ function RemediationContent() {
       />
 
       {(requestedResource || fromCve || fromKb || fromIncident) && (
-        <div className="callout remediation-handoff">
-          <span>
-            Scoped handoff:
-            {fromIncident ? ` incident ${fromIncident}` : ""}
-            {fromCve ? ` ${fromCve}` : ""}
-            {fromKb ? ` ${fromKb}` : ""}
-            {requestedResource ? ` ${requestedResource}` : ""}
-          </span>
-          <Link className="button button-quiet" href="/remediation">Clear</Link>
+        <div className="callout remediation-handoff remediation-handoff-context">
+          <div>
+            <strong>From Exposure</strong>
+            <span>
+              Scoped handoff:
+              {requestedResource ? ` ${requestedResource}` : ""}
+            </span>
+            <span>
+              {fromIncident ? ` Incident ${fromIncident}.` : ""}
+              {fromCve ? ` ${fromCve}.` : ""}
+              {fromKb ? ` ${fromKb}.` : ""}
+              {requestedResource ? ` Target ${requestedResource}.` : ""}
+              {fromGeneration ? ` Evidence generation ${fromGeneration}.` : ""}
+            </span>
+            {requestedReturnFocus && (
+              <span> Return focus: {requestedReturnFocus}.</span>
+            )}
+            <p>
+              Nothing executes from Exposure. The server revalidates targets,
+              evidence, approval, and operator eligibility immediately before
+              the governed transition.
+            </p>
+          </div>
+          <div className="remediation-handoff-actions">
+            {fromCve && (
+              <button
+                ref={riskInvokerRef}
+                type="button"
+                className="button"
+                onClick={() => setRiskDialogOpen(true)}
+              >
+                Record risk exception
+              </button>
+            )}
+            <Link className="button button-quiet" href={returnTo}>
+              Back to exposure
+            </Link>
+          </div>
         </div>
       )}
 
@@ -1125,6 +1499,34 @@ function RemediationContent() {
             </div>
           </details>
         </section>
+      )}
+
+      {fromCve && (
+        <RiskExceptionDialog
+          mode="record"
+          open={riskDialogOpen}
+          onOpenChange={setRiskDialogOpen}
+          returnFocusRef={riskInvokerRef}
+          governance={{
+            decision: workflow?.approval.latest ?? null,
+            workflow,
+            execution: workflow?.execution ?? null,
+          }}
+          record={{
+            cveId: fromCve,
+            targetScope: requestedResource || "Current authorized Exposure scope",
+            affectedMetrics: ["Open exposure", "Patch priority"],
+            evidenceFreshness: fromGeneration
+              ? `Generation ${fromGeneration}`
+              : "Current server-projected evidence",
+            sessionApprover: "Authenticated session",
+          }}
+          onRecord={recordRiskException}
+          onRefresh={async () => {
+            plans.refetch();
+            setWorkflowRefresh((value) => value + 1);
+          }}
+        />
       )}
     </div>
   );

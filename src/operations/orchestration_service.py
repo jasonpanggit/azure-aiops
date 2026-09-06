@@ -191,6 +191,31 @@ def _legacy_session_thread(
         return thread_id
 
 
+def _legacy_session_thread_for_execution(
+    session_id: str,
+    principal_subject: str,
+    scope: Scope,
+) -> str | None:
+    """Atomically bind a first legacy turn to one canonical thread."""
+
+    if not session_id:
+        return None
+    key = (principal_subject, session_id)
+    with _legacy_session_lock:
+        thread_id = _legacy_session_threads.get(key)
+        if thread_id is None:
+            thread_id = investigation_thread_store().create(
+                principal_subject,
+                scope,
+            ).thread_id
+            _legacy_session_threads[key] = thread_id
+            while len(_legacy_session_threads) > _MAX_LEGACY_SESSIONS:
+                _legacy_session_threads.popitem(last=False)
+        else:
+            _legacy_session_threads.move_to_end(key)
+        return thread_id
+
+
 def _remember_legacy_session_thread(
     session_id: str,
     principal_subject: str,
@@ -241,6 +266,7 @@ class OrchestrationService:
         context: Any,
         principal_subject: str,
         effective_scope: Scope,
+        max_wall_seconds: float | None = None,
     ) -> OrchestrationResult:
         """Execute one canonical request after all authorization gates pass."""
 
@@ -259,10 +285,13 @@ class OrchestrationService:
             request,
             effective_scope,
         )
-        deadline = started + min(
+        wall_seconds = min(
             candidate.max_wall_seconds,
             self.policy.limits.max_wall_seconds,
         )
+        if max_wall_seconds is not None:
+            wall_seconds = min(wall_seconds, max(0.0, max_wall_seconds))
+        deadline = started + wall_seconds
         tool_results: list[dict[str, Any]] = []
         tool_statuses: list[str] = []
         citations = self._snapshot_citations(request)
@@ -543,6 +572,7 @@ def execute_from_question(
     session_id: str = "",
     hint_tool: str = "",
     hint_arguments: Mapping[str, Any] | None = None,
+    max_wall_seconds: float | None = None,
 ) -> OrchestrationResult:
     """Canonical orchestration adapter for question-only legacy routes.
 
@@ -573,7 +603,11 @@ def execute_from_question(
     request = InvestigationRequest(
         question=question,
         requested_scope=scope.to_dict(),
-        thread_id=_legacy_session_thread(session_id, principal_subject),
+        thread_id=_legacy_session_thread_for_execution(
+            session_id,
+            principal_subject,
+            scope,
+        ),
         snapshot=EvidenceSnapshotV2(
             page_kind=page_kind,
             page_id="copilot",
@@ -665,13 +699,24 @@ def execute_from_question(
             context=context,
             principal_subject=principal_subject,
             effective_scope=scope,
+            max_wall_seconds=max_wall_seconds,
         )
 
     try:
         result = _execute(request)
     except ThreadNotFound:
         _forget_legacy_session_thread(session_id, principal_subject)
-        result = _execute(request.model_copy(update={"thread_id": None}))
+        result = _execute(
+            request.model_copy(
+                update={
+                    "thread_id": _legacy_session_thread_for_execution(
+                        session_id,
+                        principal_subject,
+                        scope,
+                    )
+                }
+            )
+        )
         result = result.model_copy(
             update={
                 "uncertainty": [

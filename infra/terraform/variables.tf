@@ -686,6 +686,141 @@ variable "alert_provider_stale_threshold_hours" {
   default     = 6
 }
 
+variable "exposure_ingestion_cadence_minutes" {
+  description = "Configured duration of one Exposure ingestion cycle; every Exposure alert window uses exactly this duration."
+  type        = number
+  default     = 30
+
+  validation {
+    condition = contains(
+      [5, 10, 15, 30],
+      var.exposure_ingestion_cadence_minutes,
+    )
+    error_message = "exposure_ingestion_cadence_minutes must be one of 5, 10, 15, or 30."
+  }
+}
+
+variable "exposure_alert_evaluation_minutes" {
+  description = "Azure Monitor evaluation frequency for Exposure alerts; must not exceed the ingestion cadence."
+  type        = number
+  default     = 5
+
+  validation {
+    condition = contains(
+      [5, 10, 15, 30],
+      var.exposure_alert_evaluation_minutes,
+    )
+    error_message = "exposure_alert_evaluation_minutes must be one of 5, 10, 15, or 30."
+  }
+
+  validation {
+    condition = (
+      var.exposure_alert_evaluation_minutes <=
+      var.exposure_ingestion_cadence_minutes
+    )
+    error_message = "Exposure alerts must evaluate at least as fast as the configured ingestion cadence."
+  }
+}
+
+variable "exposure_alert_min_effective_rows" {
+  description = "Minimum effective Exposure rows expected after a non-empty ingestion cycle."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.exposure_alert_min_effective_rows >= 0
+    error_message = "exposure_alert_min_effective_rows must be non-negative."
+  }
+}
+
+variable "exposure_alert_max_drop_ratio" {
+  description = "Maximum allowed effective-row drop from last known good before alerting."
+  type        = number
+  default     = 0.2
+
+  validation {
+    condition     = var.exposure_alert_max_drop_ratio >= 0 && var.exposure_alert_max_drop_ratio <= 1
+    error_message = "exposure_alert_max_drop_ratio must be between zero and one."
+  }
+}
+
+variable "exposure_alert_source_max_age_seconds" {
+  description = "Maximum allowed age of effective Exposure source-family data."
+  type        = number
+  default     = 21600
+
+  validation {
+    condition     = var.exposure_alert_source_max_age_seconds > 0
+    error_message = "exposure_alert_source_max_age_seconds must be positive."
+  }
+}
+
+variable "exposure_alert_min_enrichment_quality" {
+  description = "Minimum successful durable-enrichment ratio for one Exposure cycle."
+  type        = number
+  default     = 0.9
+
+  validation {
+    condition     = var.exposure_alert_min_enrichment_quality >= 0 && var.exposure_alert_min_enrichment_quality <= 1
+    error_message = "exposure_alert_min_enrichment_quality must be between zero and one."
+  }
+}
+
+variable "exposure_alert_min_represented_ratio" {
+  description = "Minimum represented-to-total Exposure coverage ratio."
+  type        = number
+  default     = 0.95
+
+  validation {
+    condition     = var.exposure_alert_min_represented_ratio >= 0 && var.exposure_alert_min_represented_ratio <= 1
+    error_message = "exposure_alert_min_represented_ratio must be between zero and one."
+  }
+}
+
+variable "exposure_alert_max_reconciliation_mismatches" {
+  description = "Maximum unexpected old/new semantic mismatches allowed in one cycle."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.exposure_alert_max_reconciliation_mismatches >= 0
+    error_message = "exposure_alert_max_reconciliation_mismatches must be non-negative."
+  }
+}
+
+variable "exposure_alert_max_reconciliation_ratio" {
+  description = "Maximum unexpected old/new semantic drift ratio allowed in one cycle."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.exposure_alert_max_reconciliation_ratio >= 0 && var.exposure_alert_max_reconciliation_ratio <= 1
+    error_message = "exposure_alert_max_reconciliation_ratio must be between zero and one."
+  }
+}
+
+variable "exposure_alert_query_p95_ms" {
+  description = "Maximum scoped Exposure query p95 latency in milliseconds."
+  type        = number
+  default     = 1000
+
+  validation {
+    condition     = var.exposure_alert_query_p95_ms > 0
+    error_message = "exposure_alert_query_p95_ms must be positive."
+  }
+}
+
+variable "exposure_alert_max_query_errors" {
+  description = "Maximum Exposure query errors allowed in one ingestion-cycle window."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.exposure_alert_max_query_errors >= 0
+    error_message = "exposure_alert_max_query_errors must be non-negative."
+  }
+}
+
 variable "onboarded_subscriptions" {
   description = "List of Azure subscription IDs that have onboarded SPN credentials in AKV"
   type        = list(string)

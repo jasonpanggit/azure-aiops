@@ -1,466 +1,838 @@
 "use client";
 
-import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useMemo, useRef, useState } from "react";
+import { useMsal } from "@azure/msal-react";
+import { useRouter, useSearchParams } from "next/navigation";
+
+import {
+  RiskExceptionDialog,
+  type RiskExceptionRecordRequest,
+  type RiskExceptionRecordResult,
+  type RiskExceptionRevokeRequest,
+  type RiskExceptionRevokeResult,
+} from "@/components/exposure/RiskExceptionDialog";
 import { AttackPathGraphView } from "@/components/ui/AttackPathGraphView";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CvssRadarChart } from "@/components/ui/CvssRadarChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
-import { PageHeader } from "@/components/ui/PageHeader";
-import { RiskGauge } from "@/components/ui/RiskGauge";
-import { StatePanel } from "@/components/ui/StatePanel";
+import {
+  PageHeader,
+  type PageHeaderCompleteness,
+} from "@/components/ui/PageHeader";
+import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
-import { useColumnFilters } from "@/lib/table-column-filters";
-import { useTablePagination } from "@/lib/use-table-pagination";
-import { useApi } from "@/hooks/useApi";
+import {
+  advanceExposureCursor,
+  exposureDetailHref,
+  exposureDetailParentLabel,
+  exposureDetailReturnHref,
+  exposureQueryKey,
+  exposureRetentionKey,
+  parseExposureDetailContext,
+  parseExposureQueryState,
+  restartExposureQuery,
+  retreatExposureCursor,
+  updateExposureQueryState,
+  type ExposureQueryState,
+} from "@/lib/exposure-query-state";
+import {
+  useExposureSection,
+  type ExposureSectionPresentation,
+  type ExposureSectionResult,
+} from "@/hooks/useExposureSection";
 import { useScope } from "@/lib/scope-context";
-import { buildCopilotSnapshot, copilotEvidenceRows, vulnerabilityApi } from "@/lib/services";
-import type { CveDetail } from "@/lib/types";
+import {
+  buildCopilotSnapshot,
+  copilotEvidenceRows,
+  vulnerabilityApi,
+} from "@/lib/services";
+import type {
+  AttackPathGraph,
+  CveDetail,
+  Envelope,
+  ExposureEnrichmentSourceState,
+  ExposureCursorPagination,
+  ExposureFinding,
+  ExposureOverview,
+  ExposurePage,
+} from "@/lib/types";
 
-/** Blends CVSS severity, real-world exploitation likelihood (EPSS), and CISA KEV status into a single
- * 0-100 composite score. CVSS alone measures theoretical severity; EPSS measures observed exploitation
- * probability; KEV confirms active exploitation. Combining them gives a more actionable single number
- * than any one signal alone, while remaining fully explainable in the gauge's detail text. */
-function compositeExploitScore(cve: CveDetail["cve"]): number {
-  const cvssComponent = ((cve.cvss?.base_score ?? 0) / 10) * 55;
-  const epssComponent = (cve.epss_score ?? 0) * 30;
-  const kevComponent = cve.is_known_exploited ? 15 : 0;
-  return Math.round(Math.min(100, cvssComponent + epssComponent + kevComponent));
+interface CveFindingRow extends ExposureFinding {
+  server_id?: string;
+  missing_kb?: string;
+  application?: string;
+  business_service?: string;
+  environment?: string;
+  network_exposure?: string;
+  reachable?: boolean;
+  firewall_path?: string[];
+  nsg_path?: string[];
+  owner?: string;
+  due_at?: string | null;
+  days_open?: number | null;
+  overdue?: boolean | null;
+  risk_accepted?: boolean;
+  risk_acceptance_reason?: string;
+  risk_acceptance_expires_at?: string;
+  severity?: string;
 }
 
-/** CVE drilldown connecting affected services, reachable hosts, paths, owners, and patch guidance. */
+const TARGET_KIND_OPTIONS = [
+  { value: "server", label: "Servers" },
+  { value: "container_image", label: "Container images" },
+];
+
+function statusRank(status: ExposureSectionPresentation["status"]): number {
+  return {
+    current: 0,
+    "healthy-empty": 0,
+    stale: 1,
+    partial: 2,
+    loading: 3,
+    unavailable: 4,
+  }[status];
+}
+
+function aggregateCompleteness(
+  sections: ExposureSectionPresentation[],
+): PageHeaderCompleteness {
+  const worst = sections.reduce(
+    (current, candidate) =>
+      statusRank(candidate.status) > statusRank(current.status)
+        ? candidate
+        : current,
+    sections[0],
+  );
+  const state =
+    worst.status === "current" || worst.status === "healthy-empty"
+      ? "complete"
+      : worst.status === "loading" || worst.status === "unavailable"
+        ? "unavailable"
+        : worst.status;
+  const metadata = worst.metadata;
+  return {
+    state,
+    freshness:
+      state === "complete"
+        ? "current"
+        : state === "stale"
+          ? "stale"
+          : "unknown",
+    representedConnections: metadata.represented,
+    expectedConnections: metadata.expected,
+    representedCount: metadata.loaded,
+    totalCount: metadata.total,
+    excludedCount: metadata.excluded,
+    excludedReasons: metadata.excludedReasons,
+  };
+}
+
+function metricCompleteness(
+  status: ExposureSectionPresentation["status"],
+): "complete" | "partial" | "stale" | "unavailable" {
+  if (status === "current" || status === "healthy-empty") return "complete";
+  if (status === "loading") return "unavailable";
+  return status;
+}
+
+function cursorEnvelope<T>(
+  promise: Promise<Envelope<T>>,
+): Promise<Envelope<T, ExposureCursorPagination>> {
+  return promise as unknown as Promise<Envelope<T, ExposureCursorPagination>>;
+}
+
+function sourceRecord(
+  detail: CveDetail | null,
+  source: "nvd" | "epss" | "kev" | "msrc",
+): ExposureEnrichmentSourceState | null {
+  const entries = Object.values(detail?.enrichment?.sources ?? {});
+  return (
+    entries.find((entry) => entry.source.toLocaleLowerCase("en-US") === source) ??
+    null
+  );
+}
+
+function presentSection<T>(
+  section: ExposureSectionResult<T>,
+  common: ExposureSectionResult<unknown>,
+  {
+    loaded,
+    empty = false,
+    source,
+    requiresSource = false,
+  }: {
+    loaded?: number;
+    empty?: boolean;
+    source?: ExposureEnrichmentSourceState | null;
+    requiresSource?: boolean;
+  } = {},
+): ExposureSectionPresentation {
+  const metadata = {
+    ...common.metadata,
+    represented:
+      (common.data as ExposureOverview | null)?.contract.completeness
+        .represented_connections ?? common.metadata.represented,
+    expected:
+      (common.data as ExposureOverview | null)?.contract.completeness
+        .expected_connections ?? common.metadata.expected,
+    loaded,
+    observedAt:
+      source?.source_at ??
+      source?.succeeded_at ??
+      source?.attempted_at ??
+      common.metadata.observedAt,
+    freshnessSourceFamily: source?.source ?? common.metadata.freshnessSourceFamily,
+    safeErrorMessage:
+      source?.safe_error_code || section.error?.message || common.metadata.safeErrorMessage,
+  };
+  const presentedSection = {
+    ...section,
+    retrying: section.retrying || Boolean(section.loading && section.data),
+  };
+  if (section.loading && !section.data) {
+    return { ...presentedSection, metadata, status: "loading" };
+  }
+  if (section.error) {
+    return {
+      ...presentedSection,
+      metadata,
+      status: section.data ? "stale" : "unavailable",
+    };
+  }
+  if (source) {
+    const succeeded = ["success", "succeeded", "complete"].includes(
+      source.status.toLocaleLowerCase("en-US"),
+    );
+    if (source.stale || (!succeeded && source.has_last_known_good)) {
+      return { ...presentedSection, metadata, status: "stale" };
+    }
+    if (!succeeded && !source.has_last_known_good) {
+      return {
+        ...presentedSection,
+        metadata,
+        error: new Error(
+          source.safe_error_code || `${source.source} enrichment is unavailable`,
+        ),
+        status: "unavailable",
+      };
+    }
+  } else if (requiresSource) {
+    return {
+      ...presentedSection,
+      metadata: {
+        ...metadata,
+        safeErrorMessage: "No durable source status was returned.",
+      },
+      error: new Error("No durable source status was returned."),
+      status: "unavailable",
+    };
+  }
+  if (empty) return { ...presentedSection, metadata, status: "healthy-empty" };
+  const commonStatus = common.data
+    ? common.status
+    : common.loading
+      ? "partial"
+      : "partial";
+  return {
+    ...presentedSection,
+    metadata,
+    status:
+      commonStatus === "healthy-empty" ? "current" : commonStatus,
+  };
+}
+
+function Section({
+  label,
+  sourceName,
+  itemLabel,
+  state,
+  children,
+}: {
+  label: string;
+  sourceName: string;
+  itemLabel: string;
+  state: ExposureSectionPresentation;
+  children?: React.ReactNode;
+}) {
+  return (
+    <section role="region" aria-label={`${label} section`}>
+      <div className="card-header">
+        <h2>{label}</h2>
+      </div>
+      <SourceSectionState
+        sourceName={sourceName}
+        itemLabel={itemLabel}
+        state={state}
+      >
+        {children}
+      </SourceSectionState>
+    </section>
+  );
+}
+
+/** Scoped CVE detail with independent core, graph, and enrichment state. */
 export default function CveDetailPage({ params }: { params: { id: string } }) {
+  const cveId = decodeURIComponent(params.id);
   const { scope } = useScope();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const queryState = useMemo(
+    () =>
+      parseExposureQueryState(new URLSearchParams(searchParams.toString()), {
+        authorizedScope: scope,
+      }),
+    [scope, searchParams],
+  );
+  const detailContext = useMemo(
+    () => parseExposureDetailContext(new URLSearchParams(searchParams.toString())),
+    [searchParams],
+  );
+  const [findingState, setFindingState] = useState<ExposureQueryState>(() => ({
+    ...queryState,
+    filters: { ...queryState.filters, weakness_id: cveId },
+    cursor: null,
+    cursorHistory: [],
+    page: 1,
+  }));
   const [refreshKey, setRefreshKey] = useState(0);
-  const detail = useApi(
-    () => vulnerabilityApi.cve(decodeURIComponent(params.id), scope),
-    [params.id, scope, refreshKey]
-  );
-  const attackPath = useApi(
-    () => vulnerabilityApi.attackPath(decodeURIComponent(params.id), scope),
-    [params.id, scope]
-  );
-  const [acceptRiskOpen, setAcceptRiskOpen] = useState(false);
+  const [riskDialogOpen, setRiskDialogOpen] = useState(false);
+  const [revokeExceptionId, setRevokeExceptionId] = useState("");
   const [copilotOpen, setCopilotOpen] = useState(false);
-  const [reason, setReason] = useState("");
-  const [approvedBy, setApprovedBy] = useState("");
-  const [expiresAt, setExpiresAt] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const riskInvokerRef = useRef<HTMLButtonElement>(null);
+  const { accounts } = useMsal();
+  const sessionApprover =
+    accounts[0]?.username || accounts[0]?.name || "Authenticated session";
 
-  const findings = useMemo(() => detail.data?.data.findings ?? [], [detail.data]);
-  const { filteredRows: filteredFindings, filters: findingFilters, resetFilters: resetFindingFilters } = useColumnFilters(findings, [
-    { id: "environment", label: "Environment", getValues: (finding) => finding.environment || "Unknown" },
-    { id: "reachability", label: "Reachability", getValues: (finding) => finding.reachable ? finding.network_exposure || "Reachable" : "No path observed" },
-    { id: "service", label: "Service", getValues: (finding) => finding.business_service || "Unmapped service" },
-    { id: "status", label: "Risk status", getValues: (finding) => finding.risk_accepted ? "Risk accepted" : "Open" },
-  ]);
-  const findingsPaging = useTablePagination(filteredFindings);
+  const common = useExposureSection<ExposureOverview>({
+    queryKey: `${exposureQueryKey(findingState)}|common`,
+    retentionKey: `${exposureRetentionKey(findingState)}|common`,
+    refreshKey,
+    load: ({ signal }) =>
+      vulnerabilityApi.exposureOverview(findingState, { signal }),
+  });
+  const core = useExposureSection<CveDetail>({
+    queryKey: `${exposureRetentionKey(findingState)}|core|${cveId}`,
+    refreshKey,
+    load: ({ signal }) =>
+      cursorEnvelope(vulnerabilityApi.cve(cveId, findingState.scope, { signal })),
+    isEmpty: () => false,
+  });
+  const findings = useExposureSection<ExposurePage<CveFindingRow>>({
+    queryKey: `${exposureQueryKey(findingState)}|findings|${cveId}`,
+    retentionKey: `${exposureRetentionKey(findingState)}|findings|${cveId}`,
+    refreshKey,
+    load: ({ signal }) =>
+      vulnerabilityApi.exposureItems(findingState, { signal }) as Promise<
+        Envelope<ExposurePage<CveFindingRow>, ExposureCursorPagination>
+      >,
+    isEmpty: (page) => page.items.length === 0,
+  });
+  const attack = useExposureSection<AttackPathGraph>({
+    queryKey: `${exposureRetentionKey(findingState)}|attack|${cveId}`,
+    refreshKey,
+    load: ({ signal }) =>
+      cursorEnvelope(
+        vulnerabilityApi.attackPath(cveId, findingState.scope, { signal }),
+      ),
+    isEmpty: (graph) => graph.edges.length === 0,
+  });
+  const nvd = useExposureSection<CveDetail>({
+    queryKey: `${exposureRetentionKey(findingState)}|nvd|${cveId}`,
+    refreshKey,
+    load: ({ signal }) =>
+      cursorEnvelope(vulnerabilityApi.cve(cveId, findingState.scope, { signal })),
+    isEmpty: (detail) => !detail.cve.cvss?.vector && !detail.cve.description,
+  });
+  const epss = useExposureSection<CveDetail>({
+    queryKey: `${exposureRetentionKey(findingState)}|epss|${cveId}`,
+    refreshKey,
+    load: ({ signal }) =>
+      cursorEnvelope(vulnerabilityApi.cve(cveId, findingState.scope, { signal })),
+    isEmpty: () => false,
+  });
+  const kev = useExposureSection<CveDetail>({
+    queryKey: `${exposureRetentionKey(findingState)}|kev|${cveId}`,
+    refreshKey,
+    load: ({ signal }) =>
+      cursorEnvelope(vulnerabilityApi.cve(cveId, findingState.scope, { signal })),
+    isEmpty: (detail) => !detail.cve.is_known_exploited,
+  });
+  const kb = useExposureSection<CveDetail>({
+    queryKey: `${exposureRetentionKey(findingState)}|kb|${cveId}`,
+    refreshKey,
+    load: ({ signal }) =>
+      cursorEnvelope(vulnerabilityApi.cve(cveId, findingState.scope, { signal })),
+    isEmpty: (detail) => detail.cve.associated_kbs.length === 0,
+  });
 
-  if (detail.loading) {
-    return (
-      <div className="page-container">
-        <StatePanel title="Building CVE exposure view" message="Resolving services, servers, network paths, and patch guidance." tone="loading" />
-      </div>
-    );
+  const data = core.data;
+  const rows = findings.data?.items ?? [];
+  const coreState = presentSection(findings, common, {
+    loaded: rows.length,
+    empty: Boolean(findings.data && rows.length === 0),
+  });
+  if (core.error && !data) {
+    coreState.status = rows.length ? "partial" : "unavailable";
+    coreState.error = core.error;
   }
-  if (detail.error || !detail.data) {
-    return (
-      <div className="page-container">
-        <StatePanel
-          title="CVE detail is unavailable"
-          message={detail.error?.message ?? "No exposure detail was returned."}
-          tone="error"
-          action={<Link className="button" href="/exposure">Return to exposure</Link>}
-        />
-      </div>
-    );
-  }
+  const attackState = presentSection(attack, common, {
+    loaded: attack.data?.edges.length,
+    empty: Boolean(attack.data && attack.data.edges.length === 0),
+  });
+  const nvdState = presentSection(nvd, common, {
+    loaded: nvd.data ? 1 : 0,
+    empty: Boolean(nvd.data && !nvd.data.cve.cvss?.vector && !nvd.data.cve.description),
+    source: sourceRecord(nvd.data, "nvd"),
+    requiresSource: true,
+  });
+  const epssState = presentSection(epss, common, {
+    loaded: epss.data ? 1 : 0,
+    source: sourceRecord(epss.data, "epss"),
+    requiresSource: true,
+  });
+  const kevState = presentSection(kev, common, {
+    loaded: kev.data?.cve.is_known_exploited ? 1 : 0,
+    empty: Boolean(kev.data && !kev.data.cve.is_known_exploited),
+    source: sourceRecord(kev.data, "kev"),
+    requiresSource: true,
+  });
+  const kbState = presentSection(kb, common, {
+    loaded: kb.data?.cve.associated_kbs.length ?? 0,
+    empty: Boolean(kb.data && kb.data.cve.associated_kbs.length === 0),
+    source: sourceRecord(kb.data, "msrc"),
+    requiresSource: Boolean(kb.data?.cve.associated_kbs.length),
+  });
+  const allStates = [coreState, attackState, nvdState, epssState, kevState, kbState];
+  const headerState = aggregateCompleteness(allStates);
+  const restartRequired = [common, core, findings, attack, nvd, epss, kev, kb].some(
+    (section) => section.restart.required,
+  );
+  const parentLabel = exposureDetailParentLabel(detailContext.origin);
+  const backHref = exposureDetailReturnHref(queryState, detailContext);
+  const currentDetailHref = exposureDetailHref(
+    "cves",
+    cveId,
+    queryState,
+    detailContext,
+  );
+  const findingPage = findings.data;
+  const first = rows.length ? (findingState.page - 1) * findingState.pageSize + 1 : 0;
+  const last = rows.length ? first + rows.length - 1 : 0;
 
-  const data = detail.data.data;
+  const kbHref = (kbId: string) =>
+    exposureDetailHref("kbs", kbId, queryState, detailContext);
 
-  async function handleAcceptRisk() {
-    if (!reason.trim()) {
-      setSubmitError("A reason is required to accept risk.");
-      return;
-    }
-    setSubmitting(true);
-    setSubmitError(null);
+  async function recordRiskException(
+    request: RiskExceptionRecordRequest,
+  ): Promise<RiskExceptionRecordResult> {
     try {
-      await vulnerabilityApi.acceptRisk({
-        cve_id: data.cve.cve_id,
-        reason: reason.trim(),
-        approved_by: approvedBy.trim() || undefined,
-        expires_at: expiresAt || undefined,
+      const response = await vulnerabilityApi.acceptRisk({
+        cve_id: request.cveId,
+        reason: request.reason,
+        expires_at: request.expiresAt
+          ? new Date(request.expiresAt).toISOString()
+          : undefined,
       });
-      setAcceptRiskOpen(false);
-      setReason("");
-      setApprovedBy("");
-      setExpiresAt("");
-      setRefreshKey((key) => key + 1);
-    } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : "Failed to submit risk exception.");
-    } finally {
-      setSubmitting(false);
+      return {
+        status: "success",
+        auditId: response.data.exception_id,
+        effectiveScope: request.targetScope,
+        expiresAt: response.data.expires_at || null,
+        canRevoke: response.data.can_revoke === true,
+        governance: request.governance,
+      };
+    } catch (error) {
+      return {
+        status: "failure",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Risk exception was not recorded.",
+      };
     }
   }
 
-  const acceptedFindings = data.findings.filter((finding) => finding.risk_accepted);
+  async function refreshRiskEvidence(): Promise<void> {
+    await Promise.all([
+      vulnerabilityApi.exposureItems(findingState),
+      vulnerabilityApi.exposureOverview(findingState),
+      vulnerabilityApi.cve(cveId, findingState.scope),
+    ]);
+    setRefreshKey((value) => value + 1);
+  }
+
+  async function revokeRiskException(
+    request: RiskExceptionRevokeRequest,
+  ): Promise<RiskExceptionRevokeResult> {
+    const exceptionId = request.exceptionIds[0];
+    try {
+      await vulnerabilityApi.revokeRiskException(exceptionId);
+      return {
+        status: "success",
+        auditId: exceptionId,
+        outcomes: [{ exceptionId, status: "succeeded" }],
+      };
+    } catch (error) {
+      return {
+        status: "failure",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Risk exception was not revoked.",
+        outcomes: [
+          {
+            exceptionId,
+            status: "failed",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        ],
+      };
+    }
+  }
 
   return (
-    <div className="page-container">
+    <div className="page-container exposure-detail-page">
       <div className="breadcrumb">
         <Link href="/exposure">Exposure</Link>
         <span>/</span>
-        <span>{data.cve.cve_id}</span>
+        <Link href={backHref}>{parentLabel}</Link>
+        <span>/</span>
+        <span>{data?.cve.cve_id ?? cveId}</span>
       </div>
       <PageHeader
         eyebrow="Vulnerability investigation"
-        title={data.cve.cve_id}
-        description={data.cve.title || data.cve.description}
+        title={data?.cve.cve_id ?? cveId}
+        description={
+          data?.cve.title ||
+          data?.cve.description ||
+          "Scoped vulnerability evidence and governed next actions."
+        }
+        completeness={headerState}
         actions={
           <>
-            <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about this CVE" />
-            <button className="button" onClick={() => setAcceptRiskOpen((open) => !open)}>
-              {acceptedFindings.length ? "Manage risk acceptance" : "Accept risk"}
-            </button>
-            <Link
-              className="button button-primary"
-              href={`/remediation?cve=${encodeURIComponent(data.cve.cve_id)}&kb=${encodeURIComponent(
-                data.recommended_patch || data.cve.associated_kbs[0] || ""
-              )}&business_service=${encodeURIComponent(data.affected_business_services[0] || "")}`}
-            >
-              Create patch plan
+            <Link className="button button-quiet" href={backHref}>
+              Back to {parentLabel}
             </Link>
+            <CopilotDrawerButton
+              onClick={() => setCopilotOpen(true)}
+              label={`Ask Copilot about ${cveId}`}
+            />
+            {data && rows.length > 0 && (
+              <button
+                ref={riskInvokerRef}
+                type="button"
+                className="button"
+                onClick={() => setRiskDialogOpen(true)}
+              >
+                Record risk exception
+              </button>
+            )}
+            {data && (
+              <Link
+                className="button button-primary"
+                href={`/remediation?cve=${encodeURIComponent(data.cve.cve_id)}&generation=${encodeURIComponent(
+                  findingState.generation,
+                )}&return_to=${encodeURIComponent(currentDetailHref)}`}
+              >
+                Open governed remediation
+              </Link>
+            )}
           </>
         }
         metadata={
-          <>
-            <StatusBadge label={data.cve.severity} tone={statusTone(data.cve.severity)} />
-            {data.cve.is_known_exploited && (
-              <StatusBadge label="Known Exploited (KEV)" tone="critical" />
-            )}
-            <span>{data.affected_business_services.length} affected business services</span>
-            <span>{data.affected_servers.length} affected servers</span>
-          </>
+          data ? (
+            <>
+              <StatusBadge label={data.cve.severity} tone={statusTone(data.cve.severity)} />
+              <span>{rows.length.toLocaleString("en-US")} loaded findings</span>
+            </>
+          ) : undefined
         }
       />
       <EvidenceBar
-        evidence={detail.data.evidence}
-        knowledgeVersion={detail.data.knowledge_version}
-        warnings={detail.data.warnings}
+        evidence={common.envelope?.evidence ?? core.envelope?.evidence}
+        knowledgeVersion={common.envelope?.knowledge_version ?? core.envelope?.knowledge_version}
+        warnings={common.envelope?.warnings ?? core.envelope?.warnings}
+        aggregateState={headerState}
       />
 
-      <div className="predeploy-summary cve-hero">
-        <section className="card">
-          <div className="card-header">
-            <h2>Composite exploit risk</h2>
-          </div>
-          <div className="card-body risk-gauge-body">
-            <RiskGauge
-              score={compositeExploitScore(data.cve)}
-              label="Exploitability"
-              detail={
-                data.cve.is_known_exploited
-                  ? "CISA KEV listed — actively exploited in the wild"
-                  : "Weighted from CVSS severity, EPSS likelihood, and KEV status"
+      {restartRequired && (
+        <div className="callout callout-warning" role="alert">
+          <p>The retained Exposure generation expired. Restart from the first page to continue safely.</p>
+          <button
+            type="button"
+            className="button"
+            onClick={() =>
+              router.replace(
+                exposureDetailHref(
+                  "cves",
+                  cveId,
+                  restartExposureQuery(queryState),
+                  detailContext,
+                ),
+                { scroll: false },
+              )
+            }
+          >
+            Restart results
+          </button>
+        </div>
+      )}
+
+      {coreState.status === "unavailable" && !data && rows.length === 0 ? (
+        <SourceSectionState
+          sourceName="Scoped CVE findings"
+          itemLabel="findings"
+          state={coreState}
+        />
+      ) : (
+        <>
+          <Section
+            label="Scoped findings"
+            sourceName="Scoped CVE findings"
+            itemLabel="findings"
+            state={coreState}
+          >
+            <div className="metric-grid">
+              <MetricCard
+                label="Affected targets"
+                value={findingPage ? findingPage.contract.counts.represented : null}
+                unit="targets"
+                detail={`${findingPage?.contract.counts.excluded ?? "Unknown"} excluded from this represented scope`}
+                completeness={metricCompleteness(coreState.status)}
+              />
+              <MetricCard
+                label="Business services"
+                value={data?.affected_business_services.length ?? null}
+                unit="services"
+                detail={data?.affected_business_services.join(", ") || "Service mapping unavailable"}
+                completeness={metricCompleteness(coreState.status)}
+              />
+            </div>
+            <TableColumnFilters
+              filters={[
+                {
+                  id: "target_kind",
+                  label: "Target kind",
+                  value: findingState.filters.target_kind ?? "all",
+                  options: TARGET_KIND_OPTIONS,
+                  onChange: (value) =>
+                    setFindingState((current) =>
+                      updateExposureQueryState(current, {
+                        filters: {
+                          ...current.filters,
+                          target_kind: value === "all" ? undefined : value,
+                        },
+                      }),
+                    ),
+                },
+              ]}
+              resultCount={rows.length}
+              totalCount={findingPage?.total_count ?? 0}
+              onReset={() =>
+                setFindingState((current) =>
+                  updateExposureQueryState(current, {
+                    filters: { ...current.filters, target_kind: undefined },
+                  }),
+                )
               }
             />
-          </div>
-        </section>
-        <section className="metric-grid cve-hero-metrics">
-          <MetricCard
-            label="Business impact"
-            value={data.affected_business_services.length}
-            detail={data.affected_business_services.join(", ") || "No service mapping available"}
-            tone={data.affected_business_services.length > 0 ? "warning" : "success"}
-          />
-          <MetricCard
-            label="Reachable servers"
-            value={data.affected_servers.length}
-            detail={`${data.findings.filter((finding) => finding.reachable).length} findings show a live network path`}
-            tone={data.findings.some((finding) => finding.reachable) ? "critical" : "success"}
-          />
-        </section>
-      </div>
-
-      {acceptedFindings.length > 0 && (
-        <section className="card">
-          <div className="card-header"><h2>Risk accepted</h2></div>
-          <div className="card-body">
-            <p className="muted">
-              {acceptedFindings.length} of {data.findings.length} finding(s) have accepted risk and are
-              excluded from open-exposure and priority metrics, but remain visible here for auditability.
-            </p>
-            <p className="muted">
-              Reason: {acceptedFindings[0].risk_acceptance_reason || "—"}
-              {acceptedFindings[0].risk_acceptance_expires_at &&
-                ` · Expires ${acceptedFindings[0].risk_acceptance_expires_at}`}
-            </p>
-          </div>
-        </section>
-      )}
-
-      {acceptRiskOpen && (
-        <section className="card">
-          <div className="card-header"><h2>Accept risk for {data.cve.cve_id}</h2></div>
-          <div className="card-body">
-            <p className="muted">
-              This records an auditable exception; the finding stays visible but stops counting toward
-              open-exposure and patch-priority metrics.
-            </p>
-            <label>
-              Reason
-              <textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={2} />
-            </label>
-            <label>
-              Approved by
-              <input value={approvedBy} onChange={(event) => setApprovedBy(event.target.value)} />
-            </label>
-            <label>
-              Expires at (optional, ISO-8601)
-              <input value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} placeholder="2026-12-31T00:00:00Z" />
-            </label>
-            {submitError && <p className="error-text">{submitError}</p>}
-            <div className="form-actions">
-              <button className="button button-primary" disabled={submitting} onClick={handleAcceptRisk}>
-                {submitting ? "Submitting…" : "Submit exception"}
-              </button>
-              <button className="button" onClick={() => setAcceptRiskOpen(false)} disabled={submitting}>
-                Keep reviewing CVE
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
-
-      <section className="cve-summary-grid">
-        <article className="card">
-          <div className="card-header"><h2>Recommended patch</h2></div>
-          <div className="card-body">
-            <strong className="large-value-title">{data.recommended_patch || "Not identified"}</strong>
-            <p className="muted">
-              {data.cve.associated_kbs.length ? (
-                data.cve.associated_kbs.map((kb, index) => (
-                  <span key={kb}>
-                    {index > 0 && ", "}
-                    <Link className="table-primary-link" href={`/exposure/kbs/${encodeURIComponent(kb)}`}>
-                      {kb}
-                    </Link>
-                  </span>
-                ))
-              ) : (
-                "No associated KBs"
-              )}
-            </p>
-          </div>
-        </article>
-        <article className="card">
-          <div className="card-header"><h2>CVSS</h2></div>
-          <div className="card-body">
-            <strong className="large-value">{data.cve.cvss?.base_score ? data.cve.cvss.base_score.toFixed(1) : "—"}</strong>
-            <p className="muted">
-              <StatusBadge label={data.cve.cvss?.severity || data.cve.severity} tone={statusTone(data.cve.cvss?.severity || data.cve.severity)} compact />
-            </p>
-            <p className="muted cvss-vector-string">{data.cve.cvss?.vector || "No CVSS vector available"}</p>
-          </div>
-        </article>
-        <article className="card">
-          <div className="card-header"><h2>Exploitability</h2></div>
-          <div className="card-body exploit-signals">
-            {data.exploitability_signals.map((signal) => (
-              <div key={`${signal.source}-${signal.signal}`}>
-                <StatusBadge label={signal.confidence} tone={statusTone(signal.confidence)} compact />
-                <span>{signal.signal} · {signal.source}</span>
-              </div>
-            ))}
-            {data.cve.exploit_references.length > 0 ? (
-              <ul className="exploit-reference-list">
-                {data.cve.exploit_references.map((reference) => (
-                  <li key={reference.url}>
-                    <StatusBadge label={reference.source} tone="critical" compact />{" "}
-                    <a href={reference.url} target="_blank" rel="noopener noreferrer">
-                      {reference.url}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="muted">No public exploit/PoC references observed by NVD.</p>
-            )}
-          </div>
-        </article>
-        <article className="card">
-          <div className="card-header"><h2>Real-world exploitation</h2></div>
-          <div className="card-body">
-            <strong className="large-value">
-              {data.cve.epss_score ? `${(data.cve.epss_score * 100).toFixed(1)}%` : "—"}
-            </strong>
-            <p className="muted">
-              EPSS score{data.cve.epss_percentile ? ` · ${(data.cve.epss_percentile * 100).toFixed(0)}th percentile` : ""}
-            </p>
-            {typeof data.cve.epss_percentile === "number" && (
-              <div className="epss-percentile-track" title={`${(data.cve.epss_percentile * 100).toFixed(0)}th percentile among all scored CVEs`}>
-                <div
-                  className="epss-percentile-fill"
-                  style={{ width: `${Math.min(100, data.cve.epss_percentile * 100)}%` }}
-                />
+            {rows.length > 0 && (
+              <div className="table-scroll exposure-responsive-table" role="region" aria-label="Scoped CVE findings table" tabIndex={0}>
+                <p className="table-scroll-hint">Scroll horizontally to see all columns</p>
+                <table className="operations-table exposure-table">
+                  <caption>Authorized findings for {cveId}</caption>
+                  <thead><tr><th>Target</th><th>Kind</th><th>Service</th><th>Severity</th><th>Patch</th><th>Risk status</th></tr></thead>
+                  <tbody>
+                    {rows.map((finding) => (
+                      <tr key={finding.exposure_id} id={finding.exposure_id} tabIndex={-1}>
+                        <td><strong>{finding.server_id || finding.target_id}</strong></td>
+                        <td>{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
+                        <td>{finding.business_service || "Unmapped service"}</td>
+                        <td>{finding.severity || data?.cve.severity || "Unknown"}</td>
+                        <td>
+                          {finding.missing_kb ? (
+                            <Link className="table-primary-link" href={kbHref(finding.missing_kb)}>
+                              {finding.missing_kb}
+                            </Link>
+                          ) : "—"}
+                        </td>
+                        <td>{finding.risk_accepted ? "Risk accepted" : "Open"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
-            {data.cve.is_known_exploited ? (
-              <p className="muted">
-                <StatusBadge label="CISA KEV" tone="critical" compact />{" "}
-                Due {data.cve.kev_due_date || "unspecified"}
-                {data.cve.kev_ransomware_use === "Known" && " · Known ransomware use"}
-              </p>
-            ) : (
-              <p className="muted">Not in CISA KEV catalog</p>
+            <TablePagination
+              mode="cursor"
+              cursor={{
+                total: findingPage?.total_count ?? 0,
+                returnedCount: rows.length,
+                first,
+                last,
+                hasMore: Boolean(findingPage?.next_cursor),
+                hasPrevious: findingState.page > 1,
+                historyDepth: findingState.cursorHistory.length,
+                representedCount: findingPage?.contract.counts.represented,
+              }}
+              busy={findings.refreshing}
+              pageSize={findingState.pageSize}
+              onPageSizeChange={(pageSize) =>
+                setFindingState((current) =>
+                  updateExposureQueryState(current, { pageSize }),
+                )
+              }
+              onPreviousCursor={() =>
+                setFindingState((current) => retreatExposureCursor(current))
+              }
+              onNextCursor={() => {
+                if (findingPage?.next_cursor) {
+                  setFindingState((current) =>
+                    advanceExposureCursor(current, findingPage.next_cursor!),
+                  );
+                }
+              }}
+              label="findings"
+            />
+          </Section>
+
+          <Section label="Attack path" sourceName="Attack path" itemLabel="reachable paths" state={attackState}>
+            {attack.data && <AttackPathGraphView graph={attack.data} />}
+          </Section>
+
+          <Section label="NVD and CVSS" sourceName="NVD and CVSS" itemLabel="NVD records" state={nvdState}>
+            {nvd.data && (
+              <div className="card cvss-radar-card">
+                <div className="card-body">
+                  <strong className="large-value">
+                    {Number.isFinite(nvd.data.cve.cvss?.base_score)
+                      ? `${nvd.data.cve.cvss.base_score.toFixed(1)}/10`
+                      : "—"}
+                  </strong>
+                  <p className="cve-description">{nvd.data.cve.description || "—"}</p>
+                </div>
+                {nvd.data.cve.cvss?.vector && <CvssRadarChart vector={nvd.data.cve.cvss.vector} />}
+              </div>
             )}
-          </div>
-        </article>
-      </section>
+          </Section>
 
-      <section className="card cvss-radar-card">
-        <div>
-          <div className="card-header"><h2>Description</h2></div>
-          <p className="cve-description">{data.cve.description || data.cve.title || "No CVE description available."}</p>
-        </div>
-        {data.cve.cvss?.vector && <CvssRadarChart vector={data.cve.cvss.vector} />}
-      </section>
+          <Section label="EPSS" sourceName="EPSS" itemLabel="EPSS scores" state={epssState}>
+            <MetricCard
+              label="Exploit probability"
+              value={epss.data ? epss.data.cve.epss_score * 100 : null}
+              unit="%"
+              detail={
+                epss.data
+                  ? `${(epss.data.cve.epss_percentile * 100).toFixed(0)}th percentile`
+                  : "EPSS evidence unavailable"
+              }
+              completeness={metricCompleteness(epssState.status)}
+            />
+          </Section>
 
-      {attackPath.data?.data && attackPath.data.data.nodes.length > 0 && (
-        <section className="card">
-          <div className="card-header">
-            <div>
-              <h2>Attack path</h2>
-              <p>
-                Multi-hop path from the internet through observed firewall/NSG controls to each affected
-                server, reusing the network engine&apos;s reachability decisions.
-              </p>
-            </div>
-          </div>
-          <div className="card-body">
-            {attackPath.data.data.edges.length > 0 ? (
-              <AttackPathGraphView graph={attackPath.data.data} />
-            ) : (
-              <p className="attack-path-empty">
-                No reachable path from the internet was observed for the affected server(s) — the
-                network engine found no firewall/NSG route connecting them to the internet origin.
-              </p>
+          <Section label="CISA KEV" sourceName="CISA KEV" itemLabel="KEV entries" state={kevState}>
+            {kev.data?.cve.is_known_exploited && (
+              <div className="card-body">
+                <StatusBadge label="Known exploited" tone="critical" />
+                <p>Due {kev.data.cve.kev_due_date || "—"}</p>
+                <p>{kev.data.cve.kev_ransomware_use || "Ransomware use unknown"}</p>
+              </div>
             )}
-          </div>
-        </section>
-      )}
+          </Section>
 
-      <section className="card exposure-findings-card">
-        <div className="card-header">
-          <div>
-            <h2>Affected and reachable assets</h2>
-            <p>Every finding keeps ownership, environment, and firewall/NSG path together.</p>
-          </div>
-        </div>
-        <TableColumnFilters
-          filters={findingFilters}
-          onReset={resetFindingFilters}
-          resultCount={filteredFindings.length}
-          totalCount={findings.length}
-        />
-        <div className="table-scroll">
-          <table className="operations-table">
-            <thead>
-              <tr>
-                <th>Server</th>
-                <th>Application / service</th>
-                <th>Environment</th>
-                <th>Reachability</th>
-                <th>Network controls</th>
-                <th>Owner</th>
-                <th>SLA</th>
-                <th>Risk status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {findingsPaging.pageRows.map((finding) => (
-                <tr key={finding.finding_id}>
-                  <td><strong>{finding.server_id}</strong><div className="table-secondary"><Link className="table-primary-link" href={`/exposure/kbs/${encodeURIComponent(finding.missing_kb)}`}>{finding.missing_kb}</Link></div></td>
-                  <td><strong>{finding.application || "Unmapped application"}</strong><div className="table-secondary">{finding.business_service || "Unmapped service"}</div></td>
-                  <td>{finding.environment || "Unknown"}</td>
-                  <td><StatusBadge label={finding.reachable ? finding.network_exposure || "Reachable" : "No path observed"} tone={finding.reachable ? "critical" : "neutral"} /></td>
-                  <td>
-                    <strong>{finding.firewall_path.join(" → ") || "No firewall observed"}</strong>
-                    <div className="table-secondary">{finding.nsg_path.join(" → ") || "No NSG path resolved"}</div>
-                  </td>
-                  <td>{finding.owner || "Owner unassigned"}</td>
-                  <td>
-                    {finding.due_at ? (
-                      <>
-                        <StatusBadge label={finding.overdue ? "Overdue" : "On track"} tone={finding.overdue ? "critical" : "success"} compact />
-                        <div className="table-secondary">{finding.days_open} days open</div>
-                      </>
-                    ) : (
-                      <span className="muted">No SLA data</span>
-                    )}
-                  </td>
-                  <td>
-                    {finding.risk_accepted ? (
-                      <StatusBadge label="Risk accepted" tone="neutral" compact />
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                </tr>
+          <Section label="KB mapping" sourceName="MSRC KB mapping" itemLabel="KB mappings" state={kbState}>
+            <div className="card-body">
+              {kb.data?.cve.associated_kbs.map((kbId) => (
+                <p key={kbId}>
+                  <Link className="table-primary-link" href={kbHref(kbId)}>{kbId}</Link>
+                </p>
               ))}
-            </tbody>
-          </table>
-        </div>
-        <TablePagination
-          total={findingsPaging.total}
-          pageRows={findingsPaging.pageRows.length}
-          page={findingsPaging.page}
-          onPageChange={findingsPaging.setPage}
-          pageSize={findingsPaging.pageSize}
-          onPageSizeChange={findingsPaging.setPageSize}
-          label="findings"
-        />
-      </section>
+            </div>
+          </Section>
+        </>
+      )}
 
-      <CopilotDrawer
-        open={copilotOpen}
-        onClose={() => setCopilotOpen(false)}
-        contextLabel={data.cve.cve_id}
-        snapshot={buildCopilotSnapshot({
-          pageKind: "vulnerability",
-          pageId: `cve:${data.cve.cve_id}`,
-          scope,
-          selectedResources: [{ resource_id: data.cve.cve_id, resource_type: "CVE", name: data.cve.cve_id }],
-          evidence: copilotEvidenceRows("cve", [...(detail.data?.evidence ?? []), ...(attackPath.data?.evidence ?? [])], [
-            data.cve,
-            ...(data.findings ?? []),
-            ...(attackPath.data?.data?.nodes ?? []),
-          ]),
-        })}
-        starterQuestions={[
-          {
-            label: `Explain ${data.cve.cve_id} and how it could impact our systems`,
-            tool: "cve_detail",
-            toolArguments: { cve_id: data.cve.cve_id },
-          },
-          {
-            label: `What is the blast radius of ${data.cve.cve_id} across dependent services?`,
-            tool: "cve_attack_path",
-            toolArguments: { cve_id: data.cve.cve_id },
-          },
-          {
-            label: `When does ${data.cve.cve_id} need to be patched and who owns that?`,
-            tool: "cve_detail",
-            toolArguments: { cve_id: data.cve.cve_id },
-          },
-        ]}
-      />
+      {data && (
+        <RiskExceptionDialog
+          mode="record"
+          open={riskDialogOpen}
+          onOpenChange={setRiskDialogOpen}
+          returnFocusRef={riskInvokerRef}
+          record={{
+            cveId: data.cve.cve_id,
+            targetScope: `${rows.length.toLocaleString("en-US")} loaded ${
+              rows.length === 1 ? "target" : "targets"
+            } · ${(findingPage?.contract.counts.represented ?? "unknown").toLocaleString?.() ?? "unknown"} represented · ${
+              findingPage?.contract.counts.total ?? "unknown"
+            } total · ${findingPage?.contract.counts.excluded ?? "unknown"} excluded`,
+            affectedMetrics: [
+              `Open exposure count (${findingPage?.contract.counts.excluded ?? "unknown"} excluded from represented results)`,
+              "Patch priority count",
+            ],
+            evidenceFreshness: `Generation ${
+              findingPage?.generation || findingState.generation || "unknown"
+            } · ${common.metadata.freshnessState} as of ${
+              common.metadata.observedAt || "an unknown time"
+            }`,
+            sessionApprover,
+          }}
+          onRecord={recordRiskException}
+          onRefresh={refreshRiskEvidence}
+          onRequestRevoke={(exceptionId) => {
+            setRiskDialogOpen(false);
+            setRevokeExceptionId(exceptionId);
+          }}
+        />
+      )}
+
+      {data && revokeExceptionId && (
+        <RiskExceptionDialog
+          mode="revoke"
+          open={Boolean(revokeExceptionId)}
+          onOpenChange={(open) => {
+            if (!open) setRevokeExceptionId("");
+          }}
+          returnFocusRef={riskInvokerRef}
+          exceptions={[
+            {
+              id: revokeExceptionId,
+              label: `${data.cve.cve_id} risk exception`,
+              targetScope: `${rows.length.toLocaleString("en-US")} represented targets`,
+            },
+          ]}
+          representedScope={`${rows.length.toLocaleString("en-US")} represented targets`}
+          onRevoke={revokeRiskException}
+          onRefresh={refreshRiskEvidence}
+        />
+      )}
+
+      {data && (
+        <CopilotDrawer
+          open={copilotOpen}
+          onClose={() => setCopilotOpen(false)}
+          contextLabel={data.cve.cve_id}
+          snapshot={buildCopilotSnapshot({
+            pageKind: "vulnerability",
+            pageId: `cve:${data.cve.cve_id}`,
+            scope,
+            selectedResources: [{ resource_id: data.cve.cve_id, resource_type: "CVE", name: data.cve.cve_id }],
+            evidence: copilotEvidenceRows(
+              "cve",
+              [...(core.envelope?.evidence ?? []), ...(attack.envelope?.evidence ?? [])],
+              [data.cve, ...rows, ...(attack.data?.nodes ?? [])],
+            ),
+          })}
+          starterQuestions={[
+            { label: `Explain ${data.cve.cve_id}`, tool: "cve_detail", toolArguments: { cve_id: data.cve.cve_id } },
+            { label: `Show the blast radius of ${data.cve.cve_id}`, tool: "cve_attack_path", toolArguments: { cve_id: data.cve.cve_id } },
+          ]}
+        />
+      )}
     </div>
   );
 }

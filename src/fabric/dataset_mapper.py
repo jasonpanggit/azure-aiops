@@ -431,13 +431,32 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     ("BlastRadius", "hasDependencyChain", "DependencyChain"),
     ("Incident", "hasEvent", "OperationalEvent"),
     ("Incident", "hasProbableCause", "RootCause"),
+    *(
+        ("Situation", "affects", asset)
+        for asset in (
+            "Resource",
+            "VirtualMachine",
+            "ArcServer",
+            "KubernetesCluster",
+            *sorted(PAAS_ENTITY_TYPES),
+        )
+    ),
     ("Tenant", "owns", "SubscriptionConnection"),
     ("Subscription", "contains", "SubscriptionConnection"),
     ("SubscriptionConnection", "has_health", "ConnectionHealth"),
     ("SubscriptionConnection", "mapped_to", "Environment"),
     ("SubscriptionConnection", "supports", "BusinessService"),
     ("SubscriptionConnection", "runs", "Application"),
-    *(("ResourceGroup", "contains", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
+    *(
+        ("ResourceGroup", "contains", asset)
+        for asset in (
+            "Resource",
+            "VirtualMachine",
+            "ArcServer",
+            "KubernetesCluster",
+            *sorted(PAAS_ENTITY_TYPES),
+        )
+    ),
     *((asset, "member_of", "Application") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *(("Application", "hosted_on", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
     *((asset, "belongs_to", "BusinessService") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
@@ -517,6 +536,32 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     # observation id (flow logs carry no ARM resource id), not a real resource.
     ("FlowObservation", "trafficObserved", "NetworkSecurityRule"),
 )
+
+
+def allowed_relationship_triples() -> frozenset[tuple[str, str, str]]:
+    """Return the exact authoritative relationship vocabulary.
+
+    Consumers intentionally derive their allowlist from
+    ``ONTOLOGY_RELATIONSHIP_TYPES`` on every call.  Keeping this as a helper
+    rather than a second constant prevents policy, validation, and MCP
+    projections from drifting to a copied vocabulary.
+    """
+
+    return frozenset(ONTOLOGY_RELATIONSHIP_TYPES)
+
+
+def is_allowed_relationship_triple(
+    subject_type: object,
+    predicate: object,
+    object_type: object,
+) -> bool:
+    """Check exact, direction-sensitive vocabulary membership."""
+
+    return (
+        str(subject_type),
+        str(predicate),
+        str(object_type),
+    ) in allowed_relationship_triples()
 
 
 @dataclass

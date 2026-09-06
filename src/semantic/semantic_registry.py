@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .semantic_models import (
     ApplicationKnowledge,
@@ -21,6 +23,12 @@ from .semantic_models import (
     ServiceKnowledge,
 )
 
+if TYPE_CHECKING:
+    from ontology_discovery.generation_resolver import (
+        CompatibilityAlias,
+        GenerationSelection,
+    )
+
 
 @dataclass(frozen=True)
 class SemanticModelDefinition:
@@ -28,6 +36,8 @@ class SemanticModelDefinition:
     description: str
     sources: tuple[str, ...]
     model_type: type
+    generation_id: str = ""
+    alias_version: str = ""
 
 
 class SemanticRegistry:
@@ -100,6 +110,40 @@ class SemanticRegistry:
 
     def names(self) -> tuple[str, ...]:
         return tuple(self._models)
+
+    def for_generation(
+        self,
+        generation: GenerationSelection,
+        aliases: Mapping[str, CompatibilityAlias],
+    ) -> SemanticRegistry:
+        """Return registry definitions pinned to one compatibility alias set."""
+        definitions: list[SemanticModelDefinition] = []
+        for definition in self._models.values():
+            sources: list[str] = []
+            for source in definition.sources:
+                alias = aliases.get(source)
+                if alias is None:
+                    sources.append(source)
+                    continue
+                if (
+                    alias.logical_name != source
+                    or alias.generation_id != generation.generation_id
+                ):
+                    raise ValueError(
+                        f"Semantic alias for {source!r} is not bound to the selection"
+                    )
+                sources.append(alias.logical_name)
+            definitions.append(
+                SemanticModelDefinition(
+                    name=definition.name,
+                    description=definition.description,
+                    sources=tuple(sources),
+                    model_type=definition.model_type,
+                    generation_id=generation.generation_id,
+                    alias_version=generation.compatibility_alias_version,
+                )
+            )
+        return SemanticRegistry(tuple(definitions))
 
     def get(self, name: str) -> SemanticModelDefinition:
         try:

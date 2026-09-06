@@ -17,6 +17,8 @@ export interface EvidenceItem {
   resource_id?: string | null;
   confidence: Confidence;
   freshness: Freshness;
+  freshness_threshold_seconds?: number | null;
+  freshness_source_family?: string;
 }
 
 export interface RemediationDecision {
@@ -63,7 +65,7 @@ export interface CollectionCoverage {
 }
 
 /** Every successful response body: `{ data, evidence[], scope{}, knowledge_version, warnings[], pagination? }`. */
-export interface Envelope<T> {
+export interface Envelope<T, TPagination = Pagination> {
   data: T;
   evidence: EvidenceItem[];
   scope: Record<string, string[]>;
@@ -72,7 +74,7 @@ export interface Envelope<T> {
   live_observed_at?: string;
   source_status?: Record<string, string>;
   warnings?: string[];
-  pagination?: Pagination | null;
+  pagination?: TPagination | null;
 }
 
 export type InventorySourceType = "azure_vm" | "arc" | "logs";
@@ -556,6 +558,181 @@ export interface ExposureCollection {
   source_attribution: ExposureSourceAttribution[];
 }
 
+export type ExposureQueryFilterField =
+  | "active"
+  | "completeness"
+  | "current_state"
+  | "deployment_state"
+  | "search"
+  | "severity"
+  | "sla_overdue"
+  | "sla_state"
+  | "source_family"
+  | "source_state"
+  | "target_kind"
+  | "weakness_id";
+
+export type ExposureSortField =
+  | "priority_score"
+  | "severity"
+  | "target_id"
+  | "weakness_id";
+
+export interface ExposureSort {
+  field: ExposureSortField;
+  direction: "asc" | "desc";
+}
+
+export interface ExposureAppliedFilter {
+  field: ExposureQueryFilterField;
+  operator: "eq" | "in" | "contains";
+  value: string | boolean | string[];
+}
+
+export interface ExposureAppliedQuery {
+  scope: Record<string, string[]>;
+  filters: ExposureAppliedFilter[];
+  sort: ExposureSort;
+}
+
+export interface ExposureCompleteness {
+  state: ExposureCompletenessState | "healthy-empty";
+  represented_connections?: number;
+  expected_connections?: number;
+  represented_count?: number;
+  expected_count?: number;
+  total_count?: number;
+  excluded_count?: number;
+  represented?: number;
+  expected?: number;
+  total?: number;
+  excluded?: number;
+  excluded_reasons?: string[];
+  [key: string]: unknown;
+}
+
+export interface ExposureFreshnessThreshold {
+  source_family: string;
+  threshold_seconds: number;
+}
+
+export interface ExposureFreshness {
+  state: string;
+  as_of?: string;
+  source_family?: string;
+  source_families?: string[];
+  threshold_seconds?: number | null;
+  thresholds?: ExposureFreshnessThreshold[];
+  [key: string]: unknown;
+}
+
+export interface ExposureEvidenceReference {
+  source_family?: string;
+  source_id?: string;
+  source_table?: string;
+  observed_at?: string;
+  resource_id?: string;
+  [key: string]: unknown;
+}
+
+export interface ExposureSafeError {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface ExposureCommonContract {
+  version: string;
+  query: {
+    scope: Record<string, string[]>;
+    generation: string;
+    filters: ExposureAppliedFilter[];
+    sort: ExposureSort;
+    target_kind: ExposureTargetKind | "all";
+  };
+  counts: {
+    unit: string;
+    returned: number;
+    represented: number;
+    total: number;
+    excluded: number;
+  };
+  units: Record<string, string>;
+  completeness: ExposureCompleteness;
+  freshness: ExposureFreshness;
+  evidence_refs: ExposureEvidenceReference[];
+  deep_link_action: {
+    action_id: string;
+    kind: "deep_link";
+    path_field: string;
+    fallback_path_template: string;
+  };
+  safe_error: ExposureSafeError | null;
+}
+
+export interface ExposureCursorPagination {
+  limit: number;
+  total: number;
+  next_cursor: string | null;
+}
+
+export interface ExposurePage<TItem = ExposureFinding> {
+  total_count: number;
+  items: TItem[];
+  next_cursor: string | null;
+  generation: string;
+  applied: ExposureAppliedQuery;
+  completeness: ExposureCompleteness;
+  freshness: ExposureFreshness;
+  contract: ExposureCommonContract;
+}
+
+export interface ExposureOverview {
+  total_count: number;
+  generation: string;
+  applied: ExposureAppliedQuery;
+  completeness: ExposureCompleteness;
+  freshness: ExposureFreshness;
+  contract: ExposureCommonContract;
+}
+
+export interface ExposureFacetValue {
+  value: string;
+  count: number;
+}
+
+export interface ExposureFacets extends ExposureOverview {
+  facets: Record<string, ExposureFacetValue[]>;
+}
+
+export interface ExposureQueryCatalog {
+  version: string;
+  filters: Array<{
+    field: ExposureQueryFilterField;
+    value_type: "boolean" | "string";
+    operators: Array<"eq" | "in" | "contains">;
+  }>;
+  sorts: Array<{
+    field: ExposureSortField;
+    directions: Array<"asc" | "desc">;
+  }>;
+  target_kinds: ExposureTargetKind[];
+  external_catalog_lookup: {
+    label: string;
+    path_template: string;
+    environment_membership_included: false;
+  };
+}
+
+export interface ExposureExternalCatalog<TItem = Record<string, unknown>> {
+  contract_version: string;
+  catalog_scope: "external_public_metadata";
+  environment_membership_included: false;
+  item: TItem;
+}
+
+export type ExposureEnvelope<T> = Envelope<T, ExposureCursorPagination>;
+
 export interface VulnerabilitySummary {
   cve_count: number;
   finding_count: number;
@@ -928,6 +1105,14 @@ export interface RiskException {
   approved_by: string;
   created_at: string;
   expires_at: string;
+  /** Present only when the server exposes a governed revoke transition. */
+  can_revoke?: boolean;
+  evidence_binding?: {
+    generation?: string;
+    tenant_id?: string;
+    connection_ids?: string[];
+    evidence_refs?: Array<Record<string, unknown>>;
+  };
 }
 
 export interface SlaComplianceSeverityRow {
@@ -1029,6 +1214,7 @@ export interface CveDetail {
     kev_ransomware_use: string;
     exploit_references: { url: string; source: string }[];
   };
+  enrichment?: ExposureEnrichmentState;
   exploitability_signals: { signal: string; source: string; confidence: string }[];
   affected_servers: string[];
   affected_applications: string[];
@@ -1037,11 +1223,35 @@ export interface CveDetail {
   recommended_patch: string;
 }
 
+export interface ExposureEnrichmentSourceState {
+  source: string;
+  identifier: string;
+  status: string;
+  stale: boolean;
+  safe_error_code?: string;
+  attempted_at?: string | null;
+  succeeded_at?: string | null;
+  source_at?: string | null;
+  enriched_at?: string | null;
+  refresh_after?: string | null;
+  has_last_known_good: boolean;
+}
+
+export interface ExposureEnrichmentState {
+  status: string;
+  complete: boolean;
+  stale: boolean;
+  expected_count: number;
+  available_count: number;
+  sources: Record<string, ExposureEnrichmentSourceState>;
+}
+
 export interface KbDetail {
   kb_id: string;
   title: string;
   severity: string;
   published_at: string;
+  enrichment?: ExposureEnrichmentState;
   cve_ids: string[];
   cves: { cve_id: string; title: string; severity: string; cvss: { base_score: number; vector: string; severity: string } }[];
   affected_servers: string[];

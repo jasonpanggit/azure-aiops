@@ -144,9 +144,16 @@ class CanonicalPlanHint(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
-class CanonicalInvestigationPayload(CanonicalInvestigationRequest):
-    """Versioned canonical request plus an optional policy-checked hint."""
+class CanonicalInventorySnapshot(EvidenceSnapshotV2):
+    """Inventory-only snapshot accepted by the inventory canonical endpoint."""
 
+    page_kind: Literal["inventory", "connections", "connections_fabric"]
+
+
+class CanonicalInvestigationPayload(CanonicalInvestigationRequest):
+    """Inventory canonical request plus an optional policy-checked hint."""
+
+    snapshot: CanonicalInventorySnapshot
     hint: CanonicalPlanHint | None = None
 
 

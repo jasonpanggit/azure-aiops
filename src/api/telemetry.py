@@ -13,10 +13,13 @@ from typing import Any
 
 from opentelemetry import metrics
 
+from operations.exposure_metrics import ExposureMetrics
+
 
 class ApiTelemetry:
     def __init__(self, meter: Any = None) -> None:
         self._meter = meter or metrics.get_meter("aiops.api")
+        self.exposure = ExposureMetrics(meter=self._meter)
         self._requests = self._meter.create_counter(
             "aiops.api.requests",
             description="Operations API requests by route, method and status class",
