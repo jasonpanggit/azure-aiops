@@ -16,7 +16,7 @@ verified_source_head: c2020d1f
 
 **Closed at:** 2026-09-06T07:06:02Z
 **Source review:** `.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`
-**Iterations represented:** implementation review, supplemental review, and two independent post-fix verification iterations
+**Iterations represented:** implementation review, supplemental review, and three independent post-fix verification iterations
 
 **Authoritative summary:**
 - Review observations adjudicated: **52**
@@ -82,18 +82,21 @@ and the following ledger are the authoritative final state.
 - Iteration 3: **8/8 fixed**, commits `1624765e`, `2f0359fa`,
   `495cb79a`, `48a42db8`, `e9113df0`, `18e0fa74`, `f0b25410`,
   `f6c7c196`, `09b1ba08`, `f67d55f1`, `afb333c3`, and `5d8916bd`.
+- Final policy-management review: **1/1 fixed** by failing-first regression
+  `8b502206` and implementation `c2020d1f`.
 
 ## Final Verification
 
-Verification ran in the assigned Phase 12 checkout
-`/Users/jasonmba/workspace/copilot-worktrees/azure-aiops/jasonpanggit-potential-broccoli`
-after all source commits were integrated:
+Verification ran against the final source in both locations:
 
-- Full backend: **2,720 passed, 33 skipped** in 111.19s.
-- Full web: **43 files passed; 347 tests passed; 15 pre-existing todo** in 8.71s.
-- Ruff: passed.
-- TypeScript (`tsc --noEmit`): passed with zero diagnostics.
-- Next.js ESLint: passed with zero warnings or errors.
+- **Isolated review-fix worktree** (removed after integration): the final
+  policy-management backend run passed **2,728 tests, skipped 33**
+  (**2,761 collected**); Ruff and Python parsing passed.
+- **Assigned Phase 12 checkout**
+  `/Users/jasonmba/workspace/copilot-worktrees/azure-aiops/jasonpanggit-potential-broccoli`:
+  the full web run passed **43 files / 347 tests**, with **15 pre-existing
+  todo**, in 8.71s; TypeScript (`tsc --noEmit`) passed with zero diagnostics;
+  Next.js ESLint passed with zero warnings or errors.
 - Supplemental WR-05 cache lifecycle: **46 web tests passed across 2 files**.
 - Supplemental WR-10 normalization diagnostics: **15 backend tests passed**;
   the identifier-redaction follow-up passed its focused regression.

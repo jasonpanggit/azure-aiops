@@ -56,12 +56,18 @@ files_reviewed_list:
   - web/src/lib/services.ts
   - web/src/lib/types.ts
   - web/src/test/network-fixtures.ts
+review_passes: 2
+post_fix_verification_iterations: 3
 findings:
   critical: 0
   warning: 0
   info: 0
   total: 0
-resolved_findings: 1
+historical_findings:
+  observations_total: 52
+  fixed_or_previously_resolved: 49
+  non_actionable: 3
+  open: 0
 status: clean
 ---
 
@@ -72,6 +78,30 @@ status: clean
 **Implementation range:** `d57f6137d747c344c56028d7e6211811927d0b43..c2020d1f`
 **Files Reviewed:** 49
 **Status:** clean
+
+## Consolidated Review History
+
+This is the final clean review over an overlapping implementation review and
+supplemental review, followed by three post-fix verification iterations.
+Counts are review observations rather than deduplicated defects because later
+iterations deliberately re-opened incomplete fixes.
+
+| Review stage | Critical | Warning | Info | Total | Final disposition |
+|---|---:|---:|---:|---:|---|
+| Implementation review | 8 | 2 | 0 | 10 | 10 fixed |
+| Supplemental review against `eafdf47f` | 3 | 16 | 3 | 22 | 19 fixed/resolved; 3 non-actionable |
+| Independent post-fix iteration 2 | 5 | 6 | 0 | 11 | 11 fixed |
+| Independent post-fix iteration 3 | 5 | 3 | 0 | 8 | 8 fixed |
+| Final policy-management review | 1 | 0 | 0 | 1 | 1 fixed |
+| **Historical observations** | **22** | **27** | **3** | **52** | **52 adjudicated; 0 open** |
+| Current clean scan | 0 | 0 | 0 | 0 | No significant high-confidence issue |
+
+The exact disposition and commit evidence for all 22 supplemental findings is
+in the authoritative ledger at the top of `12-REVIEW-FIX.md`. The original
+ten-finding narrative remains recoverable at
+`97114a32:.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`;
+the full pre-phase review remains in `12-REVIEW-PRE-PHASE.md`. No historical
+finding was deleted or silently reclassified.
 
 ## Summary
 
