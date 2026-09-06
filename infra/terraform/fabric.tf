@@ -83,14 +83,14 @@ resource "fabric_lakehouse" "context_graph" {
   # instead (bronze_/silver_/ontology_).
 }
 
-# The container apps read from the lakehouse with the same identity they use
-# elsewhere. Contributor rather than Member: they must not administer the
-# workspace or manage its access.
+# The API/web identity is read-only in Fabric. Authoritative ontology writes
+# are isolated to fabric_workspace_role_assignment.ontology_publisher; keeping
+# Contributor here would make a live denied-write check for the API meaningless.
 resource "fabric_workspace_role_assignment" "apps" {
   count = var.enable_fabric ? 1 : 0
 
   workspace_id = fabric_workspace.ops[0].id
-  role         = "Contributor"
+  role         = "Viewer"
 
   principal = {
     id   = azurerm_user_assigned_identity.apps.principal_id

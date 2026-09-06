@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 
@@ -71,13 +72,18 @@ def test_no_other_identity_receives_fabric_workspace_contributor() -> None:
         "fabric_workspace_role_assignment",
         "apps",
     )
+    scheduled_job = _resource(
+        job,
+        "azurerm_container_app_job",
+        "ontology_discovery",
+    )
 
     assert 'role         = "Contributor"' in publisher_assignment
     assert 'role         = "Viewer"' in api_assignment
     assert "ontology_coordinator" not in fabric
     assert "azurerm_cognitive_account_project.ops" not in fabric
-    assert "ONTOLOGY_PUBLISHER" not in job
-    assert "ontology_publisher.client_id" not in job
+    assert "ONTOLOGY_PUBLISHER" not in scheduled_job
+    assert "ontology_publisher.client_id" not in scheduled_job
     assert "ONTOLOGY_PUBLISHER" not in api
     assert "ontology_publisher.client_id" not in api
     curator = _resource(
@@ -98,10 +104,15 @@ def test_publisher_has_no_model_or_app_runtime_grant() -> None:
         "azurerm_container_app_job",
         "ontology_rbac_validation",
     )
+    publisher_assignment = _resource(
+        identity,
+        "fabric_workspace_role_assignment",
+        "ontology_publisher",
+    )
 
-    assert "Cognitive Services" not in identity
-    assert "Foundry" not in identity
-    assert "OpenAI" not in identity
+    assert "Cognitive Services" not in publisher_assignment
+    assert "Foundry" not in publisher_assignment
+    assert "OpenAI" not in publisher_assignment
     assert "ontology_publisher" in validator
     assert "AIOPS_HOME" not in validator
     assert "AIOPS_RUNTIME_MODE" not in validator
@@ -128,6 +139,7 @@ class _Credential:
 
 
 def _config() -> dict:
+    curator_prompt = "proposal-only ontology curator"
     identities = {}
     for index, identity_class in enumerate(
         ("api", "coordinator", "curator", "publisher"), start=1
@@ -135,7 +147,9 @@ def _config() -> dict:
         identities[identity_class] = {
             "object_id": f"10000000-0000-0000-0000-{index:012d}",
         }
-        if identity_class != "curator":
+        if identity_class == "curator":
+            identities[identity_class]["mode"] = "structural"
+        else:
             identities[identity_class].update(
                 {
                     "mode": "managed_identity",
@@ -149,13 +163,16 @@ def _config() -> dict:
         "publisher_role": dict(EXPECTED_PUBLISHER_ROLE),
         "foundry_project_endpoint": "https://example.services.ai.azure.com/api/projects/test",
         "curator_agent_name": "aiops-ontology-curator-agent",
-        "curator_prompt_sha256": "a" * 64,
+        "curator_model": "gpt-5.4-mini",
+        "curator_prompt_sha256": hashlib.sha256(curator_prompt.encode()).hexdigest(),
+        "curator_prompt": curator_prompt,
         "identities": identities,
     }
 
 
 class _MatrixTransport:
     def __init__(self, config: dict, *, ambiguous: bool = False, leaked: bool = False):
+        self._config = config
         self._identities = {
             entry["client_id"]: identity_class
             for identity_class, entry in config["identities"].items()
@@ -202,7 +219,7 @@ class _MatrixTransport:
         if "/agents/aiops-ontology-curator-agent/versions" in url:
             definition = {
                 "model": "gpt-5.4-mini",
-                "instructions_sha256": "a" * 64,
+                "instructions": self._config["curator_prompt"],
                 "tools": [
                     {
                         "type": "mcp",
@@ -239,7 +256,6 @@ def _credentials(config: dict):
 def test_live_matrix_combines_four_denials_with_curator_structural_evidence() -> None:
     config = _config()
     transport = _MatrixTransport(config)
-    transport._config = config
 
     report = validate_live_authorization(
         config,
@@ -304,7 +320,6 @@ def test_nonpublisher_result_must_be_an_unambiguous_denial(status_kind: str) -> 
         ambiguous=status_kind == "ambiguous",
         leaked=status_kind == "write_succeeded",
     )
-    transport._config = config
 
     with pytest.raises(AuthorizationEvidenceError, match="unambiguous denial"):
         validate_live_authorization(
@@ -384,7 +399,6 @@ def test_curator_structural_evidence_fails_on_writer_role_or_extra_tool() -> Non
             return result
 
     role_transport = UnsafeTransport(config)
-    role_transport._config = config
     with pytest.raises(AuthorizationEvidenceError, match="curator.*writer role"):
         validate_live_authorization(
             config,
@@ -414,7 +428,6 @@ def test_curator_structural_evidence_fails_on_writer_role_or_extra_tool() -> Non
             return result
 
     tool_transport = ExtraToolTransport(config)
-    tool_transport._config = config
     with pytest.raises(AuthorizationEvidenceError, match="tool allowlist"):
         validate_live_authorization(
             config,

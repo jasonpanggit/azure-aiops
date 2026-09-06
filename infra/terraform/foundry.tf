@@ -1074,7 +1074,7 @@ resource "terraform_data" "foundry_agent" {
 # map.  The discovery coordinator refers to its separately versioned name and
 # the project identity receives no Fabric publisher role or credential.
 resource "terraform_data" "foundry_ontology_curator_agent" {
-  count = var.create_foundry_agent && var.enable_foundry_specialist_candidate_publish ? 1 : 0
+  count = var.create_foundry_agent && var.enable_ontology_curator_agent ? 1 : 0
 
   triggers_replace = {
     endpoint       = local.foundry_project_endpoint

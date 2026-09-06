@@ -576,6 +576,18 @@ variable "create_foundry_agent" {
   default     = true
 }
 
+variable "enable_ontology_curator_agent" {
+  description = <<-EOT
+    Independently publish the Phase 13 ontology curator prompt agent.
+
+    This switch is intentionally separate from
+    enable_foundry_specialist_candidate_publish: enabling the ontology curator
+    must not publish or promote the complete interactive specialist portfolio.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "enable_foundry_knowledge_search" {
   description = <<-EOT
     Whether to provision an Azure AI Search service and wire it into every

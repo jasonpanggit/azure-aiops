@@ -1,10 +1,15 @@
 """Fail-closed live authorization matrix for ontology publication identities.
 
-The validator writes only beneath a unique non-production canary prefix.  It
-requires an independently acquired token for every identity, verifies the
-token's identity claims, accepts only explicit 401/403 denials, proves the
-publisher's create/CAS/rollback/delete sequence, and emits no token, URL,
-principal identifier, payload, or response body.
+The validator writes only beneath a unique non-production canary prefix. It
+uses independently selected managed identities for the API, coordinator, and
+publisher; verifies their token claims; accepts only explicit 401/403 write
+denials; proves the publisher's create/CAS/rollback/delete sequence; and emits
+no token, URL, principal identifier, payload, or response body.
+
+Foundry does not expose a safe way for this Job to impersonate the prompt
+agent project's managed identity. Curator denial is therefore structural live
+evidence: the curator principal must have no Fabric writer role and the
+deployed prompt agent must expose exactly four reviewed read-only tools.
 """
 
 from __future__ import annotations
@@ -32,16 +37,26 @@ from azure.identity import (
     WorkloadIdentityCredential,
 )
 
-TOKEN_SCOPE = "https://storage.azure.com/.default"
+STORAGE_TOKEN_SCOPE = "https://storage.azure.com/.default"
+FABRIC_TOKEN_SCOPE = "https://api.fabric.microsoft.com/.default"
+FOUNDRY_TOKEN_SCOPE = "https://ai.azure.com/.default"
 API_VERSION = "2023-11-03"
 IDENTITY_CLASSES = ("api", "coordinator", "curator", "publisher")
-NON_PUBLISHERS = IDENTITY_CLASSES[:-1]
-EXPECTED_ROLE_ACTIONS = (
-    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
-    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action",
-    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write",
-    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete",
+LIVE_WRITE_IDENTITIES = ("api", "coordinator", "publisher")
+DENIED_WRITE_IDENTITIES = ("api", "coordinator")
+EXPECTED_CURATOR_TOOLS = (
+    "list_changed_entities",
+    "get_entity_evidence",
+    "get_ontology_vocabulary",
+    "search_relationship_history",
 )
+EXPECTED_PUBLISHER_ROLE = {
+    "platform": "microsoft_fabric_workspace",
+    "role": "Contributor",
+    "scope": "workspace",
+    "granularity": "platform_minimum_write_role",
+}
+FABRIC_WRITER_ROLES = frozenset({"admin", "member", "contributor"})
 
 
 class ValidationBlocked(RuntimeError):
@@ -73,6 +88,7 @@ class IdentitySpec:
 class HttpResult:
     status: int
     headers: dict[str, str]
+    body: bytes = b""
 
 
 class HttpTransport(Protocol):
@@ -116,9 +132,15 @@ class UrllibTransport:
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
+                response_body = response.read(1_000_001)
+                if len(response_body) > 1_000_000:
+                    raise AuthorizationEvidenceError(
+                        "live authorization response exceeded size limit"
+                    )
                 return HttpResult(
                     status=response.status,
                     headers={key.casefold(): value for key, value in response.headers.items()},
+                    body=response_body,
                 )
         except urllib.error.HTTPError as exc:
             # Bodies can contain tenant, path, and policy details.  Discard
@@ -138,17 +160,85 @@ def _required(value: Any, name: str) -> str:
     return text
 
 
-def _load_config(path: Path) -> dict[str, Any]:
+def _load_config(
+    path: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise ValidationBlocked("Fabric configuration is unavailable or invalid") from exc
     if not isinstance(loaded, dict) or not isinstance(loaded.get("fabric"), dict):
         raise ValidationBlocked("Fabric configuration has no fabric section")
-    validation = loaded["fabric"].get("ontology_publisher_validation")
-    if not isinstance(validation, dict):
+    fabric = loaded["fabric"]
+    configured = fabric.get("ontology_publisher_validation")
+    validation = dict(configured) if isinstance(configured, dict) else {}
+    environment = dict(os.environ if env is None else env)
+    if environment.get("AIOPS_ONTOLOGY_API_CLIENT_ID"):
+        validation.update(
+            {
+                "non_production": environment.get(
+                    "AIOPS_ONTOLOGY_NON_PRODUCTION", ""
+                ).casefold()
+                == "true",
+                "workspace_id": environment.get("AIOPS_ONTOLOGY_WORKSPACE_ID")
+                or fabric.get("workspace_id"),
+                "lakehouse_id": environment.get("AIOPS_ONTOLOGY_LAKEHOUSE_ID")
+                or fabric.get("lakehouse_id"),
+                "publisher_role": dict(EXPECTED_PUBLISHER_ROLE),
+                "foundry_project_endpoint": environment.get(
+                    "FOUNDRY_PROJECT_ENDPOINT", ""
+                ),
+                "curator_agent_name": environment.get(
+                    "FOUNDRY_ONTOLOGY_CURATOR_AGENT_NAME", ""
+                ),
+                "curator_prompt_sha256": environment.get(
+                    "FOUNDRY_ONTOLOGY_CURATOR_PROMPT_SHA256", ""
+                ),
+                "curator_model": environment.get(
+                    "FOUNDRY_ONTOLOGY_CURATOR_MODEL", ""
+                ),
+                "identities": {
+                    "api": {
+                        "mode": "managed_identity",
+                        "client_id": environment.get(
+                            "AIOPS_ONTOLOGY_API_CLIENT_ID", ""
+                        ),
+                        "object_id": environment.get(
+                            "AIOPS_ONTOLOGY_API_OBJECT_ID", ""
+                        ),
+                    },
+                    "coordinator": {
+                        "mode": "managed_identity",
+                        "client_id": environment.get(
+                            "AIOPS_ONTOLOGY_COORDINATOR_CLIENT_ID", ""
+                        ),
+                        "object_id": environment.get(
+                            "AIOPS_ONTOLOGY_COORDINATOR_OBJECT_ID", ""
+                        ),
+                    },
+                    "curator": {
+                        "mode": "structural",
+                        "object_id": environment.get(
+                            "AIOPS_ONTOLOGY_CURATOR_OBJECT_ID", ""
+                        ),
+                    },
+                    "publisher": {
+                        "mode": "managed_identity",
+                        "client_id": environment.get(
+                            "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID", ""
+                        ),
+                        "object_id": environment.get(
+                            "AIOPS_ONTOLOGY_PUBLISHER_OBJECT_ID", ""
+                        ),
+                    },
+                },
+            }
+        )
+    if not validation:
         raise ValidationBlocked(
-            "Fabric configuration has no ontology_publisher_validation section"
+            "Fabric configuration has no ontology publisher validation settings"
         )
     return validation
 
@@ -163,6 +253,19 @@ def _identity_specs(config: dict[str, Any]) -> dict[str, IdentitySpec]:
         if not isinstance(entry, dict):
             raise ValidationBlocked(f"missing {identity_class} identity configuration")
         mode = _required(entry.get("mode"), f"{identity_class}.mode")
+        if identity_class == "curator":
+            if mode != "structural":
+                raise ValidationBlocked("curator identity must use structural evidence")
+            specs[identity_class] = IdentitySpec(
+                identity_class=identity_class,
+                mode=mode,
+                tenant_id="",
+                client_id="",
+                object_id=_required(
+                    entry.get("object_id"), f"{identity_class}.object_id"
+                ),
+            )
+            continue
         if mode not in {"managed_identity", "workload_identity", "client_secret"}:
             raise ValidationBlocked(f"unsupported {identity_class} credential mode")
         spec = IdentitySpec(
@@ -224,9 +327,14 @@ def _token_claims(token: str) -> dict[str, Any]:
     return claims
 
 
-def _verified_token(credential: TokenCredential, spec: IdentitySpec) -> str:
+def _verified_token(
+    credential: TokenCredential,
+    spec: IdentitySpec,
+    *,
+    scope: str,
+) -> str:
     try:
-        token = credential.get_token(TOKEN_SCOPE).token
+        token = credential.get_token(scope).token
     except Exception as exc:
         raise ValidationBlocked(
             f"{spec.identity_class} identity token is unavailable"
@@ -247,12 +355,17 @@ def _verified_token(credential: TokenCredential, spec: IdentitySpec) -> str:
 
 
 def _role_hash(config: dict[str, Any]) -> str:
-    actions = config.get("publisher_role_actions")
-    if not isinstance(actions, list) or any(not isinstance(item, str) for item in actions):
-        raise ValidationBlocked("publisher_role_actions must be a string list")
-    if tuple(actions) != EXPECTED_ROLE_ACTIONS:
+    role = config.get("publisher_role")
+    if not isinstance(role, dict):
+        raise ValidationBlocked("publisher_role must be an object")
+    if role != EXPECTED_PUBLISHER_ROLE:
         raise AuthorizationEvidenceError("publisher role definition does not match contract")
-    canonical = json.dumps(actions, separators=(",", ":"), ensure_ascii=True)
+    canonical = json.dumps(
+        role,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        sort_keys=True,
+    )
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
@@ -274,6 +387,7 @@ def _evidence(
     result: str,
     role_hash: str,
     correlation: str,
+    evidence_kind: str = "operation_live",
 ) -> dict[str, str]:
     return {
         "operation": operation,
@@ -282,6 +396,7 @@ def _evidence(
         "timestamp": datetime.now(UTC).isoformat(),
         "role_definition_hash": role_hash,
         "correlation_evidence": correlation,
+        "evidence_kind": evidence_kind,
     }
 
 
@@ -342,13 +457,139 @@ def _require_denial(result: HttpResult, identity_class: str, operation: str) -> 
     return _correlation(result)
 
 
+def _json_object(result: HttpResult, operation: str) -> dict[str, Any]:
+    if result.status != 200:
+        raise AuthorizationEvidenceError(f"{operation} live read failed")
+    try:
+        payload = json.loads(result.body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AuthorizationEvidenceError(
+            f"{operation} live response is invalid"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AuthorizationEvidenceError(f"{operation} live response is invalid")
+    return payload
+
+
+def _workspace_role_evidence(
+    config: dict[str, Any],
+    *,
+    specs: dict[str, IdentitySpec],
+    transport: HttpTransport,
+    token: str,
+) -> str:
+    workspace_id = _required(config.get("workspace_id"), "workspace_id")
+    url = (
+        "https://api.fabric.microsoft.com/v1/workspaces/"
+        f"{urllib.parse.quote(workspace_id, safe='')}/roleAssignments"
+    )
+    response = transport.request("GET", url, token=token, headers={})
+    payload = _json_object(response, "workspace role assignment")
+    assignments = payload.get("value")
+    if not isinstance(assignments, list):
+        raise AuthorizationEvidenceError(
+            "workspace role assignment response has no value list"
+        )
+
+    roles_by_principal: dict[str, set[str]] = {}
+    for assignment in assignments:
+        if not isinstance(assignment, dict):
+            raise AuthorizationEvidenceError(
+                "workspace role assignment entry is invalid"
+            )
+        principal = assignment.get("principal")
+        principal_id = (
+            principal.get("id")
+            if isinstance(principal, dict)
+            else assignment.get("principalId")
+        )
+        role = assignment.get("role") or assignment.get("roleName")
+        if not isinstance(principal_id, str) or not isinstance(role, str):
+            raise AuthorizationEvidenceError(
+                "workspace role assignment entry is incomplete"
+            )
+        roles_by_principal.setdefault(principal_id.casefold(), set()).add(
+            role.casefold()
+        )
+
+    publisher_roles = roles_by_principal.get(
+        specs["publisher"].object_id.casefold(), set()
+    )
+    if publisher_roles != {"contributor"}:
+        raise AuthorizationEvidenceError(
+            "publisher does not have exactly the Contributor workspace role"
+        )
+    for identity_class in ("api", "coordinator", "curator"):
+        roles = roles_by_principal.get(specs[identity_class].object_id.casefold(), set())
+        if roles & FABRIC_WRITER_ROLES:
+            raise AuthorizationEvidenceError(
+                f"{identity_class} has a Fabric workspace writer role"
+            )
+    return _correlation(response)
+
+
+def _curator_agent_evidence(
+    config: dict[str, Any],
+    *,
+    transport: HttpTransport,
+    token: str,
+) -> str:
+    endpoint = _required(
+        config.get("foundry_project_endpoint"), "foundry_project_endpoint"
+    ).rstrip("/")
+    parsed = urllib.parse.urlsplit(endpoint)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValidationBlocked("Foundry project endpoint must use HTTPS")
+    agent_name = _required(config.get("curator_agent_name"), "curator_agent_name")
+    expected_model = _required(config.get("curator_model"), "curator_model")
+    expected_prompt_hash = _required(
+        config.get("curator_prompt_sha256"), "curator_prompt_sha256"
+    )
+    url = (
+        f"{endpoint}/agents/{urllib.parse.quote(agent_name, safe='')}/versions"
+        "?api-version=v1"
+    )
+    response = transport.request("GET", url, token=token, headers={})
+    payload = _json_object(response, "deployed curator")
+    versions = payload.get("value")
+    if not isinstance(versions, list) or not versions:
+        raise AuthorizationEvidenceError("deployed curator has no versions")
+
+    for version in versions:
+        if not isinstance(version, dict) or not isinstance(
+            version.get("definition"), dict
+        ):
+            raise AuthorizationEvidenceError("deployed curator version is invalid")
+        definition = version["definition"]
+        if definition.get("model") != expected_model:
+            raise AuthorizationEvidenceError("deployed curator model mismatch")
+        instructions = definition.get("instructions")
+        if not isinstance(instructions, str) or (
+            hashlib.sha256(instructions.encode()).hexdigest()
+            != expected_prompt_hash
+        ):
+            raise AuthorizationEvidenceError("deployed curator prompt mismatch")
+        tools = definition.get("tools")
+        if not isinstance(tools, list) or len(tools) != 1:
+            raise AuthorizationEvidenceError("deployed curator tool allowlist mismatch")
+        tool = tools[0]
+        if (
+            not isinstance(tool, dict)
+            or tool.get("type") != "mcp"
+            or tool.get("server_label") != "operations-mcp"
+            or tuple(tool.get("allowed_tools") or ()) != EXPECTED_CURATOR_TOOLS
+        ):
+            raise AuthorizationEvidenceError("deployed curator tool allowlist mismatch")
+    return _correlation(response)
+
+
 def validate_live_authorization(
     config: dict[str, Any],
     *,
     transport: HttpTransport | None = None,
     credential_factory=_credential,
 ) -> dict[str, Any]:
-    """Execute the four-identity canary matrix and return a sanitized report."""
+    """Execute live write probes plus curator structural checks."""
     role_hash = _role_hash(config)
     specs = _identity_specs(config)
     http = transport or UrllibTransport()
@@ -357,10 +598,15 @@ def validate_live_authorization(
     cleanup_urls: list[str] = []
     cleanup_completed = False
     try:
-        for identity_class, spec in specs.items():
+        for identity_class in LIVE_WRITE_IDENTITIES:
+            spec = specs[identity_class]
             credential = credential_factory(spec)
             credentials[identity_class] = credential
-            tokens[identity_class] = _verified_token(credential, spec)
+            tokens[identity_class] = _verified_token(
+                credential,
+                spec,
+                scope=STORAGE_TOKEN_SCOPE,
+            )
 
         run_id = uuid.uuid4().hex
         prefix = f"Files/aiops/validation/ontology-rbac/{run_id}"
@@ -390,7 +636,7 @@ def validate_live_authorization(
         )
 
         cleanup_urls = [pointer_url, publisher_stage_url]
-        for identity_class in NON_PUBLISHERS:
+        for identity_class in DENIED_WRITE_IDENTITIES:
             stage_url = _blob_url(config, f"{prefix}/{identity_class}-stage.json")
             cleanup_urls.append(stage_url)
             denied_stage = _put(
@@ -429,6 +675,49 @@ def validate_live_authorization(
                     ),
                 )
             )
+
+        publisher_fabric_token = _verified_token(
+            credentials["publisher"],
+            specs["publisher"],
+            scope=FABRIC_TOKEN_SCOPE,
+        )
+        workspace_role_correlation = _workspace_role_evidence(
+            config,
+            specs=specs,
+            transport=http,
+            token=publisher_fabric_token,
+        )
+        records.append(
+            _evidence(
+                identity_class="curator",
+                operation="workspace_writer_role",
+                result="absent",
+                role_hash=role_hash,
+                correlation=workspace_role_correlation,
+                evidence_kind="structural_live",
+            )
+        )
+
+        api_foundry_token = _verified_token(
+            credentials["api"],
+            specs["api"],
+            scope=FOUNDRY_TOKEN_SCOPE,
+        )
+        curator_tool_correlation = _curator_agent_evidence(
+            config,
+            transport=http,
+            token=api_foundry_token,
+        )
+        records.append(
+            _evidence(
+                identity_class="curator",
+                operation="deployed_tool_allowlist",
+                result="read_only",
+                role_hash=role_hash,
+                correlation=curator_tool_correlation,
+                evidence_kind="structural_live",
+            )
+        )
 
         staged = _put(
             http,

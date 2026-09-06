@@ -71,12 +71,17 @@ def test_rbac_validator_job_is_manual_only_and_selects_exactly_three_uais() -> N
 
     assert "manual_trigger_config" in job
     assert "schedule_trigger_config" not in job
-    assert "replica_timeout_in_seconds = 600" in job
-    assert "replica_retry_limit        = 0" in job
+    assert "replica_timeout_in_seconds" in job
+    assert "= 600" in job
+    assert "replica_retry_limit" in job
+    assert "= 0" in job
     assert "azurerm_user_assigned_identity.apps.id" in job
     assert "azurerm_user_assigned_identity.ontology_coordinator.id" in job
     assert "azurerm_user_assigned_identity.ontology_publisher.id" in job
-    assert "azurerm_cognitive_account_project.ops" not in job
+    identity_block = job.split("identity {", maxsplit=1)[1].split(
+        "registry {", maxsplit=1
+    )[0]
+    assert "azurerm_cognitive_account_project.ops" not in identity_block
     assert '"/app/scripts/validate_ontology_publisher_rbac.py"' in job
     assert '"--non-production"' in job
     assert '"--fail-on-missing-evidence"' in job

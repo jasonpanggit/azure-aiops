@@ -106,3 +106,143 @@ resource "azurerm_container_app_job" "ontology_discovery" {
     azurerm_role_assignment.ontology_coordinator_acr_pull,
   ]
 }
+
+# ---------------------------------------------------------------------------
+# Manual-only live authorization validator
+#
+# ManagedIdentityCredential can select a user-assigned identity only when that
+# identity is attached to the executing Azure resource. This bounded Job is
+# therefore the validation runtime for the API, coordinator, and publisher
+# identities. It has no schedule, ingress, AIOps runtime mode, or publisher
+# credential environment variable. The curator remains deliberately
+# unattached: its denial is proven by live workspace-role absence plus its
+# deployed four-tool read-only Foundry definition.
+# ---------------------------------------------------------------------------
+
+resource "azurerm_container_app_job" "ontology_rbac_validation" {
+  count = var.enable_fabric ? 1 : 0
+
+  name                         = "${local.base}-ontology-rbac-validation"
+  resource_group_name          = azurerm_resource_group.main.name
+  location                     = azurerm_resource_group.main.location
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  workload_profile_name        = "Consumption"
+  replica_timeout_in_seconds   = 600
+  replica_retry_limit          = 0
+
+  identity {
+    type = "UserAssigned"
+    identity_ids = [
+      azurerm_user_assigned_identity.apps.id,
+      azurerm_user_assigned_identity.ontology_coordinator.id,
+      azurerm_user_assigned_identity.ontology_publisher.id,
+    ]
+  }
+
+  registry {
+    server   = local.registry_server
+    identity = azurerm_user_assigned_identity.ontology_coordinator.id
+  }
+
+  manual_trigger_config {
+    parallelism              = 1
+    replica_completion_count = 1
+  }
+
+  template {
+    container {
+      name   = "ontology-rbac-validation"
+      image  = var.deploy_images ? local.api_image : local.placeholder_image
+      cpu    = var.api_cpu
+      memory = var.api_memory
+
+      command = [
+        "python",
+        "/app/scripts/validate_ontology_publisher_rbac.py",
+      ]
+      args = [
+        "--non-production",
+        "--fail-on-missing-evidence",
+      ]
+
+      env {
+        name  = "AIOPS_ONTOLOGY_API_CLIENT_ID"
+        value = azurerm_user_assigned_identity.apps.client_id
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_API_OBJECT_ID"
+        value = azurerm_user_assigned_identity.apps.principal_id
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_COORDINATOR_CLIENT_ID"
+        value = azurerm_user_assigned_identity.ontology_coordinator.client_id
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_COORDINATOR_OBJECT_ID"
+        value = azurerm_user_assigned_identity.ontology_coordinator.principal_id
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID"
+        value = azurerm_user_assigned_identity.ontology_publisher.client_id
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_PUBLISHER_OBJECT_ID"
+        value = azurerm_user_assigned_identity.ontology_publisher.principal_id
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_CURATOR_OBJECT_ID"
+        value = azurerm_cognitive_account_project.ops.identity[0].principal_id
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_WORKSPACE_ID"
+        value = fabric_workspace.ops[0].id
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_NON_PRODUCTION"
+        value = "true"
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_LAKEHOUSE_ID"
+        value = fabric_lakehouse.context_graph[0].id
+      }
+
+      env {
+        name  = "FOUNDRY_PROJECT_ENDPOINT"
+        value = local.foundry_project_endpoint
+      }
+
+      env {
+        name  = "FOUNDRY_ONTOLOGY_CURATOR_AGENT_NAME"
+        value = local.ontology_curator_agent_name
+      }
+
+      env {
+        name  = "FOUNDRY_ONTOLOGY_CURATOR_PROMPT_SHA256"
+        value = sha256(local.ontology_curator_prompt)
+      }
+
+      env {
+        name  = "FOUNDRY_ONTOLOGY_CURATOR_MODEL"
+        value = var.foundry_model_name
+      }
+    }
+  }
+
+  tags = local.tags
+
+  depends_on = [
+    azurerm_role_assignment.ontology_coordinator_acr_pull,
+    fabric_workspace_role_assignment.apps,
+    fabric_workspace_role_assignment.ontology_publisher,
+    terraform_data.foundry_ontology_curator_agent,
+  ]
+}
