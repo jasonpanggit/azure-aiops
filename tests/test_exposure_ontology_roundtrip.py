@@ -7,7 +7,6 @@ import pytest
 from fabric.dataset_mapper import GranularExposureOntologyMapper
 from ontology.entity_builder import typed_image_semantic_id
 
-
 DIGEST = f"sha256:{'a' * 64}"
 TENANT_ID = "tenant-1"
 SUBSCRIPTION_ID = "subscription-1"
