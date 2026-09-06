@@ -331,8 +331,13 @@ def test_projection_builds_generation_pinned_scoped_facts_facets_and_summaries()
         generation_id=GENERATION,
         projected_at=PROJECTED_AT,
     )
+    manifest = reconcile_exposure_gold(datasets, projection)
 
     assert projection == repeated
+    assert manifest["status"] == "reconciled"
+    assert all(manifest["checks"].values())
+    assert manifest["canonical_exposure_count"] == 2
+    assert manifest["projected_exposure_count"] == 2
     assert len(projection.facts) == 3
     assert {
         row["target_kind"] for row in projection.facts

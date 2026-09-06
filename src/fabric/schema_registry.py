@@ -598,6 +598,20 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("payload_json", pa.string(), nullable=False),
         ]
     ),
+    "metadata_exposure_gold_generations": pa.schema(
+        [
+            *_BASE,
+            pa.field("read_model_generation_id", pa.string(), nullable=False),
+            pa.field("previous_generation_id", pa.string(), nullable=True),
+            pa.field("reconciliation_status", pa.string(), nullable=False),
+            pa.field("reconciliation_hash", pa.string(), nullable=False),
+            pa.field("reconciliation_json", pa.string(), nullable=False),
+            pa.field("table_row_counts_json", pa.string(), nullable=False),
+            pa.field("merge_counts_json", pa.string(), nullable=False),
+            pa.field("published_at", pa.string(), nullable=False),
+            pa.field("retain_until", pa.string(), nullable=False),
+        ]
+    ),
     "gold_exposure_current": pa.schema(
         [
             *_BASE,
