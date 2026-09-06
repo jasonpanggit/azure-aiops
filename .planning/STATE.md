@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.1-14 not started (13/25 complete)
 status: planning
-stopped_at: Completed 03.1-13-PLAN.md; Phase 12 verified and integrated
-last_updated: "2026-09-06T08:53:25.064Z"
+stopped_at: Completed 13-01-PLAN.md; Phase 03.1 remains the active workstream
+last_updated: "2026-09-06T10:45:19.913Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 109
+  completed_plans: 110
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -25,6 +25,7 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-01** COMPLETE — Independent Phase 10/12 evidence preflight, non-authoritative shadow/fenced-pointer tracer, and 35-scenario synthetic Wave 0 corpus
 - **12-01..12-11** COMPLETE — Scope-safe topology projection, private-link/Fabric/Foundry semantics, bounded summary/detail contracts, policy refresh, truthful provenance, accessible graph/drawer/export UX, downstream compatibility, representative scale gates, and final review remediation
 - **03.1-01** COMPLETE — Wave 0 deterministic Exposure fixture, explicit backend/web pending gates, 100k correctness harness, and exhaustive fail-closed Fabric SQL readiness probe
 - **03.1-21** COMPLETE — Approved ontology v2 contract and production scope-first tracer through typed ontology, review-only container remediation, and Copilot parity
@@ -147,6 +148,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P23 | 28min | 2 tasks | 14 files |
 | Phase 03.1 P12 | 31min | 2 tasks | 6 files |
 | Phase 03.1 P13 | 26 min | 3 tasks | 9 files |
+| Phase 13 P01 | 18min | 2 tasks | 6 files |
 
 ## Decisions
 
@@ -228,11 +230,13 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: Exposure authorization is resolved server-side and must exactly match the authenticated principal and effective request scope before SQL compilation.
 - [Phase 03.1]: Exposure cursors use canonical HMAC-SHA256 payloads with a 15-minute TTL and managed previous-key verification limited to the 30-minute overlap.
 - [Phase 03.1]: The deterministic SQL-contract benchmark remains distinct from live Fabric certification; the live canary requires readiness and explicit benchmark scope.
+- [Phase 13]: Dependency authorization requires roadmap, requirements, complete summaries, Nyquist validation, and passed verification; STATE.md alone is never sufficient.
+- [Phase 13]: Wave 0 remains test-only and non-authoritative; reviewed model edges are excluded in shadow mode and pointer changes require fresh fences.
 
 ## Session
 
-**Last session:** 2026-09-06T08:53:25.048Z
-**Stopped at:** Completed 03.1-13-PLAN.md
+**Last session:** 2026-09-06T10:45:19.877Z
+**Stopped at:** Completed 13-01-PLAN.md; Phase 03.1 remains the active workstream
 **Resume file:** None
 
 ## Accumulated Context
