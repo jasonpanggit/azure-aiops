@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from api.runtime import _load_generation_tables
 from api.routers.twin import _composer
+from api.runtime import _load_generation_tables
 from api.scope import Scope
 from fabric.data_agent_manager import build_data_agent_definition
 from fabric.semantic_model_manager import build_semantic_model_definition

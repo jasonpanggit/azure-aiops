@@ -16,9 +16,17 @@ from ..scope import Scope
 router = APIRouter(prefix="/api/v1/twin", tags=["operational-twin"])
 
 
-def _resolve(context: Context, name: str, errors: list[dict[str, str]]) -> Any | None:
+def _resolve(
+    context: Context,
+    name: str,
+    errors: list[dict[str, str]],
+    generation: Any | None = None,
+) -> Any | None:
     try:
-        return context.resolve_provider(name, optional=True)
+        provider = context.resolve_provider(name, optional=True)
+        if generation is not None and hasattr(provider, "for_generation"):
+            return provider.for_generation(generation)
+        return provider
     except Exception as exc:  # noqa: BLE001 - provider resolution must not crash the endpoint
         errors.append({"source": name, "error": exc.__class__.__name__})
         return None
@@ -27,11 +35,22 @@ def _resolve(context: Context, name: str, errors: list[dict[str, str]]) -> Any |
 def _composer(context: Context, scope: Scope) -> OperationalTwinComposer:
     subscription_ids = list(scope.values("subscription"))
     source_errors: list[dict[str, str]] = []
+    generation = None
+    resolver_provider = getattr(context, "generation_resolver_provider", None)
+    if callable(resolver_provider):
+        try:
+            generation = resolver_provider().resolve()
+        except Exception as exc:  # noqa: BLE001 - aggregate a failed optional source
+            source_errors.append(
+                {"source": "ontology_generation", "error": exc.__class__.__name__}
+            )
     network = (
         context.hybrid_network_provider(subscription_ids)
         if context.hybrid_network_provider is not None and subscription_ids
-        else _resolve(context, "network", source_errors)
+        else _resolve(context, "network", source_errors, generation)
     )
+    if generation is not None and hasattr(network, "for_generation"):
+        network = network.for_generation(generation)
     if network is not None and hasattr(network, "scoped"):
         network = network.scoped(
             NetworkScope(
@@ -46,20 +65,26 @@ def _composer(context: Context, scope: Scope) -> OperationalTwinComposer:
     vulnerability = (
         context.hybrid_vulnerability_provider(subscription_ids)
         if context.hybrid_vulnerability_provider is not None and subscription_ids
-        else _resolve(context, "vulnerability", source_errors)
+        else _resolve(context, "vulnerability", source_errors, generation)
     )
+    if generation is not None and hasattr(vulnerability, "for_generation"):
+        vulnerability = vulnerability.for_generation(generation)
     incidents = (
         context.hybrid_incident_provider(subscription_ids)
         if context.hybrid_incident_provider is not None and subscription_ids
-        else _resolve(context, "incident", source_errors)
+        else _resolve(context, "incident", source_errors, generation)
     )
+    if generation is not None and hasattr(incidents, "for_generation"):
+        incidents = incidents.for_generation(generation)
     remediation = (
         context.hybrid_remediation_provider(subscription_ids)
         if context.hybrid_remediation_provider is not None and subscription_ids
-        else _resolve(context, "remediation", source_errors)
+        else _resolve(context, "remediation", source_errors, generation)
     )
+    if generation is not None and hasattr(remediation, "for_generation"):
+        remediation = remediation.for_generation(generation)
     return OperationalTwinComposer(
-        semantic=_resolve(context, "semantic", source_errors),
+        semantic=_resolve(context, "semantic", source_errors, generation),
         network=network,
         vulnerability=vulnerability,
         incidents=incidents,
