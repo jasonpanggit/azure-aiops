@@ -216,19 +216,29 @@ class NetworkTopology:
         return ""
 
     def projected_full_node_count(self) -> int:
-        """Return the exact number of nodes the full client graph will render."""
+        """Return the exact number of resource-path client nodes.
+
+        ``buildTopologyGraph`` switches to its resource projection whenever
+        ``resources`` is non-empty.  In that path ``shared_services`` is
+        metadata only: the corresponding provider resources already exist in
+        ``resources`` and no synthetic ``*/sharedservice`` node is rendered.
+        Keep this identity union deliberately aligned with
+        ``buildResourceTopologyGraph`` rather than counting every server-side
+        collection independently.
+        """
         node_ids = {
             str(resource["id"]).casefold()
             for resource in _topology_resources(self, detail="full")
         }
         node_ids.update(
-            service.resource_id.casefold()
-            for service in self.shared_services
-            if service.resource_id
-        )
-        node_ids.update(
             peer_id.casefold()
-            for peer_id in self.unresolved_peer_vnet_ids
+            for peer_id in (
+                *self.unresolved_peer_vnet_ids,
+                *(
+                    str(peer.get("vnet_id") or "")
+                    for peer in self.unresolved_peers
+                ),
+            )
             if peer_id
         )
         return len(node_ids)

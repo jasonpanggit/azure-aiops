@@ -94,12 +94,19 @@ def test_fixtures_build_expected_shapes(
 
 
 def test_full_detail_payload_baseline_small() -> None:
-    measurement = _measure_payload(small_estate())
+    topology = build_topology(small_estate())
+    payload = topology.to_dict()
+    measurement = PayloadMeasurement(
+        nodes=len(payload["resources"]),
+        edges=len(payload["relationships"]),
+        serialized_bytes=len(json.dumps(payload)),
+    )
 
     # RESEARCH measured 1,330 nodes / 1,260 edges / 2.99 MB. The fixture
     # reproduces the node count exactly; broad edge/byte bands keep this a
     # regression detector rather than a serializer-format lock.
     assert measurement.nodes == 1_330
+    assert topology.projected_full_node_count() == measurement.nodes
     assert 1_000 <= measurement.edges <= 1_600
     assert 2_000_000 <= measurement.serialized_bytes <= 5_000_000
 
