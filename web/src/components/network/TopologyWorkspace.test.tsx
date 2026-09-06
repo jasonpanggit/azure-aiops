@@ -509,4 +509,63 @@ describe("TopologyWorkspace export and selection honesty", () => {
         .closest('[role="status"]'),
     ).not.toBeNull();
   });
+
+  it("clears selection immediately when the active scope changes", async () => {
+    const { rerender } = renderWorkspace({
+      scope: { subscription: ["sub-a"] },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select first graph node" }),
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    rerender(
+      <TopologyWorkspace
+        topology={buildTopologyEnvelope().data.topology}
+        summary={summaryWithProjectedNodes(100)}
+        detailLevel="summary"
+        loading={false}
+        error={null}
+        scope={{ subscription: ["sub-b"] }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("clears selection when a detail response omits the selected node", async () => {
+    const fullTopology = buildTopologyEnvelope(1, 1).data.topology;
+    fullTopology.resources = [
+      {
+        ...fullTopology.resources![0],
+        id: `${fullTopology.resources![0].id}/rules/rule-1`,
+        name: "rule-1",
+        entity_type: "NetworkSecurityRule",
+      },
+    ];
+    const { rerender } = renderWorkspace({
+      topology: fullTopology,
+      detailLevel: "full",
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select first graph node" }),
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    rerender(
+      <TopologyWorkspace
+        topology={buildTopologyEnvelope().data.topology}
+        summary={summaryWithProjectedNodes(100)}
+        detailLevel="summary"
+        loading={false}
+        error={null}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
 });

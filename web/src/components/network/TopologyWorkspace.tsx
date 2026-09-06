@@ -12,7 +12,7 @@ import type {
 } from "@/components/network/TopologyGraph";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { buildTopologyGraph } from "@/lib/network-graph";
-import type { ScopeSelection } from "@/lib/scope";
+import { scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import type {
   CollectionCoverage,
   EvidenceItem,
@@ -259,6 +259,7 @@ export function TopologyWorkspace({
   const [fullDetailPending, setFullDetailPending] = useState(false);
   const [selection, setSelection] = useState<TopologySelection>(EMPTY_SELECTION);
   const [selectionAnnouncement, setSelectionAnnouncement] = useState("");
+  const selectionContextRef = useRef("");
   const graphHandleRef = useRef<TopologyGraphHandle | null>(null);
   const [badgeGaps, setBadgeGaps] = useState(gaps);
   const [badgeRuleFindings, setBadgeRuleFindings] = useState(ruleFindings);
@@ -342,6 +343,15 @@ export function TopologyWorkspace({
       ),
     [renderedGraph],
   );
+  const visibleEdgeIds = useMemo(
+    () => new Set((renderedGraph?.edges ?? []).map((edge) => edge.id)),
+    [renderedGraph],
+  );
+  const scopeKey = useMemo(() => {
+    const query = scopeToSearchParams(scope ?? {});
+    query.sort();
+    return query.toString();
+  }, [scope]);
   const normalizedSearch = search.trim().toLowerCase();
   const matchingNodeIds = useMemo(
     () =>
@@ -370,6 +380,29 @@ export function TopologyWorkspace({
     setSelectionAnnouncement("");
     setSelection(next);
   }, []);
+
+  useEffect(() => {
+    const contextKey = `${scopeKey}::${detailLevel}`;
+    if (
+      selectionContextRef.current &&
+      selectionContextRef.current !== contextKey
+    ) {
+      setSelection(EMPTY_SELECTION);
+      setSelectionAnnouncement("");
+    }
+    selectionContextRef.current = contextKey;
+  }, [detailLevel, scopeKey]);
+
+  useEffect(() => {
+    if (
+      (selection.node &&
+        !visibleNodeIds.has(selection.node.id.toLowerCase())) ||
+      (selection.edge && !visibleEdgeIds.has(selection.edge.id))
+    ) {
+      setSelection(EMPTY_SELECTION);
+      setSelectionAnnouncement("");
+    }
+  }, [selection.edge, selection.node, visibleEdgeIds, visibleNodeIds]);
 
   useEffect(() => {
     if (!filterMode || !normalizedSearch || (!selection.node && !selection.edge)) {
