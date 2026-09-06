@@ -25,7 +25,12 @@ from intelligence.vulnerability.exposure_contracts import (
     ExposureCursorError,
     ExposureRestartConflict,
 )
-from operations.exposure_metrics import ExposureMetrics
+from operations.exposure_metrics import (
+    ExposureMetrics,
+    ExposureReconciliationPolicy,
+    ExposureReconciliationReport,
+    reconcile_exposure_arms,
+)
 
 EXPOSURE_FACTS_TABLE = "gold_exposure_facts"
 MAX_EXPOSURE_PAGE_SIZE = 100
@@ -614,6 +619,35 @@ class ExposureQueryService:
                     "Exposure authorization does not match the effective scope"
                 )
         return authorization
+
+    def reconcile_shadow_page(
+        self,
+        *,
+        old_rows: Iterable[Mapping[str, Any]],
+        new_rows: Iterable[Mapping[str, Any]],
+        generation_id: str,
+        old_completeness: str,
+        new_completeness: str,
+        authorized_scope_keys: Iterable[str],
+        expected_changes: (
+            Mapping[tuple[str, str], Iterable[str]] | None
+        ) = None,
+        policy: ExposureReconciliationPolicy | None = None,
+    ) -> ExposureReconciliationReport:
+        """Compare one representative old/new read at one generation."""
+
+        return reconcile_exposure_arms(
+            old_rows,
+            new_rows,
+            generation_id=generation_id,
+            old_completeness=old_completeness,
+            new_completeness=new_completeness,
+            authorized_scope_keys=authorized_scope_keys,
+            expected_changes=expected_changes,
+            policy=policy,
+            metrics=self._metrics,
+            checkpoint="representative_read",
+        )
 
     def list_page(
         self,

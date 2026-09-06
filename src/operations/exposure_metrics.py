@@ -8,8 +8,10 @@ API through which they can become metric attributes.
 
 from __future__ import annotations
 
+import hashlib
 import os
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -187,6 +189,7 @@ _DIMENSION_VALUES: dict[str, frozenset[str]] = {
             "freshness",
             "recommendation",
             "target_kind",
+            "enrichment_score",
             "time_varying_enrichment_score",
         }
     ),
@@ -198,6 +201,492 @@ _ENVIRONMENT_ALIASES = {
     "production": "prod",
 }
 _MERGE_OUTCOMES = ("insert", "update", "noop", "conflict")
+RECONCILIATION_MISMATCH_CLASSES = (
+    "scope_widening",
+    "source_class_disappearance",
+    "false_healthy_empty",
+    "false_clear",
+    "missing_image_relationship",
+    "cursor_duplicate",
+    "cursor_omission",
+    "stable_key",
+    "state",
+    "order",
+    "count",
+    "completeness",
+    "freshness",
+    "recommendation",
+    "target_kind",
+    "enrichment_score",
+    "time_varying_enrichment_score",
+)
+HARD_RECONCILIATION_FAILURE_CLASSES = frozenset(
+    {
+        "scope_widening",
+        "source_class_disappearance",
+        "false_healthy_empty",
+        "false_clear",
+        "missing_image_relationship",
+        "cursor_duplicate",
+        "cursor_omission",
+    }
+)
+EXPECTED_RECONCILIATION_CHANGE_CLASSES = frozenset(
+    {"time_varying_enrichment_score"}
+)
+
+
+@dataclass(frozen=True)
+class ExposureReconciliationPolicy:
+    """Exact cutover policy for bounded old/new comparisons."""
+
+    max_unexpected_mismatch_count: int = 0
+    max_unexpected_mismatch_ratio: float = 0.0
+    max_rows_per_arm: int = 10_000
+    max_redacted_samples: int = 10
+    hard_failure_classes: frozenset[str] = HARD_RECONCILIATION_FAILURE_CLASSES
+    expected_change_classes: frozenset[str] = (
+        EXPECTED_RECONCILIATION_CHANGE_CLASSES
+    )
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.max_unexpected_mismatch_count, bool)
+            or self.max_unexpected_mismatch_count < 0
+        ):
+            raise ValueError(
+                "max_unexpected_mismatch_count must be non-negative"
+            )
+        if not 0 <= self.max_unexpected_mismatch_ratio <= 1:
+            raise ValueError(
+                "max_unexpected_mismatch_ratio must be between zero and one"
+            )
+        if self.max_rows_per_arm < 1:
+            raise ValueError("max_rows_per_arm must be positive")
+        if self.max_redacted_samples < 0:
+            raise ValueError("max_redacted_samples must be non-negative")
+        unsupported_hard = set(self.hard_failure_classes) - set(
+            RECONCILIATION_MISMATCH_CLASSES
+        )
+        unsupported_expected = set(self.expected_change_classes) - set(
+            RECONCILIATION_MISMATCH_CLASSES
+        )
+        if unsupported_hard or unsupported_expected:
+            raise ValueError("Reconciliation policy contains an unknown class")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_unexpected_mismatch_count": (
+                self.max_unexpected_mismatch_count
+            ),
+            "max_unexpected_mismatch_ratio": (
+                self.max_unexpected_mismatch_ratio
+            ),
+            "max_rows_per_arm": self.max_rows_per_arm,
+            "max_redacted_samples": self.max_redacted_samples,
+            "hard_failure_classes": sorted(self.hard_failure_classes),
+            "expected_change_classes": sorted(self.expected_change_classes),
+        }
+
+
+@dataclass(frozen=True)
+class ExposureReconciliationReport:
+    generation_id: str
+    checkpoint: str
+    old_count: int
+    new_count: int
+    compared_count: int
+    mismatch_counts: dict[str, int]
+    expected_change_counts: dict[str, int]
+    unexpected_mismatch_count: int
+    mismatch_ratio: float
+    hard_failure_classes: tuple[str, ...]
+    passed: bool
+    blocks_cutover: bool
+    policy: dict[str, Any]
+    redacted_samples: tuple[dict[str, str], ...]
+
+    def to_manifest(self) -> dict[str, Any]:
+        return {
+            "schema_version": "1.0.0",
+            "generation_id": self.generation_id,
+            "checkpoint": self.checkpoint,
+            "old_count": self.old_count,
+            "new_count": self.new_count,
+            "compared_count": self.compared_count,
+            "mismatch_counts": dict(self.mismatch_counts),
+            "expected_change_counts": dict(self.expected_change_counts),
+            "unexpected_mismatch_count": self.unexpected_mismatch_count,
+            "mismatch_ratio": self.mismatch_ratio,
+            "hard_failure_classes": list(self.hard_failure_classes),
+            "passed": self.passed,
+            "blocks_cutover": self.blocks_cutover,
+            "policy": dict(self.policy),
+            "redacted_samples": [
+                dict(sample) for sample in self.redacted_samples
+            ],
+        }
+
+
+def reconcile_exposure_arms(
+    old_rows: Iterable[Mapping[str, Any]],
+    new_rows: Iterable[Mapping[str, Any]],
+    *,
+    generation_id: str,
+    old_completeness: str,
+    new_completeness: str,
+    authorized_scope_keys: Iterable[str],
+    expected_changes: Mapping[tuple[str, str], Iterable[str]] | None = None,
+    policy: ExposureReconciliationPolicy | None = None,
+    metrics: ExposureMetrics | None = None,
+    checkpoint: str = "post_publication",
+) -> ExposureReconciliationReport:
+    """Compare bounded scoped old/new semantics without choosing a truth arm."""
+
+    selected_policy = policy or ExposureReconciliationPolicy()
+    generation = str(generation_id or "").strip()
+    if not generation:
+        raise ValueError("Exposure reconciliation requires a generation_id")
+    if checkpoint not in {"post_publication", "representative_read"}:
+        raise ValueError("Unsupported Exposure reconciliation checkpoint")
+    old = tuple(dict(row) for row in old_rows)
+    new = tuple(dict(row) for row in new_rows)
+    if (
+        len(old) > selected_policy.max_rows_per_arm
+        or len(new) > selected_policy.max_rows_per_arm
+    ):
+        raise ValueError("Exposure reconciliation row bound exceeded")
+    for row in (*old, *new):
+        if str(row.get("read_model_generation_id") or "") != generation:
+            raise ValueError(
+                "Exposure reconciliation rows must share one generation"
+            )
+
+    authorized = {
+        str(value).strip() for value in authorized_scope_keys if str(value).strip()
+    }
+    if not authorized:
+        raise ValueError(
+            "Exposure reconciliation requires authorized scope keys"
+        )
+    expected = _expected_change_map(
+        expected_changes,
+        selected_policy=selected_policy,
+    )
+    counts = {name: 0 for name in RECONCILIATION_MISMATCH_CLASSES}
+    expected_counts: Counter[str] = Counter()
+    samples: list[dict[str, str]] = []
+
+    old_keys = [_stable_reconciliation_key(row) for row in old]
+    new_keys = [_stable_reconciliation_key(row) for row in new]
+    old_counter = Counter(old_keys)
+    new_counter = Counter(new_keys)
+    duplicate_count = sum(
+        max(0, count - 1)
+        for count in (*old_counter.values(), *new_counter.values())
+    )
+    counts["cursor_duplicate"] = duplicate_count
+    for key, count in sorted(old_counter.items()):
+        if count > 1:
+            _sample(samples, "cursor_duplicate", key, "old", selected_policy)
+    for key, count in sorted(new_counter.items()):
+        if count > 1:
+            _sample(samples, "cursor_duplicate", key, "new", selected_policy)
+
+    old_by_key = {key: row for key, row in zip(old_keys, old, strict=True)}
+    new_by_key = {key: row for key, row in zip(new_keys, new, strict=True)}
+    old_set = set(old_by_key)
+    new_set = set(new_by_key)
+    old_only = sorted(old_set - new_set)
+    new_only = sorted(new_set - old_set)
+    counts["stable_key"] = len(old_only) + len(new_only)
+    counts["cursor_omission"] = len(old_only) + len(new_only)
+    counts["count"] = abs(len(old) - len(new))
+    for key in old_only:
+        _sample(samples, "stable_key", key, "old_only", selected_policy)
+    for key in new_only:
+        _sample(samples, "stable_key", key, "new_only", selected_policy)
+
+    unauthorized = [
+        (key, side)
+        for side, rows in (("old", old_by_key), ("new", new_by_key))
+        for key in rows
+        if key[0] not in authorized
+    ]
+    counts["scope_widening"] = len(unauthorized)
+    for key, side in unauthorized:
+        _sample(samples, "scope_widening", key, side, selected_policy)
+
+    if len(old_keys) == len(new_keys) and old_keys != new_keys:
+        counts["order"] = 1
+        _sample(
+            samples,
+            "order",
+            old_keys[0] if old_keys else ("empty", "empty"),
+            "both",
+            selected_policy,
+        )
+    if old_completeness != new_completeness:
+        counts["completeness"] = 1
+        _sample(
+            samples,
+            "completeness",
+            ("aggregate", "aggregate"),
+            "both",
+            selected_policy,
+        )
+    if (
+        not old
+        and new
+        and old_completeness == "healthy-empty"
+    ) or (
+        not new
+        and old
+        and new_completeness == "healthy-empty"
+    ):
+        counts["false_healthy_empty"] = 1
+        _sample(
+            samples,
+            "false_healthy_empty",
+            ("aggregate", "aggregate"),
+            "both",
+            selected_policy,
+        )
+
+    for key in sorted(old_set & new_set):
+        old_row = old_by_key[key]
+        new_row = new_by_key[key]
+        _compare_field(
+            counts,
+            samples,
+            key,
+            "state",
+            old_row,
+            new_row,
+            selected_policy,
+        )
+        if _is_false_clear(old_row.get("state"), new_row.get("state")):
+            counts["false_clear"] += 1
+            _sample(samples, "false_clear", key, "both", selected_policy)
+        for field_name in (
+            "completeness",
+            "freshness",
+            "recommendation",
+            "target_kind",
+        ):
+            _compare_field(
+                counts,
+                samples,
+                key,
+                field_name,
+                old_row,
+                new_row,
+                selected_policy,
+            )
+        old_sources = _canonical_string_set(
+            old_row.get("source_families")
+            or old_row.get("active_source_families")
+            or (old_row.get("source_family") or (),)
+        )
+        new_sources = _canonical_string_set(
+            new_row.get("source_families")
+            or new_row.get("active_source_families")
+            or (new_row.get("source_family") or (),)
+        )
+        if old_sources != new_sources:
+            counts["source_class_disappearance"] += 1
+            _sample(
+                samples,
+                "source_class_disappearance",
+                key,
+                "both",
+                selected_policy,
+            )
+        if (
+            str(old_row.get("target_kind") or "") == "container_image"
+            or str(new_row.get("target_kind") or "") == "container_image"
+        ) and _canonical_string_set(
+            old_row.get("deployment_ids") or ()
+        ) != _canonical_string_set(new_row.get("deployment_ids") or ()):
+            counts["missing_image_relationship"] += 1
+            _sample(
+                samples,
+                "missing_image_relationship",
+                key,
+                "both",
+                selected_policy,
+            )
+        if old_row.get("enrichment_score") != new_row.get("enrichment_score"):
+            change_class = "time_varying_enrichment_score"
+            if change_class in expected.get(key, frozenset()):
+                expected_counts[change_class] += 1
+                counts[change_class] += 1
+                _sample(
+                    samples,
+                    change_class,
+                    key,
+                    "expected",
+                    selected_policy,
+                )
+            else:
+                counts["enrichment_score"] += 1
+                _sample(
+                    samples,
+                    "enrichment_score",
+                    key,
+                    "both",
+                    selected_policy,
+                )
+
+    expected_total = sum(expected_counts.values())
+    unexpected_count = max(0, sum(counts.values()) - expected_total)
+    compared_count = len(old_set | new_set)
+    mismatch_ratio = min(
+        1.0,
+        unexpected_count / compared_count if compared_count else (
+            1.0 if unexpected_count else 0.0
+        ),
+    )
+    hard_failures = tuple(
+        sorted(
+            name
+            for name in selected_policy.hard_failure_classes
+            if counts.get(name, 0) > 0
+        )
+    )
+    passed = (
+        not hard_failures
+        and unexpected_count
+        <= selected_policy.max_unexpected_mismatch_count
+        and mismatch_ratio
+        <= selected_policy.max_unexpected_mismatch_ratio
+    )
+    report = ExposureReconciliationReport(
+        generation_id=generation,
+        checkpoint=checkpoint,
+        old_count=len(old),
+        new_count=len(new),
+        compared_count=compared_count,
+        mismatch_counts=counts,
+        expected_change_counts=dict(sorted(expected_counts.items())),
+        unexpected_mismatch_count=unexpected_count,
+        mismatch_ratio=mismatch_ratio,
+        hard_failure_classes=hard_failures,
+        passed=passed,
+        blocks_cutover=not passed,
+        policy=selected_policy.to_dict(),
+        redacted_samples=tuple(samples),
+    )
+    if metrics is not None:
+        completeness = (
+            old_completeness
+            if old_completeness == new_completeness
+            else "partial"
+        )
+        for mismatch_class in RECONCILIATION_MISMATCH_CLASSES:
+            mismatch_count = counts[mismatch_class]
+            outcome = (
+                "expected_change"
+                if mismatch_class in expected_counts
+                else "unexpected_drift"
+                if mismatch_count
+                else "ok"
+            )
+            metrics.record_reconciliation(
+                mismatch_class=mismatch_class,
+                mismatch_count=mismatch_count,
+                compared_count=compared_count,
+                outcome=outcome,
+                completeness=completeness,
+            )
+    return report
+
+
+def _expected_change_map(
+    value: Mapping[tuple[str, str], Iterable[str]] | None,
+    *,
+    selected_policy: ExposureReconciliationPolicy,
+) -> dict[tuple[str, str], frozenset[str]]:
+    result: dict[tuple[str, str], frozenset[str]] = {}
+    for raw_key, raw_classes in (value or {}).items():
+        if not isinstance(raw_key, tuple) or len(raw_key) != 2:
+            raise ValueError("Expected changes require scoped stable keys")
+        key = (str(raw_key[0]).strip(), str(raw_key[1]).strip())
+        classes = frozenset(str(item).strip() for item in raw_classes)
+        if not classes <= selected_policy.expected_change_classes:
+            raise ValueError("Expected change class is not policy-approved")
+        result[key] = classes
+    return result
+
+
+def _stable_reconciliation_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    scope_key = str(row.get("scope_key") or "").strip()
+    exposure_id = str(
+        row.get("exposure_id")
+        or row.get("current_key")
+        or row.get("resource_id")
+        or ""
+    ).strip()
+    if not scope_key or not exposure_id:
+        raise ValueError(
+            "Exposure reconciliation requires scope_key and stable exposure_id"
+        )
+    return scope_key, exposure_id
+
+
+def _compare_field(
+    counts: dict[str, int],
+    samples: list[dict[str, str]],
+    key: tuple[str, str],
+    field_name: str,
+    old_row: Mapping[str, Any],
+    new_row: Mapping[str, Any],
+    policy: ExposureReconciliationPolicy,
+) -> None:
+    if old_row.get(field_name) == new_row.get(field_name):
+        return
+    counts[field_name] += 1
+    _sample(samples, field_name, key, "both", policy)
+
+
+def _is_false_clear(old_state: Any, new_state: Any) -> bool:
+    inactive = {"resolved", "clear", "not_affected"}
+    active = {"missing", "active", "vulnerable", "reintroduced"}
+    values = {str(old_state or "").casefold(), str(new_state or "").casefold()}
+    return bool(values & inactive and values & active)
+
+
+def _canonical_string_set(value: Any) -> frozenset[str]:
+    if isinstance(value, str):
+        values = (value,)
+    else:
+        values = value or ()
+    return frozenset(
+        str(item).strip().casefold()
+        for item in values
+        if str(item).strip()
+    )
+
+
+def _sample(
+    samples: list[dict[str, str]],
+    mismatch_class: str,
+    key: tuple[str, str],
+    side: str,
+    policy: ExposureReconciliationPolicy,
+) -> None:
+    if len(samples) >= policy.max_redacted_samples:
+        return
+    token = hashlib.sha256(
+        f"{key[0]}\x1f{key[1]}".encode()
+    ).hexdigest()[:16]
+    sample = {
+        "mismatch_class": mismatch_class,
+        "side": side,
+        "sample_token": f"redacted:{token}",
+    }
+    if sample not in samples:
+        samples.append(sample)
 
 
 def build_exposure_dimensions(**dimensions: Any) -> dict[str, str]:
@@ -525,8 +1014,14 @@ def _number(value: Any, field_name: str) -> float:
 
 
 __all__ = [
+    "EXPECTED_RECONCILIATION_CHANGE_CLASSES",
     "EXPOSURE_METRIC_SPECS",
+    "HARD_RECONCILIATION_FAILURE_CLASSES",
+    "RECONCILIATION_MISMATCH_CLASSES",
     "ExposureMetricSpec",
     "ExposureMetrics",
+    "ExposureReconciliationPolicy",
+    "ExposureReconciliationReport",
     "build_exposure_dimensions",
+    "reconcile_exposure_arms",
 ]
