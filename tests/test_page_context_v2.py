@@ -122,7 +122,7 @@ def test_domain_identity_uses_server_resolution_and_ignores_browser_attributes()
 
     spoofed = _evidence(
         "spoofed-domain",
-        source_key="os-source-row",
+        source_key="browser-controlled",
         entity=_model("DomainEntityRef")(
             type="domain",
             namespace="browser-spoofed",
@@ -135,6 +135,7 @@ def test_domain_identity_uses_server_resolution_and_ignores_browser_attributes()
         domain_resolver=resolve,
     )
     assert spoofed_result.evidence[0].entity_key == canonical.evidence[0].entity_key
+    assert spoofed_result.evidence[0].stable_id == canonical.evidence[0].stable_id
 
 
 def test_authorization_happens_before_retention_for_azure_and_domain_entities():
@@ -386,6 +387,98 @@ def test_material_claims_reject_orphaned_and_discarded_references():
     )
     with pytest.raises(ValueError, match="discarded evidence reference"):
         _canonicalize(snapshot, retention_limit=1)
+
+
+def test_material_claim_cannot_alias_discarded_row_through_citations():
+    snapshot = _snapshot(
+        [
+            _evidence(
+                "kept",
+                source_key="kept",
+                selected=True,
+                citations=["discarded"],
+            ),
+            _evidence(
+                "discarded",
+                source_key="discarded",
+                quality="low",
+            ),
+        ],
+        material_claims=[
+            {
+                "claim_id": "must-close",
+                "evidence_refs": ["discarded"],
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="discarded evidence reference"):
+        _canonicalize(snapshot, retention_limit=1)
+
+
+def test_partial_freshness_outranks_unknown_at_retention_boundary():
+    rows = [
+        _evidence(
+            "unknown",
+            source_key="z-unknown",
+            source="inventory/unknown",
+        ),
+        _evidence(
+            "partial",
+            source_key="a-partial",
+            source="inventory/partial",
+        ),
+    ]
+    snapshot = _snapshot(
+        rows,
+        freshness=[
+            contract.SnapshotFreshness(
+                source="inventory/partial",
+                observed_at="2026-09-01T00:00:00Z",
+                status="partial",
+            )
+        ],
+    )
+
+    canonical = _canonicalize(snapshot, retention_limit=1)
+
+    assert canonical.evidence[0].evidence_refs == ["partial"]
+    assert canonical.classification == "ready"
+
+
+def test_many_coverage_dependent_claims_produce_bounded_insufficiency():
+    row = _evidence("shared", source_key="shared")
+    snapshot = _snapshot(
+        [row],
+        coverage=contract.SnapshotCoverage(
+            visible_count=1,
+            total_count=100,
+            complete=False,
+        ),
+        freshness=[
+            contract.SnapshotFreshness(
+                source="inventory/resource_observations",
+                observed_at="2026-09-01T00:00:00Z",
+                status="fresh",
+            )
+        ],
+        material_claims=[
+            {
+                "claim_id": f"claim-{index}",
+                "evidence_refs": ["shared"],
+                "requires_complete_coverage": True,
+            }
+            for index in range(65)
+        ],
+    )
+
+    canonical = _canonicalize(snapshot)
+
+    assert canonical.classification == "insufficient_evidence"
+    assert "65 material claims require complete coverage" in (
+        canonical.insufficiency_reasons
+    )
+    assert len(canonical.insufficiency_reasons) <= 64
 
 
 def test_strict_bounds_reject_oversized_rows_and_lists():

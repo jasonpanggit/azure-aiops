@@ -225,6 +225,10 @@ class CanonicalEvidence(ContractModel):
     status: Literal["ok", "empty", "partial", "unavailable", "denied"]
     freshness: Literal["fresh", "stale", "partial", "unavailable", "unknown"]
     observed_at: str = Field(default="", max_length=128)
+    evidence_refs: list[str] = Field(
+        min_length=1,
+        max_length=MAX_SNAPSHOT_EVIDENCE,
+    )
     citations: list[str] = Field(
         min_length=1,
         max_length=MAX_RETAINED_CITATIONS,

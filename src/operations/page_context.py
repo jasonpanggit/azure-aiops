@@ -97,8 +97,8 @@ _QUALITY_PRIORITY = {"unknown": 0, "low": 1, "medium": 2, "high": 3}
 _FRESHNESS_PRIORITY = {
     "unavailable": 0,
     "stale": 1,
-    "partial": 2,
-    "unknown": 3,
+    "unknown": 2,
+    "partial": 3,
     "fresh": 4,
 }
 _FRESHNESS_WARNING = {
@@ -120,12 +120,12 @@ def _canonical_entity(
     *,
     effective_scope: Scope,
     domain_resolver: DomainEntityResolver | None,
-) -> str:
+) -> tuple[str, str | None]:
     if isinstance(entity, AzureEntityRef):
         resource_id = _canonical_resource_id(entity.resource_id)
         if not effective_scope.matches(_canonical_resource_attributes(resource_id)):
             raise ValueError("snapshot entity is outside the effective read scope")
-        return f"azure:{resource_id}"
+        return f"azure:{resource_id}", None
 
     if domain_resolver is None:
         raise ValueError("domain entity requires a server-side identity resolver")
@@ -144,13 +144,17 @@ def _canonical_entity(
         or not effective_scope.matches(scope_payload)
     ):
         raise ValueError("snapshot entity is outside the effective read scope")
-    return ":".join(
-        (
-            "domain",
-            _normalized_identity_part(canonical_namespace),
-            _normalized_identity_part(canonical_kind),
-            _normalized_identity_part(canonical_source_key),
-        )
+    normalized_source_key = _normalized_identity_part(canonical_source_key)
+    return (
+        ":".join(
+            (
+                "domain",
+                _normalized_identity_part(canonical_namespace),
+                _normalized_identity_part(canonical_kind),
+                normalized_source_key,
+            )
+        ),
+        normalized_source_key,
     )
 
 
@@ -167,8 +171,9 @@ def _canonical_row(
     entity_key: str,
     freshness: str,
     selected_entity_keys: set[str],
+    resolved_source_key: str | None = None,
 ) -> CanonicalEvidence:
-    source_key = row.source_key or row.evidence_id
+    source_key = resolved_source_key or row.source_key or row.evidence_id
     stable_id = _digest(
         "evidence",
         _normalized_identity_part(row.source),
@@ -193,6 +198,7 @@ def _canonical_row(
         status=row.status,
         freshness=freshness,
         observed_at=row.observed_at,
+        evidence_refs=[row.evidence_id],
         citations=sorted({row.evidence_id, *row.citations}),
         selected=row.selected or entity_key in selected_entity_keys,
         direct=row.direct,
@@ -231,6 +237,7 @@ def _merge_duplicate(
                 _FRESHNESS_WARNING,
             ),
             "observed_at": max(current.observed_at, incoming.observed_at),
+            "evidence_refs": sorted({*current.evidence_refs, *incoming.evidence_refs}),
             "citations": citations,
             "selected": current.selected or incoming.selected,
             "direct": current.direct or incoming.direct,
@@ -297,7 +304,7 @@ def canonicalize_snapshot_v2(
             entity,
             effective_scope=effective_scope,
             domain_resolver=domain_resolver,
-        )
+        )[0]
         for entity in snapshot.selected_entities
     }
 
@@ -308,7 +315,7 @@ def canonicalize_snapshot_v2(
             entity = AzureEntityRef(type="azure", resource_id=row.resource_id)
         if entity is None:
             raise ValueError("snapshot evidence is missing canonical entity identity")
-        entity_key = _canonical_entity(
+        entity_key, resolved_source_key = _canonical_entity(
             entity,
             effective_scope=effective_scope,
             domain_resolver=domain_resolver,
@@ -319,6 +326,7 @@ def canonicalize_snapshot_v2(
                 entity_key=entity_key,
                 freshness=_row_freshness(row.source, freshness_by_source),
                 selected_entity_keys=selected_entity_keys,
+                resolved_source_key=resolved_source_key,
             )
         )
 
@@ -344,7 +352,9 @@ def canonicalize_snapshot_v2(
             raise ValueError("retention limit cannot preserve conflict set")
     discarded_count = len(deduplicated) - len(retained)
 
-    retained_refs = {citation for row in retained for citation in row.citations}
+    retained_refs = {
+        evidence_ref for row in retained for evidence_ref in row.evidence_refs
+    }
     for claim in snapshot.material_claims:
         discarded_refs = sorted(set(claim.evidence_refs) - retained_refs)
         if discarded_refs:
@@ -408,11 +418,20 @@ def canonicalize_snapshot_v2(
             )
         elif all(row.freshness == "unknown" for row in retained):
             insufficiency_reasons.append("all retained evidence has unknown freshness")
-        for claim in snapshot.material_claims:
-            if claim.requires_complete_coverage and not snapshot.coverage.complete:
+        incomplete_claims = [
+            claim
+            for claim in snapshot.material_claims
+            if claim.requires_complete_coverage and not snapshot.coverage.complete
+        ]
+        if len(incomplete_claims) <= 32:
+            for claim in incomplete_claims:
                 insufficiency_reasons.append(
                     f"{claim.claim_id} requires complete coverage"
                 )
+        elif incomplete_claims:
+            insufficiency_reasons.append(
+                f"{len(incomplete_claims)} material claims require complete coverage"
+            )
         if insufficiency_reasons:
             classification = "insufficient_evidence"
 
