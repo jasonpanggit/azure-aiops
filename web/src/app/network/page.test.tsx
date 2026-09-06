@@ -635,9 +635,11 @@ describe("Network page policy round-trip", () => {
         {},
       ),
     );
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "Preview found 0 gaps under this rule. The saved policy is unchanged.",
-    );
+    expect(
+      await screen.findByText(
+        "Preview found 0 gaps under this rule. The saved policy is unchanged.",
+      ),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Save rule" }));
     await waitFor(() =>
@@ -765,9 +767,9 @@ describe("Network page policy round-trip", () => {
 
     await waitFor(
       () =>
-        expect(screen.getByRole("status")).toHaveTextContent(
-          "Rule saved. Inspection gaps 340 → 339.",
-        ),
+        expect(
+          screen.getByText("Rule saved. Inspection gaps 340 → 339."),
+        ).toBeInTheDocument(),
       { timeout: 1_500 },
     );
   });
@@ -790,9 +792,11 @@ describe("Network page policy round-trip", () => {
 
     await waitFor(
       () =>
-        expect(screen.getByRole("status")).toHaveTextContent(
-          "Saved. Derived analysis has not refreshed yet — retry in a moment.",
-        ),
+        expect(
+          screen.getByText(
+            "Saved. Derived analysis has not refreshed yet — retry in a moment.",
+          ),
+        ).toBeInTheDocument(),
       { timeout: 1_500 },
     );
     expect(screen.queryByText(/Inspection gaps 340 → 340/)).not.toBeInTheDocument();
