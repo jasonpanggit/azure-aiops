@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/types";
 
 const navigation = vi.hoisted(() => ({
   replace: vi.fn(),
@@ -176,6 +177,9 @@ function exposureEnvelope() {
 describe("Patch priorities", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    navigation.params = new URLSearchParams(
+      "subscription=sub-1&q=kernel&severity=critical&page_size=25&sort_by=severity&sort_direction=asc&target=server-1&drawer=evidence&generation=generation-17",
+    );
     api.exposureItems.mockResolvedValue(exposureEnvelope());
     api.exposureHandoffs.mockResolvedValue({
       data: { cases: [], read_only: true, execution_transition: false },
@@ -214,6 +218,16 @@ describe("Patch priorities", () => {
     expect(screen.getByText("Priority score 91/100")).toBeInTheDocument();
     expect(screen.getByText(/5 represented findings/)).toBeInTheDocument();
     expect(screen.getByText(/2 excluded findings/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Showing 1 of 2 connections represented. Results and totals exclude unavailable connections.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Showing 5 of 2 connections represented. Results and totals exclude unavailable connections.",
+      ),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("Defender West connection unavailable")).toBeInTheDocument();
     expect(
       screen.getByText("Showing 1–2 of 7 findings · 2 loaded"),
@@ -294,6 +308,64 @@ describe("Patch priorities", () => {
 
     const row = await screen.findByRole("row", { name: /KB600001/ });
     await waitFor(() => expect(row).toHaveFocus());
+  });
+
+  it("shows an explicit generation restart and clears stale cursor state", async () => {
+    navigation.params = new URLSearchParams(
+      "subscription=sub-1&cursor=opaque-expired&cursor_back=opaque-prior&page=3&generation=generation-old",
+    );
+    api.exposureItems.mockRejectedValueOnce(
+      new ApiError(409, "conflict", "Exposure generation expired", {
+        restart_required: true,
+        reason_code: "exposure_generation_expired",
+        generation: "generation-old",
+      }),
+    );
+    const user = userEvent.setup();
+    render(<PatchPrioritiesPage />);
+
+    expect(
+      await screen.findByText(
+        /The retained Exposure generation expired\. Restart from the first page/,
+      ),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Restart results" }));
+    expect(navigation.replace).toHaveBeenLastCalledWith(
+      "/exposure/patch-priorities?subscription=sub-1",
+      { scroll: false },
+    );
+  });
+
+  it("provides a labeled responsive region and logical keyboard order", async () => {
+    navigation.params = new URLSearchParams(
+      "subscription=sub-1&q=kernel&severity=critical&page_size=25&sort_by=severity&sort_direction=asc",
+    );
+    const user = userEvent.setup();
+    render(<PatchPrioritiesPage />);
+    await screen.findByText("KB600001");
+
+    const region = screen.getByRole("region", {
+      name: "Patch priorities table",
+    });
+    expect(region).toHaveClass("exposure-responsive-table");
+    expect(
+      screen.getByRole("table", {
+        name: "Scoped patch and vulnerability priorities",
+      }),
+    ).toBeInTheDocument();
+
+    screen.getByRole("searchbox", { name: "Search exposure" }).focus();
+    expect(screen.getByRole("searchbox", { name: "Search exposure" })).toHaveFocus();
+    await user.tab();
+    expect(
+      screen.getByRole("combobox", { name: "Filter by Target kind" }),
+    ).toHaveFocus();
+    await user.tab();
+    expect(region).toHaveFocus();
+    await user.tab();
+    expect(
+      screen.getByRole("button", { name: "Sort by operational priority" }),
+    ).toHaveFocus();
   });
 
   it("uses the governed container case for review handoff and never exposes execution", async () => {

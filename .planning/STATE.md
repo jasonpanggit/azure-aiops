@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 03.1-17 not started (16/25 sequential complete; 20/25 total summaries)
+current_plan: 03.1-19 not started (18/25 sequential complete; 21/25 total summaries)
 status: planning
-stopped_at: Completed 03.1-16-PLAN.md
-last_updated: "2026-09-06T15:03:44.821Z"
+stopped_at: Completed 03.1-17-PLAN.md
+last_updated: "2026-09-06T15:48:52.937Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 126
+  completed_plans: 127
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -20,8 +20,8 @@ current_phase_name: Exposure Reliability and Scale
 
 **Active Phase:** Phase 03.1 (Exposure Reliability and Scale)
 **Wave:** Next eligible plan<br>
-**Current Plan:** 03.1-17 not started (16/25 sequential complete; 20/25 total summaries)
-**Status:** Planning — Plans 03.1-18 and 03.1-24 complete out of sequence; Plan 03.1-17 remains next; Phase 11 snapshot v2, Phase 12, remediation, and network behavior preserved
+**Current Plan:** 03.1-19 not started (18/25 sequential complete; 21/25 total summaries)
+**Status:** Planning — Plans 03.1-21, 03.1-23, and 03.1-24 complete out of sequence; Plan 03.1-19 remains next; Phase 11 snapshot v2, Phase 12, remediation, and network behavior preserved
 
 ## Completed Plans (This Session)
 
@@ -166,6 +166,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P24 | 10 min | 3 tasks | 9 files |
 | Phase 03.1 P15 | 18 min | 2 tasks | 10 files |
 | Phase 03.1 P16 | 15min | 2 tasks | 7 files |
+| Phase 03.1 P17 | 41 min | 2 tasks | 9 files |
 
 ## Decisions
 
@@ -267,11 +268,15 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: Plan 03.1-16: Pair each independent Defender row source with the canonical URL-scoped Exposure overview contract for shared generation, freshness, completeness, and evidence.
 - [Phase 03.1]: Plan 03.1-16: Reject container eligible outcomes in the browser; only review_handoff and no_safe_action are valid container governance states.
 - [Phase 03.1]: Plan 03.1-16: Compute aggregate secure score from summed current and maximum points across authorized subscriptions.
+- [Phase 03.1]: Patch priority and inventory views use the common server-backed Exposure query and opaque cursor contract instead of legacy client aggregates.
+- [Phase 03.1]: Exposure return URLs are restricted to canonical internal Exposure paths and revalidated against the current authorized scope.
+- [Phase 03.1]: Container findings remain non-executable: only explicit review_handoff or no_safe_action server outcomes are rendered, and handoff responses must confirm no execution transition.
+- [Phase 03.1]: Existing governed server execution is revalidated immediately before execute while can_operate, approval, snapshot, polling, recovery, reconciliation, and lineage contracts remain authoritative.
 
 ## Session
 
-**Last session:** 2026-09-06T15:03:44.805Z
-**Stopped at:** Completed 03.1-16-PLAN.md
+**Last session:** 2026-09-06T15:48:52.919Z
+**Stopped at:** Completed 03.1-17-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context

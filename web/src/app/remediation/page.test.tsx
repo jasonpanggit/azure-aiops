@@ -284,6 +284,8 @@ describe("Governed remediation workflow", () => {
     createExposureHandoff.mockResolvedValue(envelope({
       handoff_id: "exposure-handoff:generation-17:exposure-image-1",
       exposure_id: "exposure-image-1",
+      target_kind: "container_image",
+      direct_execution_supported: false,
       created_by: "operator@example.com",
       created_at: "2026-09-06T08:00:00Z",
       execution_transition: false,
@@ -492,6 +494,34 @@ describe("Governed remediation workflow", () => {
     expect(screen.getAllByText("RME-1")).not.toHaveLength(0);
   });
 
+  it("revalidates can_operate immediately before execution and fails closed when it changed", async () => {
+    const current = workflowFixture({ approvalCurrent: true });
+    const revoked = workflowFixture({
+      approvalCurrent: true,
+      action: {
+        ...current.action,
+        can_operate: false,
+        operate_ineligible_reason: "operator_role_required",
+      },
+    });
+    workflow
+      .mockResolvedValueOnce(envelope(current))
+      .mockResolvedValueOnce(envelope(revoked));
+    searchParams.current = new URLSearchParams(
+      `resource_key=${encodeURIComponent(TARGET)}`,
+    );
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Run/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Review and run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm run" }));
+
+    expect(
+      await screen.findByText("operator_role_required"),
+    ).toBeInTheDocument();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("keeps unsupported configuration actions in manual review", async () => {
     renderPage();
     await screen.findByText("Patch payroll database");
@@ -531,7 +561,7 @@ describe("Governed remediation workflow", () => {
     const returnTo =
       "/exposure/patch-priorities?subscription=sub-1&q=kernel&sort_by=severity&sort_direction=asc&page_size=25&target=server-1&drawer=evidence&generation=generation-17";
     searchParams.current = new URLSearchParams(
-      `resource_key=${encodeURIComponent(TARGET)}&cve=CVE-2026-0001&kb=KB600001&generation=generation-17&return_focus=exposure-server-1&return_to=${encodeURIComponent(returnTo)}`,
+      `resource_key=${encodeURIComponent(TARGET)}&subscription=sub-1&cve=CVE-2026-0001&kb=KB600001&generation=generation-17&return_focus=exposure-server-1&return_to=${encodeURIComponent(returnTo)}`,
     );
 
     renderPage();
@@ -541,6 +571,19 @@ describe("Governed remediation workflow", () => {
     expect(screen.getByText(/From Exposure/)).toBeInTheDocument();
     expect(screen.getByText(/generation-17/)).toBeInTheDocument();
     expect(screen.getByText(/Nothing executes from Exposure/)).toBeInTheDocument();
+  });
+
+  it("rejects an external return target instead of creating an open redirect", async () => {
+    searchParams.current = new URLSearchParams(
+      `resource_key=${encodeURIComponent(TARGET)}&return_to=${encodeURIComponent("https://evil.example/steal")}`,
+    );
+
+    renderPage();
+
+    expect(await screen.findByRole("link", { name: "Back to exposure" })).toHaveAttribute(
+      "href",
+      "/exposure/patch-priorities",
+    );
   });
 
   it("creates an audited container review handoff without calling execution", async () => {

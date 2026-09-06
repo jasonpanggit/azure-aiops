@@ -14,7 +14,6 @@ import {
   DEFAULT_EXPOSURE_SORT,
   exposureQueryKey,
   exposureRetentionKey,
-  updateExposureQueryState,
   type ExposureQueryState,
 } from "@/lib/exposure-query-state";
 import type { ScopeSelection } from "@/lib/scope";
@@ -213,6 +212,18 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
   const runs = useApi(() => patchingApi.runs(scope), [scope]);
   const rows = findings.data?.items ?? [];
   const total = findings.data?.total_count ?? 0;
+  const findingsPresentation = {
+    ...findings,
+    metadata: {
+      ...findings.metadata,
+      represented:
+        findings.data?.contract.completeness.represented_connections ??
+        findings.metadata.represented,
+      expected:
+        findings.data?.contract.completeness.expected_connections ??
+        findings.metadata.expected,
+    },
+  };
   const first = rows.length ? (page - 1) * pageSize + 1 : 0;
   const last = rows.length ? first + rows.length - 1 : 0;
   const represented =
@@ -240,7 +251,7 @@ export function PatchInventory({ scope, query = "" }: PatchInventoryProps) {
       <SourceSectionState
         sourceName="Patch inventory"
         itemLabel="findings"
-        state={findings}
+        state={findingsPresentation}
       >
         <TableColumnFilters
           filters={[

@@ -816,6 +816,66 @@ export type RemediationActionFamily =
   | "configuration"
   | "unsupported";
 
+export interface ExposureRemediationCase {
+  contract_version: string;
+  case_id: string;
+  handoff_id: string;
+  exposure_id: string;
+  resource_key: string;
+  weakness_key: string;
+  target_kind: "server" | "container_image";
+  tenant_id?: string;
+  connection_ids?: string[];
+  source_families?: string[];
+  read_model_generation_id: string;
+  completeness?: string;
+  coverage?: {
+    represented?: number;
+    total?: number;
+    excluded?: number;
+    excluded_reasons?: string[];
+    [key: string]: unknown;
+  };
+  freshness?: {
+    state?: string;
+    as_of?: string;
+    [key: string]: unknown;
+  };
+  evidence_refs?: Array<Record<string, unknown>>;
+  action_id: string;
+  direct_execution_supported: boolean;
+  outcome: "governed_action" | "review_handoff" | "no_safe_action";
+  outcome_reason_code: string;
+  outcome_reason: string;
+  review_handoff: {
+    target_kind: string;
+    registry_id?: string;
+    repository?: string;
+    image_digest?: string;
+    workload_state?: string;
+    application_id?: string;
+    business_service_id?: string;
+    safe_blast_radius_known?: boolean;
+  };
+  read_only: boolean;
+}
+
+export interface ExposureHandoffCollection {
+  contract_version?: string;
+  cases: ExposureRemediationCase[];
+  read_only: true;
+  execution_transition: false;
+}
+
+export interface ExposureReviewHandoffResult extends ExposureRemediationCase {
+  handoff_reason: string;
+  created_by: string;
+  created_at: string;
+  risk_acknowledged: boolean;
+  risk_exception_id: string;
+  execution_transition: false;
+}
+
 export interface RemediationWorkflow {
   plan: RemediationPlanDetail;
   action: {
@@ -858,6 +918,27 @@ export interface RemediationWorkflow {
 }
 
 export const remediationApi = {
+  exposureHandoffs: (scope: ScopeSelection = {}) =>
+    apiRequest<ExposureHandoffCollection>("/remediation/exposure-handoffs", {
+      query: scopeToSearchParams(scope),
+    }),
+  createExposureHandoff: (
+    payload: {
+      exposure_id: string;
+      reason: string;
+      risk_acknowledged: boolean;
+      risk_exception_id?: string;
+    },
+    scope: ScopeSelection = {},
+  ) =>
+    apiRequest<ExposureReviewHandoffResult>("/remediation/exposure-handoffs", {
+      method: "POST",
+      query: scopeToSearchParams(scope),
+      body: {
+        ...payload,
+        risk_exception_id: payload.risk_exception_id ?? "",
+      },
+    }),
   plans: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
