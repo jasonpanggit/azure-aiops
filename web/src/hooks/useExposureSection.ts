@@ -20,6 +20,7 @@ export type ExposureSectionStatus =
   | "unavailable";
 
 export interface ExposureSectionMetadata {
+  loaded?: number;
   represented?: number;
   expected?: number;
   total?: number;
@@ -146,6 +147,7 @@ function metadataFrom<T>(
       )
     : [];
   return {
+    loaded: finiteNumber(contract?.counts.returned),
     represented:
       finiteNumber(completeness.represented) ??
       finiteNumber(completeness.represented_count) ??

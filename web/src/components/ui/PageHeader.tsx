@@ -8,7 +8,10 @@ export interface PageHeaderCompleteness {
   freshness: EvidenceFreshness;
   representedConnections?: number;
   expectedConnections?: number;
+  representedCount?: number;
+  totalCount?: number;
   excludedCount?: number;
+  excludedReasons?: string[];
 }
 
 export interface PageHeaderProps {
@@ -41,7 +44,14 @@ function completenessCopy(completeness: PageHeaderCompleteness): string {
 
 function coverageCopy(completeness: PageHeaderCompleteness): string[] {
   const details: string[] = [];
-  const { representedConnections, expectedConnections, excludedCount } = completeness;
+  const {
+    representedConnections,
+    expectedConnections,
+    representedCount,
+    totalCount,
+    excludedCount,
+    excludedReasons = [],
+  } = completeness;
 
   if (representedConnections !== undefined && expectedConnections !== undefined) {
     details.push(
@@ -53,6 +63,13 @@ function coverageCopy(completeness: PageHeaderCompleteness): string[] {
   if (excludedCount !== undefined) {
     details.push(`${excludedCount.toLocaleString()} excluded`);
   }
+  if (representedCount !== undefined) {
+    details.push(`${representedCount.toLocaleString()} represented`);
+  }
+  if (totalCount !== undefined) {
+    details.push(`${totalCount.toLocaleString()} total`);
+  }
+  details.push(...excludedReasons);
   return details;
 }
 

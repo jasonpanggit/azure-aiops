@@ -1,4 +1,5 @@
 import type { DurableEvidence, DurableSourceStatus, EvidenceItem } from "@/lib/types";
+import type { PageHeaderCompleteness } from "./PageHeader";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { StatusBadge, statusTone } from "./StatusBadge";
 
@@ -12,6 +13,7 @@ export interface EvidenceBarProps {
   sourceStatus?: Record<string, string>;
   durableEvidence?: DurableEvidence[];
   durableSourceStatus?: DurableSourceStatus[];
+  aggregateState?: PageHeaderCompleteness;
 }
 
 /** Keep this predicate identical to the long-form topology freshness guard:
@@ -36,11 +38,24 @@ export function EvidenceBar({
   sourceStatus = {},
   durableEvidence = [],
   durableSourceStatus = [],
+  aggregateState,
 }: EvidenceBarProps) {
   const latest = evidence[0];
   const timestamp = latest?.timestamp || fallbackTimestamp;
   const confidence = latest?.confidence || "unknown";
-  const tone = statusTone(confidence);
+  const aggregateLabel =
+    aggregateState?.state === "complete" && aggregateState.freshness === "current"
+      ? null
+      : aggregateState
+        ? `${aggregateState.state.slice(0, 1).toUpperCase()}${aggregateState.state.slice(1)} evidence`
+        : null;
+  const tone = aggregateLabel
+    ? statusTone(
+        aggregateState?.state === "unavailable"
+          ? "unavailable"
+          : "degraded",
+      )
+    : statusTone(confidence);
   const segments = [
     latest?.source_engine
       ? { key: "source", label: "Source", value: latest.source_engine, title: `${latest.source_engine}${latest.source_table ? ` · ${latest.source_table}` : ""}` }
@@ -54,7 +69,11 @@ export function EvidenceBar({
   return (
     <aside className={`evidence-bar evidence-bar-${tone}`} aria-label="Data trust and provenance">
       <div className="evidence-bar-primary">
-        <StatusBadge label={`${confidence} confidence`} tone={tone} compact />
+        <StatusBadge
+          label={aggregateLabel ?? `${confidence} confidence`}
+          tone={tone}
+          compact
+        />
         {segments.map((segment, index) => (
           <span className="evidence-chain-step" key={segment.key}>
             {index > 0 && <span className="evidence-chain-arrow" aria-hidden>›</span>}

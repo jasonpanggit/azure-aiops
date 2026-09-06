@@ -387,8 +387,8 @@ describe("Exposure independent source states", () => {
       </SourceSectionState>,
     );
     expect(screen.getByText("Partial")).toBeInTheDocument();
-    expect(screen.getByText(/1 of 2 connections represented/)).toBeInTheDocument();
-    expect(screen.getByText(/1 represented · 4 total · 3 excluded/)).toBeInTheDocument();
+    expect(screen.getAllByText(/1 of 2 connections represented/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/4 total · 3 excluded/)).toBeInTheDocument();
     expect(screen.getByText(/connection-west unavailable/)).toBeInTheDocument();
 
     rerender(

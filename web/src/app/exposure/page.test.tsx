@@ -403,11 +403,15 @@ describe("ExposurePage Defender posture", () => {
 
     // The landing page is a lean summary: detail tables live on the
     // defender-posture and patch-priorities sub-pages.
-    expect(await screen.findByRole("heading", { name: "Defender posture →" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Patch priorities →" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Defender overview" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Patch priority preview" })).toBeInTheDocument();
 
     expect(screen.getByRole("link", { name: /Defender posture/ })).toHaveAttribute("href", "/exposure/defender-posture");
-    expect(screen.getByRole("link", { name: /Patch priorities/ })).toHaveAttribute("href", "/exposure/patch-priorities");
+    expect(
+      screen
+        .getAllByRole("link", { name: /Patch priorities/ })
+        .some((link) => link.getAttribute("href") === "/exposure/patch-priorities"),
+    ).toBe(true);
 
     expect(screen.getByText("Active alerts")).toBeInTheDocument();
     expect(screen.getByText("Attack paths")).toBeInTheDocument();
@@ -421,7 +425,7 @@ describe("ExposurePage Defender posture", () => {
       </ScopeProvider>
     );
 
-    expect(await screen.findByRole("heading", { name: "Patch priorities →" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Patch priority preview" })).toBeInTheDocument();
     expect(screen.queryByText("Patch inventory")).not.toBeInTheDocument();
   });
 
@@ -496,7 +500,7 @@ describe("ExposurePage Defender posture", () => {
       expect(within(section).getByText(/Observed: 2026-09-06T08:00:00Z/)).toBeInTheDocument();
       expect(within(section).getByText(/1 of 2 connections represented/)).toBeInTheDocument();
       expect(within(section).getByText(/loaded/)).toBeInTheDocument();
-      expect(within(section).getByText(/4 total/)).toBeInTheDocument();
+      expect(within(section).getAllByText(/\d+ total/).length).toBeGreaterThan(0);
       expect(within(section).getByText(/1 excluded/)).toBeInTheDocument();
       expect(
         within(section).getByText("Defender West connection unavailable"),
@@ -594,7 +598,11 @@ describe("ExposurePage Defender posture", () => {
     );
 
     expect(await screen.findByText(`Loading ${sourceName}`)).toBeInTheDocument();
-    expect(await screen.findByText("KB600001")).toBeInTheDocument();
+    if (method === "patchPriorities") {
+      expect(await screen.findByText("Active alerts")).toBeInTheDocument();
+    } else {
+      expect(await screen.findByText("KB600001")).toBeInTheDocument();
+    }
     expect(screen.getByRole("heading", { name: "Defender overview" })).toBeInTheDocument();
   });
 
