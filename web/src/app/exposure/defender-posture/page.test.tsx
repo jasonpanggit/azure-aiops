@@ -465,14 +465,16 @@ describe("DefenderPosturePage", () => {
         name: "Open alert in Defender for Cloud (opens Azure portal in a new tab)",
       }),
     ).not.toBeInTheDocument();
-    expect(screen.getAllByText("Open alert in Defender for Cloud")[0]).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
-    expect(screen.getAllByText("Open recommendation in Defender for Cloud")[0]).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    expect(
+      screen
+        .getAllByText("Open alert in Defender for Cloud")[0]
+        .closest("[aria-disabled='true']"),
+    ).not.toBeNull();
+    expect(
+      screen
+        .getAllByText("Open recommendation in Defender for Cloud")[0]
+        .closest("[aria-disabled='true']"),
+    ).not.toBeNull();
     expect(
       screen.getAllByText(
         "No safe Azure portal destination was provided. Review the evidence in Exposure.",
@@ -512,11 +514,48 @@ describe("DefenderPosturePage", () => {
     });
     recommendationLink.focus();
     expect(document.activeElement).toBe(recommendationLink);
-    expect(screen.getByText("Mixed asset")).toBeInTheDocument();
-    const handoff = screen.getByRole("group", {
+    const mixedArticle = screen
+      .getByRole("heading", { name: "Enable endpoint protection" })
+      .closest("article");
+    expect(mixedArticle).not.toBeNull();
+    const mixedRow = within(mixedArticle!);
+    expect(mixedRow.getByText("Mixed asset")).toBeInTheDocument();
+    const handoff = mixedRow.getByRole("group", {
       name: "Governed remediation handoff",
     });
     expect(within(handoff).getByText("No safe action")).toBeInTheDocument();
     expect(within(handoff).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("fails closed when a container is incorrectly projected as execution eligible", async () => {
+    api.containerImageExposures.mockResolvedValue(
+      envelope([
+        {
+          ...container,
+          governed_handoff: {
+            outcome: "eligible",
+            href: "/remediation?handoff=unsafe-container-execution",
+          },
+        },
+      ]),
+    );
+
+    render(<DefenderPosturePage />);
+
+    const imageArticle = (
+      await screen.findByRole("heading", { name: /platform\/api:1.0.0/ })
+    ).closest("article");
+    expect(imageArticle).not.toBeNull();
+    const row = within(imageArticle!);
+    expect(row.getByText("No safe action")).toBeInTheDocument();
+    expect(
+      row.getByText(
+        "Container findings permit review-only handoffs; execution eligibility was rejected.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      row.queryByRole("link", { name: "Open governed remediation" }),
+    ).not.toBeInTheDocument();
+    expect(api.executeContainerAction).not.toHaveBeenCalled();
   });
 });

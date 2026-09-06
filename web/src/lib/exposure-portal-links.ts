@@ -10,6 +10,15 @@ export const DEFENDER_PORTAL_ACTION_LABELS = {
 export type DefenderPortalActionKind =
   keyof typeof DEFENDER_PORTAL_ACTION_LABELS;
 
+export function isDefenderPortalActionKind(
+  value: unknown,
+): value is DefenderPortalActionKind {
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(DEFENDER_PORTAL_ACTION_LABELS, value)
+  );
+}
+
 export interface DefenderPortalAction {
   kind: DefenderPortalActionKind;
   /** Complete destination supplied by the governed backend. */

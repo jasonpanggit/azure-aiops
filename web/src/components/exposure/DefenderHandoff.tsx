@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import {
   DEFENDER_PORTAL_ACTION_LABELS,
+  isDefenderPortalActionKind,
   safeDefenderPortalHref,
   safeGovernedHandoffHref,
   type DefenderPortalAction,
@@ -10,6 +11,7 @@ import {
 
 export {
   DEFENDER_PORTAL_ACTION_LABELS,
+  isDefenderPortalActionKind,
   safeDefenderPortalHref,
   type DefenderPortalAction,
   type DefenderPortalActionKind,
@@ -134,12 +136,15 @@ export function DefenderHandoff({
   authorizedResourceIds = [],
   governedHandoff,
 }: DefenderHandoffProps) {
-  if (actions.length === 0 && !governedHandoff) return null;
+  const governedActions = actions.filter((action) =>
+    isDefenderPortalActionKind(action.kind),
+  );
+  if (governedActions.length === 0 && !governedHandoff) return null;
   return (
     <div aria-label="Defender handoffs">
-      {actions.length > 0 && (
+      {governedActions.length > 0 && (
         <ul>
-          {actions.map((action, index) => (
+          {governedActions.map((action, index) => (
             <PortalAction
               key={`${action.kind}:${action.evidenceId || action.resourceId || index}`}
               action={action}
