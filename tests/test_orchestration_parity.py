@@ -31,7 +31,9 @@ from operations.mcp_server import (
 )
 from operations.page_context import PageSnapshot
 from operations.specialist_manifest import (
+    LOCKED_NON_INTERACTIVE_CONSUMER_IDS,
     LOCKED_SPECIALIST_IDS,
+    ONTOLOGY_CURATOR_ID,
     load_specialist_manifest,
 )
 from operations.tools import TOOL_REGISTRY
@@ -49,6 +51,12 @@ EXPECTED_SPECIALIST_IDS = (
     "identity_access",
     "finops",
     "resource_health_observability",
+)
+EXPECTED_ONTOLOGY_CURATOR_TOOLS = (
+    "list_changed_entities",
+    "get_entity_evidence",
+    "get_ontology_vocabulary",
+    "search_relationship_history",
 )
 
 FORBIDDEN_TOOL_MARKERS = {
@@ -119,19 +127,17 @@ def test_operations_mcp_and_registry_grants_are_exact_and_read_only():
 
 def test_ontology_curator_is_an_exact_non_interactive_tool_consumer():
     manifest = load_specialist_manifest()
-    curator_tools = (
-        "list_changed_entities",
-        "get_entity_evidence",
-        "get_ontology_vocabulary",
-        "search_relationship_history",
-    )
 
     assert manifest.non_interactive_operations_mcp_grants() == {
-        "ontology_curator": curator_tools
+        ONTOLOGY_CURATOR_ID: EXPECTED_ONTOLOGY_CURATOR_TOOLS
     }
-    assert reviewed_tools_for_specialist("ontology_curator") == curator_tools
-    assert "ontology_curator" not in manifest.specialist_ids
-    assert "ontology_curator" not in {
+    assert LOCKED_NON_INTERACTIVE_CONSUMER_IDS == (ONTOLOGY_CURATOR_ID,)
+    assert (
+        reviewed_tools_for_specialist(ONTOLOGY_CURATOR_ID)
+        == EXPECTED_ONTOLOGY_CURATOR_TOOLS
+    )
+    assert ONTOLOGY_CURATOR_ID not in manifest.specialist_ids
+    assert ONTOLOGY_CURATOR_ID not in {
         specialist_id
         for specialist_ids in manifest.page_mapping_projection().values()
         for specialist_id in specialist_ids
@@ -141,10 +147,18 @@ def test_ontology_curator_is_an_exact_non_interactive_tool_consumer():
         for grants in manifest.operations_mcp_grants().values()
         for tool in grants
     }
-    assert interactive_tools.isdisjoint(curator_tools)
+    assert interactive_tools.isdisjoint(EXPECTED_ONTOLOGY_CURATOR_TOOLS)
     assert set(manifest.operations_tool_names()) == interactive_tools | set(
-        curator_tools
+        EXPECTED_ONTOLOGY_CURATOR_TOOLS
     )
+    consumer = manifest.non_interactive_tool_consumers[0]
+    assert set(consumer.model_dump()) == {
+        "id",
+        "purpose",
+        "operations_mcp_tools",
+        "read_only",
+    }
+    assert consumer.read_only is True
 
 
 def test_azure_mcp_projection_is_exact_and_contains_no_mutation_grants():
@@ -403,6 +417,42 @@ def test_empty_network_snapshot_skips_fabric_iq_enrichment_io(monkeypatch):
                 {"operations_mcp_tools": ["execute_remediation"]}
             ),
             "read-only",
+        ),
+        (
+            lambda payload: payload["non_interactive_tool_consumers"][0][
+                "operations_mcp_tools"
+            ].append("risk_context"),
+            "grants overlap",
+        ),
+        (
+            lambda payload: payload["non_interactive_tool_consumers"][0][
+                "operations_mcp_tools"
+            ].append("missing_read_tool"),
+            "missing Operations MCP tools",
+        ),
+        (
+            lambda payload: payload["non_interactive_tool_consumers"][0][
+                "operations_mcp_tools"
+            ].append("execute_remediation"),
+            "read-only",
+        ),
+        (
+            lambda payload: payload["non_interactive_tool_consumers"][0][
+                "operations_mcp_tools"
+            ].remove("list_changed_entities"),
+            "unassigned Operations MCP tools",
+        ),
+        (
+            lambda payload: payload["non_interactive_tool_consumers"][0].update(
+                {"page_mappings": ["connections"]}
+            ),
+            "extra",
+        ),
+        (
+            lambda payload: payload["non_interactive_tool_consumers"][0].update(
+                {"client_secret": "forbidden"}
+            ),
+            "credentials are forbidden",
         ),
         (
             lambda payload: payload["specialists"][0].update(
