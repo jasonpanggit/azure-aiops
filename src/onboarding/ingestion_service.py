@@ -276,6 +276,89 @@ def _record_source_partition_metrics(
     )
 
 
+def _record_workload_projection_metrics(
+    metrics: ExposureMetrics,
+    workload: WorkloadProjection,
+    *,
+    completed_at: str,
+    previous_checkpoints: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+) -> None:
+    """Emit one aggregate workload cycle without workspace/connection labels."""
+
+    checkpoints = tuple(workload.checkpoints)
+    states = {
+        str(row.get("completeness") or row.get("status") or "unknown")
+        .strip()
+        .casefold()
+        for row in checkpoints
+    }
+    if not checkpoints or states == {"unavailable"}:
+        outcome = "unavailable"
+        completeness = "unavailable"
+    elif "unavailable" in states or "stale" in states:
+        outcome = "partial"
+        completeness = "stale" if states <= {"stale"} else "partial"
+    else:
+        outcome = "succeeded"
+        completeness = (
+            "healthy-empty"
+            if states == {"healthy-empty"}
+            else "complete"
+        )
+    attempted_rows = sum(
+        int(row.get("row_count") or 0)
+        for row in checkpoints
+        if str(row.get("completeness") or row.get("status") or "")
+        in {"complete", "healthy-empty"}
+    )
+    effective_rows = sum(
+        int(row.get("row_count") or 0) for row in checkpoints
+    )
+    previous_by_key = {
+        str(row.get("checkpoint_key") or ""): int(
+            row.get("row_count") or 0
+        )
+        for row in previous_checkpoints
+        if row.get("checkpoint_key")
+    }
+    previous_effective_rows = sum(
+        previous_by_key.get(
+            str(row.get("checkpoint_key") or ""),
+            int(row.get("row_count") or 0),
+        )
+        for row in checkpoints
+    )
+    source_age_seconds = max(
+        (
+            _age_seconds(
+                str(row.get("last_success_at") or ""),
+                completed_at,
+            )
+            for row in checkpoints
+        ),
+        default=0,
+    )
+    metrics.record_ingestion_cycle(
+        source_family="workloads",
+        target_kind="container_image",
+        attempted_rows=attempted_rows,
+        effective_rows=effective_rows,
+        previous_effective_rows=previous_effective_rows,
+        source_age_seconds=source_age_seconds,
+        outcome=outcome,
+        completeness=completeness,
+    )
+    represented = len(workload.deployments)
+    unknown = len(workload.unknown_reasons)
+    metrics.record_coverage(
+        represented=represented,
+        total=represented + unknown,
+        unknown=unknown,
+        target_kind="container_image",
+        completeness=completeness,
+    )
+
+
 def _source_partition_key(
     connection_id: str,
     source_family: str,
@@ -549,6 +632,9 @@ class IngestionService:
         )
         normalization_payload["cost_actuals"] = cost_rows
         completed_at = _iso(started)
+        previous_workload_checkpoints = self.store.read_dataset(
+            "exposure/workload_source_checkpoints"
+        )
         workload_outcomes = acquire_workload_inventory(
             logs_client=self.logs_client,
             connection_id=str(
@@ -571,9 +657,7 @@ class IngestionService:
                 previous_deployments=self.store.read_dataset(
                     "exposure/workload_deployments"
                 ),
-                previous_checkpoints=self.store.read_dataset(
-                    "exposure/workload_source_checkpoints"
-                ),
+                previous_checkpoints=previous_workload_checkpoints,
             )
             if workload_outcomes
             else WorkloadProjection(
@@ -588,6 +672,12 @@ class IngestionService:
                 ),
                 unknown_reasons=("workspace_discovery_unavailable",),
             )
+        )
+        _record_workload_projection_metrics(
+            self.metrics,
+            workload,
+            completed_at=completed_at,
+            previous_checkpoints=previous_workload_checkpoints,
         )
         graph = Normalizer(self.config.connection_context).normalize(
             normalization_payload,
