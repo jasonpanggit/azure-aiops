@@ -4,6 +4,8 @@
  * the Pydantic shapes so a schema drift is a visible diff, not a silent bug.
  */
 
+import type { ScopeSelection } from "./scope";
+
 export type Confidence = "high" | "medium" | "low" | "unknown";
 export type Freshness = "fresh" | "aging" | "stale" | "unknown";
 
@@ -2510,6 +2512,108 @@ export interface CopilotPageSnapshot {
   selected_resources: CopilotSelectedResource[]; filters: Record<string, string[]>;
   freshness: CopilotFreshnessRecord[]; scope: CopilotScopeAuthorization;
   evidence: CopilotEvidenceRow[]; question: string; rechecks: string[];
+}
+export type CopilotPageKindV2 = "inventory" | "connections" | "connections_fabric";
+export type CopilotSnapshotStatusV2 = "ok" | "empty" | "partial" | "unavailable" | "denied";
+export type CopilotFreshnessStatusV2 = "fresh" | "stale" | "partial" | "unavailable";
+export type CopilotEvidenceSeverity = "unknown" | "low" | "medium" | "high" | "critical";
+export type CopilotEvidenceQuality = "unknown" | "low" | "medium" | "high";
+export interface CopilotAzureEntityRef {
+  type: "azure";
+  resource_id: string;
+}
+export interface CopilotDomainEntityRef {
+  type: "domain";
+  namespace: string;
+  kind: string;
+  source_key: string;
+}
+export type CopilotEntityRef = CopilotAzureEntityRef | CopilotDomainEntityRef;
+export interface CopilotSnapshotCoverageV2 {
+  visible_count: number;
+  total_count: number;
+  complete: boolean;
+}
+export interface CopilotSnapshotFreshnessV2 {
+  source: string;
+  observed_at: string;
+  status: CopilotFreshnessStatusV2;
+}
+export interface CopilotSnapshotEvidenceV2 {
+  evidence_id: string;
+  source: string;
+  status: CopilotSnapshotStatusV2;
+  observed_at: string;
+  resource_id: string;
+  source_key: string;
+  entity: CopilotEntityRef;
+  claim_type: string;
+  citations: string[];
+  selected: boolean;
+  direct: boolean;
+  actionable: boolean;
+  severity: CopilotEvidenceSeverity;
+  quality: CopilotEvidenceQuality;
+  data: Record<string, unknown>;
+}
+export interface CopilotMaterialClaimV2 {
+  claim_id: string;
+  evidence_refs: string[];
+  requires_complete_coverage: boolean;
+}
+export interface CopilotEvidenceSnapshotV2 {
+  version: "2";
+  page_kind: CopilotPageKindV2;
+  page_id: string;
+  coverage: CopilotSnapshotCoverageV2;
+  freshness: CopilotSnapshotFreshnessV2[];
+  selected_entities: CopilotEntityRef[];
+  evidence: CopilotSnapshotEvidenceV2[];
+  material_claims: CopilotMaterialClaimV2[];
+}
+export interface CopilotPlanHint {
+  specialist_id: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+export interface CanonicalCopilotRequest {
+  contract_version: "1";
+  question: string;
+  requested_scope: ScopeSelection;
+  snapshot: CopilotEvidenceSnapshotV2;
+  thread_id?: string;
+  hint?: CopilotPlanHint;
+}
+export interface CanonicalCopilotCitation {
+  citation_id: string;
+  source: string;
+  status: string;
+  observed_at: string;
+  resource_id: string;
+}
+export interface CanonicalCopilotToolResult {
+  call_id: string;
+  specialist_id: string;
+  tool: string;
+  status: CopilotSnapshotStatusV2;
+  data: unknown;
+  evidence: unknown[];
+  warning: string;
+}
+export interface CanonicalCopilotResult {
+  contract_version: "1";
+  status: CopilotSnapshotStatusV2;
+  policy_status: "accepted" | "fallback";
+  fallback_reason: string;
+  selected_specialists: string[];
+  selected_tools: string[];
+  tool_results: CanonicalCopilotToolResult[];
+  uncertainty: string[];
+  coverage: CopilotSnapshotCoverageV2;
+  citations: CanonicalCopilotCitation[];
+  thread_id: string;
+  thread_revision: number;
+  mutation_authorized: false;
 }
 export interface CopilotContextFinding {
   finding_id: string; resource_ids: string[]; check_id: string; policy_id: string; source_status: string;
