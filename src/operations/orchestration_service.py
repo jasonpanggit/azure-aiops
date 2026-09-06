@@ -585,8 +585,21 @@ def execute_from_question(
         ),
     )
     planner: Planner | None = None
+    validated_hint_arguments: dict[str, Any] | None = None
+    invalid_hint_reason = ""
     if hint_tool and hinted_specialist is not None:
         specialist_id = hinted_specialist.id
+        try:
+            validated_hint_arguments, _ = validate_tool_arguments(
+                hint_tool,
+                dict(hint_arguments or {}),
+            )
+        except ValueError:
+            invalid_hint_reason = (
+                "missing_required_arguments"
+                if not hint_arguments
+                else "invalid_hint_arguments"
+            )
 
         def _hint_planner(_request: InvestigationRequest) -> CandidatePlan:
             return CandidatePlan(
@@ -596,7 +609,7 @@ def execute_from_question(
                         tool_calls=[
                             ToolCallCandidate(
                                 tool=hint_tool,
-                                arguments=dict(hint_arguments or {}),
+                                arguments=validated_hint_arguments or {},
                                 citation_ids=[COVERAGE_CITATION_ID],
                             )
                         ],
@@ -621,6 +634,13 @@ def execute_from_question(
         return False
 
     def _execute(active_request: InvestigationRequest) -> OrchestrationResult:
+        if invalid_hint_reason:
+            return service.unsupported(
+                active_request,
+                principal_subject=principal_subject,
+                effective_scope=scope,
+                reason=invalid_hint_reason,
+            )
         if hinted_specialist is None and (not hint_tool or page_kind == "copilot"):
             reason = "unsupported_tool_hint" if hint_tool else "unsupported_intent"
             return service.unsupported(

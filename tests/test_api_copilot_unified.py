@@ -2232,6 +2232,34 @@ def test_ownership_question_without_subject_is_explicitly_unavailable(
     assert calls == []
 
 
+def test_empty_required_argument_hint_is_unavailable_without_fallback_io(
+    monkeypatch,
+):
+    """Invalid hints must not fall through to an unrelated specialist tool."""
+    from operations.orchestration_service import execute_from_question
+
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda name, arguments, **_kwargs: calls.append((name, arguments)),
+    )
+
+    result = execute_from_question(
+        "Who has ownership of this resource?",
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+        hint_tool="business_service_context",
+        hint_arguments={},
+    )
+
+    assert result.status == "unavailable"
+    assert result.fallback_reason == "missing_required_arguments"
+    assert result.selected_specialists == []
+    assert result.selected_tools == []
+    assert calls == []
+
+
 def test_incident_terms_take_precedence_over_embedded_network_markers(
     monkeypatch,
 ):
