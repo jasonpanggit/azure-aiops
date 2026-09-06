@@ -1,0 +1,222 @@
+"""Contracts for restart-safe, proposal-only ontology discovery.
+
+The coordinator intentionally depends on a single ``RunProcessor`` protocol.
+The narrower protocols below describe future evidence, curator, policy,
+validation, publication-status, and evaluation seams without granting the
+coordinator a Fabric stage or active-pointer mutation primitive.
+"""
+
+from __future__ import annotations
+
+import copy
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, Protocol
+
+MAX_CHANGED_ENTITIES = 50
+MAX_CANDIDATE_PAIRS = 200
+MAX_EVIDENCE_RECORDS = 40
+
+
+def _bounded_records(
+    value: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+    *,
+    name: str,
+    limit: int,
+    scope: str,
+) -> tuple[dict[str, Any], ...]:
+    records = tuple(copy.deepcopy(dict(item)) for item in value)
+    if len(records) > limit:
+        raise ValueError(f"{name} exceeds hard limit {limit}")
+    for record in records:
+        if str(record.get("scope") or "").strip() != scope:
+            raise ValueError(f"{name} contains a record outside batch scope")
+    return records
+
+
+@dataclass(frozen=True)
+class EvidenceBatch:
+    """One scope-isolated evidence package that is safe to send to a curator."""
+
+    batch_id: str
+    scope: str
+    source_generation_id: str
+    observed_at: datetime
+    freshness: str
+    coverage: str
+    changed_entities: tuple[Mapping[str, Any], ...] = ()
+    candidate_pairs: tuple[Mapping[str, Any], ...] = ()
+    evidence_records: tuple[Mapping[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("batch_id", "scope", "source_generation_id", "freshness", "coverage"):
+            if not str(getattr(self, name) or "").strip():
+                raise ValueError(f"{name} must not be empty")
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        scope = self.scope.strip()
+        object.__setattr__(self, "scope", scope)
+        object.__setattr__(
+            self,
+            "changed_entities",
+            _bounded_records(
+                self.changed_entities,
+                name="changed_entities",
+                limit=MAX_CHANGED_ENTITIES,
+                scope=scope,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "candidate_pairs",
+            _bounded_records(
+                self.candidate_pairs,
+                name="candidate_pairs",
+                limit=MAX_CANDIDATE_PAIRS,
+                scope=scope,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "evidence_records",
+            _bounded_records(
+                self.evidence_records,
+                name="evidence_records",
+                limit=MAX_EVIDENCE_RECORDS,
+                scope=scope,
+            ),
+        )
+
+    def all_records(self) -> tuple[Mapping[str, Any], ...]:
+        """Return every complete record in deterministic category order."""
+        return self.changed_entities + self.candidate_pairs + self.evidence_records
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe durable checkpoint representation."""
+        return {
+            "batch_id": self.batch_id,
+            "scope": self.scope,
+            "source_generation_id": self.source_generation_id,
+            "observed_at": self.observed_at.astimezone(UTC).isoformat(),
+            "freshness": self.freshness,
+            "coverage": self.coverage,
+            "changed_entities": copy.deepcopy(list(self.changed_entities)),
+            "candidate_pairs": copy.deepcopy(list(self.candidate_pairs)),
+            "evidence_records": copy.deepcopy(list(self.evidence_records)),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> EvidenceBatch:
+        """Rehydrate a batch previously emitted by :meth:`to_dict`."""
+        observed_at = datetime.fromisoformat(str(value.get("observed_at") or ""))
+        return cls(
+            batch_id=str(value.get("batch_id") or ""),
+            scope=str(value.get("scope") or ""),
+            source_generation_id=str(value.get("source_generation_id") or ""),
+            observed_at=observed_at,
+            freshness=str(value.get("freshness") or ""),
+            coverage=str(value.get("coverage") or ""),
+            changed_entities=tuple(value.get("changed_entities") or ()),
+            candidate_pairs=tuple(value.get("candidate_pairs") or ()),
+            evidence_records=tuple(value.get("evidence_records") or ()),
+        )
+
+
+@dataclass(frozen=True)
+class CheckpointResult:
+    """One durable result returned by a bounded processor invocation."""
+
+    checkpoint: str
+    payload: Mapping[str, Any] = field(default_factory=dict)
+    complete: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.checkpoint.strip():
+            raise ValueError("checkpoint must not be empty")
+
+
+class RunProcessingFailure(RuntimeError):
+    """A bounded, safe failure with a durable checkpoint classification."""
+
+    def __init__(
+        self,
+        *,
+        failure_class: str,
+        checkpoint: str,
+        payload: Mapping[str, Any] | None = None,
+        message: str = "",
+    ) -> None:
+        normalized_failure = str(failure_class or "").strip()
+        normalized_checkpoint = str(checkpoint or "").strip()
+        if not normalized_failure or not normalized_checkpoint:
+            raise ValueError("failure_class and checkpoint must not be empty")
+        super().__init__(message or normalized_failure)
+        self.failure_class = normalized_failure
+        self.checkpoint = normalized_checkpoint
+        self.payload = copy.deepcopy(dict(payload or {}))
+
+
+class RunProcessor(Protocol):
+    """Advance one claimed run without owning scheduling or persistence."""
+
+    async def advance(self, run: Mapping[str, Any]) -> CheckpointResult: ...
+
+
+class EvidenceProvider(Protocol):
+    """Return bounded, server-scoped evidence for a durable run."""
+
+    async def collect(self, run: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+
+class Curator(Protocol):
+    """Produce advisory proposals only; no publication operation is exposed."""
+
+    async def propose(
+        self, run: Mapping[str, Any], evidence: Mapping[str, Any]
+    ) -> Mapping[str, Any]: ...
+
+
+class PolicyEvaluator(Protocol):
+    """Evaluate proposals under server-owned policy."""
+
+    async def evaluate(
+        self, run: Mapping[str, Any], proposals: Mapping[str, Any]
+    ) -> Mapping[str, Any]: ...
+
+
+class CandidateValidator(Protocol):
+    """Validate a candidate snapshot without making it visible."""
+
+    async def validate(
+        self, run: Mapping[str, Any], candidate: Mapping[str, Any]
+    ) -> Mapping[str, Any]: ...
+
+
+class Publisher(Protocol):
+    """Read the separately-authorized publisher's durable status only."""
+
+    async def publication_status(self, run_id: str) -> Mapping[str, Any]: ...
+
+
+class EvaluationSnapshotProvider(Protocol):
+    """Capture an immutable evaluation reference for a run."""
+
+    async def snapshot(self, run: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+
+__all__ = [
+    "MAX_CANDIDATE_PAIRS",
+    "MAX_CHANGED_ENTITIES",
+    "MAX_EVIDENCE_RECORDS",
+    "CandidateValidator",
+    "CheckpointResult",
+    "Curator",
+    "EvaluationSnapshotProvider",
+    "EvidenceBatch",
+    "EvidenceProvider",
+    "PolicyEvaluator",
+    "Publisher",
+    "RunProcessingFailure",
+    "RunProcessor",
+]

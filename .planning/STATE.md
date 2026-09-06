@@ -5,12 +5,12 @@ milestone_name: milestone
 current_plan: 03.1-15 not started (14/25 sequential complete; 18/25 total summaries)
 status: planning
 stopped_at: Completed 03.1-24-PLAN.md
-last_updated: "2026-09-06T11:48:28.080Z"
+last_updated: "2026-09-06T14:22:32.225Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 118
+  completed_plans: 116
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -25,6 +25,10 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-02** COMPLETE — Durable run identity, CAS claims, renewable leases/fences, bounded lifecycle controls, enqueue-only Manual Sync, and finite run-once CLI
+- **13-03** COMPLETE — Five-way incremental discovery, exact 50/200/40 evidence bounds, and restart-durable pending edges and batches
+- **13-11** COMPLETE — Content-addressed immutable EvaluationSnapshots, CAS latest pointer, and fail-closed freshness reconstruction
+- **13-01** COMPLETE — Independent Phase 10/12 evidence preflight, non-authoritative shadow/fenced-pointer tracer, and 35-scenario synthetic Wave 0 corpus
 - **12-01..12-11** COMPLETE — Scope-safe topology projection, private-link/Fabric/Foundry semantics, bounded summary/detail contracts, policy refresh, truthful provenance, accessible graph/drawer/export UX, downstream compatibility, representative scale gates, and final review remediation
 - **03.1-01** COMPLETE — Wave 0 deterministic Exposure fixture, explicit backend/web pending gates, 100k correctness harness, and exhaustive fail-closed Fabric SQL readiness probe
 - **03.1-21** COMPLETE — Approved ontology v2 contract and production scope-first tracer through typed ontology, review-only container remediation, and Copilot parity
@@ -151,6 +155,10 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P23 | 28min | 2 tasks | 14 files |
 | Phase 03.1 P12 | 31min | 2 tasks | 6 files |
 | Phase 03.1 P13 | 26 min | 3 tasks | 9 files |
+| Phase 13 P01 | 18min | 2 tasks | 6 files |
+| Phase 13 P02 | 9min | 2 tasks | 10 files |
+| Phase 13 P03 | 7min | 2 tasks | 8 files |
+| Phase 13 P11 | 7min | 2 tasks | 3 files |
 | Phase 03.1 P14 | 41 min | 3 tasks | 17 files |
 | Phase 03.1 P18 | 22min | 3 tasks | 10 files |
 | Phase 03.1 P24 | 10 min | 3 tasks | 9 files |
@@ -235,6 +243,8 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: Exposure authorization is resolved server-side and must exactly match the authenticated principal and effective request scope before SQL compilation.
 - [Phase 03.1]: Exposure cursors use canonical HMAC-SHA256 payloads with a 15-minute TTL and managed previous-key verification limited to the 30-minute overlap.
 - [Phase 03.1]: The deterministic SQL-contract benchmark remains distinct from live Fabric certification; the live canary requires readiness and explicit benchmark scope.
+- [Phase 13]: Dependency authorization requires roadmap, requirements, complete summaries, Nyquist validation, and passed verification; STATE.md alone is never sufficient.
+- [Phase 13]: Wave 0 remains test-only and non-authoritative; reviewed model edges are excluded in shadow mode and pointer changes require fresh fences.
 - [Phase 03.1]: Use a nested versioned Exposure semantic contract while retaining legacy response aliases during shadow rollout.
 - [Phase 03.1]: Derive Fabric SQL tenant and connection authorization only from authenticated principal scope and active connection metadata.
 - [Phase 03.1]: Container findings may create only evidence-qualified non-executable review handoffs or no_safe_action outcomes.

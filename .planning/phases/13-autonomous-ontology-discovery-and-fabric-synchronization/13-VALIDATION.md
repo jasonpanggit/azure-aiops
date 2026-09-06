@@ -1,11 +1,11 @@
 ---
 phase: 13
 slug: autonomous-ontology-discovery-and-fabric-synchronization
-status: ready
+status: in_progress
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-09-04
-updated: 2026-09-04
+updated: 2026-09-06
 ---
 
 # Phase 13 — Validation Strategy
@@ -35,12 +35,12 @@ updated: 2026-09-04
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command / Gate | Wave 0 | Status |
 |---|---:|---:|---|---|---|---|---|
-| 13-01-01 | 01 | 1 | AUTO-ONT-01..07 | preflight/tracer | `uv run pytest -q tests/test_phase_13_preflight.py tests/test_ontology_discovery_contracts.py -x && uv run python .planning/scripts/preflight_phase_13.py` | creates | pending |
-| 13-01-02 | 01 | 1 | AUTO-ONT-02..07 | fixture/contract | `uv run pytest -q tests/test_ontology_discovery_contracts.py -x` | creates | pending |
-| 13-02-01 | 02 | 2 | AUTO-ONT-01,06 | unit/concurrency | `uv run pytest -q tests/test_ontology_discovery_store.py tests/test_ontology_discovery_coordinator.py -x` | consumes | pending |
-| 13-02-02 | 02 | 2 | AUTO-ONT-01,06 | integration | `uv run pytest -q tests/test_ontology_discovery_coordinator.py tests/test_subscription_onboarding.py -k 'sync or restart or timeout' -x` | consumes | pending |
-| 13-03-01 | 03 | 3 | AUTO-ONT-02,07 | property/replay | `uv run pytest -q tests/test_ontology_discovery_incremental.py -x` | consumes | pending |
-| 13-03-02 | 03 | 3 | AUTO-ONT-02,06 | restart/replay | `uv run pytest -q tests/test_pending_relationships.py tests/test_ontology_discovery_incremental.py -x` | consumes | pending |
+| 13-01-01 | 01 | 1 | AUTO-ONT-01..07 | preflight/tracer | `uv run pytest -q tests/test_phase_13_preflight.py tests/test_ontology_discovery_contracts.py -x && uv run python .planning/scripts/preflight_phase_13.py` | creates | passed |
+| 13-01-02 | 01 | 1 | AUTO-ONT-02..07 | fixture/contract | `uv run pytest -q tests/test_ontology_discovery_contracts.py -x` | creates | passed |
+| 13-02-01 | 02 | 2 | AUTO-ONT-01,06 | unit/concurrency | `uv run pytest -q tests/test_ontology_discovery_store.py tests/test_ontology_discovery_coordinator.py -x` | consumes | passed |
+| 13-02-02 | 02 | 2 | AUTO-ONT-01,06 | integration | `uv run pytest -q tests/test_ontology_discovery_coordinator.py tests/test_subscription_onboarding.py -k 'sync or restart or timeout' -x` | consumes | passed |
+| 13-03-01 | 03 | 3 | AUTO-ONT-02,07 | property/replay | `uv run pytest -q tests/test_ontology_discovery_incremental.py -x` | consumes | passed |
+| 13-03-02 | 03 | 3 | AUTO-ONT-02,06 | restart/replay | `uv run pytest -q tests/test_pending_relationships.py tests/test_ontology_discovery_incremental.py -x` | consumes | passed |
 | 13-04-01 | 04 | 4 | AUTO-ONT-03,07 | contract/fault | `uv run pytest -q tests/test_ontology_curator_agent.py -x` | consumes | pending |
 | 13-04-02 | 04 | 4 | AUTO-ONT-03 | MCP/security | `uv run pytest -q tests/test_ontology_curator_agent.py tests/test_foundry_tool_registry_matches_implementation.py tests/test_mcp_protocol.py -x` | consumes | pending |
 | 13-05-01 | 05 | 5 | AUTO-ONT-04,07 | policy/security | `uv run pytest -q tests/test_ontology_proposal_policy.py tests/test_relationship_vocabulary_consistency.py -x` | consumes | pending |
@@ -59,8 +59,8 @@ updated: 2026-09-04
 | 13-09-03 | 09 | 7 | AUTO-ONT-05,07 | E2E/rollback | `uv run pytest -q tests/test_ontology_discovery_e2e.py tests/test_ontology_generation_publication.py -x` | consumes | pending |
 | 13-10-01 | 10 | 8 | AUTO-ONT-01,05 | integration/security | `uv run pytest -q tests/test_ontology_discovery_coordinator.py tests/test_subscription_onboarding.py tests/test_fabric_sync_service.py -k 'publisher or manual or scheduled or generation' -x` | consumes | pending |
 | 13-10-02 | 10 | 8 | AUTO-ONT-01,06 | compatibility/restart | `uv run pytest -q tests/test_subscription_onboarding.py -k 'sync or health or restart' -x` | consumes | pending |
-| 13-11-01 | 11 | 2 | AUTO-ONT-06,07 | contract/CAS | `uv run pytest -q tests/test_ontology_evaluation_snapshot.py -k 'contract or write or cas' -x` | consumes | pending |
-| 13-11-02 | 11 | 2 | AUTO-ONT-06,07 | restart/freshness | `uv run pytest -q tests/test_ontology_evaluation_snapshot.py -x` | consumes | pending |
+| 13-11-01 | 11 | 2 | AUTO-ONT-06,07 | contract/CAS | `uv run pytest -q tests/test_ontology_evaluation_snapshot.py -k 'contract or write or cas' -x` | consumes | passed |
+| 13-11-02 | 11 | 2 | AUTO-ONT-06,07 | restart/freshness | `uv run pytest -q tests/test_ontology_evaluation_snapshot.py -x` | consumes | passed |
 | 13-12-01 | 12 | 9 | AUTO-ONT-04..07 | API/security | `uv run pytest -q tests/test_api_ontology_discovery.py tests/test_api_ontology_evaluation.py -x` | consumes | pending |
 | 13-12-02 | 12 | 9 | AUTO-ONT-01,06 | app wiring | `uv run pytest -q tests/test_api_ontology_discovery.py tests/test_api_ontology_evaluation.py -x` | consumes | pending |
 | 13-13-01 | 13 | 10 | AUTO-ONT-06,07 | web contract | `cd web && npm test -- --run src/app/connections/page.test.tsx && npx tsc --noEmit` | consumes | pending |
@@ -73,10 +73,10 @@ updated: 2026-09-04
 
 ## Wave 0 Requirements
 
-- [ ] `.planning/scripts/preflight_phase_13.py` and `tests/test_phase_13_preflight.py`
-- [ ] `tests/ontology_discovery_contract_harness.py`
-- [ ] `tests/fixtures/ontology_discovery/reference.jsonl`
-- [ ] `tests/test_ontology_discovery_contracts.py`
+- [x] `.planning/scripts/preflight_phase_13.py` and `tests/test_phase_13_preflight.py`
+- [x] `tests/ontology_discovery_contract_harness.py`
+- [x] `tests/fixtures/ontology_discovery/reference.jsonl`
+- [x] `tests/test_ontology_discovery_contracts.py`
 - [ ] `tests/test_ontology_discovery_store.py`
 - [ ] `tests/test_ontology_discovery_coordinator.py`
 - [ ] `tests/test_ontology_discovery_incremental.py`
@@ -117,6 +117,6 @@ updated: 2026-09-04
 - [x] Hosted-agent exception halts before Plan 13-09 and requires explicit replanning.
 - [x] Deployed model edges remain shadow-only; live release/canary activation is absent and eligibility is BLOCKED/PENDING.
 - [x] `nyquist_compliant: true` is reconciled with the task map.
-- [ ] `wave_0_complete` remains false until Plan 13-01 executes after Phase 12 verification.
+- [x] `wave_0_complete` is true after Plan 13-01 passed the integrated Phase 10/12 preflight and Wave 0 contract gates.
 
-**Approval:** ready for execution only after `.planning/scripts/preflight_phase_13.py` passes.
+**Approval:** Plan 13-01 foundation complete; later Phase 13 plans remain gated by `.planning/scripts/preflight_phase_13.py`.

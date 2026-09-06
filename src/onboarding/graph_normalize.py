@@ -1192,8 +1192,41 @@ def _row_hash(row: Mapping[str, Any]) -> str:
     resource actually change" signal ``Normalizer.normalize()``'s optional
     ``previous_row_hashes``/``NormalizedGraph.row_hashes`` and the
     ``changed_resource_ids`` helper below are built on."""
-    canonical = json.dumps(row, sort_keys=True, default=str)
+    canonical = json.dumps(
+        _canonical_hash_value(row),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+_VOLATILE_HASH_FIELDS = frozenset(
+    {
+        "collected_at",
+        "ingested_at",
+        "observed_at",
+        "poll_timestamp",
+        "scan_timestamp",
+    }
+)
+
+
+def _canonical_hash_value(value: Any) -> Any:
+    """Normalize unordered source values while excluding ingestion wall clocks."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical_hash_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if str(key).casefold() not in _VOLATILE_HASH_FIELDS
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        normalized = [_canonical_hash_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True, default=str),
+        )
+    return value
 
 
 def changed_resource_ids(
