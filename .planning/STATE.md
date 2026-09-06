@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.6 complete (6/6 plans) - ready for next phase
 status: executing
-stopped_at: Completed 03.1-10-PLAN.md
-last_updated: "2026-09-06T01:59:53.138Z"
+stopped_at: Completed 03.1-11-PLAN.md
+last_updated: "2026-09-06T04:47:13.343Z"
 progress:
   total_phases: 17
   completed_phases: 9
   total_plans: 158
-  completed_plans: 98
+  completed_plans: 99
 current_phase_name: Remediation Workflow Safety and Operator Guidance
 ---
 
@@ -140,6 +140,7 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 | Phase 03.1 P08 | 17min | 3 tasks | 10 files |
 | Phase 03.1 P09 | 101m | 2 tasks | 6 files |
 | Phase 03.1 P10 | 19min | 3 tasks | 9 files |
+| Phase 03.1 P11 | 1h 57m | 2 tasks | 7 files |
 
 ## Decisions
 
@@ -209,11 +210,14 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 - [Phase 03.1]: Treat registry-plus-repository as logical image identity and canonical sha256 as digest identity; tags are mutable aliases only.
 - [Phase 03.1]: Use only exact observed digest deployments for container impact; unavailable evidence remains explicit unknown and never fabricates deployment or service context.
 - [Phase 03.1]: Container findings retain target_kind=container_image and server_patch_eligible=false.
+- [Phase 03.1]: Plan 03.1-11 keeps ontology vocabulary v2 and derives typed identities from scoped durable Fabric keys while retaining exact source rows for reverse mapping.
+- [Phase 03.1]: Container CVE traversal requires exact typed observation-digest-deployment evidence plus complete non-carried-forward checkpoints; unknown evidence is excluded with reason counts.
+- [Phase 03.1]: Failed ontology definition updates restore and verify the prior active definition unless the requested update is already observably active.
 
 ## Session
 
-**Last session:** 2026-09-06T01:59:53.123Z
-**Stopped at:** Completed 03.1-10-PLAN.md
+**Last session:** 2026-09-06T04:47:13.326Z
+**Stopped at:** Completed 03.1-11-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context
