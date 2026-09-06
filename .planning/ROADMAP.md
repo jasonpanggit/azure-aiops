@@ -105,7 +105,7 @@ Plans:
 **Goal:** Make Exposure authoritative, failure-tolerant, temporally correct, ontology-complete for container images, and operable at Defender-scale volumes before Phase 4 pilot validation.
 **Requirements:** PILOT-01, PILOT-02, PILOT-03, PILOT-04 (reliability prerequisites; final pilot completion remains downstream)
 **Depends on:** Phase 3
-**Plans:** 10/25 plans executed
+**Plans:** 11/25 plans executed
 
 Plans:
 
@@ -119,7 +119,7 @@ Plans:
 - [x] 03.1-07-PLAN.md — Publish source checkpoints/LKG and per-family freshness/completeness
 - [x] 03.1-08-PLAN.md — Persist immutable observations and replay deterministic current state
 - [x] 03.1-09-PLAN.md — Serve temporal state with honest first-detection and SLA semantics
-- [ ] 03.1-10-PLAN.md — Persist granular image/digest/deployment evidence
+- [x] 03.1-10-PLAN.md — Persist granular image/digest/deployment evidence
 - [ ] 03.1-11-PLAN.md — Expand the approved typed-image ontology with exact round-trip and traversal integrity
 - [ ] 03.1-23-PLAN.md — Refresh MSRC/NVD/EPSS/KEV asynchronously with durable per-item status and provider-free API reads
 - [ ] 03.1-12-PLAN.md — Materialize and publish generation-pinned Gold

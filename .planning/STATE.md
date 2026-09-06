@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.6 complete (6/6 plans) - ready for next phase
 status: executing
-stopped_at: Completed 03.1-09-PLAN.md
-last_updated: "2026-09-06T01:37:32.840Z"
+stopped_at: Completed 03.1-10-PLAN.md
+last_updated: "2026-09-06T01:59:53.138Z"
 progress:
   total_phases: 17
   completed_phases: 9
   total_plans: 158
-  completed_plans: 96
+  completed_plans: 98
 current_phase_name: Remediation Workflow Safety and Operator Guidance
 ---
 
@@ -33,6 +33,7 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 - **03.1-07** COMPLETE — Atomic source-family LKG activation, isolated multi-connection completeness, and exact typed freshness thresholds
 - **03.1-08** COMPLETE — Versioned immutable observations, deterministic family-safe replay, generation-qualified current state, and provider-time-only resumable backfill
 - **03.1-09** COMPLETE — Generation-pinned temporal compatibility findings, provider-only nullable SLA semantics, and projection-owned runtime state with legacy rollback
+- **03.1-10** COMPLETE — Versioned registry/logical-image/digest/CVE evidence, exact workload impact, honest unknown coverage, and fail-closed container target typing
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
 - **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
 - **03.6-03** COMPLETE — Fail-safe `selectedPatchIds: string[] | null` patch-selection model (fixes CR-07 deselect-all-then-widens-to-all bug) and bounded/backoff client polling (`usePollingBackoff`, capped at 40 requests or 600000ms) with independently-testable ceilings
@@ -138,6 +139,7 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 | Phase 03.1 P07 | 18 min | 3 tasks | 9 files |
 | Phase 03.1 P08 | 17min | 3 tasks | 10 files |
 | Phase 03.1 P09 | 101m | 2 tasks | 6 files |
+| Phase 03.1 P10 | 19min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -203,11 +205,15 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 - [Phase 03.1]: Null or non-provider first detection remains indeterminate; publication and ingestion timestamps never substitute for SLA age.
 - [Phase 03.1]: Enabled temporal serving treats generation-pinned gold_exposure_current as the sole active-state authority while retaining explicit legacy rollback.
 - [Phase 03.1]: Phase 03.2-03.6 remediation cache, stores, observed-target reconciliation, and no-planner/no-patching coordinator contracts remain unchanged.
+- [Phase 03.1]: Accepted the additive versioned container contract: registry, logical image, immutable digest, per-CVE observation, and exact workload deployment identities require backfill, dual readers, ontology regeneration, and generation-pointer rollback for future changes.
+- [Phase 03.1]: Treat registry-plus-repository as logical image identity and canonical sha256 as digest identity; tags are mutable aliases only.
+- [Phase 03.1]: Use only exact observed digest deployments for container impact; unavailable evidence remains explicit unknown and never fabricates deployment or service context.
+- [Phase 03.1]: Container findings retain target_kind=container_image and server_patch_eligible=false.
 
 ## Session
 
-**Last session:** 2026-09-06T01:37:32.818Z
-**Stopped at:** Completed 03.1-09-PLAN.md
+**Last session:** 2026-09-06T01:59:53.123Z
+**Stopped at:** Completed 03.1-10-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context
