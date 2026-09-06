@@ -1752,3 +1752,340 @@ def test_terraform_orchestration_mode_includes_canonical():
     assert '"shadow"' not in allowed_modes, (
         "shadow must NOT be allowed — no runtime support exists"
     )
+
+
+# ---------------------------------------------------------------------------
+# Final comprehensive-review regressions
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_contract_accepts_public_context_page_kinds():
+    """Every public v1 PageSnapshot kind must have a real canonical identity."""
+    for page_kind in (
+        "network",
+        "vulnerability",
+        "patch",
+        "incident",
+        "governance",
+        "resource",
+    ):
+        snapshot = EvidenceSnapshotV2(
+            page_kind=page_kind,
+            page_id=f"{page_kind}-page",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=False,
+            ),
+        )
+        assert snapshot.page_kind == page_kind
+
+
+def test_context_canonical_network_preserves_page_evidence_and_results(
+    tmp_path, monkeypatch
+):
+    """A valid network snapshot must stay network throughout canonical routing."""
+    from operations.orchestration_contract import Citation, OrchestrationResult
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    captured_requests: list[InvestigationRequest] = []
+    legacy_calls: list[object] = []
+
+    def _legacy(*_args, **_kwargs):
+        legacy_calls.append(True)
+        raise AssertionError("network is a canonical-supported page")
+
+    def _execute(self, request, **_kwargs):
+        captured_requests.append(request)
+        return OrchestrationResult(
+            status="ok",
+            policy_status="fallback",
+            fallback_reason="planner_unavailable",
+            selected_specialists=["network"],
+            selected_tools=["network_topology"],
+            tool_results=[
+                {
+                    "call_id": "0:0:network:network_topology",
+                    "specialist_id": "network",
+                    "tool": "network_topology",
+                    "status": "ok",
+                    "data": {"nodes": [{"id": "vnet-a"}]},
+                    "evidence": [
+                        {
+                            "source_engine": "azure-resource-graph",
+                            "source_table": "resources",
+                            "timestamp": "2026-09-01T00:00:00Z",
+                            "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet-a",
+                            "confidence": "high",
+                        }
+                    ],
+                    "warning": "",
+                }
+            ],
+            uncertainty=[],
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=1,
+                complete=True,
+            ),
+            citations=[
+                Citation(
+                    citation_id="network:route-1",
+                    source="network-route-table",
+                    status="ok",
+                    resource_id="/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt-a",
+                )
+            ],
+            thread_id="thr-" + "b" * 32,
+            thread_revision=1,
+        )
+
+    monkeypatch.setattr(
+        "api.routers.copilot.run_context_investigation",
+        _legacy,
+    )
+    monkeypatch.setattr(OrchestrationService, "execute", _execute)
+
+    client = TestClient(create_app(_context(tmp_path, None)))
+    response = client.post(
+        "/api/v1/copilot/investigate-context?subscription=sub-a",
+        headers=HEADERS,
+        json={
+            "snapshot": {
+                "version": "1",
+                "page_kind": "network",
+                "page_id": "topology",
+                "question": "Show network topology",
+                "scope": {"declared": {"subscription": ["sub-a"]}},
+                "evidence": [
+                    {
+                        "evidence_id": "network:route-1",
+                        "section": "route",
+                        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt-a",
+                        "data": {"next_hop": "firewall"},
+                        "status": "ok",
+                        "observed_at": "2026-09-01T00:00:00Z",
+                    }
+                ],
+                "selected_resources": [],
+                "freshness": [
+                    {
+                        "source": "network",
+                        "observed_at": "2026-09-01T00:00:00Z",
+                        "status": "fresh",
+                    }
+                ],
+                "rechecks": [],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert not legacy_calls
+    assert captured_requests[0].snapshot.page_kind == "network"
+    assert captured_requests[0].snapshot.evidence[0].evidence_id == "network:route-1"
+    data = response.json()["data"]
+    assert data["selected_agents"][0]["id"] == "network"
+    assert data["agent_runs"][0]["tool_calls"][0]["call_id"].startswith("0:0:network")
+    assert data["findings"][0]["data"]["nodes"][0]["id"] == "vnet-a"
+    assert data["citations"][0]["citation_id"] == "network:route-1"
+    assert data["synthesis"]["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_page_kind"),
+    [
+        ("Can UAT reach PROD through the firewall?", "network"),
+        ("Which CVEs expose production?", "vulnerability"),
+        ("Summarize incident INC-42", "incident"),
+    ],
+)
+def test_execute_from_question_routes_domain_intent(
+    question, expected_page_kind, monkeypatch
+):
+    """Question-only canonical requests must not masquerade as inventory."""
+    from operations.orchestration_contract import OrchestrationResult
+    from operations.orchestration_service import execute_from_question
+
+    captured: list[InvestigationRequest] = []
+
+    def _execute(self, request, **_kwargs):
+        captured.append(request)
+        return OrchestrationResult(
+            status="unavailable",
+            policy_status="fallback",
+            fallback_reason="planner_unavailable",
+            coverage=request.snapshot.coverage,
+            thread_id="thr-" + "c" * 32,
+            thread_revision=1,
+        )
+
+    monkeypatch.setattr(OrchestrationService, "execute", _execute)
+    execute_from_question(
+        question,
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+    )
+
+    assert captured[0].snapshot.page_kind == expected_page_kind
+
+
+def test_investigate_canonical_session_continuity_and_stale_hint(
+    tmp_path, monkeypatch
+):
+    """Legacy session IDs map to scoped canonical threads before hint validation."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda *_args, **_kwargs: ToolResult(status="empty"),
+    )
+    legacy_calls: list[object] = []
+    monkeypatch.setattr(
+        "api.routers.copilot.run_investigation",
+        lambda *_args, **_kwargs: legacy_calls.append(True),
+    )
+
+    client = TestClient(create_app(_context(tmp_path, None)))
+    body = {
+        "question": "Can UAT reach PROD?",
+        "session_id": "legacy-session-routing",
+        "tool": "retired_legacy_tool",
+        "tool_arguments": {},
+    }
+    first = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+    second = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert not legacy_calls
+    assert first.json()["data"]["thread_id"] == second.json()["data"]["thread_id"]
+    assert second.json()["data"]["thread_revision"] == 2
+
+    history_response = client.get(
+        "/api/v1/copilot/history/legacy-session-routing?subscription=sub-a",
+        headers=HEADERS,
+    )
+    assert history_response.status_code == 200
+    assert len(history_response.json()["data"]["turns"]) == 2
+
+
+def test_multi_agent_canonical_projection_retains_complete_results(
+    tmp_path, monkeypatch
+):
+    """The compatibility ledger must retain canonical evidence and findings."""
+    from operations.orchestration_contract import Citation, OrchestrationResult
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    result = OrchestrationResult(
+        status="partial",
+        policy_status="fallback",
+        fallback_reason="planner_unavailable",
+        selected_specialists=["network"],
+        selected_tools=["network_topology"],
+        tool_results=[
+            {
+                "call_id": "0:0:network:network_topology",
+                "specialist_id": "network",
+                "tool": "network_topology",
+                "status": "ok",
+                "data": {"nodes": [{"id": "vnet-a"}]},
+                "evidence": [
+                    {
+                        "source_engine": "azure-resource-graph",
+                        "source_table": "resources",
+                        "timestamp": "2026-09-01T00:00:00Z",
+                        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet-a",
+                        "confidence": "high",
+                    }
+                ],
+                "warning": "",
+            }
+        ],
+        uncertainty=["visible subset is incomplete"],
+        coverage=SnapshotCoverage(
+            visible_count=0,
+            total_count=0,
+            complete=False,
+        ),
+        citations=[
+            Citation(
+                citation_id="tool:0:0:network:network_topology:0",
+                source="azure-resource-graph:resources",
+                status="ok",
+            )
+        ],
+        thread_id="thr-" + "d" * 32,
+        thread_revision=1,
+    )
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: result,
+    )
+
+    client = TestClient(create_app(_context(tmp_path, None)))
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={"objective": "Can UAT reach PROD?"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["selected_agents"][0]["id"] == "network"
+    assert data["agent_runs"][0]["agent_id"] == "network"
+    assert data["tool_calls"][0]["call_id"] == "0:0:network:network_topology"
+    assert data["tool_calls"][0]["data"]["nodes"][0]["id"] == "vnet-a"
+    assert data["tool_calls"][0]["evidence"][0]["source_engine"] == "azure-resource-graph"
+    assert data["findings"][0]["citation_ids"] == [
+        "tool:0:0:network:network_topology:0"
+    ]
+    assert data["citations"][0]["citation_id"].startswith("tool:")
+    assert data["synthesis"]["policy_status"] == "fallback"
+    assert data["synthesis"]["fallback_reason"] == "planner_unavailable"
+    assert data["synthesis"]["status"] == "partial"
+    assert data["synthesis"]["uncertainty"] == ["visible subset is incomplete"]
+
+
+def test_projected_store_ledger_nested_mutations_do_not_touch_store():
+    """A projected store object must be deeply isolated from persisted audit state."""
+    from operations.autonomous_investigation import ledger_store, project_legacy_ledger
+
+    store = ledger_store()
+    ledger_id = "mai-deep-store-001"
+    original = {
+        "ledger_id": ledger_id,
+        "created_by": "admin@example.com",
+        "decisions": [{"action": "accept"}],
+        "approvals": [{"approved": True}],
+        "agent_runs": [{"tool_calls": [{"tool": "network_topology"}]}],
+        "synthesis": {"status": "ok"},
+        "human_controls": {"available_actions": ["stop_investigation"]},
+    }
+    store.add(original)
+
+    projected = project_legacy_ledger(
+        store.get(ledger_id, "admin@example.com")
+    )
+    projected["decisions"][0]["action"] = "tampered"
+    projected["approvals"][0]["approved"] = False
+    projected["agent_runs"][0]["tool_calls"][0]["tool"] = "mutated"
+    projected["synthesis"]["status"] = "denied"
+    projected["human_controls"]["available_actions"].append("execute")
+
+    persisted = store.get(ledger_id, "admin@example.com")
+    assert persisted["decisions"][0]["action"] == "accept"
+    assert persisted["approvals"][0]["approved"] is True
+    assert persisted["agent_runs"][0]["tool_calls"][0]["tool"] == "network_topology"
+    assert persisted["synthesis"]["status"] == "ok"
+    assert persisted["human_controls"]["available_actions"] == [
+        "stop_investigation"
+    ]
