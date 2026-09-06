@@ -67,7 +67,7 @@ def _snapshot(
             SliceMetric(
                 metric="precision",
                 slice_key="overall",
-                numerator=99,
+                numerator=round(precision * 100),
                 denominator=100,
                 value=precision,
                 critical=True,
