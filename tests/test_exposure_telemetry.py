@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -396,3 +397,117 @@ def test_reconciliation_metric_emits_safe_class_count_and_ratio() -> None:
         meter,
         "aiops.exposure.reconciliation.drift.ratio",
     )[0][0] == 0.25
+
+
+def _terraform_alert_blocks(source: str) -> dict[str, str]:
+    marker = (
+        'resource "azurerm_monitor_scheduled_query_rules_alert_v2" '
+        '"'
+    )
+    chunks = source.split(marker)[1:]
+    return {
+        chunk.split('"', 1)[0]: chunk
+        for chunk in chunks
+    }
+
+
+def test_every_required_metric_is_linked_to_an_exposure_alert() -> None:
+    alerting = Path("infra/terraform/alerting.tf").read_text(encoding="utf-8")
+    blocks = _terraform_alert_blocks(alerting)
+    required = {
+        "exposure_row_zero": {"aiops.exposure.ingestion.rows"},
+        "exposure_row_drop": {"aiops.exposure.ingestion.drop.ratio"},
+        "exposure_source_health": {
+            "aiops.exposure.source.cycles",
+            "aiops.exposure.source.age",
+        },
+        "exposure_merge_conflict": {"aiops.exposure.merge.rows"},
+        "exposure_enrichment_quality": {
+            "aiops.exposure.enrichment.quality"
+        },
+        "exposure_coverage_ratio": {"aiops.exposure.coverage.ratio"},
+        "exposure_reconciliation_drift": {
+            "aiops.exposure.reconciliation.mismatches",
+            "aiops.exposure.reconciliation.drift.ratio",
+        },
+        "exposure_query_slo": {
+            "aiops.exposure.query.duration",
+            "aiops.exposure.query.events",
+        },
+    }
+
+    assert required.keys() <= blocks.keys()
+    for resource_name, metric_names in required.items():
+        block = blocks[resource_name]
+        assert metric_names <= set(EXPOSURE_METRIC_SPECS)
+        assert all(metric_name in block for metric_name in metric_names)
+        assert (
+            "evaluation_frequency = "
+            "local.exposure_alert_evaluation_frequency"
+        ) in block
+        assert (
+            "window_duration      = "
+            "local.exposure_ingestion_cycle_window"
+        ) in block
+        assert "minimum_failing_periods_to_trigger_alert = 1" in block
+        assert "number_of_evaluation_periods             = 1" in block
+        assert (
+            "action_groups = [azurerm_monitor_action_group.ops[0].id]"
+        ) in block
+        assert "severity" in block
+
+
+def test_alert_windows_are_exactly_one_cycle_and_evaluate_no_slower() -> None:
+    alerting = Path("infra/terraform/alerting.tf").read_text(encoding="utf-8")
+    variables = Path("infra/terraform/variables.tf").read_text(
+        encoding="utf-8"
+    )
+
+    assert "exposure_ingestion_cadence_minutes" in variables
+    assert "exposure_alert_evaluation_minutes" in variables
+    assert "var.exposure_alert_evaluation_minutes <= " in variables
+    assert "var.exposure_ingestion_cadence_minutes" in variables
+    assert (
+        "exposure_ingestion_cycle_window = "
+        'local.exposure_alert_iso8601_minutes['
+        "var.exposure_ingestion_cadence_minutes]"
+    ) in alerting
+    assert (
+        "exposure_alert_evaluation_frequency = "
+        'local.exposure_alert_iso8601_minutes['
+        "var.exposure_alert_evaluation_minutes]"
+    ) in alerting
+    assert "minimum_failing_periods_to_trigger_alert = 2" not in alerting
+    assert "number_of_evaluation_periods             = 2" not in alerting
+
+
+def test_alert_queries_use_only_safe_dimensions_and_configured_thresholds() -> None:
+    alerting = Path("infra/terraform/alerting.tf").read_text(encoding="utf-8")
+    exposure_alerts = alerting.split("# Exposure one-cycle alerts", 1)[1]
+
+    for forbidden in (
+        "tenant_id",
+        "subscription_id",
+        "resource_id",
+        "connection_id",
+        "weakness_id",
+        "cve_id",
+        "query_text",
+        "raw_error",
+        "cursor_value",
+    ):
+        assert forbidden not in exposure_alerts
+    for required_threshold in (
+        "var.exposure_alert_min_effective_rows",
+        "var.exposure_alert_max_drop_ratio",
+        "var.exposure_alert_source_max_age_seconds",
+        "var.exposure_alert_min_enrichment_quality",
+        "var.exposure_alert_min_represented_ratio",
+        "var.exposure_alert_max_reconciliation_mismatches",
+        "var.exposure_alert_max_reconciliation_ratio",
+        "var.exposure_alert_query_p95_ms",
+        "var.exposure_alert_max_query_errors",
+    ):
+        assert required_threshold in exposure_alerts
+    assert "Properties" in exposure_alerts
+    assert "environment" in exposure_alerts
