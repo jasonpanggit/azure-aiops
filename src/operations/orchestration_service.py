@@ -6,14 +6,22 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import ValidationError
 
 from api.scope import Scope
-from operations.foundry_agent import FoundryAgentError
+from operations.foundry_agent import (
+    FoundryAgentError,
+    executive_synthesis_input,
+    normalize_cited_findings,
+    validate_executive_synthesis,
+)
 from operations.investigation_thread_store import (
+    OBSERVATION_CURRENT,
+    OBSERVATION_HISTORICAL,
     InvestigationThread,
     InvestigationThreadStore,
     ThreadNotFound,
@@ -274,6 +282,75 @@ def _forget_legacy_session_thread(
         _legacy_session_threads.pop((principal_subject, session_id), None)
 
 
+_EXECUTIVE_INTENT_PATTERNS: tuple[str, ...] = (
+    r"\bexecutive\b",
+    r"\bexec summary\b",
+    r"\bleadership\b",
+    r"\bbrief(?:ing)?\s+(?:for|the)\b",
+    r"\bboard\b",
+    r"\bcross[- ]domain\b",
+    r"\boverall (?:posture|picture|risk)\b",
+)
+
+
+@dataclass(frozen=True)
+class SynthesisDecision:
+    """Deterministic admission verdict for one turn."""
+
+    admitted: bool
+    reason: str
+    domain_count: int
+
+
+@dataclass(frozen=True)
+class ExecutiveSynthesis:
+    """What conditional synthesis produced, including why it did not run."""
+
+    status: str
+    reason: str
+    domain_count: int
+    claims: list[dict[str, Any]] = field(default_factory=list)
+    warning: str = ""
+
+
+@dataclass(frozen=True)
+class OrchestrationTurn:
+    """One canonical result plus the synthesis outcome that accompanied it."""
+
+    result: OrchestrationResult
+    synthesis: ExecutiveSynthesis
+
+
+def executive_synthesis_decision(
+    question: str,
+    findings: Sequence[Mapping[str, Any]],
+) -> SynthesisDecision:
+    """Decide, before any model is contacted, whether aggregation is warranted.
+
+    A second model call is only worth its latency, cost, and fabrication risk
+    when there is actually something to reconcile: either the operator asked
+    for an executive view outright, or two different domains produced material
+    findings that cite evidence. One domain restating itself is not synthesis,
+    and no cited findings leave synthesis nothing honest to say.
+    """
+
+    domains = {
+        str(item.get("specialist_id") or "")
+        for item in findings
+        if isinstance(item, Mapping) and item.get("evidence_refs")
+    }
+    domains.discard("")
+    domain_count = len(domains)
+    if not domain_count:
+        return SynthesisDecision(False, "no_cited_findings", 0)
+    lowered = str(question or "").casefold()
+    if any(re.search(pattern, lowered) for pattern in _EXECUTIVE_INTENT_PATTERNS):
+        return SynthesisDecision(True, "explicit_intent", domain_count)
+    if domain_count >= 2:
+        return SynthesisDecision(True, "multi_domain", domain_count)
+    return SynthesisDecision(False, "single_domain", domain_count)
+
+
 class OrchestrationService:
     """Execute a fully validated plan and persist only authorized result state."""
 
@@ -285,12 +362,16 @@ class OrchestrationService:
         policy: OrchestrationPolicy | None = None,
         thread_store: InvestigationThreadStore | None = None,
         clock: Callable[[], float] = time.monotonic,
+        executive_agent: Any = None,
+        telemetry: Any = None,
     ) -> None:
         self.planner = planner
         self.executor = executor
         self.policy = policy or OrchestrationPolicy()
         self.thread_store = thread_store or investigation_thread_store()
         self.clock = clock
+        self.executive_agent = executive_agent
+        self.telemetry = telemetry
 
     def execute(
         self,
@@ -301,6 +382,25 @@ class OrchestrationService:
         effective_scope: Scope,
         max_wall_seconds: float | None = None,
     ) -> OrchestrationResult:
+        """Execute one canonical request and return only the canonical result."""
+
+        return self.execute_turn(
+            request,
+            context=context,
+            principal_subject=principal_subject,
+            effective_scope=effective_scope,
+            max_wall_seconds=max_wall_seconds,
+        ).result
+
+    def execute_turn(
+        self,
+        request: InvestigationRequest,
+        *,
+        context: Any,
+        principal_subject: str,
+        effective_scope: Scope,
+        max_wall_seconds: float | None = None,
+    ) -> OrchestrationTurn:
         """Execute one canonical request after all authorization gates pass."""
 
         requested_scope = self.policy.validate_request(request, effective_scope)
@@ -310,9 +410,11 @@ class OrchestrationService:
                 principal_subject,
                 requested_scope,
             )
+            thread_outcome = "continued"
         else:
             thread = self.thread_store.create(principal_subject, requested_scope)
-
+            thread_outcome = "created"
+        self._record_thread_metric(thread_outcome, thread.durability)
         started = self.clock()
         candidate, policy_status, fallback_reason = self._resolve_candidate(
             request,
@@ -348,6 +450,14 @@ class OrchestrationService:
                 if not isinstance(result, ToolResult):
                     raise TypeError("orchestration executor must return ToolResult")
                 tool_statuses.append(result.status)
+                self._record_delegation_metric(
+                    specialist_id=step.specialist_id,
+                    tool=call.tool,
+                    status=result.status,
+                    policy_status=policy_status,
+                    started=started,
+                    evidence_count=len(result.evidence),
+                )
                 call_id = (
                     f"{step_index}:{call_index}:{step.specialist_id}:{call.tool}"
                 )
@@ -390,6 +500,16 @@ class OrchestrationService:
             uncertainty,
             budget_exhausted=budget_exhausted,
         )
+        synthesis = self._synthesize(
+            request.question,
+            tool_results,
+            retained_evidence=self._retained_evidence(thread),
+        )
+        if synthesis.warning:
+            uncertainty = [*uncertainty, synthesis.warning]
+        self._record_budget_metric(budget_exhausted, started)
+        if policy_status == "fallback":
+            self._record_fallback_metric(fallback_reason)
         result = OrchestrationResult(
             status=status,
             policy_status=policy_status,
@@ -403,13 +523,178 @@ class OrchestrationService:
             thread_id=thread.thread_id,
             thread_revision=thread.revision + 1,
         )
-        return self._record_turn(
-            thread,
-            principal_subject=principal_subject,
-            requested_scope=requested_scope,
-            question=request.question,
-            result=result,
+        return OrchestrationTurn(
+            result=self._record_turn(
+                thread,
+                principal_subject=principal_subject,
+                requested_scope=requested_scope,
+                question=request.question,
+                result=result,
+            ),
+            synthesis=synthesis,
         )
+
+    # -- conditional executive synthesis ----------------------------------
+
+    @staticmethod
+    def _retained_evidence(thread: InvestigationThread) -> list[dict[str, Any]]:
+        """Project the thread's retained citations for synthesis reconciliation.
+
+        Only identity, source, status, and observation status travel: carried
+        evidence exists so synthesis can say "this was true an hour ago", not
+        so a second model can re-read raw provider payloads.
+        """
+
+        retained: list[dict[str, Any]] = []
+        for turn in thread.turns:
+            for citation in turn.payload.get("citations") or []:
+                if not isinstance(citation, Mapping):
+                    continue
+                retained.append(
+                    {
+                        "evidence_id": str(citation.get("citation_id") or ""),
+                        "source": str(citation.get("source") or ""),
+                        "status": str(citation.get("status") or ""),
+                        "observation_status": OBSERVATION_HISTORICAL,
+                    }
+                )
+        return retained
+
+    def _synthesize(
+        self,
+        question: str,
+        tool_results: Sequence[Mapping[str, Any]],
+        *,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> ExecutiveSynthesis:
+        """Run at most one citation-closed aggregation call, or none at all."""
+
+        findings = normalize_cited_findings(tool_results)
+        decision = executive_synthesis_decision(question, findings)
+        if not decision.admitted or self.executive_agent is None:
+            synthesis = ExecutiveSynthesis(
+                status="skipped",
+                reason=decision.reason,
+                domain_count=decision.domain_count,
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+
+        stage_started = self.clock() if self.telemetry is not None else 0.0
+        evidence_refs = {
+            ref for finding in findings for ref in finding["evidence_refs"]
+        }
+        try:
+            answer = self.executive_agent.answer(
+                question=question,
+                context=executive_synthesis_input(
+                    findings,
+                    retained_evidence=retained_evidence,
+                ),
+            )
+            claims = validate_executive_synthesis(
+                getattr(answer, "text", ""),
+                evidence_refs=evidence_refs,
+            )
+        except FoundryAgentError:
+            # A rejected or unreachable narrator must not remove the evidence
+            # the specialists already produced, so the turn degrades to their
+            # direct findings and says so rather than failing.
+            synthesis = ExecutiveSynthesis(
+                status="degraded",
+                reason=decision.reason,
+                domain_count=decision.domain_count,
+                warning=(
+                    "Executive synthesis was withheld; direct specialist "
+                    "findings are shown instead."
+                ),
+            )
+        except (AttributeError, ConnectionError, TimeoutError, TypeError, ValueError):
+            synthesis = ExecutiveSynthesis(
+                status="degraded",
+                reason=decision.reason,
+                domain_count=decision.domain_count,
+                warning=(
+                    "Executive synthesis was withheld; direct specialist "
+                    "findings are shown instead."
+                ),
+            )
+        else:
+            synthesis = ExecutiveSynthesis(
+                status="synthesized",
+                reason=decision.reason,
+                domain_count=decision.domain_count,
+                claims=claims,
+            )
+        self._record_stage_metric("synthesis", stage_started)
+        self._record_synthesis_metric(synthesis)
+        return synthesis
+
+    # -- telemetry --------------------------------------------------------
+
+    def _record_delegation_metric(
+        self,
+        *,
+        specialist_id: str,
+        tool: str,
+        status: str,
+        policy_status: str,
+        started: float,
+        evidence_count: int,
+    ) -> None:
+        if self.telemetry is None:
+            return
+        self.telemetry.record_delegation(
+            stage="specialist",
+            specialist_id=specialist_id,
+            tool=tool,
+            status=status,
+            policy_status=policy_status,
+            duration_ms=(self.clock() - started) * 1000.0,
+        )
+        if evidence_count:
+            self.telemetry.record_evidence(
+                status=status,
+                observation_status=OBSERVATION_CURRENT,
+                count=evidence_count,
+            )
+
+    def _record_stage_metric(self, stage: str, started: float) -> None:
+        if self.telemetry is None:
+            return
+        self.telemetry.record_stage_latency(
+            stage=stage,
+            duration_ms=(self.clock() - started) * 1000.0,
+        )
+
+    def _record_budget_metric(self, exhausted: bool, started: float) -> None:
+        if self.telemetry is None:
+            return
+        duration_ms = (self.clock() - started) * 1000.0
+        self.telemetry.record_budget(
+            outcome="exhausted" if exhausted else "within_budget",
+            duration_ms=duration_ms,
+        )
+        self.telemetry.record_stage_latency(stage="total", duration_ms=duration_ms)
+
+    def _record_fallback_metric(self, reason: str) -> None:
+        if self.telemetry is None:
+            return
+        self.telemetry.record_fallback(reason=reason or "none")
+
+    def _record_synthesis_metric(self, synthesis: ExecutiveSynthesis) -> None:
+        if self.telemetry is None:
+            return
+        self.telemetry.record_synthesis(
+            decision=synthesis.reason,
+            status=synthesis.status,
+            domain_count=synthesis.domain_count,
+        )
+
+    def _record_thread_metric(self, outcome: str, durability: str) -> None:
+        if self.telemetry is None:
+            return
+        self.telemetry.record_thread(outcome=outcome, durability=durability)
 
     def unsupported(
         self,
@@ -829,9 +1114,13 @@ def legacy_session_history(
 
 
 __all__ = [
+    "ExecutiveSynthesis",
     "OrchestrationService",
+    "OrchestrationTurn",
     "PlannerTimeoutError",
     "PlannerUnavailableError",
+    "SynthesisDecision",
     "execute_from_question",
+    "executive_synthesis_decision",
     "legacy_session_history",
 ]

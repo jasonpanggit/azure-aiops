@@ -28,7 +28,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +51,9 @@ _SPECIALIST_MANIFEST = load_specialist_manifest()
 SPECIALIST_IDS = _SPECIALIST_MANIFEST.specialist_ids
 DEFAULT_TIMEOUT_SECONDS = 60.0
 SPECIALIST_CONTRACT_VERSION = "network-finding.v1"
+EXECUTIVE_SPECIALIST_ID = "executive_summary"
+MAX_SYNTHESIS_FINDINGS = 25
+MAX_RETAINED_SYNTHESIS_EVIDENCE = 50
 _MUTATION_WORDS = ("delete", "create", "update", "modify", "execute", "apply", "remediate")
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
@@ -259,6 +262,117 @@ def parse_specialist_findings(
         
         validated.append(finding)
     return validated
+
+
+def normalize_cited_findings(
+    tool_results: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project specialist tool results into normalized, cited findings.
+
+    Executive synthesis is the one place a second model sees the output of the
+    first, so it is given the smallest honest projection: who reported it, what
+    status it carried, and which evidence identifiers back it. Tool arguments,
+    raw provider payloads, and anything the specialist said about its own
+    reasoning are dropped here rather than filtered later, because a field that
+    is never assembled cannot leak. A result with no evidence is not a
+    material finding and is omitted entirely.
+    """
+
+    findings: list[dict[str, Any]] = []
+    for result in tool_results:
+        if not isinstance(result, Mapping):
+            continue
+        specialist_id = str(result.get("specialist_id") or "")
+        tool = str(result.get("tool") or "")
+        call_id = str(result.get("call_id") or f"{specialist_id}:{tool}")
+        refs = [
+            # The orchestrator mints one citation per evidence row as
+            # `tool:<call_id>:<index>`, so derive the same identifier here:
+            # synthesis must cite what the result actually published, not a
+            # parallel naming scheme that could never be closed against it.
+            str(item.get("evidence_id") or f"tool:{call_id}:{index}")
+            for index, item in enumerate(result.get("evidence") or [])
+            if isinstance(item, Mapping)
+        ]
+        if not refs:
+            continue
+        status = str(result.get("status") or "")
+        findings.append(
+            {
+                "finding_id": call_id,
+                "specialist_id": specialist_id,
+                "status": status,
+                "summary": f"{specialist_id} reported {status} from {tool}.",
+                "evidence_refs": refs,
+                "observation_status": str(
+                    result.get("observation_status") or "current"
+                ),
+            }
+        )
+        if len(findings) >= MAX_SYNTHESIS_FINDINGS:
+            break
+    return findings
+
+
+def executive_synthesis_input(
+    findings: Iterable[Mapping[str, Any]],
+    *,
+    retained_evidence: Iterable[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Build the bounded, citation-only context handed to executive synthesis.
+
+    Retained evidence is carried so synthesis can reconcile this turn against
+    what the thread already holds, but it is reduced to its identity, source,
+    status, and observation status: continuity must not become a channel for
+    replaying raw provider payloads into a second model.
+    """
+
+    return {
+        "findings": [
+            {
+                "finding_id": str(item.get("finding_id") or ""),
+                "specialist_id": str(item.get("specialist_id") or ""),
+                "status": str(item.get("status") or ""),
+                "summary": str(item.get("summary") or ""),
+                "evidence_refs": [str(ref) for ref in item.get("evidence_refs") or []],
+                "observation_status": str(item.get("observation_status") or "current"),
+            }
+            for item in list(findings)[:MAX_SYNTHESIS_FINDINGS]
+            if isinstance(item, Mapping)
+        ],
+        "retained_evidence": [
+            {
+                "evidence_id": str(item.get("evidence_id") or ""),
+                "source": str(item.get("source") or ""),
+                "status": str(item.get("status") or ""),
+                "observation_status": str(
+                    item.get("observation_status") or "historical"
+                ),
+            }
+            for item in list(retained_evidence)[:MAX_RETAINED_SYNTHESIS_EVIDENCE]
+            if isinstance(item, Mapping)
+        ],
+    }
+
+
+def validate_executive_synthesis(
+    text: str,
+    *,
+    evidence_refs: set[str],
+) -> list[dict[str, Any]]:
+    """Citation-close executive claims against the specialists' own references.
+
+    The executive agent aggregates; it does not observe. Any claim pointing at
+    an identifier no specialist reported is a fabrication regardless of how
+    plausible it reads, so the whole synthesis is rejected rather than
+    partially accepted.
+    """
+
+    return parse_specialist_findings(
+        text,
+        evidence_refs=set(evidence_refs),
+        agent_id=EXECUTIVE_SPECIALIST_ID,
+    )
 
 
 class _TokenProvider:

@@ -91,7 +91,7 @@ class RecordingExecutive:
                     {
                         "finding_id": "exec:1",
                         "summary": "Two domains agree the workload is exposed.",
-                        "evidence_refs": ["tool:0:0:network:network_paths:0"],
+                        "evidence_refs": ["tool:0:0:vulnerability:cve_exposure:0"],
                         "confidence": "high",
                         "freshness": "fresh",
                         "uncertainty": [],
@@ -321,8 +321,8 @@ def _request(question: str) -> InvestigationRequest:
         question=question,
         requested_scope={"subscription": ["sub-a"]},
         snapshot=EvidenceSnapshotV2(
-            page_kind="investigate",
-            page_id="copilot",
+            page_kind="vulnerability",
+            page_id="vulnerability",
             coverage=SnapshotCoverage(visible_count=1, total_count=1, complete=True),
         ),
     )
@@ -330,8 +330,8 @@ def _request(question: str) -> InvestigationRequest:
 
 def _plan(*specialists: str) -> CandidatePlan:
     tools = {
-        "network": "network_paths",
-        "vulnerability": "vulnerability_findings",
+        "vulnerability": "cve_exposure",
+        "patch": "remediation_plans",
     }
     return CandidatePlan(
         steps=[
@@ -377,7 +377,7 @@ def _service(**kwargs: Any) -> OrchestrationService:
 
 def test_single_domain_turn_makes_zero_executive_calls() -> None:
     executive = RecordingExecutive()
-    service = _service(planner=lambda _r: _plan("network"), executive_agent=executive)
+    service = _service(planner=lambda _r: _plan("vulnerability"), executive_agent=executive)
 
     turn = service.execute_turn(
         _request("Which paths reach the VM?"),
@@ -395,7 +395,7 @@ def test_single_domain_turn_makes_zero_executive_calls() -> None:
 def test_qualifying_turn_makes_exactly_one_executive_call() -> None:
     executive = RecordingExecutive()
     service = _service(
-        planner=lambda _r: _plan("network", "vulnerability"),
+        planner=lambda _r: _plan("vulnerability", "patch"),
         executive_agent=executive,
     )
 
@@ -434,7 +434,7 @@ def test_invalid_executive_citations_degrade_to_specialist_findings() -> None:
         )
     )
     service = _service(
-        planner=lambda _r: _plan("network", "vulnerability"),
+        planner=lambda _r: _plan("vulnerability", "patch"),
         executive_agent=executive,
     )
 
@@ -455,13 +455,14 @@ def test_invalid_executive_citations_degrade_to_specialist_findings() -> None:
 
 def test_unavailable_executive_degrades_without_failing_the_turn() -> None:
     class BrokenExecutive:
-        calls: list[Any] = []
+        def __init__(self) -> None:
+            self.calls: list[Any] = []
 
         def answer(self, **_: Any) -> Any:
             raise FoundryAgentError("executive unavailable")
 
     service = _service(
-        planner=lambda _r: _plan("network", "vulnerability"),
+        planner=lambda _r: _plan("vulnerability", "patch"),
         executive_agent=BrokenExecutive(),
     )
 
@@ -478,7 +479,7 @@ def test_unavailable_executive_degrades_without_failing_the_turn() -> None:
 
 
 def test_execute_still_returns_the_canonical_result_only() -> None:
-    service = _service(planner=lambda _r: _plan("network"))
+    service = _service(planner=lambda _r: _plan("vulnerability"))
 
     result = service.execute(
         _request("Which paths reach the VM?"),
@@ -576,7 +577,7 @@ def test_service_emits_only_controlled_orchestration_attributes() -> None:
     meter = RecordingMeter()
     telemetry = OrchestrationTelemetry(meter=meter)
     service = _service(
-        planner=lambda _r: _plan("network", "vulnerability"),
+        planner=lambda _r: _plan("vulnerability", "patch"),
         executive_agent=RecordingExecutive(),
         telemetry=telemetry,
     )
@@ -593,5 +594,5 @@ def test_service_emits_only_controlled_orchestration_attributes() -> None:
     for marker in SENSITIVE_MARKERS:
         assert marker not in serialized
     assert "thr-" not in serialized
-    assert "network" in serialized
+    assert "cve_exposure" in serialized
     assert any(name.endswith("stage.duration") for name, _v, _a in meter.emitted)
