@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from intelligence.vulnerability.exposure_projection import (
+    ExposureGoldProjection,
     ExposureTemporalProjection,
     build_temporal_projection,
+    project_exposure_gold,
 )
 from intelligence.vulnerability.read_port import ExposureReadPort
 from onboarding.network_normalize import NETWORK_ENTITY_TYPES
@@ -285,6 +287,22 @@ def temporal_products_from_legacy(
         ingested_at=ingested_at,
         run_at=ingested_at,
     )
+
+
+def exposure_gold_products_from_datasets(
+    datasets: Mapping[str, list[dict[str, Any]]],
+    *,
+    generation_id: str,
+    projected_at: str,
+) -> dict[str, list[dict[str, Any]]]:
+    """Map current typed Exposure products into one validated Gold generation."""
+
+    projection: ExposureGoldProjection = project_exposure_gold(
+        datasets,
+        generation_id=generation_id,
+        projected_at=projected_at,
+    )
+    return projection.as_tables()
 
 
 def _legacy_temporal_input(

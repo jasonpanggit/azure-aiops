@@ -12,7 +12,6 @@ from intelligence.vulnerability.exposure_projection import (
     project_exposure_gold,
 )
 
-
 GENERATION = "gold-generation-12"
 PROJECTED_AT = "2026-09-06T08:00:00Z"
 SERVER_ID = (
