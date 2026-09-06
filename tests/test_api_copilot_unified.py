@@ -2453,6 +2453,11 @@ def test_multi_agent_reconciliation_counts_only_observed_evidence(
     assert response.status_code == 200
     assert data["reconciliation"]["evidence_count"] == 0
     assert data["reconciliation"]["reconciled_confidence"] == "unknown"
+    assert data["findings"][0]["unsupported"] is True
+    assert data["reconciliation"]["unsupported_conclusions"] == [
+        data["findings"][0]
+    ]
+    assert data["evaluation"]["convergence"] == "converged_with_open_questions"
     assert data["synthesis"]["summary"].startswith(
         "Canonical investigation produced 0 evidence-backed"
     )
