@@ -112,7 +112,12 @@ def _create_investigation_canonical(
         {
             "agent_id": specialist_id,
             "status": (
-                "partial"
+                "not_started"
+                if not any(
+                    call["specialist_id"] == specialist_id
+                    for call in tool_calls
+                )
+                else "partial"
                 if any(
                     call["status"] != "ok"
                     for call in tool_calls
