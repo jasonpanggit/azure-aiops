@@ -5,4 +5,3 @@ from .coordinator import OntologyDiscoveryCoordinator
 from .store import OntologyRunStore
 
 __all__ = ["CheckpointResult", "OntologyDiscoveryCoordinator", "OntologyRunStore"]
-
