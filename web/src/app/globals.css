@@ -2752,6 +2752,13 @@ textarea:focus-visible {
   background: #605e5c;
 }
 
+.topology-legend-private-link::before {
+  box-sizing: border-box;
+  height: 8px;
+  background: transparent;
+  border: 1px dashed var(--color-text-muted);
+}
+
 .topology-legend-isolated::before {
   background: var(--color-warning);
 }
@@ -2938,6 +2945,23 @@ textarea:focus-visible {
 
   .predeploy-summary .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .topology-stage {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .topology-canvas-wrap {
+    height: 420px;
+  }
+
+  .topology-drawer {
+    width: 100%;
+    flex: 1 1 auto;
+    max-height: 340px;
+    border-top: 1px solid var(--color-border);
+    border-left: 0;
   }
 }
 
@@ -5377,23 +5401,6 @@ body.topology-fullscreen-open {
   .control-rule,
   .control-reason {
     grid-column: 2;
-  }
-
-  .topology-stage {
-    flex-direction: column;
-    height: auto;
-  }
-
-  .topology-canvas-wrap {
-    height: 420px;
-  }
-
-  .topology-drawer {
-    width: 100%;
-    flex: 1 1 auto;
-    max-height: 340px;
-    border-top: 1px solid var(--color-border);
-    border-left: 0;
   }
 
   .finding-row {

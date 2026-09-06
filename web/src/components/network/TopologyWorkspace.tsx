@@ -379,7 +379,10 @@ export function TopologyWorkspace({
     graphHandleRef.current = handle;
   }, []);
 
-  const clearSelection = useCallback(() => setSelection(EMPTY_SELECTION), []);
+  const clearSelection = useCallback(() => {
+    setSelection(EMPTY_SELECTION);
+    graphHandleRef.current?.focusCanvas();
+  }, []);
   const handleSelection = useCallback((next: TopologySelection) => {
     setSelectionAnnouncement("");
     setSelection(next);
@@ -392,11 +395,11 @@ export function TopologyWorkspace({
       selectionContextRef.current !== contextKey
     ) {
       clearTopologyDetailCache();
-      setSelection(EMPTY_SELECTION);
+      clearSelection();
       setSelectionAnnouncement("");
     }
     selectionContextRef.current = contextKey;
-  }, [detailLevel, scopeKey]);
+  }, [clearSelection, detailLevel, scopeKey]);
 
   useEffect(() => {
     if (topologyRef.current !== topology) {
@@ -420,10 +423,16 @@ export function TopologyWorkspace({
         !visibleNodeIds.has(selection.node.id.toLowerCase())) ||
       (selection.edge && !visibleEdgeIds.has(selection.edge.id))
     ) {
-      setSelection(EMPTY_SELECTION);
+      clearSelection();
       setSelectionAnnouncement("");
     }
-  }, [selection.edge, selection.node, visibleEdgeIds, visibleNodeIds]);
+  }, [
+    clearSelection,
+    selection.edge,
+    selection.node,
+    visibleEdgeIds,
+    visibleNodeIds,
+  ]);
 
   useEffect(() => {
     if (!filterMode || !normalizedSearch || (!selection.node && !selection.edge)) {
@@ -440,12 +449,13 @@ export function TopologyWorkspace({
           ),
         );
     if (!selectedVisible) {
-      setSelection(EMPTY_SELECTION);
+      clearSelection();
       setSelectionAnnouncement(
         "Selection cleared — the selected resource is hidden by the current filter.",
       );
     }
   }, [
+    clearSelection,
     filterMode,
     matchingNodeIds,
     normalizedSearch,
@@ -694,6 +704,7 @@ export function TopologyWorkspace({
           <span className="topology-legend-hub">Hub</span>
           <span className="topology-legend-spoke">Spoke</span>
           <span className="topology-legend-resource">Resource</span>
+          <span className="topology-legend-private-link">Private link candidate</span>
           <span className="topology-legend-isolated">Isolated</span>
           <span className="topology-legend-unresolved">Peer VNet not shown</span>
           <span className="topology-legend-unhealthy">Peering not connected</span>

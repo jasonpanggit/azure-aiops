@@ -384,6 +384,20 @@ def _css_rule(source: str, selector: str) -> str:
     return match.group("body")
 
 
+def _css_at_rule(source: str, at_rule: str) -> str:
+    start = source.index(at_rule)
+    opening = source.index("{", start)
+    depth = 1
+    cursor = opening + 1
+    while depth:
+        if source[cursor] == "{":
+            depth += 1
+        elif source[cursor] == "}":
+            depth -= 1
+        cursor += 1
+    return source[opening + 1 : cursor - 1]
+
+
 class _NetworkContext:
     provider_runtime = None
     hybrid_network_provider = None
@@ -798,3 +812,27 @@ def test_ui_backstops_preserve_zero_values_and_wrap_narrow_surfaces() -> None:
         styles,
         "#policy-assertion-error",
     )
+
+
+def test_ui_review_responsive_contract() -> None:
+    styles = GLOBAL_STYLES.read_text(encoding="utf-8")
+    tablet = _css_at_rule(styles, "@media (max-width: 900px)")
+
+    assert "flex-direction: column" in _css_rule(tablet, ".topology-stage")
+    assert "height: 420px" in _css_rule(tablet, ".topology-canvas-wrap")
+    drawer = _css_rule(tablet, ".topology-drawer")
+    assert "width: 100%" in drawer
+    assert "max-height: 340px" in drawer
+    assert "border-top: 1px solid var(--color-border)" in drawer
+    assert "border-left: 0" in drawer
+
+
+def test_ui_review_private_link_legend_matches_canvas_treatment() -> None:
+    styles = GLOBAL_STYLES.read_text(encoding="utf-8")
+    workspace = WORKSPACE_COMPONENT.read_text(encoding="utf-8")
+
+    assert ">Private link candidate</span>" in workspace
+    legend = _css_rule(styles, ".topology-legend-private-link::before")
+    assert "background: transparent" in legend
+    assert "border" in legend
+    assert "dashed" in legend

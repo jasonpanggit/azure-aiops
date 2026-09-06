@@ -21,12 +21,18 @@ import type { TopologyNodeData } from "@/lib/network-graph";
 import type { TopologyExportContext } from "./TopologyGraph";
 
 const graphProbe = vi.hoisted(() => ({
+  canvas: null as HTMLDivElement | null,
   props: null as null | {
     topology?: ReturnType<typeof buildTopologyEnvelope>["data"]["topology"];
     onSelect?: (selection: {
       node: TopologyNodeData | null;
       edge: null;
     }) => void;
+    onReady?: (handle: {
+      exportPng: () => void;
+      exportJson: () => void;
+      focusCanvas: () => void;
+    } | null) => void;
     findingSeverityByResource?: Map<
       string,
       { severity: string; count: number; title?: string }
@@ -39,6 +45,11 @@ vi.mock("next/dynamic", () => ({
   default: () =>
     function GraphDouble(props: typeof graphProbe.props) {
       graphProbe.props = props;
+      props?.onReady?.({
+        exportPng: vi.fn(),
+        exportJson: vi.fn(),
+        focusCanvas: () => graphProbe.canvas?.focus(),
+      });
       const resource = props?.topology?.resources?.[0];
       const node: TopologyNodeData | null = resource
         ? {
@@ -56,7 +67,15 @@ vi.mock("next/dynamic", () => ({
           }
         : null;
       return (
-        <div data-testid="topology-graph">
+        <div
+          data-testid="topology-graph"
+          role="application"
+          aria-label="Interactive network topology graph"
+          tabIndex={-1}
+          ref={(element) => {
+            graphProbe.canvas = element;
+          }}
+        >
           Topology graph
           {node && (
             <button
@@ -104,6 +123,7 @@ function renderWorkspace(
 
 describe("TopologyWorkspace detail level", () => {
   beforeEach(() => {
+    graphProbe.canvas = null;
     graphProbe.props = null;
   });
 
@@ -215,6 +235,15 @@ describe("TopologyWorkspace detail level", () => {
     expect(
       screen.queryByText("No observed network topology"),
     ).not.toBeInTheDocument();
+  });
+
+  it("labels the dashed workload treatment as Private link candidate", () => {
+    renderWorkspace();
+
+    const legend = screen.getByLabelText("Topology legend");
+    expect(within(legend).getByText("Private link candidate")).toHaveClass(
+      "topology-legend-private-link",
+    );
   });
 });
 
@@ -454,6 +483,23 @@ describe("TopologyWorkspace badge coverage", () => {
 });
 
 describe("TopologyWorkspace export and selection honesty", () => {
+  it("restores focus to the programmatically focusable canvas after closing the drawer", async () => {
+    renderWorkspace();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select first graph node" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close details" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("application", {
+          name: "Interactive network topology graph",
+        }),
+      ).toHaveFocus(),
+    );
+  });
+
   it("shows a Partial badge beside honest JSON and PNG export controls", () => {
     const topology = buildTopologyEnvelope().data.topology;
     topology.coverage = {
@@ -520,6 +566,11 @@ describe("TopologyWorkspace export and selection honesty", () => {
         )
         .closest('[role="status"]'),
     ).not.toBeNull();
+    expect(
+      screen.getByRole("application", {
+        name: "Interactive network topology graph",
+      }),
+    ).toHaveFocus();
   });
 
   it("clears selection immediately when the active scope changes", async () => {

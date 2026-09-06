@@ -300,6 +300,7 @@ export interface TopologySelection {
 export interface TopologyGraphHandle {
   exportPng: () => void;
   exportJson: () => void;
+  focusCanvas: () => void;
 }
 
 export interface TopologyExportCoverage {
@@ -315,6 +316,22 @@ export interface TopologyExportCoverage {
   renderedRelationships: number;
   totalRelationships: number | null;
   droppedRelationships: number;
+}
+
+/** Fit the graph viewport while respecting the user's reduced-motion preference. */
+export function fitTopology(cy: Core): void {
+  const reduceMotion =
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduceMotion) {
+    cy.fit(undefined, 40);
+    return;
+  }
+  cy.animate(
+    { fit: { eles: cy.elements(), padding: 40 } },
+    { duration: 200 },
+  );
 }
 
 export interface TopologyExportContext {
@@ -533,6 +550,7 @@ export default function TopologyGraph({
     observer.observe(container);
 
     onReady?.({
+      focusCanvas: () => container.focus(),
       exportPng: () => {
         const identity = nextExportIdentity("png");
         const uri = cy.png({ full: true, scale: 2, bg: "#eef2f6" });
@@ -614,7 +632,8 @@ export default function TopologyGraph({
   }, [findingSeverityByResource, elements]);
 
   const fit = useCallback(() => {
-    cyRef.current?.animate({ fit: { eles: cyRef.current.elements(), padding: 40 } }, { duration: 200 });
+    const cy = cyRef.current;
+    if (cy) fitTopology(cy);
   }, []);
 
   const zoomBy = useCallback((factor: number) => {
@@ -639,6 +658,7 @@ export default function TopologyGraph({
         ref={containerRef}
         role="application"
         aria-label="Interactive network topology graph"
+        tabIndex={-1}
       />
       <div className="topology-canvas-controls">
         <button type="button" onClick={() => zoomBy(1.25)} aria-label="Zoom in">

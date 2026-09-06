@@ -1,5 +1,5 @@
 import cytoscape from "cytoscape";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildTopologyEnvelope } from "@/test/network-fixtures";
 
 import {
@@ -7,10 +7,15 @@ import {
   applyHoverFocus,
   buildTopologyExport,
   clearHoverFocus,
+  fitTopology,
   nextExportIdentity,
   layoutForTransition,
   syncFindingBadge,
 } from "./TopologyGraph";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 /**
  * Cytoscape validates stylesheet property values at instantiation and throws if
@@ -171,6 +176,26 @@ describe("topology detail transitions", () => {
   it("keeps existing positions on every payload transition", () => {
     expect(layoutForTransition(40, true)).toMatchObject({ randomize: false });
     expect(layoutForTransition(1_000, true)).toMatchObject({ randomize: false });
+  });
+
+  describe("topology motion preferences", () => {
+    it("queries matchMedia and fits immediately when reduced motion is requested", () => {
+      const fit = vi.fn();
+      const animate = vi.fn();
+      const elements = vi.fn(() => ({ length: 1 }));
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => ({ matches: true })),
+      );
+
+      fitTopology({ fit, animate, elements } as unknown as cytoscape.Core);
+
+      expect(window.matchMedia).toHaveBeenCalledWith(
+        "(prefers-reduced-motion: reduce)",
+      );
+      expect(fit).toHaveBeenCalledWith(undefined, 40);
+      expect(animate).not.toHaveBeenCalled();
+    });
   });
 });
 
