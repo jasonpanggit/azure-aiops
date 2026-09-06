@@ -320,6 +320,13 @@ export function TopologyWorkspace({
     () => (topology ? buildTopologyGraph(topology) : null),
     [topology],
   );
+  const visibleNodeIds = useMemo(
+    () =>
+      new Set(
+        (renderedGraph?.nodes ?? []).map((node) => node.id.toLowerCase()),
+      ),
+    [renderedGraph],
+  );
   const normalizedSearch = search.trim().toLowerCase();
   const matchingNodeIds = useMemo(
     () =>
@@ -661,6 +668,7 @@ export function TopologyWorkspace({
               : undefined
           }
           detailLevel={detailLevel}
+          visibleNodeIds={visibleNodeIds}
         />
       </div>
 
