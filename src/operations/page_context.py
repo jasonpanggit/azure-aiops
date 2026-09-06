@@ -418,11 +418,17 @@ def canonicalize_snapshot_v2(
             )
         elif all(row.freshness == "unknown" for row in retained):
             insufficiency_reasons.append("all retained evidence has unknown freshness")
-        incomplete_claims = [
-            claim
-            for claim in snapshot.material_claims
-            if claim.requires_complete_coverage and not snapshot.coverage.complete
-        ]
+        incomplete_claims = sorted(
+            (
+                claim
+                for claim in snapshot.material_claims
+                if claim.requires_complete_coverage and not snapshot.coverage.complete
+            ),
+            key=lambda claim: (
+                claim.claim_id.casefold(),
+                tuple(sorted(claim.evidence_refs)),
+            ),
+        )
         if len(incomplete_claims) <= 32:
             for claim in incomplete_claims:
                 insufficiency_reasons.append(

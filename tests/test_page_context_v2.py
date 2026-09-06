@@ -481,6 +481,49 @@ def test_many_coverage_dependent_claims_produce_bounded_insufficiency():
     assert len(canonical.insufficiency_reasons) <= 64
 
 
+def test_material_claim_order_does_not_change_canonical_hash():
+    row = _evidence("shared", source_key="shared")
+    coverage = contract.SnapshotCoverage(
+        visible_count=1,
+        total_count=2,
+        complete=False,
+    )
+    freshness = [
+        contract.SnapshotFreshness(
+            source="inventory/resource_observations",
+            observed_at="2026-09-01T00:00:00Z",
+            status="fresh",
+        )
+    ]
+    claims = [
+        {
+            "claim_id": claim_id,
+            "evidence_refs": ["shared"],
+            "requires_complete_coverage": True,
+        }
+        for claim_id in ("claim-b", "claim-a")
+    ]
+
+    left = _canonicalize(
+        _snapshot(
+            [row],
+            coverage=coverage,
+            freshness=freshness,
+            material_claims=claims,
+        )
+    )
+    right = _canonicalize(
+        _snapshot(
+            [row],
+            coverage=coverage,
+            freshness=freshness,
+            material_claims=list(reversed(claims)),
+        )
+    )
+
+    assert left.snapshot_hash() == right.snapshot_hash()
+
+
 def test_strict_bounds_reject_oversized_rows_and_lists():
     with pytest.raises(ValidationError, match="evidence row exceeds size limit"):
         _evidence(
