@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 JOB_TF = ROOT / "infra" / "terraform" / "ontology_discovery_job.tf"
+VARIABLES_TF = ROOT / "infra" / "terraform" / "variables.tf"
 CONTAINER_APPS_TF = ROOT / "infra" / "terraform" / "container_apps.tf"
 
 
@@ -24,11 +25,44 @@ def test_ontology_job_is_finite_scheduled_and_uses_the_api_image() -> None:
     assert "replica_completion_count = 1" in job
     assert "replica_timeout_in_seconds = 900" in job
     assert "replica_retry_limit        = 2" in job
-    assert "image  = var.deploy_images ? local.api_image : local.placeholder_image" in job
+    assert (
+        "image  = var.deploy_images ? local.ontology_discovery_image : "
+        "local.placeholder_image"
+    ) in job
     assert '"python"' in job
     assert '"-m"' in job
     assert '"ontology_discovery.cli"' in job
     assert '"run-once"' in job
+
+
+def test_ontology_jobs_have_an_independent_optional_immutable_image_tag() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+    variables = VARIABLES_TF.read_text(encoding="utf-8")
+    scheduled = _resource(
+        terraform,
+        "azurerm_container_app_job",
+        "ontology_discovery",
+    )
+    validator = _resource(
+        terraform,
+        "azurerm_container_app_job",
+        "ontology_rbac_validation",
+    )
+    variable = variables.split(
+        'variable "ontology_discovery_image_tag"', maxsplit=1
+    )[1].split("\n}", maxsplit=1)[0]
+
+    assert "default     = \"\"" in variable
+    assert "validation {" in variable
+    assert "^[0-9A-Za-z_][0-9A-Za-z_.-]{0,127}$" in variable
+    assert (
+        'ontology_discovery_image = var.ontology_discovery_image_tag != "" '
+        '? "${local.registry_server}/${var.api_image_repository}:'
+        '${var.ontology_discovery_image_tag}" : local.api_image'
+    ) in terraform
+    for job in (scheduled, validator):
+        assert "local.ontology_discovery_image" in job
+        assert "var.image_tag" not in job
 
 
 def test_coordinator_identity_is_distinct_and_has_no_publisher_capability() -> None:
