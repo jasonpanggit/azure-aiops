@@ -19,8 +19,10 @@ from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     CandidatePlan,
     Citation,
+    EvidenceSnapshotV2,
     InvestigationRequest,
     OrchestrationResult,
+    SnapshotCoverage,
 )
 from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
 from operations.specialist_manifest import load_specialist_manifest
@@ -339,8 +341,65 @@ class OrchestrationService:
         return STATUS_OK
 
 
+def execute_from_question(
+    question: str,
+    *,
+    scope: Scope,
+    context: Any,
+    principal_subject: str,
+) -> OrchestrationResult:
+    """Canonical orchestration adapter for question-only legacy routes.
+
+    Shared by ``/copilot/investigate`` and ``POST /agents/investigations`` in
+    canonical mode.  Builds a synthetic ``EvidenceSnapshotV2`` with
+    ``page_kind="inventory"`` and incomplete coverage, then delegates to
+    :class:`OrchestrationService` with the deterministic keyword fallback.
+
+    Questions whose tools do not map to the inventory page receive honest
+    ``partial`` or ``unavailable`` results through the standard uncertainty
+    mechanism rather than bridging to an incorrect page context.  All I/O
+    remains behind the service's policy validation and scope enforcement.
+    """
+
+    def _safe_executor(
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        context: Any,
+        scope: Scope,
+    ) -> ToolResult:
+        try:
+            return call_tool(name, arguments, context=context, scope=scope)
+        except (AttributeError, LookupError, RuntimeError, TypeError, ValueError):
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                warning="Tool unavailable in canonical question mode",
+            )
+
+    request = InvestigationRequest(
+        question=question,
+        requested_scope=scope.to_dict(),
+        snapshot=EvidenceSnapshotV2(
+            page_kind="inventory",
+            page_id="copilot",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=False,
+            ),
+        ),
+    )
+    return OrchestrationService(executor=_safe_executor).execute(
+        request,
+        context=context,
+        principal_subject=principal_subject,
+        effective_scope=scope,
+    )
+
+
 __all__ = [
     "OrchestrationService",
     "PlannerTimeoutError",
     "PlannerUnavailableError",
+    "execute_from_question",
 ]

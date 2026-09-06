@@ -48,7 +48,7 @@ from operations.orchestration_contract import (
     InvestigationRequest as CanonicalInvestigationRequest,
 )
 from operations.orchestration_policy import PolicyViolation
-from operations.orchestration_service import OrchestrationService
+from operations.orchestration_service import OrchestrationService, execute_from_question
 from operations.page_context import PageSnapshot
 from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
 from operations.tools import (
@@ -533,6 +533,83 @@ def tools(context: Context, scope: ReadScope) -> dict[str, Any]:
     return envelope({"tools": tool_catalog()}, scope=scope.to_dict())
 
 
+def _investigate_via_canonical(
+    question: str,
+    *,
+    started: float,
+    context: Any,
+    scope: Any,
+    principal: Any,
+) -> dict[str, Any]:
+    """Route ``/copilot/investigate`` through the canonical OrchestrationService.
+
+    Translates the question to a canonical ``InvestigationRequest``, invokes
+    ``OrchestrationService.execute`` via the shared adapter, and projects the
+    result back to the legacy investigation wire shape so existing consumers
+    see the same ``question``/``tool_calls``/``fact_status``/``warnings``
+    contract.  Session continuity uses the canonical thread, not the legacy
+    ``ConversationStore``.
+    """
+    result = execute_from_question(
+        question,
+        scope=scope,
+        context=context,
+        principal_subject=principal.subject,
+    )
+    duration_ms = (time.monotonic() - started) * 1000.0
+    if duration_ms > INVESTIGATION_TIMEOUT_SECONDS * 1000.0:
+        logger.warning(
+            "copilot_investigation_over_budget duration_ms=%.0f question_len=%d",
+            duration_ms,
+            len(question),
+        )
+    audit_logger.info(
+        "copilot_investigation subject=%s tools=%s statuses=%s fact_status=%s duration_ms=%.0f",
+        principal.subject,
+        result.selected_tools,
+        [tr["status"] for tr in result.tool_results],
+        result.status,
+        duration_ms,
+    )
+    projected: dict[str, Any] = {
+        "question": question,
+        "tool_calls": [
+            {
+                "tool": tr["tool"],
+                "arguments": {},
+                "status": tr["status"],
+                "data": tr.get("data"),
+                "evidence": list(tr.get("evidence", ())),
+                "warning": tr.get("warning", ""),
+            }
+            for tr in result.tool_results
+        ],
+        "answer": None,
+        "fact_status": result.status,
+        "warnings": list(result.uncertainty),
+        "contract_version": result.contract_version,
+        "thread_id": result.thread_id,
+    }
+    evidence: list[Evidence] = []
+    for tr in result.tool_results:
+        for ev in tr.get("evidence", ()):
+            evidence.append(
+                Evidence(
+                    source_engine=str(ev.get("source_engine", "")),
+                    source_table=str(ev.get("source_table", "")),
+                    timestamp=str(ev.get("timestamp", "")),
+                    resource_id=str(ev.get("resource_id", "")),
+                    confidence=str(ev.get("confidence", CONFIDENCE_MEDIUM)),
+                )
+            )
+    return envelope(
+        projected,
+        evidence=evidence,
+        scope=scope.to_dict(),
+        warnings=list(result.uncertainty),
+    )
+
+
 @router.post("/copilot/investigate", summary="Multi-step Operations Copilot investigation")
 def investigate(
     payload: InvestigationRequest,
@@ -558,6 +635,16 @@ def investigate(
         )
 
     started = time.monotonic()
+
+    if canonical_orchestration_enabled():
+        return _investigate_via_canonical(
+            question,
+            started=started,
+            context=context,
+            scope=scope,
+            principal=principal,
+        )
+
     investigation = run_investigation(
         question,
         context=context,
@@ -602,9 +689,7 @@ def investigate(
         )
 
     return envelope(
-        canonicalize_investigation(investigation)
-        if canonical_orchestration_enabled()
-        else investigation.to_dict(),
+        investigation.to_dict(),
         evidence=evidence,
         scope=scope.to_dict(),
         warnings=list(investigation.warnings),

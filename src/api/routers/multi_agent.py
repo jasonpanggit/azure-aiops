@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid as _uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter
@@ -14,6 +16,7 @@ from operations.autonomous_investigation import (
     run_autonomous_investigation,
 )
 from operations.maf_orchestrator import canonical_orchestration_enabled
+from operations.orchestration_service import execute_from_question
 
 from ..dependencies import Context, CurrentPrincipal, ReadScope
 from ..errors import ApiError, ErrorCode
@@ -57,6 +60,84 @@ def catalog(context: Context, scope: ReadScope) -> dict[str, Any]:
     return envelope({"agents": agent_catalog()}, evidence=_evidence(), scope=scope.to_dict())
 
 
+def _create_investigation_canonical(
+    payload: InvestigationCreateRequest,
+    *,
+    context: Any,
+    scope: ReadScope,
+    principal: CurrentPrincipal,
+) -> dict[str, Any]:
+    """Route POST /agents/investigations through the canonical service.
+
+    Translates objective/scope/principal into a canonical request, invokes
+    ``OrchestrationService.execute`` via the shared adapter, and projects the
+    result into the legacy ledger shape for response compatibility and
+    persistence.  Principal scope, audit actions, and deterministic rollback
+    are preserved by the canonical service's policy and thread model.
+    """
+    objective = payload.objective.strip()
+    result = execute_from_question(
+        objective,
+        scope=scope,
+        context=context,
+        principal_subject=principal.subject,
+    )
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    ledger: dict[str, Any] = {
+        "contract_version": result.contract_version,
+        "ledger_id": f"mai-{_uuid.uuid4().hex[:12]}",
+        "objective": objective,
+        "scope": scope.to_dict(),
+        "created_by": principal.subject,
+        "created_at": now,
+        "updated_at": now,
+        "status": (
+            "synthesized" if result.status in ("ok", "empty") else result.status
+        ),
+        "orchestration": {
+            "runtime": "canonical",
+            "strategy": "canonical_service",
+            "selected_ids": result.selected_specialists,
+        },
+        "selected_agents": [],
+        "agent_runs": [],
+        "reconciliation": {
+            "evidence_count": len(result.citations),
+            "reconciled_confidence": "medium",
+        },
+        "synthesis": {"mode": "canonical", "narration": ""},
+        "human_controls": {
+            "available_actions": [
+                "request_more_evidence",
+                "accept_finding",
+                "reject_finding",
+                "assign_owner",
+                "approve_plan",
+                "stop_investigation",
+            ]
+        },
+        "decisions": [],
+        "approvals": [],
+        "outcome": "",
+        "stop_reason": "",
+        "evaluation": {},
+        "tool_calls": [
+            {
+                "tool": tr["tool"],
+                "status": tr["status"],
+                "warning": tr.get("warning", ""),
+                "operation": "delegate",
+            }
+            for tr in result.tool_results
+        ],
+        "findings": [],
+        "warnings": list(result.uncertainty),
+        "thread_id": result.thread_id,
+    }
+    ledger_store().add(ledger)
+    return _respond(ledger, scope)
+
+
 @router.post("/investigations", summary="Run autonomous multi-agent investigation")
 def create_investigation(
     payload: InvestigationCreateRequest,
@@ -64,6 +145,11 @@ def create_investigation(
     scope: ReadScope,
     principal: CurrentPrincipal,
 ) -> dict[str, Any]:
+    if canonical_orchestration_enabled():
+        return _create_investigation_canonical(
+            payload, context=context, scope=scope, principal=principal,
+        )
+
     ledger = run_autonomous_investigation(
         payload.objective.strip(),
         context=context,
