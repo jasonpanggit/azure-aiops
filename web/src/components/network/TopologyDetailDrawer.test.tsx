@@ -8,6 +8,7 @@ import { networkApi } from "@/lib/services";
 import { buildGapsEnvelope, buildRuleFindingsEnvelope } from "@/test/network-fixtures";
 
 import {
+  clearTopologyDetailCache,
   TopologyDetailDrawer,
   type DrawerFindingsState,
 } from "./TopologyDetailDrawer";
@@ -16,6 +17,7 @@ const NODE_ID =
   "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/networkSecurityGroups/nsg-a";
 
 afterEach(() => {
+  clearTopologyDetailCache();
   vi.restoreAllMocks();
 });
 
@@ -495,6 +497,36 @@ describe("TopologyDetailDrawer on-demand facts", () => {
     renderDrawer(node({ id: `${NODE_ID}/cached`, label: "cached" }));
     expect(screen.getByText("cached-rule")).toBeInTheDocument();
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reuse detail pages after the topology cache is invalidated", async () => {
+    const detailId = `${NODE_ID}/invalidated`;
+    const request = vi
+      .spyOn(networkApi, "topologyResourceDetails")
+      .mockResolvedValue({
+        data: {
+          resource_id: detailId,
+          detail_type: "rules",
+          items: [{ id: "fresh-rule", name: "fresh-rule" }],
+          coverage: { total: 1, returned: 1, truncated: false },
+        },
+        evidence: [],
+        scope: {},
+        pagination: { offset: 0, limit: 50, total: 1, next_offset: null },
+      });
+
+    const first = renderDrawer(node({ id: detailId }));
+    fireEvent.click(screen.getByRole("button", { name: "Load rules" }));
+    await screen.findByText("fresh-rule");
+    first.unmount();
+
+    clearTopologyDetailCache();
+    renderDrawer(node({ id: detailId }));
+    expect(screen.queryByText("fresh-rule")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load rules" }));
+    await screen.findByText("fresh-rule");
+
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("renders private endpoint and private-link service facts without silent unknowns", () => {

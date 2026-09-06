@@ -580,4 +580,30 @@ describe("TopologyWorkspace export and selection honesty", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
   });
+
+  it("clears selection when a refreshed topology retains the selected node", async () => {
+    const initialTopology = buildTopologyEnvelope().data.topology;
+    const { rerender } = renderWorkspace({ topology: initialTopology });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select first graph node" }),
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    rerender(
+      <TopologyWorkspace
+        topology={{
+          ...initialTopology,
+          counts: { ...initialTopology.counts },
+        }}
+        summary={summaryWithProjectedNodes(100)}
+        detailLevel="summary"
+        loading={false}
+        error={null}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
 });

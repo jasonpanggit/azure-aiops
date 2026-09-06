@@ -4,7 +4,10 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { TopologyDetailDrawer } from "@/components/network/TopologyDetailDrawer";
+import {
+  clearTopologyDetailCache,
+  TopologyDetailDrawer,
+} from "@/components/network/TopologyDetailDrawer";
 import type {
   TopologyExportContext,
   TopologyGraphHandle,
@@ -260,6 +263,7 @@ export function TopologyWorkspace({
   const [selection, setSelection] = useState<TopologySelection>(EMPTY_SELECTION);
   const [selectionAnnouncement, setSelectionAnnouncement] = useState("");
   const selectionContextRef = useRef("");
+  const topologyRef = useRef(topology);
   const graphHandleRef = useRef<TopologyGraphHandle | null>(null);
   const [badgeGaps, setBadgeGaps] = useState(gaps);
   const [badgeRuleFindings, setBadgeRuleFindings] = useState(ruleFindings);
@@ -387,11 +391,28 @@ export function TopologyWorkspace({
       selectionContextRef.current &&
       selectionContextRef.current !== contextKey
     ) {
+      clearTopologyDetailCache();
       setSelection(EMPTY_SELECTION);
       setSelectionAnnouncement("");
     }
     selectionContextRef.current = contextKey;
   }, [detailLevel, scopeKey]);
+
+  useEffect(() => {
+    if (topologyRef.current !== topology) {
+      clearTopologyDetailCache();
+      setSelection(EMPTY_SELECTION);
+      setSelectionAnnouncement("");
+    }
+    topologyRef.current = topology;
+  }, [topology]);
+
+  useEffect(
+    () => () => {
+      clearTopologyDetailCache();
+    },
+    [],
+  );
 
   useEffect(() => {
     if (

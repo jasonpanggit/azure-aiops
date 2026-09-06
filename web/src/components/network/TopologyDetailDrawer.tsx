@@ -468,6 +468,7 @@ const PRIVATE_LINK_ENTITY_TYPES = new Set([
   "FabricCapacity",
   "AIFoundryAccount",
 ]);
+const DETAIL_CACHE_MAX_ENTRIES = 64;
 const detailCache = new Map<
   string,
   Envelope<NetworkTopologyResourceDetails>
@@ -476,6 +477,28 @@ const detailRequests = new Map<
   string,
   Promise<Envelope<NetworkTopologyResourceDetails>>
 >();
+let detailCacheGeneration = 0;
+
+/** Drop detail pages whenever the topology snapshot that produced them expires. */
+export function clearTopologyDetailCache(): void {
+  detailCacheGeneration += 1;
+  detailCache.clear();
+  detailRequests.clear();
+}
+
+function cacheDetailPage(
+  key: string,
+  response: Envelope<NetworkTopologyResourceDetails>,
+): void {
+  // Refresh insertion order on a repeated key, then evict the oldest page.
+  detailCache.delete(key);
+  detailCache.set(key, response);
+  while (detailCache.size > DETAIL_CACHE_MAX_ENTRIES) {
+    const oldestKey = detailCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    detailCache.delete(oldestKey);
+  }
+}
 
 function scopeCacheKey(scope: ScopeSelection): string {
   const query = scopeToSearchParams(scope);
@@ -502,10 +525,13 @@ function requestDetailPage(
   const pending = detailRequests.get(key);
   if (pending) return pending;
 
+  const generation = detailCacheGeneration;
   const request = networkApi
     .topologyResourceDetails(nodeId, scope, offset, DETAIL_PAGE_SIZE)
     .then((response) => {
-      detailCache.set(key, response);
+      if (generation === detailCacheGeneration) {
+        cacheDetailPage(key, response);
+      }
       return response;
     });
   detailRequests.set(key, request);
