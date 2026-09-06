@@ -1,27 +1,27 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-fixed_at: 2026-09-06T07:06:02Z
+fixed_at: 2026-09-06T07:23:33Z
 review_path: .planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md
 iteration: consolidated
-review_observations: 52
-findings_in_scope: 49
-fixed: 49
+review_observations: 54
+findings_in_scope: 51
+fixed: 51
 non_actionable: 3
 skipped: 0
 status: all_fixed
-verified_source_head: c2020d1f
+verified_source_head: 811883f3
 ---
 
 # Phase 12: Consolidated Code Review Fix Report
 
-**Closed at:** 2026-09-06T07:06:02Z
+**Closed at:** 2026-09-06T07:23:33Z
 **Source review:** `.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`
 **Iterations represented:** implementation review, supplemental review, and three independent post-fix verification iterations
 
 **Authoritative summary:**
-- Review observations adjudicated: **52**
-- Actionable findings in scope: **49**
-- Fixed or resolved with commit evidence: **49**
+- Review observations adjudicated: **54**
+- Actionable findings in scope: **51**
+- Fixed or resolved with commit evidence: **51**
 - Adjudicated non-actionable: **3**
 - Skipped or open: **0**
 - Final status: **all resolved**
@@ -84,14 +84,16 @@ and the following ledger are the authoritative final state.
   `f6c7c196`, `09b1ba08`, `f67d55f1`, `afb333c3`, and `5d8916bd`.
 - Final policy-management review: **1/1 fixed** by failing-first regression
   `8b502206` and implementation `c2020d1f`.
+- Final concurrency/revision review: **2/2 fixed** by atomic test-and-fix
+  commits `653c99c0` and `811883f3`.
 
 ## Final Verification
 
 Verification ran against the final source in both locations:
 
-- **Isolated review-fix worktree** (removed after integration): the final
-  policy-management backend run passed **2,728 tests, skipped 33**
-  (**2,761 collected**); Ruff and Python parsing passed.
+- **Isolated review-fix worktree** (removed after integration): the latest
+  concurrency/revision backend run passed **2,736 tests, skipped 33**
+  (**2,769 collected**); Ruff, Python parsing, and diff checks passed.
 - **Assigned Phase 12 checkout**
   `/Users/jasonmba/workspace/copilot-worktrees/azure-aiops/jasonpanggit-potential-broccoli`:
   the full web run passed **43 files / 347 tests**, with **15 pre-existing
@@ -515,3 +517,74 @@ No source or test changes were rolled back or skipped. `STATE.md`,
 _Fixed: 2026-09-06T07:06:02Z_
 _Fixer: the agent (gsd-code-fixer)_
 _Iteration: final blocker_
+
+---
+
+## Final Warning Fixes — Concurrent Refresh and Persisted Revision
+
+**Fixed at:** 2026-09-06T07:23:33Z
+**Source review:** `.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`
+**Iteration:** final warnings
+
+**Summary:**
+- Findings in scope: **2**
+- Fixed: **2**
+- Skipped: **0**
+- Status: **all_fixed**
+
+## Fixed Issues
+
+### WR-01: Concurrent stale-policy reads bypass provider retry backoff
+
+**Status:** Fixed — requires human verification
+**Files modified:** `src/api/providers.py`, `tests/test_api_providers.py`
+**Commit:** `653c99c0`
+**Applied fix:** Changed stale cache-key refresh acquisition to non-blocking,
+marked the retained provider stale while the sole owner loads, and revalidated
+the cache key plus stale/backoff state under `_state_lock` after ownership was
+acquired. An event-controlled two-thread regression proves the concurrent
+reader returns the same last-good instance without waiting, only one failing
+load runs, and only one retry attempt is recorded.
+
+### WR-02: Malformed persisted revision maps to an invalid caller request
+
+**Status:** Fixed — requires human verification
+**Files modified:** `src/network/design.py`, `tests/test_api_network.py`
+**Commit:** `811883f3`
+**Applied fix:** Normalized persisted revisions in the shared policy decoder,
+translated conversion failures to `NetworkDesignPolicyDocumentError`, and
+rejected negative revisions before compare-and-swap or persistence. Direct and
+HTTP regressions prove malformed string, collection, and negative revisions
+perform no writes and map GET, preview, and PATCH to
+`503 provider_unavailable`; malformed operator payloads remain
+`400 invalid_request`. Existing absent-document, valid revision, and optimistic
+CAS paths remain covered.
+
+## Verification
+
+All gates in this iteration ran in the isolated review-fix worktree:
+
+- WR-01 failing-first regression: failed by timing out the queued reader and
+  showed two failed loads before implementation; passed afterward with one
+  failed load/retry owner and both callers receiving the retained instance.
+- WR-02 failing-first slice: **3 failed, 1 passed** before implementation;
+  all **7 parametrized direct/API/operator cases passed** afterward.
+- Focused provider/policy/API suite
+  (`test_api_network.py`, `test_api_providers.py`, `test_api_runtime.py`):
+  **118 passed**.
+- G-4 scale plus downstream contracts and scope: **37 passed**.
+- Full backend: **2,736 passed, 33 skipped** (**2,769 collected**).
+- Ruff (`python3 -m ruff check src tests`): passed.
+- Python compilation of all modified source/test files: passed.
+- `git diff --check 3b4508be..811883f3` and working-tree diff check: passed.
+- Both commits contain the required Copilot co-author trailer and were created
+  with repository hooks enabled; `--no-verify` was not used.
+
+No fixes were skipped or rolled back. `STATE.md`, `ROADMAP.md`,
+`REQUIREMENTS.md`, and `12-VALIDATION.md` were not modified.
+
+---
+
+_Fixed: 2026-09-06T07:23:33Z_
+_Fixer: the agent (gsd-code-fixer)_
+_Iteration: final warnings_

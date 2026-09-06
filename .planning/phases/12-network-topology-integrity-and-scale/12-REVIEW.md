@@ -1,10 +1,12 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-reviewed: 2026-09-06T07:06:02Z
+reviewed: 2026-09-06T07:14:38Z
 depth: deep
 diff_base: d57f6137d747c344c56028d7e6211811927d0b43
-diff_head: c2020d1f
+diff_head: 3b4508be8cfa244127bee244d35db8ab6aa90717
 verified_source_head: c2020d1f
+resolved_at: 2026-09-06T07:23:33Z
+resolution_head: 811883f3
 files_reviewed: 49
 files_reviewed_list:
   - src/api/providers.py
@@ -56,228 +58,183 @@ files_reviewed_list:
   - web/src/lib/services.ts
   - web/src/lib/types.ts
   - web/src/test/network-fixtures.ts
-review_passes: 2
-post_fix_verification_iterations: 3
 findings:
   critical: 0
-  warning: 0
+  warning: 2
   info: 0
-  total: 0
-historical_findings:
-  observations_total: 52
-  fixed_or_previously_resolved: 49
-  non_actionable: 3
-  open: 0
+  total: 2
+resolved: 2
+unresolved: 0
 status: clean
 ---
 
-# Phase 12: Final Deep Code Review Report
+# Phase 12: Final Independent Certification Review
 
-**Reviewed:** 2026-09-06T07:06:02Z
+**Reviewed:** 2026-09-06T07:14:38Z
 **Depth:** deep
-**Implementation range:** `d57f6137d747c344c56028d7e6211811927d0b43..c2020d1f`
+**Implementation range:** `d57f6137d747c344c56028d7e6211811927d0b43..3b4508be8cfa244127bee244d35db8ab6aa90717`
 **Files Reviewed:** 49
 **Status:** clean
 
-## Consolidated Review History
-
-This is the final clean review over an overlapping implementation review and
-supplemental review, followed by three post-fix verification iterations.
-Counts are review observations rather than deduplicated defects because later
-iterations deliberately re-opened incomplete fixes.
-
-| Review stage | Critical | Warning | Info | Total | Final disposition |
-|---|---:|---:|---:|---:|---|
-| Implementation review | 8 | 2 | 0 | 10 | 10 fixed |
-| Supplemental review against `eafdf47f` | 3 | 16 | 3 | 22 | 19 fixed/resolved; 3 non-actionable |
-| Independent post-fix iteration 2 | 5 | 6 | 0 | 11 | 11 fixed |
-| Independent post-fix iteration 3 | 5 | 3 | 0 | 8 | 8 fixed |
-| Final policy-management review | 1 | 0 | 0 | 1 | 1 fixed |
-| **Historical observations** | **22** | **27** | **3** | **52** | **52 adjudicated; 0 open** |
-| Current clean scan | 0 | 0 | 0 | 0 | No significant high-confidence issue |
-
-The exact disposition and commit evidence for all 22 supplemental findings is
-in the authoritative ledger at the top of `12-REVIEW-FIX.md`. The original
-ten-finding narrative remains recoverable at
-`97114a32:.planning/phases/12-network-topology-integrity-and-scale/12-REVIEW.md`;
-the full pre-phase review remains in `12-REVIEW-PRE-PHASE.md`. No historical
-finding was deleted or silently reclassified.
-
 ## Summary
 
-The final review re-read the complete Phase 12 source diff, the historical
-review iterations, and `12-REVIEW-FIX.md`; traced the backend and browser
-identity, scope, policy, provider, evidence, and asynchronous-error paths; and
-reran the focused backend/web gates.
+The complete Phase 12 diff and the current `12-REVIEW-FIX.md` history were
+reviewed at HEAD `3b4508be8cfa244127bee244d35db8ab6aa90717`.
+No source changed after the policy fix at `c2020d1f`; the later commits are
+Phase 12 review and validation documentation.
 
-All specifically requested closure probes pass at current HEAD:
+The exact revision-8/string-policy probe now fails closed as required:
+`read()`, `preview()`, and `update()` raise
+`NetworkDesignPolicyDocumentError`; GET, the preview endpoint, and PATCH each
+return `503 provider_unavailable`; both store and API probes record zero
+writes. The absent revision-zero case still seeds defaults and writes revision
+1, while a valid governed revision 8 preserves its description and
+`require_private_dns_zone_link: false` through preview/update and writes
+revision 9.
 
-- unknown-subscription resources reserve the browser's one synthetic group,
-  so the summary boundary is 1,499 resources plus one group;
-- persisted `InventoryDatasetMapper` Traffic Analytics rows decode to
-  canonical `subject_id`/`object_id` values and reach analyzed provenance;
-- strict provider construction rejects corrupt governed policy bodies and
-  keeps the last-good provider degraded;
-- a known newer but unreadable revision leaves the stale provider servable
-  with one failed refresh attempt and retry backoff;
-- a summary-withheld private endpoint target is not called out-of-scope;
-- invalid and timezone-naive live timestamps remain unknown;
-- missing-zone logs contain only a count/reason code and no ARM identifier;
-- drill-down, policy-save, and policy-form asynchronous critical errors use
-  `role="alert"`.
-
-The resolved history and commit ledger remain in `12-REVIEW-FIX.md`.
-
-The final policy-management blocker is resolved. Strict policy document
-decoding now covers read, preview, and update as well as provider construction;
-present malformed bodies return a provider-unavailable response and PATCH
-cannot persist generated defaults. Genuinely absent revision-zero documents
-still bootstrap defaults.
+The prior scale, scope, persisted-flow, timestamp, diagnostic-redaction,
+withheld-target, alert, provider-retention, and downstream contract tests also
+pass. The two independently reproduced robustness defects were resolved by
+`653c99c0` and `811883f3`; the focused, full-backend, G-4/downstream, Ruff, and
+diff gates are green. This review now certifies the phase as clean.
+`12-REVIEW-FIX.md` remains the historical ledger and includes the final
+resolution evidence.
 
 ## Narrative Findings (AI reviewer)
 
-## Critical Issues
+## Warnings
 
-### CR-01 [RESOLVED]: Policy management fails open on a corrupt governed body and can overwrite it with defaults
+### WR-01 [RESOLVED]: Concurrent stale-policy reads bypass the provider retry backoff
 
-**File:** `src/network/design.py:464-468,528-566`
-**Also affected:** `src/api/routers/network.py:444-453,489-608`
+**File:** `src/api/providers.py:310-349`
 
-**Issue:** `read_with_revision_or_raise()` now correctly rejects a present
-document whose `policy` is missing or not an object. The management methods do
-not use that strict path:
+**Issue:** `_refresh_changed_cache_key()` computes `retry_pending` before
+acquiring `_refresh_lock`, then waits for that lock and only rechecks whether
+the cache key became current. If two request threads observe a newer policy
+revision while its body is unreadable, both can pass the pre-lock retry check.
+The first failed refresh establishes `next_retry_at`; the second queued thread
+does not re-read that state after acquiring the lock and immediately performs
+another forced load. Because this method is called synchronously from `get()`,
+the second request also blocks behind the first provider I/O despite `get()`'s
+documented non-blocking request-path contract.
 
-- `read()` converts every non-object policy to `{}` and returns a default
-  policy;
-- `preview()` calls `_merge_changes()`, which falls back through that same
-  fail-open `read()`;
-- `update()` uses non-strict `_read_document()`, converts a malformed policy to
-  `{}`, merges the operator's partial change into defaults, and writes the
-  result as the next revision.
-
-The API therefore tells operators that generated defaults are the current
-policy while the network provider is serving a different last-good governed
-policy in degraded state. Worse, the next ordinary PATCH can permanently
-replace the corrupt revision with defaults plus the small requested delta,
-discarding all custom governed rules and settings that remain available in
-the last-good provider.
-
-An executed current-HEAD probe against
-`{"revision": 8, "policy": "corrupt"}` produced:
+An event-controlled two-thread probe at current HEAD produced two failed loads
+after one initial successful load:
 
 ```text
-read_description= ''
-preview_rule_count= 2
-write_expected_revision= 8
-written_revision= 9
-written_description= 'operator edit'
-written_rule_count= 2
+initial_plus_failed_loader_attempts=3
+concurrent_get_results=[True, True]
+retry.attempts=2
+retry.next_retry_at=2026-09-06T00:00:04Z
 ```
 
-This proves the read and preview fabricate the seed policy and a partial
-update persists that fabricated state rather than refusing the corrupt base.
-It is a policy data-loss and governance-weakening path.
+Both callers received the last-good provider, but the second unavailable-body
+load occurred inside the first retry window. Under concurrent traffic this can
+serialize request threads on failing storage and defeat the bounded retry
+policy.
 
-**Fix:** Centralize strict document/schema decoding and use it for every
-persisted-policy operation. `update()` and `preview()` must call a strict
-read that rejects present documents with a missing/non-mapping `policy`
-member before merging; no write may occur after that rejection. The GET route
-should either return the actual retained provider policy with explicit
-degraded/stale metadata, or return a provider-unavailable/corrupt-policy error
-instead of claiming defaults are current. Add regressions for string, list,
-and missing-policy documents proving:
+**Fix:** Make changed-key refresh acquisition non-blocking on the request
+path, and after acquiring `_refresh_lock`, re-read both the cache key and
+`state.cache_key_stale`/`state.next_retry_at` under `_state_lock` before
+calling `_refresh_provider()`. Add an event-controlled concurrent regression
+that starts a second `get()` while the first failing loader is blocked and
+asserts one failed load, one retry attempt, and both callers receiving the
+same last-good instance.
 
-```python
-with pytest.raises(NetworkDesignPolicyValidationError):
-    store.update({"description": "operator edit"})
-assert documents.write_calls == []
+**Resolution:** Fixed in `653c99c0`. Changed-key refresh ownership is now
+acquired without blocking, stale/backoff state is revalidated by the owner,
+and a known-stale last-good instance remains servable while that owner performs
+the load. The event-controlled two-caller regression proves one failing load,
+one retry attempt, and identical retained-provider results.
+
+### WR-02 [RESOLVED]: A malformed persisted revision is misreported as an invalid caller request
+
+**File:** `src/network/design.py:558-573`
+**Also affected:** `src/api/routers/network.py:454-460,558-565,592-599`
+
+**Issue:** The centralized persisted-document decoder validates the `policy`
+member but converts `revision` with an unguarded `int(...)`. A governed
+document such as
+`{"revision": "not-an-integer", "policy": {"description": "governed"}}`
+therefore raises a plain `ValueError`, not
+`NetworkDesignPolicyDocumentError`. The API's generic value-error handling
+maps all three management routes to `400 invalid_request`, incorrectly blaming
+the caller for corrupt server-side state instead of returning the
+`503 provider_unavailable` contract used for other malformed persisted policy
+fields.
+
+The current-HEAD probe produced:
+
+```text
+read ValueError invalid literal for int() with base 10: 'not-an-integer'
+preview ValueError invalid literal for int() with base 10: 'not-an-integer'
+update ValueError invalid literal for int() with base 10: 'not-an-integer'
+store_writes []
+api_statuses [400, 400, 400]
+api_codes ['invalid_request', 'invalid_request', 'invalid_request']
+api_writes []
 ```
 
-Apply the same fail-closed assertion to `read()`/`preview()` or introduce
-explicit strict management variants used by all three API routes. Preserve
-the genuinely absent revision-zero bootstrap behavior.
+This remains fail-closed and does not write, but it violates the persisted
+corruption error contract and gives operators the wrong remediation signal.
 
-**Resolution:** Fixed by failing-first regression commit `8b502206` and source
-commit `c2020d1f`. `NetworkDesignPolicyStore` now decodes every management
-operation through one strict body path. String, list, and missing-policy
-documents raise `NetworkDesignPolicyDocumentError` (a
-`NetworkDesignPolicyValidationError`) before merge or write; the three HTTP
-management routes map that persisted-state fault to `503
-provider_unavailable`. Valid documents preserve their governed fields and CAS
-revision, absent `{}` documents retain revision-zero defaults, and provider
-construction continues to retain its last-good instance on corruption.
+**Fix:** Validate and normalize the revision inside
+`_read_policy_document()`. Catch `TypeError`/`ValueError` from conversion and
+raise `NetworkDesignPolicyDocumentError` instead; reject negative revisions as
+invalid persisted state. Add direct and HTTP regressions proving malformed
+revisions produce no writes and map GET, preview, and PATCH to
+`503 provider_unavailable`.
 
-## Resolved History
+**Resolution:** Fixed in `811883f3`. Persisted revision conversion now raises
+`NetworkDesignPolicyDocumentError` for non-convertible values and rejects
+negative revisions before CAS or writes. Direct store and HTTP regressions
+cover string, collection, and negative revisions; all three management routes
+return `503 provider_unavailable` with zero writes, while malformed operator
+payloads remain `400 invalid_request`. Absent and valid revision paths remain
+covered.
 
-`12-REVIEW-FIX.md` remains the authoritative ledger for the earlier review
-iterations and fixes, including WR-05, WR-10, WR-11, WR-15, and WR-16. Those
-fixes were re-inspected at current HEAD:
+## Resolution Verification
 
-- the detail cache is scope-keyed, capped at 64 entries, generation-invalidated
-  on topology/scope/detail changes, and ignores stale in-flight completions;
-- normalization warnings are surfaced while log diagnostics are
-  identifier-free;
-- nested topology integrity warnings are typed, deduplicated, rendered, and
-  exported;
-- policy preview preserves semantic relationships, flow observations, and peer
-  resolutions;
-- validation counts are reconciled at the current docs-only HEAD.
-
-No previously resolved blocker or warning was reproduced by the focused
-regression suites. CR-01 above is a distinct management-path gap exposed by
-tracing the final strict-provider fix through all callers.
+- Failing-first WR-01 regression reproduced the blocked duplicate load, then
+  passed with one refresh owner and one failed loader attempt.
+- Failing-first WR-02 regressions reproduced the raw `ValueError`/HTTP 400
+  behavior; **7 direct/API cases passed** after the fix.
+- Focused provider/policy/API suite: **118 passed**.
+- G-4 scale and downstream contract/scope suite: **37 passed**.
+- Full backend: **2,736 passed, 33 skipped**.
+- Ruff over `src` and `tests`: passed.
+- Python compilation and committed/working-tree diff checks: passed.
+- Verification ran in the isolated review-fix worktree.
 
 ## Verification Evidence
 
-Commands were run in the assigned Phase 12 checkout. The test/lint runs
-verified source head `f67d55f1`; current HEAD `c66a5c5b` adds only the
-Phase 12 validation-count documentation update.
-
-- Focused Phase 12 backend suite: **279 passed**.
-- Finding-specific backend probes: **9 passed**.
-- Focused Phase 12 web suite: **7 files, 165 tests passed**.
-- Requested UI probe slice: **3 files, 115 tests passed**.
-- TypeScript: **passed** (`npx --no-install tsc --noEmit`).
-- Next.js ESLint: **passed with zero warnings/errors**.
-- Ruff over all Phase 12 Python source and tests: **passed**.
-- `git diff --check d57f6137..HEAD`: **passed**.
-- Unknown-subscription regression: **1,499 returned resources + 1 returned
-  `subscription:unknown` group = 1,500**, with server group coverage
-  `{total: 1, returned: 1, truncated: false}` and matching browser group
-  construction.
-- Persisted-flow regression uses a real `InventoryDatasetMapper` row and
-  verifies canonical lower-cased `object_id`, decoded Traffic Analytics
-  attributes, and `flow_log_provenance.state == "analyzed"`.
-- Corrupt-provider regressions cover string, list, and missing-policy bodies;
-  all retain the governed provider and report degraded health.
-- Newer-unreadable revision regression returns the same provider identity,
-  reports `cache_key_stale: true`, and records one failed refresh/retry.
-- Invalid/naive timestamp, identifier-free diagnostic, withheld-target, and
-  live-alert regressions all passed.
-- Independent adversarial policy-management probe: **failed the release
-  criterion**, demonstrating the default-policy overwrite described in CR-01.
-
-### CR-01 Resolution Verification
-
-Verification ran in the isolated review-fix worktree against `c2020d1f`:
-
-- Exact adversarial probe before the fix reproduced the review output,
-  including revision 9 being written from corrupt revision 8.
-- The same probe after the fix raised on read, preview, and update and reported
-  `write_calls= []`.
-- Failing-first regressions: **6 failed, 2 passed** before the implementation.
-- Finding-focused policy/provider regressions: **13 passed**.
-- Focused policy/provider/API files: **110 passed**.
-- G-4 and downstream contracts: **21 passed**.
+- Exact corrupt revision-8/string-policy probe:
+  - `read`, `preview`, `update`:
+    `NetworkDesignPolicyDocumentError`
+  - GET, preview endpoint, PATCH:
+    `503 provider_unavailable`
+  - store writes: `[]`
+  - API writes: `[]`
+- Absent revision-zero probe: defaults retained, preview does not write,
+  update writes revision 1 with two seed rules.
+- Valid governed revision-8 probe: governed description and private-DNS
+  setting retained, preview does not write, update writes revision 9.
+- Focused policy/provider/runtime/downstream backend suite:
+  **130 passed**.
+- Decisive Phase 12 analysis/scale/topology/storage/tool suite:
+  **153 passed**.
 - Full backend: **2,728 passed, 33 skipped** (**2,761 collected**).
-- Ruff over `src` and `tests`: **passed**.
-- Python AST checks and `git diff --check c66a5c5b..c2020d1f`: **passed**.
-
-No `STATE.md`, `ROADMAP.md`, `REQUIREMENTS.md`, or `12-VALIDATION.md` file was
-modified by this resolution.
+- Focused Phase 12 web suite: **6 files, 160 tests passed**.
+- Full web: **43 files passed; 347 tests passed; 15 todo**.
+- TypeScript (`npx --no-install tsc --noEmit`): passed.
+- Next.js ESLint (`--max-warnings=0`): passed.
+- Ruff over `src` and `tests`: passed.
+- Python compilation and `git diff --check d57f6137..HEAD`: passed.
+- Security/debug-artifact scan over Phase 12 production paths found no
+  actionable secret, dangerous-evaluation, or debug patterns.
 
 ---
 
-_Reviewed: 2026-09-06T07:06:02Z_
+_Reviewed: 2026-09-06T07:14:38Z_
 _Reviewer: the agent (gsd-code-reviewer)_
 _Depth: deep_
