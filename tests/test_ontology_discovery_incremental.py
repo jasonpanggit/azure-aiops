@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -18,6 +19,11 @@ from ontology_discovery.incremental import (
     classify_incremental,
     split_evidence_batches,
 )
+from ontology_discovery.coordinator import (
+    BoundedEvidenceProcessor,
+    OntologyDiscoveryCoordinator,
+)
+from ontology_discovery.store import OntologyRunStore
 
 OBSERVED_AT = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
 
@@ -296,3 +302,143 @@ def test_complete_reconciliation_converges_to_clean_rebuild() -> None:
     )
 
     assert delta.apply_to(previous) == current
+
+
+def _create_run(store: OntologyRunStore) -> dict:
+    run, _created = store.get_or_create_run(
+        connection_id="connection-a",
+        source_generation_id="generation-coordinator",
+        trigger="scheduled",
+        requested_by="scheduler",
+        now=OBSERVED_AT,
+    )
+    return run
+
+
+def test_coordinator_persists_every_bounded_batch_before_curator_dispatch(
+    tmp_path,
+) -> None:
+    store = OntologyRunStore(tmp_path / "ontology-runs.json")
+    run = _create_run(store)
+    entities = [_entity(f"entity-{index}") for index in range(53)]
+    pairs = [
+        _pair(f"pair-{index}", f"entity-{index % 5}", f"entity-{(index + 1) % 5}")
+        for index in range(203)
+    ]
+    evidence = [
+        _evidence(f"evidence-{index}", f"entity-{index % 5}") for index in range(43)
+    ]
+
+    class Provider:
+        async def collect(self, claimed: dict) -> dict:
+            assert claimed["run_id"] == run["run_id"]
+            return {
+                "changed_entities": entities,
+                "candidate_pairs": pairs,
+                "evidence_records": evidence,
+                "source_generation_id": claimed["source_generation_id"],
+                "observed_at": OBSERVED_AT,
+                "freshness": "fresh",
+                "coverage": "complete",
+            }
+
+    class Curator:
+        def __init__(self) -> None:
+            self.batch_ids: list[str] = []
+
+        async def propose(self, claimed: dict, batch: dict) -> dict:
+            persisted = store.list_evidence_batches(run_id=claimed["run_id"])
+            assert batch["batch_id"] in {row["batch_id"] for row in persisted}
+            assert len(batch["changed_entities"]) <= MAX_CHANGED_ENTITIES
+            assert len(batch["candidate_pairs"]) <= MAX_CANDIDATE_PAIRS
+            assert len(batch["evidence_records"]) <= MAX_EVIDENCE_RECORDS
+            self.batch_ids.append(batch["batch_id"])
+            return {"status": "insufficient_evidence"}
+
+    curator = Curator()
+    processor = BoundedEvidenceProcessor(
+        store=store,
+        evidence_provider=Provider(),
+        curator=curator,
+    )
+    coordinator = OntologyDiscoveryCoordinator(
+        store=store,
+        processor=processor,
+        owner="worker-a",
+        now=lambda: OBSERVED_AT,
+    )
+
+    result = asyncio.run(coordinator.run_once(limit=1))
+
+    assert result["processed"] == 1
+    persisted = OntologyRunStore(store.path).list_evidence_batches(
+        run_id=run["run_id"]
+    )
+    assert {row["batch_id"] for row in persisted} == set(curator.batch_ids)
+    assert len(persisted) == len(curator.batch_ids)
+    assert store.get(run["run_id"])["checkpoint"]["name"] == "evidence_dispatched"
+
+
+def test_batch_replay_is_idempotent_and_malformed_input_gets_safe_checkpoint(
+    tmp_path,
+) -> None:
+    store = OntologyRunStore(tmp_path / "ontology-runs.json")
+    run = _create_run(store)
+
+    class ReplayProvider:
+        async def collect(self, _run: dict) -> dict:
+            return {
+                "changed_entities": [_entity("entity-a")],
+                "candidate_pairs": [],
+                "evidence_records": [_evidence("evidence-a", "entity-a")],
+                "source_generation_id": "generation-coordinator",
+                "observed_at": OBSERVED_AT,
+                "freshness": "fresh",
+                "coverage": "complete",
+            }
+
+    class Curator:
+        async def propose(self, _run: dict, _batch: dict) -> dict:
+            return {"status": "insufficient_evidence"}
+
+    processor = BoundedEvidenceProcessor(
+        store=store,
+        evidence_provider=ReplayProvider(),
+        curator=Curator(),
+    )
+    asyncio.run(processor.advance(run))
+    asyncio.run(processor.advance(run))
+    assert len(store.list_evidence_batches(run_id=run["run_id"])) == 1
+
+    malformed_store = OntologyRunStore(tmp_path / "malformed-runs.json")
+    malformed_run = _create_run(malformed_store)
+
+    class MalformedProvider:
+        async def collect(self, _run: dict) -> dict:
+            return {
+                "changed_entities": [{"resource_id": "entity-a"}],
+                "candidate_pairs": [],
+                "evidence_records": [],
+                "source_generation_id": "generation-coordinator",
+                "observed_at": OBSERVED_AT,
+                "freshness": "fresh",
+                "coverage": "complete",
+            }
+
+    malformed = OntologyDiscoveryCoordinator(
+        store=malformed_store,
+        processor=BoundedEvidenceProcessor(
+            store=malformed_store,
+            evidence_provider=MalformedProvider(),
+            curator=Curator(),
+        ),
+        owner="worker-a",
+        now=lambda: OBSERVED_AT,
+    )
+    result = asyncio.run(malformed.run_once(limit=1))
+
+    assert result["retrying"] == 1
+    failed = malformed_store.get(malformed_run["run_id"])
+    assert failed["failure_class"] == "evidence_batch_malformed_record"
+    assert failed["checkpoint"]["name"] == "evidence_batch_rejected"
+    assert failed["checkpoint"]["payload"]["reason"] == "malformed_record"
