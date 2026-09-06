@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any
 
-from .contracts import RunProcessor
+from .contracts import (
+    CheckpointResult,
+    Curator,
+    EvidenceProvider,
+    RunProcessingFailure,
+    RunProcessor,
+)
+from .incremental import EvidenceBatchRejected, split_evidence_batches
 from .store import (
     RUN_RETRYING,
     OntologyRunStore,
@@ -15,6 +24,100 @@ from .store import (
 )
 
 _LOGGER = logging.getLogger("aiops.ontology_discovery.coordinator")
+
+
+class BoundedEvidenceProcessor:
+    """Collect, persist, and dispatch only contract-bounded evidence batches."""
+
+    def __init__(
+        self,
+        *,
+        store: OntologyRunStore,
+        evidence_provider: EvidenceProvider,
+        curator: Curator,
+        now=None,
+    ) -> None:
+        self._store = store
+        self._evidence_provider = evidence_provider
+        self._curator = curator
+        self._now = now or (lambda: datetime.now(UTC))
+
+    async def advance(self, run: Mapping[str, Any]) -> CheckpointResult:
+        evidence = await self._evidence_provider.collect(run)
+        try:
+            batches = split_evidence_batches(
+                changed_entities=_records(evidence, "changed_entities"),
+                candidate_pairs=_records(evidence, "candidate_pairs"),
+                evidence_records=_records(evidence, "evidence_records"),
+                source_generation_id=str(
+                    evidence.get("source_generation_id")
+                    or run.get("source_generation_id")
+                    or ""
+                ),
+                observed_at=_observed_at(evidence.get("observed_at")),
+                freshness=str(evidence.get("freshness") or "unknown"),
+                coverage=str(evidence.get("coverage") or "partial"),
+            )
+        except EvidenceBatchRejected as exc:
+            raise RunProcessingFailure(
+                failure_class=f"evidence_batch_{exc.reason.value}",
+                checkpoint="evidence_batch_rejected",
+                payload={
+                    "reason": exc.reason.value,
+                    "record_id": exc.record_id,
+                },
+                message=str(exc),
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise RunProcessingFailure(
+                failure_class="evidence_batch_invalid",
+                checkpoint="evidence_batch_rejected",
+                payload={"reason": "invalid_contract"},
+                message=str(exc),
+            ) from exc
+
+        dispatched_ids: list[str] = []
+        for batch in batches:
+            current = self._store.get(str(run.get("run_id") or ""))
+            if current is None:
+                raise RunProcessingFailure(
+                    failure_class="run_missing",
+                    checkpoint="evidence_dispatch_stopped",
+                )
+            if current.get("cancel_requested"):
+                raise RunProcessingFailure(
+                    failure_class="run_cancelled",
+                    checkpoint="evidence_dispatch_stopped",
+                    payload={"unresolved_batch_ids": [item.batch_id for item in batches]},
+                )
+            if current["source_generation_id"] != batch.source_generation_id:
+                raise RunProcessingFailure(
+                    failure_class="source_generation_changed",
+                    checkpoint="evidence_dispatch_stopped",
+                    payload={"unresolved_batch_ids": [item.batch_id for item in batches]},
+                )
+            persisted = self._store.save_evidence_batch(
+                run_id=current["run_id"],
+                batch=batch.to_dict(),
+                now=self._now(),
+            )
+            if persisted["status"] != "dispatched":
+                result = await self._curator.propose(run, batch.to_dict())
+                self._store.mark_evidence_batch_dispatched(
+                    batch.batch_id,
+                    expected_revision=persisted["revision"],
+                    result=result,
+                    now=self._now(),
+                )
+            dispatched_ids.append(batch.batch_id)
+        return CheckpointResult(
+            checkpoint="evidence_dispatched",
+            payload={
+                "batch_ids": dispatched_ids,
+                "batch_count": len(dispatched_ids),
+            },
+            complete=True,
+        )
 
 
 class OntologyDiscoveryCoordinator:
@@ -86,6 +189,29 @@ class OntologyDiscoveryCoordinator:
                 )
                 try:
                     result = await self._processor.advance(claimed)
+                except RunProcessingFailure as exc:
+                    checkpointed = self._store.checkpoint(
+                        run_id,
+                        expected_revision=claimed["revision"],
+                        owner=self._owner,
+                        fencing_token=claimed["fencing_token"],
+                        name=exc.checkpoint,
+                        payload=exc.payload,
+                        now=moment,
+                    )
+                    failed = self._store.fail(
+                        run_id,
+                        expected_revision=checkpointed["revision"],
+                        owner=self._owner,
+                        fencing_token=claimed["fencing_token"],
+                        failure_class=exc.failure_class,
+                        message=str(exc),
+                        now=moment,
+                    )
+                    counts[
+                        "retrying" if failed["status"] == RUN_RETRYING else "failed"
+                    ] += 1
+                    continue
                 except Exception as exc:
                     failed = self._store.fail(
                         run_id,
@@ -139,4 +265,28 @@ class OntologyDiscoveryCoordinator:
         return counts
 
 
-__all__ = ["OntologyDiscoveryCoordinator"]
+def _records(
+    evidence: Mapping[str, Any], name: str
+) -> list[Mapping[str, Any]]:
+    value = evidence.get(name, ())
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{name} must be a list of records")
+    if any(not isinstance(item, Mapping) for item in value):
+        raise TypeError(f"{name} must contain only records")
+    return list(value)
+
+
+def _observed_at(value: object) -> datetime:
+    if isinstance(value, datetime):
+        observed = value
+    else:
+        try:
+            observed = datetime.fromisoformat(str(value or ""))
+        except ValueError as exc:
+            raise ValueError("observed_at must be an ISO timestamp") from exc
+    if observed.tzinfo is None or observed.utcoffset() is None:
+        raise ValueError("observed_at must be timezone-aware")
+    return observed
+
+
+__all__ = ["BoundedEvidenceProcessor", "OntologyDiscoveryCoordinator"]

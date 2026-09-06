@@ -13,15 +13,15 @@ from ontology_discovery.contracts import (
     MAX_EVIDENCE_RECORDS,
     EvidenceBatch,
 )
+from ontology_discovery.coordinator import (
+    BoundedEvidenceProcessor,
+    OntologyDiscoveryCoordinator,
+)
 from ontology_discovery.incremental import (
     BatchRejectionReason,
     EvidenceBatchRejected,
     classify_incremental,
     split_evidence_batches,
-)
-from ontology_discovery.coordinator import (
-    BoundedEvidenceProcessor,
-    OntologyDiscoveryCoordinator,
 )
 from ontology_discovery.store import OntologyRunStore
 

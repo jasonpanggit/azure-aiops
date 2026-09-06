@@ -55,10 +55,26 @@ class RunDeadlineExceeded(RuntimeError):
         self.record = copy.deepcopy(dict(record))
 
 
+class PendingRelationshipConflict(RuntimeError):
+    """A pending relationship revision no longer matches durable state."""
+
+    def __init__(self, record: Mapping[str, Any]) -> None:
+        super().__init__("pending_relationship_revision_conflict")
+        self.record = copy.deepcopy(dict(record))
+
+
+class EvidenceBatchConflict(RuntimeError):
+    """A deterministic batch identity was reused for different content."""
+
+    def __init__(self, record: Mapping[str, Any]) -> None:
+        super().__init__("evidence_batch_identity_conflict")
+        self.record = copy.deepcopy(dict(record))
+
+
 class OntologyRunStore:
     """Versioned run records with deterministic identity and fenced ownership."""
 
-    SCHEMA_VERSION = "1.0.0"
+    SCHEMA_VERSION = "1.1.0"
 
     def __init__(
         self,
@@ -191,6 +207,255 @@ class OntologyRunStore:
             )
         )
         return copy.deepcopy(due[:limit])
+
+    def list_pending_relationships(
+        self, *, include_terminal: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return deterministic durable pending-edge records."""
+        with self._lock:
+            rows = self._read_state()["pending_relationships"]
+        selected = (
+            rows
+            if include_terminal
+            else [row for row in rows if row["terminal_state"] == "pending"]
+        )
+        return copy.deepcopy(sorted(selected, key=lambda row: row["pending_id"]))
+
+    def defer_pending_relationship(
+        self,
+        relationship: Mapping[str, Any],
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Create or merge one deterministic pending relationship."""
+        moment = _aware(now)
+        candidate = copy.deepcopy(dict(relationship))
+        subject_id = _required(
+            str(candidate.get("subject_id") or ""), "subject_id"
+        ).casefold()
+        object_id = _required(
+            str(candidate.get("object_id") or ""), "object_id"
+        ).casefold()
+        predicate = _required(str(candidate.get("predicate") or ""), "predicate")
+        scope = _required(str(candidate.get("scope") or ""), "scope")
+        generation = _required(
+            str(candidate.get("source_generation_id") or ""),
+            "source_generation_id",
+        )
+        relationship_id = str(
+            candidate.get("resource_id")
+            or candidate.get("relationship_id")
+            or ""
+        ).strip()
+        identity = (
+            f"{scope.casefold()}|{subject_id}|{predicate.casefold()}|{object_id}"
+        )
+        pending_id = "OPR-" + hashlib.sha256(identity.encode()).hexdigest()[:20].upper()
+        missing = sorted(
+            {
+                str(value).strip().casefold()
+                for value in candidate.get("missing_endpoint_ids", ())
+                if str(value).strip()
+            }
+        )
+        observations = _observations(candidate.get("observations"))
+        timestamp = moment.isoformat()
+
+        with self._claim_lock():
+            state = self._read_state()
+            index = next(
+                (
+                    position
+                    for position, row in enumerate(state["pending_relationships"])
+                    if row["pending_id"] == pending_id
+                ),
+                None,
+            )
+            if index is None:
+                record = {
+                    **candidate,
+                    "pending_id": pending_id,
+                    "relationship_id": relationship_id,
+                    "resource_id": relationship_id,
+                    "subject_id": subject_id,
+                    "object_id": object_id,
+                    "predicate": predicate,
+                    "scope": scope,
+                    "source_generation_id": generation,
+                    "missing_endpoint_ids": missing,
+                    "observations": observations,
+                    "attempts": _nonnegative_int(candidate.get("attempts", 0)),
+                    "freshness": str(candidate.get("freshness") or "unknown"),
+                    "terminal_state": "pending",
+                    "revision": 0,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+                state["pending_relationships"].append(record)
+            else:
+                record = copy.deepcopy(state["pending_relationships"][index])
+                record["observations"] = _merge_observations(
+                    record.get("observations"), observations
+                )
+                record["missing_endpoint_ids"] = missing or record[
+                    "missing_endpoint_ids"
+                ]
+                record["attempts"] = max(
+                    _nonnegative_int(record.get("attempts")),
+                    _nonnegative_int(candidate.get("attempts")),
+                )
+                record["freshness"] = str(
+                    candidate.get("freshness") or record["freshness"]
+                )
+                record["source_generation_id"] = generation
+                record["revision"] += 1
+                record["updated_at"] = timestamp
+                state["pending_relationships"][index] = record
+            state["pending_relationships"].sort(key=lambda row: row["pending_id"])
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record)
+
+    def transition_pending_relationship(
+        self,
+        pending_id: str,
+        *,
+        expected_revision: int,
+        terminal_state: str,
+        missing_endpoint_ids: list[str] | tuple[str, ...] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """CAS a pending edge to a durable terminal or updated pending state."""
+        normalized_state = str(terminal_state or "").strip().casefold()
+        if normalized_state not in {
+            "pending",
+            "resolved",
+            "expired",
+            "rejected",
+            "cancelled",
+        }:
+            raise ValueError("terminal_state is invalid")
+        moment = _aware(now)
+        with self._claim_lock():
+            state = self._read_state()
+            index = next(
+                (
+                    position
+                    for position, row in enumerate(state["pending_relationships"])
+                    if row["pending_id"] == pending_id
+                ),
+                None,
+            )
+            if index is None:
+                raise ValueError(f"Unknown pending relationship {pending_id!r}")
+            record = copy.deepcopy(state["pending_relationships"][index])
+            if record["revision"] != expected_revision:
+                raise PendingRelationshipConflict(record)
+            if missing_endpoint_ids is not None:
+                record["missing_endpoint_ids"] = sorted(
+                    {
+                        str(value).strip().casefold()
+                        for value in missing_endpoint_ids
+                        if str(value).strip()
+                    }
+                )
+            record["terminal_state"] = normalized_state
+            record["revision"] += 1
+            record["updated_at"] = moment.isoformat()
+            state["pending_relationships"][index] = record
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record)
+
+    def list_evidence_batches(
+        self, *, run_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return persisted batches in deterministic identity order."""
+        with self._lock:
+            rows = self._read_state()["evidence_batches"]
+        selected = rows if run_id is None else [
+            row for row in rows if row["run_id"] == run_id
+        ]
+        return copy.deepcopy(sorted(selected, key=lambda row: row["batch_id"]))
+
+    def save_evidence_batch(
+        self,
+        *,
+        run_id: str,
+        batch: Mapping[str, Any],
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Persist a validated batch before any curator call."""
+        from .contracts import EvidenceBatch
+
+        moment = _aware(now)
+        validated = EvidenceBatch.from_dict(batch).to_dict()
+        batch_id = validated["batch_id"]
+        with self._claim_lock():
+            state, _run_index, run = self._locate(run_id)
+            if validated["source_generation_id"] != run["source_generation_id"]:
+                raise ValueError("batch source generation does not match run")
+            existing = next(
+                (
+                    row
+                    for row in state["evidence_batches"]
+                    if row["batch_id"] == batch_id
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing["run_id"] != run_id or existing["batch"] != validated:
+                    raise EvidenceBatchConflict(existing)
+                return copy.deepcopy(existing)
+            record = {
+                "batch_id": batch_id,
+                "run_id": run_id,
+                "source_generation_id": validated["source_generation_id"],
+                "scope": validated["scope"],
+                "status": "persisted",
+                "revision": 0,
+                "persisted_at": moment.isoformat(),
+                "dispatched_at": "",
+                "batch": validated,
+                "result": {},
+            }
+            state["evidence_batches"].append(record)
+            state["evidence_batches"].sort(key=lambda row: row["batch_id"])
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record)
+
+    def mark_evidence_batch_dispatched(
+        self,
+        batch_id: str,
+        *,
+        expected_revision: int,
+        result: Mapping[str, Any],
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """CAS a persisted batch after the curator returns."""
+        moment = _aware(now)
+        with self._claim_lock():
+            state = self._read_state()
+            index = next(
+                (
+                    position
+                    for position, row in enumerate(state["evidence_batches"])
+                    if row["batch_id"] == batch_id
+                ),
+                None,
+            )
+            if index is None:
+                raise ValueError(f"Unknown evidence batch {batch_id!r}")
+            record = copy.deepcopy(state["evidence_batches"][index])
+            if record["revision"] != expected_revision:
+                raise EvidenceBatchConflict(record)
+            if record["status"] == "dispatched":
+                return record
+            record["status"] = "dispatched"
+            record["revision"] += 1
+            record["dispatched_at"] = moment.isoformat()
+            record["result"] = copy.deepcopy(dict(result))
+            state["evidence_batches"][index] = record
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record)
 
     def claim(
         self,
@@ -674,12 +939,28 @@ class OntologyRunStore:
         rows = payload.get("runs", [])
         if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
             raise TypeError("Ontology discovery runs must be a list of objects")
+        pending = payload.get("pending_relationships", [])
+        if not isinstance(pending, list) or any(
+            not isinstance(row, dict) for row in pending
+        ):
+            raise TypeError("Pending relationships must be a list of objects")
+        batches = payload.get("evidence_batches", [])
+        if not isinstance(batches, list) or any(
+            not isinstance(row, dict) for row in batches
+        ):
+            raise TypeError("Evidence batches must be a list of objects")
         return {
             "revision": _nonnegative_int(payload.get("revision", 0)),
             "next_fencing_token": _nonnegative_int(
                 payload.get("next_fencing_token", 0)
             ),
             "runs": [_with_defaults(row, self.max_attempts) for row in rows],
+            "pending_relationships": [
+                _pending_with_defaults(row) for row in pending
+            ],
+            "evidence_batches": [
+                _batch_with_defaults(row) for row in batches
+            ],
             "updated_at": str(payload.get("updated_at") or ""),
         }
 
@@ -705,6 +986,8 @@ class OntologyRunStore:
             "revision": state["revision"],
             "next_fencing_token": state["next_fencing_token"],
             "runs": state["runs"],
+            "pending_relationships": state["pending_relationships"],
+            "evidence_batches": state["evidence_batches"],
             "updated_at": state["updated_at"],
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -730,8 +1013,60 @@ def _initial_state() -> dict[str, Any]:
         "revision": 0,
         "next_fencing_token": 0,
         "runs": [],
+        "pending_relationships": [],
+        "evidence_batches": [],
         "updated_at": "",
     }
+
+
+def _pending_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    record = copy.deepcopy(dict(row))
+    record.setdefault("pending_id", "")
+    record.setdefault("relationship_id", str(record.get("resource_id") or ""))
+    record.setdefault("resource_id", record["relationship_id"])
+    record["subject_id"] = str(record.get("subject_id") or "").casefold()
+    record["object_id"] = str(record.get("object_id") or "").casefold()
+    record.setdefault("predicate", "")
+    record.setdefault("scope", "")
+    record.setdefault("source_generation_id", "")
+    record["missing_endpoint_ids"] = sorted(
+        {
+            str(value).casefold()
+            for value in record.get("missing_endpoint_ids", ())
+            if str(value).strip()
+        }
+    )
+    record["observations"] = _observations(record.get("observations"))
+    record["attempts"] = _nonnegative_int(record.get("attempts"))
+    record.setdefault("freshness", "unknown")
+    record.setdefault("terminal_state", "pending")
+    record["revision"] = _nonnegative_int(record.get("revision"))
+    record.setdefault("created_at", "")
+    record.setdefault("updated_at", "")
+    return record
+
+
+def _batch_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    record = copy.deepcopy(dict(row))
+    record.setdefault("batch_id", "")
+    record.setdefault("run_id", "")
+    record.setdefault("source_generation_id", "")
+    record.setdefault("scope", "")
+    record.setdefault("status", "persisted")
+    record["revision"] = _nonnegative_int(record.get("revision"))
+    record.setdefault("persisted_at", "")
+    record.setdefault("dispatched_at", "")
+    record["batch"] = (
+        copy.deepcopy(record["batch"])
+        if isinstance(record.get("batch"), dict)
+        else {}
+    )
+    record["result"] = (
+        copy.deepcopy(record["result"])
+        if isinstance(record.get("result"), dict)
+        else {}
+    )
+    return record
 
 
 def _with_defaults(row: Mapping[str, Any], default_max_attempts: int) -> dict[str, Any]:
@@ -857,6 +1192,28 @@ def _nonnegative_int(value: Any) -> int:
         return 0
 
 
+def _observations(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    observations = [
+        copy.deepcopy(dict(item))
+        for item in value
+        if isinstance(item, Mapping)
+    ]
+    return sorted(
+        observations,
+        key=lambda item: json.dumps(item, sort_keys=True, default=str),
+    )
+
+
+def _merge_observations(left: Any, right: Any) -> list[dict[str, Any]]:
+    unique = {
+        json.dumps(item, sort_keys=True, default=str): item
+        for item in [*_observations(left), *_observations(right)]
+    }
+    return [unique[key] for key in sorted(unique)]
+
+
 __all__ = [
     "CLAIMABLE_STATUSES",
     "RUN_CANCELLED",
@@ -866,7 +1223,9 @@ __all__ = [
     "RUN_RUNNING",
     "RUN_SUCCEEDED",
     "TERMINAL_STATUSES",
+    "EvidenceBatchConflict",
     "OntologyRunStore",
+    "PendingRelationshipConflict",
     "RunClaimConflict",
     "RunDeadlineExceeded",
     "RunLeaseLost",

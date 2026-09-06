@@ -136,6 +136,27 @@ class CheckpointResult:
             raise ValueError("checkpoint must not be empty")
 
 
+class RunProcessingFailure(RuntimeError):
+    """A bounded, safe failure with a durable checkpoint classification."""
+
+    def __init__(
+        self,
+        *,
+        failure_class: str,
+        checkpoint: str,
+        payload: Mapping[str, Any] | None = None,
+        message: str = "",
+    ) -> None:
+        normalized_failure = str(failure_class or "").strip()
+        normalized_checkpoint = str(checkpoint or "").strip()
+        if not normalized_failure or not normalized_checkpoint:
+            raise ValueError("failure_class and checkpoint must not be empty")
+        super().__init__(message or normalized_failure)
+        self.failure_class = normalized_failure
+        self.checkpoint = normalized_checkpoint
+        self.payload = copy.deepcopy(dict(payload or {}))
+
+
 class RunProcessor(Protocol):
     """Advance one claimed run without owning scheduling or persistence."""
 
@@ -196,5 +217,6 @@ __all__ = [
     "EvidenceProvider",
     "PolicyEvaluator",
     "Publisher",
+    "RunProcessingFailure",
     "RunProcessor",
 ]

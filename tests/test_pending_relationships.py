@@ -10,7 +10,6 @@ from ontology_discovery.store import (
     PendingRelationshipConflict,
 )
 
-
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 
 
