@@ -346,15 +346,24 @@ def rule_findings(
         "returned": len(visible),
         "truncated": len(visible) < len(findings),
     }
+    flow_logs_analyzed = (
+        service.flow_log_provenance.get("state") == "analyzed"
+    )
     return envelope(
         {
             "findings": [finding.to_dict() for finding in visible],
             "summary": analysis.summary(),
             "coverage": coverage,
         },
-        # "Unused" and "shadowed" are inferred structurally; no flow logs are
-        # ingested, and every finding states that in its own basis.
-        evidence=_evidence(service, confidence=CONFIDENCE_MEDIUM),
+        # Structural findings remain configuration-derived. When Traffic
+        # Analytics evidence was consumed, observation-backed findings carry
+        # their bounded-window basis and the route can report direct evidence.
+        evidence=_evidence(
+            service,
+            confidence=(
+                CONFIDENCE_HIGH if flow_logs_analyzed else CONFIDENCE_MEDIUM
+            ),
+        ),
         scope=scope.to_dict(),
         pagination=page.to_dict(len(findings)),
         warnings=(

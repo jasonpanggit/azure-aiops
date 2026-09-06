@@ -26,6 +26,7 @@ from api.runtime import (
     _load_fabric_iq_adapter,
     _load_network_service,
     _patch_execution_adapter,
+    _traffic_analysis_observations,
     _ttl_cached_value,
     aiops_home,
     build_authenticator,
@@ -72,6 +73,7 @@ def test_managed_network_provider_analyzes_ingested_flow_observations(
     monkeypatch,
 ) -> None:
     import api.runtime as runtime_module
+    import fabric.dataset_mapper as dataset_mapper_module
     from network.design import NetworkDesignPolicy
 
     vnet_id = (
@@ -79,12 +81,17 @@ def test_managed_network_provider_analyzes_ingested_flow_observations(
         "Microsoft.Network/virtualNetworks/vnet-a"
     )
     subnet_id = f"{vnet_id}/subnets/default"
-    flow = {
-        "subject_id": vnet_id,
-        "object_id": subnet_id,
-        "predicate": "trafficObserved",
-        "attributes": {"dataSource": "traffic_analytics"},
-    }
+    flow = dataset_mapper_module._relationship_row(
+        {
+            "relationshipId": "flow-1",
+            "subjectId": vnet_id,
+            "objectId": subnet_id,
+            "predicate": "trafficObserved",
+            "attributes": {"dataSource": "traffic_analytics"},
+        },
+        {},
+        "run-1",
+    )
 
     class _PolicyStore:
         def read_with_revision_or_raise(self):
@@ -125,6 +132,14 @@ def test_managed_network_provider_analyzes_ingested_flow_observations(
         "state": "analyzed",
         "observed_flow_count": 1,
     }
+    assert _traffic_analysis_observations([flow]) == (
+        {
+            **flow,
+            "attributes": {"dataSource": "traffic_analytics"},
+            "subject_id": vnet_id.casefold(),
+            "object_id": subnet_id.casefold(),
+        },
+    )
 
 
 def test_azure_patch_runtime_shares_credential_with_execution_verifier(

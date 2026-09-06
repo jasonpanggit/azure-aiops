@@ -638,18 +638,45 @@ def _load_semantic_snapshot() -> SemanticEngine | None:
 def _traffic_analysis_observations(
     relationships: list[dict[str, Any]] | tuple[dict[str, Any], ...],
 ) -> tuple[dict[str, Any], ...] | None:
-    observations = tuple(
-        dict(relationship)
-        for relationship in relationships
+    observations: list[dict[str, Any]] = []
+    for relationship in relationships:
+        if str(relationship.get("predicate") or "").casefold() != "trafficobserved":
+            continue
+        payload: Mapping[str, Any] = {}
+        raw_payload = relationship.get("payload_json")
+        if isinstance(raw_payload, Mapping):
+            payload = raw_payload
+        elif isinstance(raw_payload, str) and raw_payload:
+            try:
+                decoded = json.loads(raw_payload)
+            except (TypeError, ValueError):
+                decoded = {}
+            if isinstance(decoded, Mapping):
+                payload = decoded
+        attributes = relationship.get("attributes")
+        if not isinstance(attributes, Mapping):
+            attributes = payload.get("attributes")
         if (
-            str(relationship.get("predicate") or "").casefold()
-            == "trafficobserved"
-            and isinstance(relationship.get("attributes"), Mapping)
-            and relationship["attributes"].get("dataSource")
-            == "traffic_analytics"
-        )
-    )
-    return observations or None
+            not isinstance(attributes, Mapping)
+            or attributes.get("dataSource") != "traffic_analytics"
+        ):
+            continue
+        normalized = dict(relationship)
+        normalized["attributes"] = dict(attributes)
+        normalized["subject_id"] = str(
+            relationship.get("subject_id")
+            or payload.get("subjectId")
+            or payload.get("subject_id")
+            or ""
+        ).casefold()
+        normalized["object_id"] = str(
+            relationship.get("object_id")
+            or payload.get("objectId")
+            or payload.get("object_id")
+            or ""
+        ).casefold()
+        observations.append(normalized)
+    return tuple(observations) or None
 
 
 def _load_network_service() -> NetworkIntelligenceService | None:

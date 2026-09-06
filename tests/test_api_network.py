@@ -863,6 +863,27 @@ class TestPolicy:
             "peer_resolutions": peer_resolutions,
         }
 
+    def test_rule_findings_evidence_reflects_analyzed_flow_logs(self, tmp_path):
+        flow_observation = {
+            "subject_id": PROD_VNET,
+            "object_id": f"{PROD_VNET}/subnets/snet-app",
+            "predicate": "trafficObserved",
+            "attributes": {"dataSource": "traffic_analytics"},
+        }
+        base = build_service(network_rows())
+        service = NetworkIntelligenceService(
+            base.snapshot,
+            policy=base.policy,
+            semantic_relationships=(flow_observation,),
+            flow_observations=(flow_observation,),
+        )
+        client = _client(tmp_path, network_service=service)
+
+        response = client.get("/api/v1/network/rule-findings", headers=_auth())
+
+        assert response.status_code == 200
+        assert response.json()["evidence"][0]["confidence"] == "high"
+
     @pytest.mark.parametrize(
         ("path", "collection"),
         (

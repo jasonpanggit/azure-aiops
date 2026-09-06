@@ -765,6 +765,22 @@ class TestObservedTraffic:
             and finding.rule_name == "allow-unused"
         ]
 
+    def test_canonical_object_id_attributes_observed_traffic(self) -> None:
+        edge = self._edge(
+            "/nsg/obs/securityrules/allow-unused",
+            "allowed_and_observed",
+        )
+        edge["object_id"] = edge.pop("object")
+
+        findings = analyze_rules(self._snapshot(), [edge])
+
+        assert not [
+            finding
+            for finding in findings
+            if finding.category == "observed_traffic"
+            and finding.rule_name == "allow-unused"
+        ]
+
     def test_deny_rule_hit_by_traffic_is_reported(self) -> None:
         edges = [
             self._edge("/nsg/obs/securityrules/deny-probe", "denied_and_blocked"),

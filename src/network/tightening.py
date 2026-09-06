@@ -405,7 +405,7 @@ class RuleTighteningAnalyzer:
                     "custom_rule_count": len([r for r in nsg.rules if not r.is_default]),
                     "subnet_associations": 0,
                     "nic_associations": 0,
-                    "basis": "association metadata; flow logs are not ingested",
+                    "basis": "association metadata; independent of flow-log evidence",
                 },
                 recommendation="Attach the NSG where it is needed, or delete it.",
                 connection_id=nsg.connection_id,
@@ -698,9 +698,14 @@ class ObservedTrafficAnalyzer:
             if attributes.get("dataSource") != LIVE_FLOW_DATA_SOURCE:
                 continue
             self._has_live_data = True
-            # Edges use "objectId" (see flowlog_ingest._add_edge); "object"
-            # is accepted so a caller passing a simplified mapping still works.
-            rule_id = str(edge.get("objectId") or edge.get("object") or "").strip().casefold()
+            # Runtime persistence uses canonical ``object_id``; direct
+            # flow-log output and simplified callers retain legacy spellings.
+            rule_id = str(
+                edge.get("object_id")
+                or edge.get("objectId")
+                or edge.get("object")
+                or ""
+            ).strip().casefold()
             if not rule_id:
                 continue
             self._matched_rule_ids.add(rule_id)
