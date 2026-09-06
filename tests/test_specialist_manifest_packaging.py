@@ -628,6 +628,18 @@ def test_candidate_publication_is_explicitly_staged_and_safe_by_default():
     assert "azurerm_container_app.api" in rollout
 
 
+def test_candidate_publication_is_suspended_while_rollback_is_selected():
+    foundry = _read("infra/terraform/foundry.tf")
+
+    rollout = foundry[
+        foundry.index('resource "terraform_data" "foundry_agent"') :
+        foundry.index(PROMOTION_GATE_RESOURCE)
+    ]
+    assert (
+        'lower(var.foundry_specialist_activation_target) != "rollback"' in rollout
+    )
+
+
 def test_activation_selector_supports_validated_active_and_rollback_maps():
     variables = _read("infra/terraform/variables.tf")
     foundry = _read("infra/terraform/foundry.tf")
