@@ -287,11 +287,41 @@ def test_persisted_observation_identity_is_revalidated_before_replay() -> None:
         ExposureObservation.from_dict(tampered)
 
 
-@pytest.mark.skip(reason="Pending implementation: Plan 03.1-09")
 def test_unknown_first_detection_produces_indeterminate_sla() -> None:
+    from datetime import UTC, datetime
+
     from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 
-    assert VulnerabilityIntelligenceService is not None
+    service = VulnerabilityIntelligenceService.from_rows(
+        projected_current=[
+            {
+                "current_key": "exposure-current:v1:unknown-sla",
+                "projection_generation_id": "generation-unknown",
+                "target_id": "server-a",
+                "target_kind": "server",
+                "weakness_id": "CVE-2026-0999",
+                "weakness_kind": "cve",
+                "state": "missing",
+                "active": True,
+                "active_source_families": ["defender"],
+                "first_detected_at": None,
+                "first_detection_quality": "unknown",
+                "episode_started_at": None,
+                "last_observed_at": None,
+                "published_at": "2020-01-01T00:00:00Z",
+            }
+        ],
+        projection_generation_id="generation-unknown",
+        clock=lambda: datetime(2026, 8, 21, tzinfo=UTC),
+    )
+
+    finding = service.findings[0]
+    assert finding.first_detected_at is None
+    assert finding.first_observed_at == ""
+    assert finding.days_open is None
+    assert finding.due_at is None
+    assert finding.overdue is None
+    assert finding.sla_state == "indeterminate"
 
 
 def _observation(

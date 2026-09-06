@@ -888,11 +888,16 @@ def _build_vulnerability_service(
     semantic: SemanticEngine | None = None,
     network: NetworkIntelligenceService | None = None,
     connection_context: Mapping[str, Mapping[str, Any]] | None = None,
+    use_temporal_projection: bool = False,
+    projection_generation_id: str | None = None,
 ) -> VulnerabilityIntelligenceService | None:
     """Build vulnerability intelligence from one authoritative snapshot."""
     if not freshness:
         return None
     pending: list[dict[str, Any]] = []
+    projected_current: list[dict[str, Any]] = []
+    temporal_observations: list[dict[str, Any]] = []
+    source_status: list[dict[str, Any]] = []
     defender_findings: list[dict[str, Any]] = []
     defender_assessments: list[dict[str, Any]] = []
     container_image_exposures: list[dict[str, Any]] = []
@@ -917,6 +922,18 @@ def _build_vulnerability_service(
     # target was never observed at all" (e.g. the wrong subscription).
     observed_target_ids: set[str] = set()
     for table in tables:
+        if use_temporal_projection:
+            current_rows = table.get("gold_exposure_current") or []
+            projected_current.extend(current_rows)
+            temporal_observations.extend(
+                table.get("silver_exposure_observations") or []
+            )
+            source_status.extend(table.get("metadata_source_status") or [])
+            observed_target_ids.update(
+                str(row.get("target_id") or "")
+                for row in current_rows
+                if str(row.get("target_id") or "").strip()
+            )
         for row in table.get("silver_patch_findings") or []:
             kb_id = str(row.get("kb_id") or "").strip()
             target = str(row.get("target_resource_id") or "")
@@ -1037,20 +1054,42 @@ def _build_vulnerability_service(
                     )
                 ]
             signal_rows.extend(rows)
-    # Combine both ARG tables: a KB reported as still "missing" by the latest
-    # assessment but already recorded as "installed" for that same target is
-    # remediated (e.g. the install ran after the assessment snapshot) and
-    # should not surface as an open exposure.
-    findings = [
-        item for item in pending if (item["server_id"], item["missing_kb"]) not in installed_kbs
-    ]
+    # The rollback reader retains its legacy membership suppression exactly.
+    # On the temporal path these rows provide detail only; projected current
+    # state below is the sole authority for whether an exposure is active.
+    findings = (
+        pending
+        if use_temporal_projection
+        else [
+            item
+            for item in pending
+            if (item["server_id"], item["missing_kb"]) not in installed_kbs
+        ]
+    )
 
     # Resolve real CVE ids for each pending KB via the public MSRC Security
     # Update Guide feed. Some KBs (e.g. Servicing Stack Updates) genuinely
     # have no CVE association in MSRC's data; those keep the `KB-<kbId>`
     # proxy identifier used before this connector was wired in, which is
     # factually correct rather than a bug.
-    kb_metadata = _resolve_kb_metadata(tuple({item["missing_kb"] for item in findings}))
+    temporal_kb_ids = {
+        str(row.get("weakness_id") or "").strip()
+        for row in projected_current
+        if str(row.get("weakness_kind") or "").casefold() == "kb"
+        and str(row.get("weakness_id") or "").strip()
+    }
+    kb_metadata = _resolve_kb_metadata(
+        tuple(
+            sorted(
+                {
+                    item["missing_kb"]
+                    for item in findings
+                    if item.get("missing_kb")
+                }
+                | temporal_kb_ids
+            )
+        )
+    )
     kb_to_cves = {
         kb_id: tuple(entry.get("cve_ids") or ()) for kb_id, entry in kb_metadata.items()
     }
@@ -1071,9 +1110,25 @@ def _build_vulnerability_service(
         [*expanded_findings, *defender_findings]
     )
     _attach_connection_business_context(findings, connection_context)
+    temporal_findings = (
+        _temporal_runtime_finding_rows(
+            projected_current,
+            observations=temporal_observations,
+            source_status=source_status,
+            kb_metadata=kb_metadata,
+        )
+        if use_temporal_projection
+        else []
+    )
 
     all_cve_ids = tuple(
-        sorted({item["cve_id"] for item in findings if item["cve_id"].upper().startswith("CVE-")})
+        sorted(
+            {
+                item["cve_id"]
+                for item in (*findings, *temporal_findings)
+                if item.get("cve_id", "").upper().startswith("CVE-")
+            }
+        )
     )
     cve_rows = _resolve_cve_details(all_cve_ids)
 
@@ -1122,6 +1177,10 @@ def _build_vulnerability_service(
 
     service = VulnerabilityIntelligenceService.from_rows(
         findings=findings,
+        projected_current=(
+            temporal_findings if use_temporal_projection else None
+        ),
+        projection_generation_id=projection_generation_id,
         defender_assessments=defender_assessments,
         container_image_exposures=container_image_exposures,
         defender_alerts=defender_signals["alerts"],
@@ -1146,7 +1205,7 @@ def _build_vulnerability_service(
                     kb_metadata.get(item["missing_kb"], {}).get("published_at") or ""
                 ),
             }
-            for item in findings
+            for item in (*findings, *temporal_findings)
             if item.get("missing_kb")
         ],
         cves=cve_rows,
@@ -1164,6 +1223,136 @@ def _build_vulnerability_service(
     if risk_exceptions:
         service = service.apply_risk_exceptions(risk_exceptions)
     return service
+
+
+def _temporal_runtime_finding_rows(
+    current_rows: list[dict[str, Any]],
+    *,
+    observations: list[dict[str, Any]],
+    source_status: list[dict[str, Any]],
+    kb_metadata: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Join projected state to its exact event and compatibility identities.
+
+    ``gold_exposure_current`` owns whether an exposure is active. Legacy
+    patch/Defender rows are detail-only on this path, so an undated installed
+    membership can neither close a newer missing episode nor reopen a closed
+    one. The last immutable observation contributes event/publication
+    timestamps without substituting any of them for tenant first detection.
+    """
+    observations_by_id: dict[str, dict[str, Any]] = {}
+    for value in observations:
+        row = dict(value)
+        observation_id = str(
+            row.get("observation_id") or row.get("resource_id") or ""
+        ).strip()
+        if not observation_id:
+            continue
+        previous = observations_by_id.get(observation_id)
+        if previous is not None and json.dumps(
+            previous, sort_keys=True, default=str
+        ) != json.dumps(row, sort_keys=True, default=str):
+            raise ValueError(
+                "Conflicting immutable Exposure observation "
+                f"{observation_id}"
+            )
+        observations_by_id[observation_id] = row
+
+    result: list[dict[str, Any]] = []
+    for value in sorted(
+        current_rows,
+        key=lambda row: (
+            str(row.get("projection_generation_id") or ""),
+            str(row.get("current_key") or row.get("resource_id") or ""),
+        ),
+    ):
+        current = dict(value)
+        current_key = str(
+            current.get("current_key") or current.get("resource_id") or ""
+        ).strip()
+        last_observation_id = str(
+            current.get("last_observation_id") or ""
+        ).strip()
+        observation = observations_by_id.get(last_observation_id, {})
+        enriched = {
+            **current,
+            "current_key": current_key,
+            "event_at": observation.get("event_time"),
+            "ingested_at": observation.get("ingested_at"),
+            "run_at": observation.get("run_at"),
+            "published_at": observation.get("published_at"),
+            "enriched_at": observation.get("enriched_at"),
+            "source_completeness": _temporal_source_completeness(
+                current, source_status
+            ),
+        }
+        weakness_id = str(current.get("weakness_id") or "").strip()
+        weakness_kind = str(current.get("weakness_kind") or "").casefold()
+        if weakness_kind == "kb":
+            cve_ids = tuple(kb_metadata.get(weakness_id, {}).get("cve_ids") or ())
+            if not cve_ids:
+                cve_ids = (f"KB-{weakness_id}",)
+            result.extend(
+                {
+                    **enriched,
+                    "finding_id": f"{current_key}|{cve_id}",
+                    "cve_id": cve_id,
+                    "missing_kb": weakness_id,
+                }
+                for cve_id in cve_ids
+            )
+        else:
+            result.append(
+                {
+                    **enriched,
+                    "finding_id": current_key,
+                    "cve_id": weakness_id if weakness_kind == "cve" else "",
+                    "missing_kb": "",
+                }
+            )
+    return result
+
+
+def _temporal_source_completeness(
+    current: Mapping[str, Any],
+    statuses: list[dict[str, Any]],
+) -> str:
+    explicit = str(
+        current.get("source_completeness") or current.get("completeness") or ""
+    ).strip()
+    if explicit:
+        return explicit
+    families = {
+        str(value).strip().casefold()
+        for value in current.get("active_source_families") or ()
+        if str(value).strip()
+    }
+    matched = [
+        str(row.get("completeness") or row.get("state") or "").casefold()
+        for row in statuses
+        if _temporal_source_family(row.get("source_family")) in families
+        and str(row.get("completeness") or row.get("state") or "").strip()
+    ]
+    if not matched:
+        return "unknown"
+    rank = {
+        "unavailable": 0,
+        "failed": 0,
+        "stale": 1,
+        "partial": 2,
+        "healthy-empty": 3,
+        "complete": 3,
+    }
+    return min(matched, key=lambda value: (rank.get(value, -1), value))
+
+
+def _temporal_source_family(value: Any) -> str:
+    family = str(value or "").strip().casefold()
+    if family.startswith(("azure_update_manager", "aum")):
+        return "aum"
+    if family.startswith("defender"):
+        return "defender"
+    return family
 
 
 def _merge_vulnerability_finding_rows(
@@ -1421,7 +1610,20 @@ def _earliest_finding_observation(rows: list[dict[str, Any]]) -> str:
 
 def _load_vulnerability_service() -> VulnerabilityIntelligenceService | None:
     tables, freshness = _load_snapshot_tables()
-    return _build_vulnerability_service(tables, freshness)
+    return _build_vulnerability_service(
+        tables,
+        freshness,
+        use_temporal_projection=_temporal_exposure_reader_enabled(),
+    )
+
+
+def _temporal_exposure_reader_enabled() -> bool:
+    """Select projected serving only through the typed default-off flag."""
+    config_path = os.environ.get(ENV_FABRIC_CONFIG, "").strip()
+    if not config_path:
+        return False
+    exposure = FabricRuntimeConfig.load(config_path).exposure
+    return exposure.enabled and not exposure.rollback_mode
 
 
 # Risk exceptions are user-submitted mutations that must survive both a
@@ -1952,12 +2154,24 @@ def _fabric_vulnerability_service(
     ]
     semantic = runtime.semantic_engine()
     network = _fabric_network_service(runtime)
+    exposure = getattr(runtime.config, "exposure", None)
+    use_temporal_projection = bool(
+        exposure is not None
+        and exposure.enabled
+        and not exposure.rollback_mode
+    )
+    temporal_tables = (
+        _fabric_temporal_exposure_tables(runtime)
+        if use_temporal_projection
+        else {}
+    )
     return _build_vulnerability_service(
         [
             {
                 "silver_patch_findings": findings,
                 "silver_defender_findings": defender_findings,
                 "silver_defender_assessments": defender_assessments,
+                **temporal_tables,
                 **{
                     f"silver_defender_{name}": rows
                     for name, rows in defender.items()
@@ -1967,7 +2181,28 @@ def _fabric_vulnerability_service(
         str(semantic_snapshot.get("freshness") or ""),
         semantic=semantic,
         network=network,
+        use_temporal_projection=use_temporal_projection,
     )
+
+
+def _fabric_temporal_exposure_tables(
+    runtime: FabricRuntime,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read Plan 08 temporal products without replacing Fabric composition."""
+
+    def read(layer: str, name: str) -> list[dict[str, Any]]:
+        uri = runtime.service.onelake.table_uri(layer, name)
+        if runtime.service.delta.version(uri) is None:
+            return []
+        return runtime.service.delta.read(uri)
+
+    return {
+        "gold_exposure_current": read("gold", "exposure_current"),
+        "silver_exposure_observations": read(
+            "silver", "exposure_observations"
+        ),
+        "metadata_source_status": read("metadata", "source_status"),
+    }
 
 
 def _fabric_incident_engine(runtime: FabricRuntime) -> IncidentEngine | None:
