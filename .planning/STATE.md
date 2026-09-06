@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 03.1-19 not started (18/25 sequential complete; 21/25 total summaries)
+current_plan: 03.1-19 not started (18/25 sequential complete; 22/25 total summaries)
 status: planning
-stopped_at: Completed 03.1-17-PLAN.md
-last_updated: "2026-09-06T15:48:52.937Z"
+stopped_at: Completed 03.1-22-PLAN.md
+last_updated: "2026-09-06T16:07:19.561Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 127
+  completed_plans: 130
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -20,8 +20,8 @@ current_phase_name: Exposure Reliability and Scale
 
 **Active Phase:** Phase 03.1 (Exposure Reliability and Scale)
 **Wave:** Next eligible plan<br>
-**Current Plan:** 03.1-19 not started (18/25 sequential complete; 21/25 total summaries)
-**Status:** Planning — Plans 03.1-21, 03.1-23, and 03.1-24 complete out of sequence; Plan 03.1-19 remains next; Phase 11 snapshot v2, Phase 12, remediation, and network behavior preserved
+**Current Plan:** 03.1-19 not started (18/25 sequential complete; 22/25 total summaries)
+**Status:** Planning — Plans 03.1-21 through 03.1-24 are complete out of sequence; Plan 03.1-19 remains next; Phase 11 snapshot v2, Phase 12, remediation, and network behavior preserved
 
 ## Completed Plans (This Session)
 
@@ -45,6 +45,7 @@ current_phase_name: Exposure Reliability and Scale
 - **03.1-14** COMPLETE — Unified authenticated Exposure consumers, handoff-only container policy, and evidence-bound immutable audit
 - **03.1-15** COMPLETE — Scope-safe canonical Exposure query state, typed cursor APIs, same-query LKG retention, abort/race protection, and accessible independent source states
 - **03.1-16** COMPLETE — Independently recoverable Defender sections, exact allowlisted portal handoffs, weighted secure score, truthful asset labels, and review-only container governance
+- **03.1-22** COMPLETE — Native Exposure navigation, lean Overview composition, six independent source states, conservative completeness, and unknown-safe metrics
 - **03.1-18** COMPLETE — Low-cardinality Exposure telemetry, one-cycle Azure Monitor alerts, and generation-bound semantic shadow reconciliation
 - **03.1-24** COMPLETE — Conservative shared evidence primitives, opaque cursor pagination, and governed Fluent UI risk-exception feedback
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
@@ -167,6 +168,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P15 | 18 min | 2 tasks | 10 files |
 | Phase 03.1 P16 | 15min | 2 tasks | 7 files |
 | Phase 03.1 P17 | 41 min | 2 tasks | 9 files |
+| Phase 03.1 P22 | 10min | 2 tasks | 9 files |
 
 ## Decisions
 
@@ -272,11 +274,15 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: Exposure return URLs are restricted to canonical internal Exposure paths and revalidated against the current authorized scope.
 - [Phase 03.1]: Container findings remain non-executable: only explicit review_handoff or no_safe_action server outcomes are rendered, and handoff responses must confirm no execution transition.
 - [Phase 03.1]: Existing governed server execution is revalidated immediately before execute while can_operate, approval, snapshot, polling, recovery, reconciliation, and lineage contracts remain authoritative.
+- [Phase 03.1]: Plan 03.1-22: Only exact canonical Defender/Patch paths may select a detail parent; invalid or absent origins fall back to Patch priorities.
+- [Phase 03.1]: Plan 03.1-22: Each Overview source owns an independent common-contract and source request so failures and retries cannot gate healthy siblings.
+- [Phase 03.1]: Plan 03.1-22: Common completeness owns trust and connection coverage while source envelopes own loaded and total item counts.
+- [Phase 03.1]: Plan 03.1-22: Whole-page unavailability appears only when all six authorized sections are unavailable.
 
 ## Session
 
-**Last session:** 2026-09-06T15:48:52.919Z
-**Stopped at:** Completed 03.1-17-PLAN.md
+**Last session:** 2026-09-06T16:07:19.545Z
+**Stopped at:** Completed 03.1-22-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context
