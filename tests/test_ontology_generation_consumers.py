@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import io
 import json
+import base64
 from pathlib import Path
 
 import pytest
 
+from api.runtime import _load_generation_tables
+from fabric.data_agent_manager import build_data_agent_definition
+from fabric.semantic_model_manager import build_semantic_model_definition
 from ontology_discovery.generation_resolver import (
     COMPATIBILITY_ALIAS_VERSION,
     CONSUMER_INVENTORY,
     GenerationResolver,
     scan_direct_ontology_consumers,
 )
+from operations.tools import STATUS_OK, call_tool
+from api.scope import Scope
 
 
 class _MemoryFs:
@@ -154,3 +160,155 @@ def test_documented_inventory_lists_each_executable_entry():
         assert entry.path in document
         assert entry.owner in document
         assert entry.rollback_assertion in document
+
+
+def _decode_definition_part(definition: dict, suffix: str) -> dict:
+    part = next(part for part in definition["parts"] if part["path"].endswith(suffix))
+    return json.loads(base64.b64decode(part["payload"]))
+
+
+def test_api_generation_loader_pins_one_generation_for_the_mapper():
+    store = _RemoteStore()
+
+    class _Mapper:
+        def load(self, generation, run_id, *, fs=None):
+            rows = GenerationResolver(store).read_dataset(
+                "ontology_entities",
+                selection=GenerationResolver(store).selection_for(generation),
+            )
+            return {"ontology_entities": rows, "run_id": run_id, "fs": fs}
+
+    old_tables, old_selection = _load_generation_tables(store, _Mapper(), "run-old")
+    store.fs.files[store.pointer_path] = json.dumps(
+        {
+            "generation": "generation-new",
+            "previous_generation": "generation-old",
+            "source_generation": "inventory-42",
+        }
+    )
+    store.fs.files[
+        f"{store.generations}/generation-new/manifest.json"
+    ] = '{"sourceGeneration":"inventory-42"}'
+    store.fs.files[
+        f"{store.generations}/generation-new/ontology_entities.jsonl"
+    ] = '{"resource_id":"new"}\n'
+    new_tables, new_selection = _load_generation_tables(store, _Mapper(), "run-new")
+    store.fs.files[store.pointer_path] = json.dumps(
+        {
+            "generation": "generation-old",
+            "previous_generation": "generation-new",
+            "source_generation": "inventory-41",
+        }
+    )
+    rollback_tables, rollback_selection = _load_generation_tables(
+        store, _Mapper(), "run-rollback"
+    )
+
+    assert [old_tables["ontology_entities"][0]["resource_id"], old_selection.generation_id] == [
+        "old",
+        "generation-old",
+    ]
+    assert [new_tables["ontology_entities"][0]["resource_id"], new_selection.generation_id] == [
+        "new",
+        "generation-new",
+    ]
+    assert [
+        rollback_tables["ontology_entities"][0]["resource_id"],
+        rollback_selection.generation_id,
+    ] == ["old", "generation-old"]
+
+
+def test_fabric_alias_preserves_public_table_names_and_binds_generation():
+    selection = GenerationResolver(_RemoteStore()).resolve()
+    aliases = GenerationResolver(_RemoteStore()).compatibility_aliases(selection)
+
+    data_agent = build_data_agent_definition(
+        lakehouse_id="lake",
+        lakehouse_workspace_id="workspace",
+        lakehouse_display_name="ontology",
+        ai_instructions="Read only.",
+        generation=selection,
+        table_aliases=aliases,
+    )
+    datasource = _decode_definition_part(data_agent, "/datasource.json")
+    semantic_model = build_semantic_model_definition(
+        "ontology-model",
+        ["ontology_entities", "ontology_relationships"],
+        generation=selection,
+        table_aliases=aliases,
+    )
+    model = _decode_definition_part(semantic_model, "model.bim")
+
+    assert {item["display_name"] for item in datasource["elements"]} == {
+        "ontology_entities",
+        "ontology_relationships",
+    }
+    assert datasource["generationBinding"] == {
+        "aliasVersion": COMPATIBILITY_ALIAS_VERSION,
+        "generationId": "generation-old",
+    }
+    assert {table["name"] for table in model["model"]["tables"]} == {
+        "ontology_entities",
+        "ontology_relationships",
+    }
+    assert model["model"]["annotations"] == [
+        {
+            "name": "aiops.ontologyGeneration",
+            "value": f"{COMPATIBILITY_ALIAS_VERSION}:generation-old",
+        }
+    ]
+
+
+def test_operations_agent_uses_one_selected_generation_per_tool_call():
+    store = _RemoteStore()
+    resolver = GenerationResolver(store)
+
+    class _Semantic:
+        def __init__(self, generation_id: str) -> None:
+            self.generation_id = generation_id
+
+        def get_service_context(self, name, *, subject_type):
+            return {
+                "subject": {"name": name, "entity_type": subject_type},
+                "generation": self.generation_id,
+                "freshness": "2026-01-01T00:00:00+00:00",
+            }
+
+    class _GenerationSemantic:
+        def for_generation(self, selection):
+            return _Semantic(selection.generation_id)
+
+    class _Context:
+        generation_resolver_provider = lambda self: resolver
+
+        def resolve_provider(self, name, *, optional=False):
+            assert name == "semantic"
+            return _GenerationSemantic()
+
+    def invoke() -> str:
+        result = call_tool(
+            "business_service_context",
+            {"name": "Payments"},
+            context=_Context(),
+            scope=Scope(),
+        )
+        assert result.status == STATUS_OK
+        assert result.evidence[0].source_table == "ontology_entities"
+        return result.data["generation"]
+
+    old = invoke()
+    store.fs.files[store.pointer_path] = json.dumps(
+        {"generation": "generation-new", "previous_generation": "generation-old"}
+    )
+    store.fs.files[f"{store.generations}/generation-new/manifest.json"] = "{}"
+    new = invoke()
+    store.fs.files[store.pointer_path] = json.dumps(
+        {"generation": "generation-old", "previous_generation": "generation-new"}
+    )
+    rolled_back = invoke()
+
+    assert (old, new, rolled_back) == (
+        "generation-old",
+        "generation-new",
+        "generation-old",
+    )
