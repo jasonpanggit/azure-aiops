@@ -135,6 +135,14 @@ const SHA256_CONSTANTS = [
   0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ] as const;
 
+const STATUS_WARNING_PRIORITY: Record<CopilotSnapshotStatusV2, number> = {
+  ok: 0,
+  empty: 1,
+  partial: 2,
+  unavailable: 3,
+  denied: 4,
+};
+
 /** Returns the reviewed Copilot integration disposition for a route. */
 export function copilotPageDisposition(pathname: string): CopilotPageDisposition {
   return PAGE_DISPOSITIONS[pathname as keyof typeof PAGE_DISPOSITIONS] ?? "deferred";
@@ -176,6 +184,18 @@ function isStrictSnapshot(
 
 function rotateRight(value: number, count: number): number {
   return (value >>> count) | (value << (32 - count));
+}
+
+function compareCodePoints(left: string, right: string): number {
+  const leftPoints = Array.from(left, (character) => character.codePointAt(0) ?? 0);
+  const rightPoints = Array.from(right, (character) => character.codePointAt(0) ?? 0);
+  const length = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < length; index += 1) {
+    if (leftPoints[index] !== rightPoints[index]) {
+      return leftPoints[index] < rightPoints[index] ? -1 : 1;
+    }
+  }
+  return leftPoints.length - rightPoints.length;
 }
 
 function sha256(value: string): string {
@@ -246,13 +266,31 @@ function sha256(value: string): string {
 }
 
 function normalizedIdentityPart(value: string): string {
-  return value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+  const compact = value.trim().split(/\s+/).filter(Boolean).join(" ");
+  return Array.from(compact, (character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint === 0x0131) return character;
+    if (
+      (codePoint >= 0x13a0 && codePoint <= 0x13ef)
+      || (codePoint >= 0x13f0 && codePoint <= 0x13f5)
+    ) {
+      return character;
+    }
+    if (codePoint >= 0xab70 && codePoint <= 0xabbf) {
+      return String.fromCodePoint(codePoint - 0x97d0);
+    }
+    if (codePoint >= 0x13f8 && codePoint <= 0x13fd) {
+      return String.fromCodePoint(codePoint - 8);
+    }
+    return character.toUpperCase().toLowerCase();
+  }).join("");
 }
 
 function canonicalResourceId(resourceId: string): string {
-  const parts = resourceId.split("/").filter(Boolean);
+  const trimmed = resourceId.trim();
+  const parts = trimmed.split("/").filter(Boolean);
   if (
-    !resourceId.startsWith("/")
+    !trimmed.startsWith("/")
     || parts[0]?.toLowerCase() !== "subscriptions"
     || !parts[1]
   ) {
@@ -287,7 +325,7 @@ function stableJson(value: unknown): string {
   if (value && typeof value === "object") {
     return `{${Object.entries(value)
       .filter(([, item]) => item !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCodePoints(left, right))
       .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
       .join(",")}}`;
   }
@@ -338,9 +376,49 @@ function assertBound(name: string, actual: number, maximum: number): void {
   }
 }
 
+function boundedString(
+  name: string,
+  value: string,
+  minimum: number,
+  maximum: number,
+): string {
+  const trimmed = value.trim();
+  const length = Array.from(trimmed).length;
+  if (length < minimum || length > maximum) {
+    throw new Error(`${name} must contain between ${minimum} and ${maximum} characters`);
+  }
+  return trimmed;
+}
+
+function boundedSourceKey(value: string): string {
+  const sourceKey = boundedString("source key", value, 1, 256);
+  if (/[\0\r\n]/.test(sourceKey)) {
+    throw new Error("source key contains an invalid control character");
+  }
+  return sourceKey;
+}
+
 function assertEvidenceRowBound(data: Record<string, unknown>): void {
-  const bytes = new TextEncoder().encode(JSON.stringify(data)).length;
+  const bytes = new TextEncoder().encode(asciiJson(data)).length;
   assertBound("evidence row", bytes, COPILOT_SNAPSHOT_LIMITS.evidenceRowBytes);
+}
+
+function mergeDuplicateEvidence(
+  current: InventorySnapshotEvidence,
+  incoming: InventorySnapshotEvidence,
+): InventorySnapshotEvidence {
+  return {
+    ...current,
+    status: STATUS_WARNING_PRIORITY[current.status] >= STATUS_WARNING_PRIORITY[incoming.status]
+      ? current.status
+      : incoming.status,
+    observed_at: current.observed_at >= incoming.observed_at
+      ? current.observed_at
+      : incoming.observed_at,
+    selected: current.selected || incoming.selected,
+    direct: current.direct || incoming.direct,
+    actionable: current.actionable || incoming.actionable,
+  };
 }
 
 /**
@@ -357,10 +435,10 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     Object.entries(input.filters)
       .map(([key, value]) => [key, value.trim()])
       .filter(([, value]) => Boolean(value))
-      .sort(([left], [right]) => left.localeCompare(right)),
+      .sort(([left], [right]) => compareCodePoints(left, right)),
   );
   const sortContext = Object.fromEntries(
-    Object.entries(input.sort ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+    Object.entries(input.sort ?? {}).sort(([left], [right]) => compareCodePoints(left, right)),
   );
   const inventoryContext = {
     tab: input.tab,
@@ -372,11 +450,17 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
   const evidenceById = new Map<string, InventorySnapshotEvidence>();
 
   for (const record of input.records) {
-    const entity = recordEntity(record);
-    const sourceKey = record.identity;
+    const source = boundedString("evidence source", record.source, 1, 128);
+    const sourceKey = boundedSourceKey(record.identity);
+    const observedAt = record.observedAt ?? input.observedAt ?? "";
+    if (observedAt) boundedString("evidence observation time", observedAt, 1, 128);
+    if (record.resourceId && Array.from(record.resourceId.trim()).length > 512) {
+      throw new Error("Azure resource ID exceeds limit of 512");
+    }
+    const entity = recordEntity({ ...record, identity: sourceKey });
     const claimType = record.kind;
     const stableId = canonicalEvidenceStableId({
-      source: record.source,
+      source,
       sourceKey,
       entity,
       claimType,
@@ -384,14 +468,15 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     const data = {
       ...record.data,
       inventory_context: inventoryContext,
+      selected: record.identity === input.selectedIdentity,
     };
     assertEvidenceRowBound(data);
     const evidenceId = `browser:${sha256(asciiJson([stableId, stableJson(data)])).slice(0, 32)}`;
-    evidenceById.set(evidenceId, {
+    const evidenceRow: InventorySnapshotEvidence = {
       evidence_id: evidenceId,
-      source: record.source.trim(),
+      source,
       status: record.status ?? "ok",
-      observed_at: record.observedAt ?? input.observedAt ?? "",
+      observed_at: observedAt,
       resource_id: entity.type === "azure" ? entity.resource_id : "",
       source_key: sourceKey,
       entity,
@@ -403,11 +488,16 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
       severity: "unknown",
       quality: "high",
       data,
-    });
+    };
+    const existing = evidenceById.get(evidenceId);
+    evidenceById.set(
+      evidenceId,
+      existing ? mergeDuplicateEvidence(existing, evidenceRow) : evidenceRow,
+    );
   }
 
   const evidence = Array.from(evidenceById.values()).sort((left, right) =>
-    left.evidence_id.localeCompare(right.evidence_id));
+    compareCodePoints(left.evidence_id, right.evidence_id));
   assertBound("evidence rows", evidence.length, COPILOT_SNAPSHOT_LIMITS.evidenceRows);
   if (evidence.length > input.totalCount) {
     throw new Error("visible count cannot exceed total count");
@@ -420,7 +510,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
       const key = entityKey(entity);
       return entities.findIndex((candidate) => entityKey(candidate) === key) === index;
     })
-    .sort((left, right) => entityKey(left).localeCompare(entityKey(right)));
+    .sort((left, right) => compareCodePoints(entityKey(left), entityKey(right)));
   assertBound(
     "selected entities",
     selectedEntities.length,
@@ -428,15 +518,18 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
   );
 
   const freshness = input.sourceStatuses
-    .map((source) => ({
-      source: source.source.trim(),
-      observed_at: source.observedAt || input.observedAt || "unknown",
-      status: freshnessStatus(source.status),
-    }))
+    .map((source) => {
+      const observedAt = source.observedAt || input.observedAt || "unknown";
+      return {
+        source: boundedString("freshness source", source.source, 1, 128),
+        observed_at: boundedString("freshness observation time", observedAt, 1, 128),
+        status: freshnessStatus(source.status),
+      };
+    })
     .sort((left, right) =>
-      left.source.localeCompare(right.source)
-      || left.status.localeCompare(right.status)
-      || left.observed_at.localeCompare(right.observed_at));
+      compareCodePoints(left.source, right.source)
+      || compareCodePoints(left.status, right.status)
+      || compareCodePoints(left.observed_at, right.observed_at));
   assertBound(
     "freshness records",
     freshness.length,

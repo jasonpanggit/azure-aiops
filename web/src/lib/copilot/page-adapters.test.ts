@@ -119,6 +119,9 @@ describe("inventory Copilot page adapter", () => {
       offset: 0,
       limit: 50,
     });
+    expect(
+      context.snapshot.evidence.find((item) => item.selected)?.data.selected,
+    ).toBe(true);
     expect(context.uncertainty).toEqual([
       "visible subset is incomplete",
       "arc freshness is partial",
@@ -170,6 +173,19 @@ describe("inventory Copilot page adapter", () => {
         claimType: "os_group",
       }),
     ).toBe("evidence:8260f36a5239818a9fbe280261d162e5");
+    expect(
+      canonicalEvidenceStableId({
+        source: "inventory/os_observations",
+        sourceKey: "Straße",
+        entity: {
+          type: "domain",
+          namespace: "inventory",
+          kind: "os_group",
+          source_key: "Straße",
+        },
+        claimType: "os_group",
+      }),
+    ).toBe("evidence:5a5a89948c9154eb1044111a3cc48a88");
   });
 
   it("keeps stable keys and serialization unchanged across reorder and refresh", () => {
@@ -233,6 +249,27 @@ describe("inventory Copilot page adapter", () => {
     ]);
   });
 
+  it("serializes object keys deterministically regardless of insertion order", () => {
+    const left = buildInventoryCopilotContext({
+      ...baseInput,
+      records: [{
+        ...records[0],
+        data: { zed: 1, "éclair": 2, alpha: 3 },
+      }],
+      totalCount: 1,
+    }).snapshot;
+    const right = buildInventoryCopilotContext({
+      ...baseInput,
+      records: [{
+        ...records[0],
+        data: { alpha: 3, "éclair": 2, zed: 1 },
+      }],
+      totalCount: 1,
+    }).snapshot;
+
+    expect(serializeCopilotSnapshot(left)).toBe(serializeCopilotSnapshot(right));
+  });
+
   it("preserves contradictory values as stable conflict variants", () => {
     const conflicting = [
       {
@@ -261,6 +298,33 @@ describe("inventory Copilot page adapter", () => {
     expect(new Set(snapshot.evidence.map((item) => item.claim_type))).toEqual(
       new Set(["os_group"]),
     );
+  });
+
+  it("merges exact duplicates independently of input order", () => {
+    const duplicate = {
+      ...records[0],
+      status: "denied" as const,
+      observedAt: "2026-08-25T09:00:00Z",
+    };
+    const stronger = {
+      ...records[0],
+      status: "ok" as const,
+      observedAt: "2026-08-25T10:00:00Z",
+    };
+    const build = (items: InventoryCopilotRecord[]) =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        records: items,
+        totalCount: 1,
+      }).snapshot.evidence;
+
+    expect(build([duplicate, stronger])).toEqual(build([stronger, duplicate]));
+    expect(build([duplicate, stronger])).toMatchObject([
+      {
+        status: "denied",
+        observed_at: "2026-08-25T10:00:00Z",
+      },
+    ]);
   });
 
   it("rejects invalid coverage and every server-side size bound", () => {
@@ -312,5 +376,17 @@ describe("inventory Copilot page adapter", () => {
         ),
       }),
     ).toThrow(/freshness records/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        records: [{ ...records[0], source: "x".repeat(129) }],
+      }),
+    ).toThrow(/evidence source/i);
+    expect(() =>
+      buildInventoryCopilotContext({
+        ...baseInput,
+        records: [{ ...records[0], identity: "x".repeat(257) }],
+      }),
+    ).toThrow(/source key/i);
   });
 });
