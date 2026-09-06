@@ -283,16 +283,18 @@ describe("topology export provenance", () => {
     expect(payload.graph_freshness).toBeNull();
   });
 
-  it("creates collision-free JSON and PNG filenames with 15-character timestamp segments", () => {
+  it("keeps real export time while suffixing same-second filename collisions", () => {
     const instant = new Date("2026-09-06T01:02:03.000Z");
     const json = nextExportIdentity("json", instant);
     const png = nextExportIdentity("png", instant);
 
+    expect(json.exportedAt).toBe(instant.toISOString());
+    expect(png.exportedAt).toBe(instant.toISOString());
     expect(json.filename).toMatch(
       /^network-topology-\d{8}-\d{6}\.json$/,
     );
     expect(png.filename).toMatch(
-      /^network-topology-\d{8}-\d{6}\.png$/,
+      /^network-topology-\d{8}-\d{6}-2\.png$/,
     );
     expect(json.filename).not.toBe(png.filename.replace(/\.png$/, ".json"));
     expect(json.filename.match(/\d{8}-\d{6}/)?.[0]).toHaveLength(15);

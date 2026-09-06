@@ -376,16 +376,21 @@ export function buildTopologyExport(
   };
 }
 
-let lastExportSecond = 0;
+let lastExportSecond = -1;
+let exportSequence = 0;
 
 export function nextExportIdentity(
   extension: "json" | "png",
   now = new Date(),
 ): { exportedAt: string; filename: string } {
-  const candidate = Math.floor(now.getTime() / 1_000) * 1_000;
-  const timestamp = Math.max(candidate, lastExportSecond + 1_000);
-  lastExportSecond = timestamp;
-  const date = new Date(timestamp);
+  const exportSecond = Math.floor(now.getTime() / 1_000);
+  if (exportSecond === lastExportSecond) {
+    exportSequence += 1;
+  } else {
+    lastExportSecond = exportSecond;
+    exportSequence = 1;
+  }
+  const date = new Date(exportSecond * 1_000);
   const segment = [
     date.getUTCFullYear().toString().padStart(4, "0"),
     String(date.getUTCMonth() + 1).padStart(2, "0"),
@@ -396,8 +401,10 @@ export function nextExportIdentity(
     String(date.getUTCSeconds()).padStart(2, "0"),
   ].join("");
   return {
-    exportedAt: date.toISOString(),
-    filename: `network-topology-${segment}.${extension}`,
+    exportedAt: now.toISOString(),
+    filename: `network-topology-${segment}${
+      exportSequence > 1 ? `-${exportSequence}` : ""
+    }.${extension}`,
   };
 }
 
