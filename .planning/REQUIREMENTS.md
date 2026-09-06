@@ -199,6 +199,16 @@ Traceability is populated during roadmap creation.
 | MED-08 | Phase 10 | Complete |
 | MED-09 | Phase 10 | Complete |
 | MED-10 | Phase 10 | Complete |
+| COP-01 | Phase 11 | Pending |
+| COP-02 | Phase 11 | Pending |
+| COP-03 | Phase 11 | Pending |
+| COP-04 | Phase 11 | Pending |
+| COP-05 | Phase 11 | Pending |
+| TOPO-01 | Phase 12 | Complete |
+| TOPO-02 | Phase 12 | Complete |
+| TOPO-03 | Phase 12 | Complete |
+| TOPO-04 | Phase 12 | Complete |
+| TOPO-05 | Phase 12 | Complete |
 | AUTO-ONT-01 | Phase 13 | Pending |
 | AUTO-ONT-02 | Phase 13 | Pending |
 | AUTO-ONT-03 | Phase 13 | Pending |
@@ -209,10 +219,10 @@ Traceability is populated during roadmap creation.
 
 **Coverage:**
 
-- v1 requirements: 51 total
-- Mapped to phases: 51
+- v1 requirements: 67 total
+- Mapped to phases: 67
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-08-23*
-*Last updated: 2026-09-04 for Phase 13 autonomous ontology discovery*
+*Last updated: 2026-09-06 after Phase 12 verification*

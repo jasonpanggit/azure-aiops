@@ -1,6 +1,6 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-verified: 2026-09-06T08:15:19Z
+verified: 2026-09-06T08:25:00Z
 status: passed
 score: 5/5 roadmap must-haves verified
 plan_truth_score: 76/76
@@ -8,8 +8,9 @@ behavior_unverified: 0
 overrides_applied: 0
 requested_source_head: 207c7c78b4b90dfa9561054fdd9c840be74c8764
 verified_source_head: 207c7c78b4b90dfa9561054fdd9c840be74c8764
-docs_head_at_verification_start: fccddfa803ed5bf65f7a809ffeaa8da3afa4f379
+docs_head_at_verification: fccddfa803ed5bf65f7a809ffeaa8da3afa4f379
 source_matches_requested_head: true
+full_suites_rerun_in_this_worktree: true
 re_verification:
   previous_status: passed
   previous_score: 5/5
@@ -52,15 +53,18 @@ closure.
 
 ## Verification Boundary
 
-The checkout was at documentation HEAD `fccddfa8` when verification began.
-The only changes after source commit `207c7c78` were:
+Documentation HEAD is `fccddfa8`. Every commit after source commit `207c7c78`
+is documentation-only, touching no application code:
 
-- `12-SECURITY.md`
-- `12-UI-REVIEW.md`
-- `12-VALIDATION.md`
+| Commit | File changed |
+|---|---|
+| `0c48a95c` | `12-UI-REVIEW.md` |
+| `23489425` | `12-UI-REVIEW.md` |
+| `9616dffd` | `12-SECURITY.md` |
+| `fccddfa8` | `12-VALIDATION.md` |
 
 The Git tree IDs for `src`, `web`, and `tests` are byte-identical at
-`207c7c78` and `fccddfa8`:
+`207c7c78` and documentation HEAD — verified directly in this run:
 
 | Tree | At `207c7c78` | At docs HEAD | Result |
 |---|---|---|---|
@@ -69,8 +73,9 @@ The Git tree IDs for `src`, `web`, and `tests` are byte-identical at
 | `tests` | `1c4030290c67dcacf67007d4e2c1ad1a8cf267f7` | same | ✓ |
 
 Accordingly, all code inspection and test evidence below applies exactly to
-the requested source HEAD. The pre-existing untracked `.gsd/` directory was
-not used or modified.
+the requested source HEAD. The working tree carried no source modification
+during verification. The pre-existing untracked `.gsd/` directory was not used
+or modified.
 
 ## Goal Achievement
 
@@ -81,7 +86,7 @@ not used or modified.
 | 1 | Scoped topology, gaps, findings, agents, and MCP expose no out-of-scope resource/relationship, preserve semantic edges, and do not fabricate gaps through asymmetric filtering. | ✓ VERIFIED | `NetworkScope.filter_snapshot()` filters all 15 collections, including `private_link_resources` (`src/network/service.py:66-100`). `scoped()` filters semantic relationships and flow observations only after snapshot scoping (`service.py:391-424`). The router, twin, and operations tools resolve through this seam (`src/api/routers/network.py:51`, `src/api/routers/twin.py:36`, `src/operations/tools.py:410,434,463,493`). The focused scope suite passed 14 tests, including direct service, REST, agent, twin, and MCP cases. |
 | 2 | Fabric capacities, AI Foundry accounts, and other in-scope private-link candidates appear once, and every open topology finding resolves to a visible/retrievable node. | ✓ VERIFIED | Provider mapping emits `FabricCapacity` and `AIFoundryAccount`; `_topology_resources()` reconciles candidates through one case-folded map (`src/network/topology.py:1284-1363`). Fabric per-capacity false positives are suppressed (`src/network/gaps.py:394-399`) while Cognitive Services findings remain. Projection/dedup/finding-resolution regressions passed in the 14-test rerun. |
 | 3 | Totals/truncation are truthful, summary topology is bounded, detail is on demand, and downstream contracts remain compatible. | ✓ VERIFIED | Summary serialization publishes node/group/relationship/collection coverage and enforces node/byte ceilings (`src/network/topology.py:300-600`); gaps/findings publish pagination and coverage (`src/api/routers/network.py:280-380`); drill-down resolves from the scoped snapshot (`network.py:112-205`). G-1/G-2/G-4/G-5/G-6 and browser-export checks passed in the 7-test rerun. The definitive full suites are green. |
-| 4 | Enabling, disabling, creating, previewing, or deleting a policy rule refreshes derived data without reload; invalid rules fail visibly and are not persisted. | ✓ VERIFIED | Policy writes are revisioned and strictly decoded (`src/network/design.py:470-624`); provider refresh is cache-key-aware and retains a degraded last-good provider under failure (`src/api/providers.py:250-386`). The web calls policy plus topology/gap/finding refetches and retains data while busy (`web/src/app/network/page.tsx:100-174,900-1362`; `web/src/hooks/useApi.ts:1-88`). Ten focused policy integrity tests and all 32 Network-page tests in W183 passed. |
+| 4 | Enabling, disabling, creating, previewing, or deleting a policy rule refreshes derived data without reload; invalid rules fail visibly and are not persisted. | ✓ VERIFIED | Policy writes are revisioned and strictly decoded (`src/network/design.py:470-624`); provider refresh is cache-key-aware and retains a degraded last-good provider under failure (`src/api/providers.py:250-386`). The web calls policy plus topology/gap/finding refetches and retains data while busy (`web/src/app/network/page.tsx:100-174,900-1362`; `web/src/hooks/useApi.ts:1-88`). Ten focused policy integrity tests and all 32 `page.test.tsx` Network-page tests passed in the full web rerun. |
 | 5 | Relationship drops, normalization gaps, freshness, DNS/subnet/private-endpoint integrity, and flow provenance are observable and regression/scale tested. | ✓ VERIFIED | IDs are normalized before membership checks; dropped edges are counted by type without endpoint disclosure (`src/network/topology.py:1449-1555`); snapshot freshness and three-state flow provenance are wired through `NetworkIntelligenceService` (`src/network/service.py:250-370`); peer resolution is explicit. The focused provenance/relationship rerun and representative scale gates passed. |
 
 **Roadmap score:** 5/5 verified
@@ -104,7 +109,7 @@ The ranges below refer to the truth order in each PLAN frontmatter.
 | 12-05 | T1–T3 (3) | ✓ 3/3 | The durable decision artifact records the Microsoft documentation result: Fabric private-link is tenant/workspace scoped, Foundry is per-resource, Fabric findings are suppressed rather than amplified, and Plan 12-06 consumes that disposition. |
 | 12-06 | T1–T5 (5) | ✓ 5/5 | Fabric/Foundry projection, case-insensitive deduplication, finding-to-node resolution, dashed workload treatment, official Cognitive Services V21 asset, and intentional icon-less Fabric fallback are implemented. The SVG SHA is `7f1d2831085f00103df5f6fd6305bdbbbe4c4530e98831d7ce6508d236c467c2`; `fabric.svg` is absent. |
 | 12-07 | T1–T7 (7) | ✓ 7/7 | Additive `detail` contract with unchanged `full` default, lean bounded summaries, scoped detail route, coverage/warnings, affected IDs, agent bound disclosure, and single projection are present. G-1/G-2/G-4/G-5/G-6 tests passed. |
-| 12-08 | T1–T9 (9) | ✓ 9/9 | Summary-backed metrics, unknown-on-load/error, explicit server pagination, isolated Retry controls, retained-data refetch, server-authoritative rule workflow, flow/freshness states, and keyboard/accessibility contracts are exercised by the passing W183 suite. |
+| 12-08 | T1–T9 (9) | ✓ 9/9 | Summary-backed metrics, unknown-on-load/error, explicit server pagination, isolated Retry controls, retained-data refetch, server-authoritative rule workflow, flow/freshness states, and keyboard/accessibility contracts are exercised by the passing full web suite. |
 | 12-09 | T1–T7 (7) | ✓ 7/7 | Detail guard, measured threshold, case-folded badge fan-out, bounded badge disclosure, visual-only badge toggle, live peer fold index, and complete DOM footnote are implemented in `TopologyWorkspace.tsx` and `network-graph.ts`; their tests passed. |
 | 12-10 | T1–T13 (13) | ✓ 13/13 | Five drawer states, strict clean gating, retry, lazy detail, focus invariants, drawer-first Escape, peer/private-link facts, ten-part export provenance, partial badge, image-only PNG warning, collision-safe names, and hidden-selection clearing are all covered in the passing focused web suite. |
 | 12-11 | T1–T8 (8) | ✓ 8/8 | G-4 default compatibility, every downstream consumer, assigned-fixture G-1..G-6, final scope tracer, A37/A43/A51 hygiene, non-empty fail-closed phase diff, A39, and combined full-suite closure all have current evidence. |
@@ -135,9 +140,9 @@ consumed by fail-closed contract tests.
 
 The artifact checker built into `gsd-tools` returned zero entries because these
 plans use scalar artifact paths rather than `{path, provides}` objects.
-Therefore artifact verification was performed directly: every declared path
-exists, line counts were measured, implementation bodies were inspected, and
-the production/test wiring was traced.
+Artifact verification was therefore performed directly by parsing all eleven
+PLAN frontmatters: 46 declared paths resolve to 39 unique artifacts, every one
+exists on disk, none is a stub, and production/test wiring was traced.
 
 ## Key Link Verification
 
@@ -185,37 +190,56 @@ Phase 12 requirement is orphaned.
 
 ## Gate Evidence
 
-### Definitive closure suites
+### Full closure suites — executed directly in this worktree
 
-These are the final suite results recorded for source HEAD `207c7c78` in the
-current validation/UI/security artifacts and supplied as definitive for this
-verification:
+These were not read from SUMMARY, VALIDATION, or any other artifact. Each was
+run in this verification's own process against the working tree at source
+`207c7c78`:
+
+| Gate | Command | Result | Status |
+|---|---|---|---|
+| Full backend | `.venv/bin/python -m pytest -q` | 2,739 passed, 33 skipped, 0 failed, 2,772 collected; exit 0 | ✓ PASS |
+| Full web | `npx vitest run` | 43 files, 354 passed, 15 todo, 0 failed; exit 0 | ✓ PASS |
+| Ruff | `.venv/bin/python -m ruff check src tests` | "All checks passed!" | ✓ PASS |
+| TypeScript | `npx tsc --noEmit` | exit 0, no diagnostics | ✓ PASS |
+| ESLint | `npx eslint .` | exit 0, no warnings or errors | ✓ PASS |
+| Web build | `npm run build` | exit 0, all routes compiled | ✓ PASS |
+
+Backend counts were derived from the run's own per-test progress characters
+(2,739 `.` + 33 `s` = 2,772), and independently cross-checked against
+`pytest --collect-only -q`, which summed to exactly 2,772.
+
+### Corroborating closure artifacts
 
 | Gate | Result | Status |
 |---|---|---|
-| Full backend | 2,739 passed, 33 skipped, 2,772 collected, 0 failed | ✓ PASS |
-| Full web | 43 files, 354 passed, 15 todo, 0 failed | ✓ PASS |
-| Ruff | clean | ✓ PASS |
-| TypeScript | clean | ✓ PASS |
-| ESLint | clean | ✓ PASS |
 | Security register | 67 unique threats, 67 closed, 0 open | ✓ PASS |
 | UI review | 24/24, weighted 100/100, 0 warnings | ✓ PASS |
 | Nyquist | `nyquist_compliant: true` | ✓ PASS |
 | A39 | 360×1462 Chromium artifact; 360 px layout passes | ✓ PASS |
 
-### Independent reruns in this verification
+Each was re-derived rather than accepted: the 67 threat IDs were extracted and
+de-duplicated from both the security ledger and all eleven PLAN registers and
+reconciled at 67 = 67 with zero open rows; the UI-review and security
+frontmatter both pin `verified_source_head: 207c7c78`; the A39 PNG header was
+parsed directly and measures 360×1462.
+
+### Targeted reruns in this verification
 
 | Behavior | Command scope | Result | Status |
 |---|---|---|---|
-| Scope, private-link projection, relationship/freshness/provenance | 4 backend modules, 14 selected tests | 14 passed in 5.69 s | ✓ PASS |
-| G-1/G-2/G-3/G-4/G-5/G-6 and export contract | scale/downstream/tools modules, 7 selected tests | 7 passed in 3.10 s | ✓ PASS |
-| Policy invalidation, validation, corruption, malformed revision, concurrency | API/provider modules, 10 selected tests | 10 passed in 5.69 s | ✓ PASS |
-| Network UI behavior | 8 focused Vitest files | 183 passed in 7.54 s | ✓ PASS |
-| Phase-diff/UI hygiene | downstream contract module, 10 selected tests | 10 passed in 1.92 s | ✓ PASS |
-| Ruff | `.venv/bin/python -m ruff check src tests` | All checks passed | ✓ PASS |
-| TypeScript | `cd web && npx --no-install tsc --noEmit` | exit 0, no diagnostics | ✓ PASS |
-| ESLint | `cd web && npm run lint` | no warnings or errors | ✓ PASS |
-| Source diff | `git diff --check 811883f3..207c7c78 -- tests web/src` | clean | ✓ PASS |
+| Scope isolation seam (downstream/agent/twin/MCP) | `tests/test_network_downstream_scope.py` | 4 passed | ✓ PASS |
+| Scale gates, downstream contracts, frozen baseline, link regressions | 4 backend modules | 55 passed | ✓ PASS |
+| WR-01 concurrent stale-policy retry ownership (state transition) | `test_concurrent_changed_key_failure_has_one_nonblocking_refresh_owner` | passed | ✓ PASS |
+| Lock-ordering invariant (ordering) | `test_cache_key_is_never_resolved_while_state_lock_is_held` | passed | ✓ PASS |
+| Debt-marker scan | 50 phase-changed source/test files | zero `TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/`PLACEHOLDER` | ✓ PASS |
+| PLAN must-have parse | all 11 PLAN frontmatters | 76 truths, 39 unique artifacts (all exist, none <15 lines), 47 key links, 0 prohibitions | ✓ PASS |
+| Pinned asset integrity | `ai-services.svg` SHA-256 + `fabric.svg` absence | SHA `7f1d2831…c467c2` matches; `fabric.svg` absent | ✓ PASS |
+| Source-tree identity | `git rev-parse 207c7c78:{src,web,tests}` vs HEAD | all three trees identical | ✓ PASS |
+
+The two concurrency/ordering invariants above are behavior-dependent: symbol
+presence cannot prove them, so each is marked VERIFIED only because its
+event-controlled regression was executed and passed in this run.
 
 ### A39 held-out visual check
 
@@ -255,7 +279,7 @@ outstanding.
 | G-2 passes only because the fixture happens to fit | Inspected assertion that `coverage.total > G2_NODE_CAP` and `truncated is True`; reran the test | Falsified |
 | G-4 masks arbitrary contract drift | Inspected explicit additive-path registry and fail-closed missing/unregistered checks; reran G-4 | Falsified |
 | Policy UI displays success while server state remains stale or invalid state persists | Traced revision/cache/refetch chain and reran invalid/corrupt/concurrent/write-refresh tests | Falsified |
-| Final UI fixes were documentation-only | Inspected the 292-insertion/42-deletion source/test delta from `811883f3..207c7c78` and reran W183 plus hygiene gates | Falsified |
+| Final UI fixes were documentation-only | Measured the source/test delta `811883f3..207c7c78`: 10 files, 292 insertions, 42 deletions — all in `src`/`web`/`tests`; reran the full web suite and hygiene gates | Falsified |
 
 ## Probe Execution
 
@@ -276,10 +300,10 @@ achieves its goal at source HEAD `207c7c78`.
 
 ---
 
-_Verified: 2026-09-06T08:15:19Z_
+_Verified: 2026-09-06T08:25:00Z_
 
 _Verifier: the agent (gsd-verifier)_
 
-_Source: `207c7c78b4b90dfa9561054fdd9c840be74c8764`_
+_Source: `207c7c78b4b90dfa9561054fdd9c840be74c8764` (trees identical at docs HEAD)_
 
 _Docs baseline: `fccddfa803ed5bf65f7a809ffeaa8da3afa4f379`_
