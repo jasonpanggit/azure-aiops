@@ -218,6 +218,43 @@ describe("KB detail", () => {
     expect(screen.getByText("server-1")).toBeInTheDocument();
   });
 
+  it("shows partial and unknown-safe metadata without inventing zero", async () => {
+    const partial = overviewEnvelope();
+    partial.data.contract.completeness.state = "partial";
+    partial.data.completeness.state = "partial";
+    api.exposureOverview.mockResolvedValue(partial);
+    api.detail.mockResolvedValue(kbEnvelope("succeeded", ""));
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+
+    expect(await screen.findByText("Partial operational context")).toBeInTheDocument();
+    expect(screen.getByLabelText("Published value")).toHaveTextContent("—");
+    expect(screen.getByText("server-1")).toBeInTheDocument();
+  });
+
+  it("keeps sibling metadata visible while findings load and proves healthy empty", async () => {
+    const pendingFindings = deferred<ReturnType<typeof findingsEnvelope>>();
+    api.exposureItems.mockImplementationOnce(() => pendingFindings.promise);
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+
+    expect(await screen.findByText("Loading Affected findings")).toBeInTheDocument();
+    expect(screen.getAllByText("Contoso kernel security update").length).toBeGreaterThan(0);
+
+    const empty = findingsEnvelope();
+    empty.data.items = [];
+    empty.data.total_count = 0;
+    empty.data.contract.counts = {
+      ...empty.data.contract.counts,
+      returned: 0,
+      represented: 0,
+      total: 0,
+      excluded: 0,
+    };
+    pendingFindings.resolve(empty);
+    expect(
+      await screen.findByText("No findings reported by Affected findings"),
+    ).toBeInTheDocument();
+  });
+
   it("preserves safe parent and CVE round-trip context", async () => {
     render(<KbDetailPage params={{ id: "KB600001" }} />);
 

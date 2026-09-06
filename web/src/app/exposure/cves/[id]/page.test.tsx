@@ -1,5 +1,5 @@
 import { FluentProvider, webLightTheme } from "@fluentui/react-components";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/types";
@@ -214,10 +214,13 @@ function attackEnvelope() {
   return {
     data: {
       cve_id: "CVE-2026-0001",
-      nodes: [{ id: "server:server-1", kind: "server", label: "server-1" }],
-      edges: [],
-      reachable_server_count: 0,
-      internet_exposed: false,
+      nodes: [
+        { id: "attacker:internet", kind: "origin", label: "Internet" },
+        { id: "server:server-1", kind: "server", label: "server-1" },
+      ],
+      edges: [{ source: "attacker:internet", target: "server:server-1", label: "internet" }],
+      reachable_server_count: 1,
+      internet_exposed: true,
     },
     evidence: [],
     warnings: [],
@@ -283,11 +286,45 @@ describe("CVE detail", () => {
     api.cve.mockResolvedValue(cveEnvelope("failed"));
     renderPage();
 
-    expect(await screen.findByText("server-1")).toBeInTheDocument();
+    expect((await screen.findAllByText("server-1")).length).toBeGreaterThan(0);
     expect(screen.getByText("EPSS is unavailable")).toBeInTheDocument();
     expect(screen.getByText("9.8/10")).toBeInTheDocument();
     expect(screen.getByText("Due 2026-08-22")).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "KB600001" }).length).toBeGreaterThan(0);
+  });
+
+  it("shows local loading, healthy-empty, partial, and stale states without blanking siblings", async () => {
+    const attackPending = deferred<ReturnType<typeof attackEnvelope>>();
+    api.attackPath.mockImplementationOnce(() => attackPending.promise);
+    api.exposureOverview.mockResolvedValueOnce(overviewEnvelope("partial"));
+    const cveWithoutKev = cveEnvelope();
+    cveWithoutKev.data.cve.is_known_exploited = false;
+    cveWithoutKev.data.cve.kev_due_date = "";
+    api.cve.mockResolvedValue(cveWithoutKev);
+    renderPage();
+
+    expect(await screen.findByText("Loading Attack path")).toBeInTheDocument();
+    expect(screen.getByText("Unavailable operational context")).toBeInTheDocument();
+    expect(screen.getByText("No KEV entries reported by CISA KEV")).toBeInTheDocument();
+    expect(screen.getAllByText("server-1").length).toBeGreaterThan(0);
+    await act(async () => {
+      attackPending.resolve(attackEnvelope());
+    });
+  });
+
+  it("keeps attack-path last-known-good visible after a failed local retry", async () => {
+    api.exposureOverview.mockResolvedValue(overviewEnvelope("stale"));
+    const user = userEvent.setup();
+    renderPage();
+
+    const region = await screen.findByRole("region", { name: "Attack path section" });
+    expect(within(region).getByText(/Showing last successful Attack path data/)).toBeInTheDocument();
+    api.attackPath.mockRejectedValueOnce(new Error("Defender graph refresh unavailable"));
+    await user.click(within(region).getByRole("button", { name: "Retry Attack path" }));
+    expect(
+      await within(region).findByText(/Defender graph refresh unavailable/),
+    ).toBeInTheDocument();
+    expect(within(region).getByText(/Showing last successful Attack path data/)).toBeInTheDocument();
   });
 
   it("preserves canonical collection context through CVE, KB, and Back links", async () => {
