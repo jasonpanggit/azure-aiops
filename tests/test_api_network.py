@@ -776,6 +776,65 @@ class TestPolicy:
         assert runtime.get("network").policy.description == "governed"
         assert health["providers"]["network"]["state"] == "degraded"
 
+    @pytest.mark.parametrize(
+        "corrupt_document",
+        [
+            {"revision": 8, "policy": "corrupt"},
+            {"revision": 8, "policy": []},
+            {"revision": 8},
+        ],
+    )
+    def test_policy_schema_error_preserves_last_good_network_provider(
+        self,
+        corrupt_document,
+    ):
+        class CorruptiblePolicyDocuments:
+            def __init__(self):
+                self.payload = {
+                    "revision": 7,
+                    "policy": {"description": "governed"},
+                }
+
+            def read_or_raise(self, name):
+                del name
+                return dict(self.payload)
+
+        documents = CorruptiblePolicyDocuments()
+        store = NetworkDesignPolicyStore(
+            documents,
+            revision_cache_seconds=60.0,
+            monotonic=lambda: 0.0,
+        )
+
+        def load_network():
+            policy, _revision = store.read_with_revision_or_raise()
+            return NetworkIntelligenceService(
+                NetworkSnapshot(),
+                policy=policy,
+            )
+
+        runtime = ProviderRuntime(
+            {
+                "network": ProviderSpec(
+                    loader=load_network,
+                    cache_key=lambda: (
+                        "network-policy",
+                        store.revision_or_raise(),
+                    ),
+                )
+            },
+            monotonic=lambda: 0.0,
+        )
+        runtime.refresh(force=True)
+        first = runtime.get("network")
+        documents.payload = corrupt_document
+
+        health = runtime.refresh(force=True)
+
+        assert runtime.get("network") is first
+        assert runtime.get("network").policy.description == "governed"
+        assert health["providers"]["network"]["state"] == "degraded"
+
     def test_scoped_preview_matches_gaps_without_foreign_resources(
         self, tmp_path, monkeypatch
     ):

@@ -480,9 +480,15 @@ class NetworkDesignPolicyStore:
             payload = self._read_document(strict=True)
             revision = int(payload.get("revision") or 0)
             stored = payload.get("policy")
-            policy = NetworkDesignPolicy.from_mapping(
-                stored if isinstance(stored, dict) else {}
-            )
+            if payload and "policy" not in payload:
+                raise NetworkDesignPolicyValidationError(
+                    "Network policy document is missing policy"
+                )
+            if "policy" in payload and not isinstance(stored, dict):
+                raise NetworkDesignPolicyValidationError(
+                    "Network policy document policy must be an object"
+                )
+            policy = NetworkDesignPolicy.from_mapping(stored or {})
             self._cached_revision = revision
             self._revision_checked_at = self._monotonic()
             return policy, revision
