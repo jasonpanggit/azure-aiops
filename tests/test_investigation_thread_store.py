@@ -16,7 +16,10 @@ from typing import Any
 import pytest
 
 from api.scope import Scope
-from operations.autonomous_investigation import project_ledger_read_only
+from operations.autonomous_investigation import (
+    configure_ledger_store,
+    project_ledger_read_only,
+)
 from operations.investigation_thread_store import (
     ABSOLUTE_TTL_SECONDS,
     IDLE_TTL_SECONDS,
@@ -26,8 +29,11 @@ from operations.investigation_thread_store import (
     InvestigationThreadStore,
     ThreadNotFound,
     ThreadRevisionConflict,
+    investigation_thread_store,
+    legacy_binding_document_name,
     thread_document_name,
 )
+from storage.onelake_documents import DocumentConflictError
 
 
 class FakeDocuments:
@@ -46,9 +52,18 @@ class FakeDocuments:
         # an in-memory mutation can never masquerade as a durable write.
         return deepcopy(self.documents.get(name, {}))
 
-    def put(self, name: str, payload: dict[str, Any]) -> None:
+    def write(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        expected_revision: int,
+    ) -> None:
         if self.fail_writes:
             raise RuntimeError("storage unavailable")
+        current = int(self.documents.get(name, {}).get("revision") or 0)
+        if current != expected_revision:
+            raise DocumentConflictError("revision conflict")
         self.documents[name] = deepcopy(payload)
 
     def delete(self, name: str) -> None:
@@ -333,6 +348,94 @@ def test_concurrent_replicas_see_the_same_revision_after_restart() -> None:
             _turn("two"),
             expected_revision=0,
         )
+
+
+def test_stale_replica_cannot_overwrite_a_concurrent_turn() -> None:
+    documents = FakeDocuments()
+    first = InvestigationThreadStore(documents=documents)
+    thread = first.create("operator-a", SUB_A)
+    second = InvestigationThreadStore(documents=documents)
+    second.authorize(thread.thread_id, "operator-a", SUB_A)
+
+    second.append(
+        thread.thread_id,
+        "operator-a",
+        SUB_A,
+        _turn("second"),
+        expected_revision=0,
+    )
+    with pytest.raises(ThreadRevisionConflict) as raised:
+        first.append(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            _turn("first"),
+            expected_revision=0,
+        )
+
+    assert raised.value.current_revision == 1
+    restarted = InvestigationThreadStore(documents=documents)
+    history = restarted.history(thread.thread_id, "operator-a", SUB_A)
+    assert [item["snapshot_id"] for item in history] == ["snap-second"]
+
+
+def test_document_revision_is_distinct_from_thread_revision() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    thread = store.create("operator-a", SUB_A)
+    store.authorize(thread.thread_id, "operator-a", SUB_A)
+    store.append(thread.thread_id, "operator-a", SUB_A, _turn())
+
+    document = documents.documents[thread_document_name(thread.thread_id)]
+    assert document["revision"] > document["thread_revision"]
+    assert document["thread_revision"] == 1
+
+
+def test_ledger_store_configuration_also_wires_thread_durability() -> None:
+    documents = FakeDocuments()
+    configure_ledger_store(documents)
+    try:
+        assert investigation_thread_store().documents is documents
+    finally:
+        configure_ledger_store(None)
+
+
+def test_legacy_session_binding_survives_replica_restart() -> None:
+    documents = FakeDocuments()
+    first = InvestigationThreadStore(documents=documents)
+    thread = first.create("operator-a", SUB_A)
+
+    assert (
+        first.bind_legacy_session("legacy-session", "operator-a", thread.thread_id)
+        == thread.thread_id
+    )
+    restarted = InvestigationThreadStore(documents=documents)
+    assert (
+        restarted.resolve_legacy_binding("legacy-session", "operator-a")
+        == thread.thread_id
+    )
+    binding = documents.documents[
+        legacy_binding_document_name("legacy-session", "operator-a")
+    ]
+    assert "operator-a" not in str(binding)
+    assert "legacy-session" not in str(binding)
+
+
+def test_legacy_session_binding_is_first_writer_wins_across_replicas() -> None:
+    documents = FakeDocuments()
+    first = InvestigationThreadStore(documents=documents)
+    second = InvestigationThreadStore(documents=documents)
+    first_thread = first.create("operator-a", SUB_A)
+    second_thread = second.create("operator-a", SUB_A)
+
+    winner = first.bind_legacy_session(
+        "legacy-session", "operator-a", first_thread.thread_id
+    )
+    observed = second.bind_legacy_session(
+        "legacy-session", "operator-a", second_thread.thread_id
+    )
+
+    assert observed == winner == first_thread.thread_id
 
 
 # ---------------------------------------------------------------------------

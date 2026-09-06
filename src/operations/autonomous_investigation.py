@@ -22,7 +22,10 @@ from typing import Any, Protocol
 
 from api.scope import Scope
 from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
-from operations.investigation_thread_store import OBSERVATION_HISTORICAL
+from operations.investigation_thread_store import (
+    OBSERVATION_HISTORICAL,
+    configure_thread_store,
+)
 from operations.maf_orchestrator import maf_mode_enabled, select_specialists_for_turn
 from operations.mcp_server import validate_tool_arguments
 from operations.page_context import PageSnapshot, deterministic_network_findings
@@ -1240,6 +1243,7 @@ def configure_ledger_store(documents: LedgerDocumentStore | None) -> Investigati
     at the head of the audit trail.
     """
     _LEDGER_STORE.documents = documents
+    configure_thread_store(documents)
     if documents is not None:
         for ledger in list(_LEDGER_STORE.ledgers.values()):
             _LEDGER_STORE._persist(ledger)

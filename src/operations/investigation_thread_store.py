@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from api.scope import Scope
+from storage.onelake_documents import DocumentConflictError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -91,7 +92,13 @@ class ThreadDocumentStore(Protocol):
 
     def read(self, name: str) -> dict[str, Any]: ...
 
-    def put(self, name: str, payload: dict[str, Any]) -> None: ...
+    def write(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        expected_revision: int,
+    ) -> None: ...
 
 
 def thread_document_name(thread_id: str) -> str:
@@ -104,6 +111,13 @@ def thread_document_name(thread_id: str) -> str:
     """
 
     return f"threads/{thread_id}.json"
+
+
+def legacy_binding_document_name(session_id: str, principal_subject: str) -> str:
+    """Return a non-identifying durable key for a legacy session binding."""
+
+    identity = f"{principal_subject}\0{session_id}".encode()
+    return f"thread-bindings/{hashlib.sha256(identity).hexdigest()}.json"
 
 
 def _scope_within(requested: Scope, allowed: Scope) -> bool:
@@ -192,6 +206,7 @@ class InvestigationThread:
     scope_fingerprint: str
     turns: list[InvestigationThreadTurn] = field(default_factory=list)
     revision: int = 0
+    storage_revision: int = 0
     created_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     durability: str = DURABILITY_MEMORY_ONLY
@@ -203,7 +218,8 @@ class InvestigationThread:
             "principal_subject": self.principal_subject,
             "scope": self.scope.to_dict(),
             "scope_fingerprint": self.scope_fingerprint,
-            "revision": self.revision,
+            "thread_revision": self.revision,
+            "revision": self.storage_revision,
             "created_at": self.created_at,
             "last_seen": self.last_seen,
             "turns": [turn.to_document() for turn in self.turns],
@@ -231,7 +247,10 @@ class InvestigationThread:
                 for turn in (raw_turns or [])
                 if isinstance(turn, Mapping)
             ],
-            revision=int(document.get("revision") or 0),
+            revision=int(
+                document.get("thread_revision", document.get("revision")) or 0
+            ),
+            storage_revision=int(document.get("revision") or 0),
             created_at=float(document.get("created_at") or 0.0),
             last_seen=float(document.get("last_seen") or 0.0),
             durability=DURABILITY_DURABLE,
@@ -277,11 +296,23 @@ class InvestigationThreadStore:
         if self.documents is None:
             record.durability = DURABILITY_MEMORY_ONLY
             return
+        expected_revision = record.storage_revision
+        document = record.to_document()
+        document["revision"] = expected_revision + 1
         try:
-            self.documents.put(
+            self.documents.write(
                 thread_document_name(record.thread_id),
-                record.to_document(),
+                document,
+                expected_revision=expected_revision,
             )
+        except DocumentConflictError:
+            self._threads.pop(record.thread_id, None)
+            current = self._load(record.thread_id)
+            if current is not None:
+                self._cache(current)
+            raise ThreadRevisionConflict(
+                current_revision=current.revision if current is not None else record.revision
+            ) from None
         except Exception:  # Degrade, never fail the turn.
             _LOGGER.warning(
                 "failed to persist investigation thread; continuity is memory-only",
@@ -289,6 +320,7 @@ class InvestigationThreadStore:
             )
             record.durability = DURABILITY_MEMORY_ONLY
             return
+        record.storage_revision = expected_revision + 1
         record.durability = DURABILITY_DURABLE
 
     def _forget_document(self, thread_id: str) -> None:
@@ -323,8 +355,11 @@ class InvestigationThreadStore:
             record = InvestigationThread.from_document(payload)
         except (TypeError, ValueError):
             raise ThreadNotFound(reason="corrupt") from None
-        self._threads[thread_id] = record
-        self._threads.move_to_end(thread_id)
+        return record
+
+    def _cache(self, record: InvestigationThread) -> InvestigationThread:
+        self._threads[record.thread_id] = record
+        self._threads.move_to_end(record.thread_id)
         while len(self._threads) > self._max_threads:
             self._threads.popitem(last=False)
         return record
@@ -368,7 +403,18 @@ class InvestigationThreadStore:
     ) -> InvestigationThread:
         """Return a thread only after every current-turn gate passes."""
 
-        record = self._threads.get(thread_id) or self._load(thread_id)
+        cached = self._threads.get(thread_id)
+        persisted = self._load(thread_id) if self.documents is not None else None
+        if persisted is not None and (
+            cached is None
+            or persisted.storage_revision >= cached.storage_revision
+            or persisted.revision >= cached.revision
+        ):
+            record = self._cache(persisted)
+        else:
+            record = cached
+            if record is not None and self.documents is not None:
+                record.durability = DURABILITY_MEMORY_ONLY
         # Sweep after resolving the requested thread so its own expiry is
         # reported as an expiry rather than being flattened into "missing";
         # the reason is what makes an aged-out thread distinguishable in
@@ -409,7 +455,7 @@ class InvestigationThreadStore:
         )
         with self._lock:
             self._sweep(now)
-            self._threads[record.thread_id] = record
+            self._cache(record)
             while len(self._threads) > self._max_threads:
                 self._threads.popitem(last=False)
             self._persist(record)
@@ -430,11 +476,21 @@ class InvestigationThreadStore:
         with self._lock:
             now = self._clock()
             record = self._resolve(thread_id, principal_subject, current_scope, now)
-            self._age_retained_turns(record)
-            record.last_seen = now
-            self._threads.move_to_end(thread_id)
-            self._persist(record)
-            return record
+            for _ in range(2):
+                self._age_retained_turns(record)
+                record.scope = current_scope
+                record.scope_fingerprint = _scope_fingerprint(current_scope)
+                record.last_seen = now
+                self._threads.move_to_end(thread_id)
+                try:
+                    self._persist(record)
+                except ThreadRevisionConflict:
+                    record = self._resolve(
+                        thread_id, principal_subject, current_scope, now
+                    )
+                    continue
+                return record
+            raise ThreadRevisionConflict(current_revision=record.revision)
 
     def append(
         self,
@@ -481,6 +537,8 @@ class InvestigationThreadStore:
         with self._lock:
             now = self._clock()
             record = self._resolve(thread_id, principal_subject, current_scope, now)
+            record.scope = current_scope
+            record.scope_fingerprint = _scope_fingerprint(current_scope)
             record.last_seen = now
             self._threads.move_to_end(thread_id)
             history: list[dict[str, Any]] = []
@@ -500,6 +558,19 @@ class InvestigationThreadStore:
                             "Historical evidence was withheld after scope narrowing."
                         ],
                     }
+                )
+            try:
+                self._persist(record)
+            except ThreadRevisionConflict:
+                # A concurrent append already renewed the durable record. Read
+                # it back so this response never returns a stale history.
+                record = self._resolve(
+                    thread_id, principal_subject, current_scope, now
+                )
+                return self.history(
+                    record.thread_id,
+                    principal_subject,
+                    current_scope,
                 )
             return history
 
@@ -538,6 +609,60 @@ class InvestigationThreadStore:
             record.last_seen = now
             self._persist(record)
         return record
+
+    def resolve_legacy_binding(
+        self,
+        session_id: str,
+        principal_subject: str,
+    ) -> str | None:
+        """Resolve a legacy session to the same canonical thread on every replica."""
+
+        if self.documents is None or not session_id or not principal_subject:
+            return None
+        name = legacy_binding_document_name(session_id, principal_subject)
+        try:
+            document = self.documents.read(name)
+        except Exception:
+            _LOGGER.warning("failed to read legacy thread binding", exc_info=True)
+            return None
+        if not document:
+            return None
+        if document.get("binding_key") != name:
+            return None
+        thread_id = str(document.get("thread_id") or "")
+        return thread_id if thread_id.startswith("thr-") else None
+
+    def bind_legacy_session(
+        self,
+        session_id: str,
+        principal_subject: str,
+        thread_id: str,
+    ) -> str:
+        """Persist a first-writer-wins legacy-to-canonical thread binding."""
+
+        if self.documents is None:
+            return thread_id
+        existing = self.resolve_legacy_binding(session_id, principal_subject)
+        if existing is not None:
+            return existing
+        name = legacy_binding_document_name(session_id, principal_subject)
+        try:
+            self.documents.write(
+                name,
+                {
+                    "revision": 1,
+                    "binding_key": name,
+                    "thread_id": thread_id,
+                },
+                expected_revision=0,
+            )
+        except DocumentConflictError:
+            return self.resolve_legacy_binding(
+                session_id, principal_subject
+            ) or thread_id
+        except Exception:
+            _LOGGER.warning("failed to persist legacy thread binding", exc_info=True)
+        return thread_id
 
 
 _THREAD_STORE = InvestigationThreadStore()
@@ -584,5 +709,6 @@ __all__ = [
     "ThreadRevisionConflict",
     "configure_thread_store",
     "investigation_thread_store",
+    "legacy_binding_document_name",
     "thread_document_name",
 ]

@@ -15,7 +15,9 @@ has to remember, and it bounds series cardinality at the same time.
 
 from __future__ import annotations
 
+import logging
 import time
+from functools import lru_cache
 from typing import Any
 
 from opentelemetry import metrics
@@ -32,6 +34,7 @@ from operations.specialist_manifest import load_specialist_manifest
 
 _UNCONTROLLED = "other"
 _MAX_COUNT = 1_000_000
+_LOGGER = logging.getLogger(__name__)
 
 _STAGES = frozenset(
     {"plan", "specialist", "synthesis", "persist", "total"}
@@ -63,14 +66,18 @@ _FALLBACK_REASONS = frozenset(
 )
 
 
+@lru_cache(maxsize=1)
 def _manifest_vocabulary() -> tuple[frozenset[str], frozenset[str]]:
-    manifest = load_specialist_manifest()
+    """Load controlled IDs lazily; telemetry must never block API startup."""
+
+    try:
+        manifest = load_specialist_manifest()
+    except (OSError, TypeError, ValueError):
+        _LOGGER.warning("orchestration telemetry manifest unavailable", exc_info=True)
+        return frozenset(), frozenset()
     return frozenset(manifest.specialist_ids), frozenset(
         manifest.operations_tool_names()
     )
-
-
-_SPECIALIST_IDS, _TOOL_NAMES = _manifest_vocabulary()
 
 
 def _controlled(value: Any, allowed: frozenset[str]) -> str:
@@ -171,8 +178,10 @@ class OrchestrationTelemetry:
     ) -> None:
         attributes = {
             "stage": _controlled(stage, _STAGES),
-            "specialist_id": _controlled(specialist_id, _SPECIALIST_IDS),
-            "tool": _controlled(tool, _TOOL_NAMES),
+            "specialist_id": _controlled(
+                specialist_id, _manifest_vocabulary()[0]
+            ),
+            "tool": _controlled(tool, _manifest_vocabulary()[1]),
             "status": _controlled(status, _TOOL_STATUSES),
             "policy_status": _controlled(policy_status, _POLICY_STATUSES),
         }

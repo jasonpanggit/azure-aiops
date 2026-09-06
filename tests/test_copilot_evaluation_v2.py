@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+import api.telemetry as telemetry_module
 from api.scope import Scope
 from api.telemetry import ApiTelemetry, OrchestrationTelemetry
 from operations.foundry_agent import (
@@ -478,6 +479,48 @@ def test_unavailable_executive_degrades_without_failing_the_turn() -> None:
     assert turn.synthesis.warning in turn.result.uncertainty
 
 
+def test_runtime_context_supplies_executive_and_telemetry() -> None:
+    meter = RecordingMeter()
+    executive = RecordingExecutive()
+
+    class RuntimeContext:
+        telemetry = type(
+            "Telemetry",
+            (),
+            {"orchestration": OrchestrationTelemetry(meter=meter)},
+        )()
+
+        @staticmethod
+        def foundry_agent() -> RecordingExecutive:
+            return executive
+
+    service = _service(planner=lambda _r: _plan("vulnerability", "patch"))
+    turn = service.execute_turn(
+        _request("Which subscriptions are exposed and vulnerable?"),
+        context=RuntimeContext(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert len(executive.calls) == 1
+    assert turn.synthesis.status == "synthesized"
+    assert meter.emitted
+
+
+def test_admitted_synthesis_without_runtime_agent_degrades() -> None:
+    service = _service(planner=lambda _r: _plan("vulnerability", "patch"))
+
+    turn = service.execute_turn(
+        _request("Which subscriptions are exposed and vulnerable?"),
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert turn.synthesis.status == "degraded"
+    assert turn.synthesis.warning in turn.result.uncertainty
+
+
 def test_execute_still_returns_the_canonical_result_only() -> None:
     service = _service(planner=lambda _r: _plan("vulnerability"))
 
@@ -571,6 +614,34 @@ def test_telemetry_rejects_uncontrolled_values() -> None:
         assert marker not in serialized
     assert "other" in serialized
     assert "mutation_forbidden" in serialized
+
+
+def test_telemetry_manifest_failure_degrades_to_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    meter = RecordingMeter()
+    telemetry_module._manifest_vocabulary.cache_clear()
+    monkeypatch.setattr(
+        telemetry_module,
+        "load_specialist_manifest",
+        lambda: (_ for _ in ()).throw(ValueError("invalid manifest")),
+    )
+    try:
+        telemetry = OrchestrationTelemetry(meter=meter)
+        telemetry.record_delegation(
+            stage="specialist",
+            specialist_id="network",
+            tool="network_paths",
+            status=STATUS_OK,
+            policy_status="accepted",
+            duration_ms=1,
+        )
+    finally:
+        telemetry_module._manifest_vocabulary.cache_clear()
+
+    attributes = meter.emitted[0][2]
+    assert attributes["specialist_id"] == "other"
+    assert attributes["tool"] == "other"
 
 
 def test_service_emits_only_controlled_orchestration_attributes() -> None:

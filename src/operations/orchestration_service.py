@@ -196,6 +196,13 @@ def _legacy_session_thread(
     key = (principal_subject, session_id)
     with _legacy_session_lock:
         thread_id = _legacy_session_threads.get(key)
+        if thread_id is None:
+            thread_id = investigation_thread_store().resolve_legacy_binding(
+                session_id,
+                principal_subject,
+            )
+            if thread_id is not None:
+                _legacy_session_threads[key] = thread_id
         if thread_id is not None:
             _legacy_session_threads.move_to_end(key)
         return thread_id
@@ -218,6 +225,11 @@ def _legacy_session_thread_for_execution(
                 session_id,
                 principal_subject,
                 scope,
+            )
+            thread_id = investigation_thread_store().bind_legacy_session(
+                session_id,
+                principal_subject,
+                thread_id,
             )
             _legacy_session_threads[key] = thread_id
             while len(_legacy_session_threads) > _MAX_LEGACY_SESSIONS:
@@ -266,6 +278,11 @@ def _remember_legacy_session_thread(
         return
     key = (principal_subject, session_id)
     with _legacy_session_lock:
+        thread_id = investigation_thread_store().bind_legacy_session(
+            session_id,
+            principal_subject,
+            thread_id,
+        )
         _legacy_session_threads[key] = thread_id
         _legacy_session_threads.move_to_end(key)
         while len(_legacy_session_threads) > _MAX_LEGACY_SESSIONS:
@@ -402,6 +419,17 @@ class OrchestrationService:
         max_wall_seconds: float | None = None,
     ) -> OrchestrationTurn:
         """Execute one canonical request after all authorization gates pass."""
+
+        if self.telemetry is None:
+            api_telemetry = getattr(context, "telemetry", None)
+            self.telemetry = getattr(api_telemetry, "orchestration", None)
+        if self.executive_agent is None:
+            resolver = getattr(context, "foundry_agent", None)
+            if callable(resolver):
+                try:
+                    self.executive_agent = resolver()
+                except (ConnectionError, FoundryAgentError, TimeoutError):
+                    self.executive_agent = None
 
         requested_scope = self.policy.validate_request(request, effective_scope)
         if request.thread_id:
@@ -571,11 +599,23 @@ class OrchestrationService:
 
         findings = normalize_cited_findings(tool_results)
         decision = executive_synthesis_decision(question, findings)
-        if not decision.admitted or self.executive_agent is None:
+        if not decision.admitted:
             synthesis = ExecutiveSynthesis(
                 status="skipped",
                 reason=decision.reason,
                 domain_count=decision.domain_count,
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if self.executive_agent is None:
+            synthesis = ExecutiveSynthesis(
+                status="degraded",
+                reason=decision.reason,
+                domain_count=decision.domain_count,
+                warning=(
+                    "Executive synthesis was unavailable; direct specialist "
+                    "findings are shown instead."
+                ),
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
