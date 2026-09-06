@@ -4,10 +4,12 @@ import asyncio
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from api.scope import Scope
 from ontology_discovery.contracts import EvidenceBatch
 from ontology_discovery.curator import (
     HARD_MAX_OUTPUT_TOKENS,
@@ -22,6 +24,20 @@ from ontology_discovery.curator import (
     OntologyCurator,
     RetryableCuratorTransportError,
     parse_proposal_batch,
+)
+from operations.mcp_server import MCPServer, reviewed_tools_for_specialist
+from operations.tools import (
+    STATUS_DENIED,
+    STATUS_EMPTY,
+    STATUS_OK,
+    call_tool,
+)
+
+CURATOR_TOOLS = (
+    "list_changed_entities",
+    "get_entity_evidence",
+    "get_ontology_vocabulary",
+    "search_relationship_history",
 )
 
 
@@ -292,3 +308,187 @@ def test_repair_limit_fails_closed_and_audit_metadata_is_sanitized() -> None:
         "error",
     }
     assert "secret" not in json.dumps(audit)
+
+
+class OntologyEvidenceProvider:
+    def __init__(self) -> None:
+        self.selections: list[object] = []
+
+    def list_changed_entities(
+        self,
+        *,
+        scope: Scope,
+        generation: object,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        self.selections.append(generation)
+        return [
+            {
+                "entity_id": f"entity-{index}",
+                "subscription_id": "sub-a",
+            }
+            for index in range(limit + 5)
+        ]
+
+    def get_entity_evidence(
+        self,
+        entity_id: str,
+        *,
+        scope: Scope,
+        generation: object,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        self.selections.append(generation)
+        return [
+            {
+                "evidence_id": "allowed-evidence",
+                "entity_id": entity_id,
+                "subscription_id": "sub-a",
+            },
+            {
+                "evidence_id": "other-tenant-secret",
+                "entity_id": entity_id,
+                "subscription_id": "sub-b",
+            },
+        ]
+
+    def search_relationship_history(
+        self,
+        entity_id: str,
+        *,
+        scope: Scope,
+        generation: object,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        self.selections.append(generation)
+        return [
+            {
+                "relationship_id": f"relationship-{index}",
+                "subject_id": entity_id,
+                "subscription_id": "sub-a",
+            }
+            for index in range(limit + 5)
+        ]
+
+
+def _tool_context(provider: OntologyEvidenceProvider) -> tuple[Any, object]:
+    selection = object()
+    context = SimpleNamespace(
+        generation_resolver_provider=lambda: SimpleNamespace(
+            resolve=lambda: selection
+        ),
+        ontology_evidence_provider=lambda: provider,
+    )
+    return context, selection
+
+
+def test_curator_has_exactly_four_read_only_scope_derived_tools() -> None:
+    assert reviewed_tools_for_specialist("ontology_curator") == CURATOR_TOOLS
+    assert not any(
+        forbidden in name
+        for name in CURATOR_TOOLS
+        for forbidden in ("publish", "approve", "sql", "execute", "mutate", "azure")
+    )
+
+
+def test_ontology_tools_reuse_generation_selection_and_enforce_result_caps() -> None:
+    provider = OntologyEvidenceProvider()
+    context, selection = _tool_context(provider)
+    scope = Scope.from_mapping({"subscription": ["sub-a"]})
+
+    changed = call_tool(
+        "list_changed_entities",
+        {},
+        context=context,
+        scope=scope,
+    )
+    history = call_tool(
+        "search_relationship_history",
+        {"entity_id": "entity-a"},
+        context=context,
+        scope=scope,
+    )
+    vocabulary = call_tool(
+        "get_ontology_vocabulary",
+        {},
+        context=context,
+        scope=scope,
+    )
+
+    assert changed.status == STATUS_OK
+    assert len(changed.data["changed_entities"]) == 50
+    assert history.status == STATUS_OK
+    assert len(history.data["relationships"]) == 200
+    assert vocabulary.status == STATUS_OK
+    assert len(vocabulary.data["relationship_types"]) <= 200
+    assert provider.selections == [selection, selection]
+
+
+def test_entity_evidence_filters_colliding_cross_scope_ids_without_disclosure() -> None:
+    provider = OntologyEvidenceProvider()
+    context, _ = _tool_context(provider)
+
+    result = call_tool(
+        "get_entity_evidence",
+        {"entity_id": "same-name"},
+        context=context,
+        scope=Scope.from_mapping({"subscription": ["sub-a"]}),
+    )
+
+    assert result.status == STATUS_OK
+    encoded = json.dumps(result.to_dict())
+    assert "allowed-evidence" in encoded
+    assert "other-tenant-secret" not in encoded
+
+
+def test_valid_no_evidence_is_empty_and_mutation_calls_are_denied() -> None:
+    provider = OntologyEvidenceProvider()
+    provider.get_entity_evidence = lambda *args, **kwargs: []
+    context, _ = _tool_context(provider)
+    scope = Scope.from_mapping({"subscription": ["sub-a"]})
+
+    empty = call_tool(
+        "get_entity_evidence",
+        {"entity_id": "missing"},
+        context=context,
+        scope=scope,
+    )
+    denied = call_tool(
+        "publish_ontology",
+        {},
+        context=context,
+        scope=scope,
+    )
+
+    assert empty.status == STATUS_EMPTY
+    assert denied.status == STATUS_DENIED
+
+
+def test_mcp_serializes_scope_safe_errors_without_echoing_arguments() -> None:
+    provider = OntologyEvidenceProvider()
+    context, _ = _tool_context(provider)
+    response = MCPServer().handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "get_entity_evidence",
+                "arguments": {
+                    "entity_id": "same-name",
+                    "scope": "tenant-b",
+                    "secret": "do-not-echo",
+                },
+            },
+        },
+        context=context,
+        principal=SimpleNamespace(subject="curator"),
+        scope=Scope.from_mapping({"subscription": ["sub-a"]}),
+        correlation_id="corr-1",
+        specialist_id="ontology_curator",
+    )
+
+    assert response["result"]["isError"] is True
+    assert response["result"]["content"][0]["text"] == "Invalid tool arguments"
+    assert "tenant-b" not in json.dumps(response)
+    assert "do-not-echo" not in json.dumps(response)

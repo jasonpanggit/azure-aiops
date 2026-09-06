@@ -129,3 +129,19 @@ def test_remediation_decision_tools_are_advertised_and_only_remediation_assigned
             for specialist_id, tools in grants.items()
             if name in tools
         ] == ["remediation"]
+
+
+def test_ontology_curator_registry_is_exactly_four_read_only_implementations() -> None:
+    names = {
+        "list_changed_entities",
+        "get_entity_evidence",
+        "get_ontology_vocabulary",
+        "search_relationship_history",
+    }
+    assert names <= set(TOOL_REGISTRY)
+    assert all(TOOL_REGISTRY[name].read_only for name in names)
+    assert not any(
+        forbidden in name
+        for name in names
+        for forbidden in ("publish", "approve", "sql", "execute", "mutate")
+    )
