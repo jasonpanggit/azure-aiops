@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -327,6 +326,7 @@ def test_exposure_endpoint_maps_cursor_failures_to_safe_errors(
     response = client.get(
         "/api/v1/vulnerabilities/exposure/items",
         headers={"Authorization": f"Bearer {token}"},
+        params={"subscription": "subscription-scale"},
     )
 
     assert response.status_code == status

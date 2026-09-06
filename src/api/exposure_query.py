@@ -65,6 +65,7 @@ _PAGE_COLUMNS = (
     "completeness",
     "evidence_count",
     "detail_path",
+    "timestamp",
     "ordering_priority_score",
     "ordering_severity_rank",
     "ordering_target_id",
@@ -329,6 +330,8 @@ class ExposureQueryPage:
     applied_filters: tuple[dict[str, Any], ...]
     applied_sort: dict[str, str]
     next_position: tuple[Any, str] | None
+    completeness: dict[str, Any] = field(default_factory=dict)
+    freshness: dict[str, Any] = field(default_factory=dict)
     next_cursor: str | None = None
 
 
@@ -547,10 +550,53 @@ class ExposureQueryService:
         *,
         cursor_codec: ExposureCursorCodec | None = None,
         generation_window: Any | None = None,
+        authorization_resolver: Any | None = None,
     ) -> None:
         self._reader = reader
         self._cursor_codec = cursor_codec
         self._generation_window = generation_window
+        self._authorization_resolver = authorization_resolver
+
+    def authorization_for(
+        self,
+        principal: Any,
+        scope: Any,
+    ) -> ExposureAuthorization:
+        """Resolve server-owned tenant/connections for an effective API scope."""
+        if not callable(self._authorization_resolver):
+            raise ExposureQueryUnavailableError(
+                "Exposure authorization resolver is unavailable"
+            )
+        authorization = self._authorization_resolver(principal, scope)
+        if not isinstance(authorization, ExposureAuthorization):
+            raise TypeError(
+                "Exposure authorization resolver must return "
+                "ExposureAuthorization"
+            )
+        subject = str(getattr(principal, "subject", "") or "")
+        if not hmac.compare_digest(authorization.subject, subject):
+            raise PermissionError(
+                "Exposure authorization does not match the authenticated caller"
+            )
+        effective_scope = (
+            scope.to_dict()
+            if scope is not None and hasattr(scope, "to_dict")
+            else None
+        )
+        if effective_scope is None:
+            raise TypeError(
+                "Exposure authorization requires a server-derived effective scope"
+            )
+        for dimension, values in effective_scope.items():
+            if dimension not in _SUPPORTED_SCOPE_DIMENSIONS:
+                raise ValueError(
+                    f"Unsupported Exposure scope dimension: {dimension}"
+                )
+            if set(values) != set(authorization.scope.get(dimension, ())):
+                raise PermissionError(
+                    "Exposure authorization does not match the effective scope"
+                )
+        return authorization
 
     def list_page(
         self,
@@ -641,6 +687,12 @@ class ExposureQueryService:
             if count_rows
             else 0
         )
+        count_row = count_rows[0] if count_rows else {}
+        completeness = _completeness_payload(
+            total_count,
+            count_row.get("all_complete"),
+        )
+        freshness = _freshness_payload(count_row.get("freshest_at"))
         facet_rows = (
             self._reader.query(
                 compiled.facet_sql,
@@ -690,6 +742,8 @@ class ExposureQueryService:
                 "direction": query.sort.direction,
             },
             next_position=next_position,
+            completeness=completeness,
+            freshness=freshness,
             next_cursor=next_cursor,
         )
 
@@ -742,7 +796,10 @@ def _compile_queries(
     )
     count_sql = (
         f"{scoped_cte} "
-        "SELECT COUNT_BIG(DISTINCT [exposure_id]) AS [total_count] "
+        "SELECT COUNT_BIG(DISTINCT [exposure_id]) AS [total_count], "
+        "MAX([timestamp]) AS [freshest_at], "
+        "MIN(CASE WHEN [completeness] = 'complete' THEN 1 ELSE 0 END) "
+        "AS [all_complete] "
         "FROM [scoped]"
     )
     facet_sql = _compile_facet_sql(scoped_cte, query.facets)
@@ -926,6 +983,27 @@ def _facet_payload(
     for values in result.values():
         values.sort(key=lambda item: str(item["value"]).casefold())
     return dict(sorted(result.items()))
+
+
+def _completeness_payload(
+    total_count: int,
+    all_complete: Any,
+) -> dict[str, str]:
+    if total_count == 0:
+        state = "unavailable"
+    elif int(all_complete or 0) == 1:
+        state = "complete"
+    else:
+        state = "partial"
+    return {"state": state}
+
+
+def _freshness_payload(value: Any) -> dict[str, str]:
+    as_of = str(value or "")
+    return {
+        "state": "reported" if as_of else "unknown",
+        "as_of": as_of,
+    }
 
 
 def _canonical_filter_payload(
