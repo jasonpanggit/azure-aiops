@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
+
+import pytest
 
 from onboarding.defender_normalize import (
     is_container_image_assessment,
     normalize_assessment,
     normalize_container_image_exposure,
+    normalize_container_image_products,
 )
 from onboarding.graph_normalize import Normalizer
 
@@ -59,6 +63,28 @@ def _image_row(package: str, severities: list[str], cves: list[str]) -> dict:
     }
 
 
+def _granular_image_row(
+    package: str,
+    severities: list[str],
+    cves: list[str],
+    *,
+    digest: str = DIGEST_A,
+    tags: list[str] | None = None,
+) -> dict:
+    row = _image_row(package, severities, cves)
+    details = json.loads(row["properties"]["resourceAdditionalData"])
+    details.update(
+        {
+            "Digest": digest,
+            "ImageUri": f"acr1.azurecr.io/api@{digest}",
+            "Tags": list(tags or ["v1"]),
+        }
+    )
+    row["properties"]["resourceAdditionalData"] = json.dumps(details)
+    row["properties"]["timeGenerated"] = OBSERVED
+    return row
+
+
 def _vm_row() -> dict:
     return {
         "id": "/subscriptions/sub1/.../providers/Microsoft.Security/assessments/vm-a",
@@ -105,6 +131,93 @@ def test_rollup_collapses_packages_into_one_entity_per_image() -> None:
     assert entity["imageDigest"] == "sha256:abc123"
     assert entity["imageTags"] == ["v1"]
     assert entity["registryResourceId"] == REGISTRY.casefold()
+
+
+def test_granular_container_products_preserve_tag_aliases_and_per_cve_evidence() -> None:
+    rows = [
+        _granular_image_row(
+            "openssl",
+            ["Critical", "Low"],
+            ["CVE-2026-1001", "CVE-2026-1002"],
+            tags=["latest", "v1"],
+        ),
+        _granular_image_row(
+            "pip",
+            ["Medium"],
+            ["CVE-2026-1003"],
+            tags=["v1"],
+        ),
+    ]
+
+    products = normalize_container_image_products(rows, OBSERVED)
+
+    assert len(products.registries) == 1
+    assert len(products.logical_images) == 1
+    assert len(products.digests) == 1
+    assert len(products.vulnerability_observations) == 3
+    registry = products.registries[0]
+    logical_image = products.logical_images[0]
+    digest = products.digests[0]
+    assert registry["registryResourceId"] == REGISTRY.casefold()
+    assert logical_image["logicalImageId"].startswith("logical-image:v1:")
+    assert logical_image["imageTags"] == ["latest", "v1"]
+    assert digest["imageDigestId"].startswith("image-digest:v1:")
+    assert digest["imageDigest"] == DIGEST_A
+    assert digest["logicalImageIds"] == [logical_image["logicalImageId"]]
+    assert {
+        observation["cveId"]
+        for observation in products.vulnerability_observations
+    } == {"CVE-2026-1001", "CVE-2026-1002", "CVE-2026-1003"}
+    assert all(
+        observation["targetKind"] == "container_image"
+        and observation["imageDigestId"] == digest["imageDigestId"]
+        and observation["providerEventTime"] == OBSERVED
+        and observation["sourceEventId"]
+        and observation["provenance"]
+        for observation in products.vulnerability_observations
+    )
+
+    moved = normalize_container_image_products(
+        [
+            _granular_image_row(
+                "openssl",
+                ["Critical"],
+                ["CVE-2026-1001"],
+                tags=["v2"],
+            )
+        ],
+        OBSERVED,
+    )
+    assert moved.logical_images[0]["logicalImageId"] == logical_image["logicalImageId"]
+    assert moved.digests[0]["imageDigestId"] == digest["imageDigestId"]
+    matching = next(
+        row
+        for row in products.vulnerability_observations
+        if row["cveId"] == "CVE-2026-1001"
+    )
+    assert (
+        moved.vulnerability_observations[0]["vulnerabilityObservationId"]
+        == matching["vulnerabilityObservationId"]
+    )
+    assert moved.logical_images[0]["imageTags"] == ["v2"]
+
+
+def test_granular_container_products_reject_conflicting_source_digest_evidence() -> None:
+    first = _granular_image_row(
+        "openssl",
+        ["Critical"],
+        ["CVE-2026-1001"],
+        digest=DIGEST_A,
+    )
+    conflicting = _granular_image_row(
+        "openssl",
+        ["Critical"],
+        ["CVE-2026-1001"],
+        digest=DIGEST_B,
+    )
+
+    with pytest.raises(ValueError, match="conflicting digest"):
+        normalize_container_image_products([first, conflicting], OBSERVED)
 
 
 def test_healthy_images_are_dropped() -> None:
@@ -162,6 +275,110 @@ def test_normalizer_routes_image_rows_away_from_defender_assessments() -> None:
     ]
     assert len(edges) == 1
     assert edges[0]["objectId"] == REGISTRY.casefold()
+
+
+def test_normalizer_and_mapper_dual_write_granular_container_products(
+    tmp_path: Path,
+) -> None:
+    from fabric.dataset_mapper import InventoryDatasetMapper
+    from fabric.schema_registry import schema_for
+    from onboarding.ingestion_storage import DatasetStore
+
+    payload = {
+        "resources": [
+            {
+                "id": REGISTRY,
+                "name": "acr1",
+                "type": "Microsoft.ContainerRegistry/registries",
+                "location": "australiaeast",
+                "subscriptionId": "sub1",
+                "resourceGroup": "rg1",
+                "tenantId": "tenant1",
+            }
+        ],
+        "defender_assessments": [
+            _granular_image_row(
+                "openssl",
+                ["Critical", "Low"],
+                ["CVE-2026-1001", "CVE-2026-1002"],
+            ),
+        ],
+    }
+    graph = Normalizer(
+        {"connection_id": "connection-1"}
+    ).normalize(
+        payload,
+        datetime(2026, 9, 2, tzinfo=UTC),
+        run_id="generation-1",
+    )
+
+    assert len(graph.entities["ContainerImageExposure"]) == 1
+    assert len(graph.entities["LogicalImage"]) == 1
+    assert len(graph.entities["ImageDigest"]) == 1
+    assert len(graph.entities["VulnerabilityObservation"]) == 2
+
+    store = DatasetStore(tmp_path)
+    store.publish(
+        graph,
+        payload,
+        {
+            "runId": "generation-1",
+            "startedAt": OBSERVED,
+            "status": "completed",
+        },
+    )
+    snapshot = store.current_generation()
+    assert snapshot is not None
+    datasets = InventoryDatasetMapper().load(snapshot, "fabric-run-1")
+
+    registry = datasets["silver_container_registries"][0]
+    logical_image = datasets["silver_container_logical_images"][0]
+    digest = datasets["silver_container_image_digests"][0]
+    observations = datasets["silver_container_vulnerability_observations"]
+    assert registry["registry_id"] == logical_image["registry_id"]
+    assert logical_image["logical_image_id"] in digest["logical_image_ids"]
+    assert {row["cve_id"] for row in observations} == {
+        "CVE-2026-1001",
+        "CVE-2026-1002",
+    }
+    assert all(
+        row["target_kind"] == "container_image"
+        and row["image_digest_id"] == digest["image_digest_id"]
+        and row["connection_id"] == "connection-1"
+        and json.loads(row["provenance_json"])["source_event_id"]
+        for row in observations
+    )
+    assert datasets["silver_container_image_exposure"], (
+        "aggregate dual-write must remain available for rollback"
+    )
+
+    expected_fields = {
+        "silver_container_registries": {"registry_id", "registry_resource_id"},
+        "silver_container_logical_images": {
+            "logical_image_id",
+            "registry_id",
+            "image_tags",
+        },
+        "silver_container_image_digests": {
+            "image_digest_id",
+            "image_digest",
+            "logical_image_ids",
+        },
+        "silver_container_vulnerability_observations": {
+            "vulnerability_observation_id",
+            "image_digest_id",
+            "target_kind",
+            "cve_id",
+            "source_event_id",
+            "provider_event_time",
+            "provenance_json",
+        },
+    }
+    for table_name, fields in expected_fields.items():
+        assert fields <= set(schema_for(table_name).names)
+
+    approval = schema_for("silver_remediation_approval_policies")
+    assert approval.field("role_ids_json").nullable is True
 
 
 def test_vm_assessment_still_normalizes() -> None:
