@@ -11,6 +11,7 @@ const navigation = vi.hoisted(() => ({
 
 const api = vi.hoisted(() => ({
   exposureItems: vi.fn(),
+  exposureHandoffs: vi.fn(),
   patchPriorities: vi.fn(),
   slaCompliance: vi.fn(),
   exposures: vi.fn(),
@@ -30,6 +31,9 @@ vi.mock("@/lib/scope-context", () => ({
 
 vi.mock("@/lib/services", () => ({
   vulnerabilityApi: api,
+  remediationApi: {
+    exposureHandoffs: api.exposureHandoffs,
+  },
 }));
 
 import PatchPrioritiesPage from "./page";
@@ -173,6 +177,13 @@ describe("Patch priorities", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.exposureItems.mockResolvedValue(exposureEnvelope());
+    api.exposureHandoffs.mockResolvedValue({
+      data: { cases: [], read_only: true, execution_transition: false },
+      evidence: [],
+      warnings: [],
+      scope: { subscription: ["sub-1"] },
+      knowledge_version: "generation-17",
+    });
     api.patchPriorities.mockResolvedValue({ data: [] });
     api.slaCompliance.mockResolvedValue({ data: null });
     api.exposures.mockResolvedValue({ data: [] });
@@ -276,5 +287,141 @@ describe("Patch priorities", () => {
       ),
     );
     expect(screen.getByText("KB600001")).toBeInTheDocument();
+  });
+
+  it("restores focus to the originating target after the canonical result loads", async () => {
+    render(<PatchPrioritiesPage />);
+
+    const row = await screen.findByRole("row", { name: /KB600001/ });
+    await waitFor(() => expect(row).toHaveFocus());
+  });
+
+  it("uses the governed container case for review handoff and never exposes execution", async () => {
+    const envelope = exposureEnvelope();
+    envelope.data.items = [envelope.data.items[1]];
+    envelope.data.total_count = 1;
+    envelope.data.contract.counts = {
+      ...envelope.data.contract.counts,
+      returned: 1,
+      represented: 1,
+      total: 1,
+      excluded: 0,
+    };
+    api.exposureItems.mockResolvedValue(envelope);
+    api.exposureHandoffs.mockResolvedValue({
+      data: {
+        cases: [
+          {
+            handoff_id: "exposure-handoff:generation-17:exposure-image-1-cve-2026-0002",
+            exposure_id: "exposure-image-1-cve-2026-0002",
+            resource_key: `sha256:${"a".repeat(64)}`,
+            weakness_key: "CVE-2026-0002",
+            target_kind: "container_image",
+            read_model_generation_id: "generation-17",
+            outcome: "review_handoff",
+            outcome_reason: "Exact digest evidence is ready for governed review.",
+            direct_execution_supported: false,
+            review_handoff: { target_kind: "container_image" },
+          },
+        ],
+        read_only: true,
+        execution_transition: false,
+      },
+      evidence: [],
+      warnings: [],
+      scope: { subscription: ["sub-1"] },
+      knowledge_version: "generation-17",
+    });
+
+    render(<PatchPrioritiesPage />);
+
+    const link = await screen.findByRole("link", {
+      name: "Open governed container review for CVE-2026-0002",
+    });
+    expect(link).toHaveAttribute(
+      "href",
+      expect.stringContaining(
+        "handoff=exposure-handoff%3Ageneration-17%3Aexposure-image-1-cve-2026-0002",
+      ),
+    );
+    expect(screen.getByText("Nothing executes from Exposure.")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /execute|rebuild|deploy/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("records partial bulk revoke outcomes and retains failed and unattempted selections", async () => {
+    api.riskExceptions.mockResolvedValue({
+      data: [
+        {
+          exception_id: "risk-1",
+          cve_id: "CVE-2026-0001",
+          server_id: SERVER_ID,
+          reason: "Compensating control",
+          approved_by: "security@example.com",
+          created_at: "2026-09-01T00:00:00Z",
+          expires_at: "2026-10-01T00:00:00Z",
+        },
+        {
+          exception_id: "risk-2",
+          cve_id: "CVE-2026-0002",
+          server_id: SERVER_ID,
+          reason: "Maintenance window",
+          approved_by: "security@example.com",
+          created_at: "2026-09-01T00:00:00Z",
+          expires_at: "2026-10-01T00:00:00Z",
+        },
+        {
+          exception_id: "risk-3",
+          cve_id: "CVE-2026-0003",
+          server_id: SERVER_ID,
+          reason: "Vendor review",
+          approved_by: "security@example.com",
+          created_at: "2026-09-01T00:00:00Z",
+          expires_at: "2026-10-01T00:00:00Z",
+        },
+      ],
+      evidence: [],
+      warnings: [],
+      scope: { subscription: ["sub-1"] },
+      knowledge_version: "generation-17",
+    });
+    api.revokeRiskException
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Audit store unavailable"));
+    const user = userEvent.setup();
+    render(<PatchPrioritiesPage />);
+
+    await screen.findByText("risk-1");
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select all 3 risk exceptions on this page",
+      }),
+    );
+    const invoker = screen.getByRole("button", {
+      name: "Revoke 3 selected risk exceptions",
+    });
+    await user.click(invoker);
+    expect(
+      screen.getByRole("heading", { name: "Revoke 3 risk exceptions" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Revoke exceptions" }));
+
+    expect(
+      await screen.findByText(
+        "1 revoked, 1 failed, 1 not attempted. Failed and unattempted items remain selected.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Audit ID:/)).toHaveTextContent("risk-1");
+    expect(api.revokeRiskException).toHaveBeenCalledTimes(2);
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(invoker).toHaveFocus());
+    expect(
+      screen.getByRole("checkbox", { name: /Select risk exception risk-2/ }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: /Select risk exception risk-3/ }),
+    ).toBeChecked();
   });
 });
