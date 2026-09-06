@@ -29,7 +29,16 @@ from tests.network_baseline import (
 from tests.network_scale_fixtures import (
     EstateShape,
     build_estate,
+    enterprise_estate,
     g4_baseline_estate,
+    small_estate,
+)
+from tests.test_network_scale import (
+    G1_BYTE_CEILING,
+    G1_NODE_CAP,
+    G2_BYTE_CEILING,
+    G2_NODE_CAP,
+    G3_BUILD_SECONDS,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -449,5 +458,50 @@ def test_g5_default_pages_report_coverage_and_envelope_warnings() -> None:
         category=None,
     )
 
+    assert_collection_coverage(gaps, "gaps")
+    assert_collection_coverage(findings, "findings")
+
+
+def test_g1_g2_and_g3_run_against_their_assigned_fixtures() -> None:
+    measurements = measure_scale_gates(
+        small_estate(),
+        enterprise_estate(),
+    )
+
+    assert measurements["g1"]["nodes"] <= G1_NODE_CAP
+    assert measurements["g1"]["serialized_bytes"] <= G1_BYTE_CEILING
+
+    assert measurements["g2"]["truncated"] is True
+    assert measurements["g2"]["nodes"] <= G2_NODE_CAP
+    assert measurements["g2"]["serialized_bytes"] <= G2_BYTE_CEILING
+
+    assert measurements["g3"]["p95_seconds"] < G3_BUILD_SECONDS
+    assert measurements["g3"]["multiple_of_plan_12_02_baseline"] <= (
+        G3_BUILD_SECONDS / measurements["g3"]["baseline_seconds"]
+    )
+
+
+def test_g5_enterprise_default_pages_are_bounded_and_warn() -> None:
+    service = NetworkIntelligenceService(enterprise_estate())
+    context = _NetworkContext(service)
+    scope = Scope.unrestricted()
+    page = Pagination()
+    gaps = network_gaps(
+        context,
+        scope,
+        page,
+        severity=None,
+        category=None,
+    )
+    findings = rule_findings(
+        context,
+        scope,
+        page,
+        severity=None,
+        category=None,
+    )
+
+    assert gaps["data"]["coverage"]["truncated"] is True
+    assert findings["data"]["coverage"]["truncated"] is True
     assert_collection_coverage(gaps, "gaps")
     assert_collection_coverage(findings, "findings")
