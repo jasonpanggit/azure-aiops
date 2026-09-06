@@ -242,6 +242,32 @@ variable "nvd_api_key" {
   sensitive   = true
 }
 
+variable "exposure_enrichment_schedule" {
+  description = "Five-field UTC cron schedule for the durable Exposure enrichment Container Apps Job."
+  type        = string
+  default     = "0 */6 * * *"
+
+  validation {
+    condition     = length(split(" ", trimspace(var.exposure_enrichment_schedule))) == 5
+    error_message = "exposure_enrichment_schedule must be a five-field cron expression."
+  }
+}
+
+variable "exposure_enrichment_max_items" {
+  description = "Maximum durable enrichment items attempted by one scheduled job execution."
+  type        = number
+  default     = 100
+
+  validation {
+    condition = (
+      var.exposure_enrichment_max_items >= 1
+      && var.exposure_enrichment_max_items <= 1000
+      && floor(var.exposure_enrichment_max_items) == var.exposure_enrichment_max_items
+    )
+    error_message = "exposure_enrichment_max_items must be an integer from 1 through 1000."
+  }
+}
+
 variable "refresh_trigger_secret" {
   description = <<-EOT
     Shared secret checked against the x-aiops-trigger-secret header on

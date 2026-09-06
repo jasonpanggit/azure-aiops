@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -37,10 +38,14 @@ from intelligence.vulnerability.connector import (
     KevCatalogConnector,
     MsrcKbLookupConnector,
     NvdCveEnrichmentConnector,
+    canonical_enrichment_identifier,
 )
-from intelligence.vulnerability.enrichment_cache import EnrichmentCache
+from intelligence.vulnerability.enrichment_cache import (
+    EXPOSURE_ENRICHMENT_DOCUMENT,
+    EnrichmentCache,
+)
 from intelligence.vulnerability.exposure_contracts import EXPOSURE_METADATA_DATASET
-from intelligence.vulnerability.models import RiskException
+from intelligence.vulnerability.models import CVE, RiskException
 from intelligence.vulnerability.read_port import ExposureReadPort
 from intelligence.vulnerability.service import (
     VulnerabilityIntelligenceService,
@@ -708,6 +713,55 @@ def _enrichment_cache(name: str) -> EnrichmentCache:
     return _enrichment_cache_for(name, str(aiops_home()))
 
 
+def _durable_enrichment_records() -> tuple[dict[str, Any], ...]:
+    """Read fresh validated worker checkpoints without invoking a provider.
+
+    A new cache facade is intentional: ``EnrichmentCache`` keeps an L1 once
+    loaded, while this API process must observe records committed by the
+    separately scheduled Container Apps Job without requiring a restart.
+    """
+
+    return EnrichmentCache(
+        EXPOSURE_ENRICHMENT_DOCUMENT,
+        store=OneLakeDocumentStore(str(aiops_home())),
+        ttl_seconds=_KB_CVE_CACHE_TTL_SECONDS,
+    ).records()
+
+
+def _durable_enrichment_payloads(
+    records: tuple[dict[str, Any], ...],
+) -> dict[tuple[str, str], Mapping[str, Any]]:
+    """Index usable LKG payloads by their validated source/item identity."""
+
+    payloads: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for record in records:
+        payload = record.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        payloads[
+            (
+                str(record.get("source") or ""),
+                str(record.get("identifier") or ""),
+            )
+        ] = payload
+    return payloads
+
+
+def _durable_probability(
+    payload: Mapping[str, Any] | None,
+    field: str,
+) -> float | None:
+    """Return a finite public-feed probability in the closed unit interval."""
+
+    if payload is None:
+        return None
+    try:
+        value = float(payload.get(field))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and 0.0 <= value <= 1.0 else None
+
+
 def _resolve_kb_metadata(kb_ids: tuple[str, ...]) -> dict[str, dict[str, Any]]:
     """Resolve KB ids to their MSRC metadata (CVE ids and publication date).
 
@@ -891,6 +945,7 @@ def _build_vulnerability_service(
     connection_context: Mapping[str, Mapping[str, Any]] | None = None,
     use_temporal_projection: bool = False,
     projection_generation_id: str | None = None,
+    enrichment_records: tuple[dict[str, Any], ...] | None = None,
 ) -> VulnerabilityIntelligenceService | None:
     """Build vulnerability intelligence from one authoritative snapshot."""
     if not freshness:
@@ -1068,29 +1123,57 @@ def _build_vulnerability_service(
         ]
     )
 
-    # Resolve real CVE ids for each pending KB via the public MSRC Security
-    # Update Guide feed. Some KBs (e.g. Servicing Stack Updates) genuinely
-    # have no CVE association in MSRC's data; those keep the `KB-<kbId>`
-    # proxy identifier used before this connector was wired in, which is
-    # factually correct rather than a bug.
+    # Read only checkpoints written by the scheduled enrichment worker.
+    # Request-time construction must never invoke MSRC/NVD/EPSS/KEV.
+    durable_records = (
+        _durable_enrichment_records()
+        if enrichment_records is None
+        else tuple(enrichment_records)
+    )
+    durable_payloads = _durable_enrichment_payloads(durable_records)
+
+    # Resolve real CVE ids for each pending KB from durable MSRC LKG records.
+    # Some KBs genuinely have no CVE association and retain the historical
+    # `KB-<kbId>` proxy identity without a provider fallback.
     temporal_kb_ids = {
         str(row.get("weakness_id") or "").strip()
         for row in projected_current
         if str(row.get("weakness_kind") or "").casefold() == "kb"
         and str(row.get("weakness_id") or "").strip()
     }
-    kb_metadata = _resolve_kb_metadata(
-        tuple(
-            sorted(
-                {
-                    item["missing_kb"]
-                    for item in findings
-                    if item.get("missing_kb")
-                }
-                | temporal_kb_ids
-            )
+    requested_kb_ids = tuple(
+        sorted(
+            {
+                str(item["missing_kb"])
+                for item in findings
+                if item.get("missing_kb")
+            }
+            | temporal_kb_ids
         )
     )
+    kb_metadata: dict[str, dict[str, Any]] = {}
+    for kb_id in requested_kb_ids:
+        canonical_kb = str(kb_id).strip().upper()
+        try:
+            canonical_kb = canonical_enrichment_identifier("msrc", kb_id)
+        except ValueError:
+            # Legacy fixtures and pre-worker snapshots may carry short KB
+            # identifiers. They cannot be newly written by the worker, but a
+            # caller-supplied durable-record fixture may still describe them.
+            pass
+        payload = durable_payloads.get(("msrc", canonical_kb))
+        if payload is None:
+            continue
+        cve_ids: list[str] = []
+        for value in payload.get("cve_ids") or ():
+            try:
+                cve_ids.append(canonical_enrichment_identifier("nvd", value))
+            except ValueError:
+                continue
+        kb_metadata[kb_id] = {
+            "cve_ids": tuple(sorted(set(cve_ids))),
+            "published_at": str(payload.get("published_at") or ""),
+        }
     kb_to_cves = {
         kb_id: tuple(entry.get("cve_ids") or ()) for kb_id, entry in kb_metadata.items()
     }
@@ -1131,14 +1214,38 @@ def _build_vulnerability_service(
             }
         )
     )
-    cve_rows = _resolve_cve_details(all_cve_ids)
+    cve_rows: list[dict[str, Any]] = []
+    epss_scores: dict[str, dict[str, float]] = {}
+    kev_catalog: dict[str, dict[str, str]] = {}
+    for cve_id in all_cve_ids:
+        nvd_payload = durable_payloads.get(("nvd", cve_id))
+        nvd_row = dict(nvd_payload or {})
+        # The authorized finding owns membership and identity. Provider
+        # content may describe it but cannot replace that canonical id.
+        nvd_row["cve_id"] = cve_id
+        try:
+            cve_rows.append(CVE.from_mapping(nvd_row).to_dict())
+        except (TypeError, ValueError, OverflowError):
+            cve_rows.append(CVE(cve_id=cve_id, title=cve_id).to_dict())
 
-    # Layer in real-world exploitation evidence (P1): EPSS gives a continuous
-    # exploitation-probability score, CISA KEV confirms active exploitation.
-    # Both are best-effort — CVEs simply keep their default (unexploited)
-    # values if either feed is unreachable.
-    epss_scores = _resolve_epss_scores(all_cve_ids)
-    kev_catalog = _resolve_kev_catalog()
+        epss_payload = durable_payloads.get(("epss", cve_id))
+        score = _durable_probability(epss_payload, "epss_score")
+        percentile = _durable_probability(epss_payload, "epss_percentile")
+        if score is not None or percentile is not None:
+            epss_scores[cve_id] = {
+                "epss_score": score or 0.0,
+                "epss_percentile": percentile or 0.0,
+            }
+
+        kev_payload = durable_payloads.get(("kev", cve_id))
+        if kev_payload is not None:
+            kev_catalog[cve_id] = {
+                "kev_date_added": str(kev_payload.get("kev_date_added") or ""),
+                "kev_due_date": str(kev_payload.get("kev_due_date") or ""),
+                "kev_ransomware_use": str(
+                    kev_payload.get("kev_ransomware_use") or ""
+                ),
+            }
 
     _attach_business_context(findings, semantic)
     _attach_business_context(defender_assessments, semantic)
@@ -1215,6 +1322,7 @@ def _build_vulnerability_service(
         epss_scores=epss_scores,
         kev_catalog=kev_catalog,
         observed_asset_ids=observed_target_ids,
+        enrichment_records=durable_records,
     )
 
     resolver = _network_reachability_resolver(network)
