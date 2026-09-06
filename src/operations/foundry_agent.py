@@ -476,6 +476,8 @@ class FoundryPromptAgent:
             "agent_reference": {"type": "agent_reference", "name": self.agent_name},
             "input": [{"role": "user", "content": prompt}],
         }
+        if self.agent_version:
+            payload["agent_reference"]["version"] = self.agent_version
         if max_output_tokens is not None:
             payload["max_output_tokens"] = max(1, int(max_output_tokens))
         response = self._post("/openai/v1/responses", payload, versioned=False)
@@ -688,6 +690,31 @@ class MicrosoftAgentFrameworkFoundryAgent:
             context=context,
             specialist_id=self.specialist_id,
         )
+
+
+def select_foundry_agent_class(
+    specialist_id: str | None = None,
+    *,
+    prefer_maf: bool,
+) -> type[FoundryPromptAgent | MicrosoftAgentFrameworkFoundryAgent]:
+    """Select a runtime that can enforce the configured immutable version.
+
+    The preview Agent Framework path does not provide a stable wire-level
+    guarantee that the configured provider version is sent on every request.
+    Once Terraform activates an exact provider ID, use the REST client whose
+    outbound ``agent_reference`` includes that ID. Unversioned legacy callers
+    may continue using the preview path while it remains enabled.
+    """
+
+    specialist = (specialist_id or "").strip().casefold()
+    version = (
+        os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
+        if specialist
+        else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
+    )
+    if version:
+        return FoundryPromptAgent
+    return MicrosoftAgentFrameworkFoundryAgent if prefer_maf else FoundryPromptAgent
 
 
 def _run_awaitable(awaitable: Any) -> Any:

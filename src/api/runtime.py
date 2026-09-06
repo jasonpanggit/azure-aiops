@@ -92,7 +92,7 @@ from operations.defender_configuration import (
 from operations.foundry_agent import (
     SPECIALIST_IDS,
     FoundryPromptAgent,
-    MicrosoftAgentFrameworkFoundryAgent,
+    select_foundry_agent_class,
 )
 from operations.maf_orchestrator import maf_mode_enabled
 from operations.patching import (
@@ -1769,10 +1769,8 @@ def _load_foundry_agent() -> FoundryPromptAgent | None:
         # agents are resolved separately through `_load_foundry_specialist_agent`;
         # using the Network specialist here would make MAF mode page-biased
         # before it ever delegates.
-        agent_class = (
-            MicrosoftAgentFrameworkFoundryAgent
-            if maf_mode_enabled()
-            else FoundryPromptAgent
+        agent_class = select_foundry_agent_class(
+            prefer_maf=maf_mode_enabled(),
         )
         candidate = agent_class.from_env()
         if candidate is not None:
@@ -1801,10 +1799,9 @@ def _load_foundry_specialist_agent(specialist_id: str) -> FoundryPromptAgent | N
     only as an explicit last resort, removes that ambiguity.
     """
     if specialist_id not in _foundry_specialist_agents:
-        agent_class = (
-            MicrosoftAgentFrameworkFoundryAgent
-            if maf_mode_enabled()
-            else FoundryPromptAgent
+        agent_class = select_foundry_agent_class(
+            specialist_id,
+            prefer_maf=maf_mode_enabled(),
         )
         candidate = agent_class.from_env(specialist_id)
         if candidate is None:

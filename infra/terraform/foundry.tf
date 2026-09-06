@@ -897,11 +897,14 @@ resource "terraform_data" "foundry_agent" {
   # endpoint is included so that pointing at a rebuilt project also re-creates
   # the agent.
   triggers_replace = {
-    endpoint     = local.foundry_project_endpoint
-    agent_name   = var.foundry_agent_name
-    model        = azurerm_cognitive_deployment.chat.name
-    instructions = sha256(local.agent_instructions)
-    specialists  = sha256(local.foundry_specialists_json)
+    endpoint           = local.foundry_project_endpoint
+    agent_name         = var.foundry_agent_name
+    model              = azurerm_cognitive_deployment.chat.name
+    instructions       = sha256(local.agent_instructions)
+    specialists        = sha256(local.foundry_specialists_json)
+    promotion_artifact = local.foundry_promotion_artifact_path
+    rollout_script     = filesha256("${path.module}/../scripts/create-foundry-agent.sh")
+    parity_validator   = filesha256("${path.module}/../../scripts/validate_specialist_parity.py")
   }
 
   provisioner "local-exec" {
