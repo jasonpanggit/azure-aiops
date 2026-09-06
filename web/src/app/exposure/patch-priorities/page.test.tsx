@@ -218,6 +218,16 @@ describe("Patch priorities", () => {
     expect(screen.getByText("Priority score 91/100")).toBeInTheDocument();
     expect(screen.getByText(/5 represented findings/)).toBeInTheDocument();
     expect(screen.getByText(/2 excluded findings/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Showing 1 of 2 connections represented. Results and totals exclude unavailable connections.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Showing 5 of 2 connections represented. Results and totals exclude unavailable connections.",
+      ),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("Defender West connection unavailable")).toBeInTheDocument();
     expect(
       screen.getByText("Showing 1–2 of 7 findings · 2 loaded"),

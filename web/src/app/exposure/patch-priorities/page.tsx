@@ -274,8 +274,21 @@ export default function PatchPrioritiesPage() {
   );
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const revokeInvokerRef = useRef<HTMLButtonElement>(null);
+  const restoredTargetRef = useRef("");
   const page = section.data;
   const rows = useMemo(() => page?.items ?? [], [page?.items]);
+  const sectionPresentation = {
+    ...section,
+    metadata: {
+      ...section.metadata,
+      represented:
+        page?.contract.completeness.represented_connections ??
+        section.metadata.represented,
+      expected:
+        page?.contract.completeness.expected_connections ??
+        section.metadata.expected,
+    },
+  };
   const exceptionRows = riskExceptions.data?.data ?? [];
   const selectedExceptionRows = exceptionRows.filter((exception) =>
     selectedExceptions.has(exception.exception_id),
@@ -323,7 +336,13 @@ export default function PatchPrioritiesPage() {
   );
 
   useEffect(() => {
-    if (!rows.length || !queryState.target) return;
+    if (
+      !rows.length ||
+      !queryState.target ||
+      restoredTargetRef.current === queryState.target
+    ) {
+      return;
+    }
     const match = rows.find(
       (item) =>
         item.target_id === queryState.target ||
@@ -333,6 +352,7 @@ export default function PatchPrioritiesPage() {
     const row = document.getElementById(match.exposure_id);
     row?.focus({ preventScroll: true });
     row?.scrollIntoView?.({ block: "center" });
+    restoredTargetRef.current = queryState.target;
   }, [queryState.target, rows]);
 
   const revokeSelected = async (
@@ -400,7 +420,7 @@ export default function PatchPrioritiesPage() {
       <SourceSectionState
         sourceName="Patch priority evidence"
         itemLabel="findings"
-        state={section}
+        state={sectionPresentation}
       >
         <section className="card queue-card" aria-labelledby="patch-priority-heading">
           <div className="card-header">
