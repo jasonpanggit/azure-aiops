@@ -2007,3 +2007,165 @@ def test_multi_agent_projection_marks_unexecuted_specialist_not_started(
     assert runs["network"]["status"] == "ok"
     assert runs["incident"]["status"] == "not_started"
     assert runs["incident"]["tool_calls"] == []
+
+
+def test_multi_agent_read_and_action_reauthorize_stored_scope(
+    tmp_path, monkeypatch
+):
+    """Ledger reads and decisions must fail closed after scope loss."""
+    from operations.autonomous_investigation import ledger_store
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    ledger_id = "mai-scope-bound-001"
+    ledger_store().add(
+        {
+            "ledger_id": ledger_id,
+            "created_by": "admin@example.com",
+            "scope": {"subscription": ["sub-a", "sub-b"]},
+            "decisions": [],
+            "approvals": [],
+            "agent_runs": [
+                {
+                    "agent_id": "network",
+                    "tool_calls": [
+                        {
+                            "data": {"subscription": "sub-b"},
+                            "evidence": [
+                                {
+                                    "resource_id": "/subscriptions/sub-b/resourceGroups/rg-b"
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "synthesis": {"status": "ok"},
+            "human_controls": {"available_actions": ["accept_finding"]},
+            "warnings": [],
+        }
+    )
+    client = TestClient(create_app(_context(tmp_path, None)))
+
+    read = client.get(
+        f"/api/v1/agents/investigations/{ledger_id}?subscription=sub-a",
+        headers=HEADERS,
+    )
+    action = client.post(
+        f"/api/v1/agents/investigations/{ledger_id}/actions?subscription=sub-a",
+        headers=HEADERS,
+        json={"action": "accept_finding", "payload": {}},
+    )
+
+    assert read.status_code == 404
+    assert action.status_code == 404
+    persisted = ledger_store().get(ledger_id, "admin@example.com")
+    assert persisted["decisions"] == []
+    assert (
+        persisted["agent_runs"][0]["tool_calls"][0]["evidence"][0]["resource_id"]
+        == "/subscriptions/sub-b/resourceGroups/rg-b"
+    )
+
+
+def test_canonical_history_retains_question_and_validated_tool_arguments(
+    tmp_path, monkeypatch
+):
+    """History retains only policy-validated arguments from executed calls."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda *_args, **_kwargs: ToolResult(status="empty"),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)))
+    body = {
+        "question": "Can UAT reach PROD?",
+        "session_id": "traffic-session-history",
+        "tool": "traffic_flow",
+        "tool_arguments": {"source": "uat", "destination": "prod"},
+    }
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+    history_response = client.get(
+        "/api/v1/copilot/history/traffic-session-history?subscription=sub-a",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["tool_calls"][0]["arguments"] == {
+        "source": "uat",
+        "destination": "prod",
+    }
+    turns = history_response.json()["data"]["turns"]
+    assert turns[0]["question"] == "Can UAT reach PROD?"
+    assert turns[0]["tool_results"][0]["arguments"] == {
+        "source": "uat",
+        "destination": "prod",
+    }
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_page_kind"),
+    [
+        ("Which servers are vulnerable?", "vulnerability"),
+        ("Summarize vulnerabilities by severity", "vulnerability"),
+        ("Who has ownership of this resource?", "governance"),
+        ("Which route can reach production?", "network"),
+    ],
+)
+def test_question_route_handles_stable_aliases(
+    question, expected_page_kind, monkeypatch
+):
+    """Common inflections must resolve to their domain instead of incident."""
+    from operations.orchestration_contract import OrchestrationResult
+    from operations.orchestration_service import execute_from_question
+
+    captured: list[InvestigationRequest] = []
+
+    def _execute(self, request, **_kwargs):
+        captured.append(request)
+        return OrchestrationResult(
+            status="unavailable",
+            policy_status="fallback",
+            fallback_reason="planner_unavailable",
+            coverage=request.snapshot.coverage,
+            thread_id="thr-" + "f" * 32,
+            thread_revision=1,
+        )
+
+    monkeypatch.setattr(OrchestrationService, "execute", _execute)
+    execute_from_question(
+        question,
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+    )
+
+    assert captured[0].snapshot.page_kind == expected_page_kind
+
+
+def test_unmatched_question_returns_explicit_unsupported_without_tool_io(
+    monkeypatch,
+):
+    """An unmatched question must not inherit the incident page fallback."""
+    from operations.orchestration_service import execute_from_question
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda name, *_args, **_kwargs: calls.append(name),
+    )
+
+    result = execute_from_question(
+        "Please explain this view",
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+    )
+
+    assert result.status == "unavailable"
+    assert result.fallback_reason == "unsupported_intent"
+    assert result.selected_specialists == []
+    assert calls == []
