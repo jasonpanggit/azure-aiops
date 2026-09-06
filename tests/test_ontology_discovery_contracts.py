@@ -21,16 +21,20 @@ def _batch() -> EvidenceBatch:
     deterministic = RelationshipEdge(
         edge_id="edge-deterministic",
         subject_id=entity_ids[1],
+        subject_type="NetworkInterface",
         predicate="attached_to",
         object_id=entity_ids[0],
+        object_type="VirtualMachine",
         source="deterministic",
         evidence_refs=("evidence-arm-1",),
     )
     proposed = RelationshipEdge(
         edge_id="edge-model",
         subject_id=entity_ids[0],
+        subject_type="VirtualMachine",
         predicate="connected_to",
         object_id=entity_ids[2],
+        object_type="VirtualNetwork",
         source="model",
         evidence_refs=("evidence-flow-1",),
     )
@@ -70,7 +74,7 @@ def test_released_mode_can_admit_only_an_explicitly_released_reviewed_triple() -
         _batch(),
         reviewed_proposal_ids={proposal.edge_id},
         shadow_mode=False,
-        released_triples={(proposal.predicate,)},
+        released_triples={proposal.triple},
         fencing_token=2,
     )
 
