@@ -550,8 +550,12 @@ for key in ("version", "agentVersion", "agent_version", "versionId", "version_id
     value = payload.get(key)
     if isinstance(value, str):
         normalized = value.strip()
-        if key == "id":
-            normalized = normalized.rstrip("/").rsplit("/", 1)[-1]
+        if "/" in normalized:
+            path = "/" + normalized.strip("/")
+            marker = "/versions/"
+            if marker not in path:
+                continue
+            normalized = path.rsplit(marker, 1)[-1].strip("/")
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", normalized):
             print(normalized)
             sys.exit(0)

@@ -671,13 +671,26 @@ def _candidate_mapping(
 def _entry_provider_version_id(entry: dict[str, Any]) -> str:
     """Extract the immutable provider version identifier from a live entry."""
 
-    for key in ("version", "agentVersion", "agent_version", "versionId", "version_id"):
+    for key in (
+        "version",
+        "agentVersion",
+        "agent_version",
+        "versionId",
+        "version_id",
+        "id",
+    ):
         value = entry.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    value = entry.get("id")
-    if isinstance(value, str) and value.strip():
-        return value.rstrip("/").rsplit("/", 1)[-1]
+        if not isinstance(value, str):
+            continue
+        normalized = value.strip()
+        if "/" in normalized:
+            path = "/" + normalized.strip("/")
+            marker = "/versions/"
+            if marker not in path:
+                continue
+            normalized = path.rsplit(marker, 1)[-1].strip("/")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", normalized):
+            return normalized
     return ""
 
 
