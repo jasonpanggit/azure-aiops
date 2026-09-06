@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import aiops_plugin
 from api.app import create_app
+from api.dependencies import ApiContext
 from api.exposure_query import (
     ExposureAuthorization,
     ExposureFilter,
@@ -477,3 +478,55 @@ def test_plugin_contract_has_no_caller_controlled_scope_and_fails_closed() -> No
         "evidence": [],
         "warning": "Exposure query requires authenticated API context",
     }
+
+
+def test_runtime_derives_plan13_authorization_from_connection_registry() -> None:
+    from api.runtime import _exposure_query_authorization
+
+    connections = [
+        type(
+            "Connection",
+            (),
+            {
+                "connection_id": "connection-east",
+                "subscription_id": "subscription-east",
+                "tenant_id": "tenant-a",
+            },
+        )(),
+        type(
+            "Connection",
+            (),
+            {
+                "connection_id": "connection-west",
+                "subscription_id": "subscription-west",
+                "tenant_id": "tenant-a",
+            },
+        )(),
+    ]
+    onboarding = type(
+        "Onboarding",
+        (),
+        {
+            "registry": type(
+                "Registry",
+                (),
+                {
+                    "list": lambda self, include_disabled=False: connections,
+                },
+            )()
+        },
+    )()
+    principal = Principal(subject="exposure-reader@example.com")
+    scope = Scope.from_mapping({"subscription": ["subscription-east"]})
+
+    authorization = _exposure_query_authorization(
+        onboarding,
+        principal,
+        scope,
+    )
+
+    assert authorization.subject == principal.subject
+    assert authorization.tenant_id == "tenant-a"
+    assert authorization.connection_ids == ("connection-east",)
+    assert authorization.canonical_scope() == scope.to_dict()
+    assert "exposure_query_provider" in ApiContext.__dataclass_fields__
