@@ -141,6 +141,35 @@ def test_deadline_expires_without_invoking_processor(tmp_path):
     assert final["failure_class"] == "deadline_exceeded"
 
 
+def test_restart_after_final_abandoned_attempt_fails_without_reclaim(tmp_path):
+    path = tmp_path / "ontology-runs.json"
+    store = OntologyRunStore(path, max_attempts=1)
+    created = _enqueue(store)
+    store.claim(
+        created["run_id"],
+        expected_revision=created["revision"],
+        owner="worker-before-crash",
+        lease_seconds=2,
+        now=NOW,
+    )
+    processor = _CompletingProcessor()
+    restarted = OntologyDiscoveryCoordinator(
+        store=OntologyRunStore(path),
+        processor=processor,
+        owner="worker-after-crash",
+        now=lambda: NOW + timedelta(seconds=3),
+    )
+
+    result = asyncio.run(restarted.run_once(limit=1))
+
+    assert result["failed"] == 1
+    assert result["skipped_contended"] == 0
+    assert processor.seen == []
+    final = OntologyRunStore(path).get(created["run_id"])
+    assert final["status"] == "failed"
+    assert final["failure_class"] == "attempts_exhausted"
+
+
 def test_coordinator_exposes_no_authoritative_stage_or_pointer_primitive():
     source = inspect.getsource(OntologyDiscoveryCoordinator)
     signature = inspect.signature(OntologyDiscoveryCoordinator)

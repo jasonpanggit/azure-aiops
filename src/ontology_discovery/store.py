@@ -282,6 +282,49 @@ class OntologyRunStore:
             )
             return copy.deepcopy(record)
 
+    def renew_lease(
+        self,
+        run_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        fencing_token: int,
+        lease_seconds: int,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Renew a live lease without changing its monotonic fencing token."""
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int):
+            raise TypeError("lease_seconds must be an integer")
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        moment = _aware(now)
+        with self._claim_lock():
+            state, index, record = self._locate(run_id)
+            self._assert_owned(
+                state,
+                index,
+                record,
+                owner=owner,
+                fencing_token=fencing_token,
+                moment=moment,
+            )
+            if record["revision"] != expected_revision:
+                raise RunClaimConflict("run_revision_conflict", record)
+            record["lease_expires_at"] = (
+                moment + timedelta(seconds=lease_seconds)
+            ).isoformat()
+            self._replace_record(
+                state,
+                index,
+                record,
+                status=RUN_RUNNING,
+                actor=owner,
+                moment=moment,
+                checkpoint=record["checkpoint"]["name"],
+                message="Lease renewed",
+            )
+            return copy.deepcopy(record)
+
     def succeed(
         self,
         run_id: str,
@@ -406,6 +449,42 @@ class OntologyRunStore:
                 moment=moment,
                 checkpoint=record["checkpoint"]["name"],
                 failure_class="deadline_exceeded",
+                message=record["message"],
+            )
+            return copy.deepcopy(record)
+
+    def exhaust(
+        self,
+        run_id: str,
+        *,
+        expected_revision: int,
+        actor: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Fail an abandoned due run after its final claim was consumed."""
+        moment = _aware(now)
+        with self._claim_lock():
+            state, index, record = self._locate(run_id)
+            if (
+                record["revision"] != expected_revision
+                or record["status"] in TERMINAL_STATUSES
+                or record["attempt_count"] < record["max_attempts"]
+                or not _is_due(record, moment)
+            ):
+                raise RunClaimConflict("run_attempts_not_exhausted", record)
+            record["failure_class"] = "attempts_exhausted"
+            record["message"] = "Maximum run attempts exhausted"
+            record["next_attempt_at"] = ""
+            _clear_lease(record)
+            self._replace_record(
+                state,
+                index,
+                record,
+                status=RUN_FAILED,
+                actor=actor,
+                moment=moment,
+                checkpoint=record["checkpoint"]["name"],
+                failure_class="attempts_exhausted",
                 message=record["message"],
             )
             return copy.deepcopy(record)

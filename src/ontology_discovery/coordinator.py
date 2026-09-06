@@ -68,6 +68,15 @@ class OntologyDiscoveryCoordinator:
                     )
                     counts["timed_out"] += 1
                     continue
+                if record["attempt_count"] >= record["max_attempts"]:
+                    self._store.exhaust(
+                        run_id,
+                        expected_revision=record["revision"],
+                        actor=self._owner,
+                        now=moment,
+                    )
+                    counts["failed"] += 1
+                    continue
                 claimed = self._store.claim(
                     run_id,
                     expected_revision=record["revision"],

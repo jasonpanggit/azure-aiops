@@ -232,3 +232,31 @@ def test_expired_owner_cannot_checkpoint_after_new_fenced_claim(tmp_path):
     assert final["history"][-1]["failure_class"] == "lease_lost"
     assert final["history"][-1]["consequential"] is False
 
+
+def test_lease_renewal_is_durable_and_delays_restart_claim(tmp_path):
+    path = tmp_path / "ontology-runs.json"
+    store = OntologyRunStore(path)
+    created, _ = _create(store)
+    claimed = store.claim(
+        created["run_id"],
+        expected_revision=created["revision"],
+        owner="worker-a",
+        lease_seconds=5,
+        now=NOW,
+    )
+
+    renewed = store.renew_lease(
+        claimed["run_id"],
+        expected_revision=claimed["revision"],
+        owner="worker-a",
+        fencing_token=claimed["fencing_token"],
+        lease_seconds=10,
+        now=NOW + timedelta(seconds=4),
+    )
+
+    restarted = OntologyRunStore(path)
+    assert restarted.list_due(now=NOW + timedelta(seconds=6)) == []
+    assert [row["run_id"] for row in restarted.list_due(now=NOW + timedelta(seconds=15))] == [
+        created["run_id"]
+    ]
+    assert renewed["history"][-1]["message"] == "Lease renewed"
