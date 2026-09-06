@@ -224,12 +224,6 @@ def _load_config(
                             "AIOPS_ONTOLOGY_COORDINATOR_OBJECT_ID", ""
                         ),
                     },
-                    "curator": {
-                        "mode": "structural",
-                        "object_id": environment.get(
-                            "AIOPS_ONTOLOGY_CURATOR_OBJECT_ID", ""
-                        ),
-                    },
                     "publisher": {
                         "mode": "managed_identity",
                         "client_id": environment.get(
@@ -242,19 +236,24 @@ def _load_config(
                 },
             }
         )
-    if not validation:
-        raise ValidationBlocked(
-            "Fabric configuration has no ontology publisher validation settings"
-        )
     return validation
 
 
-def _identity_specs(config: dict[str, Any]) -> dict[str, IdentitySpec]:
+def _identity_specs(
+    config: dict[str, Any],
+    *,
+    require_curator: bool = True,
+) -> dict[str, IdentitySpec]:
     raw = config.get("identities")
-    if not isinstance(raw, dict) or set(raw) != set(IDENTITY_CLASSES):
-        raise ValidationBlocked("exactly four identity configurations are required")
+    expected = set(IDENTITY_CLASSES if require_curator else LIVE_WRITE_IDENTITIES)
+    if not isinstance(raw, dict) or not expected.issubset(raw):
+        raise ValidationBlocked(
+            "required identity configurations are unavailable"
+        )
     specs: dict[str, IdentitySpec] = {}
     for identity_class in IDENTITY_CLASSES:
+        if identity_class == "curator" and not require_curator:
+            continue
         entry = raw.get(identity_class)
         if not isinstance(entry, dict):
             raise ValidationBlocked(f"missing {identity_class} identity configuration")
@@ -290,6 +289,32 @@ def _identity_specs(config: dict[str, Any]) -> dict[str, IdentitySpec]:
         if mode == "client_secret" and not spec.secret_env:
             raise ValidationBlocked(f"missing {identity_class}.client_secret_env")
         specs[identity_class] = spec
+    if len({spec.object_id.casefold() for spec in specs.values()}) != len(specs):
+        raise ValidationBlocked("identity object IDs must be distinct")
+    return specs
+
+
+def _structural_identity_specs(
+    config: dict[str, Any],
+) -> dict[str, IdentitySpec]:
+    raw = config.get("identities")
+    if not isinstance(raw, dict) or set(raw) != set(IDENTITY_CLASSES):
+        raise ValidationBlocked("exactly four structural identities are required")
+    specs = {
+        identity_class: IdentitySpec(
+            identity_class=identity_class,
+            mode="structural",
+            tenant_id="",
+            client_id="",
+            object_id=_required(
+                raw.get(identity_class, {}).get("object_id")
+                if isinstance(raw.get(identity_class), dict)
+                else "",
+                f"{identity_class}.object_id",
+            ),
+        )
+        for identity_class in IDENTITY_CLASSES
+    }
     if len({spec.object_id.casefold() for spec in specs.values()}) != 4:
         raise ValidationBlocked("identity object IDs must be distinct")
     return specs
@@ -319,6 +344,152 @@ def _credential(spec: IdentitySpec) -> TokenCredential:
         client_id=spec.client_id,
         client_secret=secret,
     )
+
+
+def _deployer_credential(env: dict[str, str] | None = None) -> TokenCredential:
+    environment = dict(os.environ if env is None else env)
+    return ClientSecretCredential(
+        tenant_id=_required(environment.get("AZURE_TENANT_ID"), "AZURE_TENANT_ID"),
+        client_id=_required(environment.get("AZURE_CLIENT_ID"), "AZURE_CLIENT_ID"),
+        client_secret=_required(
+            environment.get("AZURE_CLIENT_SECRET"), "AZURE_CLIENT_SECRET"
+        ),
+    )
+
+
+def _state_attributes(
+    state: dict[str, Any],
+    resource_type: str,
+    name: str,
+) -> dict[str, Any]:
+    resources = state.get("resources")
+    if not isinstance(resources, list):
+        raise ValidationBlocked("Terraform state has no resources")
+    matches = [
+        resource
+        for resource in resources
+        if isinstance(resource, dict)
+        and resource.get("type") == resource_type
+        and resource.get("name") == name
+    ]
+    if len(matches) != 1:
+        raise ValidationBlocked("required Terraform state resource is unavailable")
+    instances = matches[0].get("instances")
+    if not isinstance(instances, list) or len(instances) != 1:
+        raise ValidationBlocked("required Terraform state instance is unavailable")
+    attributes = instances[0].get("attributes")
+    if not isinstance(attributes, dict):
+        raise ValidationBlocked("required Terraform state attributes are unavailable")
+    return attributes
+
+
+def _config_from_terraform_state(
+    config: dict[str, Any],
+    state_path: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValidationBlocked("Terraform state is unavailable or invalid") from exc
+    if not isinstance(state, dict):
+        raise ValidationBlocked("Terraform state is invalid")
+
+    api = _state_attributes(state, "azurerm_user_assigned_identity", "apps")
+    coordinator = _state_attributes(
+        state,
+        "azurerm_user_assigned_identity",
+        "ontology_coordinator",
+    )
+    publisher = _state_attributes(
+        state,
+        "azurerm_user_assigned_identity",
+        "ontology_publisher",
+    )
+    project = _state_attributes(
+        state,
+        "azurerm_cognitive_account_project",
+        "ops",
+    )
+    workspace = _state_attributes(
+        state,
+        "fabric_workspace",
+        "ontology_rbac_validation",
+    )
+    lakehouse = _state_attributes(
+        state,
+        "fabric_lakehouse",
+        "ontology_rbac_validation",
+    )
+    curator = _state_attributes(
+        state,
+        "terraform_data",
+        "foundry_ontology_curator_agent",
+    )
+    project_identity = project.get("identity")
+    if not isinstance(project_identity, list) or len(project_identity) != 1:
+        raise ValidationBlocked("Foundry project identity is unavailable in state")
+    triggers = curator.get("triggers_replace")
+    if not isinstance(triggers, dict):
+        raise ValidationBlocked("curator deployment metadata is unavailable in state")
+
+    environment = dict(os.environ if env is None else env)
+    merged = dict(config)
+    merged.update(
+        {
+            "non_production": True,
+            "workspace_id": _required(workspace.get("id"), "validation workspace ID"),
+            "lakehouse_id": _required(lakehouse.get("id"), "validation lakehouse ID"),
+            "publisher_role": dict(EXPECTED_PUBLISHER_ROLE),
+            "foundry_project_endpoint": _required(
+                triggers.get("endpoint"), "curator endpoint"
+            ),
+            "curator_agent_name": _required(
+                triggers.get("agent_name"), "curator agent name"
+            ),
+            "curator_model": _required(triggers.get("model"), "curator model"),
+            "curator_prompt_sha256": _required(
+                triggers.get("instructions"), "curator prompt hash"
+            ),
+            "deployer_client_id": _required(
+                environment.get("AZURE_CLIENT_ID"), "AZURE_CLIENT_ID"
+            ),
+            "identities": {
+                "api": {
+                    "mode": "managed_identity",
+                    "client_id": _required(api.get("client_id"), "API client ID"),
+                    "object_id": _required(api.get("principal_id"), "API object ID"),
+                },
+                "coordinator": {
+                    "mode": "managed_identity",
+                    "client_id": _required(
+                        coordinator.get("client_id"), "coordinator client ID"
+                    ),
+                    "object_id": _required(
+                        coordinator.get("principal_id"), "coordinator object ID"
+                    ),
+                },
+                "curator": {
+                    "mode": "structural",
+                    "object_id": _required(
+                        project_identity[0].get("principal_id"),
+                        "curator object ID",
+                    ),
+                },
+                "publisher": {
+                    "mode": "managed_identity",
+                    "client_id": _required(
+                        publisher.get("client_id"), "publisher client ID"
+                    ),
+                    "object_id": _required(
+                        publisher.get("principal_id"), "publisher object ID"
+                    ),
+                },
+            },
+        }
+    )
+    return merged
 
 
 def _token_claims(token: str) -> dict[str, Any]:
@@ -357,6 +528,25 @@ def _verified_token(
         raise AuthorizationEvidenceError(
             f"{spec.identity_class} token object identity mismatch"
         )
+    return token
+
+
+def _verified_deployer_token(
+    credential: TokenCredential,
+    *,
+    client_id: str,
+    scope: str,
+) -> str:
+    try:
+        token = credential.get_token(scope).token
+    except Exception as exc:
+        raise ValidationBlocked("deployer identity token is unavailable") from exc
+    claims = _token_claims(token)
+    application_claims = {
+        str(claims.get(name) or "").casefold() for name in ("appid", "azp")
+    }
+    if client_id.casefold() not in application_claims:
+        raise AuthorizationEvidenceError("deployer token client identity mismatch")
     return token
 
 
@@ -598,15 +788,15 @@ def _curator_agent_evidence(
     return _correlation(response)
 
 
-def validate_live_authorization(
+def validate_write_matrix(
     config: dict[str, Any],
     *,
     transport: HttpTransport | None = None,
     credential_factory=_credential,
 ) -> dict[str, Any]:
-    """Execute live write probes plus curator structural checks."""
+    """Execute only the three-UAI OneLake write matrix."""
     role_hash = _role_hash(config)
-    specs = _identity_specs(config)
+    specs = _identity_specs(config, require_curator=False)
     http = transport or UrllibTransport()
     credentials: dict[str, TokenCredential] = {}
     tokens: dict[str, str] = {}
@@ -691,49 +881,6 @@ def validate_live_authorization(
                 )
             )
 
-        publisher_fabric_token = _verified_token(
-            credentials["publisher"],
-            specs["publisher"],
-            scope=FABRIC_TOKEN_SCOPE,
-        )
-        workspace_role_correlation = _workspace_role_evidence(
-            config,
-            specs=specs,
-            transport=http,
-            token=publisher_fabric_token,
-        )
-        records.append(
-            _evidence(
-                identity_class="curator",
-                operation="workspace_writer_role",
-                result="absent",
-                role_hash=role_hash,
-                correlation=workspace_role_correlation,
-                evidence_kind="structural_live",
-            )
-        )
-
-        api_foundry_token = _verified_token(
-            credentials["api"],
-            specs["api"],
-            scope=FOUNDRY_TOKEN_SCOPE,
-        )
-        curator_tool_correlation = _curator_agent_evidence(
-            config,
-            transport=http,
-            token=api_foundry_token,
-        )
-        records.append(
-            _evidence(
-                identity_class="curator",
-                operation="deployed_tool_allowlist",
-                result="read_only",
-                role_hash=role_hash,
-                correlation=curator_tool_correlation,
-                evidence_kind="structural_live",
-            )
-        )
-
         staged = _put(
             http,
             publisher_stage_url,
@@ -816,6 +963,7 @@ def validate_live_authorization(
         cleanup_completed = True
         return {
             "status": "passed",
+            "mode": "write-matrix-only",
             "non_production": True,
             "evidence": records,
         }
@@ -834,16 +982,119 @@ def validate_live_authorization(
             credential.close()
 
 
+def validate_control_plane_audit(
+    config: dict[str, Any],
+    *,
+    transport: HttpTransport | None = None,
+    credential: TokenCredential | None = None,
+    credential_factory=_deployer_credential,
+) -> dict[str, Any]:
+    """Audit Fabric roles and the deployed curator under the deployer."""
+    role_hash = _role_hash(config)
+    specs = _structural_identity_specs(config)
+    http = transport or UrllibTransport()
+    deployer = credential or credential_factory()
+    deployer_client_id = _required(
+        config.get("deployer_client_id"), "deployer_client_id"
+    )
+    try:
+        fabric_token = _verified_deployer_token(
+            deployer,
+            client_id=deployer_client_id,
+            scope=FABRIC_TOKEN_SCOPE,
+        )
+        role_correlation = _workspace_role_evidence(
+            config,
+            specs=specs,
+            transport=http,
+            token=fabric_token,
+        )
+        foundry_token = _verified_deployer_token(
+            deployer,
+            client_id=deployer_client_id,
+            scope=FOUNDRY_TOKEN_SCOPE,
+        )
+        tool_correlation = _curator_agent_evidence(
+            config,
+            transport=http,
+            token=foundry_token,
+        )
+    finally:
+        deployer.close()
+
+    records = [
+        _evidence(
+            identity_class=identity_class,
+            operation="workspace_writer_role",
+            result="contributor" if identity_class == "publisher" else "absent",
+            role_hash=role_hash,
+            correlation=role_correlation,
+            evidence_kind="control_plane_live",
+        )
+        for identity_class in IDENTITY_CLASSES
+    ]
+    records.append(
+        _evidence(
+            identity_class="curator",
+            operation="deployed_tool_allowlist",
+            result="read_only",
+            role_hash=role_hash,
+            correlation=tool_correlation,
+            evidence_kind="control_plane_live",
+        )
+    )
+    return {
+        "status": "passed",
+        "mode": "control-plane-audit",
+        "non_production": True,
+        "evidence": records,
+    }
+
+
+def validate_live_authorization(
+    config: dict[str, Any],
+    *,
+    transport: HttpTransport | None = None,
+    credential_factory=_credential,
+    deployer_credential: TokenCredential | None = None,
+) -> dict[str, Any]:
+    """Aggregate both evidence passes only when all credentials are available."""
+    write_report = validate_write_matrix(
+        config,
+        transport=transport,
+        credential_factory=credential_factory,
+    )
+    audit_report = validate_control_plane_audit(
+        config,
+        transport=transport,
+        credential=deployer_credential,
+    )
+    return {
+        "status": "passed",
+        "mode": "full",
+        "non_production": True,
+        "evidence": write_report["evidence"] + audit_report["evidence"],
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate live non-production ontology publisher authorization"
     )
     parser.add_argument("--non-production", action="store_true")
     parser.add_argument("--fail-on-missing-evidence", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--write-matrix-only", action="store_true")
+    mode.add_argument("--control-plane-audit", action="store_true")
     parser.add_argument(
         "--config",
         default=os.environ.get("AIOPS_FABRIC_CONFIG", ""),
         help="Fabric YAML path (defaults to AIOPS_FABRIC_CONFIG)",
+    )
+    parser.add_argument(
+        "--terraform-state",
+        default=os.environ.get("AIOPS_TERRAFORM_STATE", ""),
+        help="Terraform state used to resolve deployed control-plane identities",
     )
     return parser
 
@@ -856,7 +1107,21 @@ def main(argv: list[str] | None = None) -> int:
         if not args.fail_on_missing_evidence:
             raise ValidationBlocked("--fail-on-missing-evidence is required")
         config_path = Path(_required(args.config, "AIOPS_FABRIC_CONFIG")).expanduser()
-        report = validate_live_authorization(_load_config(config_path))
+        config = _load_config(config_path)
+        if args.control_plane_audit:
+            state_path = Path(
+                _required(args.terraform_state, "AIOPS_TERRAFORM_STATE")
+            ).expanduser()
+            config = _config_from_terraform_state(config, state_path)
+            report = validate_control_plane_audit(config)
+        elif args.write_matrix_only:
+            report = validate_write_matrix(config)
+        else:
+            state_path = Path(
+                _required(args.terraform_state, "AIOPS_TERRAFORM_STATE")
+            ).expanduser()
+            config = _config_from_terraform_state(config, state_path)
+            report = validate_live_authorization(config)
     except (ValidationBlocked, AuthorizationEvidenceError) as exc:
         print(
             json.dumps(

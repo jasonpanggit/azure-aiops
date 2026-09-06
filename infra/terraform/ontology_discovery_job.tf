@@ -168,6 +168,7 @@ resource "azurerm_container_app_job" "ontology_rbac_validation" {
       args = [
         "--non-production",
         "--fail-on-missing-evidence",
+        "--write-matrix-only",
       ]
 
       env {
@@ -201,11 +202,6 @@ resource "azurerm_container_app_job" "ontology_rbac_validation" {
       }
 
       env {
-        name  = "AIOPS_ONTOLOGY_CURATOR_OBJECT_ID"
-        value = azurerm_cognitive_account_project.ops.identity[0].principal_id
-      }
-
-      env {
         name  = "AIOPS_ONTOLOGY_WORKSPACE_ID"
         value = fabric_workspace.ontology_rbac_validation[0].id
       }
@@ -220,25 +216,6 @@ resource "azurerm_container_app_job" "ontology_rbac_validation" {
         value = fabric_lakehouse.ontology_rbac_validation[0].id
       }
 
-      env {
-        name  = "FOUNDRY_PROJECT_ENDPOINT"
-        value = local.foundry_project_endpoint
-      }
-
-      env {
-        name  = "FOUNDRY_ONTOLOGY_CURATOR_AGENT_NAME"
-        value = local.ontology_curator_agent_name
-      }
-
-      env {
-        name  = "FOUNDRY_ONTOLOGY_CURATOR_PROMPT_SHA256"
-        value = sha256(local.ontology_curator_prompt)
-      }
-
-      env {
-        name  = "FOUNDRY_ONTOLOGY_CURATOR_MODEL"
-        value = var.foundry_model_name
-      }
     }
   }
 

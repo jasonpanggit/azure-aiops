@@ -80,15 +80,23 @@ or existing Container Apps.
   `gpt-5.4-mini` and exactly four scoped read-only Operations MCP tools.
 - Create a manual-only, bounded ACA validation Job with only the API,
   coordinator, and publisher UAIs attached. It has no schedule, ingress, or
-  AIOps runtime role.
+  AIOps runtime role and runs only `--write-matrix-only`; it never calls Fabric
+  role-assignment or Foundry agent-management APIs.
+- Run the separate `--control-plane-audit` locally under the existing
+  deployment principal. This read-only pass checks live validation-workspace
+  role assignments and the deployed curator model, prompt hash, and exact
+  four-tool allowlist without granting the publisher or API additional
+  management privilege.
 - Apply no API/web image rollout in this step unless Terraform proves the
   existing image is insufficient for the scheduled Job command.
 - Run `scripts/validate_ontology_publisher_rbac.py --non-production
-  --fail-on-missing-evidence` through the manual validation Job after
-  provisioning. API and coordinator must each be denied actual stage and
-  pointer writes, publisher must complete stage/CAS/rollback cleanup, and
-  curator denial must be proven structurally by live workspace-role absence
-  plus its exact deployed four-tool read-only definition.
+  --fail-on-missing-evidence --write-matrix-only` through the manual validation
+  Job after provisioning. API and coordinator must each be denied actual stage
+  and pointer writes, and publisher must complete stage/CAS/rollback cleanup.
+  Then run `--control-plane-audit` locally under the deployment principal to
+  prove publisher exactly Contributor, all three non-publishers without a
+  validation-workspace writer role, and the curator's exact deployed read-only
+  definition.
 - Keep the live model relationship path in shadow mode. Plan 13-08 remains the
   blocking approval gate before any authoritative publication work.
 
@@ -105,9 +113,10 @@ or existing Container Apps.
   agent `azd` deployment.
 - Apply only the targets and actions recorded in
   `.planning/phases/13-autonomous-ontology-discovery-and-fabric-synchronization/13-07-TARGETED-PLAN.md`.
-  The reviewed target set is 12 creates, 0 updates, 0 destroys, and 0 output
-  changes. Both ontology Jobs select the dedicated
-  `phase13-ontology-20260906-165556` API image through
+  The twelve-resource additive baseline is now present in canonical state. The
+  current source-only split-validator plan has 0 creates, 1 in-place validation
+  Job update, 0 destroys, and 0 output changes. A new immutable ontology image
+  will intentionally update both ontology Jobs through
   `ontology_discovery_image_tag`; existing API/web resources and outputs remain
   pinned to `azure-mcp-timeout-20260906-1454`.
 - The supplied main `terraform.tfvars` currently contains an older global image

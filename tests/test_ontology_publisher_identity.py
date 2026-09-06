@@ -9,15 +9,17 @@ from pathlib import Path
 import pytest
 
 from scripts.validate_ontology_publisher_rbac import (
-    EXPECTED_CURATOR_TOOLS,
     EXPECTED_PUBLISHER_ROLE,
     AuthorizationEvidenceError,
     HttpResult,
     UrllibTransport,
     ValidationBlocked,
+    _config_from_terraform_state,
     _correlation,
     main,
+    validate_control_plane_audit,
     validate_live_authorization,
+    validate_write_matrix,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +27,7 @@ IDENTITY_TF = ROOT / "infra" / "terraform" / "ontology_discovery_identity.tf"
 JOB_TF = ROOT / "infra" / "terraform" / "ontology_discovery_job.tf"
 FOUNDRY_TF = ROOT / "infra" / "terraform" / "foundry.tf"
 CONTAINER_APPS_TF = ROOT / "infra" / "terraform" / "container_apps.tf"
+FIXTURES = ROOT / "tests" / "fixtures" / "ontology_publisher_rbac"
 
 
 def _resource(text: str, kind: str, name: str) -> str:
@@ -269,42 +272,17 @@ class _MatrixTransport:
             else {}
         )
         if "api.fabric.microsoft.com" in url:
-            assignments = [
-                {
-                    "principal": {
-                        "id": self._config["identities"]["publisher"]["object_id"]
-                    },
-                    "role": "Contributor",
-                },
-                {
-                    "principal": {
-                        "id": self._config["identities"]["api"]["object_id"]
-                    },
-                    "role": "Viewer",
-                },
-            ]
             return HttpResult(
                 200,
                 correlation,
-                json.dumps({"value": assignments}).encode(),
+                (FIXTURES / "workspace_role_assignments.json").read_bytes(),
                 client_request_id,
             )
         if "/agents/aiops-ontology-curator-agent/versions" in url:
-            definition = {
-                "model": "gpt-5.4-mini",
-                "instructions": self._config["curator_prompt"],
-                "tools": [
-                    {
-                        "type": "mcp",
-                        "server_label": "operations-mcp",
-                        "allowed_tools": list(EXPECTED_CURATOR_TOOLS),
-                    }
-                ],
-            }
             return HttpResult(
                 200,
                 correlation,
-                json.dumps({"value": [{"version": "7", "definition": definition}]}).encode(),
+                (FIXTURES / "curator_versions.json").read_bytes(),
                 client_request_id,
             )
         if identity_class != "publisher":
@@ -347,6 +325,14 @@ def _credentials(config: dict):
     return factory
 
 
+def _deployer(config: dict) -> _Credential:
+    config["deployer_client_id"] = config["identities"]["api"]["client_id"]
+    return _Credential(
+        config["deployer_client_id"],
+        config["identities"]["api"]["object_id"],
+    )
+
+
 def test_live_matrix_combines_four_denials_with_curator_structural_evidence() -> None:
     config = _config()
     transport = _MatrixTransport(config)
@@ -355,6 +341,7 @@ def test_live_matrix_combines_four_denials_with_curator_structural_evidence() ->
         config,
         transport=transport,
         credential_factory=_credentials(config),
+        deployer_credential=_deployer(config),
     )
 
     assert report["status"] == "passed"
@@ -376,8 +363,8 @@ def test_live_matrix_combines_four_denials_with_curator_structural_evidence() ->
         (row["evidence_kind"], row["operation"], row["result"])
         for row in curator
     } == {
-        ("structural_live", "workspace_writer_role", "absent"),
-        ("structural_live", "deployed_tool_allowlist", "read_only"),
+        ("control_plane_live", "workspace_writer_role", "absent"),
+        ("control_plane_live", "deployed_tool_allowlist", "read_only"),
     }
     publisher_operations = {
         row["operation"]
@@ -406,11 +393,140 @@ def test_live_matrix_combines_four_denials_with_curator_structural_evidence() ->
     )
 
 
+def test_job_write_matrix_never_calls_control_plane_apis() -> None:
+    config = _config()
+    transport = _MatrixTransport(config)
+
+    report = validate_write_matrix(
+        config,
+        transport=transport,
+        credential_factory=_credentials(config),
+    )
+
+    assert report["mode"] == "write-matrix-only"
+    assert all(
+        "api.fabric.microsoft.com" not in url and "/agents/" not in url
+        for _identity, _method, url in transport.calls
+    )
+    assert not any(
+        row["identity_class"] == "curator" for row in report["evidence"]
+    )
+
+
+def test_deployer_control_plane_audit_never_calls_onelake() -> None:
+    config = _config()
+    transport = _MatrixTransport(config)
+
+    report = validate_control_plane_audit(
+        config,
+        transport=transport,
+        credential=_deployer(config),
+    )
+
+    assert report["mode"] == "control-plane-audit"
+    assert all(
+        "onelake.blob.fabric.microsoft.com" not in url
+        for _identity, _method, url in transport.calls
+    )
+    assert {
+        (row["identity_class"], row["operation"], row["result"])
+        for row in report["evidence"]
+    } == {
+        ("publisher", "workspace_writer_role", "contributor"),
+        ("api", "workspace_writer_role", "absent"),
+        ("coordinator", "workspace_writer_role", "absent"),
+        ("curator", "workspace_writer_role", "absent"),
+        ("curator", "deployed_tool_allowlist", "read_only"),
+    }
+
+
+def test_control_plane_config_is_resolved_from_deployed_terraform_state(
+    tmp_path: Path,
+) -> None:
+    config = _config()
+    resources = []
+
+    def add(resource_type: str, name: str, attributes: dict) -> None:
+        resources.append(
+            {
+                "type": resource_type,
+                "name": name,
+                "instances": [{"attributes": attributes}],
+            }
+        )
+
+    add(
+        "azurerm_user_assigned_identity",
+        "apps",
+        {
+            "client_id": config["identities"]["api"]["client_id"],
+            "principal_id": config["identities"]["api"]["object_id"],
+        },
+    )
+    add(
+        "azurerm_user_assigned_identity",
+        "ontology_coordinator",
+        {
+            "client_id": config["identities"]["coordinator"]["client_id"],
+            "principal_id": config["identities"]["coordinator"]["object_id"],
+        },
+    )
+    add(
+        "azurerm_user_assigned_identity",
+        "ontology_publisher",
+        {
+            "client_id": config["identities"]["publisher"]["client_id"],
+            "principal_id": config["identities"]["publisher"]["object_id"],
+        },
+    )
+    add(
+        "azurerm_cognitive_account_project",
+        "ops",
+        {"identity": [{"principal_id": config["identities"]["curator"]["object_id"]}]},
+    )
+    add(
+        "fabric_workspace",
+        "ontology_rbac_validation",
+        {"id": config["workspace_id"]},
+    )
+    add(
+        "fabric_lakehouse",
+        "ontology_rbac_validation",
+        {"id": config["lakehouse_id"]},
+    )
+    add(
+        "terraform_data",
+        "foundry_ontology_curator_agent",
+        {
+            "triggers_replace": {
+                "endpoint": config["foundry_project_endpoint"],
+                "agent_name": config["curator_agent_name"],
+                "model": config["curator_model"],
+                "instructions": config["curator_prompt_sha256"],
+            }
+        },
+    )
+    state_path = tmp_path / "terraform.tfstate"
+    state_path.write_text(json.dumps({"resources": resources}), encoding="utf-8")
+
+    resolved = _config_from_terraform_state(
+        {},
+        state_path,
+        env={"AZURE_CLIENT_ID": config["identities"]["api"]["client_id"]},
+    )
+
+    assert resolved["workspace_id"] == config["workspace_id"]
+    assert resolved["lakehouse_id"] == config["lakehouse_id"]
+    assert resolved["identities"]["curator"]["mode"] == "structural"
+    assert resolved["publisher_role"] == EXPECTED_PUBLISHER_ROLE
+    assert resolved["curator_prompt_sha256"] == config["curator_prompt_sha256"]
+
+
 def test_missing_server_correlation_uses_unique_hashed_client_request_ids() -> None:
     config = _config()
     transport = _MatrixTransport(config, server_correlation=False)
 
-    report = validate_live_authorization(
+    report = validate_write_matrix(
         config,
         transport=transport,
         credential_factory=_credentials(config),
@@ -516,7 +632,7 @@ def test_nonpublisher_result_must_be_an_unambiguous_denial(status_kind: str) -> 
     )
 
     with pytest.raises(AuthorizationEvidenceError, match="unambiguous denial"):
-        validate_live_authorization(
+        validate_write_matrix(
             config,
             transport=transport,
             credential_factory=_credentials(config),
@@ -531,12 +647,16 @@ def test_validator_rejects_missing_identity_role_drift_and_token_mismatch() -> N
     missing = _config()
     del missing["identities"]["curator"]
     with pytest.raises(ValidationBlocked, match="exactly four"):
-        validate_live_authorization(missing, transport=_MatrixTransport(_config()))
+        validate_control_plane_audit(
+            missing,
+            transport=_MatrixTransport(_config()),
+            credential=_deployer(missing),
+        )
 
     drifted = _config()
     drifted["publisher_role"]["role"] = "Admin"
     with pytest.raises(AuthorizationEvidenceError, match="does not match"):
-        validate_live_authorization(drifted, transport=_MatrixTransport(drifted))
+        validate_write_matrix(drifted, transport=_MatrixTransport(drifted))
 
     mismatched = _config()
 
@@ -544,7 +664,7 @@ def test_validator_rejects_missing_identity_role_drift_and_token_mismatch() -> N
         return _Credential("wrong-client", spec.object_id)
 
     with pytest.raises(AuthorizationEvidenceError, match="client identity mismatch"):
-        validate_live_authorization(
+        validate_write_matrix(
             mismatched,
             transport=_MatrixTransport(mismatched),
             credential_factory=wrong_credential,
@@ -594,10 +714,10 @@ def test_curator_structural_evidence_fails_on_writer_role_or_extra_tool() -> Non
 
     role_transport = UnsafeTransport(config)
     with pytest.raises(AuthorizationEvidenceError, match="curator.*writer role"):
-        validate_live_authorization(
+        validate_control_plane_audit(
             config,
             transport=role_transport,
-            credential_factory=_credentials(config),
+            credential=_deployer(config),
         )
 
     class ExtraToolTransport(_MatrixTransport):
@@ -623,8 +743,8 @@ def test_curator_structural_evidence_fails_on_writer_role_or_extra_tool() -> Non
 
     tool_transport = ExtraToolTransport(config)
     with pytest.raises(AuthorizationEvidenceError, match="tool allowlist"):
-        validate_live_authorization(
+        validate_control_plane_audit(
             config,
             transport=tool_transport,
-            credential_factory=_credentials(config),
+            credential=_deployer(config),
         )

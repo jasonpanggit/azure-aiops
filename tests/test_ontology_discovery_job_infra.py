@@ -131,11 +131,13 @@ def test_rbac_validator_job_is_manual_only_and_selects_exactly_three_uais() -> N
     assert '"/app/scripts/validate_ontology_publisher_rbac.py"' in job
     assert '"--non-production"' in job
     assert '"--fail-on-missing-evidence"' in job
+    assert '"--write-matrix-only"' in job
+    assert '"--control-plane-audit"' not in job
     assert "AIOPS_ONTOLOGY_API_CLIENT_ID" in job
     assert "AIOPS_ONTOLOGY_COORDINATOR_CLIENT_ID" in job
     assert "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID" in job
-    assert "FOUNDRY_PROJECT_ENDPOINT" in job
-    assert "ONTOLOGY_CURATOR_OBJECT_ID" in job
+    assert "FOUNDRY_PROJECT_ENDPOINT" not in job
+    assert "ONTOLOGY_CURATOR_OBJECT_ID" not in job
     assert "fabric_workspace.ontology_rbac_validation[0].id" in job
     assert "fabric_lakehouse.ontology_rbac_validation[0].id" in job
     assert "fabric_workspace.ops[0].id" not in job

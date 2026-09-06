@@ -1,0 +1,23 @@
+{
+  "value": [
+    {
+      "version": "7",
+      "definition": {
+        "model": "gpt-5.4-mini",
+        "instructions": "proposal-only ontology curator",
+        "tools": [
+          {
+            "type": "mcp",
+            "server_label": "operations-mcp",
+            "allowed_tools": [
+              "list_changed_entities",
+              "get_entity_evidence",
+              "get_ontology_vocabulary",
+              "search_relationship_history"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
