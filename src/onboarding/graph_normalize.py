@@ -249,6 +249,7 @@ class Normalizer:
         image_products = normalize_container_image_products(
             image_assessments,
             observed,
+            source_generation=run_id,
         )
         for entity_type, rows in (
             ("LogicalImage", image_products.logical_images),

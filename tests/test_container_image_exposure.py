@@ -377,6 +377,12 @@ def test_normalizer_and_mapper_dual_write_granular_container_products(
     for table_name, fields in expected_fields.items():
         assert fields <= set(schema_for(table_name).names)
 
+    remapped = InventoryDatasetMapper().load(snapshot, "fabric-run-2")
+    assert (
+        remapped["silver_container_vulnerability_observations"]
+        == observations
+    ), "immutable provider observations must not change across Fabric retries"
+
     approval = schema_for("silver_remediation_approval_policies")
     assert approval.field("role_ids_json").nullable is True
 

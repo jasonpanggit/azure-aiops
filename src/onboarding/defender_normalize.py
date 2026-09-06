@@ -154,7 +154,10 @@ def normalize_container_image_exposure(
 
 
 def normalize_container_image_products(
-    rows: list[Mapping[str, Any]], observed: str
+    rows: list[Mapping[str, Any]],
+    observed: str,
+    *,
+    source_generation: str = "",
 ) -> ContainerImageProducts:
     """Split Defender image assessments into versioned durable identities.
 
@@ -243,6 +246,7 @@ def normalize_container_image_products(
                 "observedAt": provider_event_time or observed,
                 "ingestedAt": observed,
                 "provenance": provenance,
+                "sourceGeneration": source_generation,
             },
         )
         registry["sourceIds"] = sorted(
@@ -269,6 +273,7 @@ def normalize_container_image_products(
                 "observedAt": provider_event_time or observed,
                 "ingestedAt": observed,
                 "provenance": provenance,
+                "sourceGeneration": source_generation,
             },
         )
         logical_image["imageTags"] = sorted(
@@ -297,6 +302,7 @@ def normalize_container_image_products(
                 "observedAt": provider_event_time or observed,
                 "ingestedAt": observed,
                 "provenance": provenance,
+                "sourceGeneration": source_generation,
             },
         )
         digest_product["logicalImageIds"] = sorted(
@@ -397,6 +403,7 @@ def normalize_container_image_products(
                     "logical_image_id": logical_image_id,
                     "image_digest_id": image_digest_id,
                 },
+                "sourceGeneration": source_generation,
             }
             previous = observations.get(observation_id)
             if previous is not None and previous != observation:

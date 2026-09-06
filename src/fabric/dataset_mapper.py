@@ -1662,6 +1662,9 @@ def _container_vulnerability_observation_row(
     run_id: str,
 ) -> dict[str, Any]:
     result = _base(row, run_id)
+    result["ingestion_run_id"] = str(
+        row.get("sourceGeneration") or run_id
+    )
     provider_event_time = row.get("providerEventTime")
     result.update(
         {
