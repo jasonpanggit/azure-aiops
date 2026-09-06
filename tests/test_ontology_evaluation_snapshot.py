@@ -11,6 +11,7 @@ from ontology_discovery.evaluation import (
     ArtifactReference,
     EvaluationLineage,
     EvaluationSnapshot,
+    EvaluationStatus,
     EvaluationThreshold,
     SliceMetric,
     SourceExpiry,
@@ -207,3 +208,156 @@ def test_write_failure_cannot_advance_latest_or_make_evidence_eligible(tmp_path)
 
     assert store.pointer(snapshot.scope_hash) is None
     assert store.release_evidence(snapshot.scope_hash, now=NOW) is None
+
+
+def test_restart_reconstructs_fresh_latest_and_bounded_immutable_history(tmp_path):
+    first_store = EvaluationSnapshotStore(tmp_path)
+    first = _snapshot()
+    second = _snapshot(evaluated_at=NOW + timedelta(minutes=1))
+    first_store.write(first, expected_revision=0)
+    first_store.write(second, expected_revision=1)
+
+    restarted = EvaluationSnapshotStore(tmp_path)
+    latest = restarted.latest(first.scope_hash, now=NOW + timedelta(minutes=2))
+    history = restarted.history(first.scope_hash, limit=1)
+
+    assert latest.status is EvaluationStatus.FRESH
+    assert latest.snapshot == second
+    assert latest.pointer_revision == 2
+    assert history == [second]
+    assert restarted.history(first.scope_hash, limit=10) == [second, first]
+    assert restarted.release_evidence(
+        first.scope_hash,
+        now=NOW + timedelta(minutes=2),
+    ) == second
+
+
+def test_stale_boundary_remains_auditable_but_fails_release_closed(tmp_path):
+    store = EvaluationSnapshotStore(tmp_path)
+    snapshot = _snapshot()
+    store.write(snapshot, expected_revision=0)
+
+    before_boundary = store.latest(
+        snapshot.scope_hash,
+        now=NOW + timedelta(hours=2) - timedelta(microseconds=1),
+    )
+    at_boundary = store.latest(
+        snapshot.scope_hash,
+        now=NOW + timedelta(hours=2),
+    )
+
+    assert before_boundary.status is EvaluationStatus.FRESH
+    assert at_boundary.status is EvaluationStatus.STALE
+    assert at_boundary.snapshot == snapshot
+    assert at_boundary.reason == "evaluation_snapshot_expired"
+    assert store.history(snapshot.scope_hash) == [snapshot]
+    assert (
+        store.release_evidence(
+            snapshot.scope_hash,
+            now=NOW + timedelta(hours=2),
+        )
+        is None
+    )
+
+
+def test_missing_and_invalid_latest_are_distinct_and_never_release(tmp_path):
+    store = EvaluationSnapshotStore(tmp_path)
+    scope_hash = "0123456789abcdef"
+
+    missing = store.latest(scope_hash, now=NOW)
+    assert missing.status is EvaluationStatus.MISSING
+    assert missing.reason == "evaluation_pointer_missing"
+
+    pointer_path = (
+        tmp_path / "ontology_evaluations" / "latest" / f"{scope_hash}.json"
+    )
+    pointer_path.parent.mkdir(parents=True)
+    pointer_path.write_text("{not-json", encoding="utf-8")
+
+    invalid = EvaluationSnapshotStore(tmp_path).latest(scope_hash, now=NOW)
+    assert invalid.status is EvaluationStatus.INVALID
+    assert invalid.snapshot is None
+    assert invalid.reason == "evaluation_pointer_invalid"
+    assert store.release_evidence(scope_hash, now=NOW) is None
+
+
+def test_corrupt_pointer_does_not_discard_prior_valid_history(tmp_path):
+    store = EvaluationSnapshotStore(tmp_path)
+    first = _snapshot()
+    second = _snapshot(evaluated_at=NOW + timedelta(minutes=1))
+    store.write(first, expected_revision=0)
+    store.write(second, expected_revision=1)
+    pointer_path = (
+        tmp_path
+        / "ontology_evaluations"
+        / "latest"
+        / f"{first.scope_hash}.json"
+    )
+    pointer_path.write_text('{"revision": 2, "snapshot_id": "EVS-MISSING"}\n')
+
+    restarted = EvaluationSnapshotStore(tmp_path)
+    latest = restarted.latest(first.scope_hash, now=NOW + timedelta(minutes=2))
+
+    assert latest.status is EvaluationStatus.INVALID
+    assert latest.reason == "evaluation_pointer_invalid"
+    assert restarted.history(first.scope_hash) == [second, first]
+    assert restarted.release_evidence(
+        first.scope_hash,
+        now=NOW + timedelta(minutes=2),
+    ) is None
+
+
+def test_valid_pointer_to_missing_snapshot_is_invalid_and_fail_closed(tmp_path):
+    store = EvaluationSnapshotStore(tmp_path)
+    snapshot = _snapshot()
+    store.write(snapshot, expected_revision=0)
+    pointer_path = (
+        tmp_path
+        / "ontology_evaluations"
+        / "latest"
+        / f"{snapshot.scope_hash}.json"
+    )
+    payload = store.pointer(snapshot.scope_hash).model_dump(mode="json")
+    payload["snapshot_id"] = "EVS-" + "F" * 64
+    import json
+
+    pointer_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    latest = EvaluationSnapshotStore(tmp_path).latest(snapshot.scope_hash, now=NOW)
+    assert latest.status is EvaluationStatus.INVALID
+    assert latest.reason == "evaluation_snapshot_missing"
+    assert store.history(snapshot.scope_hash) == [snapshot]
+    assert store.release_evidence(snapshot.scope_hash, now=NOW) is None
+
+
+def test_legacy_incomplete_pointer_and_snapshot_default_to_invalid(tmp_path):
+    scope_hash = "0123456789abcdef"
+    snapshot_id = "EVS-" + "A" * 64
+    pointer_path = (
+        tmp_path / "ontology_evaluations" / "latest" / f"{scope_hash}.json"
+    )
+    snapshot_path = (
+        tmp_path
+        / "ontology_evaluations"
+        / "snapshots"
+        / scope_hash
+        / f"{snapshot_id}.json"
+    )
+    pointer_path.parent.mkdir(parents=True)
+    snapshot_path.parent.mkdir(parents=True)
+    pointer_path.write_text(
+        f'{{"revision": 1, "snapshot_id": "{snapshot_id}"}}',
+        encoding="utf-8",
+    )
+    snapshot_path.write_text(
+        '{"revision": 1, "snapshot": {"schema_version": "legacy"}}',
+        encoding="utf-8",
+    )
+
+    store = EvaluationSnapshotStore(tmp_path)
+    latest = store.latest(scope_hash, now=NOW)
+
+    assert latest.status is EvaluationStatus.INVALID
+    assert latest.reason == "evaluation_pointer_invalid"
+    assert latest.snapshot is None
+    assert store.release_evidence(scope_hash, now=NOW) is None
