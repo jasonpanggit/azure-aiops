@@ -12,7 +12,7 @@ from time import perf_counter
 import pytest
 
 import network.topology as topology_module
-from network.models import NetworkSnapshot, VNetPeering
+from network.models import NetworkSnapshot, VNet, VNetPeering
 from network.topology import (
     SUMMARY_BYTE_CEILING,
     SUMMARY_MIN_NODES,
@@ -49,6 +49,45 @@ class PayloadMeasurement:
     nodes: int
     edges: int
     serialized_bytes: int
+
+
+def _client_node_ids(payload: dict) -> set[str]:
+    """Mirror the resource graph's case-insensitive node identity rules."""
+    node_ids = {
+        str(resource["id"]).casefold()
+        for resource in payload.get("resources", [])
+    }
+    node_ids.update(
+        str(peer_id).casefold()
+        for peer_id in payload.get("unresolved_peer_vnet_ids", [])
+        if peer_id
+    )
+    node_ids.update(
+        str(peer.get("vnet_id") or "").casefold()
+        for peer in payload.get("unresolved_peers", [])
+        if peer.get("vnet_id")
+    )
+    for link in payload.get("links", []):
+        local_id = str(link.get("local_vnet_id") or "").casefold()
+        remote_id = str(link.get("remote_vnet_id") or "").casefold()
+        if local_id in node_ids and remote_id:
+            node_ids.add(remote_id)
+    return node_ids
+
+
+def _client_group_ids(payload: dict, node_ids: set[str]) -> set[str]:
+    """Mirror the subscription compound nodes created by the web client."""
+    subscription_ids = {
+        str(resource.get("subscription_id") or "").casefold()
+        for resource in payload.get("resources", [])
+        if str(resource.get("id") or "").casefold() in node_ids
+        and resource.get("subscription_id")
+    }
+    for node_id in node_ids:
+        segments = node_id.strip("/").split("/")
+        if len(segments) > 1 and segments[0] == "subscriptions":
+            subscription_ids.add(segments[1])
+    return {f"subscription:{subscription_id}" for subscription_id in subscription_ids}
 
 
 def _measure_payload(
@@ -183,7 +222,8 @@ def test_g1_small_summary_payload_budget() -> None:
         }
     }
 
-    assert len(payload["resources"]) <= G1_NODE_CAP
+    node_ids = _client_node_ids(payload)
+    assert len(node_ids) + len(_client_group_ids(payload, node_ids)) <= G1_NODE_CAP
     assert len(json.dumps(payload)) <= G1_BYTE_CEILING
     assert resource_types.isdisjoint(
         {"NetworkSecurityRule", "Route", "FirewallRule"}
@@ -199,11 +239,51 @@ def test_g2_enterprise_summary_payload_budget() -> None:
     """Gate G-2 proves the enterprise response is bounded and honest."""
     payload = build_topology(enterprise_estate()).to_dict(detail="summary")
 
-    assert len(payload["resources"]) <= G2_NODE_CAP
+    node_ids = _client_node_ids(payload)
+    assert len(node_ids) + len(_client_group_ids(payload, node_ids)) <= G2_NODE_CAP
     assert len(json.dumps(payload)) <= G2_BYTE_CEILING
     assert payload["coverage"]["total"] > G2_NODE_CAP
     assert payload["coverage"]["returned"] == len(payload["resources"])
     assert payload["coverage"]["truncated"] is True
+
+
+def test_summary_node_budget_includes_unresolved_and_group_nodes() -> None:
+    """Client-added peer and subscription nodes share the 1,500-node budget."""
+    vnets = tuple(
+        VNet(
+            resource_id=f"/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet-{index}",
+            name=f"vnet-{index}",
+            subscription_id="sub-a",
+            resource_group="rg",
+        )
+        for index in range(800)
+    )
+    peerings = tuple(
+        VNetPeering(
+            resource_id=f"{vnet.resource_id}/virtualNetworkPeerings/to-ghost-{index}",
+            name=f"to-ghost-{index}",
+            subscription_id="sub-a",
+            resource_group="rg",
+            local_vnet_id=vnet.resource_id,
+            remote_vnet_id=(
+                "/subscriptions/sub-z/resourceGroups/rg/providers/"
+                f"Microsoft.Network/virtualNetworks/ghost-{index}"
+            ),
+            peering_state="Connected",
+        )
+        for index, vnet in enumerate(vnets)
+    )
+
+    payload = build_topology(
+        NetworkSnapshot(vnets=vnets, peerings=peerings)
+    ).to_dict(detail="summary")
+    node_ids = _client_node_ids(payload)
+
+    assert len(node_ids) + len(_client_group_ids(payload, node_ids)) <= SUMMARY_NODE_CAP
+    assert len(json.dumps(payload).encode()) <= SUMMARY_BYTE_CEILING
+    assert payload["coverage"]["collections"]["unresolved_peer_vnet_ids"][
+        "truncated"
+    ] is True
 
 
 def test_dense_mesh_summary_bounds_the_complete_serialized_payload() -> None:

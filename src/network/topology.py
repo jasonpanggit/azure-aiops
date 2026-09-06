@@ -78,6 +78,55 @@ SHARED_SERVICE_KINDS: dict[str, str] = {
 }
 
 
+def _subscription_group_id(
+    resource_id: str,
+    subscription_id: str = "",
+) -> str:
+    """Return the compound-node identity used by the browser, if any."""
+    resolved = str(subscription_id or "").strip().casefold()
+    if not resolved:
+        segments = str(resource_id or "").strip("/").split("/")
+        if (
+            len(segments) > 1
+            and segments[0].casefold() == "subscriptions"
+        ):
+            resolved = segments[1].casefold()
+    return f"subscription:{resolved}" if resolved else ""
+
+
+def _summary_canvas_identity(
+    resources: list[dict[str, Any]],
+    unresolved_ids: tuple[str, ...] | list[str] = (),
+) -> tuple[set[str], set[str]]:
+    """Mirror resource-path client node and compound-group identities."""
+    node_ids = {
+        str(resource.get("id") or "").casefold()
+        for resource in resources
+        if resource.get("id")
+    }
+    node_ids.update(
+        str(resource_id).casefold()
+        for resource_id in unresolved_ids
+        if resource_id
+    )
+    group_ids = {
+        group_id
+        for resource in resources
+        if (
+            group_id := _subscription_group_id(
+                str(resource.get("id") or ""),
+                str(resource.get("subscription_id") or ""),
+            )
+        )
+    }
+    group_ids.update(
+        group_id
+        for resource_id in unresolved_ids
+        if (group_id := _subscription_group_id(resource_id))
+    )
+    return node_ids, group_ids
+
+
 @dataclass(frozen=True)
 class PeeringLink:
     """A peering relationship resolved from one or both directions.
@@ -408,7 +457,15 @@ class NetworkTopology:
         low, high = 0, min(len(all_resources), SUMMARY_NODE_CAP)
         while low < high:
             candidate = (low + high + 1) // 2
-            if serialized_size(resource_payload(candidate)) <= resource_byte_budget:
+            candidate_nodes, candidate_groups = _summary_canvas_identity(
+                all_resources[:candidate]
+            )
+            if (
+                len(candidate_nodes) + len(candidate_groups)
+                <= SUMMARY_NODE_CAP
+                and serialized_size(resource_payload(candidate))
+                <= resource_byte_budget
+            ):
                 low = candidate
             else:
                 high = candidate - 1
@@ -425,13 +482,50 @@ class NetworkTopology:
             str(resource["id"]).casefold() for resource in resources
         }
 
+        unresolved_candidates = dict.fromkeys(
+            [
+                *(
+                    str(peer_id or "")
+                    for peer_id in self.unresolved_peer_vnet_ids
+                ),
+                *(
+                    str(peer.get("vnet_id") or "")
+                    for peer in self.unresolved_peers
+                ),
+                *(
+                    link.remote_vnet_id
+                    for link in self.links
+                    if (
+                        link.local_vnet_id.casefold() in resource_ids
+                        and not link.remote_vnet_observed
+                    )
+                ),
+            ]
+        )
+        allowed_unresolved_ids: set[str] = set()
+        for unresolved_id in unresolved_candidates:
+            folded_id = unresolved_id.casefold()
+            if not folded_id or folded_id in resource_ids:
+                continue
+            candidate_unresolved = (*allowed_unresolved_ids, folded_id)
+            candidate_nodes, candidate_groups = _summary_canvas_identity(
+                resources,
+                candidate_unresolved,
+            )
+            if (
+                len(candidate_nodes) + len(candidate_groups)
+                > SUMMARY_NODE_CAP
+            ):
+                continue
+            allowed_unresolved_ids.add(folded_id)
+
         candidate_links = [
             link
             for link in self.links
             if link.local_vnet_id.casefold() in resource_ids
             and (
                 link.remote_vnet_id.casefold() in resource_ids
-                or not link.remote_vnet_observed
+                or link.remote_vnet_id.casefold() in allowed_unresolved_ids
             )
         ]
         unresolved_link_ids = {
@@ -485,13 +579,18 @@ class NetworkTopology:
             "unresolved_peer_vnet_ids": [
                 peer_id
                 for peer_id in self.unresolved_peer_vnet_ids
-                if peer_id.casefold() in unresolved_link_ids
+                if (
+                    peer_id.casefold() in unresolved_link_ids
+                    and peer_id.casefold() in allowed_unresolved_ids
+                )
             ],
             "unresolved_peers": [
                 dict(peer)
                 for peer in self.unresolved_peers
                 if str(peer.get("vnet_id") or "").casefold()
                 in unresolved_link_ids
+                and str(peer.get("vnet_id") or "").casefold()
+                in allowed_unresolved_ids
             ],
             "connection_ids": [
                 connection_id
