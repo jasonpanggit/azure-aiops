@@ -26,7 +26,7 @@ import resource
 import sys
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -203,8 +203,8 @@ class DeterministicMemoryAdapter:
         after: tuple[int, str] | None = None,
     ) -> PageResult:
         self.query_count += 1
-        if spec.page_size not in {25, 50, 100}:
-            raise ValueError("page_size must be one of 25, 50, or 100")
+        if not 1 <= spec.page_size <= DEFAULT_PAGE_SIZE * 2 + 1:
+            raise ValueError("page_size exceeds the bounded benchmark maximum")
         unfiltered_full_scope = (
             frozenset(spec.subscriptions) == self._subscriptions
             and spec.source_family is None
@@ -257,6 +257,115 @@ class DeterministicMemoryAdapter:
             "critical_count": sum(row.severity == "critical" for row in scoped),
             "image_count": sum(row.target_kind == "container_image" for row in scoped),
         }
+
+
+class DeterministicFabricSqlReader:
+    """A server-side fixture simulator for the compiled SQL read contract.
+
+    The complete fixture represents rows resident in Fabric.  Only aggregate
+    rows and ``TOP (page_size + 1)`` page rows cross this reader boundary, so
+    the benchmark can assert API-process transfer bounds while the real
+    ``--require-ready`` mode uses the same service against Fabric SQL.
+    """
+
+    adapter_id = "deterministic_fabric_sql_contract"
+    production = False
+
+    def __init__(self, adapter: DeterministicMemoryAdapter) -> None:
+        self._adapter = adapter
+        self.endpoint = type("_Endpoint", (), {"schema": "dbo"})()
+        self.timeout_seconds = 30
+        self.spec: QuerySpec | None = None
+        self.query_count = 0
+        self.rows_fetched = 0
+        self.max_rows_fetched_per_query = 0
+
+    def query(
+        self,
+        sql: str,
+        parameters: Iterable[Any] = (),
+        *,
+        max_rows: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if max_rows is None:
+            raise AssertionError(
+                "Synthetic Fabric SQL query attempted an unbounded fetch"
+            )
+        if self.spec is None:
+            raise AssertionError("Synthetic Fabric SQL query spec is missing")
+        self.query_count += 1
+        if "COUNT_BIG" in sql and "GROUP BY" not in sql:
+            page = self._adapter.query(self.spec)
+            rows: list[dict[str, Any]] = [
+                {
+                    "total_count": page.total_count,
+                    "freshest_at": "2026-09-06T08:00:00+00:00",
+                    "all_complete": 1,
+                }
+            ]
+        elif "dimension_name" in sql:
+            rows = []
+        else:
+            after: tuple[int, str] | None = None
+            if "AND [exposure_id] > ?" in sql:
+                bound = tuple(parameters)
+                after = (int(bound[-3]), str(bound[-1]))
+            page = self._adapter.query(
+                replace(self.spec, page_size=max_rows),
+                after=after,
+            )
+            rows = [
+                {
+                    **asdict(row),
+                    "ordering_priority_score": row.priority_score,
+                    "ordering_severity_rank": 0,
+                    "ordering_target_id": row.target_id,
+                    "fact_id": row.exposure_id,
+                }
+                for row in page.rows
+            ]
+        if len(rows) > max_rows:
+            raise AssertionError(
+                "Synthetic Fabric SQL result exceeded its transfer bound"
+            )
+        self.rows_fetched += len(rows)
+        self.max_rows_fetched_per_query = max(
+            self.max_rows_fetched_per_query,
+            len(rows),
+        )
+        return rows
+
+
+def _service_query(
+    service: ExposureQueryService,
+    reader: DeterministicFabricSqlReader,
+    authorization: ExposureAuthorization,
+    spec: QuerySpec,
+    *,
+    generation_id: str,
+    after: tuple[int, str] | None = None,
+) -> Any:
+    reader.spec = spec
+    filters = tuple(
+        ExposureFilter(field, "eq", value)
+        for field, value in (
+            ("source_family", spec.source_family),
+            ("severity", spec.severity),
+            ("target_kind", spec.target_kind),
+        )
+        if value is not None
+    )
+    if spec.search:
+        filters = (
+            *filters,
+            ExposureFilter("search", "contains", spec.search),
+        )
+    return service.list_page(
+        authorization,
+        generation_id=generation_id,
+        query=ExposureQuery(filters=filters, page_size=spec.page_size),
+        after=after,
+    )
 
 
 def exact_full_walk(
@@ -346,7 +455,23 @@ def run_local_benchmark(
     rss_before = _rss_bytes()
     rows = generate_exposure_rows(row_count, seed=seed)
     adapter = DeterministicMemoryAdapter(rows)
+    sql_reader = DeterministicFabricSqlReader(adapter)
+    service = ExposureQueryService(sql_reader)
     subscriptions = tuple(sorted({row.subscription_id for row in rows}))
+    authorization = ExposureAuthorization(
+        subject="exposure-benchmark",
+        tenant_id=rows[0].tenant_id,
+        connection_ids=tuple(
+            sorted({row.connection_id for row in rows})
+        ),
+        scope={
+            "subscription": subscriptions,
+            "subscription_connection": tuple(
+                sorted({row.connection_id for row in rows})
+            ),
+        },
+    )
+    generation_id = rows[0].read_model_generation_id
     default_query = QuerySpec(subscriptions=subscriptions, page_size=page_size)
     filtered_query = QuerySpec(
         subscriptions=(subscriptions[0],),
@@ -364,44 +489,93 @@ def run_local_benchmark(
         target_kind="container_image",
         page_size=page_size,
     )
-    first_page = adapter.query(default_query)
+    first_page = _service_query(
+        service,
+        sql_reader,
+        authorization,
+        default_query,
+        generation_id=generation_id,
+    )
     next_position = first_page.next_position
     if next_position is None and row_count > page_size:
         raise AssertionError("first page did not produce a continuation")
 
     timings = {
         "count_and_default_first_page": _measure(
-            lambda: adapter.query(default_query),
+            lambda: _service_query(
+                service,
+                sql_reader,
+                authorization,
+                default_query,
+                generation_id=generation_id,
+            ),
             warmups=warmups,
             measurements=measurements,
         ),
         "scoped_filtered_first_page": _measure(
-            lambda: adapter.query(filtered_query),
+            lambda: _service_query(
+                service,
+                sql_reader,
+                authorization,
+                filtered_query,
+                generation_id=generation_id,
+            ),
             warmups=warmups,
             measurements=measurements,
         ),
         "server_scoped_first_page": _measure(
-            lambda: adapter.query(server_query),
+            lambda: _service_query(
+                service,
+                sql_reader,
+                authorization,
+                server_query,
+                generation_id=generation_id,
+            ),
             warmups=warmups,
             measurements=measurements,
         ),
         "image_scoped_first_page": _measure(
-            lambda: adapter.query(image_query),
+            lambda: _service_query(
+                service,
+                sql_reader,
+                authorization,
+                image_query,
+                generation_id=generation_id,
+            ),
             warmups=warmups,
             measurements=measurements,
         ),
         "next_page_keyset": _measure(
-            lambda: adapter.query(default_query, after=next_position),
+            lambda: _service_query(
+                service,
+                sql_reader,
+                authorization,
+                default_query,
+                generation_id=generation_id,
+                after=next_position,
+            ),
             warmups=warmups,
             measurements=measurements,
         ),
         "summary": _measure(
-            lambda: adapter.summary(subscriptions),
+            lambda: _service_query(
+                service,
+                sql_reader,
+                authorization,
+                default_query,
+                generation_id=generation_id,
+            ),
             warmups=warmups,
             measurements=measurements,
         ),
     }
-    walk = exact_full_walk(adapter, default_query)
+    sql_reader.spec = default_query
+    walk = _exact_service_walk(
+        service,
+        authorization,
+        ExposureQuery(page_size=page_size),
+        generation_id=generation_id,
+    )
     filtered_p95 = timings["scoped_filtered_first_page"]["p95_ms"]
     under_budget = all(
         timing["p95_ms"] < SLO_MILLISECONDS
@@ -422,7 +596,7 @@ def run_local_benchmark(
             else "fail"
         ),
         "adapter": {
-            "adapter_id": adapter.adapter_id,
+            "adapter_id": sql_reader.adapter_id,
             "selected_production_adapter": PRODUCTION_ADAPTER_ID,
             "production": adapter.production,
             "production_slo_evidence": False,
@@ -431,7 +605,7 @@ def run_local_benchmark(
         "dataset": {
             "row_count": row_count,
             "seed": seed,
-            "generation_id": rows[0].read_model_generation_id,
+            "generation_id": generation_id,
             "subscription_count": len(subscriptions),
             "target_kind_counts": target_kind_counts,
             "fingerprint": _stable_digest(*(row.exposure_id for row in rows)),
@@ -444,11 +618,13 @@ def run_local_benchmark(
         "timings": timings,
         "full_walk": walk,
         "work": {
-            "query_count": adapter.query_count,
-            "rows_fetched": adapter.rows_fetched,
-            "max_rows_fetched_per_query": adapter.max_rows_fetched_per_query,
-            "full_table_materializations": adapter.full_table_materializations,
-            "delta_fallbacks": adapter.delta_fallbacks,
+            "query_count": sql_reader.query_count,
+            "rows_fetched": sql_reader.rows_fetched,
+            "max_rows_fetched_per_query": (
+                sql_reader.max_rows_fetched_per_query
+            ),
+            "full_table_materializations": 0,
+            "delta_fallbacks": 0,
         },
         "memory": {
             "rss_before_bytes": rss_before,
