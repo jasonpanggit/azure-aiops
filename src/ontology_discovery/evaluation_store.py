@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Self
 
@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
-from .evaluation import EvaluationSnapshot
+from .evaluation import EvaluationSnapshot, EvaluationStatus
 
 _ROOT = "ontology_evaluations"
 
@@ -44,6 +44,17 @@ class _HistoryIndex(BaseModel):
     scope_key: str
     scope_hash: str
     snapshot_ids: tuple[str, ...]
+
+
+class EvaluationLookup(BaseModel):
+    """Deterministic latest-evidence result safe for policy and API projection."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: EvaluationStatus
+    snapshot: EvaluationSnapshot | None = None
+    reason: str
+    pointer_revision: int | None = Field(default=None, ge=1)
 
 
 class EvaluationSnapshotStore:
@@ -116,9 +127,14 @@ class EvaluationSnapshotStore:
         if not payload:
             return None
         try:
-            return _validate_json(LatestEvaluationPointer, payload)
+            pointer = _validate_json(LatestEvaluationPointer, payload)
         except ValidationError as exc:
             raise SnapshotIntegrityError("evaluation latest pointer is invalid") from exc
+        if pointer.scope_hash != scope_hash:
+            raise SnapshotIntegrityError(
+                "evaluation latest pointer scope does not match its path"
+            )
+        return pointer
 
     def read_snapshot(
         self,
@@ -148,17 +164,95 @@ class EvaluationSnapshotStore:
         now: datetime,
     ) -> EvaluationSnapshot | None:
         """Return only fresh, explicitly eligible durable evidence."""
-        pointer = self.pointer(scope_hash)
-        if pointer is None:
-            return None
-        snapshot = self.read_snapshot(scope_hash, pointer.snapshot_id)
+        result = self.latest(scope_hash, now=now)
         if (
-            snapshot is None
-            or not snapshot.release_eligible
-            or now >= snapshot.effective_expires_at
+            result.status is not EvaluationStatus.FRESH
+            or result.snapshot is None
+            or not result.snapshot.release_eligible
         ):
             return None
-        return snapshot
+        return result.snapshot
+
+    def latest(self, scope_hash: str, *, now: datetime) -> EvaluationLookup:
+        """Reconstruct current evidence without relying on process memory."""
+        moment = _aware(now)
+        try:
+            pointer = self.pointer(scope_hash)
+        except (OSError, ValueError, SnapshotIntegrityError):
+            return EvaluationLookup(
+                status=EvaluationStatus.INVALID,
+                reason="evaluation_pointer_invalid",
+            )
+        if pointer is None:
+            return EvaluationLookup(
+                status=EvaluationStatus.MISSING,
+                reason="evaluation_pointer_missing",
+            )
+        try:
+            snapshot = self.read_snapshot(scope_hash, pointer.snapshot_id)
+        except (OSError, ValueError, SnapshotIntegrityError):
+            return EvaluationLookup(
+                status=EvaluationStatus.INVALID,
+                reason="evaluation_snapshot_invalid",
+                pointer_revision=pointer.revision,
+            )
+        if snapshot is None:
+            return EvaluationLookup(
+                status=EvaluationStatus.INVALID,
+                reason="evaluation_snapshot_missing",
+                pointer_revision=pointer.revision,
+            )
+        if snapshot.evaluated_at != pointer.evaluated_at:
+            return EvaluationLookup(
+                status=EvaluationStatus.INVALID,
+                reason="evaluation_pointer_snapshot_mismatch",
+                pointer_revision=pointer.revision,
+            )
+        if moment >= snapshot.effective_expires_at:
+            return EvaluationLookup(
+                status=EvaluationStatus.STALE,
+                snapshot=snapshot,
+                reason="evaluation_snapshot_expired",
+                pointer_revision=pointer.revision,
+            )
+        return EvaluationLookup(
+            status=EvaluationStatus.FRESH,
+            snapshot=snapshot,
+            reason="evaluation_snapshot_fresh",
+            pointer_revision=pointer.revision,
+        )
+
+    def history(
+        self,
+        scope_hash: str,
+        *,
+        limit: int = 50,
+    ) -> list[EvaluationSnapshot]:
+        """Return newest valid immutable snapshots, bounded by ``limit``."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        payload = self.documents.read_or_raise(self._history_name(scope_hash))
+        if not payload:
+            return []
+        try:
+            index = _validate_json(_HistoryIndex, payload)
+        except ValidationError as exc:
+            raise SnapshotIntegrityError("evaluation history index is invalid") from exc
+        if index.scope_hash != scope_hash:
+            raise SnapshotIntegrityError(
+                "evaluation history scope does not match its path"
+            )
+        snapshots: list[EvaluationSnapshot] = []
+        for snapshot_id in reversed(index.snapshot_ids):
+            try:
+                snapshot = self.read_snapshot(scope_hash, snapshot_id)
+            except (OSError, ValueError, SnapshotIntegrityError):
+                continue
+            if snapshot is not None:
+                snapshots.append(snapshot)
+            if len(snapshots) >= limit:
+                break
+        return snapshots
 
     def _ensure_immutable_snapshot(self, snapshot: EvaluationSnapshot) -> None:
         name = self._snapshot_name(snapshot.scope_hash, snapshot.snapshot_id)
@@ -254,7 +348,14 @@ def _validate_json(model: type[BaseModel], payload: dict[str, object]) -> Self:
     )
 
 
+def _aware(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    return value.astimezone(UTC)
+
+
 __all__ = [
+    "EvaluationLookup",
     "EvaluationSnapshotStore",
     "LatestEvaluationPointer",
     "SnapshotConflictError",
