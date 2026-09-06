@@ -5,22 +5,26 @@ status: secured
 threats_open: 0
 asvs_level: 1
 block_on: high
-reviewed_head: 96e812578de28e9c128854cabb7d7e7ee9123c11
+reviewed_head: 207c7c78b4b90dfa9561054fdd9c840be74c8764
+verified_source_head: 207c7c78b4b90dfa9561054fdd9c840be74c8764
 created: 2026-09-06
 ---
 
 # Phase 12 — Security Threat-Mitigation Audit
 
-**Verdict:** SECURED  
-**Reviewed HEAD:** `96e812578de28e9c128854cabb7d7e7ee9123c11`  
-**Register:** 67 unique plan-time threats (`T-12-01` through `T-12-66`, plus shared `T-12-SC`)  
+**Verdict:** SECURED
+**Reviewed HEAD:** `207c7c78b4b90dfa9561054fdd9c840be74c8764`
+**Verified source HEAD:** `207c7c78b4b90dfa9561054fdd9c840be74c8764`
+**Register:** 67 unique plan-time threats (`T-12-01` through `T-12-66`, plus shared `T-12-SC`)
 **Result:** 67 closed, 0 open, 0 blocking at the configured `high` threshold
 
-The audit verified the complete plan-time register against the current tree after
-all fixes recorded in `12-REVIEW-FIX.md`. It did not infer closure from plan or
-summary claims alone: current implementation paths were inspected and the
-targeted backend, frontend, contract, scale, scope, concurrency, and static
-security checks below were rerun at the reviewed HEAD.
+The original audit verified the complete plan-time register after the fixes in
+`12-REVIEW-FIX.md`. This final reconciliation additionally inspected every
+source and test change from `96e81257` through final source commit `207c7c78`.
+It did not infer closure from plan, summary, or UI-review claims: the affected
+implementation paths were inspected and the focused backend, frontend,
+contract, scale, scope, policy, accessibility, export, and static security
+checks below were rerun against the final source tree.
 
 ## Inputs Reviewed
 
@@ -39,6 +43,38 @@ The mandatory Markdown read covered 29 artifacts and 614,397 characters. The
 baseline artifact was separately parsed and its pinned base commit, fixture,
 allowed additions, endpoint bodies, suite counts, and canvas measurement were
 checked by the passing fail-closed baseline and downstream-contract tests.
+
+## Final Source-Delta Reconciliation
+
+**Range audited:** `96e812578de28e9c128854cabb7d7e7ee9123c11..207c7c78b4b90dfa9561054fdd9c840be74c8764`
+
+The range contains three documentation-only commits and two source commits:
+
+- `10ed335bc57340023864ef4ae92a4ad90c1c929a` — topology canvas
+  interaction, reduced-motion, responsive, focus, and legend remediation.
+- `207c7c78b4b90dfa9561054fdd9c840be74c8764` — policy alert, exact copy,
+  preview disclosure, status mapping, and typography remediation.
+
+The source delta is limited to ten UI and contract-test files, totaling
+**292 insertions and 42 deletions**. It adds no endpoint, backend production
+path, authorization path, persistence behavior, executable policy construct,
+dependency, or export field. Repository HEAD before this reconciliation was
+`2348942570349997183adbbbf5499f2be50bf662`; the complete
+`207c7c78..23489425` post-source delta modifies only `12-UI-REVIEW.md`.
+
+| Delta area | Threats re-verified | Reconciliation |
+|---|---|---|
+| Scope and resource-existence isolation | T-12-01 through T-12-05, T-12-24, T-12-30, T-12-51, T-12-56, T-12-64, T-12-65 | No API or Python production source changed. B298 reran route, direct-service, agent, twin, MCP, and relationship-scope tests; uniform empty drill-down and scoped peer/drop diagnostics remain closed. |
+| Incomplete, alert, and status disclosure | T-12-31, T-12-35, T-12-36, T-12-39, T-12-44, T-12-45, T-12-48 through T-12-50, T-12-59 | Policy preview now discloses `and N more`; the form presents one prioritized assertive policy alert without suppressing the error; declared partial/provenance/peer states map to existing tones. No absent, withheld, unknown, or partial state becomes clean. |
+| Policy validation and persistence | T-12-16 through T-12-20, T-12-37, T-12-38 | UI changes only consolidate error presentation and copy. Syntax-only client parsing, server allowlists, structural comparison, CAS/revision behavior, and coalesced reloads are unchanged and pass B298/B101/W183. |
+| Denial-of-service bounds | T-12-12, T-12-18, T-12-27, T-12-29, T-12-32, T-12-38, T-12-41, T-12-43, T-12-55, T-12-57 | No cap, pagination, payload, full-detail guard, badge-page budget, cache, or serialization path changed. Immediate reduced-motion fitting changes viewport animation only and does not request more data. Scale and downstream contracts pass B298. |
+| Accessibility and operator evidence | T-12-44, T-12-54, T-12-59, T-12-63 | The canvas is programmatically focusable, explicit close/filter/context selection clears restore focus, topology refresh does not steal focus, reduced-motion fit is immediate, and the topology stacks at 900 px while preserving the 360 px contract. W183 and the CSS source contracts pass. |
+| Private-link identity and legend | T-12-23, T-12-25, T-12-28 | The new dashed, transparent `Private link candidate` legend mirrors the existing canvas treatment. It adds no Fabric icon or substitute and does not alter server gap semantics. Pinned-icon checks pass. |
+| Export integrity | T-12-52, T-12-53 | The graph handle adds `focusCanvas()` beside the unchanged JSON/PNG methods. The ten-part JSON provenance envelope, real export time, UTC collision-safe filenames, and PNG warning remain pinned by W183. |
+| Supply chain and hygiene | T-12-SC and T-12-40 | No dependency manifest changed. The hygiene helper now parses nested media rules and permits removal of the previously off-contract weight 600 only; it does not weaken added-declaration checks. Source-only `git diff --check` and all static scans pass. |
+
+**Delta verdict:** no later source fix invalidates a closure. All **67/67**
+registered threats remain closed; no risk acceptance was added.
 
 ## Trust Boundaries
 
@@ -70,6 +106,15 @@ The table uses these run identifiers:
 - **D1** — official Microsoft Learn checks for Azure icon usage, Fabric
   tenant/workspace private-link semantics, and Foundry Tools per-resource
   private endpoints: **confirmed current on 2026-09-06**.
+- **B298** — final-delta rerun of the 12 backend scope, API, provider,
+  persistence, scale, baseline, contract, topology, and agent modules:
+  **298 passed**.
+- **W183** — final-delta rerun of the eight focused Network, policy, status,
+  bounds, disclosure, accessibility, and export Vitest files:
+  **8 files / 183 tests passed**.
+- **S2** — final-delta Python/TypeScript dynamic-execution, identifier-log,
+  debug/secret, dependency-manifest, icon-integrity, and source-diff scans:
+  **passed**.
 
 ## Threat Register
 
@@ -151,7 +196,8 @@ The table uses these run identifiers:
 | AR-12-02 | T-12-20 | Operator-visible validation reasons describe only submitted declarative fields and the public supported vocabulary; internal persisted-state errors are replaced by a generic provider-unavailable response. | Phase 12 plan authority | 2026-09-06 |
 | AR-12-03 | T-12-SC | Phase 12 adds no package dependency. Official icon files are static repository assets governed by the recorded Microsoft terms and source policy. | Phase 12 plan authority | 2026-09-06 |
 
-No additional risk was accepted during this audit.
+No additional risk was accepted during either the original audit or the final
+source-delta reconciliation.
 
 ## Residual Non-Blocking Characteristics
 
@@ -165,7 +211,7 @@ No additional risk was accepted during this audit.
 - Local policy persistence is suitable for a single-process development
   fallback; deployed replicas use OneLake ETag compare-and-swap.
 
-## Exact Commands and Results
+## Original Audit Commands and Results
 
 ### Backend security, scope, policy, scale, and contract suite
 
@@ -284,21 +330,133 @@ Official Microsoft Learn was rechecked on 2026-09-06:
 - Foundry Tools documents private endpoints for the individual account
   resource.
 
+## Final Delta Commands and Results
+
+All commands in this section were rerun from the repository root with the
+production/test tree at final source commit `207c7c78`; later committed changes
+were documentation-only.
+
+### B298 — backend security, scope, policy, scale, and contract suite
+
+```bash
+.venv/bin/python -m pytest -o addopts='' \
+  tests/test_network_analysis.py \
+  tests/test_network_downstream_scope.py \
+  tests/test_network_topology_links_regression.py \
+  tests/test_api_network.py \
+  tests/test_api_providers.py \
+  tests/test_api_runtime.py \
+  tests/test_onelake_documents.py \
+  tests/test_network_scale.py \
+  tests/test_network_prephase_baseline.py \
+  tests/test_network_downstream_contracts.py \
+  tests/test_network_topology.py \
+  tests/test_operations_tools.py -q
+```
+
+Result: **298 passed**, 9 deprecation warnings, exit 0, 27.12 s.
+
+### B101 — declarative-rule and provenance suite
+
+```bash
+.venv/bin/python -m pytest -o addopts='' \
+  tests/test_network_rule_engine.py \
+  tests/test_network_flow.py \
+  tests/test_network_ontology.py \
+  tests/test_network_models.py -q
+```
+
+Result: **101 passed**, exit 0, 1.13 s.
+
+### W183 — focused incomplete-state, policy, accessibility, bounds, and export suite
+
+```bash
+cd web && npx --no-install vitest run \
+  src/app/network/page.test.tsx \
+  src/components/network/TopologyWorkspace.test.tsx \
+  src/components/network/TopologyDetailDrawer.test.tsx \
+  src/components/network/TopologyGraph.test.tsx \
+  src/components/ui/StatusBadge.test.tsx \
+  src/hooks/useApi.test.ts \
+  src/lib/network-graph.test.ts \
+  src/lib/network-services.test.ts
+```
+
+Result: **8 files passed, 183 tests passed**, exit 0, 6.98 s. Vitest emitted
+the existing Vite CJS deprecation notice and five non-failing Cytoscape
+missing-data mapping warnings.
+
+### S2 — final static security and delta scans
+
+```bash
+# Python AST scan over the 17 Phase 12 production Python files for calls to:
+# eval, exec, compile, and __import__
+#
+# Python AST scan over logging calls for arguments referencing:
+# resource_id, subscription_id, vnet_id, endpoint_id, or zone_id
+```
+
+Result: **0 dynamic-execution calls** and **0 identifier-bearing calls among
+35 logger calls**, exit 0.
+
+```bash
+rg -n --glob '*.ts' --glob '*.tsx' \
+  '(^|[^[:alnum:]_.])(eval|Function)\s*\(' \
+  web/src/app/network web/src/components/network web/src/hooks/useApi.ts \
+  web/src/lib/network-graph.ts web/src/lib/services.ts
+
+rg -n --glob '*.py' --glob '*.ts' --glob '*.tsx' \
+  '(print\(|console\.(log|debug)|debugger;|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|AKIA[0-9A-Z]{16})' \
+  src/network src/api/providers.py src/api/routers/network.py src/api/runtime.py \
+  src/onboarding/graph_normalize.py src/operations/tools.py \
+  src/storage/onelake_documents.py web/src/app/network \
+  web/src/components/network web/src/hooks/useApi.ts \
+  web/src/lib/network-graph.ts web/src/lib/services.ts
+```
+
+Result: **no matches** from either scan; expected `rg` status 1, interpreted as
+pass.
+
+```bash
+git diff --name-only \
+  d57f6137d747c344c56028d7e6211811927d0b43..207c7c78 \
+  -- package.json web/package.json pyproject.toml uv.lock \
+  package-lock.json web/package-lock.json Cargo.toml
+
+git diff --check 96e81257..207c7c78 -- \
+  tests/test_network_downstream_contracts.py \
+  web/src/app/globals.css \
+  web/src/app/network/page.test.tsx \
+  web/src/app/network/page.tsx \
+  web/src/components/network/TopologyGraph.test.tsx \
+  web/src/components/network/TopologyGraph.tsx \
+  web/src/components/network/TopologyWorkspace.test.tsx \
+  web/src/components/network/TopologyWorkspace.tsx \
+  web/src/components/ui/StatusBadge.test.tsx \
+  web/src/components/ui/StatusBadge.tsx
+```
+
+Result: **no dependency-manifest changes** and **no source-delta whitespace
+errors**, exit 0. Official icon existence, absence, README-source, unmodified
+policy, and SHA-256 assertions also passed.
+
 ## Security Audit Trail
 
 | Audit Date | Reviewed HEAD | Threats Total | Closed | Open | Blocking Open | Run By |
 |---|---|---:|---:|---:|---:|---|
 | 2026-09-06 | `96e812578de28e9c128854cabb7d7e7ee9123c11` | 67 | 67 | 0 | 0 | GitHub Copilot secure-phase audit |
+| 2026-09-06 | `207c7c78b4b90dfa9561054fdd9c840be74c8764` | 67 | 67 | 0 | 0 | GitHub Copilot final source-delta reconciliation |
 
 ## Sign-Off
 
 - [x] Every unique plan-time threat ID was enumerated exactly once.
 - [x] Every threat has a plan-authored disposition.
 - [x] Current source placement was inspected after all review fixes.
+- [x] Complete source delta `96e81257..207c7c78` was reconciled.
 - [x] Plan-authored accepted risks are documented; no new risk was accepted.
 - [x] Targeted backend, frontend, security, scope, concurrency, scale, and
   contract checks passed.
-- [x] `threats_open: 0` confirmed at reviewed HEAD.
+- [x] `threats_open: 0` confirmed at verified source HEAD `207c7c78`.
 - [x] `status: secured` set in frontmatter.
 
-**Approval:** secured 2026-09-06
+**Approval:** secured 2026-09-06 after final source-delta reconciliation
