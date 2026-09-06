@@ -52,6 +52,17 @@ const completePrePhase12Mappings = {
   dormant: "neutral",
 } as const;
 
+const phase12Mappings = {
+  complete: "success",
+  partial: "warning",
+  "not-analyzed": "warning",
+  "private-link-candidate": "info",
+  "public-access-enabled": "critical",
+  "peer-not-ingested": "warning",
+  "peer-out-of-scope": "info",
+  "peer-resolution-unknown": "unknown",
+} as const;
+
 describe("statusTone", () => {
   it("maps healthy-empty to success", () => {
     expect(statusTone("healthy-empty")).toBe("success");
@@ -109,5 +120,17 @@ describe("statusTone", () => {
         ]),
       ),
     ).toEqual(completePrePhase12Mappings);
+  });
+
+  it("maps every Phase-12 status keyword without adding a tone", () => {
+    expect(
+      Object.fromEntries(
+        Object.keys(phase12Mappings).map((keyword) => [
+          keyword,
+          statusTone(keyword),
+        ]),
+      ),
+    ).toEqual(phase12Mappings);
+    expect(STATUS_TONES).toHaveLength(7);
   });
 });

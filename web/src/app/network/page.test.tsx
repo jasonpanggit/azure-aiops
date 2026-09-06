@@ -642,6 +642,67 @@ describe("Network page policy round-trip", () => {
     );
   });
 
+  it("renders exactly one assertive policy validation alert at a time", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.click(screen.getByRole("button", { name: "Preview rule" }));
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Rule ID" }), "bad-json");
+    await user.type(screen.getByRole("textbox", { name: "Name" }), "Bad JSON");
+    fireEvent.change(screen.getByRole("textbox", { name: "Rule assertion (JSON)" }), {
+      target: { value: "{" },
+    });
+    await user.click(screen.getByRole("button", { name: "Preview rule" }));
+
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Nothing has been sent to the server",
+    );
+  });
+
+  it("uses the exact policy empty-state next-step copy", async () => {
+    mocks.policy.mockResolvedValue(policyEnvelope({ rules: [] }));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+
+    expect(
+      await screen.findByText(
+        "No design rules are configured for this estate. Add a rule to start checking for gaps.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("discloses the number of preview gaps omitted after the first five", async () => {
+    const preview = buildGapsEnvelope(7);
+    mocks.previewPolicy.mockResolvedValue({
+      ...policyEnvelope(),
+      data: {
+        policy: policyEnvelope({ rules: [declarativeRule] }).data,
+        gaps: preview.data.gaps,
+        summary: buildNetworkSummary({ gap_count: 7 }),
+      },
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.type(screen.getByRole("textbox", { name: "Rule ID" }), declarativeRule.rule_id);
+    await user.type(screen.getByRole("textbox", { name: "Name" }), declarativeRule.name);
+    fireEvent.change(screen.getByRole("textbox", { name: "Rule assertion (JSON)" }), {
+      target: { value: JSON.stringify(declarativeRule.parameters) },
+    });
+    await user.click(screen.getByRole("button", { name: "Preview rule" }));
+
+    expect(await screen.findByText("and 2 more")).toBeInTheDocument();
+  });
+
   it("retains the populated topology and metric totals while a policy-triggered refetch is in flight", async () => {
     const user = userEvent.setup();
     let resolveTopology: ((value: ReturnType<typeof buildTopologyEnvelope>) => void) | undefined;

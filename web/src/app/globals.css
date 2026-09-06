@@ -3330,7 +3330,7 @@ body.topology-fullscreen-open {
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--color-text-secondary);
 }
 

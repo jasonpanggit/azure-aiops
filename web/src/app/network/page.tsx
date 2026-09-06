@@ -1146,7 +1146,7 @@ function DesignPolicyWorkspace({
           {showAddForm ? "Cancel" : "Add rule"}
         </button>
       </div>
-      {saveError && (
+      {saveError && !showAddForm && (
         <div className="callout callout-critical" role="alert">
           {saveError}
         </div>
@@ -1168,11 +1168,6 @@ function DesignPolicyWorkspace({
             submitNewRule();
           }}
         >
-          {addError && (
-            <div className="callout callout-critical" role="alert">
-              {addError}
-            </div>
-          )}
           <div className="policy-add-form-grid">
             <label>
               Analyzer template
@@ -1249,9 +1244,9 @@ function DesignPolicyWorkspace({
               rows={2}
             />
           </label>
-          {semanticError && (
+          {(semanticError || addError || saveError) && (
             <div id="policy-assertion-error" className="callout callout-critical" role="alert">
-              {semanticError}
+              {semanticError || addError || saveError}
             </div>
           )}
           <label className="policy-add-form-description">
@@ -1291,13 +1286,19 @@ function DesignPolicyWorkspace({
                   {preview.gaps.slice(0, 5).map((gap) => <li key={gap.gap_id}>{gap.title}: {gap.resource_name}</li>)}
                 </ul>
               )}
+              {preview.gaps.length > 5 && (
+                <span>and {preview.gaps.length - 5} more</span>
+              )}
             </div>
           )}
         </form>
       )}
       <div className="finding-list">
         {rules.length === 0 && (
-          <StatePanel title="No policy rules declared" message="No design rules are configured for this estate." />
+          <StatePanel
+            title="No policy rules declared"
+            message="No design rules are configured for this estate. Add a rule to start checking for gaps."
+          />
         )}
         {rules.map((rule) => {
           const enabled = pending[rule.rule_id] ?? rule.enabled;

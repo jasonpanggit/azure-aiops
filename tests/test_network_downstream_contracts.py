@@ -735,7 +735,9 @@ def test_hygiene_a51_typography_uses_only_the_phase_scale() -> None:
             if value not in allowed:
                 violations.append(line.strip())
     removed_declarations = [
-        line.strip() for line in removed if typography.search(line)
+        line.strip()
+        for line in removed
+        if typography.search(line) and line.strip() != "font-weight: 600;"
     ]
 
     assert not violations, f"A51 added off-scale typography: {violations}"
@@ -825,6 +827,17 @@ def test_ui_review_responsive_contract() -> None:
     assert "max-height: 340px" in drawer
     assert "border-top: 1px solid var(--color-border)" in drawer
     assert "border-left: 0" in drawer
+
+
+def test_ui_review_policy_labels_use_permitted_weight() -> None:
+    styles = GLOBAL_STYLES.read_text(encoding="utf-8")
+    policy_labels = _css_rule(
+        styles,
+        ".policy-add-form label,\n.policy-add-form-description",
+    )
+
+    assert "font-weight: 700" in policy_labels
+    assert "font-weight: 600" not in policy_labels
 
 
 def test_ui_review_private_link_legend_matches_canvas_treatment() -> None:
