@@ -6,9 +6,14 @@ import asyncio
 import inspect
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from api.routers.connections import sync_connection
 from ontology_discovery.contracts import CheckpointResult
+from ontology_discovery.cli import run_once as run_cli_once
 from ontology_discovery.coordinator import OntologyDiscoveryCoordinator
 from ontology_discovery.store import OntologyRunStore
+from onboarding.service import SubscriptionOnboardingService
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 
@@ -144,3 +149,83 @@ def test_coordinator_exposes_no_authoritative_stage_or_pointer_primitive():
     assert "promote" not in source
     assert "active_pointer" not in source
     assert "stage_generation" not in source
+
+
+def _onboarding_service(tmp_path) -> SubscriptionOnboardingService:
+    service = SubscriptionOnboardingService(
+        tmp_path / "aiops",
+        ontology_run_store=OntologyRunStore(tmp_path / "ontology-runs.json"),
+    )
+    service.add(
+        connection_id="prod-core",
+        name="Production Core",
+        tenant_id="33333333-3333-3333-3333-333333333333",
+        subscription_id="11111111-1111-1111-1111-111111111111",
+        client_id="44444444-4444-4444-4444-444444444444",
+        secret_ref="kv://vault/spn-secret",
+    )
+    return service
+
+
+def test_manual_and_scheduled_sync_intake_share_one_durable_run_without_executor(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = _onboarding_service(tmp_path)
+
+    def fail_if_executor_is_resolved():
+        raise AssertionError("ontology intake must not resolve ThreadPoolExecutor")
+
+    monkeypatch.setattr(service, "_shared_executor", fail_if_executor_is_resolved)
+
+    manual = service.enqueue_ontology_refresh(
+        "prod-core",
+        mode="manual",
+        source_generation_id="inventory-generation-7",
+        requested_by="operator@example.com",
+    )
+    scheduled = service.enqueue_ontology_refresh(
+        "prod-core",
+        mode="scheduled",
+        source_generation_id="inventory-generation-7",
+        requested_by="scheduler",
+    )
+
+    assert manual["run_id"] == scheduled["run_id"]
+    assert manual["status"] == scheduled["status"] == "running"
+    assert manual["mode"] == "manual"
+    assert scheduled["mode"] == "scheduled"
+    assert manual["sync_state"]["stage"] == "queued"
+    assert manual["durable_run"]["status"] == "queued"
+    assert manual["durable_run"]["source_generation_id"] == "inventory-generation-7"
+    assert manual["durable_run"]["created"] is True
+    assert scheduled["durable_run"]["created"] is False
+
+
+def test_manual_sync_route_preserves_authorization_and_uses_durable_intake():
+    source = inspect.getsource(sync_connection)
+    signature = inspect.signature(sync_connection)
+
+    assert "principal" in signature.parameters
+    assert signature.parameters["principal"].annotation == "OperatePrincipal"
+    assert "_authorize_action" in source
+    assert "ACTION_OPERATE" in source
+    assert "enqueue_ontology_refresh" in source
+    assert "sync_async" not in source
+
+
+def test_sync_run_once_cli_delegates_one_finite_bounded_pass():
+    class Coordinator:
+        def __init__(self) -> None:
+            self.calls: list[tuple[datetime | None, int]] = []
+
+        async def run_once(self, *, now=None, limit=10):
+            self.calls.append((now, limit))
+            return {"selected": 0, "processed": 0}
+
+    coordinator = Coordinator()
+
+    result = asyncio.run(run_cli_once(coordinator, now=NOW, limit=7))
+
+    assert result == {"selected": 0, "processed": 0}
+    assert coordinator.calls == [(NOW, 7)]
