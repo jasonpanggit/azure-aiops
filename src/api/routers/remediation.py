@@ -30,6 +30,9 @@ from intelligence.remediation.approval_gate import (
 )
 from intelligence.remediation.execution_service import RemediationExecutionError
 from intelligence.remediation.execution_store import execution_scope_attributes
+from intelligence.vulnerability.exposure_contracts import (
+    EXPOSURE_CONTRACT_VERSION,
+)
 from operations.defender_configuration import DEFENDER_CONFIGURATION_ACTION_IDS
 from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.service import PatchValidationError
@@ -194,6 +197,68 @@ def list_plans(
         evidence=_evidence("", str(result.get("generated_at") or "")),
         scope=scope.to_dict(),
         pagination=page.to_dict(len(visible)),
+    )
+
+
+@router.get(
+    "/exposure-handoffs",
+    summary="List governed Exposure review handoffs and no-safe-action results",
+)
+def exposure_handoffs(
+    context: Context,
+    scope: ReadScope,
+) -> dict[str, Any]:
+    provider = getattr(context, "exposure_remediation_provider", None)
+    correlator = provider() if callable(provider) else None
+    if correlator is None or not hasattr(correlator, "exposure_cases"):
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Exposure remediation review is unavailable",
+            {"capability": "exposure_remediation"},
+        )
+    cases = correlator.exposure_cases(scope)
+    warnings = sorted(
+        {
+            str(case.get("outcome_reason") or "")
+            for case in cases
+            if case.get("outcome") == "no_safe_action"
+            and case.get("outcome_reason")
+        }
+    )
+    return envelope(
+        {
+            "contract_version": EXPOSURE_CONTRACT_VERSION,
+            "cases": cases,
+            "read_only": True,
+            "execution_transition": False,
+        },
+        evidence=Evidence(
+            source_engine="intelligence.DefenderRemediationCorrelator",
+            source_table="gold_exposure_findings",
+            timestamp=str(
+                next(
+                    (
+                        case.get("freshness", {}).get("as_of")
+                        for case in cases
+                        if case.get("freshness", {}).get("as_of")
+                    ),
+                    "",
+                )
+            ),
+            confidence=CONFIDENCE_HIGH,
+        ),
+        scope=scope.to_dict(),
+        knowledge_version=str(
+            next(
+                (
+                    case.get("read_model_generation_id")
+                    for case in cases
+                    if case.get("read_model_generation_id")
+                ),
+                "",
+            )
+        ),
+        warnings=warnings,
     )
 
 

@@ -34,6 +34,7 @@ from api.scope import Scope, scope_attributes
 from intelligence.predictive.predictive_context_builder import PredictiveContextBuilder
 from intelligence.remediation.action_catalog import EXECUTABLE_ACTION_IDS
 from intelligence.remediation.dependency_analyzer import DependencyAnalyzer
+from intelligence.vulnerability.exposure_contracts import EXPOSURE_CONTRACT_VERSION
 from operations.defender_configuration import (
     DEFENDER_CONFIGURATION_ACTION_IDS,
     supported_recommendation_action_id,
@@ -150,6 +151,16 @@ class DefenderRemediationCorrelator:
             limit=self.max_cases,
         )
         generation_id = str(page.get("read_model_generation_id") or "")
+        page_completeness = dict(page.get("completeness") or {})
+        page_freshness = dict(page.get("freshness") or {})
+        freshness_state = str(
+            page_freshness.get("state") or "unknown"
+        ).casefold()
+        stale_evidence = freshness_state in {
+            "stale",
+            "expired",
+            "unavailable",
+        }
         cases: list[dict[str, Any]] = []
         for finding in page.get("findings") or ():
             row = dict(finding)
@@ -162,6 +173,12 @@ class DefenderRemediationCorrelator:
             )
             if not execution_eligible:
                 action_id = ""
+            evidence_complete = (
+                str(page_completeness.get("state") or "").casefold()
+                == "complete"
+                and str(row.get("completeness") or "").casefold()
+                == "complete"
+            )
             exact_workload = (
                 target_kind == "container_image"
                 and str(row.get("workload_state") or "").casefold()
@@ -169,33 +186,104 @@ class DefenderRemediationCorrelator:
                 and bool(str(row.get("application_id") or "").strip())
                 and bool(str(row.get("business_service_id") or "").strip())
             )
-            if target_kind == "container_image" and exact_workload:
+            safe_container_context = (
+                target_kind == "container_image"
+                and exact_workload
+                and evidence_complete
+                and not stale_evidence
+            )
+            if safe_container_context:
                 outcome = "review_handoff"
+                outcome_reason_code = "governed_review_required"
                 outcome_reason = (
                     "Exact observed digest deployment is available for governed "
                     "platform-team review; no executable container action is registered."
                 )
             elif execution_eligible:
                 outcome = "governed_action"
+                outcome_reason_code = ""
                 outcome_reason = ""
+            elif target_kind == "container_image" and not evidence_complete:
+                outcome = "no_safe_action"
+                outcome_reason_code = "evidence_incomplete"
+                outcome_reason = (
+                    "Container deployment evidence is incomplete; no safe "
+                    "application impact or review handoff can be claimed."
+                )
+            elif target_kind == "container_image" and stale_evidence:
+                outcome = "no_safe_action"
+                outcome_reason_code = "evidence_stale"
+                outcome_reason = (
+                    "Container deployment evidence is stale; refresh evidence "
+                    "before creating a governed review handoff."
+                )
+            elif target_kind == "container_image":
+                outcome = "no_safe_action"
+                outcome_reason_code = "deployment_evidence_unknown"
+                outcome_reason = (
+                    "No exact observed digest deployment proves application "
+                    "impact or a safe blast radius."
+                )
             else:
                 outcome = "no_safe_action"
+                outcome_reason_code = "no_governed_action"
                 outcome_reason = (
                     "No existing governed executable action is evidenced for this finding."
                 )
+            exposure_id = str(row.get("exposure_id") or "")
+            source_families = sorted(
+                {
+                    str(value)
+                    for value in row.get("source_families") or ()
+                    if str(value)
+                }
+            )
             cases.append(
                 {
-                    "case_id": f"exposure-case:{row.get('exposure_id') or ''}",
-                    "exposure_id": str(row.get("exposure_id") or ""),
+                    "contract_version": EXPOSURE_CONTRACT_VERSION,
+                    "case_id": f"exposure-case:{exposure_id}",
+                    "handoff_id": (
+                        f"exposure-handoff:{generation_id}:{exposure_id}"
+                        if target_kind == "container_image"
+                        else ""
+                    ),
+                    "exposure_id": exposure_id,
                     "resource_key": str(row.get("target_id") or ""),
                     "weakness_key": str(row.get("weakness_id") or ""),
                     "target_kind": target_kind,
-                    "source_families": list(row.get("source_families") or ()),
+                    "source_families": source_families,
                     "read_model_generation_id": generation_id,
                     "completeness": str(row.get("completeness") or ""),
+                    "coverage": {
+                        **page_completeness,
+                        "represented": int(
+                            page_completeness.get(
+                                "represented_count",
+                                page.get("total_count") or 0,
+                            )
+                        ),
+                        "total": int(
+                            page_completeness.get(
+                                "total_count",
+                                page.get("total_count") or 0,
+                            )
+                        ),
+                        "excluded": int(
+                            page_completeness.get("excluded_count") or 0
+                        ),
+                    },
+                    "freshness": page_freshness,
+                    "evidence_refs": [
+                        {
+                            "exposure_id": exposure_id,
+                            "generation": generation_id,
+                            "source_families": source_families,
+                        }
+                    ],
                     "action_id": action_id,
                     "direct_execution_supported": execution_eligible,
                     "outcome": outcome,
+                    "outcome_reason_code": outcome_reason_code,
                     "outcome_reason": outcome_reason,
                     "review_handoff": {
                         "target_kind": target_kind,
@@ -207,10 +295,17 @@ class DefenderRemediationCorrelator:
                             else ""
                         ),
                         "workload_state": str(row.get("workload_state") or ""),
-                        "application_id": str(row.get("application_id") or ""),
-                        "business_service_id": str(
-                            row.get("business_service_id") or ""
+                        "application_id": (
+                            str(row.get("application_id") or "")
+                            if safe_container_context
+                            else ""
                         ),
+                        "business_service_id": (
+                            str(row.get("business_service_id") or "")
+                            if safe_container_context
+                            else ""
+                        ),
+                        "safe_blast_radius_known": safe_container_context,
                     },
                     "read_only": True,
                 }

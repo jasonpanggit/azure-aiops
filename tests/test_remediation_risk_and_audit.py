@@ -236,18 +236,8 @@ def test_remediation_exposure_handoff_read_route_is_additive(tmp_path) -> None:
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
     )
-    paths = {
-        (route.path, method)
-        for route in create_app(context).routes
-        for method in getattr(route, "methods", set())
-    }
+    paths = create_app(context).openapi()["paths"]
 
-    assert ("/api/v1/remediation/exposure-handoffs", "GET") in paths
-    assert (
-        "/api/v1/remediation-plans/{plan_id}/decisions",
-        "POST",
-    ) in paths
-    assert (
-        "/api/v1/remediation/plans/{plan_id}/decisions",
-        "POST",
-    ) not in paths
+    assert "get" in paths["/api/v1/remediation/exposure-handoffs"]
+    assert "post" in paths["/api/v1/remediation-plans/{plan_id}/decisions"]
+    assert "/api/v1/remediation/plans/{plan_id}/decisions" not in paths
