@@ -24,6 +24,7 @@ from api.runtime import (
     _execution_verifier,
     _hybrid_remediation_cache,
     _load_fabric_iq_adapter,
+    _load_network_service,
     _patch_execution_adapter,
     _ttl_cached_value,
     aiops_home,
@@ -65,6 +66,65 @@ def _clean_env(monkeypatch, tmp_path):
 def test_home_follows_aiops_home(monkeypatch, tmp_path):
     monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "custom"))
     assert aiops_home() == tmp_path / "custom"
+
+
+def test_managed_network_provider_analyzes_ingested_flow_observations(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+    from network.design import NetworkDesignPolicy
+
+    vnet_id = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Network/virtualNetworks/vnet-a"
+    )
+    subnet_id = f"{vnet_id}/subnets/default"
+    flow = {
+        "subject_id": vnet_id,
+        "object_id": subnet_id,
+        "predicate": "trafficObserved",
+        "attributes": {"dataSource": "traffic_analytics"},
+    }
+
+    class _PolicyStore:
+        def read_with_revision_or_raise(self):
+            return NetworkDesignPolicy(), 3
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_load_ontology_rows",
+        lambda: (
+            [
+                {
+                    "entity_type": "VNet",
+                    "resource_id": vnet_id,
+                    "name": "vnet-a",
+                    "payload_json": "{}",
+                },
+                {
+                    "entity_type": "Subnet",
+                    "resource_id": subnet_id,
+                    "name": "default",
+                    "payload_json": json.dumps({"vnetId": vnet_id}),
+                },
+            ],
+            [flow],
+            "2026-09-06T00:00:00Z",
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_network_policy_store",
+        lambda: _PolicyStore(),
+    )
+
+    service = _load_network_service()
+
+    assert service is not None
+    assert service.flow_log_provenance == {
+        "state": "analyzed",
+        "observed_flow_count": 1,
+    }
 
 
 def test_azure_patch_runtime_shares_credential_with_execution_verifier(

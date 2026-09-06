@@ -267,6 +267,7 @@ class NetworkIntelligenceService:
         observed_at: str = "",
         policy: NetworkDesignPolicy | None = None,
         policy_path: str | None = None,
+        flow_observations: Iterable[Mapping[str, Any]] | None = None,
     ) -> NetworkIntelligenceService:
         """Normalize raw ARG resources before loading the typed network view.
 
@@ -315,6 +316,7 @@ class NetworkIntelligenceService:
             policy_path=policy_path,
             semantic_relationships=semantic_relationships,
             observed_at=observed_at,
+            flow_observations=flow_observations,
         )
 
     @property

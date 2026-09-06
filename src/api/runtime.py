@@ -635,6 +635,23 @@ def _load_semantic_snapshot() -> SemanticEngine | None:
     )
 
 
+def _traffic_analysis_observations(
+    relationships: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], ...] | None:
+    observations = tuple(
+        dict(relationship)
+        for relationship in relationships
+        if (
+            str(relationship.get("predicate") or "").casefold()
+            == "trafficobserved"
+            and isinstance(relationship.get("attributes"), Mapping)
+            and relationship["attributes"].get("dataSource")
+            == "traffic_analytics"
+        )
+    )
+    return observations or None
+
+
 def _load_network_service() -> NetworkIntelligenceService | None:
     entities, relationships, freshness = _load_ontology_rows()
     if not entities:
@@ -645,6 +662,7 @@ def _load_network_service() -> NetworkIntelligenceService | None:
         observed_at=freshness,
         policy=policy,
         semantic_relationships=relationships,
+        flow_observations=_traffic_analysis_observations(relationships),
     )
 
 
@@ -1909,11 +1927,13 @@ def _load_fabric_iq_adapter() -> FabricIQToolAdapter | None:
 
 def _fabric_network_service(runtime: FabricRuntime) -> NetworkIntelligenceService:
     snapshot = runtime.service.semantic_snapshot()
+    relationships = snapshot.get("relationships", [])
     policy, _revision = _network_policy_store().read_with_revision_or_raise()
     return NetworkIntelligenceService.from_rows(
         snapshot["entities"],
         policy=policy,
-        semantic_relationships=snapshot.get("relationships", ()),
+        semantic_relationships=relationships,
+        flow_observations=_traffic_analysis_observations(relationships),
     )
 
 
@@ -2859,10 +2879,17 @@ def build_context() -> ApiContext:
                     observed_at = observation.observed_at
                     _hybrid_network_cache[cache_key] = (now, rows)
         policy, _revision = _network_policy_store().read_with_revision_or_raise()
+        managed_network = providers.get("network", optional=True)
+        flow_observations = (
+            managed_network.flow_observations
+            if isinstance(managed_network, NetworkIntelligenceService)
+            else None
+        )
         return NetworkIntelligenceService.from_arg_rows(
             rows,
             observed_at=observed_at,
             policy=policy,
+            flow_observations=flow_observations,
         )
 
     def hybrid_vulnerability(
