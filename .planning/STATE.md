@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 1
-status: executing
-stopped_at: Completed Phase 03.6 (03.6-01..03.6-06) — remediation workflow safety and operator guidance
-last_updated: "2026-09-05T01:34:12.791Z"
+current_plan: 12 complete (11/11 plans)
+status: verified
+stopped_at: Completed and verified Phase 12 — network topology integrity and scale
+last_updated: "2026-09-06T07:36:27Z"
 progress:
   total_phases: 17
-  completed_phases: 9
+  completed_phases: 10
   total_plans: 158
-  completed_plans: 88
+  completed_plans: 98
 current_phase_name: Network Topology Integrity and Scale
 ---
 
@@ -18,13 +18,14 @@ current_phase_name: Network Topology Integrity and Scale
 
 ## Current Status
 
-**Active Phase:** Phase 03.6 (Remediation Workflow Safety and Operator Guidance)
-**Wave:** 12<br>
-**Current Plan:** 1
-**Status:** Executing Phase 12
+**Active Phase:** Phase 12 (Network Topology Integrity and Scale)
+**Wave:** 9 complete<br>
+**Current Plan:** 12 complete (11/11 plans)
+**Status:** Verified — all five TOPO requirements satisfied
 
 ## Completed Plans (This Session)
 
+- **12-01..12-11** COMPLETE — Scope-safe topology projection, private-link/Fabric/Foundry semantics, bounded summary/detail contracts, policy refresh, truthful provenance, accessible graph/drawer/export UX, downstream compatibility, representative scale gates, and final review remediation
 - **03.1-01** COMPLETE — Wave 0 deterministic Exposure fixture, explicit backend/web pending gates, 100k correctness harness, and exhaustive fail-closed Fabric SQL readiness probe
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
 - **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
