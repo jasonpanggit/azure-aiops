@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from threading import Event
 
 import pytest
 
@@ -127,6 +129,58 @@ def test_known_newer_key_with_failed_body_serves_last_good_once():
     assert attempts == 2
     assert health["state"] == DEGRADED
     assert health["loaded"] is True
+    assert health["cache_key_stale"] is True
+    assert health["retry"]["attempts"] == 1
+
+
+def test_concurrent_changed_key_failure_has_one_nonblocking_refresh_owner():
+    attempts = 0
+    revision = 7
+    body_available = True
+    failed_load_started = Event()
+    release_failed_load = Event()
+    first = SnapshotProvider(
+        version="policy-v7",
+        freshness="2026-08-22T00:00:00Z",
+    )
+
+    def load():
+        nonlocal attempts
+        attempts += 1
+        if body_available:
+            return first
+        failed_load_started.set()
+        assert release_failed_load.wait(timeout=2)
+        raise OSError("policy body unavailable")
+
+    runtime = ProviderRuntime(
+        {
+            "network": ProviderSpec(
+                load,
+                cache_key=lambda: ("network-policy", revision),
+            )
+        },
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+        monotonic=lambda: 0.0,
+    )
+    runtime.refresh(force=True)
+    revision = 8
+    body_available = False
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        refresh_owner = pool.submit(runtime.get, "network")
+        assert failed_load_started.wait(timeout=1)
+        concurrent_reader = pool.submit(runtime.get, "network")
+        try:
+            retained = concurrent_reader.result(timeout=0.5)
+        finally:
+            release_failed_load.set()
+        owner_result = refresh_owner.result(timeout=1)
+
+    health = runtime.health(refresh=False)["providers"]["network"]
+    assert retained is first
+    assert owner_result is first
+    assert attempts == 2
     assert health["cache_key_stale"] is True
     assert health["retry"]["attempts"] == 1
 

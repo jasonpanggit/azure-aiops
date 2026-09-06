@@ -326,20 +326,33 @@ class ProviderRuntime:
                 and retry_at is not None
                 and now < retry_at
             )
+            if loaded and not unchanged:
+                state.cache_key_stale = True
         if not loaded or unchanged or retry_pending:
             return
 
-        with self._refresh_lock:
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        try:
             current = self._read_cache_key(name, spec)
             if current is _CACHE_KEY_UNAVAILABLE:
                 return
-            with self._state_lock:
-                if (
-                    name in self._instances
-                    and self._cache_keys.get(name) == current
-                ):
-                    return
             now = self.clock().astimezone(UTC)
+            with self._state_lock:
+                loaded = name in self._instances
+                unchanged = loaded and self._cache_keys.get(name) == current
+                state = self._states[name]
+                retry_at = _parse(state.next_retry_at)
+                retry_pending = (
+                    loaded
+                    and state.cache_key_stale
+                    and retry_at is not None
+                    and now < retry_at
+                )
+                if loaded and not unchanged:
+                    state.cache_key_stale = True
+            if not loaded or unchanged or retry_pending:
+                return
             self._refresh_provider(
                 name,
                 spec,
@@ -347,6 +360,8 @@ class ProviderRuntime:
                 now_iso=_iso(now),
                 force=True,
             )
+        finally:
+            self._refresh_lock.release()
 
     def get(self, name: str, *, optional: bool = False) -> Any:
         """Resolve the current provider instance from the last completed refresh.
@@ -379,7 +394,6 @@ class ProviderRuntime:
             state = self._states.get(name)
             serving_last_good = bool(
                 state is not None
-                and state.state == DEGRADED
                 and state.cache_key_stale
             )
             if instance is not None and (
