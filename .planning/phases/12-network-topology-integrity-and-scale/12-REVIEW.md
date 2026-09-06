@@ -1,8 +1,10 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-reviewed: 2026-09-06T04:45:57Z
+reviewed: 2026-09-06T05:29:34Z
 depth: deep
-files_reviewed: 45
+diff_base: d57f6137d747c344c56028d7e6211811927d0b43
+diff_head: 97114a32
+files_reviewed: 48
 files_reviewed_list:
   - src/api/providers.py
   - src/api/routers/network.py
@@ -17,9 +19,11 @@ files_reviewed_list:
   - src/network/topology.py
   - src/onboarding/graph_normalize.py
   - src/operations/tools.py
+  - src/storage/onelake_documents.py
   - tests/network_baseline.py
   - tests/network_scale_fixtures.py
   - tests/test_api_network.py
+  - tests/test_api_providers.py
   - tests/test_network_analysis.py
   - tests/test_network_downstream_contracts.py
   - tests/test_network_downstream_scope.py
@@ -27,6 +31,7 @@ files_reviewed_list:
   - tests/test_network_scale.py
   - tests/test_network_topology.py
   - tests/test_network_topology_links_regression.py
+  - tests/test_onelake_documents.py
   - tests/test_operations_tools.py
   - web/public/azure-icons/README.md
   - web/public/azure-icons/ai-services.svg
@@ -50,291 +55,318 @@ files_reviewed_list:
   - web/src/lib/types.ts
   - web/src/test/network-fixtures.ts
 findings:
-  critical: 8
-  warning: 2
+  critical: 5
+  warning: 6
   info: 0
-  total: 10
+  total: 11
 status: resolved
 resolution:
-  fixed: 10
+  fixed: 11
   skipped: 0
   verification: automated_passed_human_logic_review_recommended
 ---
 
-# Phase 12: Code Review Report
+# Phase 12: Independent Post-Fix Deep Code Review
 
-**Reviewed:** 2026-09-06T04:45:57Z
+**Reviewed:** 2026-09-06T05:29:34Z
 **Depth:** deep
-**Files Reviewed:** 45
+**Diff:** `d57f6137d747c344c56028d7e6211811927d0b43..97114a32`
+**Files Reviewed:** 48
 **Status:** resolved
 
 ## Summary
 
-The Phase 12 implementation was reviewed from the frozen phase base
-`d57f6137d747c344c56028d7e6211811927d0b43` through `HEAD`, including all
-changed production files, tests, API/client boundaries, scope propagation,
-topology state transitions, and drill-down/export call chains.
+This was a fresh review of the current Phase 12 HEAD after both review-fix
+series. I read the Phase 12 plans, summaries, research, UI/validation
+contracts, pre-phase review, both post-implementation review states, and
+`12-REVIEW-FIX.md`; then traced the current backend, API, agent, and browser
+call chains independently.
 
-The implementation closed many of the original defects, and this review
-identified ten additional high-confidence issues. All ten are now resolved;
-the most serious fixes address scope loss in follow-up requests, stale
-cross-scope client state, topology state being discarded during refetch, and
-incorrect empty/guard decisions for valid topology payloads.
+The first review's scope, stale-state, pagination, selection, and drill-down
+fixes remain present. Iteration 2 fixed all five blockers and six warnings
+identified by this independent review, with failing-first regressions and
+atomic commits for each finding.
 
-## Resolution Status
+Review-time focused verification completed:
 
-All eight blockers and both warnings were fixed on 2026-09-06. Because these
-findings concern request scope, asynchronous state, pagination, cache identity,
-and selection transitions, the fixes remain marked as requiring human logic
-verification even though the targeted and full automated suites pass.
+- Backend post-fix slice: **121 passed**
+- Web post-fix slice: **74 passed**
+- TypeScript: **passed**
+- Ruff over post-fix Python scope: **passed**
+- `git diff --check` over Phase 12 source: **passed**
+
+Before the iteration 2 fixes, the then-passing tests did not cover the failing
+estate shapes below. Executed probes against the reviewed HEAD reproduced:
+
+- **3,000 rendered graph nodes** from a summary response whose declared cap is
+  1,500, while the payload stayed just under 2 MB.
+- A 40-VNet mesh with all **820/820 resources returned**, but only **549/780
+  links** and **629/1,560 relationships**, while top-level
+  `coverage.truncated` incorrectly remained `false`.
+- A policy document body read failure replacing a last-known-good governed
+  policy with an empty default policy while provider health remained `ready`.
+- `projected_full_node_count=1,336` for a graph that the current resource
+  client renders as 1,330 nodes.
+
+## Iteration 2 Resolution Status
+
+All five blockers and six warnings were fixed on 2026-09-06. The topology
+identity, summary budgeting, coverage, provider lifecycle, CAS, scoping, and
+timestamp findings remain marked as requiring human logic verification even
+though all automated gates pass.
 
 | Finding | Status | Resolution evidence |
 |---|---|---|
-| CR-01 | Fixed — human verification recommended | `543c9be4`, `99c03223`; active scope now reaches hub/detail requests and scopes the module cache key. |
-| CR-02 | Fixed — human verification recommended | `dadf80ce`; `useApi` clears data on dependency changes while retaining it only for manual refetch. |
-| CR-03 | Fixed — human verification recommended | `0bc94e7c`; populated workspaces remain mounted and busy during refetch. |
-| CR-04 | Fixed — human verification recommended | `e910226a`; empty state now follows rendered graph nodes, including private-link-only graphs. |
-| CR-05 | Fixed — human verification recommended | `dca12bd2`; server publishes the exact de-duplicated full projection count and the guard consumes only that count. |
-| CR-06 | Fixed — human verification recommended | `c71bb46a`; scope changes reset page/page-size before requests and out-of-range pages cannot claim clean. |
-| CR-07 | Fixed — human verification recommended | `12d62358`; scope/detail changes and graph membership changes clear stale node or edge selection. |
-| CR-08 | Fixed — human verification recommended | `2a0ac8ba`, `43efb950`; all drill-down loads use one keyed, in-flight-deduplicated request path with stale-response rejection. |
-| WR-01 | Fixed — human verification recommended | `d44467c8`; failed gap refresh clears pending state and renders an explicit warning. |
-| WR-02 | Fixed | `0bc94e7c`; the real `TopologyWorkspace` now has a direct retained-canvas regression test. |
+| CR-01 | Fixed — human verification recommended | `211a116e`; full-node projection now follows resource-client identity and excludes non-rendered synthetic shared-service IDs. |
+| CR-02 | Fixed — human verification recommended | `c45f75ea`; summary budgeting covers resource, unresolved-peer, client-added, and subscription-group nodes under the 1,500-node and byte ceilings. |
+| CR-03 | Fixed — human verification recommended | `949bf4b1`, `93501a4b`; top-level and nested node/group/relationship coverage now disclose every truncated collection and retain valid shared-service metadata. |
+| CR-04 | Fixed — human verification recommended | `232cd91a`; provider construction uses one strict policy+revision read and preserves the last-good provider as degraded on body-read failure. |
+| CR-05 | Fixed — human verification recommended | `ae8cb456`; OneLake writes use ETag preconditions, local writes use an inter-process lock plus atomic replacement, and mutation reads fail closed. |
+| WR-01 | Fixed — human verification recommended | `ed8895e1`; scoped services filter flow observations by surviving endpoints. |
+| WR-02 | Fixed — human verification recommended | `4c08d698`; managed, Fabric, and hybrid constructors now pass ingested traffic-analysis observations to rule analysis. |
+| WR-03 | Fixed — human verification recommended | `578b0c21`; loader timestamps are parsed, UTC-normalized, and compared as instants while invalid values are ignored. |
+| WR-04 | Fixed | `a85715bb`, `1634f68e`; audit timestamps remain the real clock value and only colliding filenames gain a sequence suffix. |
+| WR-05 | Fixed | `fc79e096`; legacy shared-service IDs and consumers resolve through the folded identity index. |
+| WR-06 | Fixed | `04203af9`, `86b5bd05`, `7a802531`; incomplete-results warnings are polite named live regions and policy status tests remain unambiguous. |
 
-Post-fix automated checks:
+Post-fix verification:
 
-- Added backend regressions: **21 passed**
-- Phase-owned web regression slice: **74 passed**
-- Full backend suite: **2,695 passed, 33 skipped**
-- Full web suite: **339 passed, 15 pre-existing todo**
-- Ruff, TypeScript, ESLint, and `git diff --check`: passed
+- Targeted backend regression slice: **240 passed**
+- Targeted web regression slice: **129 passed**
+- G-1/G-2/G-3/G-6 modules: **19 passed**
+- G-4/G-5 and downstream contracts: **16 passed**
+- Downstream scope tracer: **4 passed**
+- Full backend suite: **2,708 passed, 33 skipped**
+- Full web suite: **340 passed, 15 todo**
+- TypeScript, ESLint, Ruff, and committed `git diff --check`: passed
 
-The original green tests did not invalidate the findings below; in particular,
-the page test replaced the real `TopologyWorkspace` with a permissive test
-double. The post-fix suite now includes direct real-workspace coverage.
+## Prior Review-Fix Verification
+
+| Prior finding | Independent HEAD result |
+|---|---|
+| Original CR-01 — drill-down scope loss | **Closed.** Scope is threaded through both clients, drawer calls, and cache keys. |
+| Original CR-02 — old-scope `useApi` records retained | **Closed.** Dependency changes clear data; manual refetch retains it. |
+| Original CR-03 — populated canvas unmounted on refetch | **Closed.** Loading takeover is limited to the no-data state. |
+| Original CR-04 — private-link-only topology shown empty | **Closed.** Empty state follows the rendered graph. |
+| Original CR-05 — exact full graph count | **Not closed.** See CR-01 below. |
+| Original CR-06 — pagination survives scope changes | **Closed.** Effective page and size synchronously fall back to page 0/default until state resets. |
+| Original CR-07 — stale topology selection | **Closed.** Scope/detail and graph-membership changes clear selection. |
+| Original CR-08 — duplicate/out-of-order drill-down | **Closed.** Requests are keyed, shared in flight, and stale completions are ignored. |
+| Original WR-01 — policy refresh never settles on failure | **Closed.** The error branch clears pending state and emits warning feedback. |
+| Original WR-02 — retained-canvas test mocked away the bug | **Closed.** Direct real-workspace coverage exists and passes. |
+| Later CR-01 — complete summary payload bounding | **Partial/regressed.** Byte bounding improved, but node and completeness contracts remain broken; see CR-02 and CR-03. |
+| Later CR-02 — recursively bounded agent lists | **Closed.** `_bound()` now recurses and the nested-list regression passes. |
+| Later CR-03 — revision read failure behavior | **Partial.** Cache-key failures retain the provider, but policy body failures still publish an empty policy; see CR-04. |
+| Later WR-09 — tests bound to production constants | **Closed.** The constants are imported and compared directly. |
 
 ## Narrative Findings (AI reviewer)
 
 ## Critical Issues
 
-### CR-01 [BLOCKER] [RESOLVED]: Drawer follow-up requests drop the active scope and can return broader-scope data
+### CR-01 [BLOCKER] [RESOLVED]: The “exact” projected full-node count does not match the client graph
 
-**File:** `web/src/lib/services.ts:945-962`
-**Also affected:** `web/src/components/network/TopologyDetailDrawer.tsx:460-466,555-580,749`
+**File:** `src/network/topology.py:218-233`
+**Also affected:** `web/src/lib/network-graph.ts:439-500`,
+`web/src/components/network/TopologyWorkspace.tsx:435-449`
 
-**Issue:** The primary topology, gaps, findings, and policy calls serialize the
-current `ScopeSelection`, but both follow-up clients omit it:
-`hubDependents(vnetId)` sends no query at all, and
-`topologyResourceDetails(resourceId, offset, limit)` sends only pagination.
-`TopologyDetailDrawer` calls both functions without access to the active scope.
-The backend therefore computes `ReadScope` from the caller's full grant rather
-than the scope selected on the page. A broadly-authorized operator viewing one
-subscription or business service can open a scoped node and receive dependent
-VNet details or rule collections from the broader grant.
+**Issue:** `projected_full_node_count()` adds every synthetic
+`shared_services[].resource_id`. The active client path for any payload with
+`resources` is `buildResourceTopologyGraph()`, which builds nodes from
+`topology.resources` and unresolved peers but does not add
+`topology.shared_services`. Those synthetic IDs therefore inflate the count.
 
-The module-level drill-down cache compounds this: `detailCacheKey()` contains
-only node ID and offset, so a response fetched under one scope can be reused
-after the user narrows scope.
+The committed small fixture reproduces the mismatch: the resource graph has
+1,330 nodes, while the server publishes 1,336 because it adds six
+non-rendered shared-service IDs. Around the 1,500 threshold this creates an
+unnecessary confirmation gate and means original CR-05's requested exact
+count is not closed.
 
-**Fix:**
+**Fix:** Define one server-side client-node identity projection matching
+`buildResourceTopologyGraph()` exactly, or render the synthetic shared-service
+nodes in that client path. Add a contract test comparing the published count
+to `buildTopologyGraph(payload).nodes.length`, including shared services and
+unresolved peers.
 
-```ts
-hubDependents: (vnetId: string, scope: ScopeSelection = {}) =>
-  apiRequest<HubDependents>(
-    `/network/topology/hubs/${encodeURIComponent(vnetId)}/dependents`,
-    { query: scopeToSearchParams(scope) },
-  ),
+### CR-02 [BLOCKER] [RESOLVED]: Summary responses can render twice the 1,500-node canvas cap
 
-topologyResourceDetails: (
-  resourceId: string,
-  scope: ScopeSelection,
-  offset = 0,
-  limit = 50,
-) => {
-  const query = scopeToSearchParams(scope);
-  query.set("offset", String(offset));
-  query.set("limit", String(limit));
-  // ...
-}
+**File:** `src/network/topology.py:397-554`
+**Also affected:** `web/src/lib/network-graph.ts:453-500`,
+`tests/test_network_scale.py:162-231`
+
+**Issue:** The summary cap applies only to `resources`. The client additionally
+materializes unresolved remote VNet nodes from `unresolved_peer_vnet_ids`,
+`unresolved_peers`, and returned links. Those node-producing collections are
+byte-bounded but not included in the node budget.
+
+An executed 1,600-VNet/1,600-unresolved-peering probe returned 1,500 resources,
+1,500 unresolved IDs, and 1,014 links. The client-equivalent ID union contains
+**3,000 nodes**, despite `SUMMARY_NODE_CAP == 1_500`; payload size was
+1,999,990 bytes. This bypasses the measured canvas safety ceiling on the
+default web path.
+
+The scale tests only assert `len(payload["resources"])`, not the number of
+nodes the browser builds.
+
+**Fix:** Budget a single de-duplicated set of all client node identities:
+resource IDs plus unresolved remote IDs introduced by returned links/peer
+collections. Stop adding unresolved entries once the union reaches
+`SUMMARY_NODE_CAP`. Change G-1/G-2 tests to build the client graph and assert
+its node count, with a production-shaped unresolved-peer fixture.
+
+### CR-03 [BLOCKER] [RESOLVED]: Summary top-level coverage claims completeness while edges are truncated
+
+**File:** `src/network/topology.py:322-340,492-554`
+**Also affected:** `web/src/components/network/TopologyWorkspace.tsx:480-543`
+
+**Issue:** Top-level `coverage.truncated` is computed only as
+`len(resources) < len(all_resources)`. The new bounding algorithm can truncate
+links, relationships, classifications, shared services, unresolved peers, or
+connection IDs while returning every resource. The UI's Partial badge and
+export's top-level completeness flag read only this false top-level value.
+
+Executed proof with a 40-VNet full mesh:
+
+```text
+resources:     820 / 820   (top-level truncated=false)
+links:         549 / 780   (truncated=true)
+relationships: 629 / 1560  (truncated=true)
+payload:       1,999,886 bytes
 ```
 
-Pass `scope` through `TopologyWorkspace` into the drawer and include a stable
-serialized scope key in `detailCacheKey`, or clear the cache whenever scope
-changes. Add client URL tests and an integration test using a globally
-authorized principal with a narrower requested scope.
+The canvas and exported audit artifact therefore present a materially
+incomplete topology as complete.
 
-### CR-02 [BLOCKER] [RESOLVED]: `useApi` retains prior-scope records while a new scope is loading
+**Fix:** Set top-level truncation to the OR of resource truncation and every
+collection's truncation. Publish graph-node and relationship totals with clear
+semantics, type the nested collection coverage in the client, and make the UI
+and export consume those authoritative totals. Add a sub-1,500-resource dense
+mesh test where only edge collections truncate.
 
-**File:** `web/src/hooks/useApi.ts:51-65`
-**Also affected:** `web/src/app/network/page.tsx:43-55,649-684`
+### CR-04 [BLOCKER] [RESOLVED]: A policy body read failure can replace the last-good provider with an empty policy
 
-**Issue:** Every dependency change executes
-`setState(prev => ({ ...prev, loading: true }))`, preserving the previous
-payload. That behavior is appropriate for a manual policy refetch, but the same
-path is used when `scope` changes. The gaps/rule-findings lists continue to
-render non-empty prior-scope rows while `loading` is true, and page metrics and
-evidence likewise continue to describe the old scope. A broad-to-narrow scope
-transition can therefore display out-of-scope records under the newly selected
-scope until the replacement request completes.
+**File:** `src/api/runtime.py:638-646`
+**Also affected:** `src/network/design.py:463-501`,
+`src/api/providers.py:207-265`,
+`src/storage/onelake_documents.py:89-145`
 
-**Fix:** Distinguish a manual refetch from a dependency/key change. Preserve
-data only for `refetchNonce` changes; clear data synchronously when a stable
-request key such as `JSON.stringify(scope)` changes. Add a test that switches
-from a broad scope to a narrow scope while the second request is pending and
-asserts that no old resource ID remains rendered.
+**Issue:** The revision cache key now uses strict `revision_or_raise()`, but
+`_load_network_service()` still loads the actual policy through fail-open
+`store.read()`. `OneLakeDocumentStore.read()` converts transport, parse, and
+HTTP failures to `{}`. If strict revision reads succeed while the separate
+policy body read fails, the cache key remains unchanged and
+`ProviderRuntime` publishes a newly built service using the empty default
+policy, marks it `ready`, and discards the governed last-good instance.
 
-### CR-03 [BLOCKER] [RESOLVED]: The real workspace unmounts the populated canvas during every refetch
+The executed probe changed policy description from `"governed"` to `""`,
+changed provider identity, and reported `state: ready`, with revision still 7.
+The added regression only tests a failing revision read, so this second read
+path is uncovered.
 
-**File:** `web/src/components/network/TopologyWorkspace.tsx:545-552`
-**Also affected:** `web/src/app/network/page.tsx:245-252`
+**Fix:** Load the policy body through a strict read for provider construction,
+so failure raises and `_refresh_provider()` retains the last-good instance as
+degraded. Prefer one atomic `read_with_revision_or_raise()` result so the
+policy and cache key cannot come from different reads. Add a test where
+`read_or_raise()` returns revision 7 but the policy body read fails.
 
-**Issue:** `useApi` deliberately retains `data` while setting `loading=true`,
-and the page passes both retained topology and the loading flag to
-`TopologyWorkspace`. The workspace nevertheless returns a loading
-`StatePanel` unconditionally whenever `loading` is true. This removes the
-canvas during policy refresh and detail-level changes. It also destroys
-`TopologyGraph` and its component-local `positionsRef`, so the promised
-incremental Summary/Full transition cannot preserve positions.
+### CR-05 [BLOCKER] [RESOLVED]: OneLake “compare-and-swap” is not atomic across replicas
 
-The passing page test does not exercise this path because
-`web/src/app/network/page.test.tsx:38-63` mocks `TopologyWorkspace` with a
-component that ignores `loading`.
+**File:** `src/storage/onelake_documents.py:151-178`
 
-**Fix:**
+**Issue:** `write()` protects only threads in one process. Two replicas can
+both read revision N, both pass the comparison, and both call
+`upload_data(..., overwrite=True)` with revision N+1. The second upload silently
+clobbers the first. No ETag, lease, conditional request, or atomic create is
+used, despite the docstring claiming cross-replica safety. A transient
+fail-open read can also return `{}`, causing the same path to compare against
+revision 0 before overwriting.
 
-```tsx
-if (loading && !topology) {
-  return <StatePanel ... />;
-}
-```
+This is a lost-update/data-integrity risk for network policy and every other
+document using this store.
 
-Keep the populated workspace mounted with `aria-busy="true"` during refresh,
-and render any refresh indicator inside it. Add an integration test using the
-real `TopologyWorkspace` and assert that the canvas remains mounted while a
-refetch promise is pending.
-
-### CR-04 [BLOCKER] [RESOLVED]: Valid private-link-only topologies are rendered as empty
-
-**File:** `web/src/components/network/TopologyWorkspace.tsx:557-563`
-
-**Issue:** The empty-state gate checks only
-`hubs + spokes + isolated === 0`. Phase 12 explicitly added standalone
-private-link candidates to `topology.resources`; a scope containing Fabric,
-Azure AI Services, or another private-link workload but no VNet has valid graph
-nodes and findings, yet the workspace returns “No observed network topology”
-before rendering them. Backend projection tests cover private-link-only
-snapshots, but the workspace test fixture always includes VNet classifications.
-
-**Fix:** Base emptiness on the graph actually rendered:
-
-```tsx
-if (!topology || !renderedGraph || renderedGraph.nodes.length === 0) {
-  return <StatePanel ... />;
-}
-```
-
-Add a workspace test with empty hub/spoke/isolated arrays and one
-`PrivateLinkResource`/`AIFoundryAccount` resource.
-
-### CR-05 [BLOCKER] [RESOLVED]: The 1,500-node full-detail guard uses a non-equivalent count and can be bypassed
-
-**File:** `web/src/components/network/TopologyWorkspace.tsx:402-423`
-**Also affected:** `src/network/topology.py:217-268`
-
-**Issue:** The guard sums `summary.resource_counts`, which counts snapshot
-records, not projected topology nodes. `_topology_resources()` additionally
-creates attached-workload nodes for private-endpoint and load-balancer targets.
-Those nodes are absent from `NetworkSnapshot.counts()`. A reproduced snapshot
-with 800 private endpoints and unique targets reports a count sum of **802**,
-while both summary `coverage.total` and the full graph contain **1,602** nodes.
-The UI therefore fetches full detail without the mandatory confirmation even
-though the graph exceeds the measured 1,500-node ceiling.
-
-**Fix:** Have the server publish an exact `projected_full_node_count` computed
-from the same deduplicated projection identity rules, and use only that value
-for the guard. Do not infer a full graph count by summing heterogeneous
-collection counts. Add a regression fixture with many unique attached targets.
-
-### CR-06 [BLOCKER] [RESOLVED]: Pagination survives scope changes and can falsely report a non-empty scope as clean
-
-**File:** `web/src/app/network/page.tsx:27-53,299-324,649-659`
-
-**Issue:** `gapPage` and `findingPage` reset only when page size changes, not
-when `scope` changes. If an operator is on page 4 and switches to a scope with
-fewer than 301 records, the new request still uses the old offset. The server
-returns an empty page with a positive total, but `FindingList` immediately
-renders “No inspection gaps detected” or “No rule findings detected” whenever
-`items.length === 0`, before rendering pagination. This is a false clean-state
-claim.
-
-**Fix:** Reset both page indices when a stable scope key changes, and treat
-`items.length === 0 && pagination.total > 0` as an out-of-range page that must
-return to page zero—not as a genuinely empty collection.
-
-### CR-07 [BLOCKER] [RESOLVED]: Selection is not cleared when a new topology no longer contains the selected element
-
-**File:** `web/src/components/network/TopologyWorkspace.tsx:259,333-343,373-400,720-745`
-
-**Issue:** Selection is cleared only when an active text filter hides it.
-After a scope change or a Full→Summary transition, a selected rule/resource can
-disappear from `renderedGraph`, but the old `selection` object remains and the
-drawer continues rendering that stale node. On a scope change this can expose
-facts from the previous broader scope after the new topology has loaded; on a
-detail change it leaves the drawer describing a node absent from the canvas.
-
-**Fix:** Add an effect keyed by `visibleNodeIds` and the rendered edge IDs that
-clears any selected node/edge no longer present, independent of filter mode.
-Also clear selection immediately when the scope key changes.
-
-### CR-08 [BLOCKER] [RESOLVED]: Drill-down page changes can issue duplicate requests and render the wrong page
-
-**File:** `web/src/components/network/TopologyDetailDrawer.tsx:535-595`
-
-**Issue:** Initial loading uses the guarded `load()` path, but
-`changePage()` bypasses it. It does not set `loading`, has no in-flight
-deduplication, and commits every response without checking that its offset is
-still current. While an uncached page request is pending, the component renders
-the ordinary “Load rules” button again; pressing it starts a duplicate request.
-Rapid Previous/Next navigation can also resolve out of order and display rows
-from one offset beside pagination state for another.
-
-**Fix:** Route initial load, Retry, and page changes through one request
-function keyed by `{nodeId, offset, scope}`. Track an in-flight promise/request
-token, set `loading` for page changes, and ignore a response unless its key
-still matches the current key.
+**Fix:** Use OneLake/ADLS conditional writes with the ETag from the read
+(`If-Match`/match condition), or a supported lease/transaction mechanism.
+Treat read failures as errors on mutation paths. For local storage, use an
+inter-process lock plus atomic temporary-file replacement. Add a two-writer
+test whose second stale write is rejected at the storage boundary.
 
 ## Warnings
 
-### WR-01 [WARNING] [RESOLVED]: Policy refresh state never settles when the gaps refetch fails
+### WR-01 [WARNING] [RESOLVED]: Scoped services retain estate-wide flow observations
 
-**File:** `web/src/app/network/page.tsx:73-110`
+**File:** `src/network/service.py:397-405`
 
-**Issue:** A successful policy mutation sets `pendingPolicyRefresh`, but the
-completion effect returns whenever `!gaps.data`. `useApi` sets `data: null` on
-a failed refetch, so the pending state is never cleared and the policy panel
-continues to display “Refreshing derived analysis…” indefinitely.
+**Issue:** Snapshot collections and semantic relationships are scoped, but
+`flow_observations=self.flow_observations` is passed through unchanged.
+`flow_log_provenance.observed_flow_count` can therefore disclose and report an
+estate-wide count in a subscription-scoped response once flow ingestion is
+wired.
 
-**Fix:** Handle `gaps.error` explicitly: clear `pendingPolicyRefresh` and render
-a warning that the policy was saved but derived analysis could not be
-refreshed. Include `gaps.error` in the effect dependencies.
+**Fix:** Scope flow observations to surviving endpoints/resources using the
+same endpoint-membership rule as semantic relationships, or omit provenance
+when an observation cannot be attributed safely.
 
-### WR-02 [WARNING] [RESOLVED]: The retained-canvas regression test replaces the component that contains the bug
+### WR-02 [WARNING] [RESOLVED]: The advertised `analyzed` flow-log state is unreachable in production
 
-**File:** `web/src/app/network/page.test.tsx:38-63,529-552`
+**File:** `src/api/runtime.py:638-646,2855-2862`
 
-**Issue:** The test titled “retains the populated topology ... while a
-policy-triggered refetch is in flight” mocks `TopologyWorkspace` with a test
-double that ignores its `loading` prop. It therefore passes while the real
-component returns a loading `StatePanel` and unmounts the graph. This is a
-false-positive regression gate for a release-critical interaction.
+**Issue:** Production constructors do not pass `flow_observations`; the only
+uses are internal to `NetworkIntelligenceService`. Consequently the UI's
+three-state contract has an unreachable `analyzed` branch.
 
-**Fix:** Keep unit tests for page request orchestration, but add a non-mocked
-integration test for `NetworkPage` + `TopologyWorkspace`, or directly rerender
-the real workspace with `{topology, loading: true}` and assert that the graph
-and current metric state remain present.
+**Fix:** Wire the flow-log ingestion result into both managed and hybrid
+network constructors, or remove/defer the state until a producer exists.
+
+### WR-03 [WARNING] [RESOLVED]: Unvalidated observation timestamps can poison API evidence
+
+**File:** `src/network/loader.py:212-228`
+
+**Issue:** External `observed_at` is accepted as any string and combined with
+row timestamps using lexicographic `max`. An invalid value such as
+`"not-a-date"` can win and is then emitted as evidence freshness. The web
+degrades it to unknown, but API, agent, and MCP consumers still receive the
+invalid provenance value.
+
+**Fix:** Parse and normalize timestamps at the loader boundary; reject or
+ignore invalid values and compare parsed datetimes rather than raw strings.
+
+### WR-04 [WARNING] [RESOLVED]: Rapid exports fabricate future `exported_at` timestamps
+
+**File:** `web/src/components/network/TopologyGraph.tsx:379-401`
+
+**Issue:** Filename collision avoidance increments the timestamp itself.
+Multiple exports in one second therefore claim to have been exported in future
+seconds, corrupting the audit provenance field.
+
+**Fix:** Keep `exported_at` equal to the real clock value and add a filename-only
+sequence suffix (for example `-2`, `-3`) for collisions.
+
+### WR-05 [WARNING] [RESOLVED]: Legacy shared-service edges still use case-sensitive IDs
+
+**File:** `web/src/lib/network-graph.ts:346-358,401-408`
+
+**Issue:** In the legacy no-`resources` path, shared services are added after
+the folded-ID index is built, and consumer lookup uses `nodes.has(consumerId)`.
+Mixed ARM casing silently drops service-to-consumer edges.
+
+**Fix:** Register shared-service IDs in the folded index and resolve consumer
+IDs through `resolveNodeId()` before creating edges. Add a mixed-case legacy
+payload regression.
+
+### WR-06 [WARNING] [RESOLVED]: The dynamic incomplete-results warning is not announced
+
+**File:** `web/src/app/network/page.tsx:264-273`
+
+**Issue:** The safety-critical callout appears after bounded loaders resolve
+but has neither `role="status"` nor an `aria-live` region, unlike the workspace
+coverage callouts. Screen-reader users may never be told that the displayed
+security findings are incomplete.
+
+**Fix:** Add `role="status"` (or an appropriate polite live region) and retain
+the visible copy.
 
 ---
 
-_Reviewed: 2026-09-06T04:45:57Z_
+_Reviewed: 2026-09-06T05:29:34Z_
 _Reviewer: the agent (gsd-code-reviewer)_
 _Depth: deep_
+_Scope: read-only; no source or tracking files modified_
