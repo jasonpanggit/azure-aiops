@@ -29,7 +29,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from operations.autonomous_investigation import ledger_store, run_context_investigation
 from operations.foundry_agent import FoundryAgentError
 from operations.investigation import (
-    canonicalize_investigation,
     conversation_store,
     run_investigation,
     tool_catalog,
