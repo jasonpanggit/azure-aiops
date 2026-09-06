@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from fabric.dataset_mapper import (
     ONTOLOGY_RELATIONSHIP_TYPES,
@@ -11,7 +13,21 @@ from fabric.dataset_mapper import (
     is_allowed_relationship_triple,
 )
 from ontology.ontology_validator import OntologyValidator
-from ontology_discovery.policy import ProposalPolicy
+from ontology_discovery.contracts import (
+    AdmissionEvaluationSnapshot,
+    proposal_content_id,
+)
+from ontology_discovery.coordinator import ProposalPolicyCoordinator
+from ontology_discovery.policy import (
+    ProposalPolicy,
+    evaluate_release_eligibility,
+)
+from ontology_discovery.store import (
+    OntologyRunStore,
+    PairReleaseDisabled,
+    ProposalReviewConflict,
+    ReviewerUnauthorized,
+)
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 SCOPE = "tenant-1/sub-1"
@@ -293,3 +309,282 @@ def test_evidence_past_source_freshness_deadline_is_stale() -> None:
 
     assert decision.admitted is False
     assert "stale_evidence" in decision.reasons
+
+
+def _proposal_identity(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "proposal": _proposal(),
+        "scope": SCOPE,
+        "source_generation_id": GENERATION,
+        "schema_version": "proposal-schema-v1",
+        "policy_version": "proposal-policy-v1",
+    }
+    values.update(overrides)
+    return values
+
+
+def _eligible_snapshot(
+    *,
+    subject_type: str = "VirtualMachine",
+    predicate: str = "member_of",
+    object_type: str = "Application",
+    evaluated_at: datetime = NOW,
+    shadow_days: int = 30,
+    expert_count: int = 200,
+    critical_failures: tuple[str, ...] = (),
+    escalation_recall: float = 1.0,
+    recall: float = 0.9,
+    precision_true_positives: int = 200,
+    precision_total: int = 200,
+    approvals: tuple[str, ...] = (
+        "ontology_steward",
+        "security_owner",
+        "fabric_governance_steward",
+    ),
+    ai_spec_gates_passed: bool = True,
+) -> AdmissionEvaluationSnapshot:
+    return AdmissionEvaluationSnapshot.create(
+        subject_type=subject_type,
+        predicate=predicate,
+        object_type=object_type,
+        shadow_started_at=evaluated_at - timedelta(days=shadow_days),
+        evaluated_at=evaluated_at,
+        expert_adjudicated_eligible_count=expert_count,
+        critical_failures=critical_failures,
+        escalation_recall=escalation_recall,
+        recall=recall,
+        precision_true_positives=precision_true_positives,
+        precision_total=precision_total,
+        approvals=approvals,
+        ai_spec_gates_passed=ai_spec_gates_passed,
+    )
+
+
+def test_proposal_identity_covers_scope_generation_triple_evidence_and_versions() -> None:
+    baseline = _proposal_identity()
+    proposal_id = proposal_content_id(**baseline)
+    assert proposal_id == proposal_content_id(
+        **{
+            **baseline,
+            "proposal": {
+                **_proposal(),
+                "evidence_refs": ["evidence-2", "evidence-1"],
+            },
+        }
+    )
+
+    mutations = [
+        {"scope": "tenant-1/sub-2"},
+        {"source_generation_id": "generation-2"},
+        {"proposal": _proposal(predicate="hosted_on")},
+        {"proposal": _proposal(evidence_refs=["evidence-1", "evidence-3"])},
+        {"schema_version": "proposal-schema-v2"},
+        {"policy_version": "proposal-policy-v2"},
+    ]
+    assert all(
+        proposal_content_id(**{**baseline, **mutation}) != proposal_id
+        for mutation in mutations
+    )
+
+
+def test_review_cas_is_authorized_immutable_and_restart_durable(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ontology-runs.json"
+    store = OntologyRunStore(path)
+    proposal, created = store.save_proposal(**_proposal_identity(), now=NOW)
+    assert created is True
+
+    with pytest.raises(ReviewerUnauthorized):
+        store.review_proposal(
+            proposal["proposal_id"],
+            action="accept",
+            expected_revision=0,
+            actor="reader@example.com",
+            actor_roles={"reader"},
+            reason="not authorized",
+            now=NOW,
+        )
+
+    accepted = store.review_proposal(
+        proposal["proposal_id"],
+        action="accept",
+        expected_revision=0,
+        actor="steward@example.com",
+        actor_roles={"ontology_steward"},
+        reason="Evidence reproduced.",
+        now=NOW,
+    )
+    with pytest.raises(ProposalReviewConflict):
+        store.review_proposal(
+            proposal["proposal_id"],
+            action="reject",
+            expected_revision=0,
+            actor="steward@example.com",
+            actor_roles={"ontology_steward"},
+            reason="stale decision",
+            now=NOW,
+        )
+
+    restarted = OntologyRunStore(path)
+    restored = restarted.get_review(proposal["proposal_id"])
+    assert restored == accepted
+    assert restored["status"] == "accepted"
+    assert restored["events"][0] == {
+        "revision": 1,
+        "action": "accept",
+        "status": "accepted",
+        "actor": "steward@example.com",
+        "actor_roles": ["ontology_steward"],
+        "reason": "Evidence reproduced.",
+        "recorded_at": NOW.isoformat(),
+    }
+
+    reversed_review = restarted.review_proposal(
+        proposal["proposal_id"],
+        action="reverse",
+        expected_revision=1,
+        actor="steward@example.com",
+        actor_roles={"ontology_steward"},
+        reason="New contradictory evidence.",
+        now=NOW + timedelta(seconds=1),
+    )
+    assert reversed_review["status"] == "pending"
+    assert accepted["status"] == "accepted"
+    assert accepted["events"][0]["reason"] == "Evidence reproduced."
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "reason"),
+    [
+        (_eligible_snapshot(shadow_days=29), "shadow_days"),
+        (_eligible_snapshot(expert_count=199), "expert_adjudications"),
+        (_eligible_snapshot(critical_failures=("scope_disclosure",)), "critical_failures"),
+        (_eligible_snapshot(escalation_recall=0.99), "escalation_recall"),
+        (_eligible_snapshot(recall=0.89), "recall"),
+        (
+            _eligible_snapshot(
+                precision_true_positives=199,
+                precision_total=200,
+            ),
+            "precision_wilson_lower_bound",
+        ),
+        (
+            _eligible_snapshot(
+                approvals=("ontology_steward", "security_owner"),
+            ),
+            "required_approvals",
+        ),
+        (_eligible_snapshot(ai_spec_gates_passed=False), "ai_spec_gates"),
+    ],
+)
+def test_pair_release_eligibility_requires_every_exact_gate(
+    snapshot: AdmissionEvaluationSnapshot,
+    reason: str,
+) -> None:
+    result = evaluate_release_eligibility(snapshot)
+
+    assert result.status == "BLOCKED/PENDING"
+    assert reason in result.reasons
+
+
+def test_release_snapshot_identity_is_immutable_and_content_addressed() -> None:
+    snapshot = _eligible_snapshot()
+    assert evaluate_release_eligibility(snapshot).status == "ELIGIBLE"
+    with pytest.raises(ValidationError, match="snapshot identity"):
+        AdmissionEvaluationSnapshot.model_validate(
+            {
+                **snapshot.model_dump(mode="python"),
+                "expert_adjudicated_eligible_count": 201,
+            }
+        )
+
+
+def test_pair_release_is_disabled_by_default_and_scoped_revocation_is_immediate(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ontology-runs.json"
+    snapshot = _eligible_snapshot()
+    production = OntologyRunStore(path)
+    pending = production.evaluate_admission_release(
+        snapshot,
+        actor="release-evaluator",
+        now=NOW,
+    )
+    assert pending["status"] == "BLOCKED/PENDING"
+    assert pending["eligible"] is True
+    with pytest.raises(PairReleaseDisabled):
+        production.activate_admission_release(
+            snapshot.snapshot_id,
+            expected_revision=0,
+            actor="release-owner",
+            now=NOW,
+        )
+
+    test_store = OntologyRunStore(path, allow_pair_release_testing=True)
+    enabled = test_store.activate_admission_release(
+        snapshot.snapshot_id,
+        expected_revision=0,
+        actor="release-owner",
+        now=NOW,
+    )
+    second_snapshot = _eligible_snapshot(
+        subject_type="Application",
+        predicate="depends_on",
+        object_type="Application",
+    )
+    second = test_store.evaluate_admission_release(
+        second_snapshot,
+        actor="release-evaluator",
+        now=NOW,
+    )
+    second_enabled = test_store.activate_admission_release(
+        second_snapshot.snapshot_id,
+        expected_revision=second["revision"],
+        actor="release-owner",
+        now=NOW,
+    )
+
+    revoked = test_store.revoke_admission_release(
+        enabled["pair_key"],
+        expected_revision=enabled["revision"],
+        actor="security-owner",
+        reason="critical_event",
+        now=NOW + timedelta(seconds=1),
+    )
+    releases = {
+        item["pair_key"]: item for item in test_store.list_admission_releases()
+    }
+    assert revoked["status"] == "REVOKED"
+    assert releases[second_enabled["pair_key"]]["status"] == "ENABLED"
+
+
+def test_coordinator_persists_accepted_review_but_returns_shadow_candidate(
+    tmp_path: Path,
+) -> None:
+    store = OntologyRunStore(tmp_path / "ontology-runs.json")
+    proposal, _ = store.save_proposal(**_proposal_identity(), now=NOW)
+    store.review_proposal(
+        proposal["proposal_id"],
+        action="accept",
+        expected_revision=0,
+        actor="steward@example.com",
+        actor_roles={"ontology_steward"},
+        reason="Accepted for shadow evidence only.",
+        now=NOW,
+    )
+    deterministic = _relationship(source="deterministic")
+    coordinator = ProposalPolicyCoordinator(
+        store=OntologyRunStore(tmp_path / "ontology-runs.json"),
+        policy=ProposalPolicy(shadow_mode=True, now=lambda: NOW),
+    )
+
+    result = coordinator.build_candidate(
+        proposals=[proposal],
+        deterministic_edges=[deterministic],
+        **_policy_inputs(),
+    )
+
+    assert result["candidate"] == [deterministic]
+    assert result["decisions"][0].review_status == "accepted"
+    assert result["decisions"][0].reasons == ("shadow_review_only",)
