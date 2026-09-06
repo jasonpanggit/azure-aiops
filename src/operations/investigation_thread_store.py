@@ -54,6 +54,7 @@ THREAD_MISS_REASONS = (
     "scope_widened",
     "expired_idle",
     "expired_absolute",
+    "storage_unavailable",
 )
 
 
@@ -81,6 +82,13 @@ class ThreadRevisionConflict(RuntimeError):
     def __init__(self, *, current_revision: int) -> None:
         super().__init__("investigation thread revision conflict")
         self.current_revision = current_revision
+
+
+class ThreadStoreUnavailable(ThreadNotFound):
+    """Configured durable continuity cannot currently be read or committed."""
+
+    def __init__(self) -> None:
+        super().__init__(reason="storage_unavailable")
 
 
 class ThreadDocumentStore(Protocol):
@@ -120,7 +128,7 @@ def legacy_binding_document_name(session_id: str, principal_subject: str) -> str
     return f"thread-bindings/{hashlib.sha256(identity).hexdigest()}.json"
 
 
-def _scope_within(requested: Scope, allowed: Scope) -> bool:
+def scope_within(requested: Scope, allowed: Scope) -> bool:
     if allowed.is_unrestricted():
         return True
     for dimension, allowed_values in allowed.dimensions.items():
@@ -313,13 +321,13 @@ class InvestigationThreadStore:
             raise ThreadRevisionConflict(
                 current_revision=current.revision if current is not None else record.revision
             ) from None
-        except Exception:  # Degrade, never fail the turn.
+        except Exception:
+            self._threads.pop(record.thread_id, None)
             _LOGGER.warning(
-                "failed to persist investigation thread; continuity is memory-only",
+                "failed to persist investigation thread",
                 exc_info=True,
             )
-            record.durability = DURABILITY_MEMORY_ONLY
-            return
+            raise ThreadStoreUnavailable() from None
         record.storage_revision = expected_revision + 1
         record.durability = DURABILITY_DURABLE
 
@@ -348,9 +356,9 @@ class InvestigationThreadStore:
             return None
         try:
             payload = self.documents.read(thread_document_name(thread_id))
-        except Exception:  # An unreadable thread is simply not found.
+        except Exception:
             _LOGGER.warning("failed to read investigation thread", exc_info=True)
-            return None
+            raise ThreadStoreUnavailable() from None
         if not payload:
             return None
         # The document store reads a missing *or corrupt* document as {}. For
@@ -436,7 +444,7 @@ class InvestigationThreadStore:
             raise ThreadNotFound(reason=expiry)
         if record.principal_subject != principal_subject:
             raise ThreadNotFound(reason="principal_mismatch")
-        if not _scope_within(current_scope, record.scope):
+        if not scope_within(current_scope, record.scope):
             raise ThreadNotFound(reason="scope_widened")
         return record
 
@@ -571,7 +579,7 @@ class InvestigationThreadStore:
     ) -> list[dict[str, Any]]:
         history: list[dict[str, Any]] = []
         for turn in record.turns:
-            if _scope_within(turn.scope, current_scope):
+            if scope_within(turn.scope, current_scope):
                 payload = deepcopy(turn.payload)
                 payload["observation_status"] = turn.observation_status
                 history.append(payload)
@@ -746,8 +754,10 @@ __all__ = [
     "ThreadDocumentStore",
     "ThreadNotFound",
     "ThreadRevisionConflict",
+    "ThreadStoreUnavailable",
     "configure_thread_store",
     "investigation_thread_store",
     "legacy_binding_document_name",
+    "scope_within",
     "thread_document_name",
 ]

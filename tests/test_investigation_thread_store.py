@@ -29,6 +29,7 @@ from operations.investigation_thread_store import (
     InvestigationThreadStore,
     ThreadNotFound,
     ThreadRevisionConflict,
+    ThreadStoreUnavailable,
     investigation_thread_store,
     legacy_binding_document_name,
     thread_document_name,
@@ -146,27 +147,37 @@ def test_durability_outcome_is_explicit() -> None:
     assert durable.create("operator-a", SUB_A).durability == "durable"
 
 
-def test_storage_outage_does_not_fail_the_turn() -> None:
+def test_configured_storage_write_outage_fails_closed() -> None:
     documents = FakeDocuments()
     documents.fail_writes = True
     store = InvestigationThreadStore(documents=documents)
 
+    with pytest.raises(ThreadStoreUnavailable):
+        store.create("operator-a", SUB_A)
+
+
+def test_failed_durable_append_discards_uncommitted_mutation() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
     thread = store.create("operator-a", SUB_A)
-    updated = store.append(thread.thread_id, "operator-a", SUB_A, _turn())
+    documents.fail_writes = True
 
-    assert updated.revision == 1
-    assert updated.durability == "memory_only"
-    assert store.history(thread.thread_id, "operator-a", SUB_A)
+    with pytest.raises(ThreadStoreUnavailable):
+        store.append(thread.thread_id, "operator-a", SUB_A, _turn())
+
+    documents.fail_writes = False
+    restarted = InvestigationThreadStore(documents=documents)
+    assert restarted.history(thread.thread_id, "operator-a", SUB_A) == []
 
 
-def test_storage_read_outage_is_not_found_rather_than_an_error() -> None:
+def test_configured_storage_read_outage_is_controlled_unavailable() -> None:
     documents = FakeDocuments()
     store = InvestigationThreadStore(documents=documents)
     thread = store.create("operator-a", SUB_A)
 
     documents.fail_reads = True
     restarted = InvestigationThreadStore(documents=documents)
-    with pytest.raises(ThreadNotFound):
+    with pytest.raises(ThreadStoreUnavailable):
         restarted.authorize(thread.thread_id, "operator-a", SUB_A)
 
 

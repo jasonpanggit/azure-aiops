@@ -274,6 +274,7 @@ def _create_investigation_canonical(
             "fallback_reason": result.fallback_reason,
             "coverage": result.coverage.model_dump(mode="json"),
             "uncertainty": list(result.uncertainty),
+            "executive": result.synthesis,
             "summary": (
                 f"Canonical investigation produced {evidence_backed_count} "
                 "evidence-backed finding(s)."

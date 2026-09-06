@@ -348,6 +348,7 @@ class OrchestrationResult(ContractModel):
     citations: list[Citation] = Field(default_factory=list, max_length=256)
     thread_id: str = Field(pattern=r"^thr-[a-f0-9]{32}$")
     thread_revision: int = Field(ge=1)
+    synthesis: dict[str, Any] | None = None
     mutation_authorized: Literal[False] = False
 
 

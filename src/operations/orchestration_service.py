@@ -28,6 +28,7 @@ from operations.investigation_thread_store import (
     ThreadNotFound,
     ThreadRevisionConflict,
     investigation_thread_store,
+    scope_within,
 )
 from operations.maf_orchestrator import (
     build_deterministic_fallback,
@@ -536,7 +537,7 @@ class OrchestrationService:
         synthesis = self._synthesize(
             request.question,
             tool_results,
-            retained_evidence=self._retained_evidence(thread),
+            retained_evidence=self._retained_evidence(thread, requested_scope),
         )
         if synthesis.warning:
             uncertainty = [*uncertainty, synthesis.warning]
@@ -555,6 +556,13 @@ class OrchestrationService:
             citations=self._deduplicate_citations(citations),
             thread_id=thread.thread_id,
             thread_revision=thread.revision + 1,
+            synthesis={
+                "status": synthesis.status,
+                "reason": synthesis.reason,
+                "domain_count": synthesis.domain_count,
+                "claims": synthesis.claims,
+                "warning": synthesis.warning,
+            },
         )
         return OrchestrationTurn(
             result=self._record_turn(
@@ -570,7 +578,10 @@ class OrchestrationService:
     # -- conditional executive synthesis ----------------------------------
 
     @staticmethod
-    def _retained_evidence(thread: InvestigationThread) -> list[dict[str, Any]]:
+    def _retained_evidence(
+        thread: InvestigationThread,
+        current_scope: Scope,
+    ) -> list[dict[str, Any]]:
         """Project the thread's retained citations for synthesis reconciliation.
 
         Only identity, source, status, and observation status travel: carried
@@ -580,6 +591,8 @@ class OrchestrationService:
 
         retained: list[dict[str, Any]] = []
         for turn in thread.turns:
+            if not scope_within(turn.scope, current_scope):
+                continue
             for citation in turn.payload.get("citations") or []:
                 if not isinstance(citation, Mapping):
                     continue
@@ -629,6 +642,11 @@ class OrchestrationService:
         evidence_refs = {
             ref for finding in findings for ref in finding["evidence_refs"]
         }
+        evidence_refs.update(
+            str(item.get("evidence_id") or "")
+            for item in retained_evidence
+            if item.get("evidence_id")
+        )
         try:
             answer = self.executive_agent.answer(
                 question=question,

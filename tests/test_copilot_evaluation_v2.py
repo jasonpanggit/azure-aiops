@@ -25,7 +25,11 @@ from operations.foundry_agent import (
     normalize_cited_findings,
     validate_executive_synthesis,
 )
-from operations.investigation_thread_store import InvestigationThreadStore
+from operations.investigation_thread_store import (
+    InvestigationThread,
+    InvestigationThreadStore,
+    InvestigationThreadTurn,
+)
 from operations.orchestration_contract import (
     CandidatePlan,
     EvidenceSnapshotV2,
@@ -212,6 +216,78 @@ def test_synthesis_input_is_only_findings_and_retained_evidence() -> None:
     assert "prompt" not in serialized
     assert "rationale" not in serialized
     assert payload["retained_evidence"][0]["observation_status"] == "historical"
+
+
+def test_retained_evidence_is_filtered_by_current_scope() -> None:
+    thread = InvestigationThread(
+        thread_id="thr-" + "a" * 32,
+        principal_subject="operator-a",
+        scope=Scope({"subscription": ["sub-a"]}),
+        scope_fingerprint="fingerprint",
+        turns=[
+            InvestigationThreadTurn(
+                scope=Scope({"subscription": ["sub-a", "sub-b"]}),
+                payload={
+                    "citations": [
+                        {"citation_id": "wide", "source": "inventory", "status": "ok"}
+                    ]
+                },
+            ),
+            InvestigationThreadTurn(
+                scope=Scope({"subscription": ["sub-a"]}),
+                payload={
+                    "citations": [
+                        {"citation_id": "narrow", "source": "inventory", "status": "ok"}
+                    ]
+                },
+            ),
+        ],
+    )
+
+    retained = OrchestrationService._retained_evidence(
+        thread,
+        Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert [item["evidence_id"] for item in retained] == ["narrow"]
+
+
+def test_executive_claim_can_cite_authorized_retained_evidence() -> None:
+    executive = RecordingExecutive(
+        text=json.dumps(
+            {
+                "findings": [
+                    {
+                        "finding_id": "exec:retained",
+                        "summary": "Prior scoped evidence remains relevant.",
+                        "evidence_refs": ["thread:prior:0"],
+                        "confidence": "medium",
+                        "freshness": "stale",
+                        "uncertainty": [],
+                        "actionable": False,
+                        "next_check": "Recheck the prior observation.",
+                    }
+                ]
+            }
+        )
+    )
+    service = _service(executive_agent=executive)
+
+    synthesis = service._synthesize(
+        "Give me an executive summary.",
+        _tool_results(),
+        retained_evidence=[
+            {
+                "evidence_id": "thread:prior:0",
+                "source": "network",
+                "status": "ok",
+                "observation_status": "historical",
+            }
+        ],
+    )
+
+    assert synthesis.status == "synthesized"
+    assert synthesis.claims[0]["evidence_refs"] == ["thread:prior:0"]
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +610,8 @@ def test_execute_still_returns_the_canonical_result_only() -> None:
 
     assert result.thread_id.startswith("thr-")
     assert result.thread_revision == 1
+    assert result.synthesis
+    assert result.synthesis["status"] == "skipped"
 
 
 # ---------------------------------------------------------------------------
