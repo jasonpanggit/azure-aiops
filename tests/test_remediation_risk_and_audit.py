@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
+import json
 from typing import Any
 
 import pytest
 
 from api.app import create_app
 from api.dependencies import ApiContext
+from api.errors import ApiError
+from api.models import ExposureReviewHandoffRequest, RiskExceptionCreateRequest
 from api.rbac import Authorizer
+from api.routers.remediation import create_exposure_handoff
+from api.routers.vulnerability import create_risk_exception
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
+from intelligence.governance.audit import (
+    AppendOnlyExposureAuditLog,
+    ExposureAuditEvent,
+)
 from intelligence.remediation.action_catalog import (
     EXECUTABLE_ACTION_IDS,
     GOVERNED_REMEDIATION_ACTIONS,
@@ -241,3 +251,273 @@ def test_remediation_exposure_handoff_read_route_is_additive(tmp_path) -> None:
     assert "get" in paths["/api/v1/remediation/exposure-handoffs"]
     assert "post" in paths["/api/v1/remediation-plans/{plan_id}/decisions"]
     assert "/api/v1/remediation/plans/{plan_id}/decisions" not in paths
+
+
+def test_exposure_audit_is_append_only_and_rejects_secret_fields() -> None:
+    audit = AppendOnlyExposureAuditLog()
+    event = ExposureAuditEvent(
+        event_id="audit:event:1",
+        event_type="exposure.review_handoff_created",
+        subject="security-admin@example.com",
+        tenant_id="tenant-a",
+        connection_ids=("connection-a",),
+        scope={"subscription": ["sub-a"]},
+        target={
+            "target_kind": "container_image",
+            "target_id": "sha256:" + ("a" * 64),
+        },
+        generation="generation-handoff-1",
+        evidence_refs=(
+            {
+                "exposure_id": "exposure:image:1",
+                "generation": "generation-handoff-1",
+            },
+        ),
+        decision="create_review_handoff",
+        reason="Platform owner review required",
+        result="recorded",
+        timestamp="2026-09-06T08:00:00+00:00",
+    )
+
+    audit.append(event)
+    audit.append(event)
+    assert audit.rows() == [event.to_dict()]
+
+    with pytest.raises(ValueError, match="immutable"):
+        audit.append(
+            ExposureAuditEvent(
+                **{
+                    **event.to_dict(),
+                    "result": "changed",
+                }
+            )
+        )
+    with pytest.raises(ValueError, match="sensitive"):
+        ExposureAuditEvent(
+            **{
+                **event.to_dict(),
+                "event_id": "audit:event:secret",
+                "target": {"client_secret": "must-not-be-recorded"},
+            }
+        )
+
+
+def test_review_handoff_creation_is_evidence_bound_and_has_no_execution_transition() -> None:
+    correlator = DefenderRemediationCorrelator.from_exposure_read_port(
+        _ExposureReadPort([_container_finding()])
+    )
+    audit_events: list[dict[str, Any]] = []
+    principal = type(
+        "Principal",
+        (),
+        {
+            "subject": "security-admin@example.com",
+            "grants": (),
+        },
+    )()
+    context = type(
+        "Context",
+        (),
+        {
+            "authorizer": type(
+                "Authorizer",
+                (),
+                {
+                    "effective_scope": lambda self, caller, action, requested=None: (
+                        Scope.unrestricted()
+                    )
+                },
+            )(),
+            "exposure_remediation_provider": lambda self: correlator,
+            "exposure_audit_append": lambda self, event: audit_events.append(
+                event.to_dict()
+            ),
+        },
+    )()
+
+    response = create_exposure_handoff(
+        ExposureReviewHandoffRequest(
+            exposure_id="exposure:image:1",
+            reason="Route to the owning platform team",
+        ),
+        context,
+        principal,
+    )
+
+    assert response["data"]["outcome"] == "review_handoff"
+    assert response["data"]["execution_transition"] is False
+    assert response["data"]["direct_execution_supported"] is False
+    assert len(audit_events) == 1
+    event = audit_events[0]
+    assert event["event_type"] == "exposure.review_handoff_created"
+    assert event["subject"] == "security-admin@example.com"
+    assert event["scope"] == {}
+    assert event["target"]["target_kind"] == "container_image"
+    assert event["generation"] == "generation-handoff-1"
+    assert event["evidence_refs"][0]["exposure_id"] == "exposure:image:1"
+    assert event["decision"] == "create_review_handoff"
+    assert event["reason"] == "Route to the owning platform team"
+    assert event["result"] == "recorded"
+
+
+def test_audit_append_failure_blocks_review_handoff_with_safe_error() -> None:
+    correlator = DefenderRemediationCorrelator.from_exposure_read_port(
+        _ExposureReadPort([_container_finding()])
+    )
+
+    def fail_audit(_event: ExposureAuditEvent) -> None:
+        raise RuntimeError("provider raw secret: super-secret-value")
+
+    context = type(
+        "Context",
+        (),
+        {
+            "authorizer": type(
+                "Authorizer",
+                (),
+                {
+                    "effective_scope": lambda self, caller, action, requested=None: (
+                        Scope.unrestricted()
+                    )
+                },
+            )(),
+            "exposure_remediation_provider": lambda self: correlator,
+            "exposure_audit_append": fail_audit,
+        },
+    )()
+    principal = type("Principal", (), {"subject": "admin@example.com"})()
+
+    with pytest.raises(ApiError) as exc_info:
+        create_exposure_handoff(
+            ExposureReviewHandoffRequest(
+                exposure_id="exposure:image:1",
+                reason="Review required",
+            ),
+            context,
+            principal,
+        )
+
+    assert exc_info.value.code.value == "upstream_unavailable"
+    assert "super-secret-value" not in str(exc_info.value)
+
+
+def test_risk_exception_is_evidence_bound_and_audit_precedes_storage() -> None:
+    added: list[Any] = []
+    audit_events: list[dict[str, Any]] = []
+    finding = type(
+        "Finding",
+        (),
+        {
+            "cve_id": "CVE-2026-1001",
+            "server_id": "server-1",
+            "scope_attributes": lambda self: {"subscription": "sub-a"},
+        },
+    )()
+    service = type(
+        "Vulnerability",
+        (),
+        {
+            "findings": [finding],
+            "freshness": "2026-09-06T08:00:00Z",
+            "read_model_generation_id": "generation-risk-1",
+        },
+    )()
+    context = type(
+        "Context",
+        (),
+        {
+            "authorizer": type(
+                "Authorizer",
+                (),
+                {
+                    "effective_scope": lambda self, caller, action, requested=None: (
+                        Scope.unrestricted()
+                    )
+                },
+            )(),
+            "hybrid_vulnerability_provider": None,
+            "resolve_provider": lambda self, name: service,
+            "risk_exception_add": lambda self, exception: added.append(exception),
+            "exposure_audit_append": lambda self, event: audit_events.append(
+                event.to_dict()
+            ),
+        },
+    )()
+    principal = type("Principal", (), {"subject": "admin@example.com"})()
+
+    response = create_risk_exception(
+        RiskExceptionCreateRequest(
+            cve_id="CVE-2026-1001",
+            server_id="server-1",
+            reason="Compensating control approved",
+            expires_at=(datetime.now(UTC) + timedelta(days=30)).isoformat(),
+        ),
+        context,
+        principal,
+    )
+
+    assert len(added) == 1
+    assert len(audit_events) == 1
+    event = audit_events[0]
+    assert event["event_type"] == "exposure.risk_exception_created"
+    assert event["subject"] == "admin@example.com"
+    assert event["target"] == {
+        "target_kind": "server",
+        "target_id": "server-1",
+        "weakness_id": "CVE-2026-1001",
+    }
+    assert event["generation"] == "generation-risk-1"
+    assert event["reason"] == "Compensating control approved"
+    assert response["data"]["evidence_binding"]["generation"] == "generation-risk-1"
+
+    context.exposure_audit_append = lambda _event: (_ for _ in ()).throw(
+        RuntimeError("raw provider details")
+    )
+    with pytest.raises(ApiError):
+        create_risk_exception(
+            RiskExceptionCreateRequest(
+                cve_id="CVE-2026-1001",
+                server_id="server-1",
+                reason="Must not persist after failed audit",
+                expires_at=(datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            ),
+            context,
+            principal,
+        )
+    assert len(added) == 1
+
+
+def test_risk_exception_rejects_expired_evidence_window() -> None:
+    with pytest.raises(Exception, match="future"):
+        create_risk_exception(
+            RiskExceptionCreateRequest(
+                cve_id="CVE-2026-1001",
+                server_id="server-1",
+                reason="Already expired",
+                expires_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+            ),
+            object(),
+            object(),
+        )
+
+
+def test_audit_rows_are_json_safe_and_have_no_raw_provider_error() -> None:
+    event = ExposureAuditEvent(
+        event_id="audit:event:json",
+        event_type="remediation.execution_requested",
+        subject="operator@example.com",
+        tenant_id="tenant-a",
+        connection_ids=("connection-a",),
+        scope={"subscription": ["sub-a"]},
+        target={"target_kind": "server", "target_id": "server-1"},
+        generation="generation-1",
+        evidence_refs=({"evidence_id": "evidence-1"},),
+        decision="execute",
+        reason="approved",
+        result="requested",
+        timestamp="2026-09-06T08:00:00+00:00",
+    )
+
+    rendered = json.dumps(event.to_dict(), sort_keys=True)
+    assert "raw_provider_error" not in rendered
+    assert "secret" not in rendered.casefold()
