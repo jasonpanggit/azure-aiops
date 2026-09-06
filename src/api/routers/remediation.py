@@ -15,6 +15,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
 
+from intelligence.governance.audit import (
+    ExposureAuditUnavailable,
+    append_exposure_audit,
+    new_exposure_audit_event,
+)
 from intelligence.remediation.action_catalog import (
     PATCH_RECOVERY_ACTION_FAMILY,
     governed_action,
@@ -37,10 +42,17 @@ from operations.defender_configuration import DEFENDER_CONFIGURATION_ACTION_IDS
 from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.service import PatchValidationError
 
-from ..dependencies import Context, CurrentPrincipal, OperatePrincipal, Page, ReadScope
+from ..dependencies import (
+    Context,
+    CurrentPrincipal,
+    OperatePrincipal,
+    Page,
+    ReadScope,
+    WritePrincipal,
+)
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
-from ..models import SupersedeExecutionRequest
+from ..models import ExposureReviewHandoffRequest, SupersedeExecutionRequest
 from ..scope import Scope, scope_attributes
 from .operations import _HIDDEN, _filter_rows, _filter_scoped, _require
 from .patching import _service as _patching_service
@@ -259,6 +271,154 @@ def exposure_handoffs(
             )
         ),
         warnings=warnings,
+    )
+
+
+@router.post(
+    "/exposure-handoffs",
+    status_code=201,
+    summary="Create an audited non-executable Exposure review handoff",
+)
+def create_exposure_handoff(
+    payload: ExposureReviewHandoffRequest,
+    context: Context,
+    principal: WritePrincipal,
+) -> dict[str, Any]:
+    write_scope = context.authorizer.effective_scope(principal, "write")
+    provider = getattr(context, "exposure_remediation_provider", None)
+    correlator = provider() if callable(provider) else None
+    if correlator is None or not hasattr(correlator, "exposure_cases"):
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Exposure remediation review is unavailable",
+            {"capability": "exposure_remediation"},
+        )
+    case = next(
+        (
+            row
+            for row in correlator.exposure_cases(write_scope)
+            if str(row.get("exposure_id") or "") == payload.exposure_id
+        ),
+        None,
+    )
+    if case is None:
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            "Exposure finding not found",
+            {"exposure_id": payload.exposure_id},
+        )
+    if (
+        case.get("target_kind") != "container_image"
+        or case.get("outcome") != "review_handoff"
+        or case.get("direct_execution_supported") is not False
+    ):
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Exposure finding is not eligible for a governed review handoff",
+            {
+                "exposure_id": payload.exposure_id,
+                "reason": str(
+                    case.get("outcome_reason_code") or "no_safe_action"
+                ),
+            },
+        )
+    risk_exception_id = payload.risk_exception_id.strip()
+    if not payload.risk_acknowledged and not risk_exception_id:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "Exposure review handoff requires risk acknowledgement or an active risk exception",
+            {"exposure_id": payload.exposure_id},
+        )
+    if risk_exception_id:
+        lister = getattr(context, "risk_exception_list", None)
+        exception = next(
+            (
+                item
+                for item in (lister() if callable(lister) else ())
+                if str(getattr(item, "exception_id", "") or "")
+                == risk_exception_id
+            ),
+            None,
+        )
+        if (
+            exception is None
+            or exception.is_expired(now_iso=datetime.now(UTC).isoformat())
+            or str(getattr(exception, "cve_id", "") or "").casefold()
+            != str(case.get("weakness_key") or "").casefold()
+        ):
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "Risk exception does not authorize this Exposure handoff",
+                {
+                    "exposure_id": payload.exposure_id,
+                    "reason": "risk_exception_invalid",
+                },
+            )
+    created_at = datetime.now(UTC).isoformat()
+    evidence_refs = [
+        dict(reference)
+        for reference in case.get("evidence_refs") or ()
+    ]
+    if risk_exception_id:
+        evidence_refs.append(
+            {
+                "risk_exception_id": risk_exception_id,
+                "weakness_id": str(case.get("weakness_key") or ""),
+            }
+        )
+    try:
+        append_exposure_audit(
+            context,
+            new_exposure_audit_event(
+                event_type="exposure.review_handoff_created",
+                subject=str(getattr(principal, "subject", "") or ""),
+                tenant_id=str(case.get("tenant_id") or ""),
+                connection_ids=case.get("connection_ids") or (),
+                scope=write_scope.to_dict(),
+                target={
+                    "target_kind": "container_image",
+                    "target_id": str(case.get("resource_key") or ""),
+                    "weakness_id": str(case.get("weakness_key") or ""),
+                    "exposure_id": str(case.get("exposure_id") or ""),
+                },
+                generation=str(
+                    case.get("read_model_generation_id") or ""
+                ),
+                evidence_refs=evidence_refs,
+                decision="create_review_handoff",
+                reason=payload.reason,
+                result="recorded",
+                timestamp=created_at,
+            ),
+        )
+    except ExposureAuditUnavailable as exc:
+        raise ApiError(
+            ErrorCode.UPSTREAM_UNAVAILABLE,
+            "Exposure audit is unavailable; review handoff was not created",
+            {"capability": "exposure_audit"},
+        ) from exc
+    result = {
+        **case,
+        "handoff_reason": payload.reason,
+        "created_by": str(getattr(principal, "subject", "") or ""),
+        "created_at": created_at,
+        "risk_acknowledged": bool(payload.risk_acknowledged),
+        "risk_exception_id": risk_exception_id,
+        "execution_transition": False,
+    }
+    return envelope(
+        result,
+        evidence=Evidence(
+            source_engine="intelligence.ExposureAudit",
+            source_table="exposure_review_handoffs",
+            timestamp=created_at,
+            resource_id=str(case.get("exposure_id") or ""),
+            confidence=CONFIDENCE_HIGH,
+        ),
+        scope=write_scope.to_dict(),
+        knowledge_version=str(
+            case.get("read_model_generation_id") or ""
+        ),
     )
 
 
@@ -814,6 +974,83 @@ def _execution_evidence(execution_id: str) -> Evidence:
     )
 
 
+def _audit_execution_request(
+    *,
+    context: Context,
+    principal: Any,
+    scope: Scope,
+    event_type: str,
+    decision: str,
+    record: dict[str, Any],
+    reason: str,
+) -> None:
+    snapshot = (
+        record.get("execution_snapshot")
+        if isinstance(record.get("execution_snapshot"), dict)
+        else {}
+    )
+    target_id = str(
+        snapshot.get("target_id")
+        or record.get("resource_key")
+        or record.get("target_id")
+        or ""
+    )
+    generation = str(
+        record.get("read_model_generation_id")
+        or snapshot.get("read_model_generation_id")
+        or snapshot.get("generation")
+        or ""
+    )
+    evidence_refs = (
+        {
+            "plan_id": str(record.get("plan_id") or ""),
+            "action_version": str(
+                record.get("action_version")
+                or snapshot.get("action_version")
+                or ""
+            ),
+            "snapshot_hash": str(
+                record.get("snapshot_hash")
+                or snapshot.get("snapshot_hash")
+                or ""
+            ),
+        },
+    )
+    try:
+        append_exposure_audit(
+            context,
+            new_exposure_audit_event(
+                event_type=event_type,
+                subject=str(getattr(principal, "subject", "") or ""),
+                tenant_id=str(record.get("tenant_id") or ""),
+                connection_ids=scope.values("subscription_connection"),
+                scope=scope.to_dict(),
+                target={
+                    "target_kind": str(
+                        record.get("target_kind") or "server"
+                    ),
+                    "target_id": target_id,
+                    "action_id": str(
+                        record.get("action_id")
+                        or record.get("opportunity_type")
+                        or ""
+                    ),
+                },
+                generation=generation,
+                evidence_refs=evidence_refs,
+                decision=decision,
+                reason=reason,
+                result="requested",
+            ),
+        )
+    except ExposureAuditUnavailable as exc:
+        raise ApiError(
+            ErrorCode.UPSTREAM_UNAVAILABLE,
+            "Exposure audit is unavailable; remediation request was not accepted",
+            {"capability": "exposure_audit"},
+        ) from exc
+
+
 @router.post(
     "/plans/{plan_id}/execute",
     status_code=202,
@@ -827,9 +1064,18 @@ def execute_plan(
     # non-existent one -- matching create_patch_run's narrowing-before-
     # resolving pattern.
     write_scope = context.authorizer.effective_scope(principal, "operate")
-    _get_scoped_plan(context, write_scope, plan_id)
+    plan = _get_scoped_plan(context, write_scope, plan_id)
 
     service = _execution_service(context, write_scope)
+    _audit_execution_request(
+        context=context,
+        principal=principal,
+        scope=write_scope,
+        event_type="remediation.execution_requested",
+        decision="execute",
+        record=plan,
+        reason="approved remediation execution requested",
+    )
     try:
         result = service.execute(plan_id, requested_by=getattr(principal, "subject", ""))
     except RemediationExecutionError as exc:
@@ -926,6 +1172,15 @@ def retry_execution(
     write_scope = context.authorizer.effective_scope(principal, "operate")
     _authorize_execution_scope(write_scope, record)
     service = _execution_service(context, write_scope)
+    _audit_execution_request(
+        context=context,
+        principal=principal,
+        scope=write_scope,
+        event_type="remediation.execution_retry_requested",
+        decision="retry",
+        record=record,
+        reason="bounded retry requested",
+    )
 
     try:
         result = service.retry(execution_id)
@@ -968,6 +1223,15 @@ def supersede_execution(
     write_scope = context.authorizer.effective_scope(principal, "operate")
     _authorize_execution_scope(write_scope, record)
     service = _execution_service(context, write_scope)
+    _audit_execution_request(
+        context=context,
+        principal=principal,
+        scope=write_scope,
+        event_type="remediation.execution_supersede_requested",
+        decision="supersede",
+        record=record,
+        reason=payload.reason,
+    )
 
     try:
         result = service.supersede(
@@ -1013,6 +1277,15 @@ def cancel_execution(
     write_scope = context.authorizer.effective_scope(principal, "operate")
     _authorize_execution_scope(write_scope, record)
     service = _execution_service(context, write_scope)
+    _audit_execution_request(
+        context=context,
+        principal=principal,
+        scope=write_scope,
+        event_type="remediation.execution_cancel_requested",
+        decision="cancel",
+        record=record,
+        reason="bounded cancellation requested",
+    )
     try:
         result = service.cancel(
             execution_id,

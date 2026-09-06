@@ -251,6 +251,14 @@ class DefenderRemediationCorrelator:
                     "resource_key": str(row.get("target_id") or ""),
                     "weakness_key": str(row.get("weakness_id") or ""),
                     "target_kind": target_kind,
+                    "tenant_id": str(row.get("tenant_id") or ""),
+                    "connection_ids": sorted(
+                        {
+                            str(value)
+                            for value in row.get("connection_ids") or ()
+                            if str(value)
+                        }
+                    ),
                     "source_families": source_families,
                     "read_model_generation_id": generation_id,
                     "completeness": str(row.get("completeness") or ""),

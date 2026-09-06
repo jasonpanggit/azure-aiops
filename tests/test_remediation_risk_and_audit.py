@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
-import json
 from typing import Any
 
 import pytest
@@ -14,8 +14,11 @@ from api.dependencies import ApiContext
 from api.errors import ApiError
 from api.models import ExposureReviewHandoffRequest, RiskExceptionCreateRequest
 from api.rbac import Authorizer
-from api.routers.remediation import create_exposure_handoff
-from api.routers.vulnerability import create_risk_exception
+from api.routers.remediation import create_exposure_handoff, execute_plan
+from api.routers.vulnerability import (
+    _normalize_risk_exception_expiry,
+    create_risk_exception,
+)
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from intelligence.governance.audit import (
@@ -339,6 +342,7 @@ def test_review_handoff_creation_is_evidence_bound_and_has_no_execution_transiti
         ExposureReviewHandoffRequest(
             exposure_id="exposure:image:1",
             reason="Route to the owning platform team",
+            risk_acknowledged=True,
         ),
         context,
         principal,
@@ -392,12 +396,13 @@ def test_audit_append_failure_blocks_review_handoff_with_safe_error() -> None:
             ExposureReviewHandoffRequest(
                 exposure_id="exposure:image:1",
                 reason="Review required",
+                risk_acknowledged=True,
             ),
             context,
             principal,
         )
 
-    assert exc_info.value.code.value == "upstream_unavailable"
+    assert exc_info.value.code == "upstream_unavailable"
     assert "super-secret-value" not in str(exc_info.value)
 
 
@@ -487,17 +492,10 @@ def test_risk_exception_is_evidence_bound_and_audit_precedes_storage() -> None:
     assert len(added) == 1
 
 
-def test_risk_exception_rejects_expired_evidence_window() -> None:
-    with pytest.raises(Exception, match="future"):
-        create_risk_exception(
-            RiskExceptionCreateRequest(
-                cve_id="CVE-2026-1001",
-                server_id="server-1",
-                reason="Already expired",
-                expires_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
-            ),
-            object(),
-            object(),
+def test_risk_exception_rejects_expiry_without_timezone() -> None:
+    with pytest.raises(Exception, match="timezone-aware"):
+        _normalize_risk_exception_expiry(
+            datetime.now(UTC).replace(tzinfo=None).isoformat()
         )
 
 
@@ -521,3 +519,65 @@ def test_audit_rows_are_json_safe_and_have_no_raw_provider_error() -> None:
     rendered = json.dumps(event.to_dict(), sort_keys=True)
     assert "raw_provider_error" not in rendered
     assert "secret" not in rendered.casefold()
+
+
+def test_execution_audit_failure_blocks_provider_submission() -> None:
+    calls: list[str] = []
+    plan = {
+        "plan_id": "plan-1",
+        "action_id": "controlled-patch-recovery",
+        "action_version": "action-version-1",
+        "resource_key": "server-1",
+        "resource": {
+            "id": "server-1",
+            "subscription_id": "sub-a",
+        },
+        "read_model_generation_id": "generation-1",
+    }
+    repository = type("Repository", (), {"get": lambda self, plan_id: plan})()
+    planner = type(
+        "Planner",
+        (),
+        {
+            "repository": repository,
+            "generate_plans": lambda self: {"plans": [plan]},
+        },
+    )()
+    execution = type(
+        "Execution",
+        (),
+        {
+            "execute": lambda self, plan_id, requested_by: calls.append(plan_id),
+        },
+    )()
+
+    def fail_audit(_event: ExposureAuditEvent) -> None:
+        raise RuntimeError("provider secret detail")
+
+    context = type(
+        "Context",
+        (),
+        {
+            "authorizer": type(
+                "Authorizer",
+                (),
+                {
+                    "effective_scope": lambda self, caller, action, requested=None: (
+                        Scope.unrestricted()
+                    )
+                },
+            )(),
+            "hybrid_remediation_provider": None,
+            "resolve_provider": lambda self, name: planner,
+            "execution_provider": lambda self, scope: execution,
+            "exposure_audit_append": fail_audit,
+        },
+    )()
+    principal = type("Principal", (), {"subject": "operator@example.com"})()
+
+    with pytest.raises(ApiError) as exc_info:
+        execute_plan("plan-1", context, principal)
+
+    assert calls == []
+    assert exc_info.value.code == "upstream_unavailable"
+    assert "provider secret detail" not in str(exc_info.value)
