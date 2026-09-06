@@ -17,6 +17,8 @@ from network.topology import (
     SUMMARY_BYTE_CEILING,
     SUMMARY_MIN_NODES,
     SUMMARY_NODE_CAP,
+    SUMMARY_SMALL_BYTE_CEILING,
+    SUMMARY_SMALL_NODE_CAP,
     build_topology,
 )
 from tests.network_scale_fixtures import (
@@ -132,11 +134,11 @@ def test_enterprise_build_latency_budget() -> None:
     assert elapsed < G3_BUILD_SECONDS
 
 
-def test_g2_budgets_are_declared() -> None:
-    assert G1_NODE_CAP == 200
-    assert G1_BYTE_CEILING == 250_000
-    assert G2_NODE_CAP == 1_500
-    assert G2_BYTE_CEILING == 2_000_000
+def test_summary_budgets_match_the_measured_contract() -> None:
+    assert SUMMARY_SMALL_NODE_CAP == G1_NODE_CAP
+    assert SUMMARY_SMALL_BYTE_CEILING == G1_BYTE_CEILING
+    assert SUMMARY_NODE_CAP == G2_NODE_CAP
+    assert SUMMARY_BYTE_CEILING == G2_BYTE_CEILING
 
 
 def test_g4_default_detail_is_byte_identical_to_the_pre_change_contract() -> None:
