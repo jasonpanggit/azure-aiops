@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from api.scope import Scope
 from operations.orchestration_contract import (
+    MAX_RETAINED_CITATIONS,
     AzureEntityRef,
     CanonicalCoverage,
     CanonicalEvidence,
@@ -131,10 +132,14 @@ def _canonical_entity(
     resolution = domain_resolver(entity)
     if not isinstance(resolution, Mapping):
         raise TypeError("domain entity resolver must return identity metadata")
+    canonical_namespace = str(resolution.get("namespace") or "").strip()
+    canonical_kind = str(resolution.get("kind") or "").strip()
     canonical_source_key = str(resolution.get("source_key") or "").strip()
     scope_payload = resolution.get("scope")
     if (
-        not canonical_source_key
+        not canonical_namespace
+        or not canonical_kind
+        or not canonical_source_key
         or not isinstance(scope_payload, Mapping)
         or not effective_scope.matches(scope_payload)
     ):
@@ -142,8 +147,8 @@ def _canonical_entity(
     return ":".join(
         (
             "domain",
-            _normalized_identity_part(entity.namespace),
-            _normalized_identity_part(entity.kind),
+            _normalized_identity_part(canonical_namespace),
+            _normalized_identity_part(canonical_kind),
             _normalized_identity_part(canonical_source_key),
         )
     )
@@ -182,9 +187,9 @@ def _canonical_row(
         stable_id=stable_id,
         variant_id=variant_id,
         entity_key=entity_key,
-        source=row.source,
-        source_key=source_key,
-        claim_type=row.claim_type,
+        source=_normalized_identity_part(row.source),
+        source_key=_normalized_identity_part(source_key),
+        claim_type=_normalized_identity_part(row.claim_type),
         status=row.status,
         freshness=freshness,
         observed_at=row.observed_at,
@@ -210,6 +215,9 @@ def _merge_duplicate(
     current: CanonicalEvidence,
     incoming: CanonicalEvidence,
 ) -> CanonicalEvidence:
+    citations = sorted({*current.citations, *incoming.citations})
+    if len(citations) > MAX_RETAINED_CITATIONS:
+        raise ValueError("duplicate evidence citations exceed retention bound")
     return current.model_copy(
         update={
             "status": _stronger_value(
@@ -223,7 +231,7 @@ def _merge_duplicate(
                 _FRESHNESS_WARNING,
             ),
             "observed_at": max(current.observed_at, incoming.observed_at),
-            "citations": sorted({*current.citations, *incoming.citations}),
+            "citations": citations,
             "selected": current.selected or incoming.selected,
             "direct": current.direct or incoming.direct,
             "actionable": current.actionable or incoming.actionable,
@@ -320,9 +328,21 @@ def canonicalize_snapshot_v2(
         existing = deduplicated.get(key)
         deduplicated[key] = row if existing is None else _merge_duplicate(existing, row)
 
-    ranked = sorted(deduplicated.values(), key=_retention_key)
-    retained = ranked[:retention_limit]
-    discarded_count = len(ranked) - len(retained)
+    evidence_groups: dict[str, list[CanonicalEvidence]] = {}
+    for row in deduplicated.values():
+        evidence_groups.setdefault(row.stable_id, []).append(row)
+    ranked_groups = sorted(
+        (sorted(group, key=_retention_key) for group in evidence_groups.values()),
+        key=lambda group: _retention_key(group[0]),
+    )
+    retained: list[CanonicalEvidence] = []
+    for group in ranked_groups:
+        if len(retained) + len(group) <= retention_limit:
+            retained.extend(group)
+            continue
+        if len(group) > 1:
+            raise ValueError("retention limit cannot preserve conflict set")
+    discarded_count = len(deduplicated) - len(retained)
 
     retained_refs = {citation for row in retained for citation in row.citations}
     for claim in snapshot.material_claims:
@@ -352,6 +372,8 @@ def canonicalize_snapshot_v2(
     for source, status in sorted(freshness_by_source.items()):
         if status != "fresh":
             uncertainty.append(f"{source} freshness is {status}")
+    if retained and any(row.freshness == "unknown" for row in retained):
+        uncertainty.append("retained evidence freshness is unknown")
     if conflicts:
         uncertainty.append("conflicting evidence requires resolution")
     if discarded_count:
@@ -384,6 +406,8 @@ def canonicalize_snapshot_v2(
             insufficiency_reasons.append(
                 "all retained evidence is stale or unavailable"
             )
+        elif all(row.freshness == "unknown" for row in retained):
+            insufficiency_reasons.append("all retained evidence has unknown freshness")
         for claim in snapshot.material_claims:
             if claim.requires_complete_coverage and not snapshot.coverage.complete:
                 insufficiency_reasons.append(

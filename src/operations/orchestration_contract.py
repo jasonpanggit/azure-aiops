@@ -15,6 +15,7 @@ MAX_SNAPSHOT_BYTES = 128 * 1024
 MAX_EVIDENCE_ROW_BYTES = 8 * 1024
 MAX_SELECTED_ENTITIES = 50
 MAX_MATERIAL_CLAIMS = 200
+MAX_RETAINED_CITATIONS = 64
 COVERAGE_CITATION_ID = "snapshot:coverage"
 
 
@@ -224,7 +225,10 @@ class CanonicalEvidence(ContractModel):
     status: Literal["ok", "empty", "partial", "unavailable", "denied"]
     freshness: Literal["fresh", "stale", "partial", "unavailable", "unknown"]
     observed_at: str = Field(default="", max_length=128)
-    citations: list[str] = Field(min_length=1, max_length=64)
+    citations: list[str] = Field(
+        min_length=1,
+        max_length=MAX_RETAINED_CITATIONS,
+    )
     selected: bool
     direct: bool
     actionable: bool

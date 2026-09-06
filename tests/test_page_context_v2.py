@@ -100,6 +100,8 @@ def test_domain_identity_uses_server_resolution_and_ignores_browser_attributes()
     def resolve(entity):
         calls.append(entity.model_dump())
         return {
+            "namespace": "inventory",
+            "kind": "operating-system",
             "source_key": "windows-server|2022",
             "scope": {"subscription": "sub-a"},
         }
@@ -117,6 +119,22 @@ def test_domain_identity_uses_server_resolution_and_ignores_browser_attributes()
         "domain:inventory:operating-system:windows-server|2022"
     )
     assert calls[0]["source_key"] == "WINDOWS SERVER|2022"
+
+    spoofed = _evidence(
+        "spoofed-domain",
+        source_key="os-source-row",
+        entity=_model("DomainEntityRef")(
+            type="domain",
+            namespace="browser-spoofed",
+            kind="browser-spoofed",
+            source_key="Windows Server|2022",
+        ),
+    )
+    spoofed_result = _canonicalize(
+        _snapshot([spoofed]),
+        domain_resolver=resolve,
+    )
+    assert spoofed_result.evidence[0].entity_key == canonical.evidence[0].entity_key
 
 
 def test_authorization_happens_before_retention_for_azure_and_domain_entities():
@@ -140,6 +158,8 @@ def test_authorization_happens_before_retention_for_azure_and_domain_entities():
         _canonicalize(
             _snapshot([domain]),
             domain_resolver=lambda entity: {
+                "namespace": entity.namespace,
+                "kind": entity.kind,
                 "source_key": entity.source_key,
                 "scope": {"subscription": "sub-b"},
             },
@@ -196,6 +216,44 @@ def test_conflicting_claims_are_retained_as_a_deterministic_conflict_set():
     )
     assert canonical.conflicts == reversed_result.conflicts
     assert "conflicting evidence requires resolution" in canonical.uncertainty
+
+
+def test_retention_never_silently_drops_one_side_of_a_conflict():
+    rows = [
+        _evidence(
+            "degraded",
+            source_key="same-record",
+            data={"state": "degraded"},
+        ),
+        _evidence(
+            "healthy",
+            source_key="same-record",
+            data={"state": "healthy"},
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="cannot preserve conflict set"):
+        _canonicalize(_snapshot(rows), retention_limit=1)
+
+
+def test_normalized_duplicate_hash_is_reorder_stable():
+    first = _evidence(
+        "first",
+        source_key=" Record ",
+        source=" Inventory/Resource_Observations ",
+        claim_type=" Health ",
+    )
+    second = _evidence(
+        "second",
+        source_key="record",
+        source="inventory/resource_observations",
+        claim_type="health",
+    )
+
+    left = _canonicalize(_snapshot([first, second]))
+    right = _canonicalize(_snapshot([second, first]))
+
+    assert left.snapshot_hash() == right.snapshot_hash()
 
 
 def test_retention_ranking_is_deterministic_and_uses_stable_id_as_final_tie_breaker():
@@ -276,6 +334,30 @@ def test_freshness_coverage_and_conflicts_drive_explicit_insufficiency():
         in canonical.insufficiency_reasons
     )
     assert "estate-health requires complete coverage" in canonical.insufficiency_reasons
+
+
+def test_missing_freshness_is_explicitly_insufficient():
+    canonical = _canonicalize(_snapshot([_evidence("unknown", source_key="unknown")]))
+
+    assert canonical.classification == "insufficient_evidence"
+    assert "retained evidence freshness is unknown" in canonical.uncertainty
+    assert (
+        "all retained evidence has unknown freshness" in canonical.insufficiency_reasons
+    )
+
+
+def test_duplicate_merge_rejects_citation_overflow():
+    rows = [
+        _evidence(
+            f"row-{index}",
+            source_key="same-record",
+            citations=[f"provider:{index}:{citation}" for citation in range(32)],
+        )
+        for index in range(3)
+    ]
+
+    with pytest.raises(ValueError, match="citations exceed retention bound"):
+        _canonicalize(_snapshot(rows))
 
 
 def test_material_claims_reject_orphaned_and_discarded_references():
