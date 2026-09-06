@@ -406,7 +406,7 @@ def test_semantic_resolves_for_edge_is_projected() -> None:
     )
 
 
-def test_parentless_virtual_network_link_warns_without_dangling_edge() -> None:
+def test_parentless_virtual_network_link_warns_without_dangling_edge(caplog) -> None:
     link_row = _base(
         f"{ZONE_ID}/virtualNetworkLinks/orphan",
         "orphan",
@@ -414,17 +414,26 @@ def test_parentless_virtual_network_link_warns_without_dangling_edge() -> None:
         {"virtualNetwork": {"id": VNET_ID}},
     )
 
-    graph = Normalizer().normalize(
-        _network_payload([link_row]),
-        _observed_datetime(),
-    )
+    with caplog.at_level("WARNING", logger="onboarding.graph_normalize"):
+        graph = Normalizer().normalize(
+            _network_payload([link_row]),
+            _observed_datetime(),
+        )
 
     assert not [
         item
         for item in graph.relationships
         if str(item.get("predicate") or "").casefold() == "resolvesfor"
     ]
-    assert any("parent zone" in warning.casefold() for warning in graph.warnings)
+    assert any(
+        "parent zone" in warning.casefold()
+        and ZONE_ID.casefold() in warning
+        and VNET_ID.casefold() in warning
+        for warning in graph.warnings
+    )
+    assert "dns_link_skipped_missing_zone" in caplog.text
+    assert f"zone_id={ZONE_ID.casefold()}" in caplog.text
+    assert f"vnet_id={VNET_ID.casefold()}" in caplog.text
 
 
 def test_flow_observations_are_forwarded_and_provenance_is_three_state(

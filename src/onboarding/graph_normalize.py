@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -34,6 +35,8 @@ from .network_normalize import (
     private_dns_link_target,
     private_endpoint_dns_zone_ids,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Gateway and load-balancer families share one entity bucket each; the
 #: specific kind (VpnGateway, Bastion, ApplicationGateway, ...) is carried on
@@ -761,10 +764,18 @@ class Normalizer:
         for zone_id, vnet_id in dns_links:
             zone = dns_zones.get(zone_id)
             if zone is None:
-                warnings.append(
+                warning = (
                     "Skipped private DNS virtual network link because its "
-                    "parent zone was absent from the payload"
+                    f"parent zone was absent from the payload: zone_id={zone_id} "
+                    f"vnet_id={vnet_id}"
                 )
+                if warning not in warnings:
+                    warnings.append(warning)
+                    logger.warning(
+                        "dns_link_skipped_missing_zone zone_id=%s vnet_id=%s",
+                        zone_id,
+                        vnet_id,
+                    )
                 continue
             if vnet_id not in zone["linkedVnetIds"]:
                 zone["linkedVnetIds"].append(vnet_id)
