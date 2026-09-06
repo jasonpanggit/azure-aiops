@@ -17,12 +17,145 @@ const RESOURCE_TYPE_LABELS: Record<string, string> = {
   "microsoft.sql/servers": "SQL server",
 };
 
-export function formatDefenderAsset(rec: DefenderPostureFinding) {
-  const resourceType = rec.resource_type || resourceTypeFromArmId(rec.asset_id);
+export type DefenderAssetIcon =
+  | "server"
+  | "container-image"
+  | "registry"
+  | "cluster"
+  | "resource"
+  | "mixed"
+  | "unknown";
+
+export interface DefenderAssetInput {
+  assetId: string;
+  assetName: string;
+  resourceType: string;
+  inventoryKind: string;
+}
+
+export interface DefenderAssetPresentation {
+  label: string;
+  kindLabel: string;
+  icon: DefenderAssetIcon;
+  serverActionEligible: boolean;
+}
+
+export function defenderAssetPresentation({
+  assetId,
+  assetName,
+  resourceType: providedResourceType,
+  inventoryKind,
+}: DefenderAssetInput): DefenderAssetPresentation {
+  const resourceType = providedResourceType || resourceTypeFromArmId(assetId);
   const typeLabel = friendlyResourceType(resourceType);
-  const inventoryLabel = rec.inventory_kind && rec.inventory_kind !== "Azure resource" ? rec.inventory_kind : typeLabel;
-  const assetName = displayResourceName(rec.asset_name, rec.asset_id, typeLabel);
-  return `${assetName} (${inventoryLabel})`;
+  const inventoryLabel =
+    inventoryKind && inventoryKind !== "Azure resource"
+      ? inventoryKind
+      : typeLabel;
+  const displayName = displayResourceName(assetName, assetId, typeLabel);
+  const classification = classifyAsset(
+    assetId,
+    resourceType,
+    inventoryKind,
+  );
+  return {
+    label: `${displayName} (${inventoryLabel})`,
+    ...classification,
+  };
+}
+
+export function formatDefenderAsset(rec: DefenderPostureFinding) {
+  return defenderAssetPresentation({
+    assetId: rec.asset_id,
+    assetName: rec.asset_name,
+    resourceType: rec.resource_type,
+    inventoryKind: rec.inventory_kind,
+  }).label;
+}
+
+function classifyAsset(
+  assetId: string,
+  resourceType: string,
+  inventoryKind: string,
+): Omit<DefenderAssetPresentation, "label"> {
+  const identity = `${resourceType} ${inventoryKind}`.toLocaleLowerCase(
+    "en-US",
+  );
+  const mixed =
+    identity.includes("mixed") ||
+    identity.includes("+") ||
+    ((identity.includes("server") || identity.includes("virtual machine")) &&
+      identity.includes("container"));
+  if (mixed) {
+    return {
+      kindLabel: "Mixed asset",
+      icon: "mixed",
+      serverActionEligible: false,
+    };
+  }
+  if (
+    identity.includes("containerimage") ||
+    identity.includes("container image") ||
+    identity.includes("container workload") ||
+    assetId.toLocaleLowerCase("en-US").startsWith("sha256:")
+  ) {
+    return {
+      kindLabel: "Container image",
+      icon: "container-image",
+      serverActionEligible: false,
+    };
+  }
+  if (
+    identity.includes("microsoft.containerregistry/registries") ||
+    identity.includes("container registry")
+  ) {
+    return {
+      kindLabel: "Container registry",
+      icon: "registry",
+      serverActionEligible: false,
+    };
+  }
+  if (
+    identity.includes("microsoft.containerservice/managedclusters") ||
+    identity.includes("aks cluster")
+  ) {
+    return {
+      kindLabel: "AKS cluster",
+      icon: "cluster",
+      serverActionEligible: false,
+    };
+  }
+  if (
+    identity.includes("microsoft.compute/virtualmachines") ||
+    identity.includes("microsoft.hybridcompute/machines") ||
+    identity.includes("server") ||
+    identity.includes("virtual machine") ||
+    identity.includes("azure vm") ||
+    identity.includes("arc-enabled")
+  ) {
+    return {
+      kindLabel: "Server",
+      icon: "server",
+      serverActionEligible: true,
+    };
+  }
+  if (!resourceType.trim() && !inventoryKind.trim()) {
+    return {
+      kindLabel: "Unknown asset",
+      icon: "unknown",
+      serverActionEligible: false,
+    };
+  }
+  return {
+    kindLabel: typeLabelForUnknown(resourceType),
+    icon: "resource",
+    serverActionEligible: false,
+  };
+}
+
+function typeLabelForUnknown(resourceType: string) {
+  const label = friendlyResourceType(resourceType);
+  return label === "Azure resource" ? "Unknown asset" : label;
 }
 
 function displayResourceName(assetName: string, assetId: string, typeLabel: string) {

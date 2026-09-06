@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider, useScope } from "@/lib/scope-context";
 
 const api = vi.hoisted(() => ({
   summary: vi.fn(),
+  exposureOverview: vi.fn(),
   exposures: vi.fn(),
   authoritativeExposures: vi.fn(),
   patchPriorities: vi.fn(),
@@ -39,6 +40,120 @@ const envelope = <T,>(data: T) => ({
   knowledge_version: "graph-1",
 });
 
+function overviewEnvelope(
+  state: "complete" | "healthy-empty" | "partial" | "stale" | "unavailable" = "complete",
+) {
+  const freshnessState = state === "stale" ? "stale" : "current";
+  return {
+    data: {
+      total_count: 4,
+      generation: "generation-overview-22",
+      applied: {
+        scope: { subscription: ["sub-1"] },
+        filters: [],
+        sort: { field: "priority_score", direction: "desc" },
+      },
+      completeness: {
+        state,
+        represented_connections: 1,
+        expected_connections: 2,
+        represented: 3,
+        total: 4,
+        excluded: 1,
+        excluded_reasons: ["Defender West connection unavailable"],
+      },
+      freshness: {
+        state: freshnessState,
+        as_of: "2026-09-06T08:00:00Z",
+        source_family: "aum",
+        threshold_seconds: 3600,
+      },
+      contract: {
+        version: "1.0.0",
+        query: {
+          scope: { subscription: ["sub-1"] },
+          generation: "generation-overview-22",
+          filters: [],
+          sort: { field: "priority_score", direction: "desc" },
+          target_kind: "all",
+        },
+        counts: {
+          unit: "findings",
+          returned: 3,
+          represented: 3,
+          total: 4,
+          excluded: 1,
+        },
+        units: {
+          finding_count: "count",
+          priority_score: "score",
+          sla_age: "seconds",
+        },
+        completeness: {
+          state,
+          represented_connections: 1,
+          expected_connections: 2,
+          represented: 3,
+          total: 4,
+          excluded: 1,
+          excluded_reasons: ["Defender West connection unavailable"],
+        },
+        freshness: {
+          state: freshnessState,
+          as_of: "2026-09-06T08:00:00Z",
+          source_family: "aum",
+          threshold_seconds: 3600,
+        },
+        evidence_refs: [{ source_family: "aum", source_id: "finding-1" }],
+        deep_link_action: {
+          action_id: "open_exposure_detail",
+          kind: "deep_link",
+          path_field: "detail_path",
+          fallback_path_template: "/exposure/{target_kind}/{exposure_id}",
+        },
+        safe_error: null,
+      },
+    },
+    evidence: [{
+      source_engine: "Azure Update Manager",
+      source_table: "gold_exposure_current",
+      timestamp: "2026-09-06T08:00:00Z",
+      confidence: "high",
+      freshness: freshnessState === "stale" ? "stale" : "fresh",
+      freshness_threshold_seconds: 3600,
+      freshness_source_family: "aum",
+    }],
+    warnings: [],
+    scope: { subscription: ["sub-1"] },
+    knowledge_version: "generation-overview-22",
+    pagination: { limit: 50, total: 4, next_cursor: null },
+  };
+}
+
+function pending<T>() {
+  return new Promise<T>(() => undefined);
+}
+
+const patchPriority = {
+  priority_id: "priority-1",
+  priority_type: "kb",
+  source_label: "Azure Update Manager",
+  source_names: ["aum"],
+  kb_id: "KB600001",
+  cve_ids: ["CVE-2026-0001"],
+  software_observations: ["Contoso Server 2.0"],
+  defender_recommendations: [],
+  affected_server_count: 1,
+  affected_application_count: 1,
+  affected_business_service_count: 1,
+  reachable_server_count: 1,
+  expected_risk_reduction: 82,
+  priority_score: 91,
+  overdue_count: 0,
+  max_days_open: 1,
+  recommended_action: "Install KB600001",
+};
+
 function ScopedExposurePage() {
   const { setScope } = useScope();
   useEffect(() => {
@@ -53,6 +168,7 @@ function ScopedExposurePage() {
 describe("ExposurePage Defender posture", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    api.exposureOverview.mockResolvedValue(overviewEnvelope());
     api.summary.mockResolvedValue(envelope({
       open_finding_count: 1,
       affected_server_count: 1,
@@ -148,7 +264,7 @@ describe("ExposurePage Defender posture", () => {
         { source_family: "defender", finding_count: 3 },
       ],
     }));
-    api.patchPriorities.mockResolvedValue(envelope([]));
+    api.patchPriorities.mockResolvedValue(envelope([patchPriority]));
     api.assetExposures.mockResolvedValue(envelope([{
       asset_id: "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
       name: "vm-1",
@@ -257,8 +373,25 @@ describe("ExposurePage Defender posture", () => {
       assessmentDefinitions: [],
       subscription_id: "sub-1",
     }]));
-    api.slaCompliance.mockResolvedValue(envelope(null));
-    api.riskExceptions.mockResolvedValue(envelope([]));
+    api.slaCompliance.mockResolvedValue(envelope({
+      open_count: 2,
+      tracked_count: 2,
+      compliant_count: 1,
+      overdue_count: 1,
+      overall_compliance_rate: 0.5,
+      by_severity: [],
+      aging_buckets: {},
+      freshness: "2026-09-06T08:00:00Z",
+    }));
+    api.riskExceptions.mockResolvedValue(envelope([{
+      exception_id: "exception-1",
+      cve_id: "CVE-2026-0001",
+      server_id: "server-1",
+      reason: "Compensating control",
+      approved_by: "security@example.com",
+      created_at: "2026-09-01T00:00:00Z",
+      expires_at: "2026-09-10T00:00:00Z",
+    }]));
   });
 
   it("summarizes Defender and patch signals and links to the detail sub-pages", async () => {
@@ -270,28 +403,44 @@ describe("ExposurePage Defender posture", () => {
 
     // The landing page is a lean summary: detail tables live on the
     // defender-posture and patch-priorities sub-pages.
-    expect(await screen.findByRole("heading", { name: "Defender posture →" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Patch priorities →" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Defender overview" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Patch priority preview" })).toBeInTheDocument();
 
     expect(screen.getByRole("link", { name: /Defender posture/ })).toHaveAttribute("href", "/exposure/defender-posture");
-    expect(screen.getByRole("link", { name: /Patch priorities/ })).toHaveAttribute("href", "/exposure/patch-priorities");
+    expect(
+      screen
+        .getAllByRole("link", { name: /Patch priorities/ })
+        .some((link) => link.getAttribute("href") === "/exposure/patch-priorities"),
+    ).toBe(true);
 
     expect(screen.getByText("Active alerts")).toBeInTheDocument();
     expect(screen.getByText("Attack paths")).toBeInTheDocument();
     expect(screen.getByText("Defender recommendations")).toBeInTheDocument();
   });
 
-  it("renders SLA metrics as placeholders when compliance data is null", async () => {
+  it("keeps the Overview lean and does not render the full patch inventory", async () => {
     render(
       <ScopeProvider>
         <ExposurePage />
       </ScopeProvider>
     );
 
-    // slaCompliance resolves to a null envelope in this suite; the summary
-    // must degrade to placeholders rather than throwing on a null payload.
-    expect(await screen.findByText("Overall compliance")).toBeInTheDocument();
-    expect(screen.getAllByText("SLA data unavailable").length).toBeGreaterThan(0);
+    expect(await screen.findByRole("heading", { name: "Patch priority preview" })).toBeInTheDocument();
+    expect(screen.queryByText("Patch inventory")).not.toBeInTheDocument();
+  });
+
+  it("renders a proven null SLA response as healthy-empty rather than zero", async () => {
+    api.slaCompliance.mockResolvedValue(envelope(null));
+    render(
+      <ScopeProvider>
+        <ExposurePage />
+      </ScopeProvider>
+    );
+
+    expect(
+      await screen.findByText("No SLA reports reported by Exposure SLA"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("0%")).not.toBeInTheDocument();
   });
 
   it("retains the selected scope when requesting risk exceptions", async () => {
@@ -309,31 +458,217 @@ describe("ExposurePage Defender posture", () => {
     });
   });
 
-  it("renders the authoritative scoped identities, generation, and source coverage", async () => {
+  it("does not duplicate the authoritative operational finding list on Overview", async () => {
     render(
       <ScopeProvider>
         <ExposurePage />
       </ScopeProvider>
     );
 
-    expect(
-      await screen.findByRole("heading", { name: "Authoritative exposure findings" }),
-    ).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Exposure summary" });
     for (const exposureId of [
       "exposure:aum-only:vm-a:cve-2026-1001",
       "exposure:defender-only:vm-b:cve-2026-1002",
       "exposure:merged:vm-shared:cve-2026-1003",
       "exposure:image:platform-api:cve-2026-2001",
     ]) {
-      expect(screen.getByText(exposureId)).toBeInTheDocument();
+      expect(screen.queryByText(exposureId)).not.toBeInTheDocument();
     }
+    expect(api.authoritativeExposures).not.toHaveBeenCalled();
+  });
+
+  it("renders all six independently stateful Overview sections", async () => {
+    render(
+      <ScopeProvider>
+        <ExposurePage />
+      </ScopeProvider>,
+    );
+
+    for (const sourceName of [
+      "Exposure summary",
+      "Patch priority preview",
+      "Exposure asset counts",
+      "Defender overview",
+      "Exposure SLA",
+      "Risk exceptions",
+    ]) {
+      const section = await screen.findByLabelText(`${sourceName} state`);
+      expect(section).toHaveAttribute("aria-busy", "false");
+      expect(within(section).getByText("Current")).toBeInTheDocument();
+      expect(within(section).getByText(/Source family: aum/)).toBeInTheDocument();
+      expect(within(section).getByText(/Freshness threshold: 3,600 seconds/)).toBeInTheDocument();
+      expect(within(section).getByText(/Observed: 2026-09-06T08:00:00Z/)).toBeInTheDocument();
+      expect(within(section).getByText(/1 of 2 connections represented/)).toBeInTheDocument();
+      expect(within(section).getByText(/loaded/)).toBeInTheDocument();
+      expect(within(section).getAllByText(/\d+ total/).length).toBeGreaterThan(0);
+      expect(within(section).getByText(/1 excluded/)).toBeInTheDocument();
+      expect(
+        within(section).getByText("Defender West connection unavailable"),
+      ).toBeInTheDocument();
+    }
+  });
+
+  it("uses the most conservative section state in the header and evidence bar", async () => {
+    api.exposureOverview.mockResolvedValue(overviewEnvelope("partial"));
+    render(
+      <ScopeProvider>
+        <ExposurePage />
+      </ScopeProvider>,
+    );
+
+    const headerStatus = await screen.findByRole("status", {
+      name: "Which exposure should be reduced first? evidence status",
+    });
+    expect(headerStatus).toHaveTextContent("Partial operational context");
+    expect(headerStatus).toHaveTextContent("1 of 2 connections represented");
+    expect(headerStatus).toHaveTextContent("3 represented");
+    expect(headerStatus).toHaveTextContent("4 total");
+    expect(headerStatus).toHaveTextContent("1 excluded");
+    expect(headerStatus).toHaveTextContent("Defender West connection unavailable");
+    expect(screen.queryByTestId("page-header-signal-dot")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Data trust and provenance")).toHaveTextContent(
+      "Partial evidence",
+    );
+  });
+
+  it.each([
+    ["summary", "Exposure summary", null],
+    ["patchPriorities", "Patch priority preview", []],
+    ["assetExposures", "Exposure asset counts", []],
+    ["defenderOverview", "Defender overview", null],
+    ["slaCompliance", "Exposure SLA", null],
+    ["riskExceptions", "Risk exceptions", []],
+  ])(
+    "keeps healthy siblings visible while %s is healthy-empty",
+    async (method, sourceName, emptyValue) => {
+      api[method as keyof typeof api].mockResolvedValue(envelope(emptyValue));
+      render(
+        <ScopeProvider>
+          <ExposurePage />
+        </ScopeProvider>,
+      );
+
+      expect(
+        await screen.findByText(new RegExp(`reported by ${sourceName}$`)),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Defender overview" })).toBeInTheDocument();
+      expect(screen.queryByText("Exposure intelligence is unavailable")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    ["summary", "Exposure summary"],
+    ["patchPriorities", "Patch priority preview"],
+    ["assetExposures", "Exposure asset counts"],
+    ["defenderOverview", "Defender overview"],
+    ["slaCompliance", "Exposure SLA"],
+    ["riskExceptions", "Risk exceptions"],
+  ])(
+    "isolates a %s error without hiding usable siblings",
+    async (method, sourceName) => {
+      api[method as keyof typeof api].mockRejectedValue(
+        new Error(`${sourceName} provider failed`),
+      );
+      render(
+        <ScopeProvider>
+          <ExposurePage />
+        </ScopeProvider>,
+      );
+
+      expect(await screen.findByText(`${sourceName} is unavailable`)).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Defender overview" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Patch priority preview" })).toBeInTheDocument();
+      expect(screen.queryByText("Exposure intelligence is unavailable")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    ["summary", "Exposure summary"],
+    ["patchPriorities", "Patch priority preview"],
+    ["assetExposures", "Exposure asset counts"],
+    ["defenderOverview", "Defender overview"],
+    ["slaCompliance", "Exposure SLA"],
+    ["riskExceptions", "Risk exceptions"],
+  ])("keeps siblings usable while %s is loading", async (method, sourceName) => {
+    api[method as keyof typeof api].mockReturnValue(pending());
+    render(
+      <ScopeProvider>
+        <ExposurePage />
+      </ScopeProvider>,
+    );
+
+    expect(await screen.findByText(`Loading ${sourceName}`)).toBeInTheDocument();
+    if (method === "patchPriorities") {
+      expect(await screen.findByText("Active alerts")).toBeInTheDocument();
+    } else {
+      expect(await screen.findByText("KB600001")).toBeInTheDocument();
+    }
+    expect(screen.getByRole("heading", { name: "Defender overview" })).toBeInTheDocument();
+  });
+
+  it("preserves same-scope patch preview LKG and retry focus after refresh failure", async () => {
+    api.exposureOverview.mockResolvedValue(overviewEnvelope("stale"));
+    api.patchPriorities
+      .mockResolvedValueOnce(envelope([patchPriority]))
+      .mockRejectedValueOnce(new Error("Patch refresh failed"));
+    render(
+      <ScopeProvider>
+        <ExposurePage />
+      </ScopeProvider>,
+    );
+
+    expect(await screen.findByText("KB600001")).toBeInTheDocument();
+    const retry = screen.getByRole("button", {
+      name: "Retry Patch priority preview",
+    });
+    retry.focus();
+    fireEvent.click(retry);
+
+    await waitFor(() => {
+      expect(api.patchPriorities).toHaveBeenCalledTimes(2);
+    });
+    expect(document.activeElement).toBe(retry);
+    expect(screen.getByText("KB600001")).toBeInTheDocument();
     expect(
-      screen.queryByText("exposure:unauthorized:vm-hidden:cve-2026-1999"),
-    ).not.toBeInTheDocument();
-    expect(screen.getByText("Generation exposure-generation-0001")).toBeInTheDocument();
-    expect(screen.getByText("Partial · 2 of 3 connections")).toBeInTheDocument();
-    expect(screen.getByText("AUM 2 findings")).toBeInTheDocument();
-    expect(screen.getByText("Defender 3 findings")).toBeInTheDocument();
-    expect(api.authoritativeExposures).toHaveBeenCalledWith({});
+      screen.getByLabelText("Patch priority preview state"),
+    ).toHaveTextContent("Patch refresh failed");
+  });
+
+  it("renders unknown summary values as em dashes with explanatory detail", async () => {
+    api.summary.mockResolvedValue(envelope({}));
+    render(
+      <ScopeProvider>
+        <ExposurePage />
+      </ScopeProvider>,
+    );
+
+    const criticalMetric = await screen.findByText("Critical CVEs");
+    const card = criticalMetric.closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByLabelText("Critical CVEs value")).toHaveTextContent("—");
+    expect(card).toHaveTextContent("CVE total unavailable");
+    expect(card).not.toHaveTextContent("0 CVEs");
+  });
+
+  it("shows whole-page unavailability only when every authorized section has failed", async () => {
+    for (const method of [
+      "summary",
+      "patchPriorities",
+      "assetExposures",
+      "defenderOverview",
+      "slaCompliance",
+      "riskExceptions",
+    ] as const) {
+      api[method].mockRejectedValue(new Error(`${method} unavailable`));
+    }
+    render(
+      <ScopeProvider>
+        <ExposurePage />
+      </ScopeProvider>,
+    );
+
+    expect(
+      await screen.findByText("Exposure intelligence is unavailable"),
+    ).toBeInTheDocument();
   });
 });

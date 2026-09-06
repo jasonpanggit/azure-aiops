@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 03.1-15 not started (14/25 sequential complete; 16/25 total summaries)
+current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
-stopped_at: Completed 03.1-14-PLAN.md
-last_updated: "2026-09-06T11:08:25.111Z"
+stopped_at: Completed 03.1-25-PLAN.md
+last_updated: "2026-09-06T16:35:45.198Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 116
+  completed_plans: 131
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -20,11 +20,15 @@ current_phase_name: Exposure Reliability and Scale
 
 **Active Phase:** Phase 03.1 (Exposure Reliability and Scale)
 **Wave:** Next eligible plan<br>
-**Current Plan:** 03.1-15 not started (14/25 sequential complete; 16/25 total summaries)
-**Status:** Planning — Plan 03.1-14 complete; Phase 12 behavior preserved
+**Current Plan:** 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
+**Status:** Planning — Plans 03.1-21 through 03.1-25 are complete out of sequence; Plan 03.1-19 remains next; Phase 11 snapshot v2, Phase 12, remediation, and network behavior preserved
 
 ## Completed Plans (This Session)
 
+- **13-02** COMPLETE — Durable run identity, CAS claims, renewable leases/fences, bounded lifecycle controls, enqueue-only Manual Sync, and finite run-once CLI
+- **13-03** COMPLETE — Five-way incremental discovery, exact 50/200/40 evidence bounds, and restart-durable pending edges and batches
+- **13-11** COMPLETE — Content-addressed immutable EvaluationSnapshots, CAS latest pointer, and fail-closed freshness reconstruction
+- **13-01** COMPLETE — Independent Phase 10/12 evidence preflight, non-authoritative shadow/fenced-pointer tracer, and 35-scenario synthetic Wave 0 corpus
 - **12-01..12-11** COMPLETE — Scope-safe topology projection, private-link/Fabric/Foundry semantics, bounded summary/detail contracts, policy refresh, truthful provenance, accessible graph/drawer/export UX, downstream compatibility, representative scale gates, and final review remediation
 - **03.1-01** COMPLETE — Wave 0 deterministic Exposure fixture, explicit backend/web pending gates, 100k correctness harness, and exhaustive fail-closed Fabric SQL readiness probe
 - **03.1-21** COMPLETE — Approved ontology v2 contract and production scope-first tracer through typed ontology, review-only container remediation, and Copilot parity
@@ -39,6 +43,12 @@ current_phase_name: Exposure Reliability and Scale
 - **03.1-12** COMPLETE — Scoped generation-pinned Gold facts/facets/summaries/evidence, exact pre-activation reconciliation, and retained-pointer rollback
 - **03.1-13** COMPLETE — Scope-first Fabric SQL queries, managed signed cursors, authenticated Exposure APIs, and the duplicate-free 100k gate
 - **03.1-14** COMPLETE — Unified authenticated Exposure consumers, handoff-only container policy, and evidence-bound immutable audit
+- **03.1-15** COMPLETE — Scope-safe canonical Exposure query state, typed cursor APIs, same-query LKG retention, abort/race protection, and accessible independent source states
+- **03.1-16** COMPLETE — Independently recoverable Defender sections, exact allowlisted portal handoffs, weighted secure score, truthful asset labels, and review-only container governance
+- **03.1-22** COMPLETE — Native Exposure navigation, lean Overview composition, six independent source states, conservative completeness, and unknown-safe metrics
+- **03.1-18** COMPLETE — Low-cardinality Exposure telemetry, one-cycle Azure Monitor alerts, and generation-bound semantic shadow reconciliation
+- **03.1-24** COMPLETE — Conservative shared evidence primitives, opaque cursor pagination, and governed Fluent UI risk-exception feedback
+- **03.1-25** COMPLETE — Independent CVE/KB detail states, canonical origin/query/row/scroll continuity, and governed risk-exception feedback
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
 - **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
 - **03.6-03** COMPLETE — Fail-safe `selectedPatchIds: string[] | null` patch-selection model (fixes CR-07 deselect-all-then-widens-to-all bug) and bounded/backoff client polling (`usePollingBackoff`, capped at 40 requests or 600000ms) with independently-testable ceilings
@@ -149,7 +159,18 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P23 | 28min | 2 tasks | 14 files |
 | Phase 03.1 P12 | 31min | 2 tasks | 6 files |
 | Phase 03.1 P13 | 26 min | 3 tasks | 9 files |
+| Phase 13 P01 | 18min | 2 tasks | 6 files |
+| Phase 13 P02 | 9min | 2 tasks | 10 files |
+| Phase 13 P03 | 7min | 2 tasks | 8 files |
+| Phase 13 P11 | 7min | 2 tasks | 3 files |
 | Phase 03.1 P14 | 41 min | 3 tasks | 17 files |
+| Phase 03.1 P18 | 22min | 3 tasks | 10 files |
+| Phase 03.1 P24 | 10 min | 3 tasks | 9 files |
+| Phase 03.1 P15 | 18 min | 2 tasks | 10 files |
+| Phase 03.1 P16 | 15min | 2 tasks | 7 files |
+| Phase 03.1 P17 | 41 min | 2 tasks | 9 files |
+| Phase 03.1 P22 | 10min | 2 tasks | 9 files |
+| Phase 03.1 P25 | 25 min | 3 tasks | 13 files |
 
 ## Decisions
 
@@ -231,15 +252,43 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: Exposure authorization is resolved server-side and must exactly match the authenticated principal and effective request scope before SQL compilation.
 - [Phase 03.1]: Exposure cursors use canonical HMAC-SHA256 payloads with a 15-minute TTL and managed previous-key verification limited to the 30-minute overlap.
 - [Phase 03.1]: The deterministic SQL-contract benchmark remains distinct from live Fabric certification; the live canary requires readiness and explicit benchmark scope.
+- [Phase 13]: Dependency authorization requires roadmap, requirements, complete summaries, Nyquist validation, and passed verification; STATE.md alone is never sufficient.
+- [Phase 13]: Wave 0 remains test-only and non-authoritative; reviewed model edges are excluded in shadow mode and pointer changes require fresh fences.
 - [Phase 03.1]: Use a nested versioned Exposure semantic contract while retaining legacy response aliases during shadow rollout.
 - [Phase 03.1]: Derive Fabric SQL tenant and connection authorization only from authenticated principal scope and active connection metadata.
 - [Phase 03.1]: Container findings may create only evidence-qualified non-executable review handoffs or no_safe_action outcomes.
 - [Phase 03.1]: Sensitive Exposure transitions must append an immutable evidence-bound audit event before acceptance.
+- [Phase 03.1]: Plan 03.1-18: Exposure metrics accept only finite low-cardinality dimensions and values; scoped identities, queries, cursors, vulnerability IDs, URLs, and raw errors are rejected rather than hashed.
+- [Phase 03.1]: Plan 03.1-18: Shadow comparison is symmetric and generation-bound; default cutover tolerance is zero, with only explicitly documented time-varying enrichment changes treated as expected.
+- [Phase 03.1]: Plan 03.1-18: Exposure alerts use exactly one configurable ingestion-cycle window, evaluate no slower than ingestion, and fire after one failing period.
+- [Phase 03.1]: Only explicit complete/current PageHeader evidence renders a live signal; omitted evidence makes no live claim.
+- [Phase 03.1]: Cursor tokens remain parent-owned; TablePagination receives only exact server facts and validated history availability.
+- [Phase 03.1]: Risk exception mutations pass the full existing remediation governance objects through unchanged.
+- [Phase 03.1]: Missing per-item revoke outcomes are treated as not attempted and remain selected for retry.
+- [Phase 03.1]: URL scope remains observational and may only narrow the current authorized browser scope. — This prevents forged or stale deep links from broadening Exposure API authority.
+- [Phase 03.1]: Exposure request identity is separate from its LKG retention boundary. — Cursor moves retain current rows while scope, filter, sort, page-size, or generation changes clear them immediately.
+- [Phase 03.1]: Healthy-empty requires explicit successful source evidence. — Unknown zero-row responses must remain unavailable instead of becoming false proof of no exposure.
+- [Phase 03.1]: Plan 03.1-16: Never construct Azure portal destinations in the browser; validate complete backend-issued URLs against closed action, route, and authorized ARM identity rules.
+- [Phase 03.1]: Plan 03.1-16: Pair each independent Defender row source with the canonical URL-scoped Exposure overview contract for shared generation, freshness, completeness, and evidence.
+- [Phase 03.1]: Plan 03.1-16: Reject container eligible outcomes in the browser; only review_handoff and no_safe_action are valid container governance states.
+- [Phase 03.1]: Plan 03.1-16: Compute aggregate secure score from summed current and maximum points across authorized subscriptions.
+- [Phase 03.1]: Patch priority and inventory views use the common server-backed Exposure query and opaque cursor contract instead of legacy client aggregates.
+- [Phase 03.1]: Exposure return URLs are restricted to canonical internal Exposure paths and revalidated against the current authorized scope.
+- [Phase 03.1]: Container findings remain non-executable: only explicit review_handoff or no_safe_action server outcomes are rendered, and handoff responses must confirm no execution transition.
+- [Phase 03.1]: Existing governed server execution is revalidated immediately before execute while can_operate, approval, snapshot, polling, recovery, reconciliation, and lineage contracts remain authoritative.
+- [Phase 03.1]: Plan 03.1-22: Only exact canonical Defender/Patch paths may select a detail parent; invalid or absent origins fall back to Patch priorities.
+- [Phase 03.1]: Plan 03.1-22: Each Overview source owns an independent common-contract and source request so failures and retries cannot gate healthy siblings.
+- [Phase 03.1]: Plan 03.1-22: Common completeness owns trust and connection coverage while source envelopes own loaded and total item counts.
+- [Phase 03.1]: Plan 03.1-22: Whole-page unavailability appears only when all six authorized sections are unavailable.
+- [Phase 03.1]: Keep existing CVE and KB [id] routes; exact internal origin allowlisting and authorized query parsing govern every detail return. — Prevents open redirects and URL-based scope widening while preserving collection context.
+- [Phase 03.1]: Use canonical Exposure item pages for detail finding totals and durable enrichment source records for local NVD, EPSS, KEV, and MSRC trust states. — Keeps pagination and completeness server-owned while allowing enrichment sections to fail independently.
+- [Phase 03.1]: Treat absent durable enrichment status as unavailable rather than rendering compatibility defaults as observed zero. — Avoids false healthy or zero claims when a feed has no proven result.
+- [Phase 03.1]: Use authenticated session identity in the shared risk dialog and expose revoke only when the server projects can_revoke. — Keeps attribution and transition authority out of browser-entered fields.
 
 ## Session
 
-**Last session:** 2026-09-06T11:08:25.095Z
-**Stopped at:** Completed 03.1-14-PLAN.md
+**Last session:** 2026-09-06T16:35:45.182Z
+**Stopped at:** Completed 03.1-25-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context

@@ -33,6 +33,7 @@ from api.errors import ApiError
 from api.evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence
 from api.exposure_query import ExposureFilter, ExposureQuery, ExposureSort
 from api.scope import Scope, scope_attributes
+from fabric.dataset_mapper import ONTOLOGY_RELATIONSHIP_TYPES
 from intelligence.vulnerability.exposure_contracts import (
     ExposureApiPage,
     exposure_page_from_read_port,
@@ -154,6 +155,7 @@ class ToolSpec:
     description: str
     parameters: Mapping[str, str]
     handler: Callable[[ToolContext, Mapping[str, Any]], ToolResult]
+    read_only: bool = True
 
 
 @dataclass
@@ -169,6 +171,7 @@ class ToolContext:
     context: Any
     scope: Scope
     principal: Any | None = None
+    generation_selection: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -300,6 +303,10 @@ def _provider_result(
         return ToolResult(status=STATUS_UNAVAILABLE, warning=str(exc.message))
     if provider is None:
         return ToolResult(status=STATUS_UNAVAILABLE, warning=f"The {name} provider is not configured")
+    if tool_context.generation_selection is not None and hasattr(
+        provider, "for_generation"
+    ):
+        provider = provider.for_generation(tool_context.generation_selection)
     try:
         return loader(provider)
     except (LookupError, ValueError) as exc:
@@ -1126,6 +1133,174 @@ def _tool_search(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResu
     return _provider_result(tool_context, "semantic", run)
 
 
+def _ontology_provider(tool_context: ToolContext) -> Any | None:
+    provider = getattr(tool_context.context, "ontology_evidence_provider", None)
+    if callable(provider):
+        return provider()
+    return provider
+
+
+def _generation_id(selection: Any | None) -> str:
+    return str(getattr(selection, "generation_id", "") or "")
+
+
+def _scoped_rows(
+    value: Any,
+    *,
+    key: str,
+    scope: Scope,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if isinstance(value, Mapping):
+        rows = value.get(key)
+        if rows is None:
+            rows = value.get("items")
+    else:
+        rows = value
+    if not isinstance(rows, (list, tuple)):
+        return []
+    visible: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        filtered = _filter_scoped(dict(row), scope)
+        if filtered is _HIDDEN or not isinstance(filtered, dict):
+            continue
+        visible.append(filtered)
+        if len(visible) >= limit:
+            break
+    return visible
+
+
+def _tool_list_changed_entities(
+    tool_context: ToolContext,
+    args: Mapping[str, Any],
+) -> ToolResult:
+    del args
+    provider = _ontology_provider(tool_context)
+    if provider is None or not hasattr(provider, "list_changed_entities"):
+        return ToolResult(
+            status=STATUS_UNAVAILABLE,
+            warning="Ontology evidence is unavailable",
+        )
+    rows = provider.list_changed_entities(
+        scope=tool_context.scope,
+        generation=tool_context.generation_selection,
+        limit=50,
+    )
+    visible = _scoped_rows(
+        rows,
+        key="changed_entities",
+        scope=tool_context.scope,
+        limit=50,
+    )
+    if not visible:
+        return ToolResult(status=STATUS_EMPTY)
+    return ToolResult(
+        status=STATUS_OK,
+        data={
+            "changed_entities": visible,
+            "generation_id": _generation_id(tool_context.generation_selection),
+        },
+    )
+
+
+def _tool_get_entity_evidence(
+    tool_context: ToolContext,
+    args: Mapping[str, Any],
+) -> ToolResult:
+    entity_id = str(args.get("entity_id") or "").strip()
+    if not entity_id:
+        return ToolResult(status=STATUS_EMPTY, warning="An entity id is required")
+    provider = _ontology_provider(tool_context)
+    if provider is None or not hasattr(provider, "get_entity_evidence"):
+        return ToolResult(
+            status=STATUS_UNAVAILABLE,
+            warning="Ontology evidence is unavailable",
+        )
+    rows = provider.get_entity_evidence(
+        entity_id,
+        scope=tool_context.scope,
+        generation=tool_context.generation_selection,
+        limit=40,
+    )
+    visible = _scoped_rows(
+        rows,
+        key="evidence_records",
+        scope=tool_context.scope,
+        limit=40,
+    )
+    if not visible:
+        return ToolResult(status=STATUS_EMPTY)
+    return ToolResult(
+        status=STATUS_OK,
+        data={
+            "evidence_records": visible,
+            "generation_id": _generation_id(tool_context.generation_selection),
+        },
+    )
+
+
+def _tool_get_ontology_vocabulary(
+    tool_context: ToolContext,
+    args: Mapping[str, Any],
+) -> ToolResult:
+    del args
+    relationship_types = [
+        {
+            "subject_type": subject_type,
+            "predicate": predicate,
+            "object_type": object_type,
+        }
+        for subject_type, predicate, object_type in ONTOLOGY_RELATIONSHIP_TYPES[:200]
+    ]
+    if not relationship_types:
+        return ToolResult(status=STATUS_EMPTY)
+    return ToolResult(
+        status=STATUS_OK,
+        data={
+            "relationship_types": relationship_types,
+            "generation_id": _generation_id(tool_context.generation_selection),
+        },
+    )
+
+
+def _tool_search_relationship_history(
+    tool_context: ToolContext,
+    args: Mapping[str, Any],
+) -> ToolResult:
+    entity_id = str(args.get("entity_id") or "").strip()
+    if not entity_id:
+        return ToolResult(status=STATUS_EMPTY, warning="An entity id is required")
+    provider = _ontology_provider(tool_context)
+    if provider is None or not hasattr(provider, "search_relationship_history"):
+        return ToolResult(
+            status=STATUS_UNAVAILABLE,
+            warning="Ontology relationship history is unavailable",
+        )
+    rows = provider.search_relationship_history(
+        entity_id,
+        scope=tool_context.scope,
+        generation=tool_context.generation_selection,
+        limit=200,
+    )
+    visible = _scoped_rows(
+        rows,
+        key="relationships",
+        scope=tool_context.scope,
+        limit=200,
+    )
+    if not visible:
+        return ToolResult(status=STATUS_EMPTY)
+    return ToolResult(
+        status=STATUS_OK,
+        data={
+            "relationships": visible,
+            "generation_id": _generation_id(tool_context.generation_selection),
+        },
+    )
+
+
 TOOL_REGISTRY: dict[str, ToolSpec] = {
     spec.name: spec
     for spec in (
@@ -1278,6 +1453,39 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             handler=_tool_search,
         ),
         ToolSpec(
+            name="list_changed_entities",
+            description=(
+                "List at most 50 changed ontology entities from the "
+                "authenticated scope and selected immutable generation."
+            ),
+            parameters={},
+            handler=_tool_list_changed_entities,
+        ),
+        ToolSpec(
+            name="get_entity_evidence",
+            description=(
+                "Read at most 40 evidence records for one in-scope ontology entity."
+            ),
+            parameters={"entity_id": "Entity identifier already present in curator evidence"},
+            handler=_tool_get_entity_evidence,
+        ),
+        ToolSpec(
+            name="get_ontology_vocabulary",
+            description=(
+                "Read the authoritative bounded ontology relationship vocabulary."
+            ),
+            parameters={},
+            handler=_tool_get_ontology_vocabulary,
+        ),
+        ToolSpec(
+            name="search_relationship_history",
+            description=(
+                "Read at most 200 historical relationships for one in-scope entity."
+            ),
+            parameters={"entity_id": "Entity identifier already present in curator evidence"},
+            handler=_tool_search_relationship_history,
+        ),
+        ToolSpec(
             name="fabric_iq_relationships",
             description="Optional scope-checked semantic relationship context; never inventory identity. Cite the returned metadata.source, not Fabric IQ.",
             parameters={"subject": "Resource or domain subject already in caller evidence"},
@@ -1316,10 +1524,21 @@ def call_tool(
     spec = TOOL_REGISTRY.get(name)
     if spec is None:
         return ToolResult(status=STATUS_DENIED, warning=f"Unknown tool {name!r}")
+    resolver_provider = getattr(context, "generation_resolver_provider", None)
+    try:
+        resolver = resolver_provider() if callable(resolver_provider) else None
+        generation_selection = resolver.resolve() if resolver is not None else None
+    except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        _LOGGER.warning("tool_generation_resolution_failed tool=%s error=%s", name, exc)
+        return ToolResult(
+            status=STATUS_UNAVAILABLE,
+            warning="The ontology generation could not be resolved",
+        )
     tool_context = ToolContext(
         context=context,
         scope=scope,
         principal=principal,
+        generation_selection=generation_selection,
     )
     try:
         return spec.handler(tool_context, args)

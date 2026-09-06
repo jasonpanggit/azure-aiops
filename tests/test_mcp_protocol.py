@@ -89,6 +89,28 @@ def test_inventory_specialist_gets_only_its_exact_manifest_grant(tmp_path):
     assert denied.json()["result"]["isError"] is True
 
 
+def test_ontology_curator_gets_exact_read_only_catalog_with_strict_schemas(tmp_path):
+    listed = client(
+        tmp_path,
+        subject="curator-service",
+        specialist_id="ontology_curator",
+    ).post(
+        "/api/v1/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        headers=auth(),
+    ).json()["result"]["tools"]
+
+    assert [tool["name"] for tool in listed] == [
+        "list_changed_entities",
+        "get_entity_evidence",
+        "get_ontology_vocabulary",
+        "search_relationship_history",
+    ]
+    for tool in listed:
+        assert tool["inputSchema"]["additionalProperties"] is False
+        assert "scope" not in tool["inputSchema"]["properties"]
+
+
 def test_non_specialist_cannot_call_inventory_grant(tmp_path):
     denied = client(tmp_path).post(
         "/api/v1/mcp",

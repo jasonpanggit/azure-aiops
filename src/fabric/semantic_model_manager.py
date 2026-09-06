@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from .fabric_client import FabricClient
+
+if TYPE_CHECKING:
+    from ontology_discovery.generation_resolver import (
+        CompatibilityAlias,
+        GenerationSelection,
+    )
 
 ITEM_TYPE = "SemanticModel"
 _BLOCKED_CODES: frozenset[str] = frozenset(
@@ -51,9 +58,22 @@ def _validate_name(name: str, field: str) -> str:
     return name.strip()
 
 
-def build_semantic_model_definition(display_name: str, gold_tables: list[str]) -> dict[str, Any]:
+def build_semantic_model_definition(
+    display_name: str,
+    gold_tables: list[str],
+    *,
+    generation: GenerationSelection | None = None,
+    table_aliases: Mapping[str, CompatibilityAlias] | None = None,
+) -> dict[str, Any]:
     semantic_model_name = _validate_name(display_name, "display_name")
     tables = _normalize_gold_tables(gold_tables)
+    if table_aliases is not None:
+        if generation is None:
+            raise ValueError("generation is required with ontology table aliases")
+        tables = [
+            _bound_alias_name(table, generation, table_aliases)
+            for table in tables
+        ]
 
     model_bim = {
         "name": semantic_model_name,
@@ -77,6 +97,21 @@ def build_semantic_model_definition(display_name: str, gold_tables: list[str]) -
                 }
                 for table_name in tables
             ],
+            **(
+                {
+                    "annotations": [
+                        {
+                            "name": "aiops.ontologyGeneration",
+                            "value": (
+                                f"{generation.compatibility_alias_version}:"
+                                f"{generation.generation_id}"
+                            ),
+                        }
+                    ]
+                }
+                if generation is not None
+                else {}
+            ),
         },
     }
     definition_pbism = {
@@ -99,6 +134,19 @@ def build_semantic_model_definition(display_name: str, gold_tables: list[str]) -
             {"path": ".platform", "payload": _b64(platform), "payloadType": "InlineBase64"},
         ]
     }
+
+
+def _bound_alias_name(
+    name: str,
+    generation: GenerationSelection,
+    table_aliases: Mapping[str, CompatibilityAlias],
+) -> str:
+    alias = table_aliases.get(name)
+    if alias is None:
+        return name
+    if alias.logical_name != name or alias.generation_id != generation.generation_id:
+        raise ValueError(f"Compatibility alias for {name!r} is not bound to the selection")
+    return alias.logical_name
 
 
 def _normalize_definition(definition: dict[str, Any]) -> dict[str, Any]:

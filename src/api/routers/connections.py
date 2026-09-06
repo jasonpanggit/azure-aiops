@@ -243,19 +243,16 @@ def sync_connection(
     principal: OperatePrincipal,
     payload: ConnectionSyncRequest | None = None,
 ) -> dict[str, Any]:
-    """Start a sync in the background and return immediately.
-
-    Discovery + merge + ontology + Fabric publish can take well past typical
-    HTTP client timeouts for a large subscription, so this endpoint only
-    queues the run (`sync_state.status == "running"`) and returns; poll
-    `GET /{connection_id}/health` for `sync_state.stage`/`stage_message`/
-    `progress_pct` until it reaches `succeeded` or `failed`.
-    """
+    """Enqueue a durable ontology refresh and return immediately."""
     scope = _authorize_action(
         context, principal, ACTION_OPERATE, context.onboarding.detail(connection_id)
     )
     mode = payload.mode if payload else "manual"
-    result = context.onboarding.sync_async(connection_id, mode=mode)
+    result = context.onboarding.enqueue_ontology_refresh(
+        connection_id,
+        mode=mode,
+        requested_by=principal.subject,
+    )
     return envelope(result, evidence=_evidence(connection_id), scope=scope.to_dict())
 
 

@@ -72,6 +72,22 @@ class OntologyValidator:
         "ontology_version",
     )
 
+    def __init__(
+        self,
+        *,
+        allowed_triples: Iterable[tuple[str, str, str]] | None = None,
+    ) -> None:
+        if allowed_triples is None:
+            # Late import avoids the dataset mapper -> validator import cycle
+            # while retaining one authoritative vocabulary definition.
+            from fabric.dataset_mapper import allowed_relationship_triples
+
+            allowed_triples = allowed_relationship_triples()
+        self._allowed_triples = frozenset(
+            (str(subject), str(predicate), str(object_type))
+            for subject, predicate, object_type in allowed_triples
+        )
+
     def validate(
         self,
         entities: Iterable[dict[str, Any]],
@@ -134,7 +150,13 @@ class OntologyValidator:
             for row in valid_entities
             if _nonempty_string(row.get("resource_id"))
         }
+        entity_scopes = {
+            str(row.get("resource_id") or "").strip().casefold(): _row_scope(row)
+            for row in valid_entities
+            if _nonempty_string(row.get("resource_id"))
+        }
         relationship_ids: list[str] = []
+        relationship_keys: list[tuple[str, str, str]] = []
         dangling = 0
         self_links = 0
         for row in valid_relationships:
@@ -166,6 +188,20 @@ class OntologyValidator:
             )
             subject = str(row.get("subject_id") or "").strip().casefold()
             object_id = str(row.get("object_id") or "").strip().casefold()
+            relationship_keys.append(
+                (
+                    subject,
+                    str(row.get("predicate") or ""),
+                    object_id,
+                )
+            )
+            triple = (
+                str(row.get("subject_type") or ""),
+                str(row.get("predicate") or ""),
+                str(row.get("object_type") or ""),
+            )
+            if triple not in self._allowed_triples:
+                invalid_relationships += 1
             if subject not in known or object_id not in known:
                 dangling += 1
             elif row.get("lifecycle_status") == "active":
@@ -183,6 +219,15 @@ class OntologyValidator:
                     or entity_lifecycle.get(object_id) != "active"
                 ):
                     invalid_relationships += 1
+                # Phase 13 candidates carry an explicit server-derived scope.
+                # Legacy ontology rows predate that field and continue through
+                # their existing tenant/subscription validation path.
+                relationship_scope = str(row.get("scope") or "").strip().casefold()
+                if relationship_scope and (
+                    entity_scopes.get(subject) != relationship_scope
+                    or entity_scopes.get(object_id) != relationship_scope
+                ):
+                    invalid_relationships += 1
             if subject == object_id:
                 self_links += 1
             confidence = row.get("confidence")
@@ -195,8 +240,9 @@ class OntologyValidator:
                 invalid_relationships += 1
 
         duplicate_entities = len(entity_ids) - len(set(entity_ids))
-        duplicate_relationships = len(relationship_ids) - len(
-            set(relationship_ids)
+        duplicate_relationships = max(
+            len(relationship_ids) - len(set(relationship_ids)),
+            len(relationship_keys) - len(set(relationship_keys)),
         )
         passed = not any(
             (
@@ -233,3 +279,12 @@ def _valid_json_mapping(value: Any) -> bool:
     except (json.JSONDecodeError, TypeError):
         return False
     return isinstance(parsed, dict)
+
+
+def _row_scope(row: Mapping[str, Any]) -> str:
+    explicit = str(row.get("scope") or "").strip().casefold()
+    if explicit:
+        return explicit
+    tenant = str(row.get("tenant_id") or "").strip().casefold()
+    subscription = str(row.get("subscription_id") or "").strip().casefold()
+    return f"{tenant}/{subscription}" if tenant and subscription else ""
