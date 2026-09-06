@@ -27,6 +27,7 @@ export function useApi<T>(loader: () => Promise<T>, deps: React.DependencyList):
   const [refetchNonce, setRefetchNonce] = useState(0);
   const loaderRef = useRef(loader);
   const refetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previousDepsRef = useRef<React.DependencyList | null>(null);
   loaderRef.current = loader;
 
   const refetch = useCallback(() => {
@@ -50,7 +51,17 @@ export function useApi<T>(loader: () => Promise<T>, deps: React.DependencyList):
 
   useEffect(() => {
     let cancelled = false;
-    setState((prev) => ({ ...prev, loading: true, error: null }));
+    const previousDeps = previousDepsRef.current;
+    const dependencyChanged =
+      previousDeps === null ||
+      previousDeps.length !== deps.length ||
+      deps.some((dependency, index) => !Object.is(dependency, previousDeps[index]));
+    previousDepsRef.current = [...deps];
+    setState((prev) => ({
+      data: dependencyChanged ? null : prev.data,
+      loading: true,
+      error: null,
+    }));
     loaderRef
       .current()
       .then((data) => {

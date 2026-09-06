@@ -75,6 +75,21 @@ EXPECTED_ADDITIVE_KEYS = {
         ("data", "findings", "*", "affected_resource_ids"),
         "12-07",
     ),
+    (
+        "topology",
+        ("data", "summary", "projected_full_node_count"),
+        "12-REVIEW-CR-05",
+    ),
+    (
+        "gaps",
+        ("data", "summary", "projected_full_node_count"),
+        "12-REVIEW-CR-05",
+    ),
+    (
+        "rule_findings",
+        ("data", "summary", "projected_full_node_count"),
+        "12-REVIEW-CR-05",
+    ),
 }
 EXPECTED_EXPORT_KEYS = (
     "exported_at",

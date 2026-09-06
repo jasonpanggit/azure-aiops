@@ -14,6 +14,7 @@ import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { presentVerdict } from "@/lib/flow-verdict";
+import { scopeToSearchParams } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import { buildCopilotSnapshot, copilotEvidenceRows, networkApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
@@ -25,12 +26,27 @@ const NETWORK_PAGE_SIZE = 100;
 /** Network decision workspace for cross-environment reachability, inspection, and rule analysis. */
 export default function NetworkPage() {
   const { scope } = useScope();
+  const scopeKey = useMemo(() => {
+    const query = scopeToSearchParams(scope);
+    query.sort();
+    return query.toString();
+  }, [scope]);
   const [tab, setTab] = useState<NetworkTab>("flow");
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [gapPage, setGapPage] = useState(0);
   const [gapPageSize, setGapPageSize] = useState(NETWORK_PAGE_SIZE);
   const [findingPage, setFindingPage] = useState(0);
   const [findingPageSize, setFindingPageSize] = useState(NETWORK_PAGE_SIZE);
+  const [paginationScopeKey, setPaginationScopeKey] = useState(scopeKey);
+  const paginationScopeMatches = paginationScopeKey === scopeKey;
+  const activeGapPage = paginationScopeMatches ? gapPage : 0;
+  const activeGapPageSize = paginationScopeMatches
+    ? gapPageSize
+    : NETWORK_PAGE_SIZE;
+  const activeFindingPage = paginationScopeMatches ? findingPage : 0;
+  const activeFindingPageSize = paginationScopeMatches
+    ? findingPageSize
+    : NETWORK_PAGE_SIZE;
   const [topologyDetail, setTopologyDetail] =
     useState<TopologyDetailLevel>("summary");
   const [policyFeedback, setPolicyFeedback] = useState<{ tone: "success" | "warning"; message: string } | null>(null);
@@ -45,12 +61,18 @@ export default function NetworkPage() {
     [scope, topologyDetail],
   );
   const gaps = useApi(
-    () => networkApi.gaps(scope, { limit: gapPageSize, offset: gapPage * gapPageSize }),
-    [scope, gapPage, gapPageSize],
+    () => networkApi.gaps(scope, {
+      limit: activeGapPageSize,
+      offset: activeGapPage * activeGapPageSize,
+    }),
+    [scopeKey, activeGapPage, activeGapPageSize],
   );
   const findings = useApi(
-    () => networkApi.ruleFindings(scope, { limit: findingPageSize, offset: findingPage * findingPageSize }),
-    [scope, findingPage, findingPageSize],
+    () => networkApi.ruleFindings(scope, {
+      limit: activeFindingPageSize,
+      offset: activeFindingPage * activeFindingPageSize,
+    }),
+    [scopeKey, activeFindingPage, activeFindingPageSize],
   );
   const bypass = useApi(() => networkApi.firewallBypass(scope), [scope]);
 
@@ -70,6 +92,37 @@ export default function NetworkPage() {
     [scope],
   );
 
+  useEffect(() => {
+    if (paginationScopeKey === scopeKey) return;
+    setGapPage(0);
+    setGapPageSize(NETWORK_PAGE_SIZE);
+    setFindingPage(0);
+    setFindingPageSize(NETWORK_PAGE_SIZE);
+    setPaginationScopeKey(scopeKey);
+  }, [paginationScopeKey, scopeKey]);
+
+  useEffect(() => {
+    if (
+      !gaps.loading &&
+      activeGapPage > 0 &&
+      (gaps.data?.pagination?.total ?? 0) > 0 &&
+      (gaps.data?.data.gaps.length ?? 0) === 0
+    ) {
+      setGapPage(0);
+    }
+  }, [activeGapPage, gaps.data, gaps.loading]);
+
+  useEffect(() => {
+    if (
+      !findings.loading &&
+      activeFindingPage > 0 &&
+      (findings.data?.pagination?.total ?? 0) > 0 &&
+      (findings.data?.data.findings.length ?? 0) === 0
+    ) {
+      setFindingPage(0);
+    }
+  }, [activeFindingPage, findings.data, findings.loading]);
+
   function refreshDerivedAnalysis(options: { saved?: boolean; successMessage?: string } = {}) {
     setPolicyFeedback(null);
     setPendingPolicyRefresh({
@@ -84,7 +137,18 @@ export default function NetworkPage() {
   }
 
   useEffect(() => {
-    if (!pendingPolicyRefresh || gaps.loading || !gaps.data || gaps.data === pendingPolicyRefresh.previousGaps) return;
+    if (!pendingPolicyRefresh || gaps.loading) return;
+    if (gaps.error) {
+      setPolicyFeedback({
+        tone: "warning",
+        message: `${
+          pendingPolicyRefresh.saved ? "Policy was saved" : "Policy was updated"
+        }, but derived analysis could not be refreshed — ${gaps.error.message}.`,
+      });
+      setPendingPolicyRefresh(null);
+      return;
+    }
+    if (!gaps.data || gaps.data === pendingPolicyRefresh.previousGaps) return;
     const afterGapTotal = gaps.data.data.summary.gap_count;
     const serverSignalsCached =
       Boolean((gaps.data.data as { analysis_cached?: boolean; cached_analysis?: boolean }).analysis_cached) ||
@@ -107,7 +171,7 @@ export default function NetworkPage() {
       });
     }
     setPendingPolicyRefresh(null);
-  }, [gaps.data, gaps.loading, pendingPolicyRefresh]);
+  }, [gaps.data, gaps.error, gaps.loading, pendingPolicyRefresh]);
   const evidence = [
     ...(topology.data?.evidence ?? []),
     ...(gaps.data?.evidence ?? []),
@@ -263,7 +327,7 @@ export default function NetworkPage() {
               onRetryFindings={
                 gaps.error ? gaps.refetch : findings.error ? findings.refetch : gaps.refetch
               }
-              scope={topology.data?.scope ?? null}
+              scope={scope}
               evidence={topology.data?.evidence ?? null}
               warnings={topology.data?.warnings ?? null}
               knowledgeVersion={topology.data?.knowledge_version ?? null}
@@ -292,8 +356,8 @@ export default function NetworkPage() {
           emptyTitle="No inspection gaps detected"
           emptyMessage="Every rule in the design policy was evaluated against the current scope and produced no finding."
           pagination={gaps.data?.pagination}
-          page={gapPage}
-          pageSize={gapPageSize}
+          page={activeGapPage}
+          pageSize={activeGapPageSize}
           label="inspection gaps"
           onPageChange={setGapPage}
           onPageSizeChange={(size) => {
@@ -315,8 +379,8 @@ export default function NetworkPage() {
           emptyTitle="No rule findings detected"
           emptyMessage="Every observed NSG, firewall, and route rule was evaluated and none was flagged."
           pagination={findings.data?.pagination}
-          page={findingPage}
-          pageSize={findingPageSize}
+          page={activeFindingPage}
+          pageSize={activeFindingPageSize}
           label="rule findings"
           onPageChange={setFindingPage}
           onPageSizeChange={(size) => {
@@ -654,6 +718,15 @@ function FindingList({
         message={errorMessage}
         tone="error"
         action={<RetryButton label={`Retry loading ${label}`} loading={loading} onClick={onRetry} />}
+      />
+    );
+  }
+  if (items.length === 0 && (pagination?.total ?? 0) > 0) {
+    return (
+      <StatePanel
+        title={`Loading ${title.toLowerCase()}`}
+        message="Returning to the first available page."
+        tone="loading"
       />
     );
   }

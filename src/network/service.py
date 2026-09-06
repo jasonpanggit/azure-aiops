@@ -136,6 +136,7 @@ class NetworkAnalysis:
             "rule_findings_by_category": _count_by(self.rule_findings, "category"),
             "intended_design_declared": self.policy.is_declared,
             "resource_counts": self.topology.snapshot.counts(),
+            "projected_full_node_count": self.topology.projected_full_node_count(),
         }
 
 

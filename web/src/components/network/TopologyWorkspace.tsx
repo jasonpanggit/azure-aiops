@@ -12,6 +12,7 @@ import type {
 } from "@/components/network/TopologyGraph";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { buildTopologyGraph } from "@/lib/network-graph";
+import { scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import type {
   CollectionCoverage,
   EvidenceItem,
@@ -221,7 +222,7 @@ interface TopologyWorkspaceProps {
   findingsError?: Error | null;
   findingsTruncated?: boolean;
   onRetryFindings?: () => void;
-  scope?: Record<string, string[]> | null;
+  scope?: ScopeSelection | null;
   evidence?: EvidenceItem[] | null;
   warnings?: string[] | null;
   knowledgeVersion?: string | null;
@@ -258,6 +259,7 @@ export function TopologyWorkspace({
   const [fullDetailPending, setFullDetailPending] = useState(false);
   const [selection, setSelection] = useState<TopologySelection>(EMPTY_SELECTION);
   const [selectionAnnouncement, setSelectionAnnouncement] = useState("");
+  const selectionContextRef = useRef("");
   const graphHandleRef = useRef<TopologyGraphHandle | null>(null);
   const [badgeGaps, setBadgeGaps] = useState(gaps);
   const [badgeRuleFindings, setBadgeRuleFindings] = useState(ruleFindings);
@@ -341,6 +343,15 @@ export function TopologyWorkspace({
       ),
     [renderedGraph],
   );
+  const visibleEdgeIds = useMemo(
+    () => new Set((renderedGraph?.edges ?? []).map((edge) => edge.id)),
+    [renderedGraph],
+  );
+  const scopeKey = useMemo(() => {
+    const query = scopeToSearchParams(scope ?? {});
+    query.sort();
+    return query.toString();
+  }, [scope]);
   const normalizedSearch = search.trim().toLowerCase();
   const matchingNodeIds = useMemo(
     () =>
@@ -371,6 +382,29 @@ export function TopologyWorkspace({
   }, []);
 
   useEffect(() => {
+    const contextKey = `${scopeKey}::${detailLevel}`;
+    if (
+      selectionContextRef.current &&
+      selectionContextRef.current !== contextKey
+    ) {
+      setSelection(EMPTY_SELECTION);
+      setSelectionAnnouncement("");
+    }
+    selectionContextRef.current = contextKey;
+  }, [detailLevel, scopeKey]);
+
+  useEffect(() => {
+    if (
+      (selection.node &&
+        !visibleNodeIds.has(selection.node.id.toLowerCase())) ||
+      (selection.edge && !visibleEdgeIds.has(selection.edge.id))
+    ) {
+      setSelection(EMPTY_SELECTION);
+      setSelectionAnnouncement("");
+    }
+  }, [selection.edge, selection.node, visibleEdgeIds, visibleNodeIds]);
+
+  useEffect(() => {
     if (!filterMode || !normalizedSearch || (!selection.node && !selection.edge)) {
       return;
     }
@@ -399,20 +433,14 @@ export function TopologyWorkspace({
     selection.node,
   ]);
 
-  const projectedFullNodeCount = useMemo(
-    () =>
-      Object.values(summary?.resource_counts ?? {}).reduce(
-        (total, count) => total + count,
-        0,
-      ),
-    [summary],
-  );
+  const projectedFullNodeCount = summary?.projected_full_node_count;
 
   const chooseDetailLevel = useCallback(
     (nextDetail: TopologyDetailLevel) => {
       if (
         nextDetail === "full" &&
-        projectedFullNodeCount > FULL_DETAIL_GUARD_NODES
+        (projectedFullNodeCount === undefined ||
+          projectedFullNodeCount > FULL_DETAIL_GUARD_NODES)
       ) {
         setFullDetailPending(true);
         return;
@@ -542,7 +570,7 @@ export function TopologyWorkspace({
     warnings,
   ]);
 
-  if (loading) {
+  if (loading && !topology) {
     return (
       <StatePanel
         title="Building cross-subscription topology"
@@ -554,7 +582,7 @@ export function TopologyWorkspace({
   if (error) {
     return <StatePanel title="Topology is unavailable" message={error.message} tone="error" />;
   }
-  if (!topology || topology.hubs.length + topology.spokes.length + topology.isolated.length === 0) {
+  if (!topology || !renderedGraph || renderedGraph.nodes.length === 0) {
     return (
       <StatePanel
         title="No observed network topology"
@@ -569,6 +597,7 @@ export function TopologyWorkspace({
     <section
       className={`network-workspace topology-workspace${expanded ? " topology-workspace-expanded" : ""}`}
       aria-label="Network topology"
+      aria-busy={loading}
     >
       <div className="topology-toolbar">
         <input
@@ -672,8 +701,9 @@ export function TopologyWorkspace({
       {fullDetailPending && (
         <div className="callout callout-warning topology-coverage" role="status">
           <strong>
-            Full detail renders about {projectedFullNodeCount} nodes and may make
-            the canvas slow to interact with.
+            {projectedFullNodeCount === undefined
+              ? "Full-detail size is unavailable and may make the canvas slow to interact with."
+              : `Full detail renders about ${projectedFullNodeCount} nodes and may make the canvas slow to interact with.`}
           </strong>
           <button
             type="button"
@@ -743,6 +773,7 @@ export function TopologyWorkspace({
           }
           detailLevel={detailLevel}
           visibleNodeIds={visibleNodeIds}
+          scope={scope ?? {}}
         />
       </div>
 

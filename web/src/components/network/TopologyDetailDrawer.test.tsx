@@ -3,6 +3,7 @@ import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TopologyNodeData } from "@/lib/network-graph";
+import type { ScopeSelection } from "@/lib/scope";
 import { networkApi } from "@/lib/services";
 import { buildGapsEnvelope, buildRuleFindingsEnvelope } from "@/test/network-fixtures";
 
@@ -58,6 +59,7 @@ function renderDrawer(
   selectedNode = node(),
   state = findings(),
   onClose = vi.fn(),
+  scope: ScopeSelection = {},
 ) {
   return {
     onClose,
@@ -68,6 +70,7 @@ function renderDrawer(
         onClose={onClose}
         findings={state}
         detailLevel="summary"
+        scope={scope}
       />,
     ),
   };
@@ -228,6 +231,67 @@ describe("TopologyDetailDrawer peer copy and keyboard behavior", () => {
 });
 
 describe("TopologyDetailDrawer on-demand facts", () => {
+  it("forwards scope to hub and detail requests and isolates cached pages by scope", async () => {
+    const firstScope = { subscription: ["sub-a"] };
+    const secondScope = { subscription: ["sub-b"] };
+    const detailId = `${NODE_ID}/scope-isolated`;
+    const details = vi
+      .spyOn(networkApi, "topologyResourceDetails")
+      .mockImplementation((_resourceId, scope = {}) =>
+        Promise.resolve({
+          data: {
+            resource_id: detailId,
+            detail_type: "rules",
+            items: [{ id: scope.subscription?.[0] ?? "", name: scope.subscription?.[0] ?? "" }],
+            coverage: { total: 1, returned: 1, truncated: false },
+          },
+          evidence: [],
+          scope,
+          pagination: { offset: 0, limit: 50, total: 1, next_offset: null },
+        }),
+      );
+
+    const first = renderDrawer(
+      node({ id: detailId, label: "scoped" }),
+      findings(),
+      vi.fn(),
+      firstScope,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Load rules" }));
+    expect(await screen.findByText("sub-a")).toBeInTheDocument();
+    expect(details).toHaveBeenLastCalledWith(detailId, firstScope, 0, 50);
+    first.unmount();
+
+    renderDrawer(
+      node({ id: detailId, label: "scoped" }),
+      findings(),
+      vi.fn(),
+      secondScope,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Load rules" }));
+    expect(await screen.findByText("sub-b")).toBeInTheDocument();
+    expect(details).toHaveBeenLastCalledWith(detailId, secondScope, 0, 50);
+
+    const hub = vi.spyOn(networkApi, "hubDependents").mockResolvedValue({
+      data: {
+        hub_vnet_id: detailId,
+        hub_name: "hub",
+        dependent_vnets: [],
+        dependent_count: 0,
+      },
+      evidence: [],
+      scope: secondScope,
+    });
+    renderDrawer(
+      node({ id: `${detailId}/hub`, kind: "hub", entityType: "VNet" }),
+      findings(),
+      vi.fn(),
+      secondScope,
+    );
+    expect(await screen.findByText("No dependent networks were observed.")).toBeInTheDocument();
+    expect(hub).toHaveBeenCalledWith(`${detailId}/hub`, secondScope);
+  });
+
   it("withholds summary rules until requested, then renders a paginated 50-row page", async () => {
     const items = Array.from({ length: 50 }, (_, index) => ({
       id: `rule-${index}`,
@@ -258,7 +322,7 @@ describe("TopologyDetailDrawer on-demand facts", () => {
 
     await screen.findByText("rule-49");
     expect(request).toHaveBeenCalledTimes(1);
-    expect(request).toHaveBeenCalledWith(`${NODE_ID}/summary-rules`, 0, 50);
+    expect(request).toHaveBeenCalledWith(`${NODE_ID}/summary-rules`, {}, 0, 50);
     expect(screen.getByText("Showing 1–50 of 61 rules")).toBeInTheDocument();
     expect(screen.queryByText("rule-50")).not.toBeInTheDocument();
   });
@@ -311,6 +375,62 @@ describe("TopologyDetailDrawer on-demand facts", () => {
     expect(
       await screen.findByText("No NSG rules were observed for this resource."),
     ).toBeInTheDocument();
+  });
+
+  it("serializes page changes and deduplicates an in-flight page request", async () => {
+    let resolveNext!: (
+      value: Awaited<ReturnType<typeof networkApi.topologyResourceDetails>>,
+    ) => void;
+    const nextPage = new Promise<
+      Awaited<ReturnType<typeof networkApi.topologyResourceDetails>>
+    >((resolve) => {
+      resolveNext = resolve;
+    });
+    const request = vi
+      .spyOn(networkApi, "topologyResourceDetails")
+      .mockResolvedValueOnce({
+        data: {
+          resource_id: `${NODE_ID}/ordered-pages`,
+          detail_type: "rules",
+          items: [{ id: "rule-0", name: "rule-0" }],
+          coverage: { total: 51, returned: 1, truncated: true },
+        },
+        evidence: [],
+        scope: {},
+        pagination: { offset: 0, limit: 50, total: 51, next_offset: 50 },
+      })
+      .mockReturnValueOnce(nextPage);
+    renderDrawer(node({ id: `${NODE_ID}/ordered-pages` }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Load rules" }));
+    await screen.findByText("rule-0");
+    const next = screen.getByRole("button", { name: "Next page" });
+    fireEvent.click(next);
+    fireEvent.click(next);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenLastCalledWith(
+      `${NODE_ID}/ordered-pages`,
+      {},
+      50,
+      50,
+    );
+    expect(screen.getByText("Loading rules…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load rules" })).toBeDisabled();
+
+    resolveNext({
+      data: {
+        resource_id: `${NODE_ID}/ordered-pages`,
+        detail_type: "rules",
+        items: [{ id: "rule-50", name: "rule-50" }],
+        coverage: { total: 51, returned: 1, truncated: false },
+      },
+      evidence: [],
+      scope: {},
+      pagination: { offset: 50, limit: 50, total: 51, next_offset: null },
+    });
+    expect(await screen.findByText("rule-50")).toBeInTheDocument();
+    expect(screen.getByText("Showing 51–51 of 51 rules")).toBeInTheDocument();
   });
 
   it("keeps the drawer open on failure with a unique R-6 Retry", async () => {

@@ -473,6 +473,36 @@ class TestPrivateLinkProjection:
         assert matches[0]["entity_type"] == "AIFoundryAccount"
         assert matches[0]["details"]["private_link_candidate"] is True
 
+    def test_summary_reports_exact_projected_full_node_count(self) -> None:
+        endpoints = tuple(
+            PrivateEndpoint(
+                resource_id=(
+                    "/subscriptions/sub-a/resourceGroups/rg-network/providers/"
+                    f"Microsoft.Network/privateEndpoints/pe-{index}"
+                ),
+                name=f"pe-{index}",
+                subscription_id="sub-a",
+                resource_group="rg-network",
+                target_resource_id=(
+                    "/subscriptions/sub-a/resourceGroups/rg-app/providers/"
+                    f"Microsoft.Web/sites/app-{index}"
+                ),
+            )
+            for index in range(800)
+        )
+        analysis = NetworkIntelligenceService(
+            NetworkSnapshot(private_endpoints=endpoints)
+        ).analyze()
+        summary_payload = analysis.summary()
+        full_payload = analysis.topology.to_dict(detail="full")
+
+        assert sum(analysis.topology.snapshot.counts().values()) == 800
+        assert len(full_payload["resources"]) == 1_600
+        assert (
+            summary_payload["projected_full_node_count"]
+            == len(full_payload["resources"])
+        )
+
     def test_unrecognised_private_link_provider_uses_generic_type(self) -> None:
         resource_id = (
             "/subscriptions/sub-a/resourceGroups/rg/providers/"

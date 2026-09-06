@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ScopeProvider } from "@/lib/scope-context";
+import { ScopeProvider, useScope } from "@/lib/scope-context";
 import {
   buildGapsEnvelope,
   buildNetworkSummary,
@@ -11,6 +11,7 @@ import {
 } from "@/test/network-fixtures";
 import { ApiError } from "@/lib/types";
 import type { NetworkDesignPolicy } from "@/lib/types";
+import type { ScopeSelection } from "@/lib/scope";
 
 const mocks = vi.hoisted(() => ({
   topology: vi.fn(),
@@ -123,10 +124,23 @@ function bypassEnvelope() {
   };
 }
 
-function renderPage() {
+function ScopeChangeButton() {
+  const { setScope } = useScope();
+  return (
+    <button
+      type="button"
+      onClick={() => setScope({ subscription: ["sub-narrow"] })}
+    >
+      Narrow test scope
+    </button>
+  );
+}
+
+function renderPage(withScopeControl = false) {
   return render(
     <ScopeProvider>
       <NetworkPage />
+      {withScopeControl && <ScopeChangeButton />}
     </ScopeProvider>,
   );
 }
@@ -254,6 +268,50 @@ describe("Network page honest totals and server pagination", () => {
       expect(mocks.ruleFindings).toHaveBeenCalledTimes(2);
     });
     expect(await screen.findByText("Showing 101–200 of 620 rule findings")).toBeInTheDocument();
+  });
+
+  it("resets both server pagers before loading a changed scope", async () => {
+    const user = userEvent.setup();
+    mocks.gaps.mockImplementation(
+      (scope: ScopeSelection, options: { offset: number; limit: number }) =>
+        Promise.resolve(
+          buildGapsEnvelope(
+            scope.subscription?.[0] === "sub-narrow" ? 1 : 340,
+            options.offset,
+            options.limit,
+          ),
+        ),
+    );
+    mocks.ruleFindings.mockImplementation(
+      (scope: ScopeSelection, options: { offset: number; limit: number }) =>
+        Promise.resolve(
+          buildRuleFindingsEnvelope(
+            scope.subscription?.[0] === "sub-narrow" ? 1 : 620,
+            options.offset,
+            options.limit,
+          ),
+        ),
+    );
+    renderPage(true);
+
+    await user.click(await screen.findByRole("tab", { name: "Inspection gaps" }));
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    await screen.findByText("Showing 101–200 of 340 inspection gaps");
+    await user.click(screen.getByRole("button", { name: "Narrow test scope" }));
+
+    await waitFor(() =>
+      expect(mocks.gaps).toHaveBeenLastCalledWith(
+        { subscription: ["sub-narrow"] },
+        { limit: 100, offset: 0 },
+      ),
+    );
+    expect(mocks.ruleFindings).toHaveBeenLastCalledWith(
+      { subscription: ["sub-narrow"] },
+      { limit: 100, offset: 0 },
+    );
+    expect(
+      screen.queryByText("No inspection gaps detected"),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -734,5 +792,38 @@ describe("Network page policy round-trip", () => {
       { timeout: 1_500 },
     );
     expect(screen.queryByText(/Inspection gaps 340 → 340/)).not.toBeInTheDocument();
+  });
+
+  it("settles policy refresh state when derived gap analysis fails", async () => {
+    const user = userEvent.setup();
+    mocks.gaps
+      .mockResolvedValueOnce(buildGapsEnvelope(340))
+      .mockRejectedValueOnce(new Error("gap refresh timed out"));
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Rule ID" }),
+      declarativeRule.rule_id,
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Name" }),
+      declarativeRule.name,
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Rule assertion (JSON)" }),
+      { target: { value: JSON.stringify(declarativeRule.parameters) } },
+    );
+    await user.click(screen.getByRole("button", { name: "Save rule" }));
+
+    expect(
+      await screen.findByText(
+        "Policy was saved, but derived analysis could not be refreshed — gap refresh timed out.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Refreshing derived analysis…"),
+    ).not.toBeInTheDocument();
   });
 });

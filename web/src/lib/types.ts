@@ -1700,6 +1700,8 @@ export interface NetworkSummary {
    * can then be found, never conformance gaps. */
   intended_design_declared: boolean;
   resource_counts: Record<string, number>;
+  /** Exact de-duplicated node count produced by a full-detail projection. */
+  projected_full_node_count: number;
 }
 
 export interface NetworkGap {
