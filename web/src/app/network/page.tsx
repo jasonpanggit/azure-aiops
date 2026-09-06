@@ -1146,7 +1146,11 @@ function DesignPolicyWorkspace({
           {showAddForm ? "Cancel" : "Add rule"}
         </button>
       </div>
-      {saveError && <div className="callout callout-critical">{saveError}</div>}
+      {saveError && (
+        <div className="callout callout-critical" role="alert">
+          {saveError}
+        </div>
+      )}
       {feedback && (
         <div className={`callout callout-${feedback.tone}`} role="status">
           {feedback.message}
@@ -1164,7 +1168,11 @@ function DesignPolicyWorkspace({
             submitNewRule();
           }}
         >
-          {addError && <div className="callout callout-critical">{addError}</div>}
+          {addError && (
+            <div className="callout callout-critical" role="alert">
+              {addError}
+            </div>
+          )}
           <div className="policy-add-form-grid">
             <label>
               Analyzer template

@@ -458,7 +458,12 @@ describe("TopologyDetailDrawer on-demand facts", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Load rules" }));
-    expect(await screen.findByText(/Rules could not be loaded — details timed out/)).toBeInTheDocument();
+    const detailError = await screen.findByText(
+      /Rules could not be loaded — details timed out/,
+    );
+    expect(detailError.closest('[role="alert"]')).toHaveClass(
+      "callout-critical",
+    );
     expect(screen.getByRole("dialog")).toBeInTheDocument();
 
     const findingsRetry = screen.getByRole("button", {

@@ -691,7 +691,7 @@ function DrillDownSection({
         </>
       )}
       {error && (
-        <div className="callout callout-critical">
+        <div className="callout callout-critical" role="alert">
           <span>
             {titleize(definition.label)} could not be loaded — {error.message}.
             Retry, or open the resource in Azure.

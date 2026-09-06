@@ -604,6 +604,36 @@ describe("Network page policy round-trip", () => {
     expect(screen.getByRole("heading", { name: "Topology & traffic paths" })).toBeInTheDocument();
   });
 
+  it("announces an asynchronous policy save failure", async () => {
+    const user = userEvent.setup();
+    mocks.updatePolicy.mockRejectedValueOnce(new Error("policy save timed out"));
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(
+      await screen.findByRole("switch", {
+        name: "Disable Internet via firewall",
+      }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "policy save timed out",
+    );
+  });
+
+  it("announces policy form validation failures", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.click(screen.getByRole("button", { name: "Save rule" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Provide a rule id and name",
+    );
+  });
+
   it("retains the populated topology and metric totals while a policy-triggered refetch is in flight", async () => {
     const user = userEvent.setup();
     let resolveTopology: ((value: ReturnType<typeof buildTopologyEnvelope>) => void) | undefined;
