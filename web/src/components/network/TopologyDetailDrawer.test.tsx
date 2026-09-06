@@ -237,7 +237,7 @@ describe("TopologyDetailDrawer on-demand facts", () => {
     const detailId = `${NODE_ID}/scope-isolated`;
     const details = vi
       .spyOn(networkApi, "topologyResourceDetails")
-      .mockImplementation((_resourceId, scope) =>
+      .mockImplementation((_resourceId, scope = {}) =>
         Promise.resolve({
           data: {
             resource_id: detailId,
