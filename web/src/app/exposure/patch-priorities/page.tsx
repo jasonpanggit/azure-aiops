@@ -10,11 +10,19 @@ import {
 } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
+import {
+  RiskExceptionDialog,
+  type RiskExceptionRevokeOutcome,
+  type RiskExceptionRevokeRequest,
+  type RiskExceptionRevokeResult,
+} from "@/components/exposure/RiskExceptionDialog";
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { PageHeader, type PageHeaderCompleteness } from "@/components/ui/PageHeader";
+import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
+import { useApi } from "@/hooks/useApi";
 import { useExposureSection } from "@/hooks/useExposureSection";
 import {
   advanceExposureCursor,
@@ -29,12 +37,17 @@ import {
   type ExposureQueryState,
 } from "@/lib/exposure-query-state";
 import { useScope } from "@/lib/scope-context";
-import { vulnerabilityApi } from "@/lib/services";
+import {
+  remediationApi,
+  vulnerabilityApi,
+  type ExposureRemediationCase,
+} from "@/lib/services";
 import type {
   ExposureEnvelope,
   ExposureFinding,
   ExposurePage,
   ExposureSort,
+  RiskException,
 } from "@/lib/types";
 
 export interface PatchExposureFinding extends ExposureFinding {
@@ -162,6 +175,25 @@ function remediationHref(
   return `/remediation?${params.toString()}`;
 }
 
+function containerReviewHref(
+  item: PatchExposureFinding,
+  handoff: ExposureRemediationCase,
+  pathname: string,
+  state: ExposureQueryState,
+): string {
+  const boundState = {
+    ...state,
+    target: item.target_id,
+    generation: item.read_model_generation_id || state.generation,
+  };
+  const params = new URLSearchParams();
+  params.set("handoff", handoff.handoff_id || handoff.exposure_id);
+  params.set("generation", boundState.generation);
+  params.set("return_to", canonicalPath(pathname, boundState));
+  params.set("return_focus", item.exposure_id);
+  return `/remediation?${params.toString()}`;
+}
+
 function nextSort(current: ExposureSort): ExposureSort {
   if (current.field !== "priority_score") {
     return { field: "priority_score", direction: "desc" };
@@ -229,8 +261,35 @@ export default function PatchPrioritiesPage() {
       >,
     isEmpty: (page) => page.items.length === 0,
   });
+  const handoffs = useApi(
+    () => remediationApi.exposureHandoffs(queryState.scope),
+    [exposureRetentionKey(queryState)],
+  );
+  const riskExceptions = useApi(
+    () => vulnerabilityApi.riskExceptions(queryState.scope),
+    [exposureRetentionKey(queryState)],
+  );
+  const [selectedExceptions, setSelectedExceptions] = useState<Set<string>>(
+    new Set(),
+  );
+  const [riskDialogOpen, setRiskDialogOpen] = useState(false);
+  const revokeInvokerRef = useRef<HTMLButtonElement>(null);
   const page = section.data;
   const rows = page?.items ?? [];
+  const exceptionRows = riskExceptions.data?.data ?? [];
+  const selectedExceptionRows = exceptionRows.filter((exception) =>
+    selectedExceptions.has(exception.exception_id),
+  );
+  const handoffByExposureId = useMemo(
+    () =>
+      new Map(
+        (handoffs.data?.data.cases ?? []).map((handoff) => [
+          handoff.exposure_id,
+          handoff,
+        ]),
+      ),
+    [handoffs.data],
+  );
   const represented =
     page?.contract.counts.represented ??
     page?.contract.completeness.represented ??
@@ -262,6 +321,56 @@ export default function PatchPrioritiesPage() {
     },
     [commitQuery, queryState],
   );
+
+  useEffect(() => {
+    if (!rows.length || !queryState.target) return;
+    const match = rows.find(
+      (item) =>
+        item.target_id === queryState.target ||
+        item.target_id.endsWith(`/${queryState.target}`),
+    );
+    if (!match) return;
+    const row = document.getElementById(match.exposure_id);
+    row?.focus({ preventScroll: true });
+    row?.scrollIntoView?.({ block: "center" });
+  }, [queryState.target, rows]);
+
+  const revokeSelected = async (
+    request: RiskExceptionRevokeRequest,
+  ): Promise<RiskExceptionRevokeResult> => {
+    const outcomes: RiskExceptionRevokeOutcome[] = [];
+    for (let index = 0; index < request.exceptionIds.length; index += 1) {
+      const exceptionId = request.exceptionIds[index];
+      try {
+        await vulnerabilityApi.revokeRiskException(exceptionId);
+        outcomes.push({ exceptionId, status: "succeeded" });
+      } catch (error) {
+        outcomes.push({
+          exceptionId,
+          status: "failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        for (const remainingId of request.exceptionIds.slice(index + 1)) {
+          outcomes.push({
+            exceptionId: remainingId,
+            status: "not_attempted",
+            message: "Not attempted after an earlier revocation failed.",
+          });
+        }
+        return {
+          status: "partial",
+          auditId: outcomes.find((outcome) => outcome.status === "succeeded")
+            ?.exceptionId,
+          outcomes,
+        };
+      }
+    }
+    return {
+      status: "success",
+      auditId: outcomes[0]?.exceptionId,
+      outcomes,
+    };
+  };
 
   return (
     <div className="page-container exposure-patch-priorities">
@@ -385,6 +494,13 @@ export default function PatchPrioritiesPage() {
                   {rows.map((item, index) => {
                     const rank = first + index;
                     const isServer = item.target_kind === "server";
+                    const containerHandoff = handoffByExposureId.get(
+                      item.exposure_id,
+                    );
+                    const canReviewContainer =
+                      isServer === false &&
+                      containerHandoff?.outcome === "review_handoff" &&
+                      containerHandoff.direct_execution_supported === false;
                     return (
                       <tr key={item.exposure_id} id={item.exposure_id} tabIndex={-1}>
                         <td data-label="Rank">Rank {rank.toLocaleString("en-US")}</td>
@@ -430,10 +546,30 @@ export default function PatchPrioritiesPage() {
                             >
                               Open governed remediation for {item.weakness_id}
                             </Link>
+                          ) : canReviewContainer && containerHandoff ? (
+                            <>
+                              <Link
+                                className="button button-primary"
+                                href={containerReviewHref(
+                                  item,
+                                  containerHandoff,
+                                  pathname,
+                                  queryState,
+                                )}
+                              >
+                                Open governed container review for {item.weakness_id}
+                              </Link>
+                              <span className="table-secondary">
+                                Nothing executes from Exposure.
+                              </span>
+                            </>
                           ) : (
                             <span className="table-secondary">
-                              {item.target_kind === "container_image"
-                                ? "Governed container review required"
+                              {isServer === false
+                                ? containerHandoff?.outcome_reason ||
+                                  (handoffs.loading
+                                    ? "Checking governed review eligibility"
+                                    : "No safe container action")
                                 : "No safe action available"}
                             </span>
                           )}
@@ -485,6 +621,160 @@ export default function PatchPrioritiesPage() {
           )}
         </section>
       </SourceSectionState>
+
+      <section className="card queue-card" aria-labelledby="risk-exceptions-heading">
+        <div className="card-header">
+          <div>
+            <h2 id="risk-exceptions-heading">Risk exceptions</h2>
+            <p>
+              Active audited exceptions for the current authorized scope.
+              Selection is limited to this loaded page.
+            </p>
+          </div>
+        </div>
+        {riskExceptions.loading ? (
+          <StatePanel
+            title="Loading risk exceptions"
+            message="Reading active risk exceptions for this scope."
+            tone="loading"
+            busy
+          />
+        ) : riskExceptions.error ? (
+          <StatePanel
+            title="Risk exceptions are unavailable"
+            message={riskExceptions.error.message}
+            tone="error"
+            action={
+              <button
+                type="button"
+                className="button"
+                onClick={riskExceptions.refetch}
+              >
+                Retry risk exceptions
+              </button>
+            }
+          />
+        ) : exceptionRows.length === 0 ? (
+          <StatePanel
+            title="No active risk exceptions"
+            message="No active risk exceptions were returned for this authorized scope."
+            tone="empty"
+          />
+        ) : (
+          <>
+            <div className="card-body">
+              <button
+                ref={revokeInvokerRef}
+                type="button"
+                className="button button-danger"
+                disabled={selectedExceptions.size === 0}
+                onClick={() => setRiskDialogOpen(true)}
+              >
+                Revoke {selectedExceptions.size} selected risk exceptions
+              </button>
+            </div>
+            <div
+              className="table-scroll exposure-responsive-table"
+              role="region"
+              aria-label="Risk exceptions table"
+              tabIndex={0}
+            >
+              <table className="operations-table exposure-table">
+                <caption>Active risk exceptions in the represented scope</caption>
+                <thead>
+                  <tr>
+                    <th>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select all ${exceptionRows.length} risk exceptions on this page`}
+                        checked={
+                          exceptionRows.length > 0 &&
+                          selectedExceptions.size === exceptionRows.length
+                        }
+                        onChange={(event) =>
+                          setSelectedExceptions(
+                            event.target.checked
+                              ? new Set(
+                                  exceptionRows.map(
+                                    (exception) => exception.exception_id,
+                                  ),
+                                )
+                              : new Set(),
+                          )
+                        }
+                      />
+                    </th>
+                    <th>Audit record</th>
+                    <th>CVE</th>
+                    <th>Target scope</th>
+                    <th>Reason</th>
+                    <th>Expiry</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {exceptionRows.map((exception) => (
+                    <tr key={exception.exception_id}>
+                      <td data-label="Select">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select risk exception ${exception.exception_id} for ${exception.cve_id}`}
+                          checked={selectedExceptions.has(exception.exception_id)}
+                          onChange={(event) =>
+                            setSelectedExceptions((current) => {
+                              const next = new Set(current);
+                              if (event.target.checked) {
+                                next.add(exception.exception_id);
+                              } else {
+                                next.delete(exception.exception_id);
+                              }
+                              return next;
+                            })
+                          }
+                        />
+                      </td>
+                      <td data-label="Audit record"><code>{exception.exception_id}</code></td>
+                      <td data-label="CVE">
+                        <Link
+                          className="table-primary-link"
+                          href={`/exposure/cves/${encodeURIComponent(exception.cve_id)}`}
+                        >
+                          {exception.cve_id}
+                        </Link>
+                      </td>
+                      <td data-label="Target scope">
+                        {exception.server_id || "Authorized CVE scope"}
+                      </td>
+                      <td data-label="Reason">{exception.reason}</td>
+                      <td data-label="Expiry">{exception.expires_at || "No expiry"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </section>
+
+      <RiskExceptionDialog
+        mode="revoke"
+        open={riskDialogOpen}
+        onOpenChange={setRiskDialogOpen}
+        returnFocusRef={revokeInvokerRef}
+        exceptions={selectedExceptionRows.map((exception: RiskException) => ({
+          id: exception.exception_id,
+          label: `${exception.exception_id} · ${exception.cve_id}`,
+          targetScope: exception.server_id || "Authorized CVE scope",
+        }))}
+        representedScope={`${selectedExceptionRows.length} selected on this page`}
+        onRevoke={revokeSelected}
+        onSelectionChange={(remainingIds) =>
+          setSelectedExceptions(new Set(remainingIds))
+        }
+        onRefresh={async () => {
+          riskExceptions.refetch();
+          section.retry();
+        }}
+      />
     </div>
   );
 }

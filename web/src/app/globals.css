@@ -3029,6 +3029,175 @@ textarea:focus-visible {
   }
 }
 
+/* Phase 03.1 Exposure action surfaces: dense desktop context, deliberate
+ * tablet overflow, and true mobile row cards without page-level clipping. */
+.exposure-responsive-table {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.exposure-responsive-table .table-scroll-hint {
+  display: none;
+  margin: 0;
+  padding: 8px 16px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.exposure-responsive-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface);
+}
+
+.exposure-long-value {
+  overflow-wrap: anywhere;
+}
+
+.table-sort-button {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 4px 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.table-sort-button:focus-visible,
+.exposure-responsive-table:focus-visible,
+.remediation-handoff-acknowledgement:focus-within {
+  outline: 3px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.remediation-handoff-context,
+.remediation-handoff-actions,
+.remediation-container-review .card-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.remediation-handoff-context > div:first-child,
+.remediation-container-review .card-body > :first-child {
+  min-width: 0;
+  flex: 1 1 420px;
+}
+
+.remediation-handoff-context p {
+  margin: 8px 0 0;
+}
+
+.remediation-handoff-actions {
+  justify-content: flex-end;
+}
+
+.remediation-handoff-acknowledgement {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+@media (min-width: 561px) and (max-width: 900px) {
+  .exposure-responsive-table .table-scroll-hint {
+    display: block;
+  }
+
+  .exposure-responsive-table table {
+    min-width: 960px;
+  }
+}
+
+@media (max-width: 560px) {
+  .exposure-responsive-table {
+    overflow-x: visible;
+  }
+
+  .exposure-responsive-table table,
+  .exposure-responsive-table tbody,
+  .exposure-responsive-table tr,
+  .exposure-responsive-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .exposure-responsive-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .exposure-responsive-table tbody {
+    padding: 8px 0;
+  }
+
+  .exposure-responsive-table tr {
+    margin: 0 0 16px;
+    padding: 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+  }
+
+  .exposure-responsive-table td {
+    min-height: 44px;
+    padding: 8px 0;
+    border: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .exposure-responsive-table td::before {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--color-text-secondary);
+    content: attr(data-label);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .exposure-responsive-table .button,
+  .exposure-responsive-table a,
+  .exposure-responsive-table input,
+  .remediation-handoff-actions .button,
+  .remediation-container-review .button,
+  .remediation-handoff-acknowledgement {
+    min-height: 44px;
+  }
+
+  .remediation-handoff-context,
+  .remediation-handoff-actions,
+  .remediation-container-review .card-body {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .exposure-patch-priorities *,
+  .remediation-container-review *,
+  .risk-exception-dialog * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 /* Full screen lifts the stage out of the page flow so the graph gets the
    whole viewport; the toolbar and drawer stay usable alongside it. */
 body.topology-fullscreen-open {

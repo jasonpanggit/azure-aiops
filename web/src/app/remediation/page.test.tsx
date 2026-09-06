@@ -531,7 +531,7 @@ describe("Governed remediation workflow", () => {
     const returnTo =
       "/exposure/patch-priorities?subscription=sub-1&q=kernel&sort_by=severity&sort_direction=asc&page_size=25&target=server-1&drawer=evidence&generation=generation-17";
     searchParams.current = new URLSearchParams(
-      `resource_key=${encodeURIComponent(TARGET)}&cve=CVE-2026-0001&kb=KB600001&generation=generation-17&return_focus=exposure-server-1&return_to=${encodeURIComponent(returnTo)}`,
+      `resource_key=${encodeURIComponent(TARGET)}&subscription=sub-1&cve=CVE-2026-0001&kb=KB600001&generation=generation-17&return_focus=exposure-server-1&return_to=${encodeURIComponent(returnTo)}`,
     );
 
     renderPage();
