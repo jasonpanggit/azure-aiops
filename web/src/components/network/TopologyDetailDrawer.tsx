@@ -231,7 +231,11 @@ function NodeDetail({
 
       <OpenFindings node={node} findings={findings} />
 
-      <PrivateLinkFacts node={node} visibleNodeIds={visibleNodeIds} />
+      <PrivateLinkFacts
+        node={node}
+        detailLevel={detailLevel}
+        visibleNodeIds={visibleNodeIds}
+      />
       <NodeSpecificDetails
         key={`${node.id}:${scopeCacheKey(scope)}`}
         node={node}
@@ -722,9 +726,11 @@ function DrillDownSection({
 
 function PrivateLinkFacts({
   node,
+  detailLevel,
   visibleNodeIds,
 }: {
   node: TopologyNodeData;
+  detailLevel: "summary" | "full";
   visibleNodeIds?: ReadonlySet<string>;
 }) {
   const details = node.details ?? {};
@@ -735,10 +741,13 @@ function PrivateLinkFacts({
   const targetOutOfScope =
     details.target_out_of_scope === true ||
     details.target_resource_out_of_scope === true ||
-    details.target_in_scope === false ||
-    (typeof details.target_resource_id === "string" &&
-      visibleNodeIds !== undefined &&
-      !visibleNodeIds.has(details.target_resource_id.toLowerCase()));
+    details.target_in_scope === false;
+  const targetWithheld =
+    !targetOutOfScope &&
+    detailLevel === "summary" &&
+    typeof details.target_resource_id === "string" &&
+    visibleNodeIds !== undefined &&
+    !visibleNodeIds.has(details.target_resource_id.toLowerCase());
   const publicAccess = formatValue(details.public_network_access);
   const publicAccessUnknown = publicAccess === "—";
 
@@ -766,6 +775,8 @@ function PrivateLinkFacts({
                 value={
                   targetOutOfScope
                     ? "Target resource is outside the collected scope."
+                    : targetWithheld
+                      ? "Target resource is not present in this topology response and may have been withheld by summary limits."
                     : formatValue(details.target_resource_id)
                 }
                 mono={!targetOutOfScope}

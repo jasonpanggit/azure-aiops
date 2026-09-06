@@ -62,6 +62,7 @@ function renderDrawer(
   state = findings(),
   onClose = vi.fn(),
   scope: ScopeSelection = {},
+  visibleNodeIds?: ReadonlySet<string>,
 ) {
   return {
     onClose,
@@ -72,6 +73,7 @@ function renderDrawer(
         onClose={onClose}
         findings={state}
         detailLevel="summary"
+        visibleNodeIds={visibleNodeIds}
         scope={scope}
       />,
     ),
@@ -566,5 +568,33 @@ describe("TopologyDetailDrawer on-demand facts", () => {
     expect(screen.getByText("pls-a.eastus.azure.privatelinkservice")).toBeInTheDocument();
     expect(screen.getByText(/loadBalancers\/lb-a/)).toBeInTheDocument();
     expect(screen.getByText("Disabled")).toBeInTheDocument();
+  });
+
+  it("distinguishes a summary-withheld target from an explicit scope exclusion", () => {
+    const targetId =
+      "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Sql/servers/sql-withheld";
+    renderDrawer(
+      node({
+        entityType: "PrivateEndpoint",
+        id: `${NODE_ID}/private-endpoint-withheld`,
+        details: {
+          target_resource_id: targetId,
+          target_in_scope: true,
+        },
+      }),
+      findings(),
+      vi.fn(),
+      {},
+      new Set([NODE_ID.toLowerCase()]),
+    );
+
+    expect(
+      screen.getByText(
+        "Target resource is not present in this topology response and may have been withheld by summary limits.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Target resource is outside the collected scope."),
+    ).not.toBeInTheDocument();
   });
 });
