@@ -36,25 +36,21 @@ def _write_complete_dependency_evidence(root: Path) -> None:
         f"- [x] 12-{number:02d}-PLAN.md — complete" for number in range(1, 12)
     )
     (planning / "ROADMAP.md").write_text(
-        "\n".join(
-            (
-                "### Phase 10: Fabric",
-                "**Plans:** 15/15 plans executed",
-                "",
-                "Plans:",
-                phase_10_plans,
-                "",
-                "### Phase 11: Other",
-                "",
-                "### Phase 12: Network",
-                "**Plans:** 11/11 plans complete",
-                "",
-                "Plans:",
-                phase_12_plans,
-                "",
-                "### Phase 13: Ontology",
-            )
-        ),
+        f"""### Phase 10: Fabric
+**Plans:** 15/15 plans executed
+
+Plans:
+{phase_10_plans}
+
+### Phase 11: Other
+
+### Phase 12: Network
+**Plans:** 11/11 plans complete
+
+Plans:
+{phase_12_plans}
+
+### Phase 13: Ontology""",
         encoding="utf-8",
     )
     requirements = [

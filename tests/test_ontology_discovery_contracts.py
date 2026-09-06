@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from ontology_discovery_contract_harness import (
     ContractHarness,
     EvidenceBatch,
