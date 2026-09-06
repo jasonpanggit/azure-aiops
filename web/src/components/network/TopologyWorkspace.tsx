@@ -211,6 +211,10 @@ interface TopologyWorkspaceProps {
   ruleFindings?: RuleFinding[];
   loadGapsPage?: LoadGapPage;
   loadRuleFindingsPage?: LoadRuleFindingPage;
+  findingsLoading?: boolean;
+  findingsError?: Error | null;
+  findingsTruncated?: boolean;
+  onRetryFindings?: () => void;
   graphFreshness?: string;
 }
 
@@ -226,6 +230,10 @@ export function TopologyWorkspace({
   ruleFindings = EMPTY_RULE_FINDINGS,
   loadGapsPage,
   loadRuleFindingsPage,
+  findingsLoading = false,
+  findingsError = null,
+  findingsTruncated = false,
+  onRetryFindings = () => undefined,
   graphFreshness,
 }: TopologyWorkspaceProps) {
   const [search, setSearch] = useState("");
@@ -239,6 +247,9 @@ export function TopologyWorkspace({
   const graphHandleRef = useRef<TopologyGraphHandle | null>(null);
   const [badgeGaps, setBadgeGaps] = useState(gaps);
   const [badgeRuleFindings, setBadgeRuleFindings] = useState(ruleFindings);
+  const [badgeLoading, setBadgeLoading] = useState(
+    Boolean(loadGapsPage && loadRuleFindingsPage),
+  );
   const [badgeCoverage, setBadgeCoverage] = useState<BadgeCoverage>({
     mapped: gaps.length + ruleFindings.length,
     total: gaps.length + ruleFindings.length,
@@ -247,6 +258,7 @@ export function TopologyWorkspace({
 
   useEffect(() => {
     if (!loadGapsPage || !loadRuleFindingsPage) {
+      setBadgeLoading(false);
       setBadgeGaps(gaps);
       setBadgeRuleFindings(ruleFindings);
       setBadgeCoverage({
@@ -257,12 +269,14 @@ export function TopologyWorkspace({
       return undefined;
     }
     let cancelled = false;
+    setBadgeLoading(true);
     Promise.all([
       fetchBadgeCollection(loadGapsPage, (data) => data.gaps),
       fetchBadgeCollection(loadRuleFindingsPage, (data) => data.findings),
     ])
       .then(([gapResult, findingResult]) => {
         if (cancelled) return;
+        setBadgeLoading(false);
         setBadgeGaps(gapResult.items as NetworkGap[]);
         setBadgeRuleFindings(findingResult.items as RuleFinding[]);
         setBadgeCoverage({
@@ -273,6 +287,7 @@ export function TopologyWorkspace({
       })
       .catch(() => {
         if (cancelled) return;
+        setBadgeLoading(false);
         // The page-level loaders own unavailable-state disclosure. Retain their
         // last successful rows here and compare them with summary totals rather
         // than presenting a failed badge fetch as complete.
@@ -627,9 +642,25 @@ export function TopologyWorkspace({
           onClose={clearSelection}
           findings={
             selection.node
-              ? findingsByResource.get(selection.node.id.toLowerCase())
+              ? {
+                  ...(findingsByResource.get(selection.node.id.toLowerCase()) ?? {
+                    gaps: [],
+                    ruleFindings: [],
+                  }),
+                  gapTotal: summary?.gap_count ?? gaps.length,
+                  ruleFindingTotal:
+                    summary?.rule_finding_count ?? ruleFindings.length,
+                  mapped: badgeCoverage.mapped,
+                  total: badgeCoverage.total,
+                  truncated: findingsTruncated || badgeCoverage.truncated,
+                  exhausted: !badgeLoading && !badgeCoverage.truncated,
+                  loading: findingsLoading || badgeLoading,
+                  error: findingsError,
+                  onRetry: onRetryFindings,
+                }
               : undefined
           }
+          detailLevel={detailLevel}
         />
       </div>
 

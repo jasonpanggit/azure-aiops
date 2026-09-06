@@ -37,7 +37,22 @@ interface TopologyDetailDrawerProps {
   onClose: () => void;
   /** Open gaps/rule findings for the selected node's resource id, so a red/orange
    * badge on the canvas can be explained rather than just colour-coded. */
-  findings?: { gaps: NetworkGap[]; ruleFindings: RuleFinding[] };
+  findings?: DrawerFindingsState;
+  detailLevel?: "summary" | "full";
+}
+
+export interface DrawerFindingsState {
+  gaps: NetworkGap[];
+  ruleFindings: RuleFinding[];
+  gapTotal: number;
+  ruleFindingTotal: number;
+  mapped: number;
+  total: number;
+  truncated: boolean;
+  exhausted: boolean;
+  loading: boolean;
+  error: Error | null;
+  onRetry: () => void;
 }
 
 /**
@@ -46,17 +61,24 @@ interface TopologyDetailDrawerProps {
  */
 export function TopologyDetailDrawer({ node, edge, onClose, findings }: TopologyDetailDrawerProps) {
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const open = Boolean(node || edge);
+  const selectionId = node?.id ?? edge?.id ?? "";
 
   useEffect(() => {
     if (!open) return undefined;
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onCloseRef.current();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, selectionId]);
 
   if (!open) return null;
 
@@ -88,7 +110,7 @@ export function TopologyDetailDrawer({ node, edge, onClose, findings }: Topology
   );
 }
 
-function NodeDetail({ node, findings }: { node: TopologyNodeData; findings?: { gaps: NetworkGap[]; ruleFindings: RuleFinding[] } }) {
+function NodeDetail({ node, findings }: { node: TopologyNodeData; findings?: DrawerFindingsState }) {
   const heading = node.entityType ? titleize(node.entityType) : node.serviceKind ? titleize(node.serviceKind) : titleize(node.kind);
   return (
     <>
@@ -110,7 +132,7 @@ function NodeDetail({ node, findings }: { node: TopologyNodeData; findings?: { g
           </strong>
           <span>
             {node.peerResolution === "not_ingested"
-              ? "Its subscription is not connected, so topology beyond this point is unknown."
+              ? "Its subscription is not onboarded, so topology beyond this point is unknown."
               : node.peerResolution === "excluded_by_scope"
                 ? "It was ingested and is present in the estate, but the active scope selection excludes it. Widen the scope to see it."
                 : "This response did not say whether the VNet was never ingested or excluded by the current scope."}
@@ -168,7 +190,7 @@ function NodeDetail({ node, findings }: { node: TopologyNodeData; findings?: { g
         </section>
       )}
 
-      <OpenFindings findings={findings} />
+      <OpenFindings node={node} findings={findings} />
 
       <NodeSpecificDetails node={node} />
       {node.kind === "hub" && <HubDependents vnetId={node.id} />}
@@ -185,41 +207,151 @@ const SEVERITY_TONE: Record<string, "critical" | "warning" | "info"> = {
 
 /** Renders the actual open gap/rule-finding records behind a node's severity
  * badge, so clicking a red-dotted node explains why it is flagged. */
-function OpenFindings({ findings }: { findings?: { gaps: NetworkGap[]; ruleFindings: RuleFinding[] } }) {
+function OpenFindings({
+  node,
+  findings,
+}: {
+  node: TopologyNodeData;
+  findings?: DrawerFindingsState;
+}) {
   const gaps = findings?.gaps ?? [];
   const ruleFindings = findings?.ruleFindings ?? [];
-  if (gaps.length === 0 && ruleFindings.length === 0) return null;
+  const directRuleFindings = ruleFindings.filter(
+    (finding) => finding.control_id.toLowerCase() === node.id.toLowerCase(),
+  );
+  const affectedRuleFindings = ruleFindings.filter(
+    (finding) =>
+      finding.control_id.toLowerCase() !== node.id.toLowerCase() &&
+      (finding.affected_resource_ids ?? []).some(
+        (resourceId) => resourceId.toLowerCase() === node.id.toLowerCase(),
+      ),
+  );
+  const findingCount =
+    gaps.length + directRuleFindings.length + affectedRuleFindings.length;
+  const resourceName = node.label || "the selected resource";
+
+  if (findings?.error) {
+    return (
+      <section className="topology-detail-section">
+        <h3>Open findings</h3>
+        <div className="callout callout-critical" role="alert">
+          <span>
+            Findings are unavailable — {findings.error.message}. This resource
+            is not confirmed clean.
+          </span>
+          <button
+            type="button"
+            className="button button-secondary"
+            aria-label={`Retry loading findings for ${resourceName}`}
+            onClick={findings.onRetry}
+          >
+            Retry
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  if (findingCount === 0 && findings?.loading) {
+    return (
+      <section className="topology-detail-section" aria-busy="true">
+        <h3>Open findings</h3>
+        <span className="muted">Checking open findings…</span>
+      </section>
+    );
+  }
+
+  if (findingCount === 0 && (!findings || findings.truncated || !findings.exhausted)) {
+    return (
+      <section className="topology-detail-section">
+        <h3>Open findings</h3>
+        <div className="callout callout-warning" role="status">
+          Findings for this resource may be incomplete. {findings?.mapped ?? 0}{" "}
+          of {findings?.total ?? 0} findings were loaded. This resource is not
+          confirmed clean.
+        </div>
+      </section>
+    );
+  }
+
+  if (findingCount === 0) {
+    return (
+      <section className="topology-detail-section">
+        <h3>Open findings (0)</h3>
+        <span className="muted">
+          No open findings for this resource. All {findings!.gapTotal} gaps and{" "}
+          {findings!.ruleFindingTotal} rule findings in scope were checked.
+        </span>
+      </section>
+    );
+  }
 
   return (
     <section className="topology-detail-section">
-      <h3>Open findings ({gaps.length + ruleFindings.length})</h3>
+      <h3>Open findings ({findingCount})</h3>
       <div className="topology-finding-list">
-        {gaps.map((gap) => (
-          <article key={gap.gap_id} className="topology-finding-item">
-            <div className="topology-finding-header">
-              <StatusBadge label={titleize(gap.severity)} tone={SEVERITY_TONE[gap.severity] ?? "info"} compact />
-              <strong>{gap.title}</strong>
-            </div>
-            <span>{gap.detail}</span>
-            {gap.recommendation && <small>Recommendation: {gap.recommendation}</small>}
-            {gap.basis && <small className="muted">Basis: {gap.basis}</small>}
-          </article>
-        ))}
-        {ruleFindings.map((finding) => (
-          <article key={finding.finding_id} className="topology-finding-item">
-            <div className="topology-finding-header">
-              <StatusBadge label={titleize(finding.severity)} tone={SEVERITY_TONE[finding.severity] ?? "info"} compact />
-              <strong>{finding.title}</strong>
-            </div>
-            <span>
-              {finding.control} · {finding.rule_name}
-            </span>
-            <small>{finding.detail}</small>
-            {finding.recommendation && <small>Recommendation: {finding.recommendation}</small>}
-          </article>
-        ))}
+        {gaps.length > 0 && (
+          <FindingGroup title="Gaps on this resource">
+            {gaps.map((gap) => (
+              <article key={gap.gap_id} className="topology-finding-item">
+                <div className="topology-finding-header">
+                  <StatusBadge label={titleize(gap.severity)} tone={SEVERITY_TONE[gap.severity] ?? "info"} compact />
+                  <strong>{gap.title}</strong>
+                </div>
+                <span>{gap.detail}</span>
+                {gap.recommendation && <small>Recommendation: {gap.recommendation}</small>}
+                {gap.basis && <small className="muted">Basis: {gap.basis}</small>}
+              </article>
+            ))}
+          </FindingGroup>
+        )}
+        {directRuleFindings.length > 0 && (
+          <FindingGroup title="Findings on this control">
+            {directRuleFindings.map((finding) => (
+              <RuleFindingItem key={finding.finding_id} finding={finding} />
+            ))}
+          </FindingGroup>
+        )}
+        {affectedRuleFindings.length > 0 && (
+          <FindingGroup title="Findings affecting this resource">
+            {affectedRuleFindings.map((finding) => (
+              <RuleFindingItem key={finding.finding_id} finding={finding} />
+            ))}
+          </FindingGroup>
+        )}
       </div>
     </section>
+  );
+}
+
+function FindingGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <h3>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function RuleFindingItem({ finding }: { finding: RuleFinding }) {
+  return (
+    <article className="topology-finding-item">
+      <div className="topology-finding-header">
+        <StatusBadge label={titleize(finding.severity)} tone={SEVERITY_TONE[finding.severity] ?? "info"} compact />
+        <strong>{finding.title}</strong>
+      </div>
+      <span>
+        {finding.control} · {finding.rule_name}
+      </span>
+      <small>{finding.detail}</small>
+      {finding.recommendation && <small>Recommendation: {finding.recommendation}</small>}
+    </article>
   );
 }
 

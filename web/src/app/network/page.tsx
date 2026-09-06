@@ -254,6 +254,15 @@ export default function NetworkPage() {
               ruleFindings={findings.data?.data.findings ?? []}
               loadGapsPage={loadBadgeGapsPage}
               loadRuleFindingsPage={loadBadgeRuleFindingsPage}
+              findingsLoading={gaps.loading || findings.loading}
+              findingsError={gaps.error ?? findings.error}
+              findingsTruncated={Boolean(
+                gaps.data?.data.coverage?.truncated ||
+                  findings.data?.data.coverage?.truncated,
+              )}
+              onRetryFindings={
+                gaps.error ? gaps.refetch : findings.error ? findings.refetch : gaps.refetch
+              }
               graphFreshness={topology.data?.graph_freshness}
             />
           </section>

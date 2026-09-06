@@ -187,7 +187,7 @@ describe("TopologyDetailDrawer peer copy and keyboard behavior", () => {
     );
 
     expect(screen.getByText("Peer VNet — resolution not recorded")).toBeInTheDocument();
-    expect(screen.queryByText(/never ingested/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("This peer was never ingested.")).not.toBeInTheDocument();
   });
 
   it("handles Escape before the full-screen listener", () => {
