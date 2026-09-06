@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+from math import ceil
 from pathlib import Path
+from time import perf_counter
 from types import SimpleNamespace
 from typing import Any
 
@@ -74,6 +76,8 @@ EXPECTED_EXPORT_KEYS = (
     "graph_freshness",
     "topology",
 )
+G3_PLAN_12_02_BASELINE_SECONDS = 0.882940
+G3_SAMPLE_COUNT = 7
 
 
 def _serialized(body: dict[str, Any]) -> str:
@@ -230,6 +234,45 @@ def assert_collection_coverage(response: dict[str, Any], collection: str) -> Non
             "truncat" in warning.casefold() or "showing" in warning.casefold()
             for warning in response["warnings"]
         )
+
+
+def measure_scale_gates(
+    small_snapshot: NetworkSnapshot,
+    enterprise_snapshot: NetworkSnapshot,
+) -> dict[str, dict[str, int | float | bool]]:
+    """Measure G-1 through G-3 on the fixtures assigned by RESEARCH."""
+    small_payload = build_topology(small_snapshot).to_dict(detail="summary")
+    enterprise_payload = build_topology(enterprise_snapshot).to_dict(
+        detail="summary"
+    )
+    latencies: list[float] = []
+    for _ in range(G3_SAMPLE_COUNT):
+        started = perf_counter()
+        build_topology(enterprise_snapshot).to_dict(detail="summary")
+        latencies.append(perf_counter() - started)
+    p95_index = ceil(0.95 * len(latencies)) - 1
+    p95_seconds = sorted(latencies)[p95_index]
+
+    return {
+        "g1": {
+            "nodes": len(small_payload["resources"]),
+            "serialized_bytes": len(json.dumps(small_payload).encode("utf-8")),
+        },
+        "g2": {
+            "nodes": len(enterprise_payload["resources"]),
+            "serialized_bytes": len(
+                json.dumps(enterprise_payload).encode("utf-8")
+            ),
+            "truncated": enterprise_payload["coverage"]["truncated"],
+        },
+        "g3": {
+            "p95_seconds": p95_seconds,
+            "baseline_seconds": G3_PLAN_12_02_BASELINE_SECONDS,
+            "multiple_of_plan_12_02_baseline": (
+                p95_seconds / G3_PLAN_12_02_BASELINE_SECONDS
+            ),
+        },
+    }
 
 
 class _NetworkContext:
