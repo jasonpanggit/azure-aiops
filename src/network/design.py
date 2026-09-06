@@ -569,7 +569,16 @@ class NetworkDesignPolicyStore:
             raise NetworkDesignPolicyDocumentError(
                 "Network policy document policy must be an object"
             )
-        revision = int(payload.get("revision") or 0)
+        try:
+            revision = int(payload.get("revision", 0))
+        except (TypeError, ValueError) as exc:
+            raise NetworkDesignPolicyDocumentError(
+                "Network policy document revision must be a non-negative integer"
+            ) from exc
+        if revision < 0:
+            raise NetworkDesignPolicyDocumentError(
+                "Network policy document revision must be a non-negative integer"
+            )
         return NetworkDesignPolicy.from_mapping(stored), revision
 
     def _read_document(self, *, strict: bool = False) -> dict[str, Any]:

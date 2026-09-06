@@ -28,6 +28,7 @@ from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from network.design import (
+    NetworkDesignPolicyDocumentError,
     NetworkDesignPolicyStore,
     NetworkDesignPolicyValidationError,
 )
@@ -520,6 +521,35 @@ class TestAuthentication:
 
 
 class TestPolicy:
+    @pytest.mark.parametrize("revision", ["not-an-integer", [], -1])
+    def test_management_paths_reject_malformed_revision_without_persisting(
+        self,
+        revision,
+    ):
+        documents = _PolicyDocuments(
+            {
+                "revision": revision,
+                "policy": {"description": "governed"},
+            }
+        )
+        store = NetworkDesignPolicyStore(documents)
+
+        for operation in (
+            store.read,
+            lambda: store.preview({"description": "operator edit"}),
+            lambda: store.update(
+                {"description": "operator edit"},
+                expected_revision=8,
+            ),
+        ):
+            with pytest.raises(
+                NetworkDesignPolicyDocumentError,
+                match="revision",
+            ):
+                operation()
+
+        assert documents.write_calls == []
+
     @pytest.mark.parametrize(
         "corrupt_document",
         [
@@ -631,6 +661,72 @@ class TestPolicy:
         assert {
             response.json()["error"]["code"] for response in responses
         } == {"provider_unavailable"}
+        assert documents.write_calls == []
+
+    @pytest.mark.parametrize("revision", ["not-an-integer", [], -1])
+    def test_policy_api_reports_malformed_stored_revision_as_unavailable(
+        self,
+        tmp_path,
+        revision,
+    ):
+        documents = _PolicyDocuments(
+            {
+                "revision": revision,
+                "policy": {"description": "governed"},
+            }
+        )
+        client = _client(
+            tmp_path,
+            network_policy_store=NetworkDesignPolicyStore(documents),
+        )
+
+        responses = (
+            client.get("/api/v1/network/policy", headers=_auth()),
+            client.post(
+                "/api/v1/network/policy/preview",
+                headers=_auth(),
+                json={"description": "operator edit"},
+            ),
+            client.patch(
+                "/api/v1/network/policy",
+                headers=_auth(),
+                json={"description": "operator edit"},
+            ),
+        )
+
+        assert [response.status_code for response in responses] == [503, 503, 503]
+        assert {
+            response.json()["error"]["code"] for response in responses
+        } == {"provider_unavailable"}
+        assert documents.write_calls == []
+
+    def test_policy_api_keeps_malformed_operator_input_as_invalid_request(
+        self,
+        tmp_path,
+    ):
+        documents = _PolicyDocuments({"revision": 8, "policy": {}})
+        client = _client(
+            tmp_path,
+            network_policy_store=NetworkDesignPolicyStore(documents),
+        )
+
+        responses = (
+            client.post(
+                "/api/v1/network/policy/preview",
+                headers=_auth(),
+                json={"rules": "not-a-list"},
+            ),
+            client.patch(
+                "/api/v1/network/policy",
+                headers=_auth(),
+                json={"rules": "not-a-list"},
+            ),
+        )
+
+        assert [response.status_code for response in responses] == [400, 400]
+        assert {
+            response.json()["error"]["code"] for response in responses
+        } == {"invalid_request"}
         assert documents.write_calls == []
 
     def test_read_additively_publishes_the_rule_engine_contract(self, tmp_path):
