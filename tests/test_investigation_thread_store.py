@@ -43,6 +43,7 @@ class FakeDocuments:
         self.documents: dict[str, dict[str, Any]] = {}
         self.fail_writes = False
         self.fail_reads = False
+        self.conflict_writes = 0
         self.deleted: list[str] = []
 
     def read(self, name: str) -> dict[str, Any]:
@@ -61,6 +62,9 @@ class FakeDocuments:
     ) -> None:
         if self.fail_writes:
             raise RuntimeError("storage unavailable")
+        if self.conflict_writes:
+            self.conflict_writes -= 1
+            raise DocumentConflictError("simulated contention")
         current = int(self.documents.get(name, {}).get("revision") or 0)
         if current != expected_revision:
             raise DocumentConflictError("revision conflict")
@@ -400,6 +404,30 @@ def test_ledger_store_configuration_also_wires_thread_durability() -> None:
         configure_ledger_store(None)
 
 
+def test_history_returns_fresh_state_after_one_persistence_conflict() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    thread = store.create("operator-a", SUB_A)
+    store.append(thread.thread_id, "operator-a", SUB_A, _turn())
+    documents.conflict_writes = 1
+
+    history = store.history(thread.thread_id, "operator-a", SUB_A)
+
+    assert [item["snapshot_id"] for item in history] == ["snap-one"]
+
+
+def test_authorize_downgrades_after_sustained_touch_contention() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    thread = store.create("operator-a", SUB_A)
+    documents.conflict_writes = 2
+
+    authorized = store.authorize(thread.thread_id, "operator-a", SUB_A)
+
+    assert authorized.thread_id == thread.thread_id
+    assert authorized.durability == "memory_only"
+
+
 def test_legacy_session_binding_survives_replica_restart() -> None:
     documents = FakeDocuments()
     first = InvestigationThreadStore(documents=documents)
@@ -436,6 +464,21 @@ def test_legacy_session_binding_is_first_writer_wins_across_replicas() -> None:
     )
 
     assert observed == winner == first_thread.thread_id
+
+
+def test_expired_legacy_binding_can_be_replaced() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    expired = store.create("operator-a", SUB_A)
+    replacement = store.create("operator-a", SUB_A)
+    store.bind_legacy_session("legacy-session", "operator-a", expired.thread_id)
+
+    store.forget_legacy_binding("legacy-session", "operator-a")
+    rebound = store.bind_legacy_session(
+        "legacy-session", "operator-a", replacement.thread_id
+    )
+
+    assert rebound == replacement.thread_id
 
 
 # ---------------------------------------------------------------------------

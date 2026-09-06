@@ -327,10 +327,17 @@ class InvestigationThreadStore:
         if self.documents is None:
             return
         delete = getattr(self.documents, "delete", None)
-        if not callable(delete):
-            return
+        name = thread_document_name(thread_id)
         try:
-            delete(thread_document_name(thread_id))
+            if callable(delete):
+                delete(name)
+                return
+            current = int(self.documents.read(name).get("revision") or 0)
+            self.documents.write(
+                name,
+                {"revision": current + 1, "deleted": True},
+                expected_revision=current,
+            )
         except Exception:  # Cleanup is best-effort.
             _LOGGER.warning("failed to remove expired thread document", exc_info=True)
 
@@ -490,7 +497,13 @@ class InvestigationThreadStore:
                     )
                     continue
                 return record
-            raise ThreadRevisionConflict(current_revision=record.revision)
+            record = self._resolve(thread_id, principal_subject, current_scope, now)
+            self._age_retained_turns(record)
+            record.scope = current_scope
+            record.scope_fingerprint = _scope_fingerprint(current_scope)
+            record.last_seen = now
+            record.durability = DURABILITY_MEMORY_ONLY
+            return record
 
     def append(
         self,
@@ -541,38 +554,40 @@ class InvestigationThreadStore:
             record.scope_fingerprint = _scope_fingerprint(current_scope)
             record.last_seen = now
             self._threads.move_to_end(thread_id)
-            history: list[dict[str, Any]] = []
-            for turn in record.turns:
-                if _scope_within(turn.scope, current_scope):
-                    payload = deepcopy(turn.payload)
-                    payload["observation_status"] = turn.observation_status
-                    history.append(payload)
-                    continue
-                history.append(
-                    {
-                        "status": "historical_scope_restricted",
-                        "observation_status": OBSERVATION_HISTORICAL,
-                        "tool_results": [],
-                        "citations": [],
-                        "uncertainty": [
-                            "Historical evidence was withheld after scope narrowing."
-                        ],
-                    }
-                )
+            history = self._project_history(record, current_scope)
             try:
                 self._persist(record)
             except ThreadRevisionConflict:
-                # A concurrent append already renewed the durable record. Read
-                # it back so this response never returns a stale history.
                 record = self._resolve(
                     thread_id, principal_subject, current_scope, now
                 )
-                return self.history(
-                    record.thread_id,
-                    principal_subject,
-                    current_scope,
-                )
+                return self._project_history(record, current_scope)
             return history
+
+    @staticmethod
+    def _project_history(
+        record: InvestigationThread,
+        current_scope: Scope,
+    ) -> list[dict[str, Any]]:
+        history: list[dict[str, Any]] = []
+        for turn in record.turns:
+            if _scope_within(turn.scope, current_scope):
+                payload = deepcopy(turn.payload)
+                payload["observation_status"] = turn.observation_status
+                history.append(payload)
+                continue
+            history.append(
+                {
+                    "status": "historical_scope_restricted",
+                    "observation_status": OBSERVATION_HISTORICAL,
+                    "tool_results": [],
+                    "citations": [],
+                    "uncertainty": [
+                        "Historical evidence was withheld after scope narrowing."
+                    ],
+                }
+            )
+        return history
 
     def import_legacy_turns(
         self,
@@ -632,6 +647,28 @@ class InvestigationThreadStore:
         thread_id = str(document.get("thread_id") or "")
         return thread_id if thread_id.startswith("thr-") else None
 
+    def forget_legacy_binding(
+        self,
+        session_id: str,
+        principal_subject: str,
+    ) -> None:
+        """Invalidate a durable binding so an expired thread can be replaced."""
+
+        if self.documents is None:
+            return
+        name = legacy_binding_document_name(session_id, principal_subject)
+        try:
+            current = int(self.documents.read(name).get("revision") or 0)
+            if not current:
+                return
+            self.documents.write(
+                name,
+                {"revision": current + 1, "deleted": True},
+                expected_revision=current,
+            )
+        except (DocumentConflictError, OSError, RuntimeError, ValueError):
+            _LOGGER.warning("failed to invalidate legacy thread binding", exc_info=True)
+
     def bind_legacy_session(
         self,
         session_id: str,
@@ -642,19 +679,21 @@ class InvestigationThreadStore:
 
         if self.documents is None:
             return thread_id
-        existing = self.resolve_legacy_binding(session_id, principal_subject)
-        if existing is not None:
-            return existing
         name = legacy_binding_document_name(session_id, principal_subject)
         try:
+            existing_document = self.documents.read(name)
+            existing = str(existing_document.get("thread_id") or "")
+            if existing.startswith("thr-"):
+                return existing
+            current = int(existing_document.get("revision") or 0)
             self.documents.write(
                 name,
                 {
-                    "revision": 1,
+                    "revision": current + 1,
                     "binding_key": name,
                     "thread_id": thread_id,
                 },
-                expected_revision=0,
+                expected_revision=current,
             )
         except DocumentConflictError:
             return self.resolve_legacy_binding(

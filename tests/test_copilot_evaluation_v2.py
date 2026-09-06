@@ -491,7 +491,8 @@ def test_runtime_context_supplies_executive_and_telemetry() -> None:
         )()
 
         @staticmethod
-        def foundry_agent() -> RecordingExecutive:
+        def specialist_agent(specialist_id: str) -> RecordingExecutive:
+            assert specialist_id == EXECUTIVE_SPECIALIST_ID
             return executive
 
     service = _service(planner=lambda _r: _plan("vulnerability", "patch"))

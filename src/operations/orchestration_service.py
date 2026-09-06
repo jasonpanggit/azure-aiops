@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from api.errors import ApiError
 from api.scope import Scope
 from operations.foundry_agent import (
     FoundryAgentError,
@@ -297,6 +298,10 @@ def _forget_legacy_session_thread(
         return
     with _legacy_session_lock:
         _legacy_session_threads.pop((principal_subject, session_id), None)
+    investigation_thread_store().forget_legacy_binding(
+        session_id,
+        principal_subject,
+    )
 
 
 _EXECUTIVE_INTENT_PATTERNS: tuple[str, ...] = (
@@ -424,11 +429,11 @@ class OrchestrationService:
             api_telemetry = getattr(context, "telemetry", None)
             self.telemetry = getattr(api_telemetry, "orchestration", None)
         if self.executive_agent is None:
-            resolver = getattr(context, "foundry_agent", None)
+            resolver = getattr(context, "specialist_agent", None)
             if callable(resolver):
                 try:
-                    self.executive_agent = resolver()
-                except (ConnectionError, FoundryAgentError, TimeoutError):
+                    self.executive_agent = resolver("executive_summary")
+                except (ApiError, ConnectionError, FoundryAgentError, TimeoutError):
                     self.executive_agent = None
 
         requested_scope = self.policy.validate_request(request, effective_scope)
