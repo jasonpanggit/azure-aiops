@@ -315,6 +315,26 @@ def test_operations_agent_uses_one_selected_generation_per_tool_call():
     )
 
 
+def test_operations_agent_fails_closed_when_generation_is_unavailable():
+    class _Resolver:
+        def resolve(self):
+            raise LookupError("pointer unavailable")
+
+    class _Context:
+        generation_resolver_provider = lambda self: _Resolver()
+
+    result = call_tool(
+        "business_service_context",
+        {"name": "Payments"},
+        context=_Context(),
+        scope=Scope(),
+    )
+
+    assert result.status != STATUS_OK
+    assert result.data is None
+    assert result.warning == "The ontology generation could not be resolved"
+
+
 def test_twin_export_resolves_old_new_then_old_without_mixed_generation():
     store = _RemoteStore()
     resolver = GenerationResolver(store)

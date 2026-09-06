@@ -485,7 +485,7 @@ def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
         store = DatasetStore(connection_root)
         try:
             selection = GenerationResolver(store).resolve()
-        except LookupError:
+        except (LookupError, OSError, TypeError, ValueError):
             continue  # connection registered but never synced
         snapshot_dir = selection.active_generation
         manifest_path = f"{snapshot_dir}/manifest.json"

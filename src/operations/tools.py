@@ -1322,8 +1322,15 @@ def call_tool(
     if spec is None:
         return ToolResult(status=STATUS_DENIED, warning=f"Unknown tool {name!r}")
     resolver_provider = getattr(context, "generation_resolver_provider", None)
-    resolver = resolver_provider() if callable(resolver_provider) else None
-    generation_selection = resolver.resolve() if resolver is not None else None
+    try:
+        resolver = resolver_provider() if callable(resolver_provider) else None
+        generation_selection = resolver.resolve() if resolver is not None else None
+    except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        _LOGGER.warning("tool_generation_resolution_failed tool=%s error=%s", name, exc)
+        return ToolResult(
+            status=STATUS_UNAVAILABLE,
+            warning="The ontology generation could not be resolved",
+        )
     tool_context = ToolContext(
         context=context,
         scope=scope,
