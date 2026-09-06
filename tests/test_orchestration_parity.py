@@ -127,15 +127,14 @@ def test_operations_mcp_and_registry_grants_are_exact_and_read_only():
 
 def test_ontology_curator_is_an_exact_non_interactive_tool_consumer():
     manifest = load_specialist_manifest()
+    manifest_grants = manifest.non_interactive_operations_mcp_grants()
+    runtime_grants = reviewed_tools_for_specialist(ONTOLOGY_CURATOR_ID)
 
-    assert manifest.non_interactive_operations_mcp_grants() == {
+    assert manifest_grants == {
         ONTOLOGY_CURATOR_ID: EXPECTED_ONTOLOGY_CURATOR_TOOLS
     }
     assert LOCKED_NON_INTERACTIVE_CONSUMER_IDS == (ONTOLOGY_CURATOR_ID,)
-    assert (
-        reviewed_tools_for_specialist(ONTOLOGY_CURATOR_ID)
-        == EXPECTED_ONTOLOGY_CURATOR_TOOLS
-    )
+    assert runtime_grants == manifest_grants[ONTOLOGY_CURATOR_ID]
     assert ONTOLOGY_CURATOR_ID not in manifest.specialist_ids
     assert ONTOLOGY_CURATOR_ID not in {
         specialist_id
