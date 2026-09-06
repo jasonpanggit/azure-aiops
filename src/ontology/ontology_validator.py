@@ -156,6 +156,7 @@ class OntologyValidator:
             if _nonempty_string(row.get("resource_id"))
         }
         relationship_ids: list[str] = []
+        relationship_keys: list[tuple[str, str, str]] = []
         dangling = 0
         self_links = 0
         for row in valid_relationships:
@@ -187,6 +188,13 @@ class OntologyValidator:
             )
             subject = str(row.get("subject_id") or "").strip().casefold()
             object_id = str(row.get("object_id") or "").strip().casefold()
+            relationship_keys.append(
+                (
+                    subject,
+                    str(row.get("predicate") or ""),
+                    object_id,
+                )
+            )
             triple = (
                 str(row.get("subject_type") or ""),
                 str(row.get("predicate") or ""),
@@ -232,8 +240,9 @@ class OntologyValidator:
                 invalid_relationships += 1
 
         duplicate_entities = len(entity_ids) - len(set(entity_ids))
-        duplicate_relationships = len(relationship_ids) - len(
-            set(relationship_ids)
+        duplicate_relationships = max(
+            len(relationship_ids) - len(set(relationship_ids)),
+            len(relationship_keys) - len(set(relationship_keys)),
         )
         passed = not any(
             (

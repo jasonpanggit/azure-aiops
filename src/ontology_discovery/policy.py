@@ -3,17 +3,27 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
+import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fabric.dataset_mapper import is_allowed_relationship_triple
+from ontology_discovery.contracts import (
+    AdmissionEvaluationSnapshot,
+    proposal_content_id,
+)
 
 _ACCEPTED_REVIEW = "accepted"
 _FRESH_STATES = frozenset({"fresh", "current"})
+_REQUIRED_RELEASE_APPROVALS = frozenset(
+    {
+        "ontology_steward",
+        "security_owner",
+        "fabric_governance_steward",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +36,50 @@ class ProposalDecision:
     admitted: bool
     reasons: tuple[str, ...]
     relationship: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class ReleaseEligibility:
+    """Exact result of evaluating one immutable pair-release snapshot."""
+
+    status: str
+    reasons: tuple[str, ...]
+    wilson_precision_lower_bound: float
+
+
+def evaluate_release_eligibility(
+    snapshot: AdmissionEvaluationSnapshot,
+) -> ReleaseEligibility:
+    """Apply every AI-SPEC release gate to one explicit pair."""
+
+    reasons: list[str] = []
+    if not is_allowed_relationship_triple(*snapshot.pair):
+        reasons.append("unsupported_triple")
+    if snapshot.evaluated_at - snapshot.shadow_started_at < timedelta(days=30):
+        reasons.append("shadow_days")
+    if snapshot.expert_adjudicated_eligible_count < 200:
+        reasons.append("expert_adjudications")
+    if snapshot.critical_failures:
+        reasons.append("critical_failures")
+    if snapshot.escalation_recall != 1.0:
+        reasons.append("escalation_recall")
+    if snapshot.recall < 0.90:
+        reasons.append("recall")
+    lower_bound = _wilson_lower_bound(
+        snapshot.precision_true_positives,
+        snapshot.precision_total,
+    )
+    if lower_bound < 0.98:
+        reasons.append("precision_wilson_lower_bound")
+    if not _REQUIRED_RELEASE_APPROVALS.issubset(snapshot.approvals):
+        reasons.append("required_approvals")
+    if not snapshot.ai_spec_gates_passed:
+        reasons.append("ai_spec_gates")
+    return ReleaseEligibility(
+        status="BLOCKED/PENDING" if reasons else "ELIGIBLE",
+        reasons=tuple(reasons),
+        wilson_precision_lower_bound=lower_bound,
+    )
 
 
 class ProposalPolicy:
@@ -65,6 +119,8 @@ class ProposalPolicy:
         source_generation_id: str,
         review_status: str = "pending",
         admission_release: Mapping[str, Any] | None = None,
+        schema_version: str = "proposal-schema-v1",
+        policy_version: str = "proposal-policy-v1",
     ) -> ProposalDecision:
         """Evaluate an untrusted proposal against server-owned facts."""
 
@@ -160,9 +216,11 @@ class ProposalPolicy:
 
         relationship = {
             "resource_id": _proposal_id(
-                candidate,
+                proposal=candidate,
                 scope=trusted_scope,
                 source_generation_id=source_generation,
+                schema_version=schema_version,
+                policy_version=policy_version,
             ),
             "subject_id": subject_id,
             "subject_type": triple[0],
@@ -217,26 +275,8 @@ class ProposalPolicy:
         return candidate
 
 
-def _proposal_id(
-    proposal: Mapping[str, Any],
-    *,
-    scope: str,
-    source_generation_id: str,
-) -> str:
-    payload = {
-        "scope": scope,
-        "source_generation_id": source_generation_id,
-        "triple": _triple(proposal),
-        "subject_id": str(proposal.get("subject_id") or "").strip().casefold(),
-        "object_id": str(proposal.get("object_id") or "").strip().casefold(),
-        "evidence_refs": sorted(
-            str(value) for value in proposal.get("evidence_refs", ())
-        ),
-    }
-    digest = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    return f"ODP-{digest.upper()}"
+def _proposal_id(**values: Any) -> str:
+    return proposal_content_id(**values)
 
 
 def _triple(value: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -304,4 +344,23 @@ def _required(value: object, name: str) -> str:
     return normalized
 
 
-__all__ = ["ProposalDecision", "ProposalPolicy"]
+def _wilson_lower_bound(successes: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    proportion = successes / total
+    z = 1.959963984540054
+    denominator = 1 + (z * z / total)
+    centre = proportion + (z * z / (2 * total))
+    margin = z * math.sqrt(
+        (proportion * (1 - proportion) / total)
+        + (z * z / (4 * total * total))
+    )
+    return (centre - margin) / denominator
+
+
+__all__ = [
+    "ProposalDecision",
+    "ProposalPolicy",
+    "ReleaseEligibility",
+    "evaluate_release_eligibility",
+]

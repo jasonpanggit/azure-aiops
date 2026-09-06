@@ -15,6 +15,7 @@ from .contracts import (
     RunProcessor,
 )
 from .incremental import EvidenceBatchRejected, split_evidence_batches
+from .policy import ProposalPolicy
 from .store import (
     RUN_RETRYING,
     OntologyRunStore,
@@ -24,6 +25,69 @@ from .store import (
 )
 
 _LOGGER = logging.getLogger("aiops.ontology_discovery.coordinator")
+
+
+class ProposalPolicyCoordinator:
+    """Join durable reviews to policy without granting publication authority."""
+
+    def __init__(
+        self,
+        *,
+        store: OntologyRunStore,
+        policy: ProposalPolicy,
+    ) -> None:
+        self._store = store
+        self._policy = policy
+
+    def build_candidate(
+        self,
+        *,
+        proposals: list[Mapping[str, Any]],
+        deterministic_edges: list[Mapping[str, Any]],
+        entities: Mapping[str, Mapping[str, Any]],
+        evidence_records: Mapping[str, Mapping[str, Any]],
+        scope: str,
+        source_generation_id: str,
+    ) -> dict[str, Any]:
+        """Evaluate durable proposals and assemble a shadow-safe candidate."""
+
+        decisions = []
+        for record in proposals:
+            proposal = record.get("proposal")
+            if not isinstance(proposal, Mapping):
+                raise TypeError("persisted proposal payload must be a mapping")
+            proposal_id = str(record.get("proposal_id") or "")
+            review = self._store.get_review(proposal_id)
+            triple = (
+                str(proposal.get("subject_type") or ""),
+                str(proposal.get("predicate") or ""),
+                str(proposal.get("object_type") or ""),
+            )
+            release = self._store.admission_release_for(*triple)
+            decisions.append(
+                self._policy.evaluate(
+                    proposal,
+                    entities=entities,
+                    evidence_records=evidence_records,
+                    scope=scope,
+                    source_generation_id=source_generation_id,
+                    review_status=str(review["status"]),
+                    admission_release=release,
+                    schema_version=str(
+                        record.get("schema_version") or "proposal-schema-v1"
+                    ),
+                    policy_version=str(
+                        record.get("policy_version") or "proposal-policy-v1"
+                    ),
+                )
+            )
+        return {
+            "candidate": self._policy.assemble_candidate(
+                deterministic_edges=deterministic_edges,
+                proposal_decisions=decisions,
+            ),
+            "decisions": decisions,
+        }
 
 
 class BoundedEvidenceProcessor:
@@ -289,4 +353,8 @@ def _observed_at(value: object) -> datetime:
     return observed
 
 
-__all__ = ["BoundedEvidenceProcessor", "OntologyDiscoveryCoordinator"]
+__all__ = [
+    "BoundedEvidenceProcessor",
+    "OntologyDiscoveryCoordinator",
+    "ProposalPolicyCoordinator",
+]

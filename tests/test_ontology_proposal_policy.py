@@ -274,6 +274,10 @@ def test_full_candidate_validation_rechecks_scope_lifecycle_duplicates_and_tripl
         [_relationship(subscription_id="sub-2", scope="tenant-1/sub-2")],
         [_relationship(lifecycle_status="active", object_id="retired-app")],
         [valid, deepcopy(valid)],
+        [
+            valid,
+            _relationship(resource_id="relationship://different-id-same-edge"),
+        ],
     ]
     retired_entities = [
         entities[0],

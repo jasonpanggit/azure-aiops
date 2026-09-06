@@ -71,10 +71,34 @@ class EvidenceBatchConflict(RuntimeError):
         self.record = copy.deepcopy(dict(record))
 
 
+class ProposalReviewConflict(RuntimeError):
+    """A proposal review compare-and-set revision was stale."""
+
+    def __init__(self, record: Mapping[str, Any]) -> None:
+        super().__init__("proposal_review_revision_conflict")
+        self.record = copy.deepcopy(dict(record))
+
+
+class ReviewerUnauthorized(PermissionError):
+    """A caller without ontology-steward authority attempted review."""
+
+
+class PairReleaseDisabled(PermissionError):
+    """Production Phase 13 cannot activate model-derived pair admission."""
+
+
+class PairReleaseConflict(RuntimeError):
+    """A pair-release compare-and-set revision was stale."""
+
+    def __init__(self, record: Mapping[str, Any]) -> None:
+        super().__init__("pair_release_revision_conflict")
+        self.record = copy.deepcopy(dict(record))
+
+
 class OntologyRunStore:
     """Versioned run records with deterministic identity and fenced ownership."""
 
-    SCHEMA_VERSION = "1.1.0"
+    SCHEMA_VERSION = "1.2.0"
 
     def __init__(
         self,
@@ -85,6 +109,7 @@ class OntologyRunStore:
         retry_base_seconds: int = 5,
         retry_max_seconds: int = 300,
         default_deadline_seconds: int = 1800,
+        allow_pair_release_testing: bool = False,
     ) -> None:
         for name, value in {
             "max_runs": max_runs,
@@ -101,6 +126,7 @@ class OntologyRunStore:
         self.retry_base_seconds = retry_base_seconds
         self.retry_max_seconds = retry_max_seconds
         self.default_deadline_seconds = default_deadline_seconds
+        self._allow_pair_release_testing = bool(allow_pair_release_testing)
         self._lock = threading.RLock()
 
     def get_or_create_run(
@@ -188,6 +214,350 @@ class OntologyRunStore:
             rows = self._read_state()["runs"]
         return next(
             (copy.deepcopy(row) for row in rows if row["run_id"] == run_id),
+            None,
+        )
+
+    def save_proposal(
+        self,
+        *,
+        proposal: Mapping[str, Any],
+        scope: str,
+        source_generation_id: str,
+        schema_version: str,
+        policy_version: str,
+        supersedes_proposal_id: str = "",
+        now: datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Persist one immutable, content-addressed proposal."""
+
+        from .contracts import proposal_content_id
+
+        moment = _aware(now)
+        proposal_copy = copy.deepcopy(dict(proposal))
+        proposal_id = proposal_content_id(
+            proposal=proposal_copy,
+            scope=scope,
+            source_generation_id=source_generation_id,
+            schema_version=schema_version,
+            policy_version=policy_version,
+        )
+        supersedes = str(supersedes_proposal_id or "").strip()
+        with self._claim_lock():
+            state = self._read_state()
+            existing = next(
+                (
+                    row
+                    for row in state["proposals"]
+                    if row["proposal_id"] == proposal_id
+                ),
+                None,
+            )
+            if existing is not None:
+                return copy.deepcopy(existing), False
+            if supersedes and not any(
+                row["proposal_id"] == supersedes for row in state["proposals"]
+            ):
+                raise ValueError("superseded proposal does not exist")
+            record = {
+                "proposal_id": proposal_id,
+                "proposal": proposal_copy,
+                "scope": _required(scope, "scope").casefold(),
+                "source_generation_id": _required(
+                    source_generation_id, "source_generation_id"
+                ),
+                "schema_version": _required(schema_version, "schema_version"),
+                "policy_version": _required(policy_version, "policy_version"),
+                "supersedes_proposal_id": supersedes,
+                "created_at": moment.isoformat(),
+            }
+            state["proposals"].append(record)
+            state["proposals"].sort(key=lambda row: row["proposal_id"])
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record), True
+
+    def get_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            rows = self._read_state()["proposals"]
+        return next(
+            (
+                copy.deepcopy(row)
+                for row in rows
+                if row["proposal_id"] == proposal_id
+            ),
+            None,
+        )
+
+    def get_review(self, proposal_id: str) -> dict[str, Any]:
+        with self._lock:
+            state = self._read_state()
+        if not any(
+            row["proposal_id"] == proposal_id for row in state["proposals"]
+        ):
+            raise ValueError(f"Unknown ontology proposal {proposal_id!r}")
+        existing = next(
+            (
+                row
+                for row in state["proposal_reviews"]
+                if row["proposal_id"] == proposal_id
+            ),
+            None,
+        )
+        return copy.deepcopy(
+            existing
+            or {
+                "proposal_id": proposal_id,
+                "status": "pending",
+                "revision": 0,
+                "events": [],
+            }
+        )
+
+    def review_proposal(
+        self,
+        proposal_id: str,
+        *,
+        action: str,
+        expected_revision: int,
+        actor: str,
+        actor_roles: set[str] | frozenset[str],
+        reason: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Append an authorized immutable accept/reject/reverse event."""
+
+        roles = sorted(
+            {
+                str(value).strip().casefold()
+                for value in actor_roles
+                if str(value).strip()
+            }
+        )
+        if "ontology_steward" not in roles:
+            raise ReviewerUnauthorized("ontology_steward role is required")
+        normalized_action = str(action or "").strip().casefold()
+        statuses = {
+            "accept": "accepted",
+            "reject": "rejected",
+            "reverse": "pending",
+        }
+        if normalized_action not in statuses:
+            raise ValueError("review action must be accept, reject, or reverse")
+        reviewer = _required(actor, "actor")
+        explanation = _required(reason, "reason")
+        moment = _aware(now)
+        with self._claim_lock():
+            state = self._read_state()
+            if not any(
+                row["proposal_id"] == proposal_id for row in state["proposals"]
+            ):
+                raise ValueError(f"Unknown ontology proposal {proposal_id!r}")
+            index = next(
+                (
+                    position
+                    for position, row in enumerate(state["proposal_reviews"])
+                    if row["proposal_id"] == proposal_id
+                ),
+                None,
+            )
+            record = (
+                copy.deepcopy(state["proposal_reviews"][index])
+                if index is not None
+                else {
+                    "proposal_id": proposal_id,
+                    "status": "pending",
+                    "revision": 0,
+                    "events": [],
+                }
+            )
+            if record["revision"] != expected_revision:
+                raise ProposalReviewConflict(record)
+            revision = expected_revision + 1
+            status = statuses[normalized_action]
+            record["status"] = status
+            record["revision"] = revision
+            record["events"].append(
+                {
+                    "revision": revision,
+                    "action": normalized_action,
+                    "status": status,
+                    "actor": reviewer,
+                    "actor_roles": roles,
+                    "reason": explanation,
+                    "recorded_at": moment.isoformat(),
+                }
+            )
+            if index is None:
+                state["proposal_reviews"].append(record)
+            else:
+                state["proposal_reviews"][index] = record
+            state["proposal_reviews"].sort(key=lambda row: row["proposal_id"])
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record)
+
+    def evaluate_admission_release(
+        self,
+        snapshot: Any,
+        *,
+        actor: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Persist eligibility evidence without enabling the pair."""
+
+        from .contracts import AdmissionEvaluationSnapshot
+        from .policy import evaluate_release_eligibility
+
+        if not isinstance(snapshot, AdmissionEvaluationSnapshot):
+            snapshot = AdmissionEvaluationSnapshot.model_validate(snapshot)
+        result = evaluate_release_eligibility(snapshot)
+        moment = _aware(now)
+        evaluator = _required(actor, "actor")
+        with self._claim_lock():
+            state = self._read_state()
+            existing = next(
+                (
+                    row
+                    for row in state["admission_releases"]
+                    if row["snapshot_id"] == snapshot.snapshot_id
+                ),
+                None,
+            )
+            if existing is not None:
+                return copy.deepcopy(existing)
+            record = {
+                "pair_key": snapshot.pair_key,
+                "subject_type": snapshot.subject_type,
+                "predicate": snapshot.predicate,
+                "object_type": snapshot.object_type,
+                "snapshot_id": snapshot.snapshot_id,
+                "snapshot": snapshot.model_dump(mode="json"),
+                "eligible": result.status == "ELIGIBLE",
+                "eligibility_reasons": list(result.reasons),
+                "wilson_precision_lower_bound": (
+                    result.wilson_precision_lower_bound
+                ),
+                # Phase 13 always records the evaluated initial state as
+                # blocked/pending. Activation is a separate audited CAS.
+                "status": "BLOCKED/PENDING",
+                "revision": 0,
+                "evaluated_by": evaluator,
+                "evaluated_at": moment.isoformat(),
+                "activated_by": "",
+                "activated_at": "",
+                "revoked_by": "",
+                "revoked_at": "",
+                "revocation_reason": "",
+            }
+            state["admission_releases"].append(record)
+            state["admission_releases"].sort(
+                key=lambda row: (row["pair_key"], row["snapshot_id"])
+            )
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record)
+
+    def activate_admission_release(
+        self,
+        snapshot_id: str,
+        *,
+        expected_revision: int,
+        actor: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Exercise the future activation CAS only in explicit synthetic tests."""
+
+        if not self._allow_pair_release_testing:
+            raise PairReleaseDisabled(
+                "pair release activation is disabled for Phase 13"
+            )
+        moment = _aware(now)
+        owner = _required(actor, "actor")
+        with self._claim_lock():
+            state = self._read_state()
+            index = next(
+                (
+                    position
+                    for position, row in enumerate(state["admission_releases"])
+                    if row["snapshot_id"] == snapshot_id
+                ),
+                None,
+            )
+            if index is None:
+                raise ValueError(f"Unknown admission snapshot {snapshot_id!r}")
+            record = copy.deepcopy(state["admission_releases"][index])
+            if (
+                record["revision"] != expected_revision
+                or record["status"] != "BLOCKED/PENDING"
+            ):
+                raise PairReleaseConflict(record)
+            if not record["eligible"]:
+                raise PairReleaseDisabled("pair release evidence is not eligible")
+            record["status"] = "ENABLED"
+            record["revision"] += 1
+            record["activated_by"] = owner
+            record["activated_at"] = moment.isoformat()
+            state["admission_releases"][index] = record
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record)
+
+    def revoke_admission_release(
+        self,
+        pair_key: str,
+        *,
+        expected_revision: int,
+        actor: str,
+        reason: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Revoke only the affected enabled pair and restore shadow admission."""
+
+        normalized_reason = str(reason or "").strip().casefold()
+        if normalized_reason not in {"critical_event", "threshold_breach"}:
+            raise ValueError(
+                "release revocation reason must be critical_event or threshold_breach"
+            )
+        moment = _aware(now)
+        owner = _required(actor, "actor")
+        with self._claim_lock():
+            state = self._read_state()
+            matches = [
+                (position, row)
+                for position, row in enumerate(state["admission_releases"])
+                if row["pair_key"] == pair_key and row["status"] == "ENABLED"
+            ]
+            if len(matches) != 1:
+                raise ValueError(f"Enabled admission pair {pair_key!r} not found")
+            index, value = matches[0]
+            record = copy.deepcopy(value)
+            if record["revision"] != expected_revision:
+                raise PairReleaseConflict(record)
+            record["status"] = "REVOKED"
+            record["revision"] += 1
+            record["revoked_by"] = owner
+            record["revoked_at"] = moment.isoformat()
+            record["revocation_reason"] = normalized_reason
+            state["admission_releases"][index] = record
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record)
+
+    def list_admission_releases(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._read_state()["admission_releases"]
+        return copy.deepcopy(
+            sorted(rows, key=lambda row: (row["pair_key"], row["snapshot_id"]))
+        )
+
+    def admission_release_for(
+        self,
+        subject_type: str,
+        predicate: str,
+        object_type: str,
+    ) -> dict[str, Any] | None:
+        pair_key = f"{subject_type}|{predicate}|{object_type}"
+        return next(
+            (
+                row
+                for row in self.list_admission_releases()
+                if row["pair_key"] == pair_key and row["status"] == "ENABLED"
+            ),
             None,
         )
 
@@ -949,6 +1319,21 @@ class OntologyRunStore:
             not isinstance(row, dict) for row in batches
         ):
             raise TypeError("Evidence batches must be a list of objects")
+        proposals = payload.get("proposals", [])
+        if not isinstance(proposals, list) or any(
+            not isinstance(row, dict) for row in proposals
+        ):
+            raise TypeError("Ontology proposals must be a list of objects")
+        reviews = payload.get("proposal_reviews", [])
+        if not isinstance(reviews, list) or any(
+            not isinstance(row, dict) for row in reviews
+        ):
+            raise TypeError("Proposal reviews must be a list of objects")
+        releases = payload.get("admission_releases", [])
+        if not isinstance(releases, list) or any(
+            not isinstance(row, dict) for row in releases
+        ):
+            raise TypeError("Admission releases must be a list of objects")
         return {
             "revision": _nonnegative_int(payload.get("revision", 0)),
             "next_fencing_token": _nonnegative_int(
@@ -960,6 +1345,13 @@ class OntologyRunStore:
             ],
             "evidence_batches": [
                 _batch_with_defaults(row) for row in batches
+            ],
+            "proposals": [_proposal_with_defaults(row) for row in proposals],
+            "proposal_reviews": [
+                _review_with_defaults(row) for row in reviews
+            ],
+            "admission_releases": [
+                _release_with_defaults(row) for row in releases
             ],
             "updated_at": str(payload.get("updated_at") or ""),
         }
@@ -988,6 +1380,9 @@ class OntologyRunStore:
             "runs": state["runs"],
             "pending_relationships": state["pending_relationships"],
             "evidence_batches": state["evidence_batches"],
+            "proposals": state["proposals"],
+            "proposal_reviews": state["proposal_reviews"],
+            "admission_releases": state["admission_releases"],
             "updated_at": state["updated_at"],
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1015,6 +1410,9 @@ def _initial_state() -> dict[str, Any]:
         "runs": [],
         "pending_relationships": [],
         "evidence_batches": [],
+        "proposals": [],
+        "proposal_reviews": [],
+        "admission_releases": [],
         "updated_at": "",
     }
 
@@ -1066,6 +1464,70 @@ def _batch_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(record.get("result"), dict)
         else {}
     )
+    return record
+
+
+def _proposal_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    record = copy.deepcopy(dict(row))
+    record.setdefault("proposal_id", "")
+    record["proposal"] = (
+        copy.deepcopy(record["proposal"])
+        if isinstance(record.get("proposal"), dict)
+        else {}
+    )
+    record.setdefault("scope", "")
+    record.setdefault("source_generation_id", "")
+    record.setdefault("schema_version", "legacy")
+    record.setdefault("policy_version", "legacy")
+    record.setdefault("supersedes_proposal_id", "")
+    record.setdefault("created_at", "")
+    return record
+
+
+def _review_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    record = copy.deepcopy(dict(row))
+    record.setdefault("proposal_id", "")
+    record.setdefault("status", "pending")
+    record["revision"] = _nonnegative_int(record.get("revision"))
+    record["events"] = (
+        copy.deepcopy(record["events"])
+        if isinstance(record.get("events"), list)
+        else []
+    )
+    return record
+
+
+def _release_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    record = copy.deepcopy(dict(row))
+    for field_name in (
+        "pair_key",
+        "subject_type",
+        "predicate",
+        "object_type",
+        "snapshot_id",
+        "evaluated_by",
+        "evaluated_at",
+        "activated_by",
+        "activated_at",
+        "revoked_by",
+        "revoked_at",
+        "revocation_reason",
+    ):
+        record.setdefault(field_name, "")
+    record["snapshot"] = (
+        copy.deepcopy(record["snapshot"])
+        if isinstance(record.get("snapshot"), dict)
+        else {}
+    )
+    record.setdefault("eligible", False)
+    record["eligibility_reasons"] = list(
+        record.get("eligibility_reasons")
+        if isinstance(record.get("eligibility_reasons"), list)
+        else []
+    )
+    record.setdefault("wilson_precision_lower_bound", 0.0)
+    record.setdefault("status", "BLOCKED/PENDING")
+    record["revision"] = _nonnegative_int(record.get("revision"))
     return record
 
 
@@ -1225,7 +1687,11 @@ __all__ = [
     "TERMINAL_STATUSES",
     "EvidenceBatchConflict",
     "OntologyRunStore",
+    "PairReleaseConflict",
+    "PairReleaseDisabled",
     "PendingRelationshipConflict",
+    "ProposalReviewConflict",
+    "ReviewerUnauthorized",
     "RunClaimConflict",
     "RunDeadlineExceeded",
     "RunLeaseLost",
