@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,11 +20,11 @@ from network.topology import build_topology
 from operations.mcp_server import MCPServer
 from operations.tools import STATUS_OK, call_tool
 from tests.network_baseline import (
-    BASELINE_PATH,
     BaselineArtifactInvalidError,
     BaselineArtifactMissingError,
     capture_default_responses,
     load_baseline,
+    without_allowed_additive_keys,
 )
 from tests.network_scale_fixtures import (
     EstateShape,
@@ -64,6 +65,162 @@ EXPECTED_EXPORT_KEYS = (
     "graph_freshness",
     "topology",
 )
+
+
+def _serialized(body: dict[str, Any]) -> str:
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+
+
+def _first_difference(expected: Any, actual: Any, path: str = "$") -> str:
+    if type(expected) is not type(actual):
+        return (
+            f"{path} changed type from {type(expected).__name__} "
+            f"to {type(actual).__name__}"
+        )
+    if isinstance(expected, dict):
+        missing = sorted(set(expected) - set(actual))
+        if missing:
+            return f"{path} is missing key {missing[0]!r}"
+        added = sorted(set(actual) - set(expected))
+        if added:
+            return f"{path} has unregistered additive key {added[0]!r}"
+        for key in expected:
+            if expected[key] != actual[key]:
+                return _first_difference(expected[key], actual[key], f"{path}.{key}")
+    elif isinstance(expected, list):
+        if len(expected) != len(actual):
+            return f"{path} changed length from {len(expected)} to {len(actual)}"
+        for index, (expected_item, actual_item) in enumerate(zip(expected, actual)):
+            if expected_item != actual_item:
+                return _first_difference(
+                    expected_item,
+                    actual_item,
+                    f"{path}[{index}]",
+                )
+    elif expected != actual:
+        return f"{path} changed from {expected!r} to {actual!r}"
+    return f"{path} differs"
+
+
+def assert_endpoint_contract(
+    endpoint: str,
+    current_record: dict[str, Any],
+    baseline: dict[str, Any],
+) -> None:
+    recorded = baseline["endpoints"][endpoint]
+    current_body = json.loads(current_record["body"])
+    normalized = without_allowed_additive_keys(
+        endpoint,
+        current_body,
+        baseline["allowed_additive_keys"],
+    )
+    expected_body = json.loads(recorded["body"])
+    normalized_serialized = _serialized(normalized)
+
+    assert sorted(normalized) == recorded["top_level_keys"], (
+        f"G-4 {endpoint} top-level keys differ: "
+        f"expected {recorded['top_level_keys']!r}, got {sorted(normalized)!r}"
+    )
+    assert len(normalized_serialized.encode("utf-8")) == recorded["byte_length"], (
+        f"G-4 {endpoint} byte length differs: expected "
+        f"{recorded['byte_length']}, got "
+        f"{len(normalized_serialized.encode('utf-8'))}"
+    )
+    assert normalized == expected_body, (
+        f"G-4 {endpoint} body differs after registered additions were removed: "
+        f"{_first_difference(expected_body, normalized)}"
+    )
+    assert normalized_serialized == recorded["body"], (
+        f"G-4 {endpoint} serialized body is not byte-identical"
+    )
+
+
+def assert_registered_additive_nodes(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    registrations: list[dict[str, Any]],
+) -> None:
+    before_ids = {str(item["id"]).casefold() for item in before["resources"]}
+    registered_types: dict[str, str] = {}
+    for entry in registrations:
+        entity_type = str(entry.get("entity_type") or "")
+        introduced_by = str(entry.get("introduced_by") or "")
+        assert entity_type and introduced_by, (
+            "allowed_additive_nodes entries require entity_type and introduced_by"
+        )
+        registered_types[entity_type] = introduced_by
+
+    for node in after["resources"]:
+        if str(node["id"]).casefold() in before_ids:
+            continue
+        entity_type = str(node.get("entity_type") or "")
+        assert entity_type in registered_types, (
+            f"additive node type {entity_type or '<missing>'!r} is not registered "
+            "with its introducing plan"
+        )
+
+
+def assert_final_topology_shape(
+    topology: dict[str, Any],
+    *,
+    allowed_subscription: str,
+) -> None:
+    assert {
+        "counts",
+        "flow_log_provenance",
+        "resources",
+        "relationships",
+        "unresolved_peer_vnet_ids",
+        "unresolved_peers",
+    } <= set(topology)
+    assert len(topology["resources"]) <= 25
+    assert all(
+        resource.get("subscription_id", "") in {"", allowed_subscription}
+        for resource in topology["resources"]
+    )
+    assert all(
+        peer["peer_resolution"]
+        in {"not_ingested", "excluded_by_scope", "observed"}
+        for peer in topology["unresolved_peers"]
+    )
+
+
+def assert_export_contract(path: Path, expected_keys: tuple[str, ...]) -> None:
+    source = path.read_text(encoding="utf-8")
+    function_start = source.index("export function buildTopologyExport(")
+    function_end = source.index("\nlet lastExportSecond", function_start)
+    export_source = source[function_start:function_end]
+    positions = []
+    for key in expected_keys:
+        match = re.search(rf"(?m)^    {re.escape(key)}(?:\s*:|,)", export_source)
+        assert match is not None, f"browser export is missing top-level key {key!r}"
+        positions.append(match.start())
+
+    assert positions == sorted(positions), (
+        "browser export keys do not match the Plan 12-10 order"
+    )
+    assert (
+        'extension: "json" | "png"' in source
+        and "filename: `network-topology-${segment}.${extension}`" in source
+    ), "browser export filename no longer matches network-topology-YYYYMMDD-HHmmss"
+
+
+def assert_collection_coverage(response: dict[str, Any], collection: str) -> None:
+    coverage = response["data"]["coverage"]
+    assert set(coverage) == {"total", "returned", "truncated"}
+    assert coverage["returned"] == len(response["data"][collection])
+    assert coverage["returned"] <= coverage["total"]
+    assert coverage["truncated"] is (
+        coverage["returned"] < coverage["total"]
+    )
+    if coverage["truncated"]:
+        assert response.get("warnings"), (
+            f"bounded {collection} response omitted its envelope warning"
+        )
+        assert any(
+            "truncat" in warning.casefold() or "showing" in warning.casefold()
+            for warning in response["warnings"]
+        )
 
 
 class _NetworkContext:
@@ -219,8 +376,18 @@ def test_agent_twin_and_mcp_consumers_process_the_scoped_final_payload() -> None
 
     agent = call_tool("network_topology", {}, context=context, scope=scope)
     assert agent.status == STATUS_OK
-    assert "Agent result bound 25" in agent.warning
     assert_final_topology_shape(agent.data["topology"], allowed_subscription=sub_a)
+
+    bounded_analysis = call_tool(
+        "firewall_nsg_gaps",
+        {},
+        context=context,
+        scope=scope,
+    )
+    assert bounded_analysis.status == STATUS_OK
+    assert "Agent result bound 25" in bounded_analysis.warning
+    assert len(bounded_analysis.data["gaps"]) <= 25
+    assert len(bounded_analysis.data["rule_findings"]) <= 25
 
     twin = twin_graph(context, scope)
     twin_resources = [
