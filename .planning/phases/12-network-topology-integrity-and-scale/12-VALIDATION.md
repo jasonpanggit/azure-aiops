@@ -6,7 +6,7 @@ nyquist_compliant: true
 wave_0_complete: true
 created: 2026-09-03
 executed: 2026-09-06
-verified_source_head: 811883f3
+verified_source_head: 207c7c78
 ---
 
 # Phase 12 — Validation Strategy
@@ -110,8 +110,8 @@ No framework installation is required.
 ## Execution Evidence
 
 - All eleven `12-01` through `12-11` summary artifacts report `status: complete`.
-- Latest full backend gate (after review remediation): **2,736 passed, 33 skipped** (**2,769 collected**).
-- Latest full web gate (after review remediation): **43 files passed; 347 tests passed; 15 pre-existing todo**.
+- Latest full backend gate (after UI review remediation): **2,739 passed, 33 skipped** (**2,772 collected**).
+- Latest full web gate (after UI review remediation): **43 files passed; 354 tests passed; 15 pre-existing todo**.
 - Python Ruff, TypeScript (`tsc --noEmit`), and Next.js ESLint gates are clean.
 - The Phase 12 G-1 through G-6/downstream closure suites passed in the Plan 12-11 closeout and again during review remediation.
 - The Fabric private-link checkpoint is recorded as complete in `12-FABRIC-PRIVATE-LINK-DECISION.md`.
