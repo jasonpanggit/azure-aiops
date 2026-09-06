@@ -427,13 +427,12 @@ def test_parentless_virtual_network_link_warns_without_dangling_edge(caplog) -> 
     ]
     assert any(
         "parent zone" in warning.casefold()
-        and ZONE_ID.casefold() in warning
-        and VNET_ID.casefold() in warning
+        and "skipped 1" in warning.casefold()
         for warning in graph.warnings
     )
-    assert "dns_link_skipped_missing_zone" in caplog.text
-    assert f"zone_id={ZONE_ID.casefold()}" in caplog.text
-    assert f"vnet_id={VNET_ID.casefold()}" in caplog.text
+    assert "dns_links_skipped_missing_zone count=1" in caplog.text
+    assert ZONE_ID.casefold() not in caplog.text
+    assert VNET_ID.casefold() not in caplog.text
 
 
 def test_flow_observations_are_forwarded_and_provenance_is_three_state(

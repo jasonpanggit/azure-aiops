@@ -761,25 +761,24 @@ class Normalizer:
                 for vnet_id in zone["linkedVnetIds"]
             )
             containment(row, zone)
+        skipped_dns_link_count = 0
         for zone_id, vnet_id in dns_links:
             zone = dns_zones.get(zone_id)
             if zone is None:
-                warning = (
-                    "Skipped private DNS virtual network link because its "
-                    f"parent zone was absent from the payload: zone_id={zone_id} "
-                    f"vnet_id={vnet_id}"
-                )
-                if warning not in warnings:
-                    warnings.append(warning)
-                    logger.warning(
-                        "dns_link_skipped_missing_zone zone_id=%s vnet_id=%s",
-                        zone_id,
-                        vnet_id,
-                    )
+                skipped_dns_link_count += 1
                 continue
             if vnet_id not in zone["linkedVnetIds"]:
                 zone["linkedVnetIds"].append(vnet_id)
             link(zone_id, "resolvesFor", vnet_id, 0.98)
+        if skipped_dns_link_count:
+            warnings.append(
+                f"Skipped {skipped_dns_link_count} private DNS virtual network "
+                "link(s) because the parent zone was absent from the payload"
+            )
+            logger.warning(
+                "dns_links_skipped_missing_zone count=%d",
+                skipped_dns_link_count,
+            )
         for zone in dns_zones.values():
             record("PrivateDnsZone", zone)
 
