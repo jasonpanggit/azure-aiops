@@ -660,6 +660,24 @@ def test_activation_selector_supports_validated_active_and_rollback_maps():
         assert f"  {local_name} = " in foundry
 
 
+def test_promotion_gate_validates_only_the_mapping_selected_for_activation():
+    foundry = _read("infra/terraform/foundry.tf")
+    gate = _hcl_block(foundry, PROMOTION_GATE_RESOURCE)
+
+    active_guard = (
+        'lower(var.foundry_specialist_activation_target) != "active" ||'
+    )
+    rollback_guard = (
+        'lower(var.foundry_specialist_activation_target) != "rollback" ||'
+    )
+    assert gate.count(active_guard) >= 5
+    assert rollback_guard in gate
+    assert "local.foundry_rollback_status_ok" in gate
+    assert "local.foundry_rollback_digest_ok" in gate
+    assert "local.foundry_rollback_ids_complete" in gate
+    assert "local.foundry_rollback_coordinator_validated" in gate
+
+
 def test_pinned_activation_emits_the_validated_shared_coordinator_version():
     foundry = _read("infra/terraform/foundry.tf")
     container_apps = _read("infra/terraform/container_apps.tf")
@@ -1052,6 +1070,34 @@ def test_later_publications_do_not_advance_rollback_without_explicit_rotation(
     record = json.loads(promotion.read_text(encoding="utf-8"))
     assert record["rollback_target"] == stable_rollback
     assert record["rollback_coordinator"] == stable_coordinator
+
+
+def test_corrupt_promotion_artifact_halts_without_publish_or_overwrite(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    promotion = tmp_path / "promotion.json"
+    corrupt = '{"status":"validated","agents":'
+    promotion.write_text(corrupt, encoding="utf-8")
+    env["FOUNDRY_PROMOTION_RECORD"] = str(promotion)
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert "promotion artifact" in result.stderr.casefold()
+    assert promotion.read_text(encoding="utf-8") == corrupt
+    assert not (tmp_path / "create.log").exists()
+
+
+def test_promotion_artifact_is_replaced_atomically():
+    script = _read("infra/scripts/create-foundry-agent.sh")
+    writer = script[script.index("promotion_record_path =") :]
+
+    assert "tempfile.NamedTemporaryFile" in writer
+    assert "os.replace(" in writer
+    assert "promotion_record_path.write_text" not in writer
 
 
 def test_new_rotation_epoch_advances_rollback_once(tmp_path):
