@@ -3,6 +3,7 @@ from operations.foundry_agent import (
     AgentAnswer,
     FoundryPromptAgent,
     MicrosoftAgentFrameworkFoundryAgent,
+    select_foundry_agent_class,
     specialist_catalog,
 )
 
@@ -48,6 +49,75 @@ def test_maf_foundry_agent_invokes_sdk_agent_with_existing_contract(monkeypatch)
     assert answer.agent_name == "operations-copilot"
     assert answer.model == "microsoft-agent-framework"
     assert "What depends on demo-vnet?" in calls[0]
+
+
+def test_versioned_rest_agent_sends_exact_provider_version(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="network-agent",
+        agent_version="provider-version-42",
+    )
+
+    def fake_post(path, payload, *, versioned=True):
+        captured["path"] = path
+        captured["payload"] = payload
+        captured["versioned"] = versioned
+        return {"output_text": "Pinned response", "model": "test"}
+
+    monkeypatch.setattr(agent, "_post", fake_post)
+
+    answer = agent.answer(question="What changed?", context={"findings": []})
+
+    assert answer.text == "Pinned response"
+    assert captured["payload"]["agent_reference"] == {
+        "type": "agent_reference",
+        "name": "network-agent",
+        "version": "provider-version-42",
+    }
+
+
+def test_versioned_runtime_uses_rest_path_instead_of_preview_maf(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_VERSION", "provider-version-42")
+
+    selected = select_foundry_agent_class("network", prefer_maf=True)
+
+    assert selected is FoundryPromptAgent
+
+
+def test_unversioned_runtime_may_use_preview_maf(monkeypatch) -> None:
+    monkeypatch.delenv("FOUNDRY_NETWORK_AGENT_VERSION", raising=False)
+
+    selected = select_foundry_agent_class("network", prefer_maf=True)
+
+    assert selected is MicrosoftAgentFrameworkFoundryAgent
+
+
+def test_version_pinning_required_disables_unversioned_legacy_agent(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "network-agent")
+    monkeypatch.delenv("FOUNDRY_NETWORK_AGENT_VERSION", raising=False)
+    monkeypatch.setenv("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "true")
+
+    assert FoundryPromptAgent.from_env("network") is None
+    assert MicrosoftAgentFrameworkFoundryAgent.from_env("network") is None
+
+
+def test_version_pinning_required_accepts_pinned_shared_coordinator(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_AGENT_NAME", "operations-copilot")
+    monkeypatch.setenv("FOUNDRY_AGENT_VERSION", "provider-coordinator-42")
+    monkeypatch.setenv("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "true")
+
+    rest = FoundryPromptAgent.from_env()
+    maf = MicrosoftAgentFrameworkFoundryAgent.from_env()
+
+    assert rest is not None
+    assert maf is not None
+    assert rest.agent_version == "provider-coordinator-42"
+    assert maf.agent_version == "provider-coordinator-42"
 
 
 def test_legacy_foundry_configuration_is_a_compatible_network_fallback(monkeypatch) -> None:

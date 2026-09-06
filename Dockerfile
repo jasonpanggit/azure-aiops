@@ -68,6 +68,12 @@ LABEL source_cache_bust="${SOURCE_CACHE_BUST}"
 COPY --from=builder /app/.venv /app/.venv
 COPY src/ /app/src/
 COPY skills/ /app/skills/
+COPY scripts/refresh_exposure_enrichment.py /app/scripts/refresh_exposure_enrichment.py
+
+# The specialist contract is the deployment's single source of truth for agent
+# identity, grants, and versions. Fail the image build -- not a production
+# request -- if it is missing or unparseable at the loader's stable path.
+RUN python -c "import json, pathlib; json.loads(pathlib.Path('/app/src/operations/specialists.v1.json').read_text(encoding='utf-8'))"
 # Baked-in default connector configs so the inventory-refresh trigger endpoint
 # (POST /api/v1/inventory/refresh, called by the Fabric Data Pipeline Web
 # activity) has a config to load without needing a mounted volume. Neither

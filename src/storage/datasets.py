@@ -85,6 +85,7 @@ class DatasetStore:
                 {f"queries/{name}": _sorted_rows(rows) for name, rows in sorted(query_results.items())}
             )
         _validate_dataset_names(datasets)
+        _validate_source_partitions(datasets)
 
         old_hashes = self._load_hashes()
         new_hashes: dict[str, str] = dict(old_hashes)
@@ -407,6 +408,107 @@ def _validate_dataset_names(datasets: dict[str, list[dict]]) -> None:
         path = PurePosixPath(text)
         if not text or path.is_absolute() or ".." in path.parts:
             raise ValueError(f"Dataset name must be relative and contained: {name}")
+
+
+def _validate_source_partitions(datasets: dict[str, list[dict]]) -> None:
+    """Validate staged Exposure partitions before any generation write."""
+
+    partition_rows = datasets.get("exposure/source_partition_rows", [])
+    status_rows = [
+        row
+        for row in datasets.get("situations/source_status", [])
+        if row.get("partition_key")
+    ]
+    if not partition_rows and not status_rows:
+        return
+
+    required_status = {
+        "partition_key",
+        "connection_id",
+        "source_family",
+        "attempted_generation",
+        "effective_generation",
+        "attempted_at",
+        "last_success_at",
+        "row_count",
+        "represented_count",
+        "expected_count",
+        "completeness",
+        "safe_error_code",
+        "safe_error_summary",
+    }
+    statuses: dict[str, dict[str, Any]] = {}
+    for row in status_rows:
+        missing = sorted(
+            field
+            for field in required_status
+            if field not in row or row[field] is None
+        )
+        if missing:
+            raise ValueError(
+                "Invalid source partition status contract: " + ",".join(missing)
+            )
+        partition_key = str(row["partition_key"])
+        if partition_key in statuses:
+            raise ValueError("Duplicate source partition status")
+        if row["completeness"] not in {
+            "complete",
+            "healthy-empty",
+            "stale",
+            "unavailable",
+        }:
+            raise ValueError("Invalid source partition completeness")
+        expected = int(row["expected_count"])
+        represented = int(row["represented_count"])
+        row_count = int(row["row_count"])
+        if expected < 1 or represented not in {0, 1} or row_count < 0:
+            raise ValueError("Invalid source partition count")
+        if row["completeness"] == "unavailable":
+            if represented or row["effective_generation"]:
+                raise ValueError("Invalid unavailable source partition")
+        elif not represented or not row["effective_generation"]:
+            raise ValueError("Invalid usable source partition")
+        statuses[partition_key] = row
+
+    actual_counts = {key: 0 for key in statuses}
+    seen_rows: set[tuple[str, str, str]] = set()
+    for row in partition_rows:
+        required_row = {
+            "partition_key",
+            "query_name",
+            "row_key",
+            "payload_json",
+            "effective_generation",
+        }
+        if any(field not in row or row[field] is None for field in required_row):
+            raise ValueError("Invalid source partition row contract")
+        partition_key = str(row["partition_key"])
+        status = statuses.get(partition_key)
+        if status is None:
+            raise ValueError("Invalid source partition reference")
+        identity = (
+            partition_key,
+            str(row["query_name"]),
+            str(row["row_key"]),
+        )
+        if identity in seen_rows:
+            raise ValueError("Duplicate source partition row")
+        seen_rows.add(identity)
+        if row["effective_generation"] != status["effective_generation"]:
+            raise ValueError("Invalid source partition generation reference")
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except json.JSONDecodeError as exc:
+            raise ValueError("Invalid source partition payload") from exc
+        if not isinstance(payload, dict):
+            raise TypeError("Invalid source partition payload")
+        actual_counts[partition_key] += 1
+
+    for partition_key, status in statuses.items():
+        if actual_counts[partition_key] != int(status["row_count"]):
+            raise ValueError("Invalid source partition row count")
+        if status["completeness"] == "healthy-empty" and actual_counts[partition_key]:
+            raise ValueError("Invalid healthy-empty source partition")
 
 
 def _sorted_rows(rows: list[dict]) -> list[dict]:

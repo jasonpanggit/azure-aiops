@@ -15,6 +15,7 @@ from .defender_normalize import (
     normalize_assessment,
     normalize_attack_path,
     normalize_container_image_exposure,
+    normalize_container_image_products,
     normalize_secure_score,
     normalize_secure_score_control,
     normalize_security_alert,
@@ -57,6 +58,9 @@ ENTITY_TYPES = (
     "DefenderAssessment",
     "DefenderVulnerabilityFinding",
     "ContainerImageExposure",
+    "LogicalImage",
+    "ImageDigest",
+    "VulnerabilityObservation",
     "SecurityAlert",
     "AttackPath",
     "AttackPathNode",
@@ -241,6 +245,22 @@ class Normalizer:
                     observed,
                     compute_confidence("arg:SecurityResources"),
                 )
+
+        image_products = normalize_container_image_products(
+            image_assessments,
+            observed,
+            source_generation=run_id,
+        )
+        for entity_type, rows in (
+            ("LogicalImage", image_products.logical_images),
+            ("ImageDigest", image_products.digests),
+            (
+                "VulnerabilityObservation",
+                image_products.vulnerability_observations,
+            ),
+        ):
+            for entity in rows:
+                entity_index[entity_type][entity["id"]] = entity
 
         for row in payload.get("defender_subassessments", []):
             for entity in normalize_vulnerability_subassessments(row, observed):

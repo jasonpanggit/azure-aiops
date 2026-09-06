@@ -39,6 +39,11 @@ packages = ["src/fabric", "src/fabric_pipelines", "src/storage", "src/ontology",
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills/operational-context-graph/SKILL.md" = "skills/operational-context-graph/SKILL.md"
+# The specialist contract is data, not code, and the loader resolves it next
+# to operations/specialist_manifest.py. Force-including it pins that stable
+# path in the wheel so an installed distribution cannot lose the manifest to a
+# packaging default that only collects .py files.
+"src/operations/specialists.v1.json" = "operations/specialists.v1.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
