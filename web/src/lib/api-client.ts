@@ -89,7 +89,10 @@ function buildQuery(query: RequestOptions["query"]): string {
  * and an `X-Correlation-ID`, and unwraps `{ error: {...} }` bodies into a
  * thrown `ApiError` so callers only handle the success shape.
  */
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<Envelope<T>> {
+export async function apiRequest<T, TPagination = import("./types").Pagination>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<Envelope<T, TPagination>> {
   const correlationId = generateCorrelationId();
 
   const prefix = options.rawPath ? "" : API_PREFIX;
@@ -189,7 +192,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     return { data: undefined as T, evidence: [], scope: {} };
   }
 
-  return (await response.json()) as Envelope<T>;
+  return (await response.json()) as Envelope<T, TPagination>;
 }
 
 export { API_BASE_URL };
