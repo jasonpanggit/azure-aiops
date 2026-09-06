@@ -555,7 +555,7 @@ export function TopologyWorkspace({
   if (error) {
     return <StatePanel title="Topology is unavailable" message={error.message} tone="error" />;
   }
-  if (!topology || topology.hubs.length + topology.spokes.length + topology.isolated.length === 0) {
+  if (!topology || !renderedGraph || renderedGraph.nodes.length === 0) {
     return (
       <StatePanel
         title="No observed network topology"

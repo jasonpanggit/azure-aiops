@@ -191,6 +191,28 @@ describe("TopologyWorkspace detail level", () => {
       screen.getByRole("region", { name: "Network topology" }),
     ).toHaveAttribute("aria-busy", "true");
   });
+
+  it("renders a private-link-only topology instead of the empty state", () => {
+    const topology = buildTopologyEnvelope(1, 1).data.topology;
+    topology.hubs = [];
+    topology.spokes = [];
+    topology.isolated = [];
+    topology.resources = [
+      {
+        ...topology.resources![0],
+        entity_type: "AIFoundryAccount",
+        role: "private_link",
+        details: { private_link_candidate: true },
+      },
+    ];
+
+    renderWorkspace({ topology });
+
+    expect(screen.getByTestId("topology-graph")).toBeInTheDocument();
+    expect(
+      screen.queryByText("No observed network topology"),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("TopologyWorkspace badge coverage", () => {
