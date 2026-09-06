@@ -28,8 +28,10 @@ import {
   advanceExposureCursor,
   createExposureSearchCommitter,
   encodeExposureQueryState,
+  exposureDetailHref,
   exposureQueryKey,
   exposureRetentionKey,
+  parseExposureDetailContext,
   parseExposureQueryState,
   restartExposureQuery,
   retreatExposureCursor,
@@ -110,10 +112,17 @@ function targetKindCopy(value: PatchExposureFinding["target_kind"]): string {
   return value === "container_image" ? "Container image" : "Server";
 }
 
-function itemDetailHref(item: PatchExposureFinding): string {
-  if (item.detail_path?.startsWith("/exposure/")) return item.detail_path;
+function itemDetailHref(
+  item: PatchExposureFinding,
+  state: ExposureQueryState,
+  scroll: number,
+): string {
   const segment = item.weakness_kind === "kb" ? "kbs" : "cves";
-  return `/exposure/${segment}/${encodeURIComponent(item.weakness_id)}`;
+  return exposureDetailHref(segment, item.weakness_id, state, {
+    origin: "/exposure/patch-priorities",
+    row: item.exposure_id,
+    scroll,
+  });
 }
 
 function headerCompleteness(
@@ -210,6 +219,10 @@ export default function PatchPrioritiesPage() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const detailContext = useMemo(
+    () => parseExposureDetailContext(new URLSearchParams(searchParams.toString())),
+    [searchParams],
+  );
   const queryState = useMemo(
     () =>
       parseExposureQueryState(new URLSearchParams(searchParams.toString()), {
@@ -336,24 +349,30 @@ export default function PatchPrioritiesPage() {
   );
 
   useEffect(() => {
+    const restoreIdentity = detailContext.row || queryState.target;
     if (
       !rows.length ||
-      !queryState.target ||
-      restoredTargetRef.current === queryState.target
+      !restoreIdentity ||
+      restoredTargetRef.current === restoreIdentity
     ) {
       return;
     }
     const match = rows.find(
       (item) =>
-        item.target_id === queryState.target ||
-        item.target_id.endsWith(`/${queryState.target}`),
+        item.exposure_id === restoreIdentity ||
+        item.target_id === restoreIdentity ||
+        item.target_id.endsWith(`/${restoreIdentity}`),
     );
     if (!match) return;
     const row = document.getElementById(match.exposure_id);
     row?.focus({ preventScroll: true });
-    row?.scrollIntoView?.({ block: "center" });
-    restoredTargetRef.current = queryState.target;
-  }, [queryState.target, rows]);
+    if (detailContext.scroll !== null && document.scrollingElement) {
+      document.scrollingElement.scrollTop = detailContext.scroll;
+    } else {
+      row?.scrollIntoView?.({ block: "center" });
+    }
+    restoredTargetRef.current = restoreIdentity;
+  }, [detailContext.row, detailContext.scroll, queryState.target, rows]);
 
   const revokeSelected = async (
     request: RiskExceptionRevokeRequest,
@@ -528,7 +547,17 @@ export default function PatchPrioritiesPage() {
                       <tr key={item.exposure_id} id={item.exposure_id} tabIndex={-1}>
                         <td data-label="Rank">Rank {rank.toLocaleString("en-US")}</td>
                         <td data-label="Finding">
-                          <Link className="table-primary-link" href={itemDetailHref(item)}>
+                          <Link
+                            className="table-primary-link"
+                            href={itemDetailHref(item, queryState, 0)}
+                            onClick={(event) => {
+                              event.currentTarget.href = itemDetailHref(
+                                item,
+                                queryState,
+                                Math.max(0, Math.round(window.scrollY)),
+                              );
+                            }}
+                          >
                             {item.weakness_id}
                           </Link>
                           <div className="table-secondary">

@@ -1105,6 +1105,14 @@ export interface RiskException {
   approved_by: string;
   created_at: string;
   expires_at: string;
+  /** Present only when the server exposes a governed revoke transition. */
+  can_revoke?: boolean;
+  evidence_binding?: {
+    generation?: string;
+    tenant_id?: string;
+    connection_ids?: string[];
+    evidence_refs?: Array<Record<string, unknown>>;
+  };
 }
 
 export interface SlaComplianceSeverityRow {
@@ -1206,6 +1214,7 @@ export interface CveDetail {
     kev_ransomware_use: string;
     exploit_references: { url: string; source: string }[];
   };
+  enrichment?: ExposureEnrichmentState;
   exploitability_signals: { signal: string; source: string; confidence: string }[];
   affected_servers: string[];
   affected_applications: string[];
@@ -1214,11 +1223,35 @@ export interface CveDetail {
   recommended_patch: string;
 }
 
+export interface ExposureEnrichmentSourceState {
+  source: string;
+  identifier: string;
+  status: string;
+  stale: boolean;
+  safe_error_code?: string;
+  attempted_at?: string | null;
+  succeeded_at?: string | null;
+  source_at?: string | null;
+  enriched_at?: string | null;
+  refresh_after?: string | null;
+  has_last_known_good: boolean;
+}
+
+export interface ExposureEnrichmentState {
+  status: string;
+  complete: boolean;
+  stale: boolean;
+  expected_count: number;
+  available_count: number;
+  sources: Record<string, ExposureEnrichmentSourceState>;
+}
+
 export interface KbDetail {
   kb_id: string;
   title: string;
   severity: string;
   published_at: string;
+  enrichment?: ExposureEnrichmentState;
   cve_ids: string[];
   cves: { cve_id: string; title: string; severity: string; cvss: { base_score: number; vector: string; severity: string } }[];
   affected_servers: string[];

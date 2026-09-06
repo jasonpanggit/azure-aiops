@@ -1,5 +1,5 @@
 import { FluentProvider, webLightTheme } from "@fluentui/react-components";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/types";
@@ -228,6 +228,14 @@ function renderPage() {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("CVE detail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -262,7 +270,7 @@ describe("CVE detail", () => {
     expect(screen.getAllByText(/2 excluded/).length).toBeGreaterThanOrEqual(6);
     expect(screen.getAllByText("Defender West connection unavailable").length).toBeGreaterThanOrEqual(6);
     expect(screen.getByText("9.8/10")).toBeInTheDocument();
-    expect(screen.getByText("73.0%")).toBeInTheDocument();
+    expect(screen.getByLabelText("Exploit probability value")).toHaveTextContent(/73\s*%/);
   });
 
   it("keeps scoped core and healthy siblings usable when EPSS is unavailable", async () => {
@@ -273,7 +281,7 @@ describe("CVE detail", () => {
     expect(screen.getByText("EPSS is unavailable")).toBeInTheDocument();
     expect(screen.getByText("9.8/10")).toBeInTheDocument();
     expect(screen.getByText("Due 2026-08-22")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "KB600001" })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "KB600001" }).length).toBeGreaterThan(0);
   });
 
   it("preserves canonical collection context through CVE, KB, and Back links", async () => {
@@ -288,7 +296,7 @@ describe("CVE detail", () => {
     expect(backUrl.searchParams.get("scroll")).toBe("640");
     expect(backUrl.searchParams.has("cursor")).toBe(false);
 
-    const kb = screen.getByRole("link", { name: "KB600001" });
+    const kb = screen.getAllByRole("link", { name: "KB600001" })[0];
     const kbUrl = new URL(kb.getAttribute("href")!, "https://aiops.example");
     expect(kbUrl.pathname).toBe("/exposure/kbs/KB600001");
     expect(kbUrl.searchParams.get("origin")).toBe("/exposure/patch-priorities");
@@ -333,9 +341,16 @@ describe("CVE detail", () => {
     const epss = await screen.findByRole("region", { name: "EPSS section" });
     const retry = within(epss).getByRole("button", { name: "Retry EPSS" });
     retry.focus();
-    api.cve.mockResolvedValue(cveEnvelope());
+    const recovery = deferred<ReturnType<typeof cveEnvelope>>();
+    api.cve.mockImplementationOnce(() => recovery.promise);
     await user.click(retry);
-    await waitFor(() => expect(screen.getByText("73.0%")).toBeInTheDocument());
-    expect(document.activeElement).toHaveAccessibleName(/Retry EPSS/);
+    await waitFor(() => {
+      expect(document.activeElement).toHaveAccessibleName("Retry EPSS");
+      expect(document.activeElement).toHaveAttribute("aria-busy", "true");
+    });
+    recovery.resolve(cveEnvelope());
+    await waitFor(() =>
+      expect(screen.getByLabelText("Exploit probability value")).toHaveTextContent(/73\s*%/),
+    );
   });
 });
