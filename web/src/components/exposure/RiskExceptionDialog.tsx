@@ -396,6 +396,7 @@ export function RiskExceptionDialog(props: RiskExceptionDialogProps) {
                   ref={successRef}
                   className="callout"
                   role="status"
+                  aria-label="Risk exception result"
                   aria-live="polite"
                   tabIndex={-1}
                 >
@@ -486,6 +487,7 @@ export function RiskExceptionDialog(props: RiskExceptionDialogProps) {
                     ? "alert"
                     : "status"
                 }
+                aria-label="Risk exception result"
                 aria-live="polite"
                 tabIndex={-1}
               >

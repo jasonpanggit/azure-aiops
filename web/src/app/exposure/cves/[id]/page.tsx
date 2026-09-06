@@ -2,8 +2,16 @@
 
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
+import { useMsal } from "@azure/msal-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
+import {
+  RiskExceptionDialog,
+  type RiskExceptionRecordRequest,
+  type RiskExceptionRecordResult,
+  type RiskExceptionRevokeRequest,
+  type RiskExceptionRevokeResult,
+} from "@/components/exposure/RiskExceptionDialog";
 import { AttackPathGraphView } from "@/components/ui/AttackPathGraphView";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -287,13 +295,13 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
     page: 1,
   }));
   const [refreshKey, setRefreshKey] = useState(0);
-  const [acceptRiskOpen, setAcceptRiskOpen] = useState(false);
-  const [reason, setReason] = useState("");
-  const [expiresAt, setExpiresAt] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [riskDialogOpen, setRiskDialogOpen] = useState(false);
+  const [revokeExceptionId, setRevokeExceptionId] = useState("");
   const [copilotOpen, setCopilotOpen] = useState(false);
   const riskInvokerRef = useRef<HTMLButtonElement>(null);
+  const { accounts } = useMsal();
+  const sessionApprover =
+    accounts[0]?.username || accounts[0]?.name || "Authenticated session";
 
   const common = useExposureSection<ExposureOverview>({
     queryKey: `${exposureQueryKey(findingState)}|common`,
@@ -397,7 +405,6 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
   );
   const parentLabel = exposureDetailParentLabel(detailContext.origin);
   const backHref = exposureDetailReturnHref(queryState, detailContext);
-  const acceptedRows = rows.filter((row) => row.risk_accepted);
   const findingPage = findings.data;
   const first = rows.length ? (findingState.page - 1) * findingState.pageSize + 1 : 0;
   const last = rows.length ? first + rows.length - 1 : 0;
@@ -405,28 +412,69 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
   const kbHref = (kbId: string) =>
     exposureDetailHref("kbs", kbId, queryState, detailContext);
 
-  async function handleAcceptRisk() {
-    if (!reason.trim() || !data) {
-      setSubmitError("A reason is required to accept risk.");
-      return;
-    }
-    setSubmitting(true);
-    setSubmitError(null);
+  async function recordRiskException(
+    request: RiskExceptionRecordRequest,
+  ): Promise<RiskExceptionRecordResult> {
     try {
-      await vulnerabilityApi.acceptRisk({
-        cve_id: data.cve.cve_id,
-        server_id: findingState.target || undefined,
-        reason: reason.trim(),
-        expires_at: expiresAt || undefined,
+      const response = await vulnerabilityApi.acceptRisk({
+        cve_id: request.cveId,
+        reason: request.reason,
+        expires_at: request.expiresAt || undefined,
       });
-      setAcceptRiskOpen(false);
-      setReason("");
-      setExpiresAt("");
-      setRefreshKey((value) => value + 1);
+      return {
+        status: "success",
+        auditId: response.data.exception_id,
+        effectiveScope: request.targetScope,
+        expiresAt: response.data.expires_at || null,
+        canRevoke: response.data.can_revoke === true,
+        governance: request.governance,
+      };
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "Risk exception was not recorded.");
-    } finally {
-      setSubmitting(false);
+      return {
+        status: "failure",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Risk exception was not recorded.",
+      };
+    }
+  }
+
+  async function refreshRiskEvidence(): Promise<void> {
+    await Promise.all([
+      vulnerabilityApi.exposureItems(findingState),
+      vulnerabilityApi.exposureOverview(findingState),
+      vulnerabilityApi.cve(cveId, findingState.scope),
+    ]);
+    setRefreshKey((value) => value + 1);
+  }
+
+  async function revokeRiskException(
+    request: RiskExceptionRevokeRequest,
+  ): Promise<RiskExceptionRevokeResult> {
+    const exceptionId = request.exceptionIds[0];
+    try {
+      await vulnerabilityApi.revokeRiskException(exceptionId);
+      return {
+        status: "success",
+        auditId: exceptionId,
+        outcomes: [{ exceptionId, status: "succeeded" }],
+      };
+    } catch (error) {
+      return {
+        status: "failure",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Risk exception was not revoked.",
+        outcomes: [
+          {
+            exceptionId,
+            status: "failed",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        ],
+      };
     }
   }
 
@@ -462,9 +510,9 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
                 ref={riskInvokerRef}
                 type="button"
                 className="button"
-                onClick={() => setAcceptRiskOpen((open) => !open)}
+                onClick={() => setRiskDialogOpen(true)}
               >
-                {acceptedRows.length ? "Manage risk acceptance" : "Accept risk"}
+                Record risk exception
               </button>
             )}
             {data && (
@@ -686,23 +734,58 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
         </>
       )}
 
-      {data && acceptRiskOpen && (
-        <section className="card" aria-label="Legacy risk acceptance">
-          <div className="card-header"><h2>Accept risk for {data.cve.cve_id}</h2></div>
-          <div className="card-body">
-            <label className="form-field">Reason<textarea value={reason} onChange={(event) => setReason(event.target.value)} /></label>
-            <label className="form-field">Expires at<input value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></label>
-            {submitError && <p className="error-text" role="alert">{submitError}</p>}
-            <div className="form-actions">
-              <button type="button" className="button button-primary" disabled={submitting} onClick={handleAcceptRisk}>
-                {submitting ? "Submitting…" : "Submit exception"}
-              </button>
-              <button type="button" className="button" disabled={submitting} onClick={() => setAcceptRiskOpen(false)}>
-                Keep reviewing CVE
-              </button>
-            </div>
-          </div>
-        </section>
+      {data && (
+        <RiskExceptionDialog
+          mode="record"
+          open={riskDialogOpen}
+          onOpenChange={setRiskDialogOpen}
+          returnFocusRef={riskInvokerRef}
+          record={{
+            cveId: data.cve.cve_id,
+            targetScope: `${rows.length.toLocaleString("en-US")} loaded ${
+              rows.length === 1 ? "target" : "targets"
+            } · ${(findingPage?.contract.counts.represented ?? "unknown").toLocaleString?.() ?? "unknown"} represented · ${
+              findingPage?.contract.counts.total ?? "unknown"
+            } total · ${findingPage?.contract.counts.excluded ?? "unknown"} excluded`,
+            affectedMetrics: [
+              `Open exposure count (${findingPage?.contract.counts.excluded ?? "unknown"} excluded from represented results)`,
+              "Patch priority count",
+            ],
+            evidenceFreshness: `Generation ${
+              findingPage?.generation || findingState.generation || "unknown"
+            } · ${common.metadata.freshnessState} as of ${
+              common.metadata.observedAt || "an unknown time"
+            }`,
+            sessionApprover,
+          }}
+          onRecord={recordRiskException}
+          onRefresh={refreshRiskEvidence}
+          onRequestRevoke={(exceptionId) => {
+            setRiskDialogOpen(false);
+            setRevokeExceptionId(exceptionId);
+          }}
+        />
+      )}
+
+      {data && revokeExceptionId && (
+        <RiskExceptionDialog
+          mode="revoke"
+          open={Boolean(revokeExceptionId)}
+          onOpenChange={(open) => {
+            if (!open) setRevokeExceptionId("");
+          }}
+          returnFocusRef={riskInvokerRef}
+          exceptions={[
+            {
+              id: revokeExceptionId,
+              label: `${data.cve.cve_id} risk exception`,
+              targetScope: `${rows.length.toLocaleString("en-US")} represented targets`,
+            },
+          ]}
+          representedScope={`${rows.length.toLocaleString("en-US")} represented targets`}
+          onRevoke={revokeRiskException}
+          onRefresh={refreshRiskEvidence}
+        />
       )}
 
       {data && (

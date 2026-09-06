@@ -369,16 +369,17 @@ describe("CVE detail", () => {
     });
     await user.click(invoker);
 
-    expect(screen.getByRole("dialog", { name: "Record risk exception" })).toBeInTheDocument();
-    expect(screen.getByText("CVE-2026-0001")).toBeInTheDocument();
-    expect(screen.getByText(/1 loaded target.*2 excluded/i)).toBeInTheDocument();
-    expect(screen.getByText(/Generation generation-25/)).toBeInTheDocument();
-    expect(screen.getByLabelText("Session approver")).toHaveValue(
+    const dialog = screen.getByRole("dialog", { name: "Record risk exception" });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText("CVE-2026-0001")).toBeInTheDocument();
+    expect(within(dialog).getByText(/1 loaded target.*2 excluded/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Generation generation-25/)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Session approver")).toHaveValue(
       "operator@example.com",
     );
-    expect(screen.getByLabelText("Session approver")).toHaveAttribute("readonly");
-    expect(screen.queryByLabelText("Approved by")).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByLabelText("Reason")).toHaveFocus());
+    expect(within(dialog).getByLabelText("Session approver")).toHaveAttribute("readonly");
+    expect(within(dialog).queryByLabelText("Approved by")).not.toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByLabelText("Reason")).toHaveFocus());
 
     await user.click(screen.getByRole("button", { name: "Keep reviewing" }));
     await waitFor(() => expect(invoker).toHaveFocus());
