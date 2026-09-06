@@ -733,6 +733,7 @@ def test_conflicting_runtime_controller_evidence_remains_unknown() -> None:
 
 def test_workload_schemas_are_additive_and_preserve_approval_role_ids() -> None:
     from fabric.schema_registry import schema_for
+    from fabric.sync_service import FabricSyncService
 
     assert {
         "observation_id",
@@ -760,6 +761,14 @@ def test_workload_schemas_are_additive_and_preserve_approval_role_ids() -> None:
         "role_ids_json"
     )
     assert approval_field.nullable is True
+    assert "silver_container_vulnerability_observations" in (
+        FabricSyncService._WORKLOAD_APPEND_WRITE_TABLES
+    )
+    assert {
+        "silver_container_registries",
+        "silver_container_logical_images",
+        "silver_container_image_digests",
+    } <= FabricSyncService._WORKLOAD_MERGE_WRITE_TABLES
 
 
 def test_ingestion_service_persists_the_exact_workload_slice(tmp_path) -> None:

@@ -86,9 +86,13 @@ class FabricSyncService:
         "silver_server_inventory",
     })
     _WORKLOAD_APPEND_WRITE_TABLES: frozenset[str] = frozenset({
+        "silver_container_vulnerability_observations",
         "silver_workload_observations",
     })
     _WORKLOAD_MERGE_WRITE_TABLES: frozenset[str] = frozenset({
+        "silver_container_image_digests",
+        "silver_container_logical_images",
+        "silver_container_registries",
         "silver_workload_deployments",
         "metadata_workload_source_checkpoints",
     })
