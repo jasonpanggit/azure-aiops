@@ -45,9 +45,16 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 from .fabric_client import FabricClient
+
+if TYPE_CHECKING:
+    from ontology_discovery.generation_resolver import (
+        CompatibilityAlias,
+        GenerationSelection,
+    )
 
 ITEM_TYPE = "DataAgent"
 
@@ -187,6 +194,8 @@ def build_data_agent_definition(
     lakehouse_display_name: str,
     ai_instructions: str,
     table_names: tuple[str, ...] = ("ontology_entities", "ontology_relationships"),
+    generation: GenerationSelection | None = None,
+    table_aliases: Mapping[str, CompatibilityAlias] | None = None,
 ) -> dict[str, Any]:
     """Builds the DataAgent item definition ``parts`` payload per Microsoft
     Learn's "Data Agent item definition" article (fetched live during this
@@ -212,6 +221,8 @@ def build_data_agent_definition(
     agent (see module docstring: querying is a separate, MCP-based runtime
     surface, not exercised by this manager)."""
 
+    if table_aliases is not None:
+        table_names = _bound_alias_names(table_names, generation, table_aliases)
     datasource_name = lakehouse_display_name or "ontology_lakehouse"
     datasource_part_prefix = f"Files/Config/draft/lakehouse_tables-{datasource_name}"
 
@@ -260,6 +271,25 @@ def build_data_agent_definition(
             },
         ]
     }
+
+
+def _bound_alias_names(
+    table_names: tuple[str, ...],
+    generation: GenerationSelection | None,
+    table_aliases: Mapping[str, CompatibilityAlias],
+) -> tuple[str, ...]:
+    if generation is None:
+        raise ValueError("generation is required with ontology table aliases")
+    bound: list[str] = []
+    for name in table_names:
+        try:
+            alias = table_aliases[name]
+        except KeyError as exc:
+            raise ValueError(f"Missing compatibility alias for {name!r}") from exc
+        if alias.logical_name != name or alias.generation_id != generation.generation_id:
+            raise ValueError(f"Compatibility alias for {name!r} is not bound to the selection")
+        bound.append(alias.logical_name)
+    return tuple(bound)
 
 
 def ensure_data_agent(

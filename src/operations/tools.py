@@ -169,6 +169,7 @@ class ToolContext:
     context: Any
     scope: Scope
     principal: Any | None = None
+    generation_selection: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -300,6 +301,10 @@ def _provider_result(
         return ToolResult(status=STATUS_UNAVAILABLE, warning=str(exc.message))
     if provider is None:
         return ToolResult(status=STATUS_UNAVAILABLE, warning=f"The {name} provider is not configured")
+    if tool_context.generation_selection is not None and hasattr(
+        provider, "for_generation"
+    ):
+        provider = provider.for_generation(tool_context.generation_selection)
     try:
         return loader(provider)
     except (LookupError, ValueError) as exc:
@@ -1316,10 +1321,21 @@ def call_tool(
     spec = TOOL_REGISTRY.get(name)
     if spec is None:
         return ToolResult(status=STATUS_DENIED, warning=f"Unknown tool {name!r}")
+    resolver_provider = getattr(context, "generation_resolver_provider", None)
+    try:
+        resolver = resolver_provider() if callable(resolver_provider) else None
+        generation_selection = resolver.resolve() if resolver is not None else None
+    except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        _LOGGER.warning("tool_generation_resolution_failed tool=%s error=%s", name, exc)
+        return ToolResult(
+            status=STATUS_UNAVAILABLE,
+            warning="The ontology generation could not be resolved",
+        )
     tool_context = ToolContext(
         context=context,
         scope=scope,
         principal=principal,
+        generation_selection=generation_selection,
     )
     try:
         return spec.handler(tool_context, args)
