@@ -7,7 +7,7 @@ from fabric_pipelines.topology_fabric_contracts import (
     TOPOLOGY_ENTITIES_CONTRACT,
 )
 
-SCHEMA_VERSION = "2.3.0"
+SCHEMA_VERSION = "2.4.0"
 
 _BASE = [
     pa.field("tenant_id", pa.string(), nullable=False),
@@ -264,6 +264,92 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("vulnerable_packages", pa.list_(pa.string()), nullable=False),
             pa.field("recommendation", pa.string(), nullable=False),
             pa.field("last_assessed_at", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_container_registries": pa.schema(
+        [
+            *_BASE,
+            pa.field("registry_id", pa.string(), nullable=False),
+            pa.field("identity_version", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field("registry_resource_id", pa.string(), nullable=False),
+            pa.field("registry_host", pa.string(), nullable=False),
+            pa.field("connection_id", pa.string(), nullable=False),
+            pa.field("source_system", pa.string(), nullable=False),
+            pa.field("source_ids", pa.list_(pa.string()), nullable=False),
+            pa.field("observed_at", pa.string(), nullable=False),
+            pa.field("ingested_at", pa.string(), nullable=False),
+            pa.field("provenance_json", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_container_logical_images": pa.schema(
+        [
+            *_BASE,
+            pa.field("logical_image_id", pa.string(), nullable=False),
+            pa.field("identity_version", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field("registry_id", pa.string(), nullable=False),
+            pa.field("registry_resource_id", pa.string(), nullable=False),
+            pa.field("registry_host", pa.string(), nullable=False),
+            pa.field("repository", pa.string(), nullable=False),
+            pa.field("image_tags", pa.list_(pa.string()), nullable=False),
+            pa.field("connection_id", pa.string(), nullable=False),
+            pa.field("source_system", pa.string(), nullable=False),
+            pa.field("source_ids", pa.list_(pa.string()), nullable=False),
+            pa.field("observed_at", pa.string(), nullable=False),
+            pa.field("ingested_at", pa.string(), nullable=False),
+            pa.field("provenance_json", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_container_image_digests": pa.schema(
+        [
+            *_BASE,
+            pa.field("image_digest_id", pa.string(), nullable=False),
+            pa.field("identity_version", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field("image_digest", pa.string(), nullable=False),
+            pa.field("logical_image_ids", pa.list_(pa.string()), nullable=False),
+            pa.field("registry_ids", pa.list_(pa.string()), nullable=False),
+            pa.field("image_tags", pa.list_(pa.string()), nullable=False),
+            pa.field("connection_id", pa.string(), nullable=False),
+            pa.field("source_system", pa.string(), nullable=False),
+            pa.field("source_ids", pa.list_(pa.string()), nullable=False),
+            pa.field("observed_at", pa.string(), nullable=False),
+            pa.field("ingested_at", pa.string(), nullable=False),
+            pa.field("provenance_json", pa.string(), nullable=False),
+        ]
+    ),
+    "silver_container_vulnerability_observations": pa.schema(
+        [
+            *_BASE,
+            pa.field(
+                "vulnerability_observation_id",
+                pa.string(),
+                nullable=False,
+            ),
+            pa.field("identity_version", pa.string(), nullable=False),
+            pa.field("contract_version", pa.string(), nullable=False),
+            pa.field("registry_id", pa.string(), nullable=False),
+            pa.field("logical_image_id", pa.string(), nullable=False),
+            pa.field("image_digest_id", pa.string(), nullable=False),
+            pa.field("image_digest", pa.string(), nullable=False),
+            pa.field("target_kind", pa.string(), nullable=False),
+            pa.field("cve_id", pa.string(), nullable=False),
+            pa.field("assessment_id", pa.string(), nullable=False),
+            pa.field("source_event_id", pa.string(), nullable=False),
+            pa.field("source_family", pa.string(), nullable=False),
+            pa.field("status", pa.string(), nullable=False),
+            pa.field("severity", pa.string(), nullable=False),
+            pa.field("software_name", pa.string(), nullable=False),
+            pa.field("package_version", pa.string(), nullable=False),
+            pa.field("fixed_version", pa.string(), nullable=False),
+            pa.field("provider_event_time", pa.string(), nullable=True),
+            pa.field("provider_event_time_quality", pa.string(), nullable=False),
+            pa.field("observed_at", pa.string(), nullable=False),
+            pa.field("ingested_at", pa.string(), nullable=False),
+            pa.field("connection_id", pa.string(), nullable=False),
+            pa.field("source_event_payload_json", pa.string(), nullable=False),
+            pa.field("provenance_json", pa.string(), nullable=False),
         ]
     ),
     "silver_exposure_observations": pa.schema(

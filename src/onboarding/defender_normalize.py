@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 _CVE_PATTERN = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
+_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$", re.IGNORECASE)
+
+CONTAINER_EVIDENCE_CONTRACT_VERSION = "1.0.0"
+CONTAINER_IDENTITY_VERSION = "1"
 
 #: Severity ranking used to pick the worst finding when rolling container image
 #: package findings up into a single per-image entity.
@@ -21,6 +27,16 @@ _SEVERITY_RANK = {
     "informational": 0,
     "unknown": 0,
 }
+
+
+@dataclass(frozen=True)
+class ContainerImageProducts:
+    """Granular, additive container products derived from Defender evidence."""
+
+    registries: tuple[dict[str, Any], ...]
+    logical_images: tuple[dict[str, Any], ...]
+    digests: tuple[dict[str, Any], ...]
+    vulnerability_observations: tuple[dict[str, Any], ...]
 
 
 def is_container_image_assessment(row: Mapping[str, Any]) -> bool:
@@ -135,6 +151,270 @@ def normalize_container_image_exposure(
             }
         )
     return entities
+
+
+def normalize_container_image_products(
+    rows: list[Mapping[str, Any]], observed: str
+) -> ContainerImageProducts:
+    """Split Defender image assessments into versioned durable identities.
+
+    Mutable tags remain aliases on a logical image and digest; they never
+    participate in an identity. A digest is accepted only when Defender
+    supplies a canonical immutable sha256. Workload deployment is deliberately
+    absent here: only the exact Container Insights product may establish it.
+    """
+
+    registries: dict[str, dict[str, Any]] = {}
+    logical_images: dict[str, dict[str, Any]] = {}
+    digests: dict[str, dict[str, Any]] = {}
+    observations: dict[str, dict[str, Any]] = {}
+    source_event_digests: dict[tuple[str, str, str, str, str], str] = {}
+
+    for row in rows:
+        properties = _mapping(row.get("properties"))
+        if _status(properties).casefold() != "unhealthy":
+            continue
+        image = _image_details(properties)
+        digest = _normalize_sha256(image.get("digest"))
+        registry_resource_id = _target_resource_id(properties).split(
+            "/securityentitydata/", 1
+        )[0]
+        registry_host = _text(image.get("registryHost")).casefold().rstrip("/")
+        repository = _text(image.get("repository")).casefold().strip("/")
+        if not digest or not repository or not (
+            registry_resource_id or registry_host
+        ):
+            # The aggregate compatibility row remains available, but an
+            # incomplete/mutable identity can never enter granular products.
+            continue
+
+        tenant_id = _text(row.get("tenantId")).casefold() or "unknown"
+        subscription_id = _text(row.get("subscriptionId")).casefold() or "unknown"
+        source_event_id = _text(row.get("id")).casefold()
+        provider_event_time = _first_text(
+            properties.get("statusChangeDate"),
+            properties.get("timeGenerated"),
+        )
+        tags = sorted(
+            {
+                _text(tag)
+                for tag in image.get("tags") or ()
+                if _text(tag)
+            }
+        )
+        registry_identity = registry_resource_id or registry_host
+        registry_id = _container_identity(
+            "container-registry",
+            tenant_id,
+            subscription_id,
+            registry_identity,
+        )
+        logical_image_id = _container_identity(
+            "logical-image",
+            tenant_id,
+            subscription_id,
+            registry_identity,
+            repository,
+        )
+        image_digest_id = _container_identity(
+            "image-digest",
+            tenant_id,
+            subscription_id,
+            digest,
+        )
+        source_ids = [source_event_id] if source_event_id else []
+        provenance = {
+            "source_system": "arg:SecurityResources",
+            "source_event_id": source_event_id,
+            "provider_event_time": provider_event_time or None,
+            "ingested_at": observed,
+        }
+
+        registry = registries.setdefault(
+            registry_id,
+            {
+                **_granular_base(row, observed, "ContainerRegistry", registry_id),
+                "registryId": registry_id,
+                "identityVersion": CONTAINER_IDENTITY_VERSION,
+                "contractVersion": CONTAINER_EVIDENCE_CONTRACT_VERSION,
+                "registryResourceId": registry_resource_id,
+                "registryHost": registry_host,
+                "sourceIds": [],
+                "observedAt": provider_event_time or observed,
+                "ingestedAt": observed,
+                "provenance": provenance,
+            },
+        )
+        registry["sourceIds"] = sorted(
+            {*registry.get("sourceIds", []), *source_ids}
+        )
+        registry["observedAt"] = max(
+            str(registry.get("observedAt") or ""),
+            provider_event_time or observed,
+        )
+
+        logical_image = logical_images.setdefault(
+            logical_image_id,
+            {
+                **_granular_base(row, observed, "LogicalImage", logical_image_id),
+                "logicalImageId": logical_image_id,
+                "identityVersion": CONTAINER_IDENTITY_VERSION,
+                "contractVersion": CONTAINER_EVIDENCE_CONTRACT_VERSION,
+                "registryId": registry_id,
+                "registryResourceId": registry_resource_id,
+                "registryHost": registry_host,
+                "repository": repository,
+                "imageTags": [],
+                "sourceIds": [],
+                "observedAt": provider_event_time or observed,
+                "ingestedAt": observed,
+                "provenance": provenance,
+            },
+        )
+        logical_image["imageTags"] = sorted(
+            {*logical_image.get("imageTags", []), *tags}
+        )
+        logical_image["sourceIds"] = sorted(
+            {*logical_image.get("sourceIds", []), *source_ids}
+        )
+        logical_image["observedAt"] = max(
+            str(logical_image.get("observedAt") or ""),
+            provider_event_time or observed,
+        )
+
+        digest_product = digests.setdefault(
+            image_digest_id,
+            {
+                **_granular_base(row, observed, "ImageDigest", image_digest_id),
+                "imageDigestId": image_digest_id,
+                "identityVersion": CONTAINER_IDENTITY_VERSION,
+                "contractVersion": CONTAINER_EVIDENCE_CONTRACT_VERSION,
+                "imageDigest": digest,
+                "logicalImageIds": [],
+                "registryIds": [],
+                "imageTags": [],
+                "sourceIds": [],
+                "observedAt": provider_event_time or observed,
+                "ingestedAt": observed,
+                "provenance": provenance,
+            },
+        )
+        digest_product["logicalImageIds"] = sorted(
+            {*digest_product.get("logicalImageIds", []), logical_image_id}
+        )
+        digest_product["registryIds"] = sorted(
+            {*digest_product.get("registryIds", []), registry_id}
+        )
+        digest_product["imageTags"] = sorted(
+            {*digest_product.get("imageTags", []), *tags}
+        )
+        digest_product["sourceIds"] = sorted(
+            {*digest_product.get("sourceIds", []), *source_ids}
+        )
+        digest_product["observedAt"] = max(
+            str(digest_product.get("observedAt") or ""),
+            provider_event_time or observed,
+        )
+
+        additional = _mapping(properties.get("additionalData"))
+        cve_details = _image_cve_details(additional)
+        if not cve_details:
+            cve_details = tuple(
+                {"cve_id": cve_id, "severity": _severity(properties)}
+                for cve_id in sorted(_cve_ids_from_details(additional))
+            )
+        software_name = _first_text(
+            additional.get("SoftwareName"),
+            additional.get("softwareName"),
+            properties.get("displayName"),
+        )
+        for detail in cve_details:
+            cve_id = str(detail["cve_id"]).upper()
+            source_event_key = (
+                tenant_id,
+                subscription_id,
+                source_event_id,
+                cve_id,
+                provider_event_time,
+            )
+            previous_digest = source_event_digests.get(source_event_key)
+            if previous_digest is not None and previous_digest != digest:
+                raise ValueError(
+                    "Container vulnerability source event has conflicting digest evidence"
+                )
+            source_event_digests[source_event_key] = digest
+            observation_id = _container_identity(
+                "vulnerability-observation",
+                tenant_id,
+                subscription_id,
+                digest,
+                cve_id,
+                source_event_id,
+                provider_event_time,
+            )
+            observation = {
+                **_granular_base(
+                    row,
+                    observed,
+                    "VulnerabilityObservation",
+                    observation_id,
+                ),
+                "vulnerabilityObservationId": observation_id,
+                "identityVersion": CONTAINER_IDENTITY_VERSION,
+                "contractVersion": CONTAINER_EVIDENCE_CONTRACT_VERSION,
+                "registryId": registry_id,
+                "logicalImageId": logical_image_id,
+                "imageDigestId": image_digest_id,
+                "imageDigest": digest,
+                "targetKind": "container_image",
+                "cveId": cve_id,
+                "assessmentId": source_event_id,
+                "sourceEventId": source_event_id,
+                "sourceFamily": "defender_image",
+                "status": "unhealthy",
+                "severity": str(detail.get("severity") or "Unknown"),
+                "softwareName": software_name,
+                "packageVersion": str(
+                    detail.get("package_version")
+                    or additional.get("SoftwareVersion")
+                    or ""
+                ),
+                "fixedVersion": str(
+                    detail.get("fixed_version")
+                    or additional.get("FixedVersion")
+                    or ""
+                ),
+                "providerEventTime": provider_event_time or None,
+                "providerEventTimeQuality": (
+                    "provider" if provider_event_time else "unknown"
+                ),
+                "observedAt": provider_event_time or observed,
+                "ingestedAt": observed,
+                "sourceEventPayload": dict(detail),
+                "provenance": {
+                    **provenance,
+                    "registry_id": registry_id,
+                    "logical_image_id": logical_image_id,
+                    "image_digest_id": image_digest_id,
+                },
+            }
+            previous = observations.get(observation_id)
+            if previous is not None and previous != observation:
+                raise ValueError(
+                    "Container vulnerability observation identity has conflicting content"
+                )
+            observations[observation_id] = observation
+
+    return ContainerImageProducts(
+        registries=tuple(registries[key] for key in sorted(registries)),
+        logical_images=tuple(
+            logical_images[key] for key in sorted(logical_images)
+        ),
+        digests=tuple(digests[key] for key in sorted(digests)),
+        vulnerability_observations=tuple(
+            observations[key] for key in sorted(observations)
+        ),
+    )
 
 
 def normalize_assessment(row: Mapping[str, Any], observed: str) -> dict[str, Any] | None:
@@ -596,6 +876,52 @@ def _image_severities(additional: Mapping[str, Any]) -> tuple[str, ...]:
     )
 
 
+def _image_cve_details(
+    additional: Mapping[str, Any],
+) -> tuple[dict[str, str], ...]:
+    raw = _first_text(additional.get("CvesDetails"), additional.get("cvesDetails"))
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    details: list[dict[str, str]] = []
+    for item in parsed:
+        if not isinstance(item, Mapping):
+            continue
+        cve_value = _first_text(
+            item.get("CveId"),
+            item.get("cveId"),
+            item.get("Id"),
+            item.get("id"),
+        )
+        matches = _CVE_PATTERN.findall(cve_value)
+        for cve_id in matches:
+            details.append(
+                {
+                    "cve_id": cve_id.upper(),
+                    "severity": _first_text(
+                        item.get("Severity"),
+                        item.get("severity"),
+                        "Unknown",
+                    ),
+                    "package_version": _first_text(
+                        item.get("PackageVersion"),
+                        item.get("packageVersion"),
+                        item.get("Version"),
+                    ),
+                    "fixed_version": _first_text(
+                        item.get("FixedVersion"),
+                        item.get("fixedVersion"),
+                    ),
+                }
+            )
+    return tuple(details)
+
+
 def _image_details(properties: Mapping[str, Any]) -> dict[str, Any]:
     """Parse the ``resourceAdditionalData`` JSON blob on image assessments."""
     raw = _first_text(
@@ -619,6 +945,40 @@ def _image_details(properties: Mapping[str, Any]) -> dict[str, Any]:
         "imageUri": _text(parsed.get("ImageUri")),
         "tags": [_text(tag) for tag in tags] if isinstance(tags, (list, tuple)) else [],
         "lastPushedAt": _text(parsed.get("LastPushedToRegistryUTC")),
+    }
+
+
+def _normalize_sha256(value: Any) -> str:
+    digest = _text(value).casefold()
+    return digest if _SHA256_PATTERN.fullmatch(digest) else ""
+
+
+def _container_identity(kind: str, *parts: str) -> str:
+    canonical = json.dumps(
+        [CONTAINER_IDENTITY_VERSION, *(str(part).strip().casefold() for part in parts)],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return (
+        f"{kind}:v{CONTAINER_IDENTITY_VERSION}:"
+        f"{hashlib.sha256(canonical.encode()).hexdigest()}"
+    )
+
+
+def _granular_base(
+    row: Mapping[str, Any],
+    observed: str,
+    entity_type: str,
+    identity: str,
+) -> dict[str, Any]:
+    base = _base(row, observed, entity_type)
+    return {
+        **base,
+        "id": identity,
+        "name": identity,
+        "displayName": identity,
+        "sourceId": _text(row.get("id")),
+        "schemaVersion": CONTAINER_EVIDENCE_CONTRACT_VERSION,
     }
 
 

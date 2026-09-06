@@ -57,6 +57,9 @@ ENTITY_FILES = (
     "DefenderAssessment",
     "DefenderVulnerabilityFinding",
     "ContainerImageExposure",
+    "LogicalImage",
+    "ImageDigest",
+    "VulnerabilityObservation",
     "SecurityAlert",
     "AttackPath",
     "AttackPathNode",
@@ -69,6 +72,10 @@ ENTITY_FILES = (
     # Without these the ontology has no VNet internals, so the topology graph
     # renders nodes with no relationships between them.
     *NETWORK_ENTITY_TYPES,
+)
+
+_GRANULAR_CONTAINER_ENTITY_FILES = frozenset(
+    {"LogicalImage", "ImageDigest", "VulnerabilityObservation"}
 )
 
 ONTOLOGY_ENTITY_TYPES = (
@@ -915,6 +922,7 @@ class InventoryDatasetMapper:
             [
                 _entity_row(row, entity_type, ingestion_run_id)
                 for entity_type, rows in entities.items()
+                if entity_type not in _GRANULAR_CONTAINER_ENTITY_FILES
                 for row in rows
             ]
         )
@@ -1041,6 +1049,25 @@ class InventoryDatasetMapper:
                 _container_image_exposure_row(row, ingestion_run_id)
                 for row in entities["ContainerImageExposure"]
             ],
+            "silver_container_registries": _container_registry_rows(
+                entities["LogicalImage"],
+                ingestion_run_id,
+            ),
+            "silver_container_logical_images": [
+                _container_logical_image_row(row, ingestion_run_id)
+                for row in entities["LogicalImage"]
+            ],
+            "silver_container_image_digests": [
+                _container_image_digest_row(row, ingestion_run_id)
+                for row in entities["ImageDigest"]
+            ],
+            "silver_container_vulnerability_observations": [
+                _container_vulnerability_observation_row(
+                    row,
+                    ingestion_run_id,
+                )
+                for row in entities["VulnerabilityObservation"]
+            ],
             **{
                 f"silver_defender_{dataset}": [
                     _entity_row(row, entity_type, ingestion_run_id)
@@ -1119,6 +1146,7 @@ class InventoryDatasetMapper:
         situation_relationships = [row for row in situation_relationships if row]
         datasets["ontology_relationships"].extend(situation_relationships)
         datasets["ontology_rel_situation_affects_resource"] = situation_relationships
+        _validate_granular_container_products(datasets)
         return datasets
 
 
@@ -1438,6 +1466,306 @@ def _container_image_exposure_row(row: dict[str, Any], run_id: str) -> dict[str,
         }
     )
     return result
+
+
+def _container_registry_rows(
+    logical_images: list[dict[str, Any]],
+    run_id: str,
+) -> list[dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for logical_image in logical_images:
+        registry_id = str(logical_image.get("registryId") or "")
+        candidate = {
+            **_base(
+                {**logical_image, "id": registry_id},
+                run_id,
+            ),
+            "registry_id": registry_id,
+            "identity_version": str(
+                logical_image.get("identityVersion") or ""
+            ),
+            "contract_version": str(
+                logical_image.get("contractVersion") or ""
+            ),
+            "registry_resource_id": str(
+                logical_image.get("registryResourceId") or ""
+            ).casefold(),
+            "registry_host": str(
+                logical_image.get("registryHost") or ""
+            ).casefold(),
+            "connection_id": _connection_id(logical_image),
+            "source_system": str(
+                logical_image.get("sourceSystem") or ""
+            ),
+            "source_ids": sorted(
+                {
+                    str(value)
+                    for value in logical_image.get("sourceIds") or ()
+                    if str(value)
+                }
+            ),
+            "observed_at": str(
+                logical_image.get("observedAt")
+                or logical_image.get("lastObservedTimestamp")
+                or ""
+            ),
+            "ingested_at": str(
+                logical_image.get("ingestedAt")
+                or logical_image.get("createdTimestamp")
+                or ""
+            ),
+            "provenance_json": _canonical(
+                logical_image.get("provenance") or {}
+            ),
+        }
+        previous = rows.get(registry_id)
+        if previous is None:
+            rows[registry_id] = candidate
+            continue
+        invariant_fields = (
+            "tenant_id",
+            "subscription_id",
+            "registry_resource_id",
+            "registry_host",
+            "identity_version",
+            "contract_version",
+        )
+        if any(
+            previous[field] != candidate[field]
+            for field in invariant_fields
+        ):
+            raise ValueError("Container registry identity has conflicting content")
+        previous["source_ids"] = sorted(
+            {*previous["source_ids"], *candidate["source_ids"]}
+        )
+        previous["observed_at"] = max(
+            previous["observed_at"],
+            candidate["observed_at"],
+        )
+        previous["change_version"] = _version(
+            {
+                key: value
+                for key, value in previous.items()
+                if key != "change_version"
+            }
+        )
+    return [rows[key] for key in sorted(rows)]
+
+
+def _container_logical_image_row(
+    row: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any]:
+    result = _base(row, run_id)
+    result.update(
+        {
+            "logical_image_id": str(row.get("logicalImageId") or ""),
+            "identity_version": str(row.get("identityVersion") or ""),
+            "contract_version": str(row.get("contractVersion") or ""),
+            "registry_id": str(row.get("registryId") or ""),
+            "registry_resource_id": str(
+                row.get("registryResourceId") or ""
+            ).casefold(),
+            "registry_host": str(row.get("registryHost") or "").casefold(),
+            "repository": str(row.get("repository") or "").casefold(),
+            "image_tags": sorted(
+                {
+                    str(value)
+                    for value in row.get("imageTags") or ()
+                    if str(value)
+                }
+            ),
+            "connection_id": _connection_id(row),
+            "source_system": str(row.get("sourceSystem") or ""),
+            "source_ids": sorted(
+                {
+                    str(value)
+                    for value in row.get("sourceIds") or ()
+                    if str(value)
+                }
+            ),
+            "observed_at": str(
+                row.get("observedAt")
+                or row.get("lastObservedTimestamp")
+                or ""
+            ),
+            "ingested_at": str(
+                row.get("ingestedAt")
+                or row.get("createdTimestamp")
+                or ""
+            ),
+            "provenance_json": _canonical(row.get("provenance") or {}),
+        }
+    )
+    return result
+
+
+def _container_image_digest_row(
+    row: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any]:
+    result = _base(row, run_id)
+    result.update(
+        {
+            "image_digest_id": str(row.get("imageDigestId") or ""),
+            "identity_version": str(row.get("identityVersion") or ""),
+            "contract_version": str(row.get("contractVersion") or ""),
+            "image_digest": str(row.get("imageDigest") or "").casefold(),
+            "logical_image_ids": sorted(
+                {
+                    str(value)
+                    for value in row.get("logicalImageIds") or ()
+                    if str(value)
+                }
+            ),
+            "registry_ids": sorted(
+                {
+                    str(value)
+                    for value in row.get("registryIds") or ()
+                    if str(value)
+                }
+            ),
+            "image_tags": sorted(
+                {
+                    str(value)
+                    for value in row.get("imageTags") or ()
+                    if str(value)
+                }
+            ),
+            "connection_id": _connection_id(row),
+            "source_system": str(row.get("sourceSystem") or ""),
+            "source_ids": sorted(
+                {
+                    str(value)
+                    for value in row.get("sourceIds") or ()
+                    if str(value)
+                }
+            ),
+            "observed_at": str(
+                row.get("observedAt")
+                or row.get("lastObservedTimestamp")
+                or ""
+            ),
+            "ingested_at": str(
+                row.get("ingestedAt")
+                or row.get("createdTimestamp")
+                or ""
+            ),
+            "provenance_json": _canonical(row.get("provenance") or {}),
+        }
+    )
+    return result
+
+
+def _container_vulnerability_observation_row(
+    row: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any]:
+    result = _base(row, run_id)
+    provider_event_time = row.get("providerEventTime")
+    result.update(
+        {
+            "vulnerability_observation_id": str(
+                row.get("vulnerabilityObservationId") or ""
+            ),
+            "identity_version": str(row.get("identityVersion") or ""),
+            "contract_version": str(row.get("contractVersion") or ""),
+            "registry_id": str(row.get("registryId") or ""),
+            "logical_image_id": str(row.get("logicalImageId") or ""),
+            "image_digest_id": str(row.get("imageDigestId") or ""),
+            "image_digest": str(row.get("imageDigest") or "").casefold(),
+            "target_kind": str(row.get("targetKind") or ""),
+            "cve_id": str(row.get("cveId") or "").upper(),
+            "assessment_id": str(row.get("assessmentId") or ""),
+            "source_event_id": str(row.get("sourceEventId") or ""),
+            "source_family": str(row.get("sourceFamily") or ""),
+            "status": str(row.get("status") or ""),
+            "severity": str(row.get("severity") or "Unknown"),
+            "software_name": str(row.get("softwareName") or ""),
+            "package_version": str(row.get("packageVersion") or ""),
+            "fixed_version": str(row.get("fixedVersion") or ""),
+            "provider_event_time": (
+                str(provider_event_time) if provider_event_time else None
+            ),
+            "provider_event_time_quality": str(
+                row.get("providerEventTimeQuality") or "unknown"
+            ),
+            "observed_at": str(
+                row.get("observedAt")
+                or row.get("lastObservedTimestamp")
+                or ""
+            ),
+            "ingested_at": str(
+                row.get("ingestedAt")
+                or row.get("createdTimestamp")
+                or ""
+            ),
+            "connection_id": _connection_id(row),
+            "source_event_payload_json": _canonical(
+                row.get("sourceEventPayload") or {}
+            ),
+            "provenance_json": _canonical(row.get("provenance") or {}),
+        }
+    )
+    return result
+
+
+def _validate_granular_container_products(
+    datasets: Mapping[str, list[dict[str, Any]]],
+) -> None:
+    registries = {
+        str(row.get("registry_id") or "")
+        for row in datasets.get("silver_container_registries", ())
+    }
+    logical_images = {
+        str(row.get("logical_image_id") or ""): row
+        for row in datasets.get("silver_container_logical_images", ())
+    }
+    digests = {
+        str(row.get("image_digest_id") or ""): row
+        for row in datasets.get("silver_container_image_digests", ())
+    }
+    digest_pattern = re.compile(r"^sha256:[0-9a-f]{64}$")
+    for row in logical_images.values():
+        if str(row.get("registry_id") or "") not in registries:
+            raise ValueError("Container logical image references an unknown registry")
+    for row in digests.values():
+        if not digest_pattern.fullmatch(str(row.get("image_digest") or "")):
+            raise ValueError("Container image digest is not an immutable sha256")
+        if not row.get("logical_image_ids") or any(
+            logical_image_id not in logical_images
+            for logical_image_id in row["logical_image_ids"]
+        ):
+            raise ValueError(
+                "Container image digest references an unknown logical image"
+            )
+    for row in datasets.get(
+        "silver_container_vulnerability_observations",
+        (),
+    ):
+        if str(row.get("target_kind") or "") != "container_image":
+            raise ValueError(
+                "Container vulnerability observation has an unsafe target kind"
+            )
+        digest = digests.get(str(row.get("image_digest_id") or ""))
+        if digest is None or digest.get("image_digest") != row.get("image_digest"):
+            raise ValueError(
+                "Container vulnerability observation has conflicting digest evidence"
+            )
+        if str(row.get("logical_image_id") or "") not in logical_images:
+            raise ValueError(
+                "Container vulnerability observation references an unknown logical image"
+            )
+
+
+def _connection_id(row: Mapping[str, Any]) -> str:
+    return str(
+        row.get("connection_id")
+        or row.get("connectionId")
+        or row.get("subscription_connection_id")
+        or row.get("subscriptionConnectionId")
+        or ""
+    )
 
 
 def _patch_history_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
