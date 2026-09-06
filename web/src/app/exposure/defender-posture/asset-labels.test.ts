@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { formatDefenderAsset } from "./asset-labels";
+import {
+  defenderAssetPresentation,
+  formatDefenderAsset,
+} from "./asset-labels";
 import type { DefenderPostureFinding } from "@/lib/types";
 
 const baseFinding: DefenderPostureFinding = {
@@ -53,5 +56,91 @@ describe("formatDefenderAsset", () => {
         inventory_kind: "Container workload",
       })
     ).toBe("agentic-aiops-demo (Container workload)");
+  });
+});
+
+describe("defenderAssetPresentation", () => {
+  it("classifies servers, registries, clusters, and container images distinctly", () => {
+    expect(
+      defenderAssetPresentation({
+        assetId:
+          "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        assetName: "vm-1",
+        resourceType: "microsoft.compute/virtualmachines",
+        inventoryKind: "Azure VM",
+      }),
+    ).toMatchObject({
+      label: "vm-1 (Azure VM)",
+      kindLabel: "Server",
+      icon: "server",
+      serverActionEligible: true,
+    });
+    expect(
+      defenderAssetPresentation({
+        assetId:
+          "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ContainerRegistry/registries/acr-1",
+        assetName: "acr-1",
+        resourceType: "microsoft.containerregistry/registries",
+        inventoryKind: "Container registry",
+      }),
+    ).toMatchObject({
+      kindLabel: "Container registry",
+      icon: "registry",
+      serverActionEligible: false,
+    });
+    expect(
+      defenderAssetPresentation({
+        assetId:
+          "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ContainerService/managedClusters/aks-1",
+        assetName: "aks-1",
+        resourceType: "microsoft.containerservice/managedclusters",
+        inventoryKind: "AKS cluster",
+      }),
+    ).toMatchObject({
+      kindLabel: "AKS cluster",
+      icon: "cluster",
+      serverActionEligible: false,
+    });
+    expect(
+      defenderAssetPresentation({
+        assetId: "sha256:aaaaaaaa",
+        assetName: "platform/api@sha256:aaaaaaaa",
+        resourceType: "containerimage",
+        inventoryKind: "Container image",
+      }),
+    ).toMatchObject({
+      kindLabel: "Container image",
+      icon: "container-image",
+      serverActionEligible: false,
+    });
+  });
+
+  it("labels mixed and unknown targets truthfully and disables server-only actions", () => {
+    expect(
+      defenderAssetPresentation({
+        assetId: "mixed:server-and-image",
+        assetName: "vm-1 and platform/api",
+        resourceType: "mixed",
+        inventoryKind: "Server + container image",
+      }),
+    ).toEqual({
+      label: "vm-1 and platform/api (Server + container image)",
+      kindLabel: "Mixed asset",
+      icon: "mixed",
+      serverActionEligible: false,
+    });
+    expect(
+      defenderAssetPresentation({
+        assetId: "opaque-target",
+        assetName: "",
+        resourceType: "",
+        inventoryKind: "",
+      }),
+    ).toEqual({
+      label: "opaque-target (Azure resource)",
+      kindLabel: "Unknown asset",
+      icon: "unknown",
+      serverActionEligible: false,
+    });
   });
 });
