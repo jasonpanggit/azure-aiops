@@ -1072,3 +1072,164 @@ def test_multi_agent_old_ledger_readable_via_get(tmp_path, monkeypatch):
     assert response.status_code == 200
     data = response.json()["data"]
     assert data.get("contract_version") == "1"
+
+
+# ---------------------------------------------------------------------------
+# Code-review findings CR-01 through CR-04
+# ---------------------------------------------------------------------------
+
+
+def test_investigate_context_canonical_invokes_service_not_legacy(
+    tmp_path, monkeypatch
+):
+    """CR-01/CR-04: In canonical mode /copilot/investigate-context must route
+    through OrchestrationService and must NOT call run_context_investigation."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+
+    legacy_calls: list[object] = []
+
+    def _spy_legacy(*_args, **_kwargs):
+        legacy_calls.append(True)
+        return {
+            "ledger_id": "ctx-spylegacy001",
+            "contract_version": "1",
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        "api.routers.copilot.run_context_investigation", _spy_legacy
+    )
+
+    service_calls: list[object] = []
+    _orig_execute = OrchestrationService.execute
+
+    def _spy_execute(self, *args, **kwargs):
+        service_calls.append(True)
+        return _orig_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _spy_execute)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate-context?subscription=sub-a",
+        json={
+            "snapshot": {
+                "version": "1",
+                "page_kind": "network",
+                "page_id": "topology",
+                "question": "What firewall gaps exist?",
+                "scope": {"declared": {}},
+                "evidence": [
+                    {
+                        "evidence_id": "route-1",
+                        "section": "route",
+                        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt-1",
+                        "data": {"finding": "Default route bypasses firewall"},
+                    }
+                ],
+                "selected_resources": [],
+                "freshness": [],
+                "rechecks": [],
+            }
+        },
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert not legacy_calls, (
+        "Legacy run_context_investigation must not be called in canonical mode"
+    )
+    assert service_calls, (
+        "Canonical OrchestrationService.execute must be invoked"
+    )
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+    assert data.get("thread_id", "").startswith("thr-")
+
+
+def test_action_on_old_ledger_projects_version_in_canonical_mode(
+    tmp_path, monkeypatch
+):
+    """CR-02: POST /agents/investigations/{id}/actions must project
+    record_decision output through project_legacy_ledger in canonical mode."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    from operations.autonomous_investigation import ledger_store as get_store
+
+    store = get_store()
+    old_ledger = {
+        "ledger_id": "mai-oldaction001",
+        "objective": "Old investigation",
+        "scope": {"subscription": ["sub-a"]},
+        "created_by": "admin@example.com",
+        "created_at": "2026-08-01T00:00:00Z",
+        "updated_at": "2026-08-01T00:00:00Z",
+        "status": "synthesized",
+        "selected_agents": [],
+        "agent_runs": [],
+        "reconciliation": {},
+        "synthesis": {},
+        "human_controls": {"available_actions": ["accept_finding"]},
+        "decisions": [],
+        "approvals": [],
+        "outcome": "",
+        "stop_reason": "",
+        "evaluation": {},
+        "warnings": [],
+    }
+    store.add(old_ledger)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agents/investigations/mai-oldaction001/actions?subscription=sub-a",
+        json={"action": "accept_finding", "payload": {}},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1", (
+        "Action on old unversioned ledger must include contract_version"
+    )
+
+
+def test_project_legacy_ledger_always_returns_shallow_copy():
+    """CR-03: project_legacy_ledger must return a new dict even when the
+    ledger already carries a truthy contract_version, to avoid mutable
+    store aliases."""
+    from operations.autonomous_investigation import project_legacy_ledger
+
+    versioned = {
+        "ledger_id": "mai-copy001",
+        "contract_version": "1",
+        "decisions": [],
+    }
+    projected = project_legacy_ledger(versioned)
+
+    assert projected is not versioned, (
+        "Must return a shallow copy, not the original dict"
+    )
+    assert projected["contract_version"] == "1"
+    assert projected["ledger_id"] == "mai-copy001"
+
+
+def test_project_legacy_ledger_mutation_does_not_reach_original():
+    """CR-03: Mutating the projected dict must not alter the persisted
+    original — mutable store aliases are forbidden."""
+    from operations.autonomous_investigation import project_legacy_ledger
+
+    original = {
+        "ledger_id": "mai-mut001",
+        "contract_version": "1",
+        "status": "synthesized",
+    }
+    snapshot = dict(original)
+    projected = project_legacy_ledger(original)
+    projected["status"] = "tampered"
+
+    assert original == snapshot, (
+        "Mutations on projected must not propagate to the original"
+    )
