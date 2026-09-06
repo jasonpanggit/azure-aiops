@@ -362,3 +362,37 @@ def test_query_error_emits_only_bounded_outcome() -> None:
             for record in instrument.records
         ]
     )
+
+
+def test_reconciliation_metric_emits_safe_class_count_and_ratio() -> None:
+    meter = _Meter()
+    exposure = ExposureMetrics(meter=meter, environment="prod")
+
+    exposure.record_reconciliation(
+        mismatch_class="state",
+        mismatch_count=2,
+        compared_count=8,
+        outcome="unexpected_drift",
+        completeness="partial",
+    )
+
+    assert _records(
+        meter,
+        "aiops.exposure.reconciliation.mismatches",
+    ) == [
+        (
+            2.0,
+            {
+                "environment": "prod",
+                "adapter": "shadow",
+                "operation": "reconcile",
+                "outcome": "unexpected_drift",
+                "completeness": "partial",
+                "mismatch_class": "state",
+            },
+        )
+    ]
+    assert _records(
+        meter,
+        "aiops.exposure.reconciliation.drift.ratio",
+    )[0][0] == 0.25
