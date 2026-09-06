@@ -32,9 +32,10 @@ function completenessCopy(completeness: PageHeaderCompleteness): string {
   if (completeness.state === "complete" && completeness.freshness === "current") {
     return "Live operational context";
   }
-  if (completeness.freshness === "stale") {
+  if (completeness.state === "complete" && completeness.freshness === "stale") {
     return "Stale operational context";
   }
+  if (completeness.state === "complete") return "Unavailable operational context";
   return COMPLETENESS_LABELS[completeness.state];
 }
 

@@ -180,7 +180,25 @@ function revokeSummary(outcomes: readonly RiskExceptionRevokeOutcome[]): string 
   const notAttempted = outcomes.filter(
     (outcome) => outcome.status === "not_attempted",
   ).length;
+  if (failed === 0 && notAttempted === 0) return `${succeeded} revoked.`;
   return `${succeeded} revoked, ${failed} failed, ${notAttempted} not attempted. Failed and unattempted items remain selected.`;
+}
+
+function normalizeRevokeOutcomes(
+  selected: readonly RiskExceptionSelection[],
+  outcomes: readonly RiskExceptionRevokeOutcome[],
+): RiskExceptionRevokeOutcome[] {
+  const outcomeById = new Map(
+    outcomes.map((outcome) => [outcome.exceptionId, outcome]),
+  );
+  return selected.map(
+    (exception) =>
+      outcomeById.get(exception.id) ?? {
+        exceptionId: exception.id,
+        status: "not_attempted",
+        message: "No outcome was returned for this selected exception.",
+      },
+  );
 }
 
 function outcomeCopy(outcome: RiskExceptionRevokeOutcome): string {
@@ -326,7 +344,10 @@ export function RiskExceptionDialog(props: RiskExceptionDialogProps) {
         return;
       }
 
-      const outcomes = result.outcomes ?? [];
+      const outcomes = normalizeRevokeOutcomes(
+        props.exceptions,
+        result.outcomes ?? [],
+      );
       props.onSelectionChange?.(
         outcomes
           .filter((outcome) => outcome.status !== "succeeded")
@@ -469,6 +490,9 @@ export function RiskExceptionDialog(props: RiskExceptionDialogProps) {
                 tabIndex={-1}
               >
                 <h3>Risk exception revocation result</h3>
+                {feedback.result.status === "failure" && (
+                  <p>{feedback.result.message}</p>
+                )}
                 <p>{revokeSummary(feedback.result.outcomes)}</p>
                 {"auditId" in feedback.result && feedback.result.auditId && (
                   <p>Audit ID: <code>{feedback.result.auditId}</code></p>

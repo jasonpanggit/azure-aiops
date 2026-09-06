@@ -288,4 +288,37 @@ describe("RiskExceptionDialog revoke mode", () => {
     expect(onSelectionChange).toHaveBeenCalledWith(["REX-2", "REX-3"]);
     expect(screen.getByRole("button", { name: "Retry remaining exceptions" })).toBeEnabled();
   });
+
+  it("conservatively marks omitted server outcomes not attempted and retains them", async () => {
+    const user = userEvent.setup();
+    const onSelectionChange = vi.fn();
+
+    renderDialog(
+      <RiskExceptionDialog
+        open
+        mode="revoke"
+        exceptions={selectedExceptions}
+        representedScope="2 of 3 connections represented"
+        onOpenChange={() => {}}
+        onSelectionChange={onSelectionChange}
+        onRevoke={vi.fn().mockResolvedValue({
+          status: "failure",
+          message: "Revocation stopped after the first provider rejection.",
+          outcomes: [
+            { exceptionId: "REX-1", status: "succeeded" },
+            { exceptionId: "REX-2", status: "failed", message: "Provider rejection" },
+          ],
+        } satisfies RiskExceptionRevokeResult)}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Revoke exceptions" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Revocation stopped after the first provider rejection.");
+    expect(alert).toHaveTextContent(
+      "REX-3 — Not attempted: No outcome was returned for this selected exception.",
+    );
+    expect(onSelectionChange).toHaveBeenCalledWith(["REX-2", "REX-3"]);
+  });
 });

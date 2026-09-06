@@ -68,6 +68,18 @@ describe("PageHeader", () => {
     expect(status).not.toHaveTextContent("Live operational context");
   });
 
+  it("keeps an explicit degraded aggregate state authoritative over contributor freshness", () => {
+    render(
+      <PageHeader
+        {...baseProps}
+        completeness={{ state: "partial", freshness: "stale" }}
+      />,
+    );
+
+    expect(screen.getByText("Partial operational context")).toBeInTheDocument();
+    expect(screen.queryByText("Live operational context")).not.toBeInTheDocument();
+  });
+
   it("makes no live evidence claim when aggregate completeness was not supplied", () => {
     render(<PageHeader {...baseProps} />);
 
