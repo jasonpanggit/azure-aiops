@@ -469,13 +469,38 @@ variable "foundry_specialist_promotion_artifact" {
     Because the artifact is read at plan time, a candidate version created by
     the current apply can never activate in that same unvalidated step.
 
-    Leave empty (the default) or point at a missing/stale/unvalidated artifact
-    to keep the deterministic legacy eight-agent rollback mapping active. The
-    file is a deployment input, not repository state -- keep it outside the
-    build context and reviewed alongside the manifest it pins.
+    Leave empty (the default) to keep the deterministic legacy eight-agent
+    migration mapping active without sending synthetic release labels as
+    provider IDs. Select active or rollback explicitly only after supplying a
+    matching validated artifact. The file is a deployment input, not
+    repository state -- keep it outside the build context and reviewed
+    alongside the manifest it pins.
   EOT
   type        = string
   default     = ""
+}
+
+variable "foundry_specialist_activation_target" {
+  description = "Specialist provider-ID mapping to activate: legacy, active, or rollback."
+  type        = string
+  default     = "legacy"
+
+  validation {
+    condition     = contains(["legacy", "active", "rollback"], lower(var.foundry_specialist_activation_target))
+    error_message = "foundry_specialist_activation_target must be legacy, active, or rollback."
+  }
+}
+
+variable "enable_foundry_specialist_candidate_publish" {
+  description = "Explicit stage-B switch for additive specialist candidate publication after the version-pinning runtime is verified."
+  type        = bool
+  default     = false
+}
+
+variable "foundry_version_pinning_runtime_verified" {
+  description = "Reviewed assertion that the deployed API runtime pins outbound Foundry requests to configured provider version IDs."
+  type        = bool
+  default     = false
 }
 
 variable "foundry_model_deployment_name_override" {

@@ -339,6 +339,7 @@ if promotion == "promoted":
     # activated mapping and the previous one becomes the rollback target.
     agents = candidate_agents
     rollback = previous_agents
+    rollback_manifest_digest = previous.get("manifest_digest", "")
     manifest_digest = os.environ["MANIFEST_DIGEST"]
     release = os.environ["RELEASE_STAMP"]
 else:
@@ -346,6 +347,7 @@ else:
     # never destroys the mapping the running revision depends on.
     agents = previous_agents
     rollback = previous.get("rollback_target") or {}
+    rollback_manifest_digest = previous.get("rollback_manifest_digest", "")
     manifest_digest = previous.get("manifest_digest", "")
     release = previous.get("release", "")
 
@@ -363,6 +365,7 @@ record = {
     "agent_count": len(agents),
     "previous_version": previous_agents,
     "rollback_target": rollback,
+    "rollback_manifest_digest": rollback_manifest_digest,
     "candidate": {
         "promotion": promotion,
         "reason": reason,

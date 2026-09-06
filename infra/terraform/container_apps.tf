@@ -245,7 +245,10 @@ resource "azurerm_container_app" "api" {
       }
 
       dynamic "env" {
-        for_each = local.foundry_specialist_activation
+        for_each = {
+          for id, agent in local.foundry_specialist_activation : id => agent
+          if agent.version != ""
+        }
         content {
           name  = "FOUNDRY_${upper(env.key)}_AGENT_VERSION"
           value = env.value.version
@@ -256,6 +259,11 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "AIOPS_SPECIALIST_ACTIVATION_SOURCE"
         value = local.foundry_specialist_activation_source
+      }
+
+      env {
+        name  = "AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED"
+        value = "true"
       }
 
       env {

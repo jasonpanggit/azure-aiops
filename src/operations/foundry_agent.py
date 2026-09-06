@@ -52,6 +52,14 @@ SPECIALIST_IDS = _SPECIALIST_MANIFEST.specialist_ids
 DEFAULT_TIMEOUT_SECONDS = 60.0
 SPECIALIST_CONTRACT_VERSION = "network-finding.v1"
 _MUTATION_WORDS = ("delete", "create", "update", "modify", "execute", "apply", "remediate")
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _version_pinning_required() -> bool:
+    return (
+        os.environ.get("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "").strip().casefold()
+        in _TRUE_ENV_VALUES
+    )
 
 # Entra scope for the Foundry data plane. Distinct from the ARM scope: an ARM
 # token is rejected by the agents endpoint.
@@ -354,6 +362,13 @@ class FoundryPromptAgent:
         agent_name = specialist_name or os.environ.get(ENV_AGENT_NAME, "").strip()
         if not endpoint or not agent_name:
             return None
+        agent_version = (
+            os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
+            if specialist
+            else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
+        )
+        if _version_pinning_required() and not agent_version:
+            return None
         try:
             timeout = float(os.environ.get(ENV_TIMEOUT, "") or DEFAULT_TIMEOUT_SECONDS)
         except ValueError:
@@ -387,11 +402,7 @@ class FoundryPromptAgent:
                 failure_threshold=circuit_threshold, reset_seconds=circuit_reset
             ),
             specialist_id=specialist or "network",
-            agent_version=(
-                os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
-                if specialist
-                else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
-            ),
+            agent_version=agent_version,
         )
 
     def _post_once(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -576,6 +587,13 @@ class MicrosoftAgentFrameworkFoundryAgent:
         agent_name = specialist_name or os.environ.get(ENV_AGENT_NAME, "").strip()
         if not endpoint or not agent_name:
             return None
+        agent_version = (
+            os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
+            if specialist
+            else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
+        )
+        if _version_pinning_required() and not agent_version:
+            return None
         try:
             timeout = float(os.environ.get(ENV_TIMEOUT, "") or DEFAULT_TIMEOUT_SECONDS)
         except ValueError:
@@ -583,11 +601,7 @@ class MicrosoftAgentFrameworkFoundryAgent:
         return cls(
             project_endpoint=endpoint,
             agent_name=agent_name,
-            agent_version=(
-                os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
-                if specialist
-                else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
-            ),
+            agent_version=agent_version,
             timeout_seconds=timeout,
             specialist_id=specialist or "operations_copilot",
             agent_factory=agent_factory,

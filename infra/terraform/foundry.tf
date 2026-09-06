@@ -337,6 +337,7 @@ locals {
     : null
   )
   foundry_promoted_agents = try(local.foundry_promotion_artifact.agents, {})
+  foundry_rollback_agents = try(local.foundry_promotion_artifact.rollback_target, {})
 
   # The parity gate wrote "validated" only after an exact live comparison.
   foundry_promotion_status_ok = try(local.foundry_promotion_artifact.status, "") == "validated"
@@ -372,24 +373,64 @@ locals {
     local.foundry_promotion_no_candidate_ids
   )
 
-  # What the running revision actually selects. With a validated artifact it
-  # is the promoted provider IDs; without one it is the deterministic legacy
-  # eight-agent rollback mapping. It is never the candidate projection.
-  foundry_specialist_activation = local.foundry_promotion_validated ? {
+  foundry_rollback_ids_ok = sort(keys(local.foundry_rollback_agents)) == sort(keys(local.specialists_by_id))
+
+  foundry_rollback_ids_complete = alltrue([
+    for id, entry in local.foundry_rollback_agents :
+    try(entry.provider_version_id, "") != "" &&
+    try(entry.agent_name, "") == try(local.foundry_specialist_agent_names[id], "")
+  ])
+
+  foundry_rollback_no_candidate_ids = alltrue([
+    for id, entry in local.foundry_rollback_agents :
+    !contains(values(local.foundry_specialist_agent_versions), try(entry.provider_version_id, ""))
+  ])
+
+  foundry_rollback_validated = (
+    local.foundry_promotion_artifact_present &&
+    local.foundry_promotion_status_ok &&
+    try(local.foundry_promotion_artifact.rollback_manifest_digest, "") == local.specialist_manifest_digest &&
+    local.foundry_rollback_ids_ok &&
+    local.foundry_rollback_ids_complete &&
+    local.foundry_rollback_no_candidate_ids
+  )
+
+  foundry_activation_selection_valid = (
+    lower(var.foundry_specialist_activation_target) == "legacy" ||
+    (lower(var.foundry_specialist_activation_target) == "active" && local.foundry_promotion_validated) ||
+    (lower(var.foundry_specialist_activation_target) == "rollback" && local.foundry_rollback_validated)
+  )
+
+  # Active and rollback select exact provider IDs from validated mappings.
+  # Legacy migration uses names only: runtime pinning disables unversioned
+  # Foundry calls until a reviewed provider-ID mapping is selected.
+  foundry_specialist_activation = lower(var.foundry_specialist_activation_target) == "active" && local.foundry_promotion_validated ? {
     for id, entry in local.foundry_promoted_agents : id => {
       name    = entry.agent_name
       version = entry.provider_version_id
       source  = "validated_promotion"
     }
+    } : lower(var.foundry_specialist_activation_target) == "rollback" && local.foundry_rollback_validated ? {
+    for id, entry in local.foundry_rollback_agents : id => {
+      name    = entry.agent_name
+      version = entry.provider_version_id
+      source  = "validated_rollback"
+    }
     } : {
     for id, legacy in var.foundry_specialists : id => {
       name    = legacy.name
-      version = legacy.version
-      source  = "legacy_rollback"
+      version = ""
+      source  = "legacy_unversioned"
     }
   }
 
-  foundry_specialist_activation_source = local.foundry_promotion_validated ? "validated_promotion" : "legacy_rollback"
+  foundry_specialist_activation_source = (
+    lower(var.foundry_specialist_activation_target) == "active" && local.foundry_promotion_validated
+    ? "validated_promotion"
+    : lower(var.foundry_specialist_activation_target) == "rollback" && local.foundry_rollback_validated
+    ? "validated_rollback"
+    : "legacy_unversioned"
+  )
 
   # Model deployment name handed to the live parity gate so the deployed
   # agents' model can be checked against the real Azure deployment, keeping
@@ -891,7 +932,7 @@ locals {
 }
 
 resource "terraform_data" "foundry_agent" {
-  count = var.create_foundry_agent ? 1 : 0
+  count = var.create_foundry_agent && var.enable_foundry_specialist_candidate_publish ? 1 : 0
 
   # Re-runs the provisioner whenever the agent's definition changes. The
   # endpoint is included so that pointing at a rebuilt project also re-creates
@@ -905,6 +946,19 @@ resource "terraform_data" "foundry_agent" {
     promotion_artifact = local.foundry_promotion_artifact_path
     rollout_script     = filesha256("${path.module}/../scripts/create-foundry-agent.sh")
     parity_validator   = filesha256("${path.module}/../../scripts/validate_specialist_parity.py")
+    runtime_verified   = var.foundry_version_pinning_runtime_verified
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.foundry_version_pinning_runtime_verified
+      error_message = "Candidate publication requires the deployed version-pinning API runtime to be explicitly verified first."
+    }
+
+    precondition {
+      condition     = local.foundry_promotion_artifact_path != ""
+      error_message = "Candidate publication requires a persistent foundry_specialist_promotion_artifact path."
+    }
   }
 
   provisioner "local-exec" {
@@ -946,6 +1000,7 @@ resource "terraform_data" "foundry_agent" {
     azurerm_role_assignment.foundry_project_search_index_data_contributor,
     azurerm_role_assignment.foundry_project_search_service_contributor,
     terraform_data.foundry_knowledge_index,
+    azurerm_container_app.api,
   ]
 }
 
@@ -958,9 +1013,9 @@ resource "terraform_data" "foundry_agent" {
 # time against the persisted artifact from a previous apply -- they can never
 # be satisfied by output the current apply's agent-creation step produces.
 #
-# With no artifact (the default) the gate still passes, but the activation
-# mapping is the deterministic legacy eight-agent set and no candidate
-# provider ID is activated.
+# In default legacy mode the gate passes without an artifact, but version
+# environment variables are omitted and runtime pinning prevents unversioned
+# Foundry calls. Active and rollback modes require exact validated mappings.
 # ---------------------------------------------------------------------------
 resource "terraform_data" "foundry_specialist_promotion_gate" {
   input = {
@@ -972,33 +1027,38 @@ resource "terraform_data" "foundry_specialist_promotion_gate" {
 
   lifecycle {
     precondition {
-      condition     = !local.foundry_promotion_artifact_present || local.foundry_promotion_status_ok
+      condition     = lower(var.foundry_specialist_activation_target) == "legacy" || local.foundry_promotion_status_ok
       error_message = "Specialist promotion artifact is present but its status is not \"validated\"; it was produced by a held or failed parity gate and must not be activated."
     }
 
     precondition {
-      condition     = !local.foundry_promotion_artifact_present || local.foundry_promotion_digest_ok
+      condition     = lower(var.foundry_specialist_activation_target) == "legacy" || local.foundry_promotion_digest_ok
       error_message = "Specialist promotion artifact was validated against a different manifest digest than src/operations/specialists.v1.json; re-run the create -> validate stage before promoting."
     }
 
     precondition {
-      condition     = !local.foundry_promotion_artifact_present || local.foundry_promotion_ids_ok
+      condition     = lower(var.foundry_specialist_activation_target) == "legacy" || local.foundry_promotion_ids_ok
       error_message = "Specialist promotion artifact must map exactly the twelve manifest specialist IDs -- no missing specialist and no extra key."
     }
 
     precondition {
-      condition     = !local.foundry_promotion_artifact_present || local.foundry_promotion_ids_complete
+      condition     = lower(var.foundry_specialist_activation_target) == "legacy" || local.foundry_promotion_ids_complete
       error_message = "Every promoted specialist must carry a non-empty provider_version_id and the agent_name this manifest projects for it."
     }
 
     precondition {
-      condition     = !local.foundry_promotion_artifact_present || local.foundry_promotion_no_candidate_ids
+      condition     = lower(var.foundry_specialist_activation_target) == "legacy" || local.foundry_promotion_no_candidate_ids
       error_message = "A promoted provider_version_id restates a synthetic candidate release stamp; only actual Foundry-returned version IDs may be activated."
     }
 
     precondition {
-      condition     = local.foundry_promotion_validated || alltrue([for id, entry in local.foundry_specialist_activation : entry.source == "legacy_rollback"])
-      error_message = "Without a validated promotion artifact the activation must remain the deterministic legacy eight-agent rollback mapping."
+      condition     = local.foundry_activation_selection_valid
+      error_message = "The requested specialist activation target does not have an exact validated provider-ID mapping."
+    }
+
+    precondition {
+      condition     = lower(var.foundry_specialist_activation_target) != "legacy" || alltrue([for id, entry in local.foundry_specialist_activation : entry.source == "legacy_unversioned" && entry.version == ""])
+      error_message = "Legacy migration must remain unversioned so synthetic release labels cannot be sent as provider IDs."
     }
   }
 }

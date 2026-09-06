@@ -561,13 +561,14 @@ def test_activation_never_uses_a_candidate_synthetic_version():
     assert "values(local.foundry_specialist_agent_versions)" in no_candidate
 
 
-def test_activation_falls_back_to_legacy_eight_without_a_validated_artifact():
+def test_activation_falls_back_to_unversioned_legacy_eight_without_artifact():
     foundry = _read("infra/terraform/foundry.tf")
 
     activation = _local_block(foundry, "foundry_specialist_activation")
     assert "local.foundry_promotion_validated" in activation
     assert "var.foundry_specialists" in activation
-    assert "legacy_rollback" in activation
+    assert "legacy_unversioned" in activation
+    assert 'version = ""' in activation
 
 
 def test_container_app_revision_depends_on_the_promotion_gate():
@@ -905,6 +906,7 @@ def test_rollout_validates_and_promotes_only_actual_provider_ids(tmp_path):
     )
     # The previously promoted mapping is retained as the rollback target.
     assert record["rollback_target"] == previous
+    assert record["rollback_manifest_digest"] == "digest-old"
 
 
 def test_blocked_live_parity_holds_promotion_and_preserves_the_validated_mapping(
