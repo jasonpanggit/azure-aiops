@@ -12,11 +12,50 @@ import copy
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MAX_CHANGED_ENTITIES = 50
 MAX_CANDIDATE_PAIRS = 200
 MAX_EVIDENCE_RECORDS = 40
+
+
+class RelationshipProposal(BaseModel):
+    """One untrusted relationship proposal returned by the prompt agent."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    subject_id: str = Field(min_length=1, max_length=512)
+    subject_type: str = Field(min_length=1, max_length=128)
+    predicate: str = Field(min_length=1, max_length=128)
+    object_id: str = Field(min_length=1, max_length=512)
+    object_type: str = Field(min_length=1, max_length=128)
+    evidence_refs: list[str] = Field(min_length=1, max_length=20)
+    observed_at: datetime
+    rationale: str = Field(min_length=1, max_length=1_000)
+    confidence: float = Field(ge=0.0, le=1.0)
+    uncertainty: list[str] = Field(max_length=10)
+    disposition: Literal["propose", "needs_review"]
+
+
+class ProposalBatch(BaseModel):
+    """Strict whole-document contract for proposal-only curator output."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    batch_id: str = Field(min_length=1, max_length=128)
+    status: Literal["proposals", "insufficient_evidence"]
+    proposals: list[RelationshipProposal] = Field(max_length=100)
+    missing_evidence: list[str] = Field(max_length=20)
+
+    @model_validator(mode="after")
+    def status_matches_content(self) -> Self:
+        if self.status == "insufficient_evidence" and self.proposals:
+            raise ValueError("insufficient_evidence cannot contain proposals")
+        if self.status == "proposals" and not self.proposals:
+            raise ValueError("proposals status requires at least one proposal")
+        return self
 
 
 def _bounded_records(
@@ -216,7 +255,9 @@ __all__ = [
     "EvidenceBatch",
     "EvidenceProvider",
     "PolicyEvaluator",
+    "ProposalBatch",
     "Publisher",
+    "RelationshipProposal",
     "RunProcessingFailure",
     "RunProcessor",
 ]

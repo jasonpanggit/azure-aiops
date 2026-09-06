@@ -163,8 +163,7 @@ def test_evidence_batch_hard_caps_reject_before_transport(
         _batch(**values)
 
 
-@pytest.mark.asyncio
-async def test_normal_token_budgets_and_hard_api_ceiling_are_independent() -> None:
+def test_normal_token_budgets_and_hard_api_ceiling_are_independent() -> None:
     transport = ScriptedTransport(_response(_valid_output()))
     curator = OntologyCurator(
         project_endpoint="https://example.services.ai.azure.com/api/projects/p",
@@ -173,10 +172,12 @@ async def test_normal_token_budgets_and_hard_api_ceiling_are_independent() -> No
         token_estimator=lambda _: MAX_INPUT_TOKENS,
     )
 
-    result = await curator.propose(
-        {"run_id": "run-1"},
-        _batch().to_dict(),
-        requested_output_tokens=NORMAL_OUTPUT_TOKENS,
+    result = asyncio.run(
+        curator.propose(
+            {"run_id": "run-1"},
+            _batch().to_dict(),
+            requested_output_tokens=NORMAL_OUTPUT_TOKENS,
+        )
     )
 
     assert result["status"] == "proposals"
@@ -188,8 +189,7 @@ async def test_normal_token_budgets_and_hard_api_ceiling_are_independent() -> No
     assert json.loads(payload["input"][0]["content"])["requested_output_tokens"] == 1_200
 
 
-@pytest.mark.asyncio
-async def test_oversized_normal_budget_requires_split_before_transport() -> None:
+def test_oversized_normal_budget_requires_split_before_transport() -> None:
     transport = ScriptedTransport(_response(_valid_output()))
     curator = OntologyCurator(
         project_endpoint="https://example.services.ai.azure.com/api/projects/p",
@@ -199,21 +199,22 @@ async def test_oversized_normal_budget_requires_split_before_transport() -> None
     )
 
     with pytest.raises(CuratorInputTooLarge) as error:
-        await curator.propose({"run_id": "run-1"}, _batch().to_dict())
+        asyncio.run(curator.propose({"run_id": "run-1"}, _batch().to_dict()))
     assert error.value.requires_split is True
     assert transport.calls == []
 
     with pytest.raises(ValueError, match="normal output budget"):
-        await curator.propose(
-            {"run_id": "run-1"},
-            _batch().to_dict(),
-            requested_output_tokens=NORMAL_OUTPUT_TOKENS + 1,
+        asyncio.run(
+            curator.propose(
+                {"run_id": "run-1"},
+                _batch().to_dict(),
+                requested_output_tokens=NORMAL_OUTPUT_TOKENS + 1,
+            )
         )
     assert transport.calls == []
 
 
-@pytest.mark.asyncio
-async def test_each_transport_attempt_has_a_deadline() -> None:
+def test_each_transport_attempt_has_a_deadline() -> None:
     async def hangs() -> Mapping[str, Any]:
         await asyncio.sleep(0.05)
         return _response(_valid_output())
@@ -228,12 +229,11 @@ async def test_each_transport_attempt_has_a_deadline() -> None:
     )
 
     with pytest.raises(CuratorTransportError, match="deadline"):
-        await curator.propose({"run_id": "run-1"}, _batch().to_dict())
+        asyncio.run(curator.propose({"run_id": "run-1"}, _batch().to_dict()))
     assert len(transport.calls) == MAX_TRANSPORT_RETRIES + 1 == 3
 
 
-@pytest.mark.asyncio
-async def test_transport_retries_and_schema_repairs_have_separate_bounds() -> None:
+def test_transport_retries_and_schema_repairs_have_separate_bounds() -> None:
     transport = ScriptedTransport(
         RetryableCuratorTransportError("temporary"),
         _response("{", response_id="invalid-1"),
@@ -247,7 +247,7 @@ async def test_transport_retries_and_schema_repairs_have_separate_bounds() -> No
         retry_backoff_seconds=0,
     )
 
-    result = await curator.propose({"run_id": "run-1"}, _batch().to_dict())
+    result = asyncio.run(curator.propose({"run_id": "run-1"}, _batch().to_dict()))
 
     assert result["proposals"][0]["subject_id"] == "entity-a"
     assert len(transport.calls) == 4
@@ -259,8 +259,7 @@ async def test_transport_retries_and_schema_repairs_have_separate_bounds() -> No
     assert {"location", "type"} >= set(repair_prompt["validation_errors"][0])
 
 
-@pytest.mark.asyncio
-async def test_repair_limit_fails_closed_and_audit_metadata_is_sanitized() -> None:
+def test_repair_limit_fails_closed_and_audit_metadata_is_sanitized() -> None:
     transport = ScriptedTransport(
         _response('{"secret": "first"}', response_id="bad-1"),
         _response('{"secret": "second"}', response_id="bad-2"),
@@ -274,7 +273,7 @@ async def test_repair_limit_fails_closed_and_audit_metadata_is_sanitized() -> No
     )
 
     with pytest.raises(CuratorInvalidOutput, match="repair"):
-        await curator.propose({"run_id": "run-1"}, _batch().to_dict())
+        asyncio.run(curator.propose({"run_id": "run-1"}, _batch().to_dict()))
 
     assert len(transport.calls) == MAX_REPAIR_ATTEMPTS + 1 == 3
     audit = curator.last_attempt
