@@ -1,13 +1,30 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { approve, cancel, execute, execution, remediationPlans, retry, searchParams, supersede, workflow } = vi.hoisted(() => ({
+const {
+  acceptRisk,
+  approve,
+  cancel,
+  createExposureHandoff,
+  execute,
+  execution,
+  exposureHandoffs,
+  remediationPlans,
+  retry,
+  searchParams,
+  supersede,
+  workflow,
+} = vi.hoisted(() => ({
+  acceptRisk: vi.fn(),
   approve: vi.fn(),
   cancel: vi.fn(),
+  createExposureHandoff: vi.fn(),
   execute: vi.fn(),
   execution: vi.fn(),
+  exposureHandoffs: vi.fn(),
   remediationPlans: vi.fn(),
   retry: vi.fn(),
   searchParams: { current: new URLSearchParams() },
@@ -21,7 +38,18 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/lib/services", () => ({
   operationsApi: { remediationPlans },
-  remediationApi: { approve, cancel, execute, execution, retry, supersede, workflow },
+  remediationApi: {
+    approve,
+    cancel,
+    createExposureHandoff,
+    execute,
+    execution,
+    exposureHandoffs,
+    retry,
+    supersede,
+    workflow,
+  },
+  vulnerabilityApi: { acceptRisk },
 }));
 
 import RemediationPage from "./page";
@@ -248,6 +276,27 @@ describe("Governed remediation workflow", () => {
     retry.mockResolvedValue(envelope(executionRecord({ status: "running" })));
     cancel.mockResolvedValue(envelope(executionRecord({ status: "cancelled" })));
     supersede.mockResolvedValue(envelope(executionRecord({ status: "queued" })));
+    exposureHandoffs.mockResolvedValue(envelope({
+      cases: [],
+      read_only: true,
+      execution_transition: false,
+    }));
+    createExposureHandoff.mockResolvedValue(envelope({
+      handoff_id: "exposure-handoff:generation-17:exposure-image-1",
+      exposure_id: "exposure-image-1",
+      created_by: "operator@example.com",
+      created_at: "2026-09-06T08:00:00Z",
+      execution_transition: false,
+    }));
+    acceptRisk.mockResolvedValue(envelope({
+      exception_id: "risk-audit-1",
+      cve_id: "CVE-2026-0001",
+      server_id: TARGET,
+      reason: "Compensating control verified",
+      approved_by: "operator@example.com",
+      created_at: "2026-09-06T08:00:00Z",
+      expires_at: "",
+    }));
   });
 
   it("shows the simplified five-step workflow and generated fixes only", async () => {
@@ -476,6 +525,158 @@ describe("Governed remediation workflow", () => {
     expect(screen.getAllByText("Attempt 1").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Provider accepted the operation/).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Retry approved snapshot" })).toBeEnabled();
+  });
+
+  it("preserves a validated Exposure return path and complete handoff context", async () => {
+    const returnTo =
+      "/exposure/patch-priorities?subscription=sub-1&q=kernel&sort_by=severity&sort_direction=asc&page_size=25&target=server-1&drawer=evidence&generation=generation-17";
+    searchParams.current = new URLSearchParams(
+      `resource_key=${encodeURIComponent(TARGET)}&cve=CVE-2026-0001&kb=KB600001&generation=generation-17&return_focus=exposure-server-1&return_to=${encodeURIComponent(returnTo)}`,
+    );
+
+    renderPage();
+
+    const back = await screen.findByRole("link", { name: "Back to exposure" });
+    expect(back).toHaveAttribute("href", returnTo);
+    expect(screen.getByText(/From Exposure/)).toBeInTheDocument();
+    expect(screen.getByText(/generation-17/)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing executes from Exposure/)).toBeInTheDocument();
+  });
+
+  it("creates an audited container review handoff without calling execution", async () => {
+    exposureHandoffs.mockResolvedValue(envelope({
+      cases: [
+        {
+          handoff_id: "exposure-handoff:generation-17:exposure-image-1",
+          exposure_id: "exposure-image-1",
+          resource_key: `sha256:${"a".repeat(64)}`,
+          weakness_key: "CVE-2026-0002",
+          target_kind: "container_image",
+          read_model_generation_id: "generation-17",
+          outcome: "review_handoff",
+          outcome_reason: "Exact digest evidence is ready for governed review.",
+          direct_execution_supported: false,
+          review_handoff: {
+            target_kind: "container_image",
+            repository: "platform/api",
+            image_digest: `sha256:${"a".repeat(64)}`,
+            safe_blast_radius_known: true,
+          },
+        },
+      ],
+      read_only: true,
+      execution_transition: false,
+    }));
+    searchParams.current = new URLSearchParams(
+      `handoff=${encodeURIComponent("exposure-handoff:generation-17:exposure-image-1")}&return_to=${encodeURIComponent("/exposure/patch-priorities?subscription=sub-1&generation=generation-17")}`,
+    );
+    const user = userEvent.setup();
+
+    renderPage();
+    expect(
+      await screen.findByRole("heading", { name: "Governed container review" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/No executable container action is available/)).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "I acknowledge this is a non-executable review handoff",
+      }),
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Review handoff reason" }),
+      "Platform team review requested",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Create governed review handoff" }),
+    );
+
+    await waitFor(() =>
+      expect(createExposureHandoff).toHaveBeenCalledWith(
+        {
+          exposure_id: "exposure-image-1",
+          reason: "Platform team review requested",
+          risk_acknowledged: true,
+          risk_exception_id: "",
+        },
+        {},
+      ),
+    );
+    expect(await screen.findByText(/Audit ID:/)).toHaveTextContent(
+      "exposure-handoff:generation-17:exposure-image-1",
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("shows no-safe-action container evidence without a mutation control", async () => {
+    exposureHandoffs.mockResolvedValue(envelope({
+      cases: [
+        {
+          handoff_id: "exposure-handoff:generation-17:exposure-image-2",
+          exposure_id: "exposure-image-2",
+          resource_key: `sha256:${"b".repeat(64)}`,
+          weakness_key: "CVE-2026-0003",
+          target_kind: "container_image",
+          read_model_generation_id: "generation-17",
+          outcome: "no_safe_action",
+          outcome_reason: "Exact digest deployment evidence is unavailable.",
+          direct_execution_supported: false,
+          review_handoff: {
+            target_kind: "container_image",
+            safe_blast_radius_known: false,
+          },
+        },
+      ],
+      read_only: true,
+      execution_transition: false,
+    }));
+    searchParams.current = new URLSearchParams(
+      `handoff=${encodeURIComponent("exposure-handoff:generation-17:exposure-image-2")}`,
+    );
+
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "No safe container action" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Exact digest deployment evidence is unavailable."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Create governed review handoff" }),
+    ).not.toBeInTheDocument();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("records risk through the shared confirmation dialog with session-owned identity", async () => {
+    searchParams.current = new URLSearchParams(
+      `resource_key=${encodeURIComponent(TARGET)}&cve=CVE-2026-0001&generation=generation-17`,
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    const invoker = screen.getByRole("button", { name: "Record risk exception" });
+    await user.click(invoker);
+    expect(
+      screen.getByRole("heading", { name: "Record risk exception" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Session approver")).toHaveValue(
+      "Authenticated session",
+    );
+    await user.type(screen.getByLabelText("Reason"), "Compensating control verified");
+    await user.click(screen.getByRole("button", { name: "Record exception" }));
+
+    await waitFor(() =>
+      expect(acceptRisk).toHaveBeenCalledWith({
+        cve_id: "CVE-2026-0001",
+        server_id: TARGET,
+        reason: "Compensating control verified",
+        expires_at: undefined,
+      }),
+    );
+    expect(await screen.findByText(/Audit ID:/)).toHaveTextContent("risk-audit-1");
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(invoker).toHaveFocus());
   });
 });
 

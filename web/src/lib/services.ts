@@ -55,6 +55,12 @@ import type {
   SlaComplianceReport,
   AttackPathGraph,
   ExposureCollection,
+  ExposureEnvelope,
+  ExposureExternalCatalog,
+  ExposureFacets,
+  ExposureOverview,
+  ExposurePage,
+  ExposureQueryCatalog,
   VulnerabilityExposure,
   VulnerabilitySummary,
   EvidenceItem,
@@ -96,6 +102,10 @@ import type {
   ResourceHealthSnapshot,
   CopilotPageKind, CopilotPageSnapshot, CopilotSelectedResource, CopilotEvidenceRow, CopilotContextResult,
 } from "./types";
+import {
+  toExposureApiSearchParams,
+  type ExposureQueryState,
+} from "./exposure-query-state";
 
 async function listAllConnections(scope: ScopeSelection): Promise<Envelope<SubscriptionConnection[]>> {
   const connections: SubscriptionConnection[] = [];
@@ -1063,6 +1073,63 @@ export const networkApi = {
 };
 
 export const vulnerabilityApi = {
+  exposureItems: (
+    queryState: ExposureQueryState,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ExposureEnvelope<ExposurePage>> =>
+    apiRequest<ExposurePage, import("./types").ExposureCursorPagination>(
+      "/vulnerabilities/exposure/items",
+      {
+        query: toExposureApiSearchParams(queryState),
+        signal: options.signal,
+      },
+    ),
+  exposureOverview: (
+    queryState: ExposureQueryState,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ExposureEnvelope<ExposureOverview>> =>
+    apiRequest<ExposureOverview, import("./types").ExposureCursorPagination>(
+      "/vulnerabilities/exposure/overview",
+      {
+        query: toExposureApiSearchParams(queryState, {
+          includePagination: false,
+          includeSort: false,
+        }),
+        signal: options.signal,
+      },
+    ),
+  exposureFacets: (
+    queryState: ExposureQueryState,
+    facets: Array<"severity" | "target_kind" | "source_family" | "completeness"> = [],
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ExposureEnvelope<ExposureFacets>> => {
+    const query = toExposureApiSearchParams(queryState, {
+      includePagination: false,
+      includeSort: false,
+    });
+    for (const facet of facets) query.append("facet", facet);
+    return apiRequest<ExposureFacets, import("./types").ExposureCursorPagination>(
+      "/vulnerabilities/exposure/facets",
+      { query, signal: options.signal },
+    );
+  },
+  exposureCatalog: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<ExposureQueryCatalog>("/vulnerabilities/exposure/catalog", {
+      query: scopeToSearchParams(scope),
+      signal: options.signal,
+    }),
+  exposureExternalCatalog: <TItem = Record<string, unknown>>(
+    weaknessId: string,
+    scope: ScopeSelection = {},
+    options: { signal?: AbortSignal } = {},
+  ) =>
+    apiRequest<ExposureExternalCatalog<TItem>>(
+      `/vulnerabilities/exposure/external-catalog/${encodeURIComponent(weaknessId)}`,
+      {
+        query: scopeToSearchParams(scope),
+        signal: options.signal,
+      },
+    ),
   summary: (scope: ScopeSelection = {}) =>
     apiRequest<VulnerabilitySummary>("/vulnerabilities/summary", { query: scopeToSearchParams(scope) }),
   exposures: (scope: ScopeSelection = {}, filters?: { q?: string; reachableOnly?: boolean }) => {
