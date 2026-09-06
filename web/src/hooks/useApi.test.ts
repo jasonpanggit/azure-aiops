@@ -103,4 +103,33 @@ describe("useApi refetch", () => {
     expect(result.current.data).toBe("refreshed");
     expect(result.current.loading).toBe(false);
   });
+
+  it("clears records immediately when request dependencies change", async () => {
+    const narrow = deferred<string>();
+    const loader = vi
+      .fn<(scope: string) => Promise<string>>()
+      .mockResolvedValueOnce("broad-scope-record")
+      .mockImplementationOnce(() => narrow.promise);
+    const { result, rerender } = renderHook(
+      ({ scope }: { scope: string }) =>
+        useApi(() => loader(scope), [scope]),
+      { initialProps: { scope: "broad" } },
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.data).toBe("broad-scope-record");
+
+    rerender({ scope: "narrow" });
+
+    expect(loader).toHaveBeenLastCalledWith("narrow");
+    expect(result.current.data).toBeNull();
+    expect(result.current.loading).toBe(true);
+
+    await act(async () => {
+      narrow.resolve("narrow-scope-record");
+      await narrow.promise;
+    });
+    expect(result.current.data).toBe("narrow-scope-record");
+  });
 });
