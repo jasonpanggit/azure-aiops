@@ -737,8 +737,13 @@ def _granular_exposure_ontology_source_rows(
     for key, row in logical_images.items():
         _require_granular_scope(row, table_name="silver_container_logical_images")
         registry_id = str(row.get("registry_id") or "")
-        if registry_id not in registries:
+        registry = registries.get(registry_id)
+        if registry is None:
             raise ValueError("Container logical image references an unknown registry")
+        if _granular_scope(registry) != _granular_scope(row):
+            raise ValueError(
+                "Container logical image crosses its registry scope"
+            )
         logical_entity_ids[key] = typed_image_semantic_id(
             "LogicalImage",
             str(row["tenant_id"]),
@@ -759,6 +764,14 @@ def _granular_exposure_ontology_source_rows(
             reference not in logical_entity_ids for reference in references
         ):
             raise ValueError("Container image digest references an unknown logical image")
+        if any(
+            _granular_scope(logical_images[reference])
+            != _granular_scope(row)
+            for reference in references
+        ):
+            raise ValueError(
+                "Container image digest crosses its logical image scope"
+            )
         digest_entity_ids[key] = typed_image_semantic_id(
             "ImageDigest",
             str(row["tenant_id"]),
@@ -791,6 +804,12 @@ def _granular_exposure_ontology_source_rows(
             raise ValueError(
                 "Container vulnerability observation references an unknown logical image"
             )
+        if _granular_scope(digest_row) != _granular_scope(row) or _granular_scope(
+            logical_images[str(row["logical_image_id"])]
+        ) != _granular_scope(row):
+            raise ValueError(
+                "Container vulnerability observation crosses an evidence scope"
+            )
         observation_entity_ids[key] = typed_image_semantic_id(
             "VulnerabilityObservation",
             str(row["tenant_id"]),
@@ -798,20 +817,24 @@ def _granular_exposure_ontology_source_rows(
             key,
         )
 
-    digest_keys_by_value: dict[str, str] = {}
+    digest_keys_by_value: dict[tuple[str, str, str], str] = {}
     for key, row in digests.items():
         digest = str(row.get("image_digest") or "").casefold()
-        previous = digest_keys_by_value.get(digest)
+        scoped_digest = (*_granular_scope(row), digest)
+        previous = digest_keys_by_value.get(scoped_digest)
         if previous is not None and previous != key:
             raise ValueError(
-                "Container image digest value maps to multiple durable keys"
+                "Container image digest value maps to multiple keys in one scope"
             )
-        digest_keys_by_value[digest] = key
+        digest_keys_by_value[scoped_digest] = key
 
     for key, row in deployments.items():
         _require_granular_scope(row, table_name="silver_workload_deployments")
         digest_key = digest_keys_by_value.get(
-            str(row.get("image_digest") or "").casefold()
+            (
+                *_granular_scope(row),
+                str(row.get("image_digest") or "").casefold(),
+            )
         )
         if digest_key is None:
             raise ValueError("Workload deployment references an unknown image digest")
@@ -819,6 +842,17 @@ def _granular_exposure_ontology_source_rows(
         checkpoint = checkpoints.get(checkpoint_key)
         if checkpoint is None:
             raise ValueError("Workload deployment references an unknown checkpoint")
+        if _granular_scope(checkpoint) != _granular_scope(row):
+            raise ValueError("Workload deployment crosses its checkpoint scope")
+        if (
+            str(row.get("connection_id") or "")
+            != str(checkpoint.get("connection_id") or "")
+            or str(row.get("workspace_id") or "")
+            != str(checkpoint.get("workspace_id") or "")
+        ):
+            raise ValueError(
+                "Workload deployment conflicts with checkpoint source identity"
+            )
         if str(row.get("effective_generation") or "") != str(
             checkpoint.get("effective_generation") or ""
         ):
@@ -832,17 +866,17 @@ def _granular_exposure_ontology_source_rows(
             key,
         )
 
-    checkpoints_by_subscription: dict[str, list[dict[str, Any]]] = {}
+    checkpoints_by_scope: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for checkpoint in checkpoints.values():
         _require_granular_scope(
             checkpoint,
             table_name="metadata_workload_source_checkpoints",
         )
-        checkpoints_by_subscription.setdefault(
-            str(checkpoint["subscription_id"]),
+        checkpoints_by_scope.setdefault(
+            _granular_scope(checkpoint),
             [],
         ).append(dict(checkpoint))
-    for rows in checkpoints_by_subscription.values():
+    for rows in checkpoints_by_scope.values():
         rows.sort(key=lambda row: str(row["checkpoint_key"]))
 
     def add_fabric_entity(
@@ -928,7 +962,6 @@ def _granular_exposure_ontology_source_rows(
         )
 
     for key, row in digests.items():
-        subscription_id = str(row["subscription_id"])
         add_fabric_entity(
             table_name="silver_container_image_digests",
             fabric_key=key,
@@ -948,8 +981,8 @@ def _granular_exposure_ontology_source_rows(
                     row.get("provenance_json"),
                     field_name="image digest provenance_json",
                 ),
-                "coverage_checkpoints": checkpoints_by_subscription.get(
-                    subscription_id,
+                "coverage_checkpoints": checkpoints_by_scope.get(
+                    _granular_scope(row),
                     [],
                 ),
             },
@@ -1004,7 +1037,12 @@ def _granular_exposure_ontology_source_rows(
         )
 
     for key, row in deployments.items():
-        digest_key = digest_keys_by_value[str(row["image_digest"]).casefold()]
+        digest_key = digest_keys_by_value[
+            (
+                *_granular_scope(row),
+                str(row["image_digest"]).casefold(),
+            )
+        ]
         checkpoint = checkpoints[str(row["checkpoint_key"])]
         add_fabric_entity(
             table_name="silver_workload_deployments",
@@ -1107,6 +1145,13 @@ def _require_granular_scope(
         row.get("subscription_id") or ""
     ).strip():
         raise ValueError(f"{table_name} row requires tenant and subscription scope")
+
+
+def _granular_scope(row: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        str(row.get("tenant_id") or "").strip().casefold(),
+        str(row.get("subscription_id") or "").strip().casefold(),
+    )
 
 
 def _json_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
