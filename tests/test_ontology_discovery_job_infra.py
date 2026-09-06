@@ -52,6 +52,17 @@ def test_coordinator_identity_is_distinct_and_has_no_publisher_capability() -> N
     assert "stage" not in job.casefold()
     assert "active_pointer" not in job.casefold()
     assert 'role_definition_name             = "AcrPull"' in acr
+    assert "fabric_workspace.ontology_discovery_state[0].id" in terraform
+
+
+def test_scheduled_job_uses_only_the_nonproduction_state_lakehouse() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+    job = _resource(terraform, "azurerm_container_app_job", "ontology_discovery")
+
+    assert "fabric_workspace.ontology_discovery_state[0].id" in job
+    assert "fabric_lakehouse.ontology_discovery_state[0].id" in job
+    assert "fabric_workspace.ops[0].id" not in job
+    assert "fabric_lakehouse.context_graph[0].id" not in job
 
 
 def test_api_container_has_no_competing_ontology_schedule() -> None:
@@ -91,6 +102,10 @@ def test_rbac_validator_job_is_manual_only_and_selects_exactly_three_uais() -> N
     assert "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID" in job
     assert "FOUNDRY_PROJECT_ENDPOINT" in job
     assert "ONTOLOGY_CURATOR_OBJECT_ID" in job
+    assert "fabric_workspace.ontology_rbac_validation[0].id" in job
+    assert "fabric_lakehouse.ontology_rbac_validation[0].id" in job
+    assert "fabric_workspace.ops[0].id" not in job
+    assert "fabric_lakehouse.context_graph[0].id" not in job
 
 
 def test_validator_script_is_packaged_in_the_api_image() -> None:

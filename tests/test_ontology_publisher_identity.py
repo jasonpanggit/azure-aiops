@@ -41,6 +41,10 @@ def test_publisher_uses_the_least_broad_working_fabric_workspace_role() -> None:
 
     assert 'resource "azurerm_user_assigned_identity" "ontology_publisher"' in terraform
     assert 'role         = "Contributor"' in assignment
+    assert (
+        "workspace_id = fabric_workspace.ontology_rbac_validation[0].id"
+        in assignment
+    )
     assert "azurerm_user_assigned_identity.ontology_publisher.principal_id" in assignment
     assert 'type = "ServicePrincipal"' in assignment
     assert 'resource "azurerm_role_definition" "ontology_publisher"' not in terraform
@@ -50,7 +54,7 @@ def test_publisher_uses_the_least_broad_working_fabric_workspace_role() -> None:
     assert "Platform limitation" in terraform
 
 
-def test_no_other_identity_receives_fabric_workspace_contributor() -> None:
+def test_two_nonproduction_workspaces_isolate_state_and_validation_writers() -> None:
     identity = IDENTITY_TF.read_text(encoding="utf-8")
     job = JOB_TF.read_text(encoding="utf-8")
     foundry = FOUNDRY_TF.read_text(encoding="utf-8")
@@ -67,10 +71,15 @@ def test_no_other_identity_receives_fabric_workspace_contributor() -> None:
         "fabric_workspace_role_assignment",
         "ontology_publisher",
     )
-    api_assignment = _resource(
+    production_assignment = _resource(
         fabric,
         "fabric_workspace_role_assignment",
         "apps",
+    )
+    coordinator_assignment = _resource(
+        identity,
+        "fabric_workspace_role_assignment",
+        "ontology_coordinator_state",
     )
     scheduled_job = _resource(
         job,
@@ -79,9 +88,20 @@ def test_no_other_identity_receives_fabric_workspace_contributor() -> None:
     )
 
     assert 'role         = "Contributor"' in publisher_assignment
-    assert 'role         = "Viewer"' in api_assignment
-    assert "ontology_coordinator" not in fabric
-    assert "azurerm_cognitive_account_project.ops" not in fabric
+    assert (
+        "workspace_id = fabric_workspace.ontology_rbac_validation[0].id"
+        in publisher_assignment
+    )
+    assert 'role         = "Contributor"' in coordinator_assignment
+    assert (
+        "workspace_id = fabric_workspace.ontology_discovery_state[0].id"
+        in coordinator_assignment
+    )
+    assert "ontology_publisher" not in coordinator_assignment
+    assert "ontology_coordinator" not in publisher_assignment
+    assert 'role         = "Contributor"' in production_assignment
+    assert "ontology_discovery_state" not in production_assignment
+    assert "ontology_rbac_validation" not in production_assignment
     assert "ONTOLOGY_PUBLISHER" not in scheduled_job
     assert "ontology_publisher.client_id" not in scheduled_job
     assert "ONTOLOGY_PUBLISHER" not in api
@@ -94,6 +114,39 @@ def test_no_other_identity_receives_fabric_workspace_contributor() -> None:
     assert "ontology_publisher" not in curator
     assert "AZURE_CLIENT_SECRET" in curator  # deployer-only script credential
     assert "ONTOLOGY_PUBLISHER" not in curator
+
+
+def test_nonproduction_workspaces_reuse_capacity_and_have_explicit_descriptions() -> None:
+    identity = IDENTITY_TF.read_text(encoding="utf-8")
+
+    state_workspace = _resource(
+        identity,
+        "fabric_workspace",
+        "ontology_discovery_state",
+    )
+    state_lakehouse = _resource(
+        identity,
+        "fabric_lakehouse",
+        "ontology_discovery_state",
+    )
+    validation_workspace = _resource(
+        identity,
+        "fabric_workspace",
+        "ontology_rbac_validation",
+    )
+    validation_lakehouse = _resource(
+        identity,
+        "fabric_lakehouse",
+        "ontology_rbac_validation",
+    )
+
+    for workspace in (state_workspace, validation_workspace):
+        assert "capacity_id = data.fabric_capacity.main[0].id" in workspace
+        assert "non-production" in workspace.casefold()
+    for lakehouse in (state_lakehouse, validation_lakehouse):
+        assert "non-production" in lakehouse.casefold()
+    assert '"${local.base}-ontology-state"' in state_workspace
+    assert '"${local.base}-ontology-rbac-validation"' in validation_workspace
 
 
 def test_publisher_has_no_model_or_app_runtime_grant() -> None:
