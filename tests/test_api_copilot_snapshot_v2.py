@@ -80,7 +80,7 @@ def test_snapshot_v2_api_rejects_orphaned_material_citations_before_io(tmp_path)
 
     assert response.status_code == 400
     assert calls == []
-    assert "missing evidence reference" in response.text
+    assert response.json()["error"]["code"] == "invalid_request"
 
 
 def test_snapshot_v2_api_rejects_unknown_fields_and_versions(tmp_path):
@@ -93,26 +93,32 @@ def test_snapshot_v2_api_rejects_unknown_fields_and_versions(tmp_path):
     unknown_version = _body()
     unknown_version["snapshot"]["version"] = "3"
 
-    assert client.post(
-        "/api/v1/copilot/investigations?subscription=sub-a",
-        json=extra,
-        headers=HEADERS,
-    ).status_code == 400
-    assert client.post(
-        "/api/v1/copilot/investigations?subscription=sub-a",
-        json=unknown_version,
-        headers=HEADERS,
-    ).status_code == 400
+    assert (
+        client.post(
+            "/api/v1/copilot/investigations?subscription=sub-a",
+            json=extra,
+            headers=HEADERS,
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            "/api/v1/copilot/investigations?subscription=sub-a",
+            json=unknown_version,
+            headers=HEADERS,
+        ).status_code
+        == 400
+    )
 
 
 def test_snapshot_v2_api_never_retains_untrusted_browser_citations(tmp_path):
     class InventoryPort:
-        def list_os_observations(self, scope, *, name, version, limit):
+        def list_resources(self, scope, *, family, resource_type, limit):
             assert scope.to_dict() == {"subscription": ["sub-a"]}
-            assert name is None
-            assert version is None
+            assert family == "os"
+            assert resource_type is None
             assert limit == 25
-            return {"items": [], "total": 0}
+            return {"resources": [], "total": 0}
 
     context = _context(tmp_path, None)
     context.inventory_read_port_provider = lambda: InventoryPort()
@@ -129,6 +135,4 @@ def test_snapshot_v2_api_never_retains_untrusted_browser_citations(tmp_path):
     assert "inventory:os:windows-2022" not in {
         citation["citation_id"] for citation in citations
     }
-    assert {citation["citation_id"] for citation in citations} == {
-        "snapshot:coverage"
-    }
+    assert citations == []

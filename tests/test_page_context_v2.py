@@ -9,7 +9,6 @@ from api.scope import Scope
 from operations import orchestration_contract as contract
 from operations import page_context
 
-
 ARM_ID = (
     "/subscriptions/SUB-A/resourceGroups/RG/providers/"
     "Microsoft.Compute/virtualMachines/VM-1"
@@ -88,9 +87,7 @@ def test_azure_identity_and_hash_are_canonical_and_reorder_stable():
     left = _canonicalize(_snapshot([first, second]))
     right = _canonicalize(_snapshot([second, first]))
 
-    assert {row.entity_key for row in left.evidence} == {
-        "azure:" + ARM_ID.casefold()
-    }
+    assert {row.entity_key for row in left.evidence} == {"azure:" + ARM_ID.casefold()}
     assert left.snapshot_hash() == right.snapshot_hash()
     assert [row.variant_id for row in left.evidence] == [
         row.variant_id for row in right.evidence
@@ -274,7 +271,10 @@ def test_freshness_coverage_and_conflicts_drive_explicit_insufficiency():
     assert canonical.coverage.state == "partial"
     assert canonical.classification == "insufficient_evidence"
     assert "visible subset is incomplete" in canonical.uncertainty
-    assert "all retained evidence is stale or unavailable" in canonical.insufficiency_reasons
+    assert (
+        "all retained evidence is stale or unavailable"
+        in canonical.insufficiency_reasons
+    )
     assert "estate-health requires complete coverage" in canonical.insufficiency_reasons
 
 
@@ -339,9 +339,7 @@ def test_complete_empty_is_distinct_from_unavailable_or_denied():
         )
     )
     denied = _canonicalize(
-        _snapshot(
-            [_evidence("denied", source_key="denied", status="denied")]
-        )
+        _snapshot([_evidence("denied", source_key="denied", status="denied")])
     )
 
     assert unavailable.classification == "insufficient_evidence"
