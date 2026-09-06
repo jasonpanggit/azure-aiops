@@ -449,9 +449,44 @@ describe("Exposure independent source states", () => {
     expect(formatExposureValue(3, { unit: "rank" })).toBe("Rank 3");
   });
 
-  it.todo(
-    "renders all six Overview sections independently with conservative aggregate state [Plan 03.1-22]",
-  );
+  it("keeps all six Overview section boundaries independent", async () => {
+    const sections = [
+      "Exposure summary",
+      "Patch priority preview",
+      "Exposure asset counts",
+      "Defender overview",
+      "Exposure SLA",
+      "Risk exceptions",
+    ] as const;
+
+    function OverviewHarnessSection({ sourceName }: { sourceName: string }) {
+      const section = useExposureSection<Rows>({
+        queryKey: `overview|${sourceName}`,
+        load: () =>
+          sourceName === "Exposure SLA"
+            ? Promise.reject(new Error("SLA provider unavailable"))
+            : Promise.resolve(envelope([`${sourceName} row`])),
+      });
+      return <Section sourceName={sourceName} section={section} />;
+    }
+
+    render(
+      <>
+        {sections.map((sourceName) => (
+          <OverviewHarnessSection key={sourceName} sourceName={sourceName} />
+        ))}
+      </>,
+    );
+
+    expect(
+      await screen.findByText("Exposure SLA is unavailable"),
+    ).toBeInTheDocument();
+    for (const sourceName of sections.filter(
+      (name) => name !== "Exposure SLA",
+    )) {
+      expect(screen.getByText(`${sourceName} row`)).toBeInTheDocument();
+    }
+  });
   it.todo(
     "preserves scoped core truth when CVE or KB enrichment fails [Plan 03.1-25]",
   );
