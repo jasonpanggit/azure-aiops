@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from ontology_discovery_contract_harness import (
@@ -9,6 +12,13 @@ from ontology_discovery_contract_harness import (
     RelationshipEdge,
     RollbackError,
     StaleFenceError,
+    candidate_membership_hash,
+    materialize_fixture_batch,
+    normalized_fixture_hash,
+)
+
+REFERENCE_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "ontology_discovery" / "reference.jsonl"
 )
 
 
@@ -112,3 +122,109 @@ def test_stale_fence_and_failed_rollback_preserve_prior_test_pointer() -> None:
             fail_before_swap=True,
         )
     assert pointer.resolve() == candidate.generation_id
+
+
+def _reference_cases() -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in REFERENCE_FIXTURE.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def test_reference_corpus_is_bounded_synthetic_and_threat_complete() -> None:
+    cases = _reference_cases()
+    categories = {
+        str(category)
+        for case in cases
+        for category in case["categories"]
+    }
+
+    assert len(cases) >= 32
+    assert len({case["scenario_id"] for case in cases}) == len(cases)
+    assert sum(int(case["input"]["candidate_pair_count"]) for case in cases) >= 100
+    assert {
+        "normal",
+        "hard-negative",
+        "stale",
+        "partial",
+        "collision",
+        "injection",
+        "duplicate",
+        "fence",
+        "cancellation",
+        "review",
+        "promotion",
+        "rollback",
+    } <= categories
+    assert all(str(case["scope"]).startswith("synthetic/") for case in cases)
+
+
+def test_reference_corpus_records_exact_hashes_membership_and_pointer_outcomes() -> None:
+    for case in _reference_cases():
+        assert case["schema_version"] == "ontology-discovery-wave0.v1"
+        assert case["fixture_hash"] == normalized_fixture_hash(case)
+        expected = case["expected"]
+        assert expected["pre_promotion_generation"] == "generation-0"
+        assert expected["post_rollback_generation"] == "generation-0"
+
+        expected_error = str(expected["error"])
+        if expected_error:
+            with pytest.raises(ValueError, match=expected_error):
+                materialize_fixture_batch(case)
+            continue
+
+        batch = materialize_fixture_batch(case)
+        pointer = FencedPointerStore(initial_generation="generation-0", initial_fence=1)
+        harness = ContractHarness(pointer)
+        reviewed = {
+            edge.edge_id for edge in batch.candidate_pairs if edge.source == "model"
+        }
+        shadow = harness.build_candidate(
+            batch,
+            reviewed_proposal_ids=reviewed,
+            shadow_mode=True,
+        )
+        released = harness.build_candidate(
+            batch,
+            reviewed_proposal_ids=reviewed,
+            shadow_mode=False,
+            released_triples={edge.triple for edge in batch.candidate_pairs},
+        )
+
+        assert candidate_membership_hash(shadow) == expected["shadow_membership_hash"]
+        assert len(shadow.edges) == expected["shadow_edge_count"]
+        assert candidate_membership_hash(released) == expected["released_membership_hash"]
+        assert len(released.edges) == expected["released_edge_count"]
+        assert expected["post_promotion_generation"] == shadow.generation_id
+
+
+@pytest.mark.parametrize(
+    ("category", "message"),
+    [
+        ("over-limit-entities", "changed entities exceeds limit 50: 51"),
+        ("over-limit-pairs", "candidate pairs exceeds limit 200: 201"),
+        ("over-limit-evidence", "evidence records exceeds limit 40: 41"),
+    ],
+)
+def test_reference_corpus_proves_every_hard_batch_limit(
+    category: str, message: str
+) -> None:
+    case = next(
+        item for item in _reference_cases() if category in item["categories"]
+    )
+
+    with pytest.raises(ValueError, match=message):
+        materialize_fixture_batch(case)
+
+
+def test_reference_corpus_materializes_exact_maximum_batch() -> None:
+    case = next(
+        item for item in _reference_cases() if "boundary-max" in item["categories"]
+    )
+
+    batch = materialize_fixture_batch(case)
+
+    assert len(batch.entity_ids) == 50
+    assert len(batch.candidate_pairs) == 200
+    assert len(batch.evidence_ids) == 40
