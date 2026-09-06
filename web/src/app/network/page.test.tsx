@@ -793,4 +793,37 @@ describe("Network page policy round-trip", () => {
     );
     expect(screen.queryByText(/Inspection gaps 340 → 340/)).not.toBeInTheDocument();
   });
+
+  it("settles policy refresh state when derived gap analysis fails", async () => {
+    const user = userEvent.setup();
+    mocks.gaps
+      .mockResolvedValueOnce(buildGapsEnvelope(340))
+      .mockRejectedValueOnce(new Error("gap refresh timed out"));
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Design policy" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Rule ID" }),
+      declarativeRule.rule_id,
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Name" }),
+      declarativeRule.name,
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Rule assertion (JSON)" }),
+      { target: { value: JSON.stringify(declarativeRule.parameters) } },
+    );
+    await user.click(screen.getByRole("button", { name: "Save rule" }));
+
+    expect(
+      await screen.findByText(
+        "Policy was saved, but derived analysis could not be refreshed — gap refresh timed out.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Refreshing derived analysis…"),
+    ).not.toBeInTheDocument();
+  });
 });

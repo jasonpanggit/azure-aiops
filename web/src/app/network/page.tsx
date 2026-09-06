@@ -137,7 +137,18 @@ export default function NetworkPage() {
   }
 
   useEffect(() => {
-    if (!pendingPolicyRefresh || gaps.loading || !gaps.data || gaps.data === pendingPolicyRefresh.previousGaps) return;
+    if (!pendingPolicyRefresh || gaps.loading) return;
+    if (gaps.error) {
+      setPolicyFeedback({
+        tone: "warning",
+        message: `${
+          pendingPolicyRefresh.saved ? "Policy was saved" : "Policy was updated"
+        }, but derived analysis could not be refreshed — ${gaps.error.message}.`,
+      });
+      setPendingPolicyRefresh(null);
+      return;
+    }
+    if (!gaps.data || gaps.data === pendingPolicyRefresh.previousGaps) return;
     const afterGapTotal = gaps.data.data.summary.gap_count;
     const serverSignalsCached =
       Boolean((gaps.data.data as { analysis_cached?: boolean; cached_analysis?: boolean }).analysis_cached) ||
@@ -160,7 +171,7 @@ export default function NetworkPage() {
       });
     }
     setPendingPolicyRefresh(null);
-  }, [gaps.data, gaps.loading, pendingPolicyRefresh]);
+  }, [gaps.data, gaps.error, gaps.loading, pendingPolicyRefresh]);
   const evidence = [
     ...(topology.data?.evidence ?? []),
     ...(gaps.data?.evidence ?? []),
