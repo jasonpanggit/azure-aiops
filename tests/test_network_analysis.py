@@ -35,6 +35,39 @@ def _by_category(category: str):
     return [item for item in _findings() if item.category == category]
 
 
+def _live_vnet_row() -> dict:
+    return {
+        "id": (
+            "/subscriptions/sub-a/resourceGroups/rg/providers/"
+            "Microsoft.Network/virtualNetworks/vnet-a"
+        ),
+        "name": "vnet-a",
+        "type": "microsoft.network/virtualnetworks",
+        "subscriptionId": "sub-a",
+        "resourceGroup": "rg",
+        "properties": {"subnets": []},
+    }
+
+
+def test_live_arg_invalid_timestamp_remains_unknown() -> None:
+    for observed_at in ("not-a-date", "2026-09-06T01:00:00"):
+        service = NetworkIntelligenceService.from_arg_rows(
+            [_live_vnet_row()],
+            observed_at=observed_at,
+        )
+
+        assert service.snapshot.observed_at == ""
+
+
+def test_live_arg_timestamp_is_normalized_to_utc() -> None:
+    service = NetworkIntelligenceService.from_arg_rows(
+        [_live_vnet_row()],
+        observed_at="2026-09-06T02:00:00+01:00",
+    )
+
+    assert service.snapshot.observed_at == "2026-09-06T01:00:00Z"
+
+
 def _rule(**kwargs) -> NetworkSnapshot:
     defaults = {
         "resource_id": "/nsg/a/securityrules/r",

@@ -277,6 +277,7 @@ class NetworkIntelligenceService:
         produces an empty topology. Reuse the ingestion normalizer so live and
         synchronized views share the same ID and nested-resource semantics.
         """
+        from network.loader import _format_observed_at, _parse_observed_at
         from onboarding.graph_normalize import Normalizer
         from onboarding.query_catalog import NETWORK_RESOURCE_TYPES
 
@@ -290,23 +291,32 @@ class NetworkIntelligenceService:
                 if str(row.get("type") or "").casefold() in accepted
             ]
 
-        timestamp = datetime.now(UTC)
-        if observed_at.strip():
-            try:
-                timestamp = datetime.fromisoformat(observed_at.strip())
-            except ValueError:
-                pass
-        graph = Normalizer().normalize(payload, timestamp, run_id="live-network")
+        timestamp = _parse_observed_at(observed_at)
+        normalized_observed_at = _format_observed_at(timestamp)
+        graph = Normalizer().normalize(
+            payload,
+            timestamp or datetime(1970, 1, 1, tzinfo=UTC),
+            run_id="live-network",
+        )
         normalized_rows = [
             entity
             for entities in graph.entities.values()
             for entity in entities
         ]
+        if timestamp is None:
+            for entity in normalized_rows:
+                entity["createdTimestamp"] = ""
+                entity["lastObservedTimestamp"] = ""
         semantic_relationships = [
             {
                 **relationship,
                 "subject_id": relationship.get("subjectId", ""),
                 "object_id": relationship.get("objectId", ""),
+                **(
+                    {"lastObservedTimestamp": ""}
+                    if timestamp is None
+                    else {}
+                ),
             }
             for relationship in graph.relationships
         ]
@@ -315,7 +325,7 @@ class NetworkIntelligenceService:
             policy=policy,
             policy_path=policy_path,
             semantic_relationships=semantic_relationships,
-            observed_at=observed_at,
+            observed_at=normalized_observed_at,
             flow_observations=flow_observations,
         )
 
