@@ -45,7 +45,7 @@ Requirements for the controlled Azure pilot.
 
 ### Pilot Experience
 
-- [ ] **PILOT-01**: Dashboard provides consistent views for situations, evidence, exposure/compliance, vulnerabilities, operational-twin context, recommendations, approvals, and execution history.
+- [x] **PILOT-01**: Dashboard provides consistent views for situations, evidence, exposure/compliance, vulnerabilities, operational-twin context, recommendations, approvals, and execution history.
 - [x] **PILOT-02**: Pilot demonstrates one incident/change-correlation case, one Defender/Policy exposure case, one vulnerability-prioritization case, and one operational-twin discrepancy case.
 - [x] **PILOT-03**: Operators can replay the evidence snapshot and audit history used for a historical recommendation.
 - [x] **PILOT-04**: Pilot includes failure and stale-source handling for ingestion, authorization, execution, verification, and provider outage scenarios.
@@ -173,7 +173,7 @@ Traceability is populated during roadmap creation.
 | EXEC-04 | Phase 3 | Complete |
 | EXEC-05 | Phase 3 | Complete |
 | EXEC-06 | Phase 3 | Complete |
-| PILOT-01 | Phase 4 | Pending |
+| PILOT-01 | Phase 4 | Complete |
 | PILOT-02 | Phase 4 | Complete |
 | PILOT-03 | Phase 4 | Complete |
 | PILOT-04 | Phase 5 | Complete |
