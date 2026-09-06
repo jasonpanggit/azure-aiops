@@ -50,7 +50,11 @@ from operations.orchestration_contract import (
     InvestigationRequest as CanonicalInvestigationRequest,
 )
 from operations.orchestration_policy import PolicyViolation
-from operations.orchestration_service import OrchestrationService, execute_from_question
+from operations.orchestration_service import (
+    OrchestrationService,
+    execute_from_question,
+    legacy_session_history,
+)
 from operations.page_context import PageSnapshot
 from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
 from operations.tools import (
@@ -83,7 +87,9 @@ INVESTIGATION_TIMEOUT_SECONDS = 20.0
 # contract.  Only these may route through _run_context_via_canonical; all
 # others fall through to the legacy adapter to avoid masquerading as a
 # different page.
-CANONICAL_CONTEXT_PAGE_KINDS = frozenset({"inventory", "connections", "connections_fabric"})
+CANONICAL_CONTEXT_PAGE_KINDS = frozenset(
+    {"network", "vulnerability", "patch", "incident", "governance", "resource"}
+)
 
 # `SemanticEngine.search` returns its hits under `items`. `results` is accepted
 # too so the route keeps working if the engine is ever normalized to the name
@@ -548,6 +554,9 @@ def _investigate_via_canonical(
     context: Any,
     scope: Any,
     principal: Any,
+    session_id: str,
+    hint_tool: str,
+    hint_arguments: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Route ``/copilot/investigate`` through the canonical OrchestrationService.
 
@@ -563,6 +572,9 @@ def _investigate_via_canonical(
         scope=scope,
         context=context,
         principal_subject=principal.subject,
+        session_id=session_id,
+        hint_tool=hint_tool,
+        hint_arguments=hint_arguments,
     )
     duration_ms = (time.monotonic() - started) * 1000.0
     if duration_ms > INVESTIGATION_TIMEOUT_SECONDS * 1000.0:
@@ -597,6 +609,13 @@ def _investigate_via_canonical(
         "warnings": list(result.uncertainty),
         "contract_version": result.contract_version,
         "thread_id": result.thread_id,
+        "thread_revision": result.thread_revision,
+        "policy_status": result.policy_status,
+        "fallback_reason": result.fallback_reason,
+        "coverage": result.coverage.model_dump(mode="json"),
+        "citations": [
+            citation.model_dump(mode="json") for citation in result.citations
+        ],
     }
     evidence: list[Evidence] = []
     for tr in result.tool_results:
@@ -635,13 +654,6 @@ def investigate(
     audit exactly what was observed vs. inferred vs. unavailable.
     """
     question = payload.question.strip()
-    if payload.tool and payload.tool not in tool_catalog_names():
-        raise ApiError(
-            ErrorCode.INVALID_REQUEST,
-            f"Unknown tool {payload.tool!r}",
-            details={"supported_tools": sorted(tool_catalog_names())},
-        )
-
     started = time.monotonic()
 
     if canonical_orchestration_enabled():
@@ -651,6 +663,16 @@ def investigate(
             context=context,
             scope=scope,
             principal=principal,
+            session_id=payload.session_id,
+            hint_tool=payload.tool,
+            hint_arguments=payload.tool_arguments,
+        )
+
+    if payload.tool and payload.tool not in tool_catalog_names():
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            f"Unknown tool {payload.tool!r}",
+            details={"supported_tools": sorted(tool_catalog_names())},
         )
 
     investigation = run_investigation(
@@ -730,7 +752,11 @@ def _run_context_via_canonical(
         SnapshotEvidence(
             evidence_id=row.evidence_id,
             source=row.section,
-            status=row.status if row.status in ("ok", "empty", "unavailable", "denied") else "ok",
+            status=(
+                row.status
+                if row.status in ("ok", "empty", "partial", "unavailable", "denied")
+                else "ok"
+            ),
             observed_at=getattr(row, "observed_at", ""),
             resource_id=getattr(row, "resource_id", ""),
             data=getattr(row, "data", {}),
@@ -798,6 +824,47 @@ def _run_context_via_canonical(
     )
 
     now = datetime.now(UTC).isoformat(timespec="seconds")
+    selected_agents = [
+        {"id": specialist_id}
+        for specialist_id in result.selected_specialists
+    ]
+    tool_calls = [
+        {
+            "call_id": tr.get("call_id", ""),
+            "tool": tr["tool"],
+            "status": tr["status"],
+            "data": tr.get("data"),
+            "warning": tr.get("warning", ""),
+            "specialist_id": tr.get("specialist_id", ""),
+            "evidence": list(tr.get("evidence", ())),
+            "operation": "delegate",
+        }
+        for tr in result.tool_results
+    ]
+    agent_runs = [
+        {
+            "agent_id": specialist_id,
+            "status": (
+                "partial"
+                if any(
+                    call["status"] != STATUS_OK
+                    for call in tool_calls
+                    if call["specialist_id"] == specialist_id
+                )
+                else STATUS_OK
+            ),
+            "tool_calls": [
+                call
+                for call in tool_calls
+                if call["specialist_id"] == specialist_id
+            ],
+        }
+        for specialist_id in result.selected_specialists
+    ]
+    citations = [
+        citation.model_dump(mode="json")
+        for citation in result.citations
+    ]
     return {
         "contract_version": result.contract_version,
         "ledger_id": f"ctx-{_uuid.uuid4().hex[:12]}",
@@ -814,25 +881,26 @@ def _run_context_via_canonical(
             "runtime": "canonical",
             "strategy": "canonical_service",
             "selected_ids": result.selected_specialists,
+            "policy_status": result.policy_status,
+            "fallback_reason": result.fallback_reason,
         },
-        "tool_calls": [
-            {
-                "tool": tr["tool"],
-                "status": tr["status"],
-                "data": tr.get("data", {}),
-                "warning": tr.get("warning", ""),
-                "specialist_id": tr.get("specialist_id", ""),
-                "evidence": tr.get("evidence", []),
-                "operation": "delegate",
-            }
-            for tr in result.tool_results
-        ],
+        "selected_agents": selected_agents,
+        "agent_runs": agent_runs,
+        "tool_calls": tool_calls,
         "findings": [
             {
+                "finding_id": tr.get("call_id", ""),
                 "tool": tr["tool"],
                 "specialist_id": tr.get("specialist_id", ""),
                 "status": tr["status"],
-                "data": tr.get("data", {}),
+                "data": tr.get("data"),
+                "citation_ids": [
+                    citation["citation_id"]
+                    for citation in citations
+                    if citation["citation_id"].startswith(
+                        f"tool:{tr.get('call_id', '')}:"
+                    )
+                ],
             }
             for tr in result.tool_results
             if tr.get("data")
@@ -841,17 +909,11 @@ def _run_context_via_canonical(
             "mode": "canonical",
             "status": result.status,
             "policy_status": result.policy_status,
+            "fallback_reason": result.fallback_reason,
             "coverage": result.coverage.model_dump(mode="json"),
+            "uncertainty": list(result.uncertainty),
         },
-        "citations": [
-            {
-                "citation_id": c.citation_id,
-                "source": c.source,
-                "status": c.status,
-                "observed_at": c.observed_at,
-            }
-            for c in result.citations
-        ],
+        "citations": citations,
         "warnings": list(result.uncertainty),
         "stop_reason": "reassessed",
         "human_controls": {
@@ -904,6 +966,15 @@ def investigate_context(
             scope=scope,
             principal_subject=principal.subject,
         )
+        if canonical_orchestration_enabled():
+            ledger.setdefault("warnings", []).append(
+                f"Canonical context adapter unavailable for {snapshot.page_kind}; "
+                "used the explicit legacy rollback path."
+            )
+            ledger["orchestration"] = {
+                **dict(ledger.get("orchestration") or {}),
+                "fallback_reason": "unsupported_canonical_page_kind",
+            }
     ledger_store().add(ledger)
     evidence = [
         Evidence(
@@ -1038,7 +1109,15 @@ def investigate_canonical(
 @router.get("/copilot/history/{session_id}", summary="Bounded conversation history")
 def history(session_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal) -> dict[str, Any]:
     """Prior turns for one caller's session -- never visible to another principal."""
-    turns = conversation_store().history(session_id, principal.subject)
+    turns = (
+        legacy_session_history(
+            session_id,
+            principal_subject=principal.subject,
+            scope=scope,
+        )
+        if canonical_orchestration_enabled()
+        else conversation_store().history(session_id, principal.subject)
+    )
     return envelope({"session_id": session_id, "turns": turns}, scope=scope.to_dict())
 
 

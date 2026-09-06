@@ -1536,8 +1536,9 @@ def test_project_legacy_ledger_deep_copy_nested_mutation_isolation():
     """BLOCKER-B: project_legacy_ledger must deep-copy so nested mutations to
     decisions, approvals, agent_runs, synthesis, and human_controls in the
     projected copy never affect the original store record."""
-    from operations.autonomous_investigation import project_legacy_ledger
     import json
+
+    from operations.autonomous_investigation import project_legacy_ledger
 
     original = {
         "ledger_id": "mai-deepcopy001",

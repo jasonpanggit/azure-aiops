@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from api.scope import Scope
+from operations.specialist_manifest import PageMapping
 
 MAX_SNAPSHOT_EVIDENCE = 200
 MAX_SNAPSHOT_BYTES = 128 * 1024
@@ -169,7 +170,7 @@ class EvidenceSnapshotV2(ContractModel):
     """Bounded browser observations accepted by the canonical v2 pipeline."""
 
     version: Literal["2"] = "2"
-    page_kind: Literal["inventory", "connections", "connections_fabric"]
+    page_kind: PageMapping
     page_id: str = Field(min_length=1, max_length=128)
     coverage: SnapshotCoverage
     freshness: list[SnapshotFreshness] = Field(default_factory=list, max_length=32)

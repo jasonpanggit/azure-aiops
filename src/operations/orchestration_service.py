@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -12,9 +14,13 @@ from api.scope import Scope
 from operations.foundry_agent import FoundryAgentError
 from operations.investigation_thread_store import (
     InvestigationThreadStore,
+    ThreadNotFound,
     investigation_thread_store,
 )
-from operations.maf_orchestrator import build_deterministic_fallback
+from operations.maf_orchestrator import (
+    build_deterministic_fallback,
+    select_specialists_for_turn,
+)
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     CandidatePlan,
@@ -23,9 +29,15 @@ from operations.orchestration_contract import (
     InvestigationRequest,
     OrchestrationResult,
     SnapshotCoverage,
+    SpecialistStep,
+    ToolCallCandidate,
 )
 from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
-from operations.specialist_manifest import load_specialist_manifest
+from operations.specialist_manifest import (
+    PageMapping,
+    SpecialistDefinition,
+    load_specialist_manifest,
+)
 from operations.tools import (
     STATUS_DENIED,
     STATUS_EMPTY,
@@ -37,6 +49,9 @@ from operations.tools import (
 
 Planner = Callable[[InvestigationRequest], CandidatePlan | Mapping[str, Any]]
 Executor = Callable[..., ToolResult]
+_MAX_LEGACY_SESSIONS = 2_000
+_legacy_session_lock = threading.Lock()
+_legacy_session_threads: OrderedDict[tuple[str, str], str] = OrderedDict()
 
 
 class PlannerUnavailableError(RuntimeError):
@@ -65,6 +80,85 @@ def _fallback_candidate(request: InvestigationRequest) -> CandidatePlan:
     the identical policy validator applied to model-proposed plans.
     """
     return build_deterministic_fallback(request, load_specialist_manifest())
+
+
+def _preferred_page_kind(specialist: SpecialistDefinition) -> PageMapping:
+    """Return the stable primary page mapping for a selected specialist."""
+
+    return specialist.page_mappings[0]
+
+
+def _question_route(
+    question: str,
+    *,
+    hint_tool: str,
+) -> tuple[PageMapping, SpecialistDefinition | None]:
+    """Resolve a question or tool hint to one manifest-backed page identity."""
+
+    manifest = load_specialist_manifest()
+    if hint_tool:
+        for specialist in manifest.specialists:
+            if hint_tool in specialist.operations_mcp_tools:
+                return _preferred_page_kind(specialist), specialist
+
+    catalog = tuple(
+        type(
+            "_CatalogEntry",
+            (),
+            {"id": specialist.id, "keywords": specialist.intent_examples},
+        )()
+        for specialist in manifest.specialists
+    )
+    decision = select_specialists_for_turn(
+        page_kind="investigate",
+        question=question,
+        page_specialists=manifest.page_mapping_projection(),
+        catalog=catalog,
+        limit=1,
+    )
+    if decision.selected_ids:
+        specialist = manifest.require(decision.selected_ids[0])
+        return _preferred_page_kind(specialist), specialist
+    return "investigate", None
+
+
+def _legacy_session_thread(
+    session_id: str,
+    principal_subject: str,
+) -> str | None:
+    if not session_id:
+        return None
+    key = (principal_subject, session_id)
+    with _legacy_session_lock:
+        thread_id = _legacy_session_threads.get(key)
+        if thread_id is not None:
+            _legacy_session_threads.move_to_end(key)
+        return thread_id
+
+
+def _remember_legacy_session_thread(
+    session_id: str,
+    principal_subject: str,
+    thread_id: str,
+) -> None:
+    if not session_id:
+        return
+    key = (principal_subject, session_id)
+    with _legacy_session_lock:
+        _legacy_session_threads[key] = thread_id
+        _legacy_session_threads.move_to_end(key)
+        while len(_legacy_session_threads) > _MAX_LEGACY_SESSIONS:
+            _legacy_session_threads.popitem(last=False)
+
+
+def _forget_legacy_session_thread(
+    session_id: str,
+    principal_subject: str,
+) -> None:
+    if not session_id:
+        return
+    with _legacy_session_lock:
+        _legacy_session_threads.pop((principal_subject, session_id), None)
 
 
 class OrchestrationService:
@@ -347,18 +441,15 @@ def execute_from_question(
     scope: Scope,
     context: Any,
     principal_subject: str,
+    session_id: str = "",
+    hint_tool: str = "",
+    hint_arguments: Mapping[str, Any] | None = None,
 ) -> OrchestrationResult:
     """Canonical orchestration adapter for question-only legacy routes.
 
-    Shared by ``/copilot/investigate`` and ``POST /agents/investigations`` in
-    canonical mode.  Builds a synthetic ``EvidenceSnapshotV2`` with
-    ``page_kind="inventory"`` and incomplete coverage, then delegates to
-    :class:`OrchestrationService` with the deterministic keyword fallback.
-
-    Questions whose tools do not map to the inventory page receive honest
-    ``partial`` or ``unavailable`` results through the standard uncertainty
-    mechanism rather than bridging to an incorrect page context.  All I/O
-    remains behind the service's policy validation and scope enforcement.
+    Intent and optional hints select a real manifest page identity before
+    deterministic policy validates the candidate. Legacy session IDs map to
+    opaque, principal-scoped canonical threads and never become authority.
     """
 
     def _safe_executor(
@@ -376,11 +467,16 @@ def execute_from_question(
                 warning="Tool unavailable in canonical question mode",
             )
 
+    page_kind, hinted_specialist = _question_route(
+        question,
+        hint_tool=hint_tool,
+    )
     request = InvestigationRequest(
         question=question,
         requested_scope=scope.to_dict(),
+        thread_id=_legacy_session_thread(session_id, principal_subject),
         snapshot=EvidenceSnapshotV2(
-            page_kind="inventory",
+            page_kind=page_kind,
             page_id="copilot",
             coverage=SnapshotCoverage(
                 visible_count=0,
@@ -389,12 +485,92 @@ def execute_from_question(
             ),
         ),
     )
-    return OrchestrationService(executor=_safe_executor).execute(
-        request,
-        context=context,
-        principal_subject=principal_subject,
-        effective_scope=scope,
+    planner: Planner | None = None
+    if hint_tool:
+        manifest = load_specialist_manifest()
+        specialist_id = (
+            hinted_specialist.id
+            if hinted_specialist is not None
+            else next(
+                specialist_id
+                for specialist_id in manifest.page_mapping_projection()[page_kind]
+                if specialist_id != "executive_summary"
+            )
+        )
+
+        def _hint_planner(_request: InvestigationRequest) -> CandidatePlan:
+            return CandidatePlan(
+                steps=[
+                    SpecialistStep(
+                        specialist_id=specialist_id,
+                        tool_calls=[
+                            ToolCallCandidate(
+                                tool=hint_tool,
+                                arguments=dict(hint_arguments or {}),
+                                citation_ids=[COVERAGE_CITATION_ID],
+                            )
+                        ],
+                    )
+                ],
+                estimated_tokens=0,
+                max_wall_seconds=5,
+                mutation_intent=False,
+            )
+
+        planner = _hint_planner
+
+    service = OrchestrationService(planner=planner, executor=_safe_executor)
+    try:
+        result = service.execute(
+            request,
+            context=context,
+            principal_subject=principal_subject,
+            effective_scope=scope,
+        )
+    except ThreadNotFound:
+        _forget_legacy_session_thread(session_id, principal_subject)
+        result = service.execute(
+            request.model_copy(update={"thread_id": None}),
+            context=context,
+            principal_subject=principal_subject,
+            effective_scope=scope,
+        )
+        result = result.model_copy(
+            update={
+                "uncertainty": [
+                    *result.uncertainty,
+                    "Legacy session continuity was reset after reauthorization.",
+                ]
+            }
+        )
+    _remember_legacy_session_thread(
+        session_id,
+        principal_subject,
+        result.thread_id,
     )
+    return result
+
+
+def legacy_session_history(
+    session_id: str,
+    *,
+    principal_subject: str,
+    scope: Scope,
+) -> list[dict[str, Any]]:
+    """Read canonical turns associated with a principal-owned legacy session."""
+
+    thread_id = _legacy_session_thread(session_id, principal_subject)
+    if thread_id is None:
+        return []
+    try:
+        return investigation_thread_store().history(
+            thread_id,
+            principal_subject,
+            scope,
+        )
+    except ThreadNotFound:
+        _forget_legacy_session_thread(session_id, principal_subject)
+        return []
 
 
 __all__ = [
@@ -402,4 +578,5 @@ __all__ = [
     "PlannerTimeoutError",
     "PlannerUnavailableError",
     "execute_from_question",
+    "legacy_session_history",
 ]

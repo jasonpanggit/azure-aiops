@@ -83,6 +83,69 @@ def _create_investigation_canonical(
         principal_subject=principal.subject,
     )
     now = datetime.now(UTC).isoformat(timespec="seconds")
+    catalog_by_id = {
+        str(agent.get("id") or ""): agent
+        for agent in agent_catalog()
+    }
+    selected_agents = [
+        catalog_by_id.get(specialist_id, {"id": specialist_id})
+        for specialist_id in result.selected_specialists
+    ]
+    citations = [
+        citation.model_dump(mode="json")
+        for citation in result.citations
+    ]
+    tool_calls = [
+        {
+            "call_id": tool_result.get("call_id", ""),
+            "specialist_id": tool_result.get("specialist_id", ""),
+            "tool": tool_result["tool"],
+            "status": tool_result["status"],
+            "data": tool_result.get("data"),
+            "evidence": list(tool_result.get("evidence", ())),
+            "warning": tool_result.get("warning", ""),
+            "operation": "delegate",
+        }
+        for tool_result in result.tool_results
+    ]
+    agent_runs = [
+        {
+            "agent_id": specialist_id,
+            "status": (
+                "partial"
+                if any(
+                    call["status"] != "ok"
+                    for call in tool_calls
+                    if call["specialist_id"] == specialist_id
+                )
+                else "ok"
+            ),
+            "tool_calls": [
+                call
+                for call in tool_calls
+                if call["specialist_id"] == specialist_id
+            ],
+        }
+        for specialist_id in result.selected_specialists
+    ]
+    findings = [
+        {
+            "finding_id": tool_result.get("call_id", ""),
+            "agent_id": tool_result.get("specialist_id", ""),
+            "tool": tool_result["tool"],
+            "status": tool_result["status"],
+            "data": tool_result.get("data"),
+            "citation_ids": [
+                citation["citation_id"]
+                for citation in citations
+                if citation["citation_id"].startswith(
+                    f"tool:{tool_result.get('call_id', '')}:"
+                )
+            ],
+        }
+        for tool_result in result.tool_results
+        if tool_result.get("data") is not None
+    ]
     ledger: dict[str, Any] = {
         "contract_version": result.contract_version,
         "ledger_id": f"mai-{_uuid.uuid4().hex[:12]}",
@@ -98,14 +161,26 @@ def _create_investigation_canonical(
             "runtime": "canonical",
             "strategy": "canonical_service",
             "selected_ids": result.selected_specialists,
+            "policy_status": result.policy_status,
+            "fallback_reason": result.fallback_reason,
         },
-        "selected_agents": [],
-        "agent_runs": [],
+        "selected_agents": selected_agents,
+        "agent_runs": agent_runs,
         "reconciliation": {
-            "evidence_count": len(result.citations),
+            "evidence_count": len(citations),
             "reconciled_confidence": "medium",
+            "coverage": result.coverage.model_dump(mode="json"),
+            "uncertainty": list(result.uncertainty),
         },
-        "synthesis": {"mode": "canonical", "narration": ""},
+        "synthesis": {
+            "mode": "canonical",
+            "status": result.status,
+            "policy_status": result.policy_status,
+            "fallback_reason": result.fallback_reason,
+            "coverage": result.coverage.model_dump(mode="json"),
+            "uncertainty": list(result.uncertainty),
+            "narration": "",
+        },
         "human_controls": {
             "available_actions": [
                 "request_more_evidence",
@@ -121,16 +196,9 @@ def _create_investigation_canonical(
         "outcome": "",
         "stop_reason": "",
         "evaluation": {},
-        "tool_calls": [
-            {
-                "tool": tr["tool"],
-                "status": tr["status"],
-                "warning": tr.get("warning", ""),
-                "operation": "delegate",
-            }
-            for tr in result.tool_results
-        ],
-        "findings": [],
+        "tool_calls": tool_calls,
+        "findings": findings,
+        "citations": citations,
         "warnings": list(result.uncertainty),
         "thread_id": result.thread_id,
     }
