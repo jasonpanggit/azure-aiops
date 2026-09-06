@@ -379,13 +379,40 @@ class NetworkTopology:
                 "flow_log_provenance": dict(self.flow_log_provenance),
             }
             if detail == "summary":
-                payload["coverage"] = {
-                    "total": len(all_resources),
-                    "returned": len(resources),
-                    "truncated": len(resources) < len(all_resources),
+                returned_unresolved_ids = {
+                    str(peer_id or "").casefold()
+                    for peer_id in serialized_unresolved_ids
+                    if peer_id
                 }
-                if collection_totals is not None:
-                    payload["coverage"]["collections"] = {
+                returned_unresolved_ids.update(
+                    str(peer.get("vnet_id") or "").casefold()
+                    for peer in serialized_unresolved_peers
+                    if peer.get("vnet_id")
+                )
+                returned_unresolved_ids.update(
+                    str(link.get("remote_vnet_id") or "").casefold()
+                    for link in serialized_links
+                    if (
+                        link.get("remote_vnet_id")
+                        and not link.get("remote_vnet_observed")
+                    )
+                )
+                returned_nodes, returned_groups = _summary_canvas_identity(
+                    resources,
+                    tuple(returned_unresolved_ids),
+                )
+                total_nodes, total_groups = _summary_canvas_identity(
+                    all_resources,
+                    [
+                        *self.unresolved_peer_vnet_ids,
+                        *(
+                            str(peer.get("vnet_id") or "")
+                            for peer in self.unresolved_peers
+                        ),
+                    ],
+                )
+                collection_coverage = (
+                    {
                         name: {
                             "total": collection_totals[name],
                             "returned": len(bounded_collections[name]),
@@ -396,6 +423,46 @@ class NetworkTopology:
                         }
                         for name in bounded_collections
                     }
+                    if collection_totals is not None
+                    else {}
+                )
+                relationship_total = (
+                    collection_totals["relationships"]
+                    + collection_totals["links"]
+                    if collection_totals is not None
+                    else len(visible_relationships) + len(serialized_links)
+                )
+                relationship_returned = (
+                    len(visible_relationships) + len(serialized_links)
+                )
+                payload["coverage"] = {
+                    "total": len(total_nodes),
+                    "returned": len(returned_nodes),
+                    "truncated": (
+                        len(returned_nodes) < len(total_nodes)
+                        or any(
+                            coverage["truncated"]
+                            for coverage in collection_coverage.values()
+                        )
+                    ),
+                    "nodes": {
+                        "total": len(total_nodes),
+                        "returned": len(returned_nodes),
+                        "truncated": len(returned_nodes) < len(total_nodes),
+                    },
+                    "groups": {
+                        "total": len(total_groups),
+                        "returned": len(returned_groups),
+                        "truncated": len(returned_groups) < len(total_groups),
+                    },
+                    "relationships": {
+                        "total": relationship_total,
+                        "returned": relationship_returned,
+                        "truncated": relationship_returned < relationship_total,
+                    },
+                }
+                if collection_totals is not None:
+                    payload["coverage"]["collections"] = collection_coverage
                 if byte_ceiling is not None:
                     payload["coverage"]["byte_ceiling"] = byte_ceiling
             if dropped_relationships:

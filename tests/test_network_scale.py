@@ -316,6 +316,59 @@ def test_dense_mesh_summary_bounds_the_complete_serialized_payload() -> None:
     assert link_coverage["total"] == len(peerings)
     assert 0 < link_coverage["returned"] < link_coverage["total"]
     assert payload["coverage"]["collections"]["relationships"]["returned"] > 0
+    assert payload["coverage"]["truncated"] is True
+    returned_node_count = len(_client_node_ids(payload))
+    assert payload["coverage"]["nodes"]["returned"] == returned_node_count
+    assert payload["coverage"]["nodes"]["total"] >= returned_node_count
+    assert payload["coverage"]["nodes"]["truncated"] is (
+        payload["coverage"]["nodes"]["returned"]
+        < payload["coverage"]["nodes"]["total"]
+    )
+    assert payload["coverage"]["relationships"] == {
+        "total": (
+            payload["coverage"]["collections"]["links"]["total"]
+            + payload["coverage"]["collections"]["relationships"]["total"]
+        ),
+        "returned": (
+            payload["coverage"]["collections"]["links"]["returned"]
+            + payload["coverage"]["collections"]["relationships"]["returned"]
+        ),
+        "truncated": True,
+    }
+
+
+def test_dense_mesh_reports_edge_only_truncation_at_top_level() -> None:
+    """All nodes can fit while link and relationship coverage is partial."""
+    vnets = tuple(
+        VNet(
+            resource_id=f"/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet-{index}",
+            name=f"vnet-{index}",
+            subscription_id="sub-a",
+            resource_group="rg",
+        )
+        for index in range(40)
+    )
+    peerings = tuple(
+        VNetPeering(
+            resource_id=f"{local.resource_id}/virtualNetworkPeerings/to-{remote.name}",
+            name=f"{local.name}-to-{remote.name}",
+            subscription_id="sub-a",
+            resource_group="rg",
+            local_vnet_id=local.resource_id,
+            remote_vnet_id=remote.resource_id,
+            peering_state="Connected",
+        )
+        for local, remote in combinations(vnets, 2)
+    )
+
+    payload = build_topology(
+        NetworkSnapshot(vnets=vnets, peerings=peerings)
+    ).to_dict(detail="summary")
+
+    assert payload["coverage"]["nodes"]["truncated"] is False
+    assert payload["coverage"]["relationships"]["truncated"] is True
+    assert payload["coverage"]["truncated"] is True
+    assert len(json.dumps(payload).encode()) <= SUMMARY_BYTE_CEILING
 
 
 def test_topology_projection_is_computed_once_per_response(monkeypatch) -> None:

@@ -456,7 +456,13 @@ describe("TopologyWorkspace badge coverage", () => {
 describe("TopologyWorkspace export and selection honesty", () => {
   it("shows a Partial badge beside honest JSON and PNG export controls", () => {
     const topology = buildTopologyEnvelope().data.topology;
-    topology.coverage = { total: 9, returned: 2, truncated: true };
+    topology.coverage = {
+      total: 2,
+      returned: 2,
+      truncated: true,
+      nodes: { total: 2, returned: 2, truncated: false },
+      relationships: { total: 9, returned: 1, truncated: true },
+    };
 
     renderWorkspace({ topology });
 
@@ -468,17 +474,23 @@ describe("TopologyWorkspace export and selection honesty", () => {
       "title",
       "The image carries no scope or freshness metadata. Export JSON for an auditable record.",
     );
-    expect(screen.getByText("Partial — 2 of 9")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Partial topology — 2 of 2 nodes; 1 of 9 relationships",
+      ),
+    ).toBeInTheDocument();
     expect(png.closest(".topology-toolbar")).toContainElement(json);
     expect(png.closest(".topology-toolbar")).toContainElement(
-      screen.getByText("Partial — 2 of 9"),
+      screen.getByText(
+        "Partial topology — 2 of 2 nodes; 1 of 9 relationships",
+      ),
     );
   });
 
   it("omits the Partial badge for complete coverage", () => {
     renderWorkspace();
 
-    expect(screen.queryByText(/Partial —/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Partial topology —/)).not.toBeInTheDocument();
   });
 
   it("clears a selected node when a changed filter hides it", async () => {

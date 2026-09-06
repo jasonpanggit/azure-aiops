@@ -498,7 +498,10 @@ export function TopologyWorkspace({
       resources: topology.resources?.length ?? topology.hubs.length + topology.spokes.length + topology.isolated.length + topology.shared_services.length,
       relationships: topology.relationships?.length ?? topology.links.length + topology.shared_services.reduce((count, service) => count + service.consumer_vnet_ids.length, 0),
       rendered: renderedGraph.nodes.length,
-      total: topology.coverage?.total ?? renderedGraph.nodes.length,
+      total:
+        topology.coverage?.nodes?.total ??
+        topology.coverage?.total ??
+        renderedGraph.nodes.length,
       droppedEntries,
       droppedTotal: droppedEntries.reduce((total, [, count]) => total + count, 0),
       peerCounts,
@@ -521,15 +524,20 @@ export function TopologyWorkspace({
 
   const exportContext = useMemo<TopologyExportContext>(() => {
     const relationshipTotal =
-      typeof topology?.counts.relationships === "number"
+      topology?.coverage?.relationships?.total ??
+      (typeof topology?.counts.relationships === "number"
         ? topology.counts.relationships
-        : counts?.relationships ?? null;
+        : counts?.relationships ?? null);
     return {
       scope,
       detailLevel,
       coverage: {
         total: topology?.coverage?.total ?? counts?.total ?? null,
-        returned: topology?.coverage?.returned ?? counts?.rendered ?? null,
+        returned:
+          topology?.coverage?.nodes?.returned ??
+          topology?.coverage?.returned ??
+          counts?.rendered ??
+          null,
         truncated: topology?.coverage?.truncated ?? false,
         badgePageBudget: BADGE_FETCH_MAX_PAGES,
         badgeFetchExhausted:
@@ -538,7 +546,10 @@ export function TopologyWorkspace({
         badgeTotal: badgeCoverage.total,
         renderedNodes: counts?.rendered ?? 0,
         totalNodes: counts?.total ?? null,
-        renderedRelationships: counts?.relationships ?? 0,
+        renderedRelationships:
+          topology?.coverage?.relationships?.returned ??
+          counts?.relationships ??
+          0,
         totalRelationships: relationshipTotal,
         droppedRelationships: counts?.droppedTotal ?? 0,
       },
@@ -668,7 +679,15 @@ export function TopologyWorkspace({
         </div>
         {topology.coverage?.truncated && (
           <StatusBadge
-            label={`Partial — ${topology.coverage.returned} of ${topology.coverage.total}`}
+            label={`Partial topology — ${
+              topology.coverage.nodes?.returned ?? topology.coverage.returned
+            } of ${
+              topology.coverage.nodes?.total ?? topology.coverage.total
+            } nodes; ${
+              topology.coverage.relationships?.returned ?? counts?.relationships ?? 0
+            } of ${
+              topology.coverage.relationships?.total ?? counts?.relationships ?? 0
+            } relationships`}
             tone="warning"
           />
         )}

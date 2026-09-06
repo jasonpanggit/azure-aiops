@@ -1655,6 +1655,14 @@ export interface FlowLogProvenance {
   observed_flow_count: number;
 }
 
+export interface TopologyCoverage extends CollectionCoverage {
+  byte_ceiling?: number;
+  nodes?: CollectionCoverage;
+  groups?: CollectionCoverage;
+  relationships?: CollectionCoverage;
+  collections?: Record<string, CollectionCoverage>;
+}
+
 export interface NetworkTopology {
   hubs: HubClassification[];
   spokes: HubClassification[];
@@ -1676,7 +1684,7 @@ export interface NetworkTopology {
   }>;
   connection_ids: string[];
   counts: Record<string, number | Record<string, number>>;
-  coverage?: CollectionCoverage;
+  coverage?: TopologyCoverage;
   /** Whether flow-log evidence exists and whether rule analysis consumed it. */
   flow_log_provenance?: FlowLogProvenance;
 }
