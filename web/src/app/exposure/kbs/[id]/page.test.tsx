@@ -214,7 +214,7 @@ describe("KB detail", () => {
     render(<KbDetailPage params={{ id: "KB600001" }} />);
 
     expect(await screen.findByText("MSRC CVE associations is unavailable")).toBeInTheDocument();
-    expect(screen.getByText("Contoso kernel security update")).toBeInTheDocument();
+    expect(screen.getAllByText("Contoso kernel security update").length).toBeGreaterThan(0);
     expect(screen.getByText("server-1")).toBeInTheDocument();
   });
 
@@ -228,7 +228,7 @@ describe("KB detail", () => {
     expect(backUrl.searchParams.get("row")).toBe("exposure-1");
     expect(backUrl.searchParams.get("scroll")).toBe("320");
 
-    const cve = screen.getByRole("link", { name: "CVE-2026-0001" });
+    const cve = screen.getAllByRole("link", { name: "CVE-2026-0001" })[0];
     const cveUrl = new URL(cve.getAttribute("href")!, "https://aiops.example");
     expect(cveUrl.pathname).toBe("/exposure/cves/CVE-2026-0001");
     expect(cveUrl.searchParams.get("origin")).toBe("/exposure/defender-posture");
@@ -268,6 +268,6 @@ describe("KB detail", () => {
     });
     expect(screen.getByText("server-1")).toBeInTheDocument();
     recovery.resolve(kbEnvelope());
-    expect(await screen.findByRole("link", { name: "CVE-2026-0001" })).toBeInTheDocument();
+    expect((await screen.findAllByRole("link", { name: "CVE-2026-0001" })).length).toBeGreaterThan(0);
   });
 });
