@@ -823,3 +823,217 @@ def test_ingestion_service_persists_the_exact_workload_slice(tmp_path) -> None:
         "container_inventory",
         "container_image_inventory",
     }
+
+
+def test_granular_container_pipeline_round_trips_and_projects_exact_impact(
+    tmp_path: Path,
+) -> None:
+    from fabric.dataset_mapper import InventoryDatasetMapper
+    from fabric_pipelines.vulnerability_pipeline import (
+        ContainerExposureFabricWriter,
+        project_container_exposure,
+    )
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+    from onboarding.ingestion_storage import DatasetStore
+    from storage.delta_writer import DeltaWriter
+
+    payload = {
+        "resources": [
+            {
+                "id": REGISTRY,
+                "name": "acr1",
+                "type": "Microsoft.ContainerRegistry/registries",
+                "location": "australiaeast",
+                "subscriptionId": "sub1",
+                "resourceGroup": "rg1",
+                "tenantId": "tenant1",
+            }
+        ],
+        "defender_assessments": [
+            _granular_image_row(
+                "openssl",
+                ["Critical"],
+                ["CVE-2026-1001"],
+            )
+        ],
+    }
+    graph = Normalizer(
+        {"connection_id": "connection-1"}
+    ).normalize(
+        payload,
+        datetime(2026, 9, 2, tzinfo=UTC),
+        run_id="generation-2",
+    )
+    source = tmp_path / "source"
+    store = DatasetStore(source)
+    store.publish(
+        graph,
+        payload,
+        {
+            "runId": "generation-2",
+            "startedAt": OBSERVED,
+            "status": "completed",
+        },
+    )
+    snapshot = store.current_generation()
+    assert snapshot is not None
+    datasets = InventoryDatasetMapper().load(snapshot, "fabric-run-2")
+
+    pods, containers, images = _workload_rows()
+    workload = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[_defender_image_row()],
+        kube_pod_rows=pods,
+        container_rows=containers,
+        image_rows=images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+    datasets.update(
+        {
+            "silver_workload_deployments": list(workload.deployments),
+            "metadata_workload_source_checkpoints": list(
+                workload.checkpoints
+            ),
+        }
+    )
+    projection = project_container_exposure(datasets)
+    assert len(projection.findings) == 1
+    finding = projection.findings[0]
+    assert finding["target_kind"] == "container_image"
+    assert finding["image_digest"] == DIGEST_A
+    assert finding["cve_id"] == "CVE-2026-1001"
+    assert finding["deployment_state"] == "observed_exact_digest"
+    assert finding["represented_workload_count"] == 1
+    assert finding["total_workload_count"] == 1
+    assert finding["unknown_workload_count"] == 0
+    assert finding["workload_checkpoint_generations"] == ["generation-2"]
+    assert finding["server_patch_eligible"] is False
+    assert finding["impact_score"] > 0
+    assert projection.coverage["represented_workload_count"] == 1
+    assert projection.coverage["total_workload_count"] == 1
+
+    writer = ContainerExposureFabricWriter(
+        table_root=tmp_path / "Tables",
+        delta_writer=DeltaWriter(),
+    )
+    writer.publish(datasets)
+    reread = writer.read_products()
+    repeated = writer.publish(reread)
+    projected_again = project_container_exposure(reread)
+    assert projected_again == projection
+    assert all(result.skipped for result in repeated.values())
+
+
+def test_container_projection_preserves_unknown_coverage_without_inference(
+    tmp_path: Path,
+) -> None:
+    from fabric.dataset_mapper import InventoryDatasetMapper
+    from fabric_pipelines.vulnerability_pipeline import (
+        project_container_exposure,
+    )
+    from intelligence.vulnerability.workload_inventory import (
+        WorkloadFailureCode,
+        WorkloadQueryFailure,
+        activate_workload_partitions,
+    )
+    from onboarding.ingestion_storage import DatasetStore
+
+    payload = {
+        "resources": [
+            {
+                "id": REGISTRY,
+                "name": "acr1",
+                "type": "Microsoft.ContainerRegistry/registries",
+                "subscriptionId": "sub1",
+                "resourceGroup": "rg1",
+                "tenantId": "tenant1",
+            }
+        ],
+        "defender_assessments": [
+            _granular_image_row(
+                "openssl",
+                ["Critical"],
+                ["CVE-2026-1001"],
+            )
+        ],
+    }
+    graph = Normalizer(
+        {"connection_id": "connection-1"}
+    ).normalize(
+        payload,
+        datetime(2026, 9, 2, tzinfo=UTC),
+        run_id="generation-unknown",
+    )
+    store = DatasetStore(tmp_path / "source")
+    store.publish(
+        graph,
+        payload,
+        {
+            "runId": "generation-unknown",
+            "startedAt": OBSERVED,
+            "status": "completed",
+        },
+    )
+    snapshot = store.current_generation()
+    assert snapshot is not None
+    datasets = InventoryDatasetMapper().load(snapshot, "fabric-unknown")
+    outcomes = [
+        WorkloadQueryFailure(
+            connection_id="connection-1",
+            workspace_id="workspace-1",
+            subscription_id="sub1",
+            source_family=family,
+            source_table={
+                "kube_pod_inventory": "KubePodInventory",
+                "container_inventory": "ContainerInventory",
+                "container_image_inventory": "ContainerImageInventory",
+            }[family],
+            query_version=f"container-insights-{family}-v1",
+            attempted_at=OBSERVED,
+            completed_at=OBSERVED,
+            error_code=WorkloadFailureCode.PROVIDER_TIMEOUT,
+            error_summary="Container Insights query timed out.",
+        )
+        for family in (
+            "kube_pod_inventory",
+            "container_inventory",
+            "container_image_inventory",
+        )
+    ]
+    unknown = activate_workload_partitions(
+        outcomes=outcomes,
+        defender_rows=[_defender_image_row()],
+        attempted_generation="generation-unknown",
+        completed_at=OBSERVED,
+    )
+    datasets.update(
+        {
+            "silver_workload_deployments": list(unknown.deployments),
+            "metadata_workload_source_checkpoints": list(
+                unknown.checkpoints
+            ),
+        }
+    )
+
+    projection = project_container_exposure(datasets)
+
+    assert projection.findings[0]["deployment_state"] == "unknown"
+    assert projection.findings[0]["represented_workload_count"] == 0
+    assert projection.findings[0]["total_workload_count"] == 1
+    assert projection.findings[0]["unknown_workload_count"] == 1
+    assert projection.findings[0]["unknown_reason_counts"] == {
+        "source_unavailable": 1
+    }
+    assert projection.findings[0]["workload_ids"] == []
+    assert projection.findings[0]["business_service_ids"] == []
+    assert projection.findings[0]["server_patch_eligible"] is False
+    assert projection.coverage == {
+        "represented_workload_count": 0,
+        "total_workload_count": 1,
+        "unknown_workload_count": 1,
+        "unknown_reason_counts": {"source_unavailable": 1},
+    }
