@@ -10,8 +10,10 @@ from pydantic import BaseModel, Field
 from operations.autonomous_investigation import (
     agent_catalog,
     ledger_store,
+    project_legacy_ledger,
     run_autonomous_investigation,
 )
+from operations.maf_orchestrator import canonical_orchestration_enabled
 
 from ..dependencies import Context, CurrentPrincipal, ReadScope
 from ..errors import ApiError, ErrorCode
@@ -83,6 +85,8 @@ def get_investigation(
     ledger = ledger_store().get(ledger_id, principal.subject)
     if ledger is None:
         raise ApiError(ErrorCode.NOT_FOUND, "Investigation ledger not found", details={"ledger_id": ledger_id})
+    if canonical_orchestration_enabled():
+        ledger = project_legacy_ledger(ledger)
     return _respond(ledger, scope)
 
 

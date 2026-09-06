@@ -35,6 +35,7 @@ from operations.tools import (
 
 _LOGGER = logging.getLogger(__name__)
 
+CONTRACT_VERSION = "1"
 AGENT_TIMEOUT_SECONDS = 8.0
 MAX_RETRIES = 1
 MAX_LEDGER_ENTRIES = 1_000
@@ -102,6 +103,18 @@ def agent_catalog() -> list[dict[str, Any]]:
         }
         for agent in AGENTS
     ]
+
+
+def project_legacy_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
+    """Project an old ledger without contract_version with defaults on read.
+
+    Returns a shallow copy with ``contract_version`` injected so consumers
+    can distinguish versioned from unversioned records.  The original dict
+    is never mutated — persisted ledgers are not bulk-rewritten.
+    """
+    if ledger.get("contract_version"):
+        return ledger
+    return {"contract_version": CONTRACT_VERSION, **ledger}
 
 
 _SUBJECT_STOPWORDS = {
@@ -725,6 +738,7 @@ def run_autonomous_investigation(
     agent_runs.append(executive_run)
     ledger_id = f"mai-{uuid.uuid4().hex[:12]}"
     return {
+        "contract_version": CONTRACT_VERSION,
         "ledger_id": ledger_id,
         "objective": objective,
         "scope": scope.to_dict(),
@@ -987,6 +1001,7 @@ def run_context_investigation(
         warnings.append("Foundry narration unavailable; deterministic findings returned")
     ledger_id = f"ctx-{uuid.uuid4().hex[:12]}"
     ledger = {
+        "contract_version": CONTRACT_VERSION,
         "ledger_id": ledger_id,
         "objective": snapshot.question,
         "scope": scope.to_dict(),

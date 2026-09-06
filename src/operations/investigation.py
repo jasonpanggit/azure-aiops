@@ -471,12 +471,32 @@ def conversation_store() -> ConversationStore:
     return _CONVERSATION_STORE
 
 
+# ---------------------------------------------------------------------------
+# Canonical compatibility projection (Plan 11-03)
+# ---------------------------------------------------------------------------
+
+CONTRACT_VERSION = "1"
+
+
+def canonicalize_investigation(investigation: Investigation) -> dict[str, Any]:
+    """Project an Investigation result into the canonical wire contract.
+
+    The legacy ``to_dict`` shape is preserved so existing clients are not
+    broken; only ``contract_version`` is added to signal the canonical path.
+    """
+    result = investigation.to_dict()
+    result["contract_version"] = CONTRACT_VERSION
+    return result
+
+
 __all__ = [
+    "CONTRACT_VERSION",
     "MAX_TOOL_CALLS",
     "MAX_TURNS_PER_SESSION",
     "ConversationStore",
     "Investigation",
     "ToolCallRecord",
+    "canonicalize_investigation",
     "conversation_store",
     "run_investigation",
     "tool_catalog",

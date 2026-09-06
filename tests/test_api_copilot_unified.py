@@ -960,8 +960,15 @@ def test_investigate_context_canonical_stamps_contract_version(tmp_path, monkeyp
             "snapshot": {
                 "version": "1",
                 "page_kind": "network",
+                "page_id": "topology",
                 "question": "What firewall gaps exist?",
-                "evidence": [],
+                "scope": {"declared": {}},
+                "evidence": [{
+                    "evidence_id": "route-1",
+                    "section": "route",
+                    "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt-1",
+                    "data": {"finding": "Default route bypasses firewall"},
+                }],
                 "selected_resources": [],
                 "freshness": [],
                 "rechecks": [],

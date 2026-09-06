@@ -27,11 +27,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from operations.autonomous_investigation import ledger_store, run_context_investigation
 from operations.foundry_agent import FoundryAgentError
 from operations.investigation import (
+    canonicalize_investigation,
     conversation_store,
     run_investigation,
     tool_catalog,
 )
 from operations.investigation_thread_store import ThreadNotFound
+from operations.maf_orchestrator import canonical_orchestration_enabled
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     CandidatePlan,
@@ -596,7 +598,9 @@ def investigate(
         )
 
     return envelope(
-        investigation.to_dict(),
+        canonicalize_investigation(investigation)
+        if canonical_orchestration_enabled()
+        else investigation.to_dict(),
         evidence=evidence,
         scope=scope.to_dict(),
         warnings=list(investigation.warnings),
