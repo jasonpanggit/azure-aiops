@@ -1,6 +1,6 @@
 # Azure Deployment Plan
 
-Status: Validated
+Status: Ready for Validation
 
 ## Objective
 
@@ -36,6 +36,16 @@ processes, require reinitialization after restart, reject malformed requests,
 and require APIM's gateway assertion on the public ACA backend. Keep one warm
 replica and one maximum replica because MCP session state is process-local.
 
+Current follow-up: deploy Phase 13's autonomous ontology foundation using the
+existing Terraform workflow. Add one finite scheduled ACA Job with a
+non-publisher identity, one code-defined Foundry prompt curator with exactly four
+scoped read tools, and one separate least-privilege publisher identity/role.
+Validate the four-identity denied-write matrix against the non-production Fabric
+target before enabling authoritative publication. No model-derived relationship
+may enter the authoritative ontology in this deployment; shadow mode remains
+mandatory. Do not replace APIM, the Foundry account/project, Fabric workspace,
+or existing Container Apps.
+
 ## Workspace
 
 - Mode: MODIFY existing deployed application
@@ -43,6 +53,44 @@ replica and one maximum replica because MCP session state is process-local.
 - Target: existing Azure Container Apps environment and registry
 - IaC: existing Terraform under `infra/terraform`
 - Execution: `infra/scripts/build-and-push.sh`, then Terraform/app revision update
+
+## Azure Context
+
+- Subscription: `ME-MngEnvMCAP686238-pangj-1`
+  (`a87a8e64-a52a-4aa8-a760-5e8919d23cd1`)
+- Tenant: `ffc83107-fcc0-4d2e-8798-d582da36505e`
+- Location: `australiaeast` (existing Terraform deployment default)
+- Environment: existing `aiops-dev` resources
+
+## Phase 13 Deployment Scope
+
+- Create the ontology-discovery ACA scheduled Job in the existing Container Apps
+  environment with finite execution, `parallelism = 1`, bounded timeout/retry,
+  and the existing application image.
+- Create distinct coordinator and publisher user-assigned identities; only the
+  publisher may stage immutable ontology generations or conditionally change the
+  active pointer.
+- Update the existing code-first Foundry prompt-agent provisioning map with the
+  ontology curator and exactly four scoped read-only MCP tools.
+- Apply no API/web image rollout in this step unless Terraform proves the
+  existing image is insufficient for the scheduled Job command.
+- Run `scripts/validate_ontology_publisher_rbac.py --non-production
+  --fail-on-missing-evidence` after provisioning. Three non-publisher identities
+  must be denied and the publisher must complete stage/CAS/rollback cleanup.
+- Keep the live model relationship path in shadow mode. Plan 13-08 remains the
+  blocking approval gate before any authoritative publication work.
+
+## Phase 13 Constraints
+
+- Terraform plan must show no APIM, Foundry project/account, Fabric workspace,
+  lakehouse, or existing Container App replacement/destruction.
+- Managed identities and role assignments must be additive and scope-minimal.
+- Deployment and live RBAC validation are serialized with Phase 03.1; the
+  deployment lane must be explicitly released before apply.
+- The installed `azd` version cannot install the current
+  `microsoft.foundry` extension. This deployment therefore uses the repository's
+  existing Terraform and `create-foundry-agent.sh` prompt-agent path, not hosted
+  agent `azd` deployment.
 
 ## Configuration
 
