@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from api.runtime import _load_generation_tables
+from api.routers.twin import _composer
 from api.scope import Scope
 from fabric.data_agent_manager import build_data_agent_definition
 from fabric.semantic_model_manager import build_semantic_model_definition
@@ -18,6 +19,7 @@ from ontology_discovery.generation_resolver import (
     scan_direct_ontology_consumers,
 )
 from operations.tools import STATUS_OK, call_tool
+from semantic.semantic_registry import SemanticRegistry
 
 
 class _MemoryFs:
@@ -311,3 +313,90 @@ def test_operations_agent_uses_one_selected_generation_per_tool_call():
         "generation-new",
         "generation-old",
     )
+
+
+def test_twin_export_resolves_old_new_then_old_without_mixed_generation():
+    store = _RemoteStore()
+    resolver = GenerationResolver(store)
+
+    class _Indexes:
+        relationships = ()
+
+        def __init__(self, generation_id: str) -> None:
+            self.entities = {
+                f"entity-{generation_id}": {
+                    "resource_id": f"entity-{generation_id}",
+                    "entity_type": "Application",
+                    "name": generation_id,
+                }
+            }
+
+    class _Semantic:
+        def __init__(self, generation_id: str) -> None:
+            self.indexes = _Indexes(generation_id)
+            self.ontology_synchronized_at = "2026-01-01T00:00:00+00:00"
+
+    class _GenerationProvider:
+        def for_generation(self, selection):
+            return _Semantic(selection.generation_id)
+
+    class _Context:
+        generation_resolver_provider = lambda self: resolver
+        hybrid_network_provider = None
+        hybrid_vulnerability_provider = None
+        hybrid_incident_provider = None
+        hybrid_remediation_provider = None
+
+        def resolve_provider(self, name, *, optional=False):
+            return _GenerationProvider() if name == "semantic" else None
+
+    def exported_names() -> list[str]:
+        snapshot = _composer(_Context(), Scope()).export()["snapshot"]
+        return [entity["name"] for entity in snapshot["entities"]]
+
+    old = exported_names()
+    store.fs.files[store.pointer_path] = json.dumps(
+        {"generation": "generation-new", "previous_generation": "generation-old"}
+    )
+    store.fs.files[f"{store.generations}/generation-new/manifest.json"] = "{}"
+    new = exported_names()
+    store.fs.files[store.pointer_path] = json.dumps(
+        {"generation": "generation-old", "previous_generation": "generation-new"}
+    )
+    rolled_back = exported_names()
+
+    assert old == ["generation-old"]
+    assert new == ["generation-new"]
+    assert rolled_back == ["generation-old"]
+
+
+def test_semantic_registry_binds_sources_to_one_generation_and_rolls_back():
+    store = _RemoteStore()
+    resolver = GenerationResolver(store)
+
+    def registry_generation() -> tuple[str, tuple[str, ...]]:
+        selection = resolver.resolve()
+        registry = SemanticRegistry.default().for_generation(
+            selection,
+            resolver.compatibility_aliases(selection),
+        )
+        model = registry.get("Application")
+        return model.generation_id, model.sources
+
+    old = registry_generation()
+    store.fs.files[store.pointer_path] = json.dumps(
+        {"generation": "generation-new", "previous_generation": "generation-old"}
+    )
+    store.fs.files[f"{store.generations}/generation-new/manifest.json"] = "{}"
+    new = registry_generation()
+    store.fs.files[store.pointer_path] = json.dumps(
+        {"generation": "generation-old", "previous_generation": "generation-new"}
+    )
+    rolled_back = registry_generation()
+
+    assert old == (
+        "generation-old",
+        ("ontology_entities", "ontology_relationships", "inventory", "compliance"),
+    )
+    assert new[0] == "generation-new"
+    assert rolled_back == old
