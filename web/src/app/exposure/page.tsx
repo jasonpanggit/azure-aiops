@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
-import { PatchInventory } from "@/components/exposure/PatchInventory";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { OperationsSignalChart } from "@/components/ui/OperationsSignalChart";
@@ -385,8 +384,6 @@ export default function ExposurePage() {
               </div>
             </Link>
           </div>
-
-          <PatchInventory scope={scope} />
         </>
       )}
 
