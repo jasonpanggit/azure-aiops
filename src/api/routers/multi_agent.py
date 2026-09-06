@@ -151,7 +151,10 @@ def _create_investigation_canonical(
                 "high" if tool_result.get("evidence") else "unknown"
             ),
             "evidence_count": len(tool_result.get("evidence", ())),
-            "unsupported": tool_result["status"] in {"denied", "unavailable"},
+            "unsupported": (
+                tool_result["status"] in {"denied", "unavailable"}
+                or not tool_result.get("evidence")
+            ),
             "data": tool_result.get("data"),
             "citation_ids": [
                 citation["citation_id"]
