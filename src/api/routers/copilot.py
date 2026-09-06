@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid as _uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter
@@ -37,6 +39,8 @@ from operations.maf_orchestrator import canonical_orchestration_enabled
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     CandidatePlan,
+    EvidenceSnapshotV2,
+    SnapshotCoverage,
     SpecialistStep,
     ToolCallCandidate,
 )
@@ -607,6 +611,127 @@ def investigate(
     )
 
 
+def _run_context_via_canonical(
+    snapshot: PageSnapshot,
+    *,
+    context: Any,
+    scope: Any,
+    principal_subject: str,
+) -> dict[str, Any]:
+    """Thin canonical adapter: route a context investigation through OrchestrationService.
+
+    Builds a synthetic ``InvestigationRequest`` (the v2 snapshot contract only
+    accepts inventory/connections page kinds, so the adapter uses ``inventory``
+    as a bridge) and delegates to the single governed orchestration path.  The
+    result is projected back to the legacy context-ledger dict shape so
+    existing consumers see the same wire contract.
+
+    Non-canonical and shadow/rollback modes bypass this function entirely and
+    continue to use :func:`run_context_investigation`.
+    """
+
+    canonical_snapshot = EvidenceSnapshotV2(
+        page_kind="inventory",
+        page_id=snapshot.page_id,
+        coverage=SnapshotCoverage(
+            visible_count=len(snapshot.evidence),
+            total_count=len(snapshot.evidence),
+            complete=False,
+        ),
+    )
+    request = CanonicalInvestigationRequest(
+        question=snapshot.question,
+        requested_scope=scope.to_dict(),
+        snapshot=canonical_snapshot,
+    )
+
+    def _context_planner(_req: Any) -> CandidatePlan:
+        return CandidatePlan(
+            steps=[
+                SpecialistStep(
+                    specialist_id=INVENTORY_DATA_HEALTH_ID,
+                    tool_calls=[
+                        ToolCallCandidate(
+                            tool="inventory_resources",
+                            arguments={},
+                            citation_ids=[COVERAGE_CITATION_ID],
+                        )
+                    ],
+                )
+            ],
+            estimated_tokens=0,
+            max_wall_seconds=5,
+        )
+
+    def _safe_executor(
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        context: Any,
+        scope: Any,
+    ) -> ToolResult:
+        try:
+            return call_tool(name, arguments, context=context, scope=scope)
+        except (AttributeError, LookupError, RuntimeError, TypeError, ValueError):
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                warning="Tool unavailable in context canonical mode",
+            )
+
+    result = OrchestrationService(
+        planner=_context_planner,
+        executor=_safe_executor,
+    ).execute(
+        request,
+        context=context,
+        principal_subject=principal_subject,
+        effective_scope=scope,
+    )
+
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    return {
+        "contract_version": result.contract_version,
+        "ledger_id": f"ctx-{_uuid.uuid4().hex[:12]}",
+        "objective": snapshot.question,
+        "scope": scope.to_dict(),
+        "created_by": principal_subject,
+        "created_at": now,
+        "updated_at": now,
+        "status": (
+            "synthesized" if result.status in ("ok", "empty") else result.status
+        ),
+        "page_kind": snapshot.page_kind,
+        "orchestration": {
+            "runtime": "canonical",
+            "strategy": "canonical_service",
+            "selected_ids": result.selected_specialists,
+        },
+        "tool_calls": [
+            {
+                "tool": tr["tool"],
+                "status": tr["status"],
+                "warning": tr.get("warning", ""),
+                "operation": "delegate",
+            }
+            for tr in result.tool_results
+        ],
+        "findings": [],
+        "synthesis": {"mode": "canonical", "narration": ""},
+        "warnings": list(result.uncertainty),
+        "stop_reason": "reassessed",
+        "human_controls": {
+            "available_actions": [
+                "request_more_evidence",
+                "approve_plan",
+                "stop_investigation",
+            ]
+        },
+        "decisions": [],
+        "approvals": [],
+        "thread_id": result.thread_id,
+    }
+
+
 @router.post(
     "/copilot/investigate-context",
     summary="Investigate the exact state shown on a supported page",
@@ -627,12 +752,20 @@ def investigate_context(
             str(exc),
             details={"field": "snapshot.scope"},
         ) from exc
-    ledger = run_context_investigation(
-        snapshot,
-        context=context,
-        scope=scope,
-        principal_subject=principal.subject,
-    )
+    if canonical_orchestration_enabled():
+        ledger = _run_context_via_canonical(
+            snapshot,
+            context=context,
+            scope=scope,
+            principal_subject=principal.subject,
+        )
+    else:
+        ledger = run_context_investigation(
+            snapshot,
+            context=context,
+            scope=scope,
+            principal_subject=principal.subject,
+        )
     ledger_store().add(ledger)
     evidence = [
         Evidence(

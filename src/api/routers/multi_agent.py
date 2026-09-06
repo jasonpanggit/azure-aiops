@@ -106,4 +106,6 @@ def apply_action(
     )
     if ledger is None:
         raise ApiError(ErrorCode.NOT_FOUND, "Investigation ledger not found", details={"ledger_id": ledger_id})
+    if canonical_orchestration_enabled():
+        ledger = project_legacy_ledger(ledger)
     return _respond(ledger, scope)

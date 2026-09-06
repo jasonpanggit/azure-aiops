@@ -108,13 +108,15 @@ def agent_catalog() -> list[dict[str, Any]]:
 def project_legacy_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     """Project an old ledger without contract_version with defaults on read.
 
-    Returns a shallow copy with ``contract_version`` injected so consumers
-    can distinguish versioned from unversioned records.  The original dict
-    is never mutated — persisted ledgers are not bulk-rewritten.
+    Always returns a **shallow copy** so callers cannot mutate the persisted
+    record through the projected reference.  Key *presence* (not truthiness)
+    determines whether the ledger is already versioned — an explicit falsy
+    value such as ``""`` is preserved, not replaced.
     """
-    if ledger.get("contract_version"):
-        return ledger
-    return {"contract_version": CONTRACT_VERSION, **ledger}
+    projected = {**ledger}
+    if "contract_version" not in ledger:
+        projected["contract_version"] = CONTRACT_VERSION
+    return projected
 
 
 _SUBJECT_STOPWORDS = {
