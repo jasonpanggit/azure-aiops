@@ -900,3 +900,168 @@ def test_canonical_route_never_promotes_browser_observations_to_authority(
     assert "inventory:os:stable" not in {
         citation["citation_id"] for citation in data["citations"]
     }
+
+
+# ---------------------------------------------------------------------------
+# Plan 11-03 Task 2: Thin canonical compatibility adapters for legacy routes
+# ---------------------------------------------------------------------------
+
+
+def test_investigate_canonical_mode_stamps_contract_version(tmp_path, monkeypatch):
+    """When canonical orchestration is active, /copilot/investigate stamps
+    contract_version on the response so consumers can distinguish the
+    canonical result from the legacy wire shape."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        json={"question": "Show inventory resources", "session_id": ""},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+
+
+def test_investigate_canonical_preserves_legacy_wire_fields(tmp_path, monkeypatch):
+    """Canonical mode must preserve the question, tool_calls, fact_status, and
+    warnings fields so existing clients do not break."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        json={"question": "Show inventory resources", "session_id": ""},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert "question" in data
+    assert "tool_calls" in data
+    assert "fact_status" in data
+    assert data["contract_version"] == "1"
+
+
+def test_investigate_context_canonical_stamps_contract_version(tmp_path, monkeypatch):
+    """When canonical orchestration is active, /copilot/investigate-context
+    stamps contract_version on the ledger."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate-context?subscription=sub-a",
+        json={
+            "snapshot": {
+                "version": "1",
+                "page_kind": "network",
+                "question": "What firewall gaps exist?",
+                "evidence": [],
+                "selected_resources": [],
+                "freshness": [],
+                "rechecks": [],
+            }
+        },
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+
+
+def test_multi_agent_canonical_stamps_contract_version(tmp_path, monkeypatch):
+    """When canonical orchestration is active, /agents/investigations stamps
+    contract_version on new ledger writes."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Investigate inventory health", "timeout_seconds": 3},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+
+
+def test_old_ledger_read_projected_with_defaults(tmp_path):
+    """Persisted old ledgers without contract_version are readable via
+    project_legacy_ledger without bulk rewrite."""
+    from operations.autonomous_investigation import project_legacy_ledger
+
+    old_ledger = {
+        "ledger_id": "mai-abc123def456",
+        "objective": "Old investigation",
+        "scope": {"subscription": ["sub-a"]},
+        "created_by": "admin@example.com",
+        "created_at": "2026-08-01T00:00:00Z",
+        "updated_at": "2026-08-01T00:00:00Z",
+        "status": "synthesized",
+        "selected_agents": [],
+        "agent_runs": [],
+        "reconciliation": {},
+        "synthesis": {},
+        "human_controls": {"available_actions": []},
+        "decisions": [],
+        "approvals": [],
+        "outcome": "",
+        "stop_reason": "",
+        "evaluation": {},
+    }
+
+    projected = project_legacy_ledger(old_ledger)
+
+    assert projected["contract_version"] == "1"
+    assert projected["ledger_id"] == "mai-abc123def456"
+    # Original is not mutated
+    assert "contract_version" not in old_ledger
+
+
+def test_multi_agent_old_ledger_readable_via_get(tmp_path, monkeypatch):
+    """GET /agents/investigations/{id} projects old ledgers on read."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    from operations.autonomous_investigation import ledger_store
+
+    store = ledger_store()
+    old_ledger = {
+        "ledger_id": "mai-oldledger001",
+        "objective": "Old network investigation",
+        "scope": {"subscription": ["sub-a"]},
+        "created_by": "admin@example.com",
+        "created_at": "2026-08-01T00:00:00Z",
+        "updated_at": "2026-08-01T00:00:00Z",
+        "status": "synthesized",
+        "selected_agents": [],
+        "agent_runs": [],
+        "reconciliation": {},
+        "synthesis": {},
+        "human_controls": {"available_actions": []},
+        "decisions": [],
+        "approvals": [],
+        "outcome": "",
+        "stop_reason": "",
+        "evaluation": {},
+        "warnings": [],
+    }
+    store.add(old_ledger)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/agents/investigations/mai-oldledger001?subscription=sub-a",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
