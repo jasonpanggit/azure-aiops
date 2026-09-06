@@ -6,6 +6,7 @@ import pytest
 
 from api.scope import Scope
 from operations.orchestration_contract import (
+    COVERAGE_CITATION_ID,
     CandidatePlan,
     EvidenceSnapshotV2,
     InvestigationRequest,
@@ -191,3 +192,120 @@ def test_widened_scope_is_rejected_before_candidate_execution():
             candidate=_candidate(),
             effective_scope=Scope({"subscription": ["sub-a"]}),
         )
+
+
+# ---------------------------------------------------------------------------
+# Plan 11-03 Task 1: Generalized keyword fallback and multi-specialist policy
+# ---------------------------------------------------------------------------
+
+
+def test_deterministic_keyword_fallback_produces_valid_candidate():
+    """build_deterministic_fallback constructs a CandidatePlan that passes
+    the same policy validator applied to model-proposed candidates."""
+    from operations.maf_orchestrator import build_deterministic_fallback
+
+    manifest = load_specialist_manifest()
+    request = _request()
+    candidate = build_deterministic_fallback(request, manifest)
+
+    policy = OrchestrationPolicy(manifest=manifest)
+    validated = policy.validate(
+        request=request,
+        candidate=candidate,
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+    assert validated.steps
+    for step in validated.steps:
+        spec = manifest.require(step.specialist_id)
+        assert request.snapshot.page_kind in spec.page_mappings
+        for call in step.tool_calls:
+            assert call.tool in spec.operations_mcp_tools
+
+
+def test_keyword_fallback_page_constrains_specialist_selection():
+    """The fallback only selects specialists whose page_mappings include
+    the request's page_kind — a network specialist cannot appear for
+    an inventory snapshot."""
+    from operations.maf_orchestrator import build_deterministic_fallback
+
+    manifest = load_specialist_manifest()
+    # Question mentions network keywords, but page is inventory
+    request = InvestigationRequest(
+        question="Show network topology and firewall gaps for these resources.",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="inventory",
+            page_id="inventory",
+            coverage=SnapshotCoverage(visible_count=1, total_count=1, complete=True),
+            evidence=[
+                SnapshotEvidence(
+                    evidence_id="inv:row1",
+                    source="inventory-page",
+                    status="ok",
+                )
+            ],
+        ),
+    )
+    candidate = build_deterministic_fallback(request, manifest)
+
+    # Every step must map to inventory, regardless of network keywords
+    for step in candidate.steps:
+        spec = manifest.require(step.specialist_id)
+        assert "inventory" in spec.page_mappings
+    # Must not select network specialist (maps to network/twin only)
+    assert not any(step.specialist_id == "network" for step in candidate.steps)
+
+
+def test_keyword_fallback_citations_reference_submitted_evidence():
+    """Fallback candidate citations are drawn from the request's evidence,
+    never from fabricated or empty references."""
+    from operations.maf_orchestrator import build_deterministic_fallback
+
+    manifest = load_specialist_manifest()
+    request = _request()
+    candidate = build_deterministic_fallback(request, manifest)
+
+    evidence_ids = {item.evidence_id for item in request.snapshot.evidence}
+    evidence_ids.add(COVERAGE_CITATION_ID)
+    for step in candidate.steps:
+        for call in step.tool_calls:
+            assert call.citation_ids
+            assert set(call.citation_ids) <= evidence_ids
+
+
+def test_keyword_fallback_empty_evidence_uses_coverage_citation():
+    """When the snapshot has no evidence rows, fallback uses the canonical
+    coverage citation so the policy's requires_citations check passes."""
+    from operations.maf_orchestrator import build_deterministic_fallback
+
+    manifest = load_specialist_manifest()
+    request = InvestigationRequest(
+        question="Show inventory resources.",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="inventory",
+            page_id="inventory",
+            coverage=SnapshotCoverage(
+                visible_count=0, total_count=0, complete=True
+            ),
+        ),
+    )
+    candidate = build_deterministic_fallback(request, manifest)
+
+    for step in candidate.steps:
+        for call in step.tool_calls:
+            assert COVERAGE_CITATION_ID in call.citation_ids
+
+
+def test_keyword_fallback_no_mutation_intent():
+    """The deterministic fallback never sets mutation_intent, matching the
+    no-production-mutation decision (D-10)."""
+    from operations.maf_orchestrator import build_deterministic_fallback
+
+    manifest = load_specialist_manifest()
+    candidate = build_deterministic_fallback(_request(), manifest)
+
+    assert candidate.mutation_intent is False
+    for step in candidate.steps:
+        for call in step.tool_calls:
+            assert call.mutation is False
