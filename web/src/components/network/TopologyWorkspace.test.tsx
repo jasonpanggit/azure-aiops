@@ -18,6 +18,7 @@ import type {
   RuleFinding,
 } from "@/lib/types";
 import type { TopologyNodeData } from "@/lib/network-graph";
+import type { TopologyExportContext } from "./TopologyGraph";
 
 const graphProbe = vi.hoisted(() => ({
   props: null as null | {
@@ -30,6 +31,7 @@ const graphProbe = vi.hoisted(() => ({
       string,
       { severity: string; count: number; title?: string }
     >;
+    exportContext?: TopologyExportContext;
   },
 }));
 
@@ -394,6 +396,9 @@ describe("TopologyWorkspace badge coverage", () => {
     expect(screen.getByText("Badges: 2000 of 3000 findings")).toBeInTheDocument();
     expect(loadRuleFindingsPage).toHaveBeenCalledTimes(4);
     expect(loadRuleFindingsPage).toHaveBeenNthCalledWith(4, 1_500, 500);
+    expect(
+      graphProbe.props?.exportContext?.coverage.badgeFetchExhausted,
+    ).toBe(false);
   });
 
   it("loads until exhaustion below the budget and reports equal coverage", async () => {

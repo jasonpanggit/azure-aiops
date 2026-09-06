@@ -8,7 +8,7 @@ import {
   type TopologyEdgeData,
   type TopologyNodeData,
 } from "@/lib/network-graph";
-import type { NetworkTopology } from "@/lib/types";
+import type { EvidenceItem, NetworkTopology } from "@/lib/types";
 
 cytoscape.use(fcose);
 
@@ -302,6 +302,105 @@ export interface TopologyGraphHandle {
   exportJson: () => void;
 }
 
+export interface TopologyExportCoverage {
+  total: number | null;
+  returned: number | null;
+  truncated: boolean;
+  badgePageBudget: number;
+  badgeFetchExhausted: boolean;
+  badgeReturned: number;
+  badgeTotal: number;
+  renderedNodes: number;
+  totalNodes: number | null;
+  renderedRelationships: number;
+  totalRelationships: number | null;
+  droppedRelationships: number;
+}
+
+export interface TopologyExportContext {
+  scope: Record<string, string[]> | null;
+  detailLevel: "summary" | "full";
+  coverage: TopologyExportCoverage;
+  filters: {
+    search: string;
+    filterMode: boolean;
+    showServices: boolean;
+    showFindings: boolean;
+  };
+  evidence: EvidenceItem[] | null;
+  warnings: string[] | null;
+  knowledgeVersion: string | null;
+  graphFreshness: string | null;
+}
+
+export function buildTopologyExport(
+  topology: NetworkTopology,
+  context: TopologyExportContext,
+  exportedAt: string,
+) {
+  return {
+    exported_at: exportedAt,
+    scope: context.scope,
+    detail_level: context.detailLevel,
+    coverage: {
+      total: context.coverage.total,
+      returned: context.coverage.returned,
+      truncated: context.coverage.truncated,
+      badge_page_budget: context.coverage.badgePageBudget,
+      badge_fetch_exhausted: context.coverage.badgeFetchExhausted,
+      badge_findings: {
+        returned: context.coverage.badgeReturned,
+        total: context.coverage.badgeTotal,
+      },
+      nodes: {
+        rendered: context.coverage.renderedNodes,
+        total: context.coverage.totalNodes,
+      },
+      relationships: {
+        rendered: context.coverage.renderedRelationships,
+        total: context.coverage.totalRelationships,
+        dropped: context.coverage.droppedRelationships,
+      },
+    },
+    filters: {
+      search: context.filters.search,
+      filter_mode: context.filters.filterMode,
+      show_services: context.filters.showServices,
+      show_findings: context.filters.showFindings,
+    },
+    evidence: context.evidence,
+    warnings: context.warnings,
+    knowledge_version: context.knowledgeVersion,
+    graph_freshness: context.graphFreshness,
+    topology,
+  };
+}
+
+let lastExportSecond = 0;
+
+export function nextExportIdentity(
+  extension: "json" | "png",
+  now = new Date(),
+): { exportedAt: string; filename: string } {
+  const candidate = Math.floor(now.getTime() / 1_000) * 1_000;
+  const timestamp = Math.max(candidate, lastExportSecond + 1_000);
+  lastExportSecond = timestamp;
+  const date = new Date(timestamp);
+  const segment = [
+    date.getUTCFullYear().toString().padStart(4, "0"),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+    "-",
+    String(date.getUTCHours()).padStart(2, "0"),
+    String(date.getUTCMinutes()).padStart(2, "0"),
+    String(date.getUTCSeconds()).padStart(2, "0"),
+  ].join("");
+  return {
+    exportedAt: date.toISOString(),
+    filename: `network-topology-${segment}.${extension}`,
+  };
+}
+
 interface TopologyGraphProps {
   topology: NetworkTopology;
   /** Applied to node labels. In "dim" mode non-matches fade but stay on
@@ -314,6 +413,7 @@ interface TopologyGraphProps {
   onSelect: (selection: TopologySelection) => void;
   /** Receives an imperative handle for export actions once the canvas mounts. */
   onReady?: (handle: TopologyGraphHandle | null) => void;
+  exportContext: TopologyExportContext;
   /** Highest-severity open gap/rule finding per resource id. When set, matching
    * nodes render a small corner badge sourced from `/gaps` and `/rule-findings`. */
   findingSeverityByResource?: Map<
@@ -336,6 +436,7 @@ export default function TopologyGraph({
   selectedId,
   onSelect,
   onReady,
+  exportContext,
   findingSeverityByResource,
 }: TopologyGraphProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -343,6 +444,8 @@ export default function TopologyGraph({
   const positionsRef = useRef<Map<string, cytoscape.Position>>(new Map());
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
+  const exportContextRef = useRef(exportContext);
+  exportContextRef.current = exportContext;
 
   const graph = useMemo(() => buildTopologyGraph(topology), [topology]);
 
@@ -424,13 +527,23 @@ export default function TopologyGraph({
 
     onReady?.({
       exportPng: () => {
+        const identity = nextExportIdentity("png");
         const uri = cy.png({ full: true, scale: 2, bg: "#eef2f6" });
-        downloadDataUri(uri, "network-topology.png");
+        downloadDataUri(uri, identity.filename);
       },
       exportJson: () => {
-        const payload = JSON.stringify(topology, null, 2);
+        const identity = nextExportIdentity("json");
+        const payload = JSON.stringify(
+          buildTopologyExport(
+            topology,
+            exportContextRef.current,
+            identity.exportedAt,
+          ),
+          null,
+          2,
+        );
         const uri = `data:application/json;charset=utf-8,${encodeURIComponent(payload)}`;
-        downloadDataUri(uri, "network-topology.json");
+        downloadDataUri(uri, identity.filename);
       },
     });
 
@@ -472,7 +585,12 @@ export default function TopologyGraph({
       }
       if (selectedId) {
         const selected = cy.getElementById(selectedId);
-        if (selected.nonempty()) selected.removeClass("cy-dimmed").addClass("cy-selected");
+        if (
+          selected.nonempty() &&
+          selected.style("display") !== "none"
+        ) {
+          selected.removeClass("cy-dimmed").addClass("cy-selected");
+        }
       }
     });
   }, [search, filterMode, showServices, selectedId]);

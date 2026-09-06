@@ -263,6 +263,10 @@ export default function NetworkPage() {
               onRetryFindings={
                 gaps.error ? gaps.refetch : findings.error ? findings.refetch : gaps.refetch
               }
+              scope={topology.data?.scope ?? null}
+              evidence={topology.data?.evidence ?? null}
+              warnings={topology.data?.warnings ?? null}
+              knowledgeVersion={topology.data?.knowledge_version ?? null}
               graphFreshness={topology.data?.graph_freshness}
             />
           </section>
