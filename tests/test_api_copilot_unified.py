@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 from test_api_copilot_investigation import HEADERS, _context
@@ -2289,3 +2292,167 @@ def test_incident_terms_take_precedence_over_embedded_network_markers(
     )
 
     assert captured[0].snapshot.page_kind == "incident"
+
+
+def test_inventory_canonical_endpoint_rejects_non_inventory_snapshot(
+    tmp_path,
+):
+    """The inventory-specific canonical route must reject other page kinds."""
+    body = _canonical_body()
+    body["snapshot"]["page_kind"] = "network"
+    body["snapshot"]["page_id"] = "network"
+    client = TestClient(create_app(_context(tmp_path, None)))
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 422
+
+
+def test_concurrent_first_legacy_session_turns_share_one_thread(monkeypatch):
+    """Concurrent first turns must both remain reachable from session history."""
+    from operations.orchestration_service import (
+        execute_from_question,
+        legacy_session_history,
+    )
+
+    barrier = threading.Barrier(2)
+    original_execute = OrchestrationService.execute
+
+    def _synchronized_execute(self, request, **kwargs):
+        barrier.wait(timeout=5)
+        return original_execute(self, request, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _synchronized_execute)
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda *_args, **_kwargs: ToolResult(status="empty"),
+    )
+    session_id = "concurrent-first-turns"
+
+    def _run(question):
+        return execute_from_question(
+            question,
+            scope=Scope({"subscription": ["sub-a"]}),
+            context=object(),
+            principal_subject="operator@example.com",
+            session_id=session_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                _run,
+                ("Show network topology", "Summarize network traffic"),
+            )
+        )
+
+    history = legacy_session_history(
+        session_id,
+        principal_subject="operator@example.com",
+        scope=Scope({"subscription": ["sub-a"]}),
+    )
+    assert results[0].thread_id == results[1].thread_id
+    assert {turn["question"] for turn in history} == {
+        "Show network topology",
+        "Summarize network traffic",
+    }
+
+
+def test_multi_agent_canonical_propagates_requested_timeout(
+    tmp_path, monkeypatch
+):
+    """The public timeout remains authoritative in canonical mode."""
+    from operations.orchestration_contract import OrchestrationResult
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    captured: list[float] = []
+
+    def _execute(*_args, **kwargs):
+        captured.append(kwargs["max_wall_seconds"])
+        return OrchestrationResult(
+            status="unavailable",
+            policy_status="fallback",
+            fallback_reason="unsupported_intent",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=False,
+            ),
+            thread_id="thr-" + "b" * 32,
+            thread_revision=1,
+        )
+
+    monkeypatch.setattr("api.routers.multi_agent.execute_from_question", _execute)
+    client = TestClient(create_app(_context(tmp_path, None)))
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={"objective": "Explain current state", "timeout_seconds": 1.5},
+    )
+
+    assert response.status_code == 200
+    assert captured == [1.5]
+
+
+def test_multi_agent_reconciliation_counts_only_observed_evidence(
+    tmp_path, monkeypatch
+):
+    """Coverage citations must not inflate evidence-backed finding counts."""
+    from operations.orchestration_contract import Citation, OrchestrationResult
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    result = OrchestrationResult(
+        status="ok",
+        policy_status="accepted",
+        selected_specialists=["network"],
+        selected_tools=["network_topology"],
+        tool_results=[
+            {
+                "call_id": "0:0:network:network_topology",
+                "specialist_id": "network",
+                "tool": "network_topology",
+                "arguments": {},
+                "status": "ok",
+                "data": {"nodes": []},
+                "evidence": [],
+                "warning": "",
+            }
+        ],
+        coverage=SnapshotCoverage(
+            visible_count=0,
+            total_count=0,
+            complete=True,
+        ),
+        citations=[
+            Citation(
+                citation_id="snapshot:coverage",
+                source="page_snapshot:network:coverage",
+                status="empty",
+            )
+        ],
+        thread_id="thr-" + "c" * 32,
+        thread_revision=1,
+    )
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: result,
+    )
+    client = TestClient(create_app(_context(tmp_path, None)))
+
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={"objective": "Show network topology"},
+    )
+    data = response.json()["data"]
+
+    assert response.status_code == 200
+    assert data["reconciliation"]["evidence_count"] == 0
+    assert data["reconciliation"]["reconciled_confidence"] == "unknown"
+    assert data["synthesis"]["summary"].startswith(
+        "Canonical investigation produced 0 evidence-backed"
+    )
