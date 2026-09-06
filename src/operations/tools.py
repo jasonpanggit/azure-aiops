@@ -526,14 +526,23 @@ def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> To
     query_provider = getattr(
         tool_context.context, "exposure_query_provider", None
     )
+    query_service = None
     if callable(query_provider):
+        try:
+            query_service = query_provider()
+        except (LookupError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            _LOGGER.warning("exposure_query_provider_failed error=%s", exc)
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                warning="The authoritative Exposure query failed to answer",
+            )
+    if query_service is not None:
         if tool_context.principal is None:
             return ToolResult(
                 status=STATUS_DENIED,
                 warning="Exposure query requires an authenticated principal",
             )
         try:
-            query_service = query_provider()
             filters = tuple(
                 ExposureFilter(field, operator, value)
                 for field, operator, value in (
