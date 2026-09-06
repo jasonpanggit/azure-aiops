@@ -1951,3 +1951,59 @@ def test_projected_store_ledger_nested_mutations_do_not_touch_store():
     assert persisted["human_controls"]["available_actions"] == [
         "stop_investigation"
     ]
+
+
+def test_multi_agent_projection_marks_unexecuted_specialist_not_started(
+    tmp_path, monkeypatch
+):
+    """A selected specialist with no attempted calls must never report success."""
+    from operations.orchestration_contract import OrchestrationResult
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    result = OrchestrationResult(
+        status="partial",
+        policy_status="fallback",
+        fallback_reason="planner_unavailable",
+        selected_specialists=["network", "incident"],
+        selected_tools=["network_topology"],
+        tool_results=[
+            {
+                "call_id": "0:0:network:network_topology",
+                "specialist_id": "network",
+                "tool": "network_topology",
+                "status": "ok",
+                "data": {"nodes": []},
+                "evidence": [],
+                "warning": "",
+            }
+        ],
+        uncertainty=["orchestration wall-clock budget exhausted"],
+        coverage=SnapshotCoverage(
+            visible_count=0,
+            total_count=0,
+            complete=False,
+        ),
+        citations=[],
+        thread_id="thr-" + "e" * 32,
+        thread_revision=1,
+    )
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: result,
+    )
+
+    client = TestClient(create_app(_context(tmp_path, None)))
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={"objective": "Correlate network and incident state"},
+    )
+
+    assert response.status_code == 200
+    runs = {
+        run["agent_id"]: run
+        for run in response.json()["data"]["agent_runs"]
+    }
+    assert runs["network"]["status"] == "ok"
+    assert runs["incident"]["status"] == "not_started"
+    assert runs["incident"]["tool_calls"] == []
