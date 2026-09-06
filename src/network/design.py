@@ -467,6 +467,26 @@ class NetworkDesignPolicyStore:
         stored = payload.get("policy")
         return NetworkDesignPolicy.from_mapping(stored if isinstance(stored, dict) else {})
 
+    def read_with_revision_or_raise(
+        self,
+    ) -> tuple[NetworkDesignPolicy, int]:
+        """Read one authoritative policy document and its matching revision.
+
+        Provider construction must not combine a strict revision probe with a
+        second fail-open body read: that can publish the default policy as
+        healthy when OneLake fails between those operations.
+        """
+        with self._lock:
+            payload = self._read_document(strict=True)
+            revision = int(payload.get("revision") or 0)
+            stored = payload.get("policy")
+            policy = NetworkDesignPolicy.from_mapping(
+                stored if isinstance(stored, dict) else {}
+            )
+            self._cached_revision = revision
+            self._revision_checked_at = self._monotonic()
+            return policy, revision
+
     @property
     def revision(self) -> int:
         """Return the last known revision, preserving the fail-open read API."""

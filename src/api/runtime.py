@@ -639,10 +639,11 @@ def _load_network_service() -> NetworkIntelligenceService | None:
     entities, relationships, freshness = _load_ontology_rows()
     if not entities:
         return None
+    policy, _revision = _network_policy_store().read_with_revision_or_raise()
     return NetworkIntelligenceService.from_rows(
         entities,
         observed_at=freshness,
-        policy=_network_policy_store().read(),
+        policy=policy,
         semantic_relationships=relationships,
     )
 
@@ -1908,8 +1909,11 @@ def _load_fabric_iq_adapter() -> FabricIQToolAdapter | None:
 
 def _fabric_network_service(runtime: FabricRuntime) -> NetworkIntelligenceService:
     snapshot = runtime.service.semantic_snapshot()
+    policy, _revision = _network_policy_store().read_with_revision_or_raise()
     return NetworkIntelligenceService.from_rows(
-        snapshot["entities"], policy=_network_policy_store().read()
+        snapshot["entities"],
+        policy=policy,
+        semantic_relationships=snapshot.get("relationships", ()),
     )
 
 
@@ -2854,10 +2858,11 @@ def build_context() -> ApiContext:
                     rows = list(observation.rows)
                     observed_at = observation.observed_at
                     _hybrid_network_cache[cache_key] = (now, rows)
+        policy, _revision = _network_policy_store().read_with_revision_or_raise()
         return NetworkIntelligenceService.from_arg_rows(
             rows,
             observed_at=observed_at,
-            policy=_network_policy_store().read(),
+            policy=policy,
         )
 
     def hybrid_vulnerability(

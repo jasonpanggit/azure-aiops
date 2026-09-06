@@ -28,6 +28,7 @@ from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from network.design import NetworkDesignPolicyStore
+from network.models import NetworkSnapshot
 from network.rule_engine import SUPPORTED_OPERATORS, SUPPORTED_TARGET_NAMES
 from network.service import NetworkIntelligenceService, build_service
 from onboarding.service import SubscriptionOnboardingService
@@ -692,6 +693,59 @@ class TestPolicy:
         assert runtime.get("network") is loaded
         assert store.revision == 7
         assert load_count == 1
+
+    def test_policy_body_error_preserves_last_good_network_provider(self):
+        class FlakyPolicyDocuments:
+            failing = False
+
+            def read(self, name):
+                del name
+                return {}
+
+            def read_or_raise(self, name):
+                del name
+                if self.failing:
+                    raise OSError("OneLake policy body read failed")
+                return {
+                    "revision": 7,
+                    "policy": {"description": "governed"},
+                }
+
+        documents = FlakyPolicyDocuments()
+        store = NetworkDesignPolicyStore(
+            documents,
+            revision_cache_seconds=60.0,
+            monotonic=lambda: 0.0,
+        )
+
+        def load_network():
+            policy, _revision = store.read_with_revision_or_raise()
+            return NetworkIntelligenceService(
+                NetworkSnapshot(),
+                policy=policy,
+            )
+
+        runtime = ProviderRuntime(
+            {
+                "network": ProviderSpec(
+                    loader=load_network,
+                    cache_key=lambda: (
+                        "network-policy",
+                        store.revision_or_raise(),
+                    ),
+                )
+            },
+            monotonic=lambda: 0.0,
+        )
+        runtime.refresh(force=True)
+        first = runtime.get("network")
+        documents.failing = True
+
+        health = runtime.refresh(force=True)
+
+        assert runtime.get("network") is first
+        assert runtime.get("network").policy.description == "governed"
+        assert health["providers"]["network"]["state"] == "degraded"
 
     def test_scoped_preview_matches_gaps_without_foreign_resources(
         self, tmp_path, monkeypatch
