@@ -23,7 +23,7 @@ affects: [11-05, 11-06, 11-07, 11-08, 11-09, 11-10, 11-11, 11-12, 11-14, 11-15, 
 actuals:
   tokens: 17163
   tasks: 2
-  commits: 12
+  commits: 25
 tech-stack:
   added: []
   patterns:
@@ -31,7 +31,7 @@ tech-stack:
     - Canonical/shadow/rollback seam controlled by AIOPS_AGENT_ORCHESTRATION_MODE env var
     - Legacy planners retained; retirement requires zero v1 traffic and separate review
     - Old ledgers projected on read without bulk rewrite via deep copy
-    - Shared execute_from_question adapter builds synthetic inventory snapshot with incomplete coverage for question-only routes
+    - Shared execute_from_question adapter resolves a bounded page/intent and returns explicit unsupported results when required arguments are unavailable
     - CANONICAL_CONTEXT_PAGE_KINDS gate prevents unsupported page kinds from masquerading as inventory
 key-files:
   created: []
@@ -50,8 +50,8 @@ key-decisions:
   - "Canonical mode is opt-in via AIOPS_AGENT_ORCHESTRATION_MODE=canonical; legacy and MAF modes preserved as rollback."
   - "Contract version is stamped unconditionally on new ledger writes; old ledgers are projected on read without mutation."
   - "Legacy planner code retained through Phase 11; retirement requires zero v1 traffic for 30 days plus separate review."
-  - "Shared execute_from_question adapter uses inventory page_kind with incomplete coverage; non-inventory questions receive honest unavailable/partial results rather than bridging to incorrect page context."
-  - "Unsupported page kinds (those not in EvidenceSnapshotV2 Literal) route through legacy adapter — never masquerade as inventory."
+  - "Question-only canonical routing uses boundary-aware intent aliases and validated hints; unsupported or under-specified requests perform zero tool I/O."
+  - "All public contextual page kinds retain their actual page/evidence identity; unsupported kinds route explicitly through the legacy adapter."
   - "project_legacy_ledger uses copy.deepcopy for full nested-structure isolation."
   - "Terraform accepts canonical mode; shadow deliberately excluded (no runtime support)."
 patterns-established:
@@ -99,8 +99,8 @@ status: complete
 - **Duration:** 18 min + review fix cycle
 - **Started:** 2026-09-06T11:35:20Z
 - **Completed:** 2026-09-06T15:12:00Z
-- **Tasks:** 2 (TDD: RED→GREEN each, plus two review-fix RED→GREEN cycles)
-- **Files modified:** 9
+- **Tasks:** 2 (TDD: RED→GREEN each, plus iterative adversarial review-fix cycles)
+- **Files modified:** 11
 
 ## Accomplishments
 
@@ -136,6 +136,15 @@ status: complete
 - **BLOCKER-C fixed:** `infra/terraform/variables.tf` `agent_orchestration_mode` validation now accepts `"canonical"` (runtime support exists via `MODE_CANONICAL`). `"shadow"` deliberately excluded — no runtime support. Description and error message updated.
 - Added 5 new tests: unsupported page routes to legacy (not inventory masquerade), supported page translates actual kind/evidence/findings, deep-copy nested mutation isolation, falsy contract_version preservation, Terraform mode contract.
 
+### Final release hardening
+
+- Canonical question routing now uses boundary-aware intent aliases, preserves validated hint arguments, and returns explicit unsupported results with zero tool I/O when required arguments cannot be derived.
+- Legacy `session_id` values map to principal-scoped canonical threads, and history retains bounded questions plus validated executed arguments.
+- Canonical context adapters preserve actual page identity, selected entities, freshness, citations, findings, and tool evidence instead of substituting Inventory.
+- Canonical multi-agent ledgers now satisfy the complete existing UI contract, including agent findings/evidence, reconciliation defaults, synthesis fields, evaluation metrics, and budget-skipped `not_started` status.
+- Ledger reads and actions reauthorize immutable stored scope against the caller's current scope and deep-copy nested state.
+- Terraform accepts the implemented `canonical` mode while retaining deterministic and MAF rollback modes.
+
 ## Task Commits
 
 1. **Task 1 RED** — `805c672f` test(11-03): 5 failing policy/fallback tests
@@ -150,6 +159,16 @@ status: complete
 10. **V1/V2 lint** — `fd71ad04` fix(11-03): Remove unused canonicalize_investigation import after canonical branch refactor
 11. **Blocker A/B/C RED** — `4aefc3e3` test(11-03): Failing tests for blocker A/B/C review fixes
 12. **Blocker A/B/C GREEN** — `7801de64` fix(11-03): Canonical context fidelity, deep-copy ledger, Terraform mode
+13. **Review gaps RED** — `a88446f7` test(11-03): Expose canonical routing and projection gaps
+14. **Context expectations** — `e3ba0c2f` test(11-03): Replace obsolete context fallback expectations
+15. **Intent/continuity GREEN** — `cebb2b23` fix(11-03): Preserve canonical intent continuity and evidence
+16. **Budget status RED** — `9dead4f6` test(11-03): Expose unexecuted specialist success status
+17. **Budget status GREEN** — `1be624f5` fix(11-03): Mark budget-skipped specialists not started
+18. **Compatibility RED** — `9153c54d` test(orchestration): Expose remaining compatibility gaps
+19. **Scoped history GREEN** — `d93b7122` fix(orchestration): Preserve scoped canonical history
+20. **Adapter contract RED** — `7c0e805c` test(orchestration): Enforce final adapter contracts
+21. **Adapter contract GREEN** — `d8b3652f` fix(orchestration): Complete canonical adapter contracts
+22. **Hint guard GREEN** — `564af420` fix(11-03): Reject invalid canonical hints before fallback
 
 ## Files Modified
 
@@ -175,14 +194,13 @@ status: complete
 
 ## Verification Evidence
 
-- `python3 -m pytest tests/test_orchestration_policy.py tests/test_context_specialist_routing.py` — **32 passed**
-- `python3 -m pytest tests/test_api_copilot_unified.py tests/test_api_copilot_investigation.py tests/test_api_copilot_snapshot.py tests/test_api_multi_agent.py` — **75 passed**
-- `python3 -m pytest tests/test_foundry_agent.py tests/test_mcp_tools.py tests/test_mcp_protocol.py tests/test_orchestration_parity.py` — **64 passed**
+- Combined focused/adjacent canonical orchestration suite — **166 passed**
+- Final hint/scope/ledger/routing regression subset — **105 passed**
 - `python3 -m ruff check` on all changed files — **passed**
 - `python3 -m compileall -q` on all changed source files — **passed**
 - `git diff --check` — **passed**
 - `terraform fmt -check` — **passed**
-- `terraform validate` — **skipped** (provider plugins not cached locally; HCL syntax verified by fmt)
+- `terraform init -backend=false && terraform validate -no-color` — **passed**
 
 ## Deviations from Plan
 
@@ -214,7 +232,7 @@ None — no external service configuration required.
 
 - The canonical orchestration mode is opt-in and does not change default behavior.
 - Later Phase 11 plans expanding page adapters (11-06 through 11-12) and specialist portfolio (11-14 through 11-16) can use the same canonical service path.
-- The contract's `page_kind` Literal remains limited to inventory/connections/connections_fabric; full canonical routing for other page kinds requires the contract expansion scheduled in later plans.
+- The canonical page contract and adapters support the current public contextual page kinds; later plans can expand page coverage without adding another orchestration loop.
 - `.planning/STATE.md` and `.planning/ROADMAP.md` remain unchanged as requested.
 
 ---
