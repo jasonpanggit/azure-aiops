@@ -30,7 +30,10 @@ client avoids that fallback entirely.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -38,14 +41,51 @@ from urllib.parse import urlparse
 from storage.fs import ONELAKE_HOST, is_onelake_uri
 
 try:  # pragma: no cover - azure-core is always installed alongside adlfs
-    from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
+    from azure.core import MatchConditions
+    from azure.core.exceptions import (
+        HttpResponseError,
+        ResourceExistsError,
+        ResourceModifiedError,
+        ResourceNotFoundError,
+    )
 except ImportError:  # pragma: no cover - local-disk-only environments
+    MatchConditions = None  # type: ignore[assignment,misc]
     HttpResponseError = ()  # type: ignore[assignment]
+    ResourceExistsError = ()  # type: ignore[assignment]
+    ResourceModifiedError = ()  # type: ignore[assignment]
     ResourceNotFoundError = ()  # type: ignore[assignment]
 
 
 class DocumentConflictError(RuntimeError):
     """Raised when a concurrent writer advanced the revision mid-update."""
+
+
+@contextmanager
+def _interprocess_lock(path: Path):
+    """Serialize local document updates across processes."""
+    lock_path = Path(f"{path}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+            import msvcrt
+
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class OneLakeDocumentStore:
@@ -107,12 +147,25 @@ class OneLakeDocumentStore:
         silently return ``{}`` -- making an existing connection look
         "not registered" for the instant the write was in flight. The lock
         only serializes this process's own threads; cross-replica safety
-        still comes from the revision compare-and-swap in :meth:`write`.
+        comes from the conditional ETag write in :meth:`write`.
         """
         with self._lock:
             return self._read_locked(name)
 
-    def _read_locked(self, name: str) -> dict[str, Any]:
+    def read_or_raise(self, name: str) -> dict[str, Any]:
+        """Return a document while preserving missing-vs-unreadable semantics."""
+        with self._lock:
+            return self._read_locked(name, suppress_errors=False)
+
+    def _read_locked(
+        self,
+        name: str,
+        *,
+        suppress_errors: bool = True,
+    ) -> dict[str, Any]:
+        # Validate containment before the fail-open transport boundary. An
+        # invalid caller-supplied name is a programming error, not a missing
+        # or temporarily unreadable document.
         path = self._path(name)
         try:
             if self.is_remote:
@@ -128,38 +181,107 @@ class OneLakeDocumentStore:
                     return {}
                 payload = json.loads(local_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, HttpResponseError):
+            if suppress_errors:
+                return {}
+            raise
+        if isinstance(payload, dict):
+            return payload
+        if suppress_errors:
             return {}
-        return payload if isinstance(payload, dict) else {}
+        raise ValueError(f"Document {name} must contain a JSON object")
 
     def write(self, name: str, payload: dict[str, Any], *, expected_revision: int) -> None:
         """Persist ``payload`` if the stored revision still matches.
 
-        The check-then-write pair is guarded by a process-local lock so
-        concurrent threads in one replica serialize; cross-replica safety
-        comes from the revision comparison itself, which turns a lost update
-        into a :class:`DocumentConflictError` the caller retries.
+        Local updates use an inter-process lock and atomic replacement.
+        OneLake updates use the ETag read with the document as an ``If-Match``
+        precondition, so two replicas cannot both commit from one revision.
         """
         with self._lock:
-            current = int(self._read_locked(name).get("revision") or 0)
-            if current != expected_revision:
-                raise DocumentConflictError(
-                    f"Document {name} changed during update (revision {current}, "
-                    f"expected {expected_revision}); reload and retry"
-                )
             body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
             path = self._path(name)
             if self.is_remote:
                 file_client = self._client().get_file_client(path)
                 data = body.encode("utf-8")
-                # upload_data() creates the file and, with overwrite=True,
-                # commits it in a single DFS "create" + "append" + "flush"
-                # sequence -- no Blob Service calls involved, so it works
-                # against OneLake's DFS-only endpoint.
-                file_client.upload_data(data, overwrite=True, length=len(data))
+                try:
+                    properties = file_client.get_file_properties()
+                    etag = str(properties.etag)
+                    downloaded = file_client.download_file(
+                        etag=etag,
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                    current_payload = json.loads(downloaded.readall())
+                    if not isinstance(current_payload, dict):
+                        raise TypeError(
+                            f"Document {name} must contain a JSON object"
+                        )
+                except ResourceNotFoundError:
+                    etag = ""
+                    current_payload = {}
+                except ResourceModifiedError as exc:
+                    raise DocumentConflictError(
+                        f"Document {name} changed while it was read; reload and retry"
+                    ) from exc
+                current = int(current_payload.get("revision") or 0)
+                if current != expected_revision:
+                    raise DocumentConflictError(
+                        f"Document {name} changed during update (revision {current}, "
+                        f"expected {expected_revision}); reload and retry"
+                    )
+                try:
+                    if etag:
+                        file_client.upload_data(
+                            data,
+                            overwrite=True,
+                            length=len(data),
+                            etag=etag,
+                            match_condition=MatchConditions.IfNotModified,
+                        )
+                    else:
+                        file_client.upload_data(
+                            data,
+                            overwrite=False,
+                            length=len(data),
+                        )
+                except (ResourceExistsError, ResourceModifiedError) as exc:
+                    raise DocumentConflictError(
+                        f"Document {name} changed during update; reload and retry"
+                    ) from exc
             else:
                 local_path = Path(path)
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                local_path.write_text(body, encoding="utf-8")
+                with _interprocess_lock(local_path):
+                    current = int(
+                        self._read_locked(
+                            name,
+                            suppress_errors=False,
+                        ).get("revision")
+                        or 0
+                    )
+                    if current != expected_revision:
+                        raise DocumentConflictError(
+                            f"Document {name} changed during update "
+                            f"(revision {current}, expected {expected_revision}); "
+                            "reload and retry"
+                        )
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    temporary_path = ""
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            mode="w",
+                            encoding="utf-8",
+                            dir=local_path.parent,
+                            prefix=f".{local_path.name}.",
+                            suffix=".tmp",
+                            delete=False,
+                        ) as temporary:
+                            temporary.write(body)
+                            temporary.flush()
+                            os.fsync(temporary.fileno())
+                            temporary_path = temporary.name
+                        os.replace(temporary_path, local_path)
+                    finally:
+                        if temporary_path:
+                            Path(temporary_path).unlink(missing_ok=True)
 
     def put(self, name: str, payload: dict[str, Any]) -> None:
         """Write ``payload`` unconditionally, bumping its revision.

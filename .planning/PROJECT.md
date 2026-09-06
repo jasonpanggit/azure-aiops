@@ -23,6 +23,7 @@ auditable, human-approved remediation without losing context or control.
 - ✓ Next.js operations workbench with graph and situation views — existing
 - ✓ Domain intelligence for incidents, changes, lifecycle, patching, prediction, remediation, and vulnerabilities — existing
 - ✓ Terraform deployment configuration for Azure Container Apps and Fabric — existing
+- ✓ Scope-safe, bounded network topology with truthful coverage, governed policy refresh, private-link semantics, and diagnosable evidence — validated in Phase 12
 
 ### Active
 
@@ -63,6 +64,9 @@ auditable, human-approved remediation without losing context or control.
 | Prioritize detect → explain → recommend → approved execution | This is the smallest complete value loop for the pilot | — Pending |
 | Keep human approval before remediation | Prevents unsafe autonomous production changes | — Pending |
 | Build on the existing Azure and Fabric architecture | The repository already contains the required ingestion, semantic, API, UI, and infrastructure foundations | — Pending |
+| Enforce network scope before topology derivation | A single authorization seam prevents resource, relationship, finding, drill-down, agent, and MCP leakage | ✓ Validated in Phase 12 |
+| Keep the topology API default compatible and let the web request bounded summary detail explicitly | Existing consumers retain byte-compatible behavior while enterprise canvases remain bounded and honest | ✓ Validated in Phase 12 |
+| Evaluate Fabric private-link posture at tenant or workspace scope, not per capacity | Microsoft Fabric does not expose the per-capacity private-endpoint control assumed by the prior rule | ✓ Validated in Phase 12 |
 
 ## Evolution
 
@@ -82,4 +86,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-08-23 after initialization*
+*Last updated: 2026-09-06 after Phase 12 completion*

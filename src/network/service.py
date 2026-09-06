@@ -92,6 +92,9 @@ class NetworkScope:
             gateways=tuple(i for i in snapshot.gateways if keep(i)),
             load_balancers=tuple(i for i in snapshot.load_balancers if keep(i)),
             shared_services=tuple(i for i in snapshot.shared_services if keep(i)),
+            private_link_resources=tuple(
+                i for i in snapshot.private_link_resources if keep(i)
+            ),
         )
 
     @staticmethod
@@ -133,6 +136,7 @@ class NetworkAnalysis:
             "rule_findings_by_category": _count_by(self.rule_findings, "category"),
             "intended_design_declared": self.policy.is_declared,
             "resource_counts": self.topology.snapshot.counts(),
+            "projected_full_node_count": self.topology.projected_full_node_count(),
         }
 
 
@@ -144,6 +148,59 @@ def _count_by(items: Iterable[Any], attribute: str) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda pair: (-pair[1], pair[0])))
 
 
+def _snapshot_resource_ids(snapshot: NetworkSnapshot) -> set[str]:
+    """Return every addressable resource id retained by a snapshot."""
+    groups = (
+        snapshot.vnets,
+        snapshot.subnets,
+        snapshot.nics,
+        snapshot.nsgs,
+        snapshot.route_tables,
+        snapshot.peerings,
+        snapshot.firewalls,
+        snapshot.firewall_policies,
+        snapshot.firewall_collections,
+        snapshot.private_endpoints,
+        snapshot.private_dns_zones,
+        snapshot.gateways,
+        snapshot.load_balancers,
+        snapshot.shared_services,
+        snapshot.private_link_resources,
+    )
+    resource_ids = {
+        resource.resource_id
+        for group in groups
+        for resource in group
+        if resource.resource_id
+    }
+    resource_ids.update(
+        rule.resource_id for nsg in snapshot.nsgs for rule in nsg.rules
+    )
+    resource_ids.update(
+        route.resource_id for table in snapshot.route_tables for route in table.routes
+    )
+    resource_ids.update(
+        rule.resource_id
+        for collection in snapshot.firewall_collections
+        for rule in collection.rules
+    )
+    return resource_ids
+
+
+def _scope_relationships(
+    relationships: Iterable[Mapping[str, Any]],
+    snapshot: NetworkSnapshot,
+) -> tuple[dict[str, Any], ...]:
+    """Keep semantic edges only when both endpoints survived snapshot scoping."""
+    resource_ids = _snapshot_resource_ids(snapshot)
+    return tuple(
+        dict(relationship)
+        for relationship in relationships
+        if str(relationship.get("subject_id") or "").casefold() in resource_ids
+        and str(relationship.get("object_id") or "").casefold() in resource_ids
+    )
+
+
 class NetworkIntelligenceService:
     """Builds and serves the network view of the estate."""
 
@@ -153,10 +210,32 @@ class NetworkIntelligenceService:
         *,
         policy: NetworkDesignPolicy | None = None,
         semantic_relationships: Iterable[Mapping[str, Any]] = (),
+        flow_observations: Iterable[Mapping[str, Any]] | None = None,
+        peer_resolutions: Mapping[str, str] | None = None,
     ) -> None:
         self.snapshot = snapshot
         self.policy = policy if policy is not None else NetworkDesignPolicy()
-        self.semantic_relationships = tuple(dict(row) for row in semantic_relationships)
+        self.semantic_relationships = tuple(
+            {
+                **dict(row),
+                "subject_id": str(row.get("subject_id") or "").casefold(),
+                "object_id": str(row.get("object_id") or "").casefold(),
+            }
+            for row in semantic_relationships
+        )
+        self.flow_observations = (
+            None
+            if flow_observations is None
+            else tuple(dict(row) for row in flow_observations)
+        )
+        self.peer_resolutions = (
+            None
+            if peer_resolutions is None
+            else {
+                str(peer_id or "").casefold(): str(resolution or "")
+                for peer_id, resolution in peer_resolutions.items()
+            }
+        )
         self._topology: NetworkTopology | None = None
         self._gaps: tuple[NetworkGap, ...] | None = None
         self._findings: tuple[RuleFinding, ...] | None = None
@@ -169,12 +248,15 @@ class NetworkIntelligenceService:
         policy: NetworkDesignPolicy | None = None,
         policy_path: str | None = None,
         semantic_relationships: Iterable[Mapping[str, Any]] = (),
+        observed_at: str | None = None,
+        flow_observations: Iterable[Mapping[str, Any]] | None = None,
     ) -> NetworkIntelligenceService:
         resolved = policy if policy is not None else load_design_policy(policy_path)
         return cls(
-            load_network_snapshot(rows),
+            load_network_snapshot(rows, observed_at=observed_at),
             policy=resolved,
             semantic_relationships=semantic_relationships,
+            flow_observations=flow_observations,
         )
 
     @classmethod
@@ -185,6 +267,7 @@ class NetworkIntelligenceService:
         observed_at: str = "",
         policy: NetworkDesignPolicy | None = None,
         policy_path: str | None = None,
+        flow_observations: Iterable[Mapping[str, Any]] | None = None,
     ) -> NetworkIntelligenceService:
         """Normalize raw ARG resources before loading the typed network view.
 
@@ -194,6 +277,7 @@ class NetworkIntelligenceService:
         produces an empty topology. Reuse the ingestion normalizer so live and
         synchronized views share the same ID and nested-resource semantics.
         """
+        from network.loader import _format_observed_at, _parse_observed_at
         from onboarding.graph_normalize import Normalizer
         from onboarding.query_catalog import NETWORK_RESOURCE_TYPES
 
@@ -207,23 +291,32 @@ class NetworkIntelligenceService:
                 if str(row.get("type") or "").casefold() in accepted
             ]
 
-        timestamp = datetime.now(UTC)
-        if observed_at.strip():
-            try:
-                timestamp = datetime.fromisoformat(observed_at.strip())
-            except ValueError:
-                pass
-        graph = Normalizer().normalize(payload, timestamp, run_id="live-network")
+        timestamp = _parse_observed_at(observed_at)
+        normalized_observed_at = _format_observed_at(timestamp)
+        graph = Normalizer().normalize(
+            payload,
+            timestamp or datetime(1970, 1, 1, tzinfo=UTC),
+            run_id="live-network",
+        )
         normalized_rows = [
             entity
             for entities in graph.entities.values()
             for entity in entities
         ]
+        if timestamp is None:
+            for entity in normalized_rows:
+                entity["createdTimestamp"] = ""
+                entity["lastObservedTimestamp"] = ""
         semantic_relationships = [
             {
                 **relationship,
                 "subject_id": relationship.get("subjectId", ""),
                 "object_id": relationship.get("objectId", ""),
+                **(
+                    {"lastObservedTimestamp": ""}
+                    if timestamp is None
+                    else {}
+                ),
             }
             for relationship in graph.relationships
         ]
@@ -232,13 +325,45 @@ class NetworkIntelligenceService:
             policy=policy,
             policy_path=policy_path,
             semantic_relationships=semantic_relationships,
+            observed_at=normalized_observed_at,
+            flow_observations=flow_observations,
         )
 
     @property
     def topology(self) -> NetworkTopology:
         if self._topology is None:
-            self._topology = TopologyBuilder().build(self.snapshot, self.semantic_relationships)
+            self._topology = TopologyBuilder().build(
+                self.snapshot,
+                self.semantic_relationships,
+                flow_log_provenance=self.flow_log_provenance,
+                peer_resolutions=self.peer_resolutions,
+            )
         return self._topology
+
+    @property
+    def flow_log_provenance(self) -> dict[str, Any]:
+        evidence = tuple(
+            row
+            for row in self.semantic_relationships
+            if str(row.get("predicate") or "").casefold() == "trafficobserved"
+            and isinstance(row.get("attributes"), Mapping)
+            and row["attributes"].get("dataSource") == "traffic_analytics"
+        )
+        if self.flow_observations is None:
+            return {
+                "state": "ingested_not_analyzed" if evidence else "not_ingested",
+                "observed_flow_count": len(evidence),
+            }
+        analyzed = tuple(
+            row
+            for row in self.flow_observations
+            if isinstance(row.get("attributes"), Mapping)
+            and row["attributes"].get("dataSource") == "traffic_analytics"
+        )
+        return {
+            "state": "analyzed",
+            "observed_flow_count": len(analyzed),
+        }
 
     @property
     def gaps(self) -> tuple[NetworkGap, ...]:
@@ -249,15 +374,17 @@ class NetworkIntelligenceService:
     @property
     def rule_findings(self) -> tuple[RuleFinding, ...]:
         if self._findings is None:
-            self._findings = analyze_rules(self.snapshot)
+            self._findings = analyze_rules(
+                self.snapshot,
+                self.flow_observations or (),
+            )
         return self._findings
 
-    def analyze(self, scope: NetworkScope | None = None) -> NetworkAnalysis:
-        active = scope or NetworkScope()
+    def analyze(self) -> NetworkAnalysis:
         return NetworkAnalysis(
-            topology=self._scoped_topology(active),
-            gaps=tuple(gap for gap in self.gaps if active.matches(gap)),
-            rule_findings=tuple(item for item in self.rule_findings if active.matches(item)),
+            topology=self.topology,
+            gaps=self.gaps,
+            rule_findings=self.rule_findings,
             policy=self.policy,
         )
 
@@ -265,9 +392,36 @@ class NetworkIntelligenceService:
         """Return an isolated service whose every operation sees only ``scope``."""
         if scope.is_empty:
             return self
+        snapshot = scope.filter_snapshot(self.snapshot)
+        unscoped_vnet_ids = {vnet.resource_id for vnet in self.snapshot.vnets}
+        scoped_vnet_ids = {vnet.resource_id for vnet in snapshot.vnets}
+        peer_resolutions: dict[str, str] = {}
+        for peering in snapshot.peerings:
+            peer_id = peering.remote_vnet_id
+            if not peer_id:
+                continue
+            if peer_id in scoped_vnet_ids:
+                peer_resolutions[peer_id] = "observed"
+            elif peer_id in unscoped_vnet_ids:
+                peer_resolutions[peer_id] = "excluded_by_scope"
+            else:
+                peer_resolutions[peer_id] = "not_ingested"
         return NetworkIntelligenceService(
-            scope.filter_snapshot(self.snapshot),
+            snapshot,
             policy=self.policy,
+            semantic_relationships=_scope_relationships(
+                self.semantic_relationships,
+                snapshot,
+            ),
+            flow_observations=(
+                None
+                if self.flow_observations is None
+                else _scope_relationships(
+                    self.flow_observations,
+                    snapshot,
+                )
+            ),
+            peer_resolutions=peer_resolutions,
         )
 
     def validate_flow(self, query: FlowQuery) -> FlowResult:
@@ -309,29 +463,6 @@ class NetworkIntelligenceService:
     def firewall_bypass_spokes(self) -> tuple[NetworkGap, ...]:
         """Answers "which spokes bypass the firewall?"."""
         return tuple(gap for gap in self.gaps if gap.category == "firewall_bypass")
-
-    def _scoped_topology(self, scope: NetworkScope) -> NetworkTopology:
-        if scope.is_empty:
-            return self.topology
-        base = self.topology
-        classifications = tuple(item for item in base.classifications if scope.matches(item))
-        kept = {item.vnet_id for item in classifications}
-        scoped_snapshot = scope.filter_snapshot(base.snapshot)
-        return NetworkTopology(
-            classifications=classifications,
-            links=tuple(
-                link
-                for link in base.links
-                if link.local_vnet_id in kept and link.remote_vnet_id in kept
-            ),
-            shared_services=tuple(
-                service for service in base.shared_services if scope.matches(service)
-            ),
-            unresolved_peer_vnet_ids=base.unresolved_peer_vnet_ids,
-            connection_ids=scoped_snapshot.connection_ids(),
-            snapshot=scoped_snapshot,
-        )
-
 
 def build_service(
     rows: Iterable[Mapping[str, Any]],

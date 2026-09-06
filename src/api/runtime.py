@@ -643,14 +643,61 @@ def _load_semantic_snapshot() -> SemanticEngine | None:
     )
 
 
+def _traffic_analysis_observations(
+    relationships: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], ...] | None:
+    observations: list[dict[str, Any]] = []
+    for relationship in relationships:
+        if str(relationship.get("predicate") or "").casefold() != "trafficobserved":
+            continue
+        payload: Mapping[str, Any] = {}
+        raw_payload = relationship.get("payload_json")
+        if isinstance(raw_payload, Mapping):
+            payload = raw_payload
+        elif isinstance(raw_payload, str) and raw_payload:
+            try:
+                decoded = json.loads(raw_payload)
+            except (TypeError, ValueError):
+                decoded = {}
+            if isinstance(decoded, Mapping):
+                payload = decoded
+        attributes = relationship.get("attributes")
+        if not isinstance(attributes, Mapping):
+            attributes = payload.get("attributes")
+        if (
+            not isinstance(attributes, Mapping)
+            or attributes.get("dataSource") != "traffic_analytics"
+        ):
+            continue
+        normalized = dict(relationship)
+        normalized["attributes"] = dict(attributes)
+        normalized["subject_id"] = str(
+            relationship.get("subject_id")
+            or payload.get("subjectId")
+            or payload.get("subject_id")
+            or ""
+        ).casefold()
+        normalized["object_id"] = str(
+            relationship.get("object_id")
+            or payload.get("objectId")
+            or payload.get("object_id")
+            or ""
+        ).casefold()
+        observations.append(normalized)
+    return tuple(observations) or None
+
+
 def _load_network_service() -> NetworkIntelligenceService | None:
-    entities, relationships, _freshness = _load_ontology_rows()
+    entities, relationships, freshness = _load_ontology_rows()
     if not entities:
         return None
+    policy, _revision = _network_policy_store().read_with_revision_or_raise()
     return NetworkIntelligenceService.from_rows(
         entities,
-        policy=_network_policy_store().read(),
+        observed_at=freshness,
+        policy=policy,
         semantic_relationships=relationships,
+        flow_observations=_traffic_analysis_observations(relationships),
     )
 
 
@@ -2221,8 +2268,13 @@ def _load_fabric_iq_adapter() -> FabricIQToolAdapter | None:
 
 def _fabric_network_service(runtime: FabricRuntime) -> NetworkIntelligenceService:
     snapshot = runtime.service.semantic_snapshot()
+    relationships = snapshot.get("relationships", [])
+    policy, _revision = _network_policy_store().read_with_revision_or_raise()
     return NetworkIntelligenceService.from_rows(
-        snapshot["entities"], policy=_network_policy_store().read()
+        snapshot["entities"],
+        policy=policy,
+        semantic_relationships=relationships,
+        flow_observations=_traffic_analysis_observations(relationships),
     )
 
 
@@ -2518,6 +2570,9 @@ def _build_provider_runtime(
             ),
             "network": lambda: with_fabric(_fabric_network_service),
             "vulnerability": lambda: with_fabric(_fabric_vulnerability_service),
+            "exposure_query": lambda: with_fabric(
+                lambda item: _fabric_exposure_query_service(item, onboarding)
+            ),
             "incidents": lambda: with_fabric(_fabric_incident_engine),
             "remediation": lambda: with_fabric(_fabric_remediation_planner),
             "change": lambda: with_fabric(_fabric_change_intelligence),
@@ -2536,6 +2591,7 @@ def _build_provider_runtime(
             "semantic",
             "network",
             "vulnerability",
+            "exposure_query",
             "incidents",
             "remediation",
             "change",
@@ -2555,6 +2611,16 @@ def _build_provider_runtime(
             loader=loader,
             configured=True,
             required=(name in core_readiness_providers and not bootstrap),
+            cache_key=(
+                (
+                    lambda: (
+                        "network-policy",
+                        _network_policy_store().revision_or_raise(),
+                    )
+                )
+                if name == "network"
+                else None
+            ),
         )
         for name, loader in loaders.items()
     }
@@ -3017,6 +3083,136 @@ def _load_exposure_read_port() -> ExposureReadPort | None:
     return ExposureReadPort(store)
 
 
+def _exposure_query_authorization(
+    onboarding: SubscriptionOnboardingService,
+    principal: Any,
+    scope: Scope,
+) -> Any:
+    """Derive the Plan 13 SQL boundary from trusted connection metadata."""
+
+    from .exposure_query import ExposureAuthorization
+
+    requested_subscriptions = {
+        str(value).casefold() for value in scope.values("subscription")
+    }
+    requested_connections = {
+        str(value).casefold()
+        for value in scope.values("subscription_connection")
+    }
+    connections = [
+        connection
+        for connection in onboarding.registry.list(include_disabled=False)
+        if (
+            not requested_subscriptions
+            or str(connection.subscription_id).casefold()
+            in requested_subscriptions
+        )
+        and (
+            not requested_connections
+            or str(connection.connection_id).casefold()
+            in requested_connections
+        )
+    ]
+    if not connections:
+        raise PermissionError(
+            "Exposure authorization has no active in-scope connection"
+        )
+    tenant_ids = {
+        str(connection.tenant_id).strip().casefold()
+        for connection in connections
+        if str(connection.tenant_id).strip()
+    }
+    if len(tenant_ids) != 1:
+        raise PermissionError(
+            "Exposure query requires one unambiguous tenant boundary"
+        )
+    return ExposureAuthorization(
+        subject=str(getattr(principal, "subject", "") or ""),
+        tenant_id=next(iter(tenant_ids)),
+        connection_ids=tuple(
+            str(connection.connection_id) for connection in connections
+        ),
+        scope=scope.to_dict(),
+    )
+
+
+def _exposure_generation_window() -> Any:
+    """Load the current/retained Gold pointer without exposing storage errors."""
+
+    from api.exposure_query import ExposureGenerationWindow
+    from fabric_pipelines.vulnerability_pipeline import (
+        EXPOSURE_GOLD_POINTER_DOCUMENT,
+    )
+
+    pointer = OneLakeDocumentStore(str(aiops_home())).read(
+        EXPOSURE_GOLD_POINTER_DOCUMENT
+    )
+    active = str(pointer.get("readable_generation_id") or "").strip()
+    retained_payload = pointer.get("retained_generations")
+    retained: dict[str, datetime | None] = {}
+    if isinstance(retained_payload, Mapping):
+        for generation_id, metadata in retained_payload.items():
+            if not isinstance(metadata, Mapping):
+                continue
+            retain_until = str(metadata.get("retain_until") or "").strip()
+            try:
+                retained[str(generation_id)] = (
+                    datetime.fromisoformat(retain_until)
+                    if retain_until
+                    else None
+                )
+            except ValueError:
+                continue
+    if not active:
+        read_port = _load_exposure_read_port()
+        metadata_rows = (
+            read_port.store.read_dataset(EXPOSURE_METADATA_DATASET)
+            if read_port is not None
+            else []
+        )
+        active_generations = {
+            str(row.get("read_model_generation_id") or "").strip()
+            for row in metadata_rows
+            if row.get("read_model_generation_id")
+        }
+        if len(active_generations) == 1:
+            active = next(iter(active_generations))
+    if not active:
+        raise RuntimeError("Exposure readable generation is unavailable")
+    return ExposureGenerationWindow(
+        active_generation=active,
+        retained_generations=retained,
+    )
+
+
+def _fabric_exposure_query_service(
+    runtime: FabricRuntime,
+    onboarding: SubscriptionOnboardingService,
+) -> Any:
+    """Compose the production Plan 13 service without a Delta fallback."""
+
+    from .exposure_query import (
+        ExposureCursorCodec,
+        ExposureCursorKeyRing,
+        ExposureQueryService,
+    )
+
+    return ExposureQueryService(
+        runtime.service.sql_reader,
+        cursor_codec=ExposureCursorCodec(
+            ExposureCursorKeyRing.from_environment()
+        ),
+        generation_window=_exposure_generation_window,
+        authorization_resolver=lambda principal, scope: (
+            _exposure_query_authorization(
+                onboarding,
+                principal,
+                scope,
+            )
+        ),
+    )
+
+
 def _load_eol_review_service() -> Any:
     """Build the request-time catalog/review provider from server-owned state."""
     from intelligence.inventory.eol_repository import LocalEOLCatalogRepository
@@ -3205,10 +3401,18 @@ def build_context() -> ApiContext:
                     rows = list(observation.rows)
                     observed_at = observation.observed_at
                     _hybrid_network_cache[cache_key] = (now, rows)
+        policy, _revision = _network_policy_store().read_with_revision_or_raise()
+        managed_network = providers.get("network", optional=True)
+        flow_observations = (
+            managed_network.flow_observations
+            if isinstance(managed_network, NetworkIntelligenceService)
+            else None
+        )
         return NetworkIntelligenceService.from_arg_rows(
             rows,
             observed_at=observed_at,
-            policy=_network_policy_store().read(),
+            policy=policy,
+            flow_observations=flow_observations,
         )
 
     def hybrid_vulnerability(
@@ -3627,6 +3831,9 @@ def build_context() -> ApiContext:
         inventory_provider=lambda: providers.get("inventory", optional=True),
         inventory_read_port_provider=lambda: providers.get(
             "inventory_read_port", optional=True
+        ),
+        exposure_query_provider=lambda: providers.get(
+            "exposure_query", optional=True
         ),
         exposure_read_port_provider=exposure_read_port,
         exposure_ontology_provider=exposure_ontology,

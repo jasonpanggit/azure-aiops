@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -36,6 +37,8 @@ from .network_normalize import (
     private_dns_link_target,
     private_endpoint_dns_zone_ids,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Gateway and load-balancer families share one entity bucket each; the
 #: specific kind (VpnGateway, Bastion, ApplicationGateway, ...) is carried on
@@ -75,6 +78,7 @@ ENTITY_TYPES = (
 class NormalizedGraph:
     entities: dict[str, list[dict]] = field(default_factory=lambda: {name: [] for name in ENTITY_TYPES})
     relationships: list[dict] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     changes: list[dict] = field(default_factory=list)
     # Phase 1 projections are carried alongside the established graph so the
     # immutable generation remains the single publication path.
@@ -490,7 +494,13 @@ class Normalizer:
             for row in payload.get("resource_changes", [])
             if not _failed_provider_row(row)
         ]
-        self._normalize_network(payload, observed, entity_index, edge_index)
+        self._normalize_network(
+            payload,
+            observed,
+            entity_index,
+            edge_index,
+            graph.warnings,
+        )
         if context:
             for entity_type in ENTITY_TYPES:
                 for entity in entity_index[entity_type].values():
@@ -612,6 +622,7 @@ class Normalizer:
         observed: str,
         entity_index: dict[str, dict[str, dict]],
         edge_index: dict[str, dict],
+        warnings: list[str],
     ) -> None:
         """Flattens network payloads into entities plus topology edges.
 
@@ -775,11 +786,24 @@ class Normalizer:
                 for vnet_id in zone["linkedVnetIds"]
             )
             containment(row, zone)
+        skipped_dns_link_count = 0
         for zone_id, vnet_id in dns_links:
             zone = dns_zones.get(zone_id)
-            if zone is not None and vnet_id not in zone["linkedVnetIds"]:
+            if zone is None:
+                skipped_dns_link_count += 1
+                continue
+            if vnet_id not in zone["linkedVnetIds"]:
                 zone["linkedVnetIds"].append(vnet_id)
             link(zone_id, "resolvesFor", vnet_id, 0.98)
+        if skipped_dns_link_count:
+            warnings.append(
+                f"Skipped {skipped_dns_link_count} private DNS virtual network "
+                "link(s) because the parent zone was absent from the payload"
+            )
+            logger.warning(
+                "dns_links_skipped_missing_zone count=%d",
+                skipped_dns_link_count,
+            )
         for zone in dns_zones.values():
             record("PrivateDnsZone", zone)
 

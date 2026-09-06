@@ -17,7 +17,7 @@ Wiring those edges in would let this module distinguish the two.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .addressing import SENSITIVE_PORTS, AddressSpec
@@ -62,6 +62,7 @@ class RuleFinding:
     detail: str
     evidence: dict[str, Any]
     recommendation: str
+    affected_resource_ids: tuple[str, ...] = ()
     connection_id: str = ""
     subscription_id: str = ""
     environment: str = ""
@@ -79,6 +80,7 @@ class RuleFinding:
             "detail": self.detail,
             "evidence": dict(self.evidence),
             "recommendation": self.recommendation,
+            "affected_resource_ids": list(self.affected_resource_ids),
             "connection_id": self.connection_id,
             "subscription_id": self.subscription_id,
             "environment": self.environment,
@@ -403,7 +405,7 @@ class RuleTighteningAnalyzer:
                     "custom_rule_count": len([r for r in nsg.rules if not r.is_default]),
                     "subnet_associations": 0,
                     "nic_associations": 0,
-                    "basis": "association metadata; flow logs are not ingested",
+                    "basis": "association metadata; independent of flow-log evidence",
                 },
                 recommendation="Attach the NSG where it is needed, or delete it.",
                 connection_id=nsg.connection_id,
@@ -696,9 +698,14 @@ class ObservedTrafficAnalyzer:
             if attributes.get("dataSource") != LIVE_FLOW_DATA_SOURCE:
                 continue
             self._has_live_data = True
-            # Edges use "objectId" (see flowlog_ingest._add_edge); "object"
-            # is accepted so a caller passing a simplified mapping still works.
-            rule_id = str(edge.get("objectId") or edge.get("object") or "").strip().casefold()
+            # Runtime persistence uses canonical ``object_id``; direct
+            # flow-log output and simplified callers retain legacy spellings.
+            rule_id = str(
+                edge.get("object_id")
+                or edge.get("objectId")
+                or edge.get("object")
+                or ""
+            ).strip().casefold()
             if not rule_id:
                 continue
             self._matched_rule_ids.add(rule_id)
@@ -887,9 +894,51 @@ def analyze_rules(
             observation_window_days=observation_window_days,
         ).analyze()
     )
+    affected_by_control: dict[str, tuple[str, ...]] = {
+        nsg.resource_id: tuple(sorted({*nsg.subnet_ids, *nsg.nic_ids}))
+        for nsg in snapshot.nsgs
+    }
+    for collection in snapshot.firewall_collections:
+        firewalls = [
+            firewall
+            for firewall in snapshot.firewalls
+            if (
+                collection.firewall_id
+                and firewall.resource_id == collection.firewall_id
+            )
+            or (
+                collection.policy_id
+                and firewall.policy_id == collection.policy_id
+            )
+        ]
+        affected_by_control[collection.resource_id] = tuple(
+            sorted(
+                {
+                    resource_id
+                    for firewall in firewalls
+                    for resource_id in (firewall.vnet_id, firewall.subnet_id)
+                    if resource_id
+                }
+            )
+        )
+
+    attributed = [
+        replace(
+            finding,
+            affected_resource_ids=affected_by_control.get(
+                finding.control_id,
+                (),
+            ),
+        )
+        for finding in findings
+    ]
     return tuple(
         sorted(
-            findings,
-            key=lambda item: (SEVERITY_ORDER.get(item.severity, 9), item.category, item.rule_id),
+            attributed,
+            key=lambda item: (
+                SEVERITY_ORDER.get(item.severity, 9),
+                item.category,
+                item.rule_id,
+            ),
         )
     )

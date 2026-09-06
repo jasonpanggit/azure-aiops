@@ -205,7 +205,14 @@ def test_exposure_list_endpoint_returns_cursor_envelope(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["data"] == {
+    data = dict(body["data"])
+    contract = data.pop("contract")
+    assert contract["version"] == "1.0.0"
+    assert contract["query"]["generation"] == "generation-100k"
+    assert contract["counts"]["total"] == 100_000
+    assert contract["counts"]["returned"] == 1
+    assert contract["safe_error"] is None
+    assert data == {
         "total_count": 100_000,
         "items": [
             {
@@ -253,6 +260,7 @@ def test_exposure_list_endpoint_returns_cursor_envelope(
                 "completeness",
                 "freshness",
                 "applied",
+                "contract",
             },
         ),
         (
@@ -264,6 +272,7 @@ def test_exposure_list_endpoint_returns_cursor_envelope(
                 "completeness",
                 "freshness",
                 "applied",
+                "contract",
             },
         ),
     ],

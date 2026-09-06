@@ -2,29 +2,30 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 03.6 complete (6/6 plans) - ready for next phase
-status: executing
-stopped_at: Completed 03.1-13-PLAN.md
-last_updated: "2026-09-06T08:53:25.064Z"
+current_plan: 03.1-15 not started (14/25 sequential complete; 16/25 total summaries)
+status: planning
+stopped_at: Completed 03.1-14-PLAN.md
+last_updated: "2026-09-06T11:08:25.111Z"
 progress:
   total_phases: 17
-  completed_phases: 9
+  completed_phases: 10
   total_plans: 158
-  completed_plans: 104
-current_phase_name: Remediation Workflow Safety and Operator Guidance
+  completed_plans: 116
+current_phase_name: Exposure Reliability and Scale
 ---
 
-# Phase 10: Fabric Medallion Capability Expansion
+# Phase 03.1: Exposure Reliability and Scale
 
 ## Current Status
 
-**Active Phase:** Phase 03.6 (Remediation Workflow Safety and Operator Guidance)
-**Wave:** 12<br>
-**Current Plan:** 03.6 complete (6/6 plans) - ready for next phase
-**Status:** executing (03.6-01..03.6-06 all executed and verified this session; no plans currently in progress)
+**Active Phase:** Phase 03.1 (Exposure Reliability and Scale)
+**Wave:** Next eligible plan<br>
+**Current Plan:** 03.1-15 not started (14/25 sequential complete; 16/25 total summaries)
+**Status:** Planning — Plan 03.1-14 complete; Phase 12 behavior preserved
 
 ## Completed Plans (This Session)
 
+- **12-01..12-11** COMPLETE — Scope-safe topology projection, private-link/Fabric/Foundry semantics, bounded summary/detail contracts, policy refresh, truthful provenance, accessible graph/drawer/export UX, downstream compatibility, representative scale gates, and final review remediation
 - **03.1-01** COMPLETE — Wave 0 deterministic Exposure fixture, explicit backend/web pending gates, 100k correctness harness, and exhaustive fail-closed Fabric SQL readiness probe
 - **03.1-21** COMPLETE — Approved ontology v2 contract and production scope-first tracer through typed ontology, review-only container remediation, and Copilot parity
 - **03.1-04** COMPLETE — Pinned pyodbc/ODBC Driver 18 runtime, fail-closed Fabric SQL readiness, and managed dual-key cursor rotation
@@ -36,6 +37,8 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 - **03.1-10** COMPLETE — Versioned registry/logical-image/digest/CVE evidence, exact workload impact, honest unknown coverage, and fail-closed container target typing
 - **03.1-23** COMPLETE — Durable per-item MSRC/NVD/EPSS/KEV refresh, bounded scheduled/manual trigger, and provider-call-free API reads
 - **03.1-12** COMPLETE — Scoped generation-pinned Gold facts/facets/summaries/evidence, exact pre-activation reconciliation, and retained-pointer rollback
+- **03.1-13** COMPLETE — Scope-first Fabric SQL queries, managed signed cursors, authenticated Exposure APIs, and the duplicate-free 100k gate
+- **03.1-14** COMPLETE — Unified authenticated Exposure consumers, handoff-only container policy, and evidence-bound immutable audit
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
 - **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
 - **03.6-03** COMPLETE — Fail-safe `selectedPatchIds: string[] | null` patch-selection model (fixes CR-07 deselect-all-then-widens-to-all bug) and bounded/backoff client polling (`usePollingBackoff`, capped at 40 requests or 600000ms) with independently-testable ceilings
@@ -146,6 +149,7 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 | Phase 03.1 P23 | 28min | 2 tasks | 14 files |
 | Phase 03.1 P12 | 31min | 2 tasks | 6 files |
 | Phase 03.1 P13 | 26 min | 3 tasks | 9 files |
+| Phase 03.1 P14 | 41 min | 3 tasks | 17 files |
 
 ## Decisions
 
@@ -227,11 +231,15 @@ current_phase_name: Remediation Workflow Safety and Operator Guidance
 - [Phase 03.1]: Exposure authorization is resolved server-side and must exactly match the authenticated principal and effective request scope before SQL compilation.
 - [Phase 03.1]: Exposure cursors use canonical HMAC-SHA256 payloads with a 15-minute TTL and managed previous-key verification limited to the 30-minute overlap.
 - [Phase 03.1]: The deterministic SQL-contract benchmark remains distinct from live Fabric certification; the live canary requires readiness and explicit benchmark scope.
+- [Phase 03.1]: Use a nested versioned Exposure semantic contract while retaining legacy response aliases during shadow rollout.
+- [Phase 03.1]: Derive Fabric SQL tenant and connection authorization only from authenticated principal scope and active connection metadata.
+- [Phase 03.1]: Container findings may create only evidence-qualified non-executable review handoffs or no_safe_action outcomes.
+- [Phase 03.1]: Sensitive Exposure transitions must append an immutable evidence-bound audit event before acceptance.
 
 ## Session
 
-**Last session:** 2026-09-06T08:53:25.048Z
-**Stopped at:** Completed 03.1-13-PLAN.md
+**Last session:** 2026-09-06T11:08:25.095Z
+**Stopped at:** Completed 03.1-14-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context

@@ -8,7 +8,7 @@ import {
   type TopologyEdgeData,
   type TopologyNodeData,
 } from "@/lib/network-graph";
-import type { NetworkTopology } from "@/lib/types";
+import type { EvidenceItem, NetworkTopology } from "@/lib/types";
 
 cytoscape.use(fcose);
 
@@ -48,12 +48,16 @@ function severityBadgeUri(severity: string): string {
 /** Synchronizes one node's imperative Cytoscape badge data with its finding. */
 export function syncFindingBadge(
   node: cytoscape.NodeSingular,
-  finding: { severity: string; count: number } | undefined
+  finding: { severity: string; count: number; title?: string } | undefined
 ): void {
   if (finding) {
     const badge = severityBadgeUri(finding.severity);
     node.data("badge", badge);
-    node.data("badgeTitle", `${finding.count} open finding${finding.count === 1 ? "" : "s"} (${finding.severity})`);
+    node.data(
+      "badgeTitle",
+      finding.title ??
+        `${finding.count} open finding${finding.count === 1 ? "" : "s"} (${finding.severity})`,
+    );
     node.style("background-image", [node.data("icon") || "none", badge]);
   } else {
     node.removeData("badge");
@@ -264,6 +268,19 @@ export function layoutFor(nodeCount: number): cytoscape.LayoutOptions {
   } as unknown as cytoscape.LayoutOptions;
 }
 
+/** Preserve spatial memory whenever a new topology payload replaces one that
+ * already has positioned nodes. The explicit Re-layout action remains the only
+ * path that forces randomization. */
+export function layoutForTransition(
+  nodeCount: number,
+  hasPreviousPositions: boolean,
+): cytoscape.LayoutOptions {
+  const options = layoutFor(nodeCount);
+  return hasPreviousPositions
+    ? ({ ...options, randomize: false } as cytoscape.LayoutOptions)
+    : options;
+}
+
 /** Triggers a browser download for a data: URI without a server round trip. */
 function downloadDataUri(uri: string, filename: string): void {
   const link = document.createElement("a");
@@ -283,6 +300,129 @@ export interface TopologySelection {
 export interface TopologyGraphHandle {
   exportPng: () => void;
   exportJson: () => void;
+  focusCanvas: () => void;
+}
+
+export interface TopologyExportCoverage {
+  total: number | null;
+  returned: number | null;
+  truncated: boolean;
+  badgePageBudget: number;
+  badgeFetchExhausted: boolean;
+  badgeReturned: number;
+  badgeTotal: number;
+  renderedNodes: number;
+  totalNodes: number | null;
+  renderedRelationships: number;
+  totalRelationships: number | null;
+  droppedRelationships: number;
+}
+
+/** Fit the graph viewport while respecting the user's reduced-motion preference. */
+export function fitTopology(cy: Core): void {
+  const reduceMotion =
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduceMotion) {
+    cy.fit(undefined, 40);
+    return;
+  }
+  cy.animate(
+    { fit: { eles: cy.elements(), padding: 40 } },
+    { duration: 200 },
+  );
+}
+
+export interface TopologyExportContext {
+  scope: Record<string, string[]> | null;
+  detailLevel: "summary" | "full";
+  coverage: TopologyExportCoverage;
+  filters: {
+    search: string;
+    filterMode: boolean;
+    showServices: boolean;
+    showFindings: boolean;
+  };
+  evidence: EvidenceItem[] | null;
+  warnings: string[] | null;
+  knowledgeVersion: string | null;
+  graphFreshness: string | null;
+}
+
+export function buildTopologyExport(
+  topology: NetworkTopology,
+  context: TopologyExportContext,
+  exportedAt: string,
+) {
+  return {
+    exported_at: exportedAt,
+    scope: context.scope,
+    detail_level: context.detailLevel,
+    coverage: {
+      total: context.coverage.total,
+      returned: context.coverage.returned,
+      truncated: context.coverage.truncated,
+      badge_page_budget: context.coverage.badgePageBudget,
+      badge_fetch_exhausted: context.coverage.badgeFetchExhausted,
+      badge_findings: {
+        returned: context.coverage.badgeReturned,
+        total: context.coverage.badgeTotal,
+      },
+      nodes: {
+        rendered: context.coverage.renderedNodes,
+        total: context.coverage.totalNodes,
+      },
+      relationships: {
+        rendered: context.coverage.renderedRelationships,
+        total: context.coverage.totalRelationships,
+        dropped: context.coverage.droppedRelationships,
+      },
+    },
+    filters: {
+      search: context.filters.search,
+      filter_mode: context.filters.filterMode,
+      show_services: context.filters.showServices,
+      show_findings: context.filters.showFindings,
+    },
+    evidence: context.evidence,
+    warnings: context.warnings,
+    knowledge_version: context.knowledgeVersion,
+    graph_freshness: context.graphFreshness,
+    topology,
+  };
+}
+
+let lastExportSecond = -1;
+let exportSequence = 0;
+
+export function nextExportIdentity(
+  extension: "json" | "png",
+  now = new Date(),
+): { exportedAt: string; filename: string } {
+  const exportSecond = Math.floor(now.getTime() / 1_000);
+  if (exportSecond === lastExportSecond) {
+    exportSequence += 1;
+  } else {
+    lastExportSecond = exportSecond;
+    exportSequence = 1;
+  }
+  const date = new Date(exportSecond * 1_000);
+  const segment = [
+    date.getUTCFullYear().toString().padStart(4, "0"),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+    "-",
+    String(date.getUTCHours()).padStart(2, "0"),
+    String(date.getUTCMinutes()).padStart(2, "0"),
+    String(date.getUTCSeconds()).padStart(2, "0"),
+  ].join("");
+  return {
+    exportedAt: now.toISOString(),
+    filename: `network-topology-${segment}${
+      exportSequence > 1 ? `-${exportSequence}` : ""
+    }.${extension}`,
+  };
 }
 
 interface TopologyGraphProps {
@@ -297,9 +437,13 @@ interface TopologyGraphProps {
   onSelect: (selection: TopologySelection) => void;
   /** Receives an imperative handle for export actions once the canvas mounts. */
   onReady?: (handle: TopologyGraphHandle | null) => void;
+  exportContext: TopologyExportContext;
   /** Highest-severity open gap/rule finding per resource id. When set, matching
    * nodes render a small corner badge sourced from `/gaps` and `/rule-findings`. */
-  findingSeverityByResource?: Map<string, { severity: string; count: number }>;
+  findingSeverityByResource?: Map<
+    string,
+    { severity: string; count: number; title?: string }
+  >;
 }
 
 /**
@@ -316,12 +460,16 @@ export default function TopologyGraph({
   selectedId,
   onSelect,
   onReady,
+  exportContext,
   findingSeverityByResource,
 }: TopologyGraphProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<Core | null>(null);
+  const positionsRef = useRef<Map<string, cytoscape.Position>>(new Map());
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
+  const exportContextRef = useRef(exportContext);
+  exportContextRef.current = exportContext;
 
   const graph = useMemo(() => buildTopologyGraph(topology), [topology]);
 
@@ -341,9 +489,15 @@ export default function TopologyGraph({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return undefined;
+    const previousPositions = positionsRef.current;
+    const positionedElements = elements.map((element) => {
+      const id = "data" in element ? String(element.data.id ?? "") : "";
+      const position = previousPositions.get(id);
+      return position ? { ...element, position } : element;
+    });
     const cy = cytoscape({
       container,
-      elements,
+      elements: positionedElements,
       style: STYLESHEET,
       minZoom: 0.15,
       maxZoom: 3,
@@ -352,7 +506,11 @@ export default function TopologyGraph({
     });
     cyRef.current = cy;
 
-    cy.layout(layoutFor(cy.nodes().length)).run();
+    const hasPreviousPositions = cy
+      .nodes()
+      .toArray()
+      .some((node) => previousPositions.has(node.id()));
+    cy.layout(layoutForTransition(cy.nodes().length, hasPreviousPositions)).run();
     cy.fit(undefined, 40);
 
     cy.on("tap", "node", (event) => {
@@ -392,18 +550,34 @@ export default function TopologyGraph({
     observer.observe(container);
 
     onReady?.({
+      focusCanvas: () => container.focus(),
       exportPng: () => {
+        const identity = nextExportIdentity("png");
         const uri = cy.png({ full: true, scale: 2, bg: "#eef2f6" });
-        downloadDataUri(uri, "network-topology.png");
+        downloadDataUri(uri, identity.filename);
       },
       exportJson: () => {
-        const payload = JSON.stringify(topology, null, 2);
+        const identity = nextExportIdentity("json");
+        const payload = JSON.stringify(
+          buildTopologyExport(
+            topology,
+            exportContextRef.current,
+            identity.exportedAt,
+          ),
+          null,
+          2,
+        );
         const uri = `data:application/json;charset=utf-8,${encodeURIComponent(payload)}`;
-        downloadDataUri(uri, "network-topology.json");
+        downloadDataUri(uri, identity.filename);
       },
     });
 
     return () => {
+      const positions = new Map<string, cytoscape.Position>();
+      cy.nodes().forEach((node) => {
+        if (!node.isParent()) positions.set(node.id(), { ...node.position() });
+      });
+      positionsRef.current = positions;
       observer.disconnect();
       onReady?.(null);
       cy.destroy();
@@ -436,7 +610,12 @@ export default function TopologyGraph({
       }
       if (selectedId) {
         const selected = cy.getElementById(selectedId);
-        if (selected.nonempty()) selected.removeClass("cy-dimmed").addClass("cy-selected");
+        if (
+          selected.nonempty() &&
+          selected.style("display") !== "none"
+        ) {
+          selected.removeClass("cy-dimmed").addClass("cy-selected");
+        }
       }
     });
   }, [search, filterMode, showServices, selectedId]);
@@ -446,14 +625,15 @@ export default function TopologyGraph({
     if (!cy) return;
     cy.batch(() => {
       cy.nodes().forEach((node) => {
-        const finding = findingSeverityByResource?.get(node.id());
+        const finding = findingSeverityByResource?.get(node.id().toLowerCase());
         syncFindingBadge(node, finding);
       });
     });
   }, [findingSeverityByResource, elements]);
 
   const fit = useCallback(() => {
-    cyRef.current?.animate({ fit: { eles: cyRef.current.elements(), padding: 40 } }, { duration: 200 });
+    const cy = cyRef.current;
+    if (cy) fitTopology(cy);
   }, []);
 
   const zoomBy = useCallback((factor: number) => {
@@ -478,6 +658,7 @@ export default function TopologyGraph({
         ref={containerRef}
         role="application"
         aria-label="Interactive network topology graph"
+        tabIndex={-1}
       />
       <div className="topology-canvas-controls">
         <button type="button" onClick={() => zoomBy(1.25)} aria-label="Zoom in">

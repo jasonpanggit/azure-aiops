@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { StatusBadge, statusTone } from "./StatusBadge";
+import { StatusBadge, statusTone, type StatusTone } from "./StatusBadge";
+
+const STATUS_TONES = [
+  "critical",
+  "high",
+  "warning",
+  "success",
+  "neutral",
+  "info",
+  "unknown",
+] as const satisfies readonly StatusTone[];
+
+type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const statusToneUnionIsExact: Exact<StatusTone, (typeof STATUS_TONES)[number]> = true;
 
 const prePhase10Mappings = {
   critical: "critical",
@@ -28,6 +41,26 @@ const prePhase10Mappings = {
   "in progress": "info",
   unknown: "unknown",
   "not available": "unknown",
+} as const;
+
+const completePrePhase12Mappings = {
+  ...prePhase10Mappings,
+  "healthy-empty": "success",
+  unavailable: "critical",
+  "deployment-blocked": "warning",
+  retired: "neutral",
+  dormant: "neutral",
+} as const;
+
+const phase12Mappings = {
+  complete: "success",
+  partial: "warning",
+  "not-analyzed": "warning",
+  "private-link-candidate": "info",
+  "public-access-enabled": "critical",
+  "peer-not-ingested": "warning",
+  "peer-out-of-scope": "info",
+  "peer-resolution-unknown": "unknown",
 } as const;
 
 describe("statusTone", () => {
@@ -65,5 +98,39 @@ describe("statusTone", () => {
     for (const [keyword, tone] of Object.entries(prePhase10Mappings)) {
       expect(statusTone(keyword), keyword).toBe(tone);
     }
+  });
+
+  it("pins the seven-member tone union and every pre-Phase-12 keyword mapping", () => {
+    expect(statusToneUnionIsExact).toBe(true);
+    expect(STATUS_TONES).toHaveLength(7);
+    expect([...STATUS_TONES].sort()).toEqual([
+      "critical",
+      "high",
+      "info",
+      "neutral",
+      "success",
+      "unknown",
+      "warning",
+    ]);
+    expect(
+      Object.fromEntries(
+        Object.keys(completePrePhase12Mappings).map((keyword) => [
+          keyword,
+          statusTone(keyword),
+        ]),
+      ),
+    ).toEqual(completePrePhase12Mappings);
+  });
+
+  it("maps every Phase-12 status keyword without adding a tone", () => {
+    expect(
+      Object.fromEntries(
+        Object.keys(phase12Mappings).map((keyword) => [
+          keyword,
+          statusTone(keyword),
+        ]),
+      ),
+    ).toEqual(phase12Mappings);
+    expect(STATUS_TONES).toHaveLength(7);
   });
 });

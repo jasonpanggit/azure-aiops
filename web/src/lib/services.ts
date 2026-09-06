@@ -31,6 +31,7 @@ import type {
   NetworkSeverity,
   NetworkSummary,
   NetworkTopology,
+  NetworkTopologyResourceDetails,
   RuleFinding,
   SearchResult,
   AssetExposure,
@@ -940,17 +941,47 @@ export const remediationApi = {
 // ---------------------------------------------------------------------------
 
 export const networkApi = {
-  topology: (scope: ScopeSelection = {}) =>
-    apiRequest<{ topology: NetworkTopology; summary: NetworkSummary }>("/network/topology", {
-      query: scopeToSearchParams(scope),
-    }),
+  topology: (
+    scope: ScopeSelection = {},
+    options: { detail: "summary" | "full" } = { detail: "full" },
+  ) => {
+    const query = scopeToSearchParams(scope);
+    query.set("detail", options.detail);
+    return apiRequest<{ topology: NetworkTopology; summary: NetworkSummary }>(
+      "/network/topology",
+      { query },
+    );
+  },
 
   summary: (scope: ScopeSelection = {}) =>
     apiRequest<NetworkSummary>("/network/summary", { query: scopeToSearchParams(scope) }),
 
   /** "What depends on the hub?" */
-  hubDependents: (vnetId: string) =>
-    apiRequest<HubDependents>(`/network/topology/hubs/${encodeURIComponent(vnetId)}/dependents`),
+  hubDependents: (vnetId: string, scope: ScopeSelection = {}) =>
+    apiRequest<HubDependents>(
+      `/network/topology/hubs/${encodeURIComponent(vnetId)}/dependents`,
+      { query: scopeToSearchParams(scope) },
+    ),
+
+  topologyResourceDetails: (
+    resourceId: string,
+    scope: ScopeSelection = {},
+    offset = 0,
+    limit = 50,
+  ) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    const resourcePath = resourceId
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+    return apiRequest<NetworkTopologyResourceDetails>(
+      `/network/topology/resources/${resourcePath}/details`,
+      { query },
+    );
+  },
 
   /** "Which spokes bypass the firewall?" */
   firewallBypass: (scope: ScopeSelection = {}) =>
@@ -977,21 +1008,40 @@ export const networkApi = {
     return apiRequest<FlowResult>("/network/traffic-flow", { query });
   },
 
-  gaps: (scope: ScopeSelection = {}, options: { severity?: NetworkSeverity; category?: string } = {}) => {
+  gaps: (
+    scope: ScopeSelection = {},
+    options: { severity?: NetworkSeverity; category?: string; offset?: number; limit?: number } = {},
+  ) => {
     const query = scopeToSearchParams(scope);
     if (options.severity) query.set("severity", options.severity);
     if (options.category) query.set("category", options.category);
-    return apiRequest<{ gaps: NetworkGap[]; intended_design_declared: boolean; summary: NetworkSummary }>(
+    if (options.offset != null) query.set("offset", String(options.offset));
+    if (options.limit != null) query.set("limit", String(options.limit));
+    return apiRequest<{
+      gaps: NetworkGap[];
+      intended_design_declared: boolean;
+      summary: NetworkSummary;
+      coverage?: import("./types").CollectionCoverage;
+    }>(
       "/network/gaps",
       { query }
     );
   },
 
-  ruleFindings: (scope: ScopeSelection = {}, options: { severity?: NetworkSeverity; category?: string } = {}) => {
+  ruleFindings: (
+    scope: ScopeSelection = {},
+    options: { severity?: NetworkSeverity; category?: string; offset?: number; limit?: number } = {},
+  ) => {
     const query = scopeToSearchParams(scope);
     if (options.severity) query.set("severity", options.severity);
     if (options.category) query.set("category", options.category);
-    return apiRequest<{ findings: RuleFinding[]; summary: NetworkSummary }>("/network/rule-findings", { query });
+    if (options.offset != null) query.set("offset", String(options.offset));
+    if (options.limit != null) query.set("limit", String(options.limit));
+    return apiRequest<{
+      findings: RuleFinding[];
+      summary: NetworkSummary;
+      coverage?: import("./types").CollectionCoverage;
+    }>("/network/rule-findings", { query });
   },
 
   /** The rule-based, UI-editable design policy gap analysis is checked against. */

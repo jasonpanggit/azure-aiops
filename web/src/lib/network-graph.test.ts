@@ -1,8 +1,14 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RESOURCE_ICONS, SERVICE_ICONS, buildTopologyGraph, serviceIcon, shortName, subscriptionOf } from "@/lib/network-graph";
-import type { HubClassification, NetworkTopology, PeeringLink, SharedServiceSummary } from "@/lib/types";
+import type {
+  HubClassification,
+  NetworkTopology,
+  NetworkTopologyResource,
+  PeeringLink,
+  SharedServiceSummary,
+} from "@/lib/types";
 
 function vnet(overrides: Partial<HubClassification> & { vnet_id: string }): HubClassification {
   return {
@@ -48,11 +54,58 @@ function topologyOf(overrides: Partial<NetworkTopology> = {}): NetworkTopology {
   };
 }
 
+function resource(
+  overrides: Partial<NetworkTopologyResource> & Pick<NetworkTopologyResource, "id" | "entity_type">
+): NetworkTopologyResource {
+  return {
+    name: shortName(overrides.id),
+    subscription_id: "sub-a",
+    resource_group: "rg-workloads",
+    location: "eastus",
+    connection_id: "conn-1",
+    environment: "prod",
+    business_service: "",
+    application: "",
+    owner: "",
+    tags: {},
+    details: {},
+    ...overrides,
+  };
+}
+
 const HUB = "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/hub";
 const SPOKE = "/subscriptions/sub-b/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/spoke";
 const GHOST = "/subscriptions/sub-z/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/ghost";
+const FABRIC =
+  "/subscriptions/sub-a/resourceGroups/rg-workloads/providers/Microsoft.Fabric/capacities/fabric-capacity";
+const AI_SERVICES =
+  "/subscriptions/sub-a/resourceGroups/rg-workloads/providers/Microsoft.CognitiveServices/accounts/foundry-tools";
 
 describe("buildTopologyGraph", () => {
+  it("creates one unknown-subscription group for resources without subscription metadata", () => {
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({
+            id: "inventory:vnet-1",
+            entity_type: "VNet",
+            subscription_id: "",
+          }),
+        ],
+      }),
+    );
+
+    expect(graph.nodes).toHaveLength(1);
+    expect(graph.nodes[0].parent).toBe("subscription:unknown");
+    expect(graph.groups).toEqual([
+      {
+        id: "subscription:unknown",
+        label: "Unknown subscription",
+        kind: "subscription",
+      },
+    ]);
+  });
+
   it("classifies VNets by role and groups them by subscription", () => {
     const graph = buildTopologyGraph(
       topologyOf({
@@ -117,6 +170,56 @@ describe("buildTopologyGraph", () => {
     expect(graph.edges[0].kind).toBe("unresolved");
   });
 
+  it("deduplicates one unresolved peer referenced in two ARM casings", () => {
+    const differentlyCasedGhost = GHOST.toUpperCase();
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [resource({ id: HUB, entity_type: "VNet", role: "hub" })],
+        links: [
+          link({
+            local_vnet_id: HUB,
+            remote_vnet_id: GHOST,
+            remote_vnet_observed: false,
+          }),
+          link({
+            local_vnet_id: HUB.toUpperCase(),
+            remote_vnet_id: differentlyCasedGhost,
+            remote_vnet_observed: false,
+          }),
+        ],
+      }),
+    );
+
+    expect(
+      graph.nodes.filter((node) => node.id.toLowerCase() === GHOST.toLowerCase()),
+    ).toHaveLength(1);
+  });
+
+  it("maps peer resolution and gives legacy unresolved ids the unknown state", () => {
+    const outside = `${GHOST}-outside`;
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [resource({ id: HUB, entity_type: "VNet", role: "hub" })],
+        unresolved_peer_vnet_ids: [GHOST],
+        unresolved_peers: [
+          { vnet_id: outside, peer_resolution: "excluded_by_scope" },
+        ],
+      }),
+    );
+
+    expect(
+      graph.nodes.find((node) => node.id.toLowerCase() === GHOST.toLowerCase())
+        ?.peerResolution,
+    ).toBe("unknown");
+    expect(
+      graph.nodes.find((node) => node.id.toLowerCase() === outside.toLowerCase())
+        ?.peerResolution,
+    ).toBe("excluded_by_scope");
+    expect(graph.nodes.some((node) => node.peerResolution === "not_ingested")).toBe(
+      false,
+    );
+  });
+
   it("links shared services to each observed consumer VNet only", () => {
     const service: SharedServiceSummary = {
       resource_id: "/subscriptions/sub-a/providers/Microsoft.Network/azureFirewalls/fw/sharedservice",
@@ -140,6 +243,34 @@ describe("buildTopologyGraph", () => {
     expect(serviceEdges).toHaveLength(2);
     expect(serviceEdges.map((edge) => edge.target).sort()).toEqual([HUB, SPOKE].sort());
     expect(graph.nodes.find((node) => node.id === service.resource_id)?.icon).toBe("/azure-icons/firewall.svg");
+  });
+
+  it("resolves legacy shared-service consumers case-insensitively", () => {
+    const service: SharedServiceSummary = {
+      resource_id: "/subscriptions/sub-a/providers/Microsoft.Network/azureFirewalls/fw/sharedservice",
+      name: "hub-fw",
+      service_kind: "firewall",
+      hub_vnet_id: HUB,
+      consumer_vnet_ids: [HUB.toUpperCase()],
+      connection_id: "conn-1",
+      subscription_id: "sub-a",
+      environment: "prod",
+    };
+
+    const graph = buildTopologyGraph(
+      topologyOf({
+        hubs: [vnet({ vnet_id: HUB, role: "hub" })],
+        shared_services: [service],
+      }),
+    );
+
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        source: service.resource_id,
+        target: HUB,
+        kind: "service",
+      }),
+    );
   });
 
   it("labels one-way and cross-subscription peerings", () => {
@@ -292,6 +423,82 @@ describe("buildTopologyGraph", () => {
       }),
     ]);
   });
+
+  it("preserves Fabric and AI Foundry entity types as exactly two graph nodes", () => {
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({ id: FABRIC, entity_type: "FabricCapacity" }),
+          resource({ id: AI_SERVICES, entity_type: "AIFoundryAccount" }),
+        ],
+      })
+    );
+
+    expect(graph.nodes).toHaveLength(2);
+    expect(graph.nodes.map((node) => node.entityType).sort()).toEqual([
+      "AIFoundryAccount",
+      "FabricCapacity",
+    ]);
+    expect(graph.nodes.find((node) => node.entityType === "AIFoundryAccount")?.icon).toBe(
+      "/azure-icons/ai-services.svg"
+    );
+    expect(graph.nodes.find((node) => node.entityType === "FabricCapacity")?.icon).toBe("");
+  });
+
+  it("uses the existing workload kind for Fabric and AI Foundry nodes", () => {
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({ id: FABRIC, entity_type: "FabricCapacity" }),
+          resource({ id: AI_SERVICES, entity_type: "AIFoundryAccount" }),
+        ],
+      })
+    );
+
+    expect(graph.nodes.map((node) => node.kind)).toEqual(["workload", "workload"]);
+  });
+
+  it("deduplicates dual-projected resources case-insensitively", () => {
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({ id: AI_SERVICES, entity_type: "AIFoundryAccount" }),
+          resource({ id: AI_SERVICES.toUpperCase(), entity_type: "AIFoundryAccount" }),
+        ],
+      })
+    );
+
+    expect(graph.nodes).toHaveLength(1);
+    expect(graph.nodes[0].id.toLowerCase()).toBe(AI_SERVICES.toLowerCase());
+  });
+
+  it("recognises a generic private-link resource as an icon-less workload", () => {
+    const id = "/subscriptions/sub-a/resourceGroups/rg/providers/Contoso.Widgets/widgets/widget-1";
+    const graph = buildTopologyGraph(
+      topologyOf({ resources: [resource({ id, entity_type: "PrivateLinkResource" })] })
+    );
+
+    expect(graph.nodes[0]).toMatchObject({
+      id,
+      kind: "workload",
+      icon: "",
+      entityType: "PrivateLinkResource",
+    });
+  });
+
+  it("keeps an icon-less Fabric node addressable for finding badges", () => {
+    const graph = buildTopologyGraph(
+      topologyOf({ resources: [resource({ id: FABRIC, entity_type: "FabricCapacity" })] })
+    );
+    const findingTarget = graph.nodes.find((node) => node.id.toLowerCase() === FABRIC.toLowerCase());
+
+    expect(findingTarget).toMatchObject({
+      id: FABRIC,
+      kind: "workload",
+      icon: "",
+      observed: true,
+    });
+  });
 });
 
 describe("serviceIcon", () => {
@@ -342,5 +549,15 @@ describe("icon assets", () => {
     for (const entityType of ["VirtualMachine", "CosmosDb"]) {
       expect(RESOURCE_ICONS[entityType]).toBeTruthy();
     }
+  });
+
+  it("uses only the available V21 icon and documents Fabric's icon-less fallback", () => {
+    const readme = readFileSync(resolve(iconDir, "README.md"), "utf8");
+
+    expect(existsSync(resolve(iconDir, "ai-services.svg"))).toBe(true);
+    expect(existsSync(resolve(iconDir, "fabric.svg"))).toBe(false);
+    expect(readme).toContain("`ai-services.svg` | Azure AI Services");
+    expect(readme).toContain("Microsoft Fabric");
+    expect(readme).toContain("intentionally icon-less");
   });
 });

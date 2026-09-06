@@ -227,6 +227,15 @@ class RiskExceptionCreateRequest(ApiModel):
     )
 
 
+class ExposureReviewHandoffRequest(ApiModel):
+    """Create an audited, non-executable review handoff for one finding."""
+
+    exposure_id: str = Field(min_length=1, max_length=512)
+    reason: str = Field(min_length=1, max_length=2048)
+    risk_acknowledged: bool = False
+    risk_exception_id: str = Field("", max_length=256)
+
+
 class RemediationDecisionRequest(ApiModel):
     """Record a human decision for a recommendation without executing it."""
 

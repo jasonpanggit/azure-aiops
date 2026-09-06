@@ -105,7 +105,7 @@ Plans:
 **Goal:** Make Exposure authoritative, failure-tolerant, temporally correct, ontology-complete for container images, and operable at Defender-scale volumes before Phase 4 pilot validation.
 **Requirements:** PILOT-01, PILOT-02, PILOT-03, PILOT-04 (reliability prerequisites; final pilot completion remains downstream)
 **Depends on:** Phase 3
-**Plans:** 15/25 plans executed
+**Plans:** 16/25 plans executed
 
 Plans:
 
@@ -124,7 +124,7 @@ Plans:
 - [x] 03.1-23-PLAN.md — Refresh MSRC/NVD/EPSS/KEV asynchronously with durable per-item status and provider-free API reads
 - [x] 03.1-12-PLAN.md — Materialize and publish generation-pinned Gold
 - [x] 03.1-13-PLAN.md — Enforce scope-first Fabric SQL queries and managed signed cursors
-- [ ] 03.1-14-PLAN.md — Consolidate scoped consumers and enforce handoff-only container remediation
+- [x] 03.1-14-PLAN.md — Consolidate scoped consumers and enforce handoff-only container remediation
 - [ ] 03.1-15-PLAN.md — Build cursor-aware web query, same-scope LKG, and independent-section contracts
 - [ ] 03.1-18-PLAN.md — Add complete low-cardinality Exposure telemetry, alerts, and shadow reconciliation
 - [ ] 03.1-24-PLAN.md — Extend and test the actual shared PageHeader, MetricCard, TablePagination, and governed risk dialog
@@ -777,21 +777,21 @@ Plans:
 **Goal:** Deliver a scope-safe, complete, scalable, and diagnosable network topology experience whose nodes, relationships, findings, policy changes, freshness, and evidence coverage remain accurate from inventory ingestion through API, web, agents, MCP, and export.
 **Requirements**: TOPO-01, TOPO-02, TOPO-03, TOPO-04, TOPO-05
 **Depends on:** Phase 10
-**Plans:** 11 plans
+**Plans:** 11/11 plans complete
 
 Plans:
 
-- [ ] 12-01-PLAN.md — Scope-isolation tracer and security gate across web/API/service/agents/MCP and policy preview
-- [ ] 12-02-PLAN.md — Test harness, scale fixtures, and measured baseline gates
-- [ ] 12-03-PLAN.md — Identifier correctness, relationship retention, freshness threading, and peer resolution
-- [ ] 12-04-PLAN.md — Policy revision invalidation, declarative rule targets, and the client refetch primitive
-- [ ] 12-05-PLAN.md — Checkpoint: resolve Fabric and AI Services private-endpoint semantics before surfacing gaps
-- [ ] 12-06-PLAN.md — Private-link projection, provider type mapping, de-duplication, and official icons
-- [ ] 12-07-PLAN.md — Level of detail, lean payload, pagination, coverage disclosure, and drill-down route
-- [ ] 12-08-PLAN.md — Page-level honest totals, policy round-trip, and data-derived provenance
-- [ ] 12-09-PLAN.md — Canvas detail control, badge fan-out, live fold index, and disclosing footnote
-- [ ] 12-10-PLAN.md — Drawer states, on-demand drill-down, private-link facts, and self-describing export
-- [ ] 12-11-PLAN.md — Downstream compatibility contracts and representative scale validation
+- [x] 12-01-PLAN.md — Scope-isolation tracer and security gate across web/API/service/agents/MCP and policy preview
+- [x] 12-02-PLAN.md — Test harness, scale fixtures, and measured baseline gates
+- [x] 12-03-PLAN.md — Identifier correctness, relationship retention, freshness threading, and peer resolution
+- [x] 12-04-PLAN.md — Policy revision invalidation, declarative rule targets, and the client refetch primitive
+- [x] 12-05-PLAN.md — Checkpoint: resolve Fabric and AI Services private-endpoint semantics before surfacing gaps
+- [x] 12-06-PLAN.md — Private-link projection, provider type mapping, de-duplication, and official icons
+- [x] 12-07-PLAN.md — Level of detail, lean payload, pagination, coverage disclosure, and drill-down route
+- [x] 12-08-PLAN.md — Page-level honest totals, policy round-trip, and data-derived provenance
+- [x] 12-09-PLAN.md — Canvas detail control, badge fan-out, live fold index, and disclosing footnote
+- [x] 12-10-PLAN.md — Drawer states, on-demand drill-down, private-link facts, and self-describing export
+- [x] 12-11-PLAN.md — Downstream compatibility contracts and representative scale validation
 
 **Success Criteria** (what must be TRUE):
 

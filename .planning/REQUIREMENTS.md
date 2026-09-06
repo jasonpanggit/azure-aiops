@@ -88,11 +88,11 @@ Requirements for the controlled Azure pilot.
 
 ### Network Topology Integrity and Scale
 
-- [ ] **TOPO-01**: Every topology, gap, and rule-finding response enforces the effective subscription/resource scope across all resource and relationship collections, including private-link resources and semantic relationships, without disclosing or fabricating out-of-scope findings.
-- [ ] **TOPO-02**: Every in-scope private-link candidate and every resource referenced by a topology finding is represented by a stable, de-duplicated topology node, including Microsoft Fabric capacities and Azure AI Foundry accounts.
-- [ ] **TOPO-03**: Topology and finding APIs expose honest totals, truncation, pagination, and level-of-detail contracts so enterprise estates remain usable and no badge, metric, drawer, agent, or export silently implies complete coverage from a bounded result.
-- [ ] **TOPO-04**: Design-policy mutations invalidate derived topology analysis, refresh gaps/findings/badges without a page reload, and allow operators to preview, validate, save, and diagnose declarative custom rules through the web UI.
-- [ ] **TOPO-05**: Relationship normalization and projection are case-stable and observable, with dropped-edge diagnostics, snapshot freshness, DNS/private-endpoint/subnet integrity, actual flow-log provenance, and direct regression coverage of the scoped topology seam.
+- [x] **TOPO-01**: Every topology, gap, and rule-finding response enforces the effective subscription/resource scope across all resource and relationship collections, including private-link resources and semantic relationships, without disclosing or fabricating out-of-scope findings.
+- [x] **TOPO-02**: Every in-scope private-link candidate and every resource referenced by a topology finding is represented by a stable, de-duplicated topology node, including Microsoft Fabric capacities and Azure AI Foundry accounts.
+- [x] **TOPO-03**: Topology and finding APIs expose honest totals, truncation, pagination, and level-of-detail contracts so enterprise estates remain usable and no badge, metric, drawer, agent, or export silently implies complete coverage from a bounded result.
+- [x] **TOPO-04**: Design-policy mutations invalidate derived topology analysis, refresh gaps/findings/badges without a page reload, and allow operators to preview, validate, save, and diagnose declarative custom rules through the web UI.
+- [x] **TOPO-05**: Relationship normalization and projection are case-stable and observable, with dropped-edge diagnostics, snapshot freshness, DNS/private-endpoint/subnet integrity, actual flow-log provenance, and direct regression coverage of the scoped topology seam.
 
 ### Autonomous Ontology Discovery
 
@@ -199,6 +199,16 @@ Traceability is populated during roadmap creation.
 | MED-08 | Phase 10 | Complete |
 | MED-09 | Phase 10 | Complete |
 | MED-10 | Phase 10 | Complete |
+| COP-01 | Phase 11 | Pending |
+| COP-02 | Phase 11 | Pending |
+| COP-03 | Phase 11 | Pending |
+| COP-04 | Phase 11 | Pending |
+| COP-05 | Phase 11 | Pending |
+| TOPO-01 | Phase 12 | Complete |
+| TOPO-02 | Phase 12 | Complete |
+| TOPO-03 | Phase 12 | Complete |
+| TOPO-04 | Phase 12 | Complete |
+| TOPO-05 | Phase 12 | Complete |
 | AUTO-ONT-01 | Phase 13 | Pending |
 | AUTO-ONT-02 | Phase 13 | Pending |
 | AUTO-ONT-03 | Phase 13 | Pending |
@@ -209,10 +219,10 @@ Traceability is populated during roadmap creation.
 
 **Coverage:**
 
-- v1 requirements: 51 total
-- Mapped to phases: 51
+- v1 requirements: 67 total
+- Mapped to phases: 67
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-08-23*
-*Last updated: 2026-09-04 for Phase 13 autonomous ontology discovery*
+*Last updated: 2026-09-06 after Phase 12 verification*

@@ -15,11 +15,21 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Query
 
-from network.design import NetworkDesignPolicy, NetworkDesignPolicyValidationError
+from network.design import (
+    NetworkDesignPolicy,
+    NetworkDesignPolicyDocumentError,
+    NetworkDesignPolicyValidationError,
+)
 from network.flow import FlowQuery
 from network.gaps import NetworkGapAnalyzer
-from network.rule_engine import RuleValidationError, validate_rule_parameters
+from network.rule_engine import (
+    SUPPORTED_OPERATORS,
+    SUPPORTED_TARGET_NAMES,
+    RuleValidationError,
+    validate_rule_parameters,
+)
 from network.service import NetworkIntelligenceService, NetworkScope
+from network.topology import TopologyDetail
 
 from ..dependencies import Context, Page, ReadScope, WritePrincipal
 from ..errors import ApiError, ErrorCode
@@ -80,18 +90,119 @@ def _evidence(
 
 
 @router.get("/topology", summary="Hub-spoke network topology")
-def network_topology(context: Context, scope: ReadScope) -> dict[str, Any]:
+def network_topology(
+    context: Context,
+    scope: ReadScope,
+    detail: Annotated[TopologyDetail, Query()] = "full",
+) -> dict[str, Any]:
     service = _service(context, scope)
     analysis = service.analyze()
     return envelope(
         {
-            "topology": analysis.topology.to_dict(),
+            "topology": analysis.topology.to_dict(detail=detail),
             "summary": analysis.summary(),
         },
         # Topology is stitched from observed peering resources, so it is a
         # direct reading of the estate rather than an inference.
         evidence=_evidence(service),
         scope=scope.to_dict(),
+    )
+
+
+def _topology_resource_details(
+    service: NetworkIntelligenceService,
+    resource_id: str,
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Resolve drill-down data only from the already-scoped snapshot."""
+    requested_id = f"/{resource_id.lstrip('/')}".casefold()
+    snapshot = service.snapshot
+
+    for nsg in snapshot.nsgs:
+        if nsg.resource_id == requested_id:
+            return (
+                nsg.resource_id,
+                "rules",
+                [rule.to_dict() for rule in nsg.ordered_rules()],
+            )
+    for table in snapshot.route_tables:
+        if table.resource_id == requested_id:
+            return (
+                table.resource_id,
+                "routes",
+                [route.to_dict() for route in table.routes],
+            )
+    for collection in snapshot.firewall_collections:
+        if collection.resource_id == requested_id:
+            return (
+                collection.resource_id,
+                "rules",
+                [rule.to_dict() for rule in collection.rules],
+            )
+    for policy in snapshot.firewall_policies:
+        if policy.resource_id == requested_id:
+            collections = [
+                collection.to_dict()
+                for collection in snapshot.firewall_collections
+                if collection.policy_id == policy.resource_id
+            ]
+            return policy.resource_id, "rule_collections", collections
+    for firewall in snapshot.firewalls:
+        if firewall.resource_id != requested_id:
+            continue
+        collections = [
+            collection
+            for collection in snapshot.firewall_collections
+            if collection.firewall_id == firewall.resource_id
+            or (
+                firewall.policy_id
+                and collection.policy_id == firewall.policy_id
+            )
+        ]
+        rules = {
+            rule.resource_id: rule.to_dict()
+            for collection in collections
+            for rule in collection.rules
+        }
+        return (
+            firewall.resource_id,
+            "rules",
+            [rules[key] for key in sorted(rules)],
+        )
+    return requested_id, "", []
+
+
+@router.get(
+    "/topology/resources/{resource_id:path}/details",
+    summary="Paginated topology resource details",
+)
+def topology_resource_details(
+    resource_id: str,
+    context: Context,
+    scope: ReadScope,
+    page: Page,
+) -> dict[str, Any]:
+    """Return summary-withheld details without bypassing request scope."""
+    service = _service(context, scope)
+    canonical_id, detail_type, items = _topology_resource_details(
+        service,
+        resource_id,
+    )
+    visible = items[page.offset : page.offset + page.limit]
+    coverage = {
+        "total": len(items),
+        "returned": len(visible),
+        "truncated": len(visible) < len(items),
+    }
+    return envelope(
+        {
+            "resource_id": canonical_id,
+            "detail_type": detail_type,
+            "items": visible,
+            "coverage": coverage,
+        },
+        evidence=_evidence(service, resource_id=canonical_id),
+        scope=scope.to_dict(),
+        pagination=page.to_dict(len(items)),
     )
 
 
@@ -185,6 +296,11 @@ def network_gaps(
         and (category is None or gap.category == category)
     ]
     visible = gaps[page.offset : page.offset + page.limit]
+    coverage = {
+        "total": len(gaps),
+        "returned": len(visible),
+        "truncated": len(visible) < len(gaps),
+    }
     return envelope(
         {
             "gaps": [gap.to_dict() for gap in visible],
@@ -192,10 +308,21 @@ def network_gaps(
             # means conformance gaps cannot be assessed, only structural ones.
             "intended_design_declared": analysis.policy.is_declared,
             "summary": analysis.summary(),
+            "coverage": coverage,
         },
         evidence=_evidence(service, confidence=CONFIDENCE_MEDIUM),
         scope=scope.to_dict(),
         pagination=page.to_dict(len(gaps)),
+        warnings=(
+            [
+                (
+                    f"Showing {len(visible)} of {len(gaps)} inspection gaps; "
+                    "use pagination for the complete result"
+                )
+            ]
+            if coverage["truncated"]
+            else []
+        ),
     )
 
 
@@ -218,16 +345,41 @@ def rule_findings(
         and (category is None or finding.category == category)
     ]
     visible = findings[page.offset : page.offset + page.limit]
+    coverage = {
+        "total": len(findings),
+        "returned": len(visible),
+        "truncated": len(visible) < len(findings),
+    }
+    flow_logs_analyzed = (
+        service.flow_log_provenance.get("state") == "analyzed"
+    )
     return envelope(
         {
             "findings": [finding.to_dict() for finding in visible],
             "summary": analysis.summary(),
+            "coverage": coverage,
         },
-        # "Unused" and "shadowed" are inferred structurally; no flow logs are
-        # ingested, and every finding states that in its own basis.
-        evidence=_evidence(service, confidence=CONFIDENCE_MEDIUM),
+        # Structural findings remain configuration-derived. When Traffic
+        # Analytics evidence was consumed, observation-backed findings carry
+        # their bounded-window basis and the route can report direct evidence.
+        evidence=_evidence(
+            service,
+            confidence=(
+                CONFIDENCE_HIGH if flow_logs_analyzed else CONFIDENCE_MEDIUM
+            ),
+        ),
         scope=scope.to_dict(),
         pagination=page.to_dict(len(findings)),
+        warnings=(
+            [
+                (
+                    f"Showing {len(visible)} of {len(findings)} rule findings; "
+                    "use pagination for the complete result"
+                )
+            ]
+            if coverage["truncated"]
+            else []
+        ),
     )
 
 
@@ -288,6 +440,8 @@ def _policy_payload(policy: NetworkDesignPolicy) -> tuple[dict[str, Any], list[s
     payload["invalid_rule_ids"] = [
         rule["rule_id"] for rule in annotated if rule.get("invalid_reason")
     ]
+    payload["supported_targets"] = list(SUPPORTED_TARGET_NAMES)
+    payload["supported_operators"] = list(SUPPORTED_OPERATORS)
     return payload, unevaluated
 
 
@@ -300,7 +454,10 @@ def read_policy(context: Context, scope: ReadScope) -> dict[str, Any]:
     usable policy rather than an empty one.
     """
     store = context.network_policy_store
-    policy = store.read() if store is not None else NetworkDesignPolicy()
+    try:
+        policy = store.read() if store is not None else NetworkDesignPolicy()
+    except NetworkDesignPolicyDocumentError as exc:
+        raise _corrupt_policy_error() from exc
     # Whether a rule is actually inspected is a property of the analyzer, not
     # of the stored policy. Surfacing it here stops the UI from claiming a
     # custom rule is enforced when nothing evaluates it.
@@ -335,6 +492,14 @@ def read_policy(context: Context, scope: ReadScope) -> dict[str, Any]:
             if invalid
             else []
         ),
+    )
+
+
+def _corrupt_policy_error() -> ApiError:
+    return ApiError(
+        ErrorCode.PROVIDER_UNAVAILABLE,
+        "Stored network policy is unavailable because its document is invalid",
+        {"capability": "network_policy", "provider_state": "degraded"},
     )
 
 
@@ -393,6 +558,8 @@ def update_policy(
         )
     try:
         policy = store.update(changes)
+    except NetworkDesignPolicyDocumentError as exc:
+        raise _corrupt_policy_error() from exc
     except NetworkDesignPolicyValidationError as exc:
         raise ApiError(
             ErrorCode.INVALID_REQUEST, str(exc), {"section": sorted(changes)}
@@ -425,10 +592,18 @@ def preview_policy(
         )
     try:
         policy = store.preview(changes)
+    except NetworkDesignPolicyDocumentError as exc:
+        raise _corrupt_policy_error() from exc
     except NetworkDesignPolicyValidationError as exc:
         raise ApiError(ErrorCode.INVALID_REQUEST, str(exc), {"section": sorted(changes)}) from exc
     service = _service(context, scope)
-    preview_service = NetworkIntelligenceService(service.snapshot, policy=policy)
+    preview_service = NetworkIntelligenceService(
+        service.snapshot,
+        policy=policy,
+        semantic_relationships=service.semantic_relationships,
+        flow_observations=service.flow_observations,
+        peer_resolutions=service.peer_resolutions,
+    )
     analysis = preview_service.analyze()
     payload = _policy_payload(policy)[0]
     invalid = payload.get("invalid_rule_ids") or []

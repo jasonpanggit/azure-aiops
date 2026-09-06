@@ -312,6 +312,7 @@ def run_investigation(
     *,
     context: Any,
     scope: Scope,
+    principal: Any | None = None,
     hint_tool: str | None = None,
     hint_args: dict[str, Any] | None = None,
     page_kind: str | None = None,
@@ -328,7 +329,13 @@ def run_investigation(
     plan = [(hint_tool, hint_args or {})] if hint_tool else _plan(question)
     calls: list[ToolCallRecord] = []
     for name, args in plan:
-        result = call_tool(name, args, context=context, scope=scope)
+        result = call_tool(
+            name,
+            args,
+            context=context,
+            scope=scope,
+            principal=principal,
+        )
         calls.append(ToolCallRecord(tool=name, arguments=dict(args), result=result))
 
     fact_status = _overall_status(calls)

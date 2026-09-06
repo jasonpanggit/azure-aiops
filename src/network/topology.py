@@ -12,15 +12,20 @@ peerings, not because someone called it "hub".
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from .models import (
+    FABRIC_CAPACITY_RESOURCE_TYPE,
+    FABRIC_PRIVATE_LINK_SCOPE,
     AzureFirewall,
     FirewallRule,
     FirewallRuleCollection,
     NetworkSnapshot,
+    PrivateLinkResource,
     SharedService,
     VNet,
 )
@@ -43,6 +48,26 @@ HUB_SCORE_THRESHOLD = 3.0
 #: Peerings above this count count as "many".
 MANY_PEERINGS_THRESHOLD = 2
 
+PEER_RESOLUTION_VALUES = frozenset(
+    {"not_ingested", "excluded_by_scope", "observed"}
+)
+
+TopologyDetail = Literal["summary", "full"]
+
+# Summary topology is the browser-safe projection. Keep these values aligned
+# with the measured G-2 contract in tests/test_network_scale.py.
+SUMMARY_NODE_CAP = 1_500
+SUMMARY_SMALL_NODE_CAP = 200
+SUMMARY_SMALL_BYTE_CEILING = 250_000
+SUMMARY_BYTE_CEILING = 2_000_000
+SUMMARY_MIN_NODES = 1
+_SUMMARY_OMITTED_ENTITY_TYPES = frozenset(
+    {"NetworkSecurityRule", "Route", "FirewallRule"}
+)
+_SUMMARY_OMITTED_DETAIL_KEYS = frozenset(
+    {"rules", "routes", "rule_collections"}
+)
+
 SHARED_SERVICE_KINDS: dict[str, str] = {
     "AzureFirewall": "firewall",
     "VpnGateway": "vpn",
@@ -51,6 +76,60 @@ SHARED_SERVICE_KINDS: dict[str, str] = {
     "DnsResolver": "dns",
     "NatGateway": "egress",
 }
+
+
+def _subscription_group_id(
+    resource_id: str,
+    subscription_id: str = "",
+    *,
+    unknown_fallback: bool = False,
+) -> str:
+    """Return the compound-node identity used by the browser, if any."""
+    resolved = str(subscription_id or "").strip().casefold()
+    if not resolved and not unknown_fallback:
+        segments = str(resource_id or "").strip("/").split("/")
+        if (
+            len(segments) > 1
+            and segments[0].casefold() == "subscriptions"
+        ):
+            resolved = segments[1].casefold()
+    if resolved:
+        return f"subscription:{resolved}"
+    return "subscription:unknown" if unknown_fallback else ""
+
+
+def _summary_canvas_identity(
+    resources: list[dict[str, Any]],
+    unresolved_ids: tuple[str, ...] | list[str] = (),
+) -> tuple[set[str], set[str]]:
+    """Mirror resource-path client node and compound-group identities."""
+    node_ids = {
+        str(resource.get("id") or "").casefold()
+        for resource in resources
+        if resource.get("id")
+    }
+    node_ids.update(
+        str(resource_id).casefold()
+        for resource_id in unresolved_ids
+        if resource_id
+    )
+    group_ids = {
+        group_id
+        for resource in resources
+        if (
+            group_id := _subscription_group_id(
+                str(resource.get("id") or ""),
+                str(resource.get("subscription_id") or ""),
+                unknown_fallback=True,
+            )
+        )
+    }
+    group_ids.update(
+        group_id
+        for resource_id in unresolved_ids
+        if (group_id := _subscription_group_id(resource_id))
+    )
+    return node_ids, group_ids
 
 
 @dataclass(frozen=True)
@@ -139,9 +218,16 @@ class NetworkTopology:
     links: tuple[PeeringLink, ...] = ()
     shared_services: tuple[SharedService, ...] = ()
     unresolved_peer_vnet_ids: tuple[str, ...] = ()
+    unresolved_peers: tuple[dict[str, Any], ...] = ()
     connection_ids: tuple[str, ...] = ()
     snapshot: NetworkSnapshot = field(default_factory=NetworkSnapshot)
     semantic_relationships: tuple[dict[str, Any], ...] = ()
+    flow_log_provenance: dict[str, Any] = field(
+        default_factory=lambda: {
+            "state": "not_ingested",
+            "observed_flow_count": 0,
+        }
+    )
 
     @property
     def hubs(self) -> tuple[HubClassification, ...]:
@@ -183,19 +269,470 @@ class NetworkTopology:
                 return peer
         return ""
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "hubs": [hub.to_dict() for hub in self.hubs],
-            "spokes": [spoke.to_dict() for spoke in self.spokes],
-            "isolated": [item.to_dict() for item in self.isolated],
-            "links": [link.to_dict() for link in self.links],
-            "shared_services": [service.to_dict() for service in self.shared_services],
-            "resources": _topology_resources(self),
-            "relationships": _topology_relationships(self),
-            "unresolved_peer_vnet_ids": list(self.unresolved_peer_vnet_ids),
-            "connection_ids": list(self.connection_ids),
-            "counts": self.snapshot.counts(),
+    def projected_full_node_count(self) -> int:
+        """Return the exact number of resource-path client nodes.
+
+        ``buildTopologyGraph`` switches to its resource projection whenever
+        ``resources`` is non-empty.  In that path ``shared_services`` is
+        metadata only: the corresponding provider resources already exist in
+        ``resources`` and no synthetic ``*/sharedservice`` node is rendered.
+        Keep this identity union deliberately aligned with
+        ``buildResourceTopologyGraph`` rather than counting every server-side
+        collection independently.
+        """
+        node_ids = {
+            str(resource["id"]).casefold()
+            for resource in _topology_resources(self, detail="full")
         }
+        node_ids.update(
+            peer_id.casefold()
+            for peer_id in (
+                *self.unresolved_peer_vnet_ids,
+                *(
+                    str(peer.get("vnet_id") or "")
+                    for peer in self.unresolved_peers
+                ),
+            )
+            if peer_id
+        )
+        return len(node_ids)
+
+    def to_dict(self, *, detail: TopologyDetail = "full") -> dict[str, Any]:
+        """Serialize the topology at the requested additive detail level.
+
+        ``full`` is deliberately the default and preserves the historical
+        payload byte-for-byte. ``summary`` omits rule-level nodes and embedded
+        detail collections, then applies both measured enterprise ceilings.
+        """
+        all_resources = _topology_resources(self, detail=detail)
+        omitted_ids = _summary_omitted_resource_ids(self.snapshot) if detail == "summary" else set()
+        relationships, dropped_relationships = _topology_relationships(
+            self,
+            resource_ids={
+                str(resource["id"]).casefold() for resource in all_resources
+            },
+            intentionally_omitted_ids=omitted_ids,
+        )
+        counts: dict[str, Any] = {
+            **self.snapshot.counts(),
+            "dropped_relationships": dict(sorted(dropped_relationships.items())),
+        }
+
+        def serialize(
+            resources: list[dict[str, Any]],
+            *,
+            bounded_collections: dict[str, list[Any]] | None = None,
+            collection_totals: dict[str, int] | None = None,
+            byte_ceiling: int | None = None,
+        ) -> dict[str, Any]:
+            resource_ids = {
+                str(resource["id"]).casefold() for resource in resources
+            }
+            if bounded_collections is None:
+                serialized_hubs = [hub.to_dict() for hub in self.hubs]
+                serialized_spokes = [spoke.to_dict() for spoke in self.spokes]
+                serialized_isolated = [
+                    item.to_dict() for item in self.isolated
+                ]
+                serialized_links = [link.to_dict() for link in self.links]
+                serialized_shared_services = [
+                    service.to_dict() for service in self.shared_services
+                ]
+                visible_relationships = [
+                    relationship
+                    for relationship in relationships
+                    if relationship["source"] in resource_ids
+                    and relationship["target"] in resource_ids
+                ]
+                serialized_unresolved_ids = list(
+                    self.unresolved_peer_vnet_ids
+                )
+                serialized_unresolved_peers = [
+                    dict(item) for item in self.unresolved_peers
+                ]
+                serialized_connection_ids = list(self.connection_ids)
+            else:
+                serialized_hubs = bounded_collections["hubs"]
+                serialized_spokes = bounded_collections["spokes"]
+                serialized_isolated = bounded_collections["isolated"]
+                serialized_links = bounded_collections["links"]
+                serialized_shared_services = bounded_collections[
+                    "shared_services"
+                ]
+                visible_relationships = bounded_collections["relationships"]
+                serialized_unresolved_ids = bounded_collections[
+                    "unresolved_peer_vnet_ids"
+                ]
+                serialized_unresolved_peers = bounded_collections[
+                    "unresolved_peers"
+                ]
+                serialized_connection_ids = bounded_collections[
+                    "connection_ids"
+                ]
+            payload: dict[str, Any] = {
+                "hubs": serialized_hubs,
+                "spokes": serialized_spokes,
+                "isolated": serialized_isolated,
+                "links": serialized_links,
+                "shared_services": serialized_shared_services,
+                "resources": resources,
+                "relationships": visible_relationships,
+                "unresolved_peer_vnet_ids": serialized_unresolved_ids,
+                "unresolved_peers": serialized_unresolved_peers,
+                "connection_ids": serialized_connection_ids,
+                "counts": counts,
+                "flow_log_provenance": dict(self.flow_log_provenance),
+            }
+            if detail == "summary":
+                returned_unresolved_ids = {
+                    str(peer_id or "").casefold()
+                    for peer_id in serialized_unresolved_ids
+                    if peer_id
+                }
+                returned_unresolved_ids.update(
+                    str(peer.get("vnet_id") or "").casefold()
+                    for peer in serialized_unresolved_peers
+                    if peer.get("vnet_id")
+                )
+                returned_unresolved_ids.update(
+                    str(link.get("remote_vnet_id") or "").casefold()
+                    for link in serialized_links
+                    if (
+                        link.get("remote_vnet_id")
+                        and not link.get("remote_vnet_observed")
+                    )
+                )
+                returned_nodes, returned_groups = _summary_canvas_identity(
+                    resources,
+                    tuple(returned_unresolved_ids),
+                )
+                total_nodes, total_groups = _summary_canvas_identity(
+                    all_resources,
+                    [
+                        *self.unresolved_peer_vnet_ids,
+                        *(
+                            str(peer.get("vnet_id") or "")
+                            for peer in self.unresolved_peers
+                        ),
+                    ],
+                )
+                collection_coverage = (
+                    {
+                        name: {
+                            "total": collection_totals[name],
+                            "returned": len(bounded_collections[name]),
+                            "truncated": (
+                                len(bounded_collections[name])
+                                < collection_totals[name]
+                            ),
+                        }
+                        for name in bounded_collections
+                    }
+                    if collection_totals is not None
+                    else {}
+                )
+                relationship_total = (
+                    collection_totals["relationships"]
+                    + collection_totals["links"]
+                    if collection_totals is not None
+                    else len(visible_relationships) + len(serialized_links)
+                )
+                relationship_returned = (
+                    len(visible_relationships) + len(serialized_links)
+                )
+                payload["coverage"] = {
+                    "total": len(total_nodes),
+                    "returned": len(returned_nodes),
+                    "truncated": (
+                        len(returned_nodes) < len(total_nodes)
+                        or any(
+                            coverage["truncated"]
+                            for coverage in collection_coverage.values()
+                        )
+                    ),
+                    "nodes": {
+                        "total": len(total_nodes),
+                        "returned": len(returned_nodes),
+                        "truncated": len(returned_nodes) < len(total_nodes),
+                    },
+                    "groups": {
+                        "total": len(total_groups),
+                        "returned": len(returned_groups),
+                        "truncated": len(returned_groups) < len(total_groups),
+                    },
+                    "relationships": {
+                        "total": relationship_total,
+                        "returned": relationship_returned,
+                        "truncated": relationship_returned < relationship_total,
+                    },
+                }
+                if collection_totals is not None:
+                    payload["coverage"]["collections"] = collection_coverage
+                if byte_ceiling is not None:
+                    payload["coverage"]["byte_ceiling"] = byte_ceiling
+            if dropped_relationships:
+                total = sum(dropped_relationships.values())
+                breakdown = ", ".join(
+                    f"{relationship_type}={count}"
+                    for relationship_type, count in sorted(
+                        dropped_relationships.items()
+                    )
+                )
+                payload["warnings"] = [
+                    (
+                        f"{total} topology relationships dropped because an endpoint "
+                        f"was absent from this scope ({breakdown})"
+                    )
+                ]
+            return payload
+
+        if detail == "full":
+            return serialize(all_resources)
+
+        byte_ceiling = (
+            SUMMARY_SMALL_BYTE_CEILING
+            if len(all_resources) <= SUMMARY_SMALL_NODE_CAP
+            else SUMMARY_BYTE_CEILING
+        )
+        collection_totals = {
+            "hubs": len(self.hubs),
+            "spokes": len(self.spokes),
+            "isolated": len(self.isolated),
+            "links": len(self.links),
+            "shared_services": len(self.shared_services),
+            "relationships": len(relationships),
+            "unresolved_peer_vnet_ids": len(
+                self.unresolved_peer_vnet_ids
+            ),
+            "unresolved_peers": len(self.unresolved_peers),
+            "connection_ids": len(self.connection_ids),
+        }
+        empty_collections: dict[str, list[Any]] = {
+            name: [] for name in collection_totals
+        }
+
+        def serialized_size(payload: dict[str, Any]) -> int:
+            return len(json.dumps(payload).encode())
+
+        def resource_payload(count: int) -> dict[str, Any]:
+            return serialize(
+                all_resources[:count],
+                bounded_collections=empty_collections,
+                collection_totals=collection_totals,
+                byte_ceiling=byte_ceiling,
+            )
+
+        # Reserve one third of the complete envelope for relationships and
+        # the legacy topology summaries. Without this reservation a dense
+        # mesh can spend the entire budget on nodes and return no edges.
+        resource_byte_budget = byte_ceiling * 2 // 3
+        low, high = 0, min(len(all_resources), SUMMARY_NODE_CAP)
+        while low < high:
+            candidate = (low + high + 1) // 2
+            candidate_nodes, candidate_groups = _summary_canvas_identity(
+                all_resources[:candidate]
+            )
+            if (
+                len(candidate_nodes) + len(candidate_groups)
+                <= SUMMARY_NODE_CAP
+                and serialized_size(resource_payload(candidate))
+                <= resource_byte_budget
+            ):
+                low = candidate
+            else:
+                high = candidate - 1
+        resource_count = low
+        if (
+            all_resources
+            and resource_count < SUMMARY_MIN_NODES
+            and serialized_size(resource_payload(SUMMARY_MIN_NODES))
+            <= byte_ceiling
+        ):
+            resource_count = SUMMARY_MIN_NODES
+        resources = all_resources[:resource_count]
+        resource_ids = {
+            str(resource["id"]).casefold() for resource in resources
+        }
+
+        unresolved_candidates = dict.fromkeys(
+            [
+                *(
+                    str(peer_id or "")
+                    for peer_id in self.unresolved_peer_vnet_ids
+                ),
+                *(
+                    str(peer.get("vnet_id") or "")
+                    for peer in self.unresolved_peers
+                ),
+                *(
+                    link.remote_vnet_id
+                    for link in self.links
+                    if (
+                        link.local_vnet_id.casefold() in resource_ids
+                        and not link.remote_vnet_observed
+                    )
+                ),
+            ]
+        )
+        allowed_unresolved_ids: set[str] = set()
+        for unresolved_id in unresolved_candidates:
+            folded_id = unresolved_id.casefold()
+            if not folded_id or folded_id in resource_ids:
+                continue
+            candidate_unresolved = (*allowed_unresolved_ids, folded_id)
+            candidate_nodes, candidate_groups = _summary_canvas_identity(
+                resources,
+                candidate_unresolved,
+            )
+            if (
+                len(candidate_nodes) + len(candidate_groups)
+                > SUMMARY_NODE_CAP
+            ):
+                continue
+            allowed_unresolved_ids.add(folded_id)
+
+        candidate_links = [
+            link
+            for link in self.links
+            if link.local_vnet_id.casefold() in resource_ids
+            and (
+                link.remote_vnet_id.casefold() in resource_ids
+                or link.remote_vnet_id.casefold() in allowed_unresolved_ids
+            )
+        ]
+        unresolved_link_ids = {
+            link.remote_vnet_id.casefold()
+            for link in candidate_links
+            if not link.remote_vnet_observed
+        }
+        visible_connection_ids = {
+            str(resource.get("connection_id") or "")
+            for resource in resources
+            if resource.get("connection_id")
+        }
+
+        def serialized_shared_service(service: SharedService) -> dict[str, Any]:
+            item = service.to_dict()
+            item["consumer_vnet_ids"] = [
+                consumer_id
+                for consumer_id in item.get("consumer_vnet_ids", [])
+                if str(consumer_id).casefold() in resource_ids
+            ]
+            return item
+
+        candidates: dict[str, list[Any]] = {
+            "hubs": [
+                hub.to_dict()
+                for hub in self.hubs
+                if hub.vnet_id.casefold() in resource_ids
+            ],
+            "spokes": [
+                spoke.to_dict()
+                for spoke in self.spokes
+                if spoke.vnet_id.casefold() in resource_ids
+            ],
+            "isolated": [
+                item.to_dict()
+                for item in self.isolated
+                if item.vnet_id.casefold() in resource_ids
+            ],
+            "links": [link.to_dict() for link in candidate_links],
+            "shared_services": [
+                serialized_shared_service(service)
+                for service in self.shared_services
+                if service.provider_resource_id.casefold() in resource_ids
+            ],
+            "relationships": [
+                relationship
+                for relationship in relationships
+                if relationship["source"] in resource_ids
+                and relationship["target"] in resource_ids
+            ],
+            "unresolved_peer_vnet_ids": [
+                peer_id
+                for peer_id in self.unresolved_peer_vnet_ids
+                if (
+                    peer_id.casefold() in unresolved_link_ids
+                    and peer_id.casefold() in allowed_unresolved_ids
+                )
+            ],
+            "unresolved_peers": [
+                dict(peer)
+                for peer in self.unresolved_peers
+                if str(peer.get("vnet_id") or "").casefold()
+                in unresolved_link_ids
+                and str(peer.get("vnet_id") or "").casefold()
+                in allowed_unresolved_ids
+            ],
+            "connection_ids": [
+                connection_id
+                for connection_id in self.connection_ids
+                if connection_id in visible_connection_ids
+            ],
+        }
+        bounded: dict[str, list[Any]] = {
+            name: [] for name in collection_totals
+        }
+
+        def bounded_payload(
+            selected: dict[str, list[Any]],
+        ) -> dict[str, Any]:
+            return serialize(
+                resources,
+                bounded_collections=selected,
+                collection_totals=collection_totals,
+                byte_ceiling=byte_ceiling,
+            )
+
+        def fill_collection(name: str, target_bytes: int) -> None:
+            items = candidates[name]
+            low = len(bounded[name])
+            high = len(items)
+            while low < high:
+                candidate = (low + high + 1) // 2
+                selection = {
+                    **bounded,
+                    name: items[:candidate],
+                }
+                if serialized_size(bounded_payload(selection)) <= target_bytes:
+                    low = candidate
+                else:
+                    high = candidate - 1
+            bounded[name] = items[:low]
+
+        # Give each non-empty collection a fair first share, then use any
+        # remainder in graph-usefulness order. Every fit decision serializes
+        # the complete payload, so no unbounded sibling collection can hide
+        # outside the byte ceiling.
+        nonempty = [name for name, items in candidates.items() if items]
+        payload = bounded_payload(bounded)
+        fair_share = (
+            max(0, byte_ceiling - serialized_size(payload)) // len(nonempty)
+            if nonempty
+            else 0
+        )
+        for name in nonempty:
+            fill_collection(
+                name,
+                min(
+                    byte_ceiling,
+                    serialized_size(bounded_payload(bounded)) + fair_share,
+                ),
+            )
+        for name in (
+            "relationships",
+            "links",
+            "hubs",
+            "spokes",
+            "isolated",
+            "shared_services",
+            "unresolved_peer_vnet_ids",
+            "unresolved_peers",
+            "connection_ids",
+        ):
+            fill_collection(name, byte_ceiling)
+
+        return bounded_payload(bounded)
 
 
 class TopologyBuilder:
@@ -214,6 +751,9 @@ class TopologyBuilder:
         self,
         snapshot: NetworkSnapshot,
         semantic_relationships: tuple[dict[str, Any], ...] = (),
+        *,
+        flow_log_provenance: dict[str, Any] | None = None,
+        peer_resolutions: Mapping[str, str] | None = None,
     ) -> NetworkTopology:
         vnets = {vnet.resource_id: vnet for vnet in snapshot.vnets}
         links = self._stitch_peerings(snapshot, vnets)
@@ -228,6 +768,11 @@ class TopologyBuilder:
                 if not link.remote_vnet_observed and link.remote_vnet_id
             }
         )
+        unresolved_peers = self._unresolved_peers(
+            unresolved,
+            snapshot,
+            peer_resolutions,
+        )
         shared_services = self._attach_consumers(shared_services, classifications, links)
 
         return NetworkTopology(
@@ -235,10 +780,43 @@ class TopologyBuilder:
             links=tuple(links),
             shared_services=tuple(shared_services),
             unresolved_peer_vnet_ids=tuple(unresolved),
+            unresolved_peers=tuple(unresolved_peers),
             connection_ids=snapshot.connection_ids(),
             snapshot=snapshot,
             semantic_relationships=semantic_relationships,
+            flow_log_provenance=flow_log_provenance
+            or _flow_log_provenance(semantic_relationships),
         )
+
+    @staticmethod
+    def _unresolved_peers(
+        unresolved_ids: list[str],
+        snapshot: NetworkSnapshot,
+        peer_resolutions: Mapping[str, str] | None,
+    ) -> list[dict[str, Any]]:
+        """Describe missing peers without inferring facts unavailable here."""
+        if peer_resolutions is None:
+            observed_vnet_ids = {vnet.resource_id for vnet in snapshot.vnets}
+            resolutions = {
+                peer_id: "not_ingested"
+                for peer_id in unresolved_ids
+                if peer_id not in observed_vnet_ids
+            }
+        else:
+            resolutions = {
+                str(peer_id or "").casefold(): str(resolution or "")
+                for peer_id, resolution in peer_resolutions.items()
+            }
+
+        return [
+            {
+                "vnet_id": peer_id,
+                "peer_resolution": resolutions[peer_id],
+            }
+            for peer_id in unresolved_ids
+            if resolutions.get(peer_id) in PEER_RESOLUTION_VALUES
+            and resolutions[peer_id] != "observed"
+        ]
 
     def _stitch_peerings(
         self, snapshot: NetworkSnapshot, vnets: dict[str, VNet]
@@ -556,7 +1134,68 @@ def _firewall_rules_for(
     return [_rule_summary(rule) for rule in sorted(deduped.values(), key=lambda r: (r.name, r.resource_id))]
 
 
-def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
+def _lean_summary_node(node: dict[str, Any]) -> dict[str, Any]:
+    """Return a node without embedded collections available via drill-down."""
+    lean = dict(node)
+    details = dict(lean.get("details") or {})
+    duplicated_keys = {
+        "resource_id",
+        "name",
+        "entity_type",
+        "subscription_id",
+        "resource_group",
+        "location",
+        "connection_id",
+        "environment",
+        "business_service",
+        "application",
+        "owner",
+        "tags",
+    }
+    lean["details"] = {
+        key: value
+        for key, value in details.items()
+        if key not in duplicated_keys
+        and key not in _SUMMARY_OMITTED_DETAIL_KEYS
+        and not isinstance(value, (dict, list, tuple))
+    }
+    return lean
+
+
+def _summary_omitted_resource_ids(snapshot: NetworkSnapshot) -> set[str]:
+    omitted = {
+        resource_id.casefold()
+        for resource_id in (
+            *(
+                rule.resource_id
+                for nsg in snapshot.nsgs
+                for rule in nsg.rules
+            ),
+            *(
+                route.resource_id
+                for table in snapshot.route_tables
+                for route in table.routes
+            ),
+            *(
+                rule.resource_id
+                for collection in snapshot.firewall_collections
+                for rule in collection.rules
+            ),
+        )
+    }
+    omitted.update(
+        nic.resource_id
+        for nic in snapshot.nics
+        if not nic.attached_resource_id and not nic.nsg_id
+    )
+    return omitted
+
+
+def _topology_resources(
+    topology: NetworkTopology,
+    *,
+    detail: TopologyDetail = "full",
+) -> list[dict[str, Any]]:
     snapshot = topology.snapshot
     role_by_vnet = {item.vnet_id: item.role for item in topology.classifications}
     collections_by_firewall: dict[str, tuple[FirewallRuleCollection, ...]] = defaultdict(tuple)
@@ -570,7 +1209,11 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     nodes.extend(_resource_node(vnet, role=role_by_vnet.get(vnet.resource_id, "unknown")) for vnet in snapshot.vnets)
     nodes.extend(_resource_node(subnet) for subnet in snapshot.subnets)
-    nodes.extend(_resource_node(nic) for nic in snapshot.nics)
+    nodes.extend(
+        _resource_node(nic)
+        for nic in snapshot.nics
+        if detail == "full" or nic.attached_resource_id or nic.nsg_id
+    )
     nodes.extend(
         _resource_node(
             nsg,
@@ -582,7 +1225,8 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
         )
         for nsg in snapshot.nsgs
     )
-    nodes.extend(_resource_node(rule) for nsg in snapshot.nsgs for rule in nsg.rules)
+    if detail == "full":
+        nodes.extend(_resource_node(rule) for nsg in snapshot.nsgs for rule in nsg.rules)
     nodes.extend(
         _resource_node(
             table,
@@ -593,7 +1237,8 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
         )
         for table in snapshot.route_tables
     )
-    nodes.extend(_resource_node(route) for table in snapshot.route_tables for route in table.routes)
+    if detail == "full":
+        nodes.extend(_resource_node(route) for table in snapshot.route_tables for route in table.routes)
     nodes.extend(_resource_node(peering) for peering in snapshot.peerings)
     nodes.extend(
         _resource_node(
@@ -625,13 +1270,35 @@ def _topology_resources(topology: NetworkTopology) -> list[dict[str, Any]]:
         )
         for collection in snapshot.firewall_collections
     )
-    nodes.extend(_resource_node(rule) for collection in snapshot.firewall_collections for rule in collection.rules)
+    if detail == "full":
+        nodes.extend(
+            _resource_node(rule)
+            for collection in snapshot.firewall_collections
+            for rule in collection.rules
+        )
     nodes.extend(_resource_node(endpoint) for endpoint in snapshot.private_endpoints)
     nodes.extend(_resource_node(zone) for zone in snapshot.private_dns_zones)
     nodes.extend(_resource_node(gateway) for gateway in snapshot.gateways)
     nodes.extend(_resource_node(lb) for lb in snapshot.load_balancers)
-    nodes.extend(_attached_workload_nodes(snapshot))
+
+    # Attached workloads and inventory-backed private-link candidates share
+    # one case-insensitive identity map. A candidate wins over a placeholder
+    # because it carries authoritative service and public-access facts.
+    resources = {str(node["id"]).casefold(): node for node in nodes}
+    for node in _attached_workload_nodes(snapshot):
+        resources.setdefault(str(node["id"]).casefold(), node)
+    for resource in snapshot.private_link_resources:
+        node = _private_link_resource_node(resource)
+        resources[str(node["id"]).casefold()] = node
+
+    nodes = list(resources.values())
     nodes = _disambiguate_duplicate_names(nodes)
+    if detail == "summary":
+        nodes = [
+            _lean_summary_node(node)
+            for node in nodes
+            if node["entity_type"] not in _SUMMARY_OMITTED_ENTITY_TYPES
+        ]
     return sorted(nodes, key=lambda node: (node["entity_type"], node["name"], node["id"]))
 
 
@@ -676,6 +1343,31 @@ _WORKLOAD_ENTITY_TYPE_BY_PROVIDER = {
     "microsoft.cognitiveservices/accounts": "AIFoundryAccount",
     "microsoft.fabric/capacities": "FabricCapacity",
 }
+
+
+def _private_link_resource_node(resource: PrivateLinkResource) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "service_kind": resource.service_kind,
+        "public_network_access": resource.public_network_access,
+        "private_link_candidate": True,
+    }
+    if resource.resource_type == FABRIC_CAPACITY_RESOURCE_TYPE:
+        details.update(
+            {
+                "private_link_scope": FABRIC_PRIVATE_LINK_SCOPE,
+                "private_link_scope_qualification": (
+                    "Fabric private-link posture is evaluated at tenant or "
+                    "workspace scope, not capacity scope."
+                ),
+            }
+        )
+
+    node = _resource_node(resource, role="private_link", details=details)
+    node["entity_type"] = (
+        _WORKLOAD_ENTITY_TYPE_BY_PROVIDER.get(resource.resource_type)
+        or resource.entity_type
+    )
+    return node
 
 
 def _attached_workload_nodes(snapshot: NetworkSnapshot) -> list[dict[str, Any]]:
@@ -744,19 +1436,68 @@ def _relationship(
     }
 
 
+def _is_flow_log_observation(relationship: Mapping[str, Any]) -> bool:
+    if str(relationship.get("predicate") or "").casefold() != "trafficobserved":
+        return False
+    attributes = relationship.get("attributes")
+    return (
+        isinstance(attributes, Mapping)
+        and attributes.get("dataSource") == "traffic_analytics"
+    )
+
+
+def _flow_log_provenance(
+    semantic_relationships: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    observed = sum(
+        1 for relationship in semantic_relationships if _is_flow_log_observation(relationship)
+    )
+    return {
+        "state": "ingested_not_analyzed" if observed else "not_ingested",
+        "observed_flow_count": observed,
+    }
+
+
 def _has_resource(resource_ids: set[str], resource_id: str) -> bool:
-    return bool(resource_id and resource_id in resource_ids)
+    return bool(resource_id and resource_id.casefold() in resource_ids)
 
 
-def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
+def _topology_relationships(
+    topology: NetworkTopology,
+    *,
+    resource_ids: set[str],
+    intentionally_omitted_ids: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     snapshot = topology.snapshot
-    resource_ids = {node["id"] for node in _topology_resources(topology)}
+    intentionally_omitted_ids = intentionally_omitted_ids or set()
     relationships: dict[str, dict[str, Any]] = {}
+    dropped_relationships: dict[str, int] = {}
 
     def add(source: str, target: str, relationship_type: str, *, label: str = "", details: dict[str, Any] | None = None) -> None:
-        if not (_has_resource(resource_ids, source) and _has_resource(resource_ids, target)):
+        source_id = str(source or "").casefold()
+        target_id = str(target or "").casefold()
+        if not source_id or not target_id:
             return
-        relationship = _relationship(source, target, relationship_type, label=label, details=details)
+        if not (
+            _has_resource(resource_ids, source_id)
+            and _has_resource(resource_ids, target_id)
+        ):
+            if (
+                source_id in intentionally_omitted_ids
+                or target_id in intentionally_omitted_ids
+            ):
+                return
+            dropped_relationships[relationship_type] = (
+                dropped_relationships.get(relationship_type, 0) + 1
+            )
+            return
+        relationship = _relationship(
+            source_id,
+            target_id,
+            relationship_type,
+            label=label,
+            details=details,
+        )
         relationships[relationship["id"]] = relationship
 
     def add_hosted(resource: Any, label: str) -> None:
@@ -776,6 +1517,7 @@ def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
         "attachedto": "attached_to",
         "loadbalances": "load_balances",
         "hosts": "hosts",
+        "resolvesfor": "resolves_for",
     }
     for semantic in topology.semantic_relationships:
         predicate = str(semantic.get("predicate") or "").casefold()
@@ -875,16 +1617,19 @@ def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
         for circuit_id in gateway.connected_circuit_ids:
             add(gateway.resource_id, circuit_id, "connects_to", label="connects to circuit")
 
-    if not topology.semantic_relationships:
-        for lb in snapshot.load_balancers:
-            add_hosted(lb, "hosts load balancer")
-            add(lb.resource_id, lb.subnet_id, "attached_to", label="attached to subnet")
-            for backend_id in lb.backend_resource_ids:
-                add(lb.resource_id, backend_id, "load_balances", label="load balances")
-            for backend_subnet_id in lb.backend_subnet_ids:
-                add(lb.resource_id, backend_subnet_id, "load_balances", label="load balances subnet")
-            if lb.managed_resource_id:
-                add(lb.managed_resource_id, lb.resource_id, "hosts", label="uses internal load balancer")
+    # Inventory-derived load-balancer edges are authoritative regardless of
+    # whether semantic provenance is also available. ``add`` keys every edge
+    # by relationship identity, so an equivalent semantic edge collapses
+    # without suppressing the inventory-only hosting and attachment edges.
+    for lb in snapshot.load_balancers:
+        add_hosted(lb, "hosts load balancer")
+        add(lb.resource_id, lb.subnet_id, "attached_to", label="attached to subnet")
+        for backend_id in lb.backend_resource_ids:
+            add(lb.resource_id, backend_id, "load_balances", label="load balances")
+        for backend_subnet_id in lb.backend_subnet_ids:
+            add(lb.resource_id, backend_subnet_id, "load_balances", label="load balances subnet")
+        if lb.managed_resource_id:
+            add(lb.managed_resource_id, lb.resource_id, "hosts", label="uses internal load balancer")
 
     for service in topology.shared_services:
         for consumer_id in service.consumer_vnet_ids:
@@ -907,4 +1652,14 @@ def _topology_relationships(topology: NetworkTopology) -> list[dict[str, Any]]:
         if item["relationship_type"] == "linked_to" and (item["source"], item["target"]) in served_pairs:
             del relationships[key]
 
-    return sorted(relationships.values(), key=lambda item: (item["relationship_type"], item["source"], item["target"]))
+    return (
+        sorted(
+            relationships.values(),
+            key=lambda item: (
+                item["relationship_type"],
+                item["source"],
+                item["target"],
+            ),
+        ),
+        dropped_relationships,
+    )

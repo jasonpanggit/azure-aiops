@@ -11,12 +11,86 @@ from network_scenario import (
     network_rows,
 )
 
-from network import build_service, build_topology, load_network_snapshot
-from network.topology import HUB_SCORE_THRESHOLD
+from network import (
+    NetworkIntelligenceService,
+    NetworkScope,
+    NetworkSnapshot,
+    VNet,
+    VNetPeering,
+    build_service,
+    build_topology,
+    load_network_snapshot,
+)
+from network.models import PrivateEndpoint, PrivateLinkResource
+from network.tightening import RuleFinding
+from network.topology import HUB_SCORE_THRESHOLD, PEER_RESOLUTION_VALUES
 
 
 def _topology():
     return build_topology(load_network_snapshot(network_rows()))
+
+
+class TestRuleFindingAffectedResources:
+    def test_nsg_findings_name_the_subnets_and_nics_the_control_protects(self) -> None:
+        service = build_service(network_rows())
+        finding = next(
+            item
+            for item in service.rule_findings
+            if item.control == "nsg" and item.affected_resource_ids
+        )
+        nsg = next(
+            item
+            for item in service.snapshot.nsgs
+            if item.resource_id == finding.control_id
+        )
+
+        assert finding.affected_resource_ids == tuple(
+            sorted({*nsg.subnet_ids, *nsg.nic_ids})
+        )
+
+    def test_firewall_findings_name_the_network_the_collection_governs(self) -> None:
+        service = build_service(network_rows())
+        finding = next(
+            item
+            for item in service.rule_findings
+            if item.control == "azure_firewall"
+        )
+
+        assert finding.affected_resource_ids
+        assert any("/subnets/" in item for item in finding.affected_resource_ids)
+        assert any(
+            "/virtualnetworks/" in item and "/subnets/" not in item
+            for item in finding.affected_resource_ids
+        )
+
+    def test_legacy_finding_payload_uses_an_empty_optional_collection(self) -> None:
+        legacy = {
+            "finding_id": "finding-1",
+            "category": "any_any",
+            "severity": "critical",
+            "rule_id": "/rules/1",
+            "rule_name": "allow-all",
+            "control": "nsg",
+            "control_id": "/nsgs/1",
+            "title": "Broad rule",
+            "detail": "Existing detail",
+            "evidence": {"source": "*"},
+            "recommendation": "Narrow the rule",
+        }
+
+        finding = RuleFinding(**legacy)
+
+        assert finding.affected_resource_ids == ()
+        assert {
+            key: value
+            for key, value in finding.to_dict().items()
+            if key != "affected_resource_ids"
+        } == {
+            **legacy,
+            "connection_id": "",
+            "subscription_id": "",
+            "environment": "",
+        }
 
 
 class TestHubClassification:
@@ -113,6 +187,104 @@ class TestPeeringStitching:
         assert topology.hub_for(PROD_VNET.casefold()) == HUB_VNET.casefold()
 
 
+class TestPeerResolution:
+    VNET_A = "/subscriptions/sub-a/resourceGroups/rg-a/providers/Microsoft.Network/virtualNetworks/a"
+    VNET_B = "/subscriptions/sub-b/resourceGroups/rg-b/providers/Microsoft.Network/virtualNetworks/b"
+    VNET_C = "/subscriptions/sub-c/resourceGroups/rg-c/providers/Microsoft.Network/virtualNetworks/c"
+
+    @classmethod
+    def _service(cls) -> NetworkIntelligenceService:
+        vnet_a = VNet(
+            resource_id=cls.VNET_A,
+            name="a",
+            subscription_id="sub-a",
+            resource_group="rg-a",
+        )
+        vnet_b = VNet(
+            resource_id=cls.VNET_B,
+            name="b",
+            subscription_id="sub-b",
+            resource_group="rg-b",
+        )
+        peer_b = VNetPeering(
+            resource_id=f"{cls.VNET_A}/virtualNetworkPeerings/to-b",
+            name="to-b",
+            subscription_id="sub-a",
+            resource_group="rg-a",
+            local_vnet_id=cls.VNET_A,
+            remote_vnet_id=cls.VNET_B,
+            peering_state="Connected",
+        )
+        peer_c = VNetPeering(
+            resource_id=f"{cls.VNET_A}/virtualNetworkPeerings/to-c",
+            name="to-c",
+            subscription_id="sub-a",
+            resource_group="rg-a",
+            local_vnet_id=cls.VNET_A,
+            remote_vnet_id=cls.VNET_C,
+            peering_state="Connected",
+        )
+        return NetworkIntelligenceService(
+            NetworkSnapshot(
+                vnets=(vnet_a, vnet_b),
+                peerings=(peer_b, peer_c),
+            )
+        )
+
+    def test_scoped_topology_distinguishes_excluded_and_not_ingested_peers(
+        self,
+    ) -> None:
+        payload = self._service().scoped(
+            NetworkScope(subscription_ids=("sub-a",))
+        ).topology.to_dict()
+
+        assert payload["unresolved_peers"] == [
+            {
+                "vnet_id": self.VNET_B.casefold(),
+                "peer_resolution": "excluded_by_scope",
+            },
+            {
+                "vnet_id": self.VNET_C.casefold(),
+                "peer_resolution": "not_ingested",
+            },
+        ]
+        assert payload["unresolved_peer_vnet_ids"] == [
+            self.VNET_B.casefold(),
+            self.VNET_C.casefold(),
+        ]
+
+    def test_peer_resolution_values_are_closed(self) -> None:
+        assert PEER_RESOLUTION_VALUES == frozenset(
+            {"not_ingested", "excluded_by_scope", "observed"}
+        )
+        payload = self._service().scoped(
+            NetworkScope(subscription_ids=("sub-a",))
+        ).topology.to_dict()
+        assert {
+            item["peer_resolution"] for item in payload["unresolved_peers"]
+        } <= PEER_RESOLUTION_VALUES
+
+    def test_empty_scope_never_marks_peer_excluded(self) -> None:
+        payload = self._service().scoped(NetworkScope()).topology.to_dict()
+
+        assert all(
+            item["peer_resolution"] != "excluded_by_scope"
+            for item in payload["unresolved_peers"]
+        )
+        assert payload["unresolved_peer_vnet_ids"] == [self.VNET_C.casefold()]
+
+    def test_widening_scope_restores_real_vnet_kind(self) -> None:
+        payload = self._service().scoped(
+            NetworkScope(subscription_ids=("sub-a", "sub-b"))
+        ).topology.to_dict()
+
+        assert self.VNET_B.casefold() not in {
+            item["vnet_id"] for item in payload["unresolved_peers"]
+        }
+        by_id = {item["id"]: item for item in payload["resources"]}
+        assert by_id[self.VNET_B.casefold()]["entity_type"] == "VNet"
+
+
 class TestSharedServices:
     def test_hub_services_are_promoted(self) -> None:
         kinds = {service.service_kind for service in _topology().shared_services}
@@ -162,6 +334,228 @@ class TestConnectionScope:
         assert firewall["details"]["rules"]
         assert nsg["details"]["rules"]
         assert route_table["details"]["routes"]
+
+
+class TestPrivateLinkProjection:
+    FABRIC_ID = (
+        "/subscriptions/sub-a/resourceGroups/rg-data/providers/"
+        "Microsoft.Fabric/capacities/fabric-capacity"
+    )
+    AI_ID = (
+        "/subscriptions/sub-a/resourceGroups/rg-ai/providers/"
+        "Microsoft.CognitiveServices/accounts/foundry-tools"
+    )
+
+    @classmethod
+    def _resource(
+        cls,
+        resource_id: str,
+        *,
+        name: str,
+        resource_type: str,
+        service_kind: str,
+        subscription_id: str = "sub-a",
+    ) -> PrivateLinkResource:
+        return PrivateLinkResource(
+            resource_id=resource_id,
+            name=name,
+            subscription_id=subscription_id,
+            resource_group="rg-private-link",
+            connection_id=f"conn-{subscription_id}",
+            service_kind=service_kind,
+            resource_type=resource_type,
+            public_network_access="Enabled",
+        )
+
+    def test_fabric_and_ai_resources_project_with_workload_types_and_details(self) -> None:
+        snapshot = NetworkSnapshot(
+            private_link_resources=(
+                self._resource(
+                    self.FABRIC_ID,
+                    name="fabric-capacity",
+                    resource_type="Microsoft.Fabric/capacities",
+                    service_kind="Microsoft Fabric",
+                ),
+                self._resource(
+                    self.AI_ID,
+                    name="foundry-tools",
+                    resource_type="Microsoft.CognitiveServices/accounts",
+                    service_kind="Azure AI Services",
+                ),
+            )
+        )
+
+        resources = build_topology(snapshot).to_dict()["resources"]
+        by_id = {resource["id"].casefold(): resource for resource in resources}
+
+        assert len(resources) == 2
+        assert by_id[self.FABRIC_ID.casefold()]["entity_type"] == "FabricCapacity"
+        assert by_id[self.AI_ID.casefold()]["entity_type"] == "AIFoundryAccount"
+        assert by_id[self.FABRIC_ID.casefold()]["details"] | {
+            "service_kind": "Microsoft Fabric",
+            "public_network_access": "Enabled",
+            "private_link_candidate": True,
+            "private_link_scope": "tenant_or_workspace",
+        } == by_id[self.FABRIC_ID.casefold()]["details"]
+        assert by_id[self.AI_ID.casefold()]["details"] | {
+            "service_kind": "Azure AI Services",
+            "public_network_access": "Enabled",
+            "private_link_candidate": True,
+        } == by_id[self.AI_ID.casefold()]["details"]
+
+    def test_missing_private_endpoint_gap_ids_resolve_to_projected_nodes(self) -> None:
+        service = NetworkIntelligenceService(
+            NetworkSnapshot(
+                private_link_resources=(
+                    self._resource(
+                        self.FABRIC_ID,
+                        name="fabric-capacity",
+                        resource_type="Microsoft.Fabric/capacities",
+                        service_kind="Microsoft Fabric",
+                    ),
+                    self._resource(
+                        self.AI_ID,
+                        name="foundry-tools",
+                        resource_type="Microsoft.CognitiveServices/accounts",
+                        service_kind="Azure AI Services",
+                    ),
+                )
+            )
+        )
+
+        node_ids = {
+            resource["id"].casefold()
+            for resource in service.topology.to_dict()["resources"]
+        }
+        gaps = [
+            gap
+            for gap in service.gaps
+            if gap.category == "missing_private_endpoint"
+        ]
+
+        assert [gap.resource_id for gap in gaps] == [self.AI_ID.casefold()]
+        assert all(gap.resource_id.casefold() in node_ids for gap in gaps)
+
+    def test_private_link_resource_already_projected_as_workload_is_not_duplicated(
+        self,
+    ) -> None:
+        target_id = self.AI_ID.swapcase()
+        snapshot = NetworkSnapshot(
+            private_endpoints=(
+                PrivateEndpoint(
+                    resource_id=(
+                        "/subscriptions/sub-a/resourceGroups/rg-network/providers/"
+                        "Microsoft.Network/privateEndpoints/ai-pe"
+                    ),
+                    name="ai-pe",
+                    subscription_id="sub-a",
+                    resource_group="rg-network",
+                    target_resource_id=target_id,
+                ),
+            ),
+            private_link_resources=(
+                self._resource(
+                    self.AI_ID,
+                    name="foundry-tools",
+                    resource_type="Microsoft.CognitiveServices/accounts",
+                    service_kind="Azure AI Services",
+                ),
+            ),
+        )
+
+        matches = [
+            resource
+            for resource in build_topology(snapshot).to_dict()["resources"]
+            if resource["id"].casefold() == self.AI_ID.casefold()
+        ]
+
+        assert len(matches) == 1
+        assert matches[0]["entity_type"] == "AIFoundryAccount"
+        assert matches[0]["details"]["private_link_candidate"] is True
+
+    def test_summary_reports_exact_projected_full_node_count(self) -> None:
+        endpoints = tuple(
+            PrivateEndpoint(
+                resource_id=(
+                    "/subscriptions/sub-a/resourceGroups/rg-network/providers/"
+                    f"Microsoft.Network/privateEndpoints/pe-{index}"
+                ),
+                name=f"pe-{index}",
+                subscription_id="sub-a",
+                resource_group="rg-network",
+                target_resource_id=(
+                    "/subscriptions/sub-a/resourceGroups/rg-app/providers/"
+                    f"Microsoft.Web/sites/app-{index}"
+                ),
+            )
+            for index in range(800)
+        )
+        analysis = NetworkIntelligenceService(
+            NetworkSnapshot(private_endpoints=endpoints)
+        ).analyze()
+        summary_payload = analysis.summary()
+        full_payload = analysis.topology.to_dict(detail="full")
+
+        assert sum(analysis.topology.snapshot.counts().values()) == 800
+        assert len(full_payload["resources"]) == 1_600
+        assert (
+            summary_payload["projected_full_node_count"]
+            == len(full_payload["resources"])
+        )
+
+    def test_unrecognised_private_link_provider_uses_generic_type(self) -> None:
+        resource_id = (
+            "/subscriptions/sub-a/resourceGroups/rg/providers/"
+            "Contoso.Widgets/widgets/widget-1"
+        )
+        snapshot = NetworkSnapshot(
+            private_link_resources=(
+                self._resource(
+                    resource_id,
+                    name="widget-1",
+                    resource_type="Contoso.Widgets/widgets",
+                    service_kind="Contoso Widgets",
+                ),
+            )
+        )
+
+        resources = build_topology(snapshot).to_dict()["resources"]
+
+        assert len(resources) == 1
+        assert resources[0]["entity_type"] == "PrivateLinkResource"
+
+    def test_scoped_projection_excludes_out_of_scope_private_link_resources(
+        self,
+    ) -> None:
+        foreign_id = self.AI_ID.replace("sub-a", "sub-b")
+        service = NetworkIntelligenceService(
+            NetworkSnapshot(
+                private_link_resources=(
+                    self._resource(
+                        self.AI_ID,
+                        name="foundry-tools-a",
+                        resource_type="Microsoft.CognitiveServices/accounts",
+                        service_kind="Azure AI Services",
+                    ),
+                    self._resource(
+                        foreign_id,
+                        name="foundry-tools-b",
+                        resource_type="Microsoft.CognitiveServices/accounts",
+                        service_kind="Azure AI Services",
+                        subscription_id="sub-b",
+                    ),
+                )
+            )
+        )
+
+        resources = service.scoped(
+            NetworkScope(subscription_ids=("sub-a",))
+        ).topology.to_dict()["resources"]
+
+        assert [resource["id"] for resource in resources] == [self.AI_ID.casefold()]
+
+
+class TestResourceTopologyProjection:
 
     def test_shared_service_summaries_do_not_duplicate_provider_resource_nodes(self) -> None:
         payload = _topology().to_dict()

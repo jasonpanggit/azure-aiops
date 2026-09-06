@@ -49,6 +49,13 @@ them so an endpoint is not a dead end:
 | `container-registry.svg` | Container Registries |
 | `container-app.svg` | Container Apps Environments |
 | `app-service.svg` | App Services |
+| `ai-services.svg` | Azure AI Services |
+
+Microsoft Fabric capacities are intentionally icon-less. The Azure Public
+Service Icons V21 archive has no Microsoft Fabric product glyph, and the
+similarly named Azure Service Fabric icons represent a different service.
+Fabric nodes therefore use the existing icon-less workload tile; do not add or
+map a `fabric.svg` substitute.
 
 To add a service kind, place the unmodified official SVG here and map it in
 `SERVICE_ICONS` in `src/lib/network-graph.ts`. To add a workload, map its ARM

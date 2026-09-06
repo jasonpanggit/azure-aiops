@@ -12,6 +12,9 @@ which is materially different from "the design is satisfied".
 from __future__ import annotations
 
 import json
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -388,6 +391,22 @@ class NetworkDesignPolicyValidationError(ValueError):
     """Raised when a policy update would leave the policy unusable."""
 
 
+class NetworkDesignPolicyDocumentError(NetworkDesignPolicyValidationError):
+    """Raised when a present persisted policy document is structurally invalid."""
+
+
+class NetworkDesignPolicyRevisionConflict(RuntimeError):
+    """Raised when a policy writer targets a superseded revision."""
+
+    def __init__(self, expected: int, current: int) -> None:
+        self.expected = expected
+        self.current = current
+        super().__init__(
+            f"Network design policy revision {current} does not match "
+            f"expected {expected}; reload and retry"
+        )
+
+
 def validate_policy_update(changes: dict[str, Any]) -> None:
     """Rejects a subset of malformed edits before they are ever persisted.
 
@@ -423,53 +442,169 @@ class NetworkDesignPolicyStore:
     """Reads and writes the UI-editable network design policy document.
 
     Same shape as :class:`~intelligence.governance.settings.EnterpriseSettingsStore`:
-    a single revision-checked document, defaulted on read, validated on
-    write, with an in-memory fallback when no document store is configured
-    (correct for a single-process local run, never reached in a deployed
-    replica with OneLake configured).
+    a single revision-checked document, defaulted only when genuinely absent,
+    validated on read and write, with an in-memory fallback when no document
+    store is configured (correct for a single-process local run, never reached
+    in a deployed replica with OneLake configured).
     """
 
-    def __init__(self, documents: Any = None) -> None:
+    def __init__(
+        self,
+        documents: Any = None,
+        *,
+        revision_cache_seconds: float = 1.0,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if revision_cache_seconds < 0:
+            raise ValueError("revision_cache_seconds cannot be negative")
         self._documents = documents
-        self._memory: dict[str, Any] | None = None
+        self._memory: dict[str, Any] = {}
+        self._lock = threading.RLock()
+        self._revision_cache_seconds = revision_cache_seconds
+        self._monotonic = monotonic
+        self._cached_revision: int | None = None
+        self._revision_checked_at = float("-inf")
 
     def read(self) -> NetworkDesignPolicy:
-        if self._documents is None:
-            return NetworkDesignPolicy.from_mapping(self._memory or {})
-        payload = self._documents.read(POLICY_DOCUMENT)
-        stored = payload.get("policy")
-        return NetworkDesignPolicy.from_mapping(stored if isinstance(stored, dict) else {})
+        with self._lock:
+            policy, _revision = self._read_policy_document()
+            return policy
 
-    def update(self, changes: dict[str, Any]) -> NetworkDesignPolicy:
+    def read_with_revision_or_raise(
+        self,
+    ) -> tuple[NetworkDesignPolicy, int]:
+        """Read one authoritative policy document and its matching revision.
+
+        Provider construction must not combine a strict revision probe with a
+        second fail-open body read: that can publish the default policy as
+        healthy when OneLake fails between those operations.
+        """
+        with self._lock:
+            policy, revision = self._read_policy_document()
+            self._cached_revision = revision
+            self._revision_checked_at = self._monotonic()
+            return policy, revision
+
+    @property
+    def revision(self) -> int:
+        """Return the last known revision, preserving the fail-open read API."""
+        try:
+            return self.revision_or_raise()
+        # Credential and transport SDKs do not share one stable exception
+        # base; this compatibility accessor must preserve the last known key.
+        except Exception:  # noqa: BLE001
+            with self._lock:
+                return (
+                    self._cached_revision
+                    if self._cached_revision is not None
+                    else 0
+                )
+
+    def revision_or_raise(self) -> int:
+        """Return a short-lived revision, surfacing store read failures."""
+        with self._lock:
+            now = self._monotonic()
+            if (
+                self._cached_revision is not None
+                and now - self._revision_checked_at
+                < self._revision_cache_seconds
+            ):
+                return self._cached_revision
+            revision = int(
+                self._read_document(strict=True).get("revision") or 0
+            )
+            self._cached_revision = revision
+            self._revision_checked_at = now
+            return revision
+
+    def update(
+        self,
+        changes: dict[str, Any],
+        *,
+        expected_revision: int | None = None,
+    ) -> NetworkDesignPolicy:
         """Applies a partial update and returns the full effective policy."""
         validate_policy_update(changes)
-        merged = self._merge_changes(changes)
-        if self._documents is None:
-            self._memory = merged
-            return NetworkDesignPolicy.from_mapping(merged)
-
-        payload = self._documents.read(POLICY_DOCUMENT)
-        revision = int(payload.get("revision") or 0)
-        self._documents.write(
-            POLICY_DOCUMENT,
-            {"policy": merged, "revision": revision + 1},
-            expected_revision=revision,
-        )
+        with self._lock:
+            current, revision = self._read_policy_document()
+            if expected_revision is not None and expected_revision != revision:
+                raise NetworkDesignPolicyRevisionConflict(
+                    expected_revision,
+                    revision,
+                )
+            merged = self._merge_changes(changes, current=current)
+            document = {"policy": merged, "revision": revision + 1}
+            if self._documents is None:
+                self._memory = document
+            else:
+                self._documents.write(
+                    POLICY_DOCUMENT,
+                    document,
+                    expected_revision=revision,
+                )
+            self._cached_revision = revision + 1
+            self._revision_checked_at = self._monotonic()
         return NetworkDesignPolicy.from_mapping(merged)
 
     def preview(self, changes: dict[str, Any]) -> NetworkDesignPolicy:
         """Returns the effective policy for changes without persisting them."""
         validate_policy_update(changes)
-        return NetworkDesignPolicy.from_mapping(self._merge_changes(changes))
+        with self._lock:
+            current, _revision = self._read_policy_document()
+            return NetworkDesignPolicy.from_mapping(
+                self._merge_changes(changes, current=current)
+            )
 
-    def _merge_changes(self, changes: dict[str, Any]) -> dict[str, Any]:
-        current = self.read().to_dict()
-        merged = {**current, **changes}
+    def _read_policy_document(self) -> tuple[NetworkDesignPolicy, int]:
+        """Decode one authoritative body, defaulting only a missing document."""
+        payload = self._read_document(strict=True)
+        if not payload:
+            return NetworkDesignPolicy(), 0
+        if "policy" not in payload:
+            raise NetworkDesignPolicyDocumentError(
+                "Network policy document is missing policy"
+            )
+        stored = payload["policy"]
+        if not isinstance(stored, dict):
+            raise NetworkDesignPolicyDocumentError(
+                "Network policy document policy must be an object"
+            )
+        try:
+            revision = int(payload.get("revision", 0))
+        except (TypeError, ValueError) as exc:
+            raise NetworkDesignPolicyDocumentError(
+                "Network policy document revision must be a non-negative integer"
+            ) from exc
+        if revision < 0:
+            raise NetworkDesignPolicyDocumentError(
+                "Network policy document revision must be a non-negative integer"
+            )
+        return NetworkDesignPolicy.from_mapping(stored), revision
+
+    def _read_document(self, *, strict: bool = False) -> dict[str, Any]:
+        if self._documents is None:
+            return self._memory
+        if strict:
+            strict_reader = getattr(self._documents, "read_or_raise", None)
+            if callable(strict_reader):
+                return strict_reader(POLICY_DOCUMENT)
+        return self._documents.read(POLICY_DOCUMENT)
+
+    def _merge_changes(
+        self,
+        changes: dict[str, Any],
+        *,
+        current: NetworkDesignPolicy,
+    ) -> dict[str, Any]:
+        current_payload = current.to_dict()
+        merged = {**current_payload, **changes}
         # Rules replace by rule_id rather than requiring the whole list to be
         # resubmitted, so a UI toggling one rule's ``enabled`` flag does not
         # need to round-trip every other rule first.
         if "rules" in changes:
-            existing_rules = {item["rule_id"]: item for item in current.get("rules") or []}
+            existing_rules = {
+                item["rule_id"]: item for item in current_payload.get("rules") or []
+            }
             for item in changes["rules"]:
                 if isinstance(item, dict) and item.get("rule_id"):
                     existing_rules[str(item["rule_id"])] = item

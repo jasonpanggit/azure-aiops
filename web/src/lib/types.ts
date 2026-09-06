@@ -54,6 +54,14 @@ export interface Pagination {
   next_offset: number | null;
 }
 
+/** Honest server-side collection coverage. Optional on additive consumers so
+ * payloads from an older API remain valid during rolling deployment. */
+export interface CollectionCoverage {
+  total: number;
+  returned: number;
+  truncated: boolean;
+}
+
 /** Every successful response body: `{ data, evidence[], scope{}, knowledge_version, warnings[], pagination? }`. */
 export interface Envelope<T> {
   data: T;
@@ -1637,6 +1645,26 @@ export interface NetworkTopologyRelationship {
   details: Record<string, unknown>;
 }
 
+export interface NetworkTopologyResourceDetails {
+  resource_id: string;
+  detail_type: "rules" | "routes" | "rule_collections" | "";
+  items: Record<string, unknown>[];
+  coverage: CollectionCoverage;
+}
+
+export interface FlowLogProvenance {
+  state: "not_ingested" | "ingested_not_analyzed" | "analyzed";
+  observed_flow_count: number;
+}
+
+export interface TopologyCoverage extends CollectionCoverage {
+  byte_ceiling?: number;
+  nodes?: CollectionCoverage;
+  groups?: CollectionCoverage;
+  relationships?: CollectionCoverage;
+  collections?: Record<string, CollectionCoverage>;
+}
+
 export interface NetworkTopology {
   hubs: HubClassification[];
   spokes: HubClassification[];
@@ -1650,8 +1678,19 @@ export interface NetworkTopology {
   /** Peers referenced by an observed VNet but never ingested — i.e. a
    * subscription that has not been onboarded. Rendered as a known unknown. */
   unresolved_peer_vnet_ids: string[];
+  /** Additive reasoned peer projection. Older payloads omit this collection. */
+  unresolved_peers?: Array<{
+    vnet_id: string;
+    peer_resolution: "not_ingested" | "excluded_by_scope" | "observed";
+    subscription_id?: string | null;
+  }>;
   connection_ids: string[];
-  counts: Record<string, number>;
+  counts: Record<string, number | Record<string, number>>;
+  coverage?: TopologyCoverage;
+  /** Server-authored integrity warnings produced while projecting the graph. */
+  warnings?: string[];
+  /** Whether flow-log evidence exists and whether rule analysis consumed it. */
+  flow_log_provenance?: FlowLogProvenance;
 }
 
 export interface NetworkSummary {
@@ -1673,6 +1712,8 @@ export interface NetworkSummary {
    * can then be found, never conformance gaps. */
   intended_design_declared: boolean;
   resource_counts: Record<string, number>;
+  /** Exact de-duplicated node count produced by a full-detail projection. */
+  projected_full_node_count: number;
 }
 
 export interface NetworkGap {
@@ -1707,6 +1748,11 @@ export interface NetworkPolicyRule {
   /** Whether the analyzer has a gap check for this rule. Absent on older
    * API responses, in which case evaluability is unknown. */
   evaluated?: boolean;
+  /** Server classification for rules backed by the declarative engine. */
+  declarative?: boolean;
+  /** Server-owned semantic validation failure; the browser never recreates
+   * this validation contract. */
+  invalid_reason?: string;
 }
 
 /** The full design policy gap analysis is checked against. */
@@ -1728,6 +1774,11 @@ export interface NetworkDesignPolicy {
   exempt_subnet_names: string[];
   exempt_vnet_names: string[];
   rules: NetworkPolicyRule[];
+  /** Additive engine vocabulary used for rule-authoring help and controls. */
+  supported_targets?: string[];
+  supported_operators?: string[];
+  unevaluated_rule_ids?: string[];
+  invalid_rule_ids?: string[];
 }
 
 export interface RuleFinding {
@@ -1738,6 +1789,8 @@ export interface RuleFinding {
   rule_name: string;
   control: string;
   control_id: string;
+  /** Resources whose posture is affected by this control-level finding. */
+  affected_resource_ids?: string[];
   title: string;
   detail: string;
   evidence: Record<string, unknown>;

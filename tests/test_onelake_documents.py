@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +52,15 @@ def test_corrupt_document_reads_as_empty(tmp_path):
     target.write_text("{not json", encoding="utf-8")
 
     assert OneLakeDocumentStore(tmp_path).read("state/registry.json") == {}
+
+
+def test_strict_read_surfaces_a_corrupt_document(tmp_path):
+    target = tmp_path / "state" / "registry.json"
+    target.parent.mkdir(parents=True)
+    target.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        OneLakeDocumentStore(tmp_path).read_or_raise("state/registry.json")
 
 
 def test_put_is_last_writer_wins_and_bumps_revision(tmp_path):
@@ -101,12 +111,19 @@ def test_remote_write_uses_datalake_upload_data_not_adlfs(tmp_path):
     written: dict[str, bytes] = {}
 
     class _FakeFileClient:
+        def get_file_properties(self):
+            from azure.core.exceptions import ResourceNotFoundError
+
+            raise ResourceNotFoundError("not found")
+
         def download_file(self):
             from azure.core.exceptions import ResourceNotFoundError
 
             raise ResourceNotFoundError("not found")
 
-        def upload_data(self, data, *, overwrite, length):
+        def upload_data(self, data, *, overwrite, length, **conditions):
+            assert overwrite is False
+            assert conditions == {}
             written["state/registry.json"] = data
 
     class _FakeFsClient:
@@ -121,6 +138,78 @@ def test_remote_write_uses_datalake_upload_data_not_adlfs(tmp_path):
     [(path, data)] = written.items()
     assert path == "state/registry.json"
     assert json.loads(data.decode("utf-8")) == {"revision": 1, "items": ["a"]}
+
+
+def test_remote_conditional_write_rejects_a_replica_that_lost_the_race(
+    tmp_path,
+):
+    """The storage ETag, not a process-local lock, closes the write race."""
+    from azure.core import MatchConditions
+    from azure.core.exceptions import ResourceModifiedError
+
+    state = {
+        "body": json.dumps({"revision": 1, "writer": "original"}).encode(),
+        "etag": '"etag-1"',
+    }
+
+    class _Download:
+        def __init__(self, body):
+            self._body = body
+
+        def readall(self):
+            return self._body
+
+    class _RacingFileClient:
+        def get_file_properties(self):
+            return SimpleNamespace(etag=state["etag"])
+
+        def download_file(self, *, etag, match_condition):
+            assert etag == state["etag"]
+            assert match_condition is MatchConditions.IfNotModified
+            return _Download(state["body"])
+
+        def upload_data(
+            self,
+            data,
+            *,
+            overwrite,
+            length,
+            etag,
+            match_condition,
+        ):
+            assert overwrite is True
+            assert length == len(data)
+            assert match_condition is MatchConditions.IfNotModified
+            # A second replica commits after this writer's read but before its
+            # conditional upload reaches storage.
+            state["body"] = json.dumps(
+                {"revision": 2, "writer": "competitor"}
+            ).encode()
+            state["etag"] = '"etag-2"'
+            if etag != state["etag"]:
+                raise ResourceModifiedError("condition not met")
+
+    class _FakeFsClient:
+        def get_file_client(self, path):
+            del path
+            return _RacingFileClient()
+
+    stale_replica = OneLakeDocumentStore(tmp_path)
+    stale_replica.is_remote = True
+    stale_replica._file_system_client = _FakeFsClient()
+    stale_replica._base = str(tmp_path)
+
+    with pytest.raises(DocumentConflictError):
+        stale_replica.write(
+            "state/registry.json",
+            {"revision": 2, "writer": "stale"},
+            expected_revision=1,
+        )
+
+    assert json.loads(state["body"]) == {
+        "revision": 2,
+        "writer": "competitor",
+    }
 
 
 def test_concurrent_read_does_not_observe_partial_write(tmp_path):

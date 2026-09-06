@@ -61,6 +61,12 @@ PRIVATE_LINK_RESOURCE_TYPES: dict[str, str] = {
     "microsoft.fabric/capacities": "Microsoft Fabric",
 }
 
+# Fabric private-link controls apply to a tenant or workspace, not to an
+# individual capacity resource. Keep the normalized ARM type and scope value
+# shared by topology projection and gap analysis so they cannot drift.
+FABRIC_CAPACITY_RESOURCE_TYPE = "microsoft.fabric/capacities"
+FABRIC_PRIVATE_LINK_SCOPE = "tenant_or_workspace"
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -158,7 +164,11 @@ class Subnet(NetworkResource):
         object.__setattr__(self, "route_table_id", _lower(self.route_table_id))
         object.__setattr__(self, "nat_gateway_id", _lower(self.nat_gateway_id))
         object.__setattr__(self, "address_prefixes", _tuple(self.address_prefixes))
-        object.__setattr__(self, "private_endpoint_ids", _tuple(self.private_endpoint_ids))
+        object.__setattr__(
+            self,
+            "private_endpoint_ids",
+            tuple(_lower(item) for item in _tuple(self.private_endpoint_ids)),
+        )
         object.__setattr__(self, "service_endpoints", _tuple(self.service_endpoints))
         object.__setattr__(self, "delegations", _tuple(self.delegations))
 

@@ -61,6 +61,7 @@ from .models import NetworkSnapshot
 __all__ = [
     "SUPPORTED_OPERATORS",
     "SUPPORTED_TARGETS",
+    "SUPPORTED_TARGET_NAMES",
     "CustomRuleEvaluator",
     "InvalidRule",
     "RuleValidationError",
@@ -89,6 +90,13 @@ SUPPORTED_TARGETS: dict[str, str] = {
 #: ``nsg_rules`` is derived rather than a snapshot attribute -- rules live
 #: inside their NSG. Handled separately in :meth:`_resources_for`.
 _DERIVED_TARGETS = {"nsg_rules", "routes"}
+
+#: Complete public target vocabulary accepted by ``validate_rule_parameters``.
+#: Keep the snapshot mapping above separate because derived targets are
+#: expanded by :meth:`CustomRuleEvaluator._resources_for`.
+SUPPORTED_TARGET_NAMES: tuple[str, ...] = tuple(
+    sorted(set(SUPPORTED_TARGETS) | _DERIVED_TARGETS)
+)
 
 SUPPORTED_OPERATORS: tuple[str, ...] = (
     "equals",
@@ -301,8 +309,8 @@ def validate_rule_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
     target = str(parameters.get("target") or "").strip()
     if not target:
         raise RuleValidationError("rule is missing 'target'")
-    if target not in SUPPORTED_TARGETS and target not in _DERIVED_TARGETS:
-        known = ", ".join(sorted(set(SUPPORTED_TARGETS) | _DERIVED_TARGETS))
+    if target not in SUPPORTED_TARGET_NAMES:
+        known = ", ".join(SUPPORTED_TARGET_NAMES)
         raise RuleValidationError(f"unknown target '{target}' (expected one of: {known})")
 
     assertions = parameters.get("assert")

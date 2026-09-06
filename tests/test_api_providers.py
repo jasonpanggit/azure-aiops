@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from threading import Event
 
 import pytest
 
@@ -61,6 +63,156 @@ def test_failed_refresh_retains_last_good_provider():
     assert health["providers"]["semantic"]["loaded"] is True
     assert health["providers"]["semantic"]["retry"]["attempts"] == 1
     assert "ConnectionError" in health["providers"]["semantic"]["degraded_reason"]
+
+
+def test_cache_key_read_failure_retains_last_good_provider():
+    attempts = 0
+    revision_read_fails = False
+    first = SnapshotProvider(
+        version="ontology-v1", freshness="2026-08-22T00:00:00Z"
+    )
+
+    def load():
+        nonlocal attempts
+        attempts += 1
+        return first
+
+    def cache_key():
+        if revision_read_fails:
+            raise OSError("revision store unavailable")
+        return ("policy", 7)
+
+    runtime = ProviderRuntime(
+        {"network": ProviderSpec(load, cache_key=cache_key)},
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+    )
+    runtime.refresh(force=True)
+    revision_read_fails = True
+
+    assert runtime.get("network") is first
+    assert attempts == 1
+
+
+def test_known_newer_key_with_failed_body_serves_last_good_once():
+    attempts = 0
+    revision = 7
+    body_available = True
+    first = SnapshotProvider(
+        version="policy-v7",
+        freshness="2026-08-22T00:00:00Z",
+    )
+
+    def load():
+        nonlocal attempts
+        attempts += 1
+        if not body_available:
+            raise OSError("policy body unavailable")
+        return first
+
+    runtime = ProviderRuntime(
+        {
+            "network": ProviderSpec(
+                load,
+                cache_key=lambda: ("network-policy", revision),
+            )
+        },
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+        monotonic=lambda: 0.0,
+    )
+    runtime.refresh(force=True)
+    revision = 8
+    body_available = False
+
+    assert runtime.get("network") is first
+
+    health = runtime.health(refresh=False)["providers"]["network"]
+    assert attempts == 2
+    assert health["state"] == DEGRADED
+    assert health["loaded"] is True
+    assert health["cache_key_stale"] is True
+    assert health["retry"]["attempts"] == 1
+
+
+def test_concurrent_changed_key_failure_has_one_nonblocking_refresh_owner():
+    attempts = 0
+    revision = 7
+    body_available = True
+    failed_load_started = Event()
+    release_failed_load = Event()
+    first = SnapshotProvider(
+        version="policy-v7",
+        freshness="2026-08-22T00:00:00Z",
+    )
+
+    def load():
+        nonlocal attempts
+        attempts += 1
+        if body_available:
+            return first
+        failed_load_started.set()
+        assert release_failed_load.wait(timeout=2)
+        raise OSError("policy body unavailable")
+
+    runtime = ProviderRuntime(
+        {
+            "network": ProviderSpec(
+                load,
+                cache_key=lambda: ("network-policy", revision),
+            )
+        },
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+        monotonic=lambda: 0.0,
+    )
+    runtime.refresh(force=True)
+    revision = 8
+    body_available = False
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        refresh_owner = pool.submit(runtime.get, "network")
+        assert failed_load_started.wait(timeout=1)
+        concurrent_reader = pool.submit(runtime.get, "network")
+        try:
+            retained = concurrent_reader.result(timeout=0.5)
+        finally:
+            release_failed_load.set()
+        owner_result = refresh_owner.result(timeout=1)
+
+    health = runtime.health(refresh=False)["providers"]["network"]
+    assert retained is first
+    assert owner_result is first
+    assert attempts == 2
+    assert health["cache_key_stale"] is True
+    assert health["retry"]["attempts"] == 1
+
+
+def test_cache_key_is_never_resolved_while_state_lock_is_held():
+    lock_observations: list[bool] = []
+    runtime_holder: dict[str, ProviderRuntime] = {}
+
+    def cache_key():
+        runtime = runtime_holder["runtime"]
+        lock_observations.append(runtime._state_lock._is_owned())
+        return ("policy", 1)
+
+    runtime = ProviderRuntime(
+        {
+            "network": ProviderSpec(
+                lambda: SnapshotProvider(
+                    version="ontology-v1",
+                    freshness="2026-08-22T00:00:00Z",
+                ),
+                cache_key=cache_key,
+            )
+        },
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+    )
+    runtime_holder["runtime"] = runtime
+
+    runtime.refresh(force=True)
+    runtime.get("network")
+
+    assert lock_observations
+    assert not any(lock_observations)
 
 
 def test_optional_provider_failure_does_not_block_readiness():

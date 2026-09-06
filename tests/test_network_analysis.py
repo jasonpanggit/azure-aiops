@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from network_scenario import network_rows
+import json
+
+from network_scenario import (
+    PROD_SUB,
+    PROD_SUBNET,
+    PROD_VNET,
+    UAT_SUB,
+    UAT_SUBNET,
+    UAT_VNET,
+    network_rows,
+)
 
 from network import (
     NetworkDesignPolicy,
@@ -23,6 +33,39 @@ def _findings():
 
 def _by_category(category: str):
     return [item for item in _findings() if item.category == category]
+
+
+def _live_vnet_row() -> dict:
+    return {
+        "id": (
+            "/subscriptions/sub-a/resourceGroups/rg/providers/"
+            "Microsoft.Network/virtualNetworks/vnet-a"
+        ),
+        "name": "vnet-a",
+        "type": "microsoft.network/virtualnetworks",
+        "subscriptionId": "sub-a",
+        "resourceGroup": "rg",
+        "properties": {"subnets": []},
+    }
+
+
+def test_live_arg_invalid_timestamp_remains_unknown() -> None:
+    for observed_at in ("not-a-date", "2026-09-06T01:00:00"):
+        service = NetworkIntelligenceService.from_arg_rows(
+            [_live_vnet_row()],
+            observed_at=observed_at,
+        )
+
+        assert service.snapshot.observed_at == ""
+
+
+def test_live_arg_timestamp_is_normalized_to_utc() -> None:
+    service = NetworkIntelligenceService.from_arg_rows(
+        [_live_vnet_row()],
+        observed_at="2026-09-06T02:00:00+01:00",
+    )
+
+    assert service.snapshot.observed_at == "2026-09-06T01:00:00Z"
 
 
 def _rule(**kwargs) -> NetworkSnapshot:
@@ -47,6 +90,138 @@ def _rule(**kwargs) -> NetworkSnapshot:
         tags={"owner": "team@example.com"},
     )
     return NetworkSnapshot(nsgs=(nsg,))
+
+
+def _private_link_row(
+    resource_id: str,
+    name: str,
+    subscription_id: str,
+    connection_id: str,
+    resource_type: str,
+) -> dict:
+    payload = {
+        "id": resource_id,
+        "name": name,
+        "entityType": "Resource",
+        "subscriptionId": subscription_id,
+        "connection_id": connection_id,
+        "resourceType": resource_type,
+        "publicNetworkAccess": "Enabled",
+    }
+    return {
+        "subscription_id": subscription_id,
+        "resource_id": resource_id,
+        "entity_type": "Resource",
+        "name": name,
+        "payload_json": json.dumps(payload),
+    }
+
+
+class TestScopeIsolation:
+    @staticmethod
+    def _service() -> NetworkIntelligenceService:
+        prod_storage = (
+            f"/subscriptions/{PROD_SUB}/resourcegroups/rg-prod/providers/"
+            "microsoft.storage/storageaccounts/stpayments"
+        )
+        foreign_vault = (
+            f"/subscriptions/{UAT_SUB}/resourcegroups/rg-uat/providers/"
+            "microsoft.keyvault/vaults/kv-foreign"
+        )
+        rows = [
+            *network_rows(),
+            _private_link_row(
+                prod_storage,
+                "stpayments",
+                PROD_SUB,
+                "conn-prod",
+                "Microsoft.Storage/storageAccounts",
+            ),
+            _private_link_row(
+                foreign_vault,
+                "kv-foreign",
+                UAT_SUB,
+                "conn-uat",
+                "Microsoft.KeyVault/vaults",
+            ),
+        ]
+        return NetworkIntelligenceService.from_rows(
+            rows,
+            semantic_relationships=(
+                {
+                    "subject_id": PROD_VNET,
+                    "object_id": PROD_SUBNET,
+                    "predicate": "hosts",
+                },
+                {
+                    "subject_id": UAT_VNET,
+                    "object_id": UAT_SUBNET,
+                    "predicate": "hosts",
+                },
+            ),
+        )
+
+    def test_scoped_gaps_never_include_another_subscription(self) -> None:
+        scoped = self._service().scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
+
+        assert all(gap.subscription_id == PROD_SUB for gap in scoped.gaps)
+        assert not any(gap.resource_name == "kv-foreign" for gap in scoped.gaps)
+
+    def test_scoped_private_link_resources_and_counts_are_filtered(self) -> None:
+        scoped = self._service().scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
+
+        assert {item.subscription_id for item in scoped.snapshot.private_link_resources} == {
+            PROD_SUB
+        }
+        assert scoped.snapshot.counts()["private_link_resources"] == 1
+
+    def test_scoped_semantic_relationships_keep_only_in_scope_endpoints(self) -> None:
+        scoped = self._service().scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
+
+        assert scoped.semantic_relationships == (
+            {
+                "subject_id": PROD_VNET,
+                "object_id": PROD_SUBNET,
+                "predicate": "hosts",
+            },
+        )
+
+    def test_scoped_flow_observations_keep_only_in_scope_endpoints(self) -> None:
+        observations = (
+            {
+                "subject_id": PROD_VNET,
+                "object_id": PROD_SUBNET,
+                "predicate": "trafficObserved",
+                "attributes": {"dataSource": "traffic_analytics"},
+            },
+            {
+                "subject_id": UAT_VNET,
+                "object_id": UAT_SUBNET,
+                "predicate": "trafficObserved",
+                "attributes": {"dataSource": "traffic_analytics"},
+            },
+        )
+        scoped = NetworkIntelligenceService.from_rows(
+            network_rows(),
+            semantic_relationships=observations,
+            flow_observations=observations,
+        ).scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
+
+        assert scoped.flow_observations == (observations[0],)
+        assert scoped.flow_log_provenance == {
+            "state": "analyzed",
+            "observed_flow_count": 1,
+        }
+
+    def test_in_scope_private_endpoint_still_protects_its_target(self) -> None:
+        scoped = self._service().scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
+
+        missing = [
+            gap
+            for gap in scoped.gaps
+            if gap.category == "missing_private_endpoint"
+        ]
+        assert not any(gap.resource_name == "stpayments" for gap in missing)
 
 
 class TestInternetExposure:
@@ -351,7 +526,7 @@ class TestPolicyRules:
 class TestScoping:
     def test_scope_narrows_results_to_one_connection(self) -> None:
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(connection_ids=("conn-uat",)))
+        scoped = service.scoped(NetworkScope(connection_ids=("conn-uat",))).analyze()
         assert scoped.topology.classifications
         for item in scoped.topology.classifications:
             assert item.connection_id == "conn-uat"
@@ -367,20 +542,20 @@ class TestScoping:
         snapshot unscoped would report estate-wide counts and connection IDs
         to a caller who may only see one connection."""
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(connection_ids=("conn-uat",)))
+        scoped = service.scoped(NetworkScope(connection_ids=("conn-uat",))).analyze()
         assert scoped.topology.connection_ids == ("conn-uat",)
         assert scoped.topology.snapshot.counts()["vnets"] == 1
         assert service.analyze().topology.snapshot.counts()["vnets"] == 3
 
     def test_scope_preserves_the_observation_stamp(self) -> None:
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(connection_ids=("conn-uat",)))
+        scoped = service.scoped(NetworkScope(connection_ids=("conn-uat",))).analyze()
         assert scoped.topology.snapshot.observed_at == service.snapshot.observed_at
         assert scoped.topology.snapshot.observed_at
 
     def test_environment_scope_filters_findings(self) -> None:
         service = build_service(network_rows())
-        scoped = service.analyze(NetworkScope(environments=("uat",)))
+        scoped = service.scoped(NetworkScope(environments=("uat",))).analyze()
         for finding in scoped.rule_findings:
             assert finding.environment in {"uat", ""}
 
@@ -441,6 +616,44 @@ class TestRuleRegistry:
         # The storage account is already targeted by pe-storage; the key vault is not.
         assert "kv-payments" in flagged
         assert "stpayments" not in flagged
+
+    def test_fabric_capacity_gap_is_suppressed_but_cognitive_account_remains(
+        self,
+    ) -> None:
+        rows = network_rows()
+        rows.extend(
+            [
+                _private_link_row(
+                    (
+                        "/subscriptions/sub-prod/resourcegroups/rg-data/providers/"
+                        "Microsoft.Fabric/capacities/fabric-capacity"
+                    ),
+                    "fabric-capacity",
+                    "sub-prod",
+                    "conn-prod",
+                    "Microsoft.Fabric/capacities",
+                ),
+                _private_link_row(
+                    (
+                        "/subscriptions/sub-prod/resourcegroups/rg-ai/providers/"
+                        "Microsoft.CognitiveServices/accounts/foundry-tools"
+                    ),
+                    "foundry-tools",
+                    "sub-prod",
+                    "conn-prod",
+                    "Microsoft.CognitiveServices/accounts",
+                ),
+            ]
+        )
+
+        gaps = [
+            gap
+            for gap in NetworkIntelligenceService.from_rows(rows).gaps
+            if gap.category == "missing_private_endpoint"
+        ]
+
+        assert not any(gap.resource_name == "fabric-capacity" for gap in gaps)
+        assert any(gap.resource_name == "foundry-tools" for gap in gaps)
 
     def test_disabling_the_rule_suppresses_its_gaps(self) -> None:
         policy = NetworkDesignPolicy.from_mapping(
@@ -578,6 +791,22 @@ class TestObservedTraffic:
     def test_an_exercised_allow_rule_is_not_flagged(self) -> None:
         edges = [self._edge("/nsg/obs/securityrules/allow-unused", "allowed_and_observed")]
         findings = analyze_rules(self._snapshot(), edges)
+        assert not [
+            finding
+            for finding in findings
+            if finding.category == "observed_traffic"
+            and finding.rule_name == "allow-unused"
+        ]
+
+    def test_canonical_object_id_attributes_observed_traffic(self) -> None:
+        edge = self._edge(
+            "/nsg/obs/securityrules/allow-unused",
+            "allowed_and_observed",
+        )
+        edge["object_id"] = edge.pop("object")
+
+        findings = analyze_rules(self._snapshot(), [edge])
+
         assert not [
             finding
             for finding in findings
