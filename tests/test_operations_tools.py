@@ -18,6 +18,18 @@ class _Item:
         return {"item_id": self.item_id}
 
 
+@dataclass(frozen=True)
+class _AffectedFinding:
+    item_id: int
+    affected_resource_ids: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "item_id": self.item_id,
+            "affected_resource_ids": list(self.affected_resource_ids),
+        }
+
+
 class _NetworkService:
     def __init__(self, *, gaps: int, findings: int) -> None:
         self.snapshot = SimpleNamespace(observed_at="2026-01-01T00:00:00Z")
@@ -74,3 +86,36 @@ def test_g6_stays_silent_when_agent_lists_are_complete() -> None:
 
     assert result.status == STATUS_OK
     assert result.warning == ""
+
+
+def test_nested_finding_ids_are_bounded_to_the_disclosed_count() -> None:
+    service = _NetworkService(gaps=0, findings=0)
+    service._analysis = SimpleNamespace(
+        gaps=(),
+        rule_findings=(
+            _AffectedFinding(
+                1,
+                tuple(f"resource-{index}" for index in range(300)),
+            ),
+            _AffectedFinding(
+                2,
+                tuple(f"other-resource-{index}" for index in range(40)),
+            ),
+        ),
+    )
+
+    result = call_tool(
+        "firewall_nsg_gaps",
+        {},
+        context=_Context(service),
+        scope=Scope.from_mapping({"subscription": ["sub-a"]}),
+    )
+
+    first_ids = result.data["rule_findings"][0]["affected_resource_ids"]
+    second_ids = result.data["rule_findings"][1]["affected_resource_ids"]
+    assert len(first_ids) == 25
+    assert len(second_ids) == 25
+    assert result.warning == (
+        "Agent result bound 25: "
+        f"rule_findings.affected_resource_ids showing {len(first_ids)} of 300."
+    )

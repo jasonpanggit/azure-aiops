@@ -79,7 +79,7 @@ def _filter_scoped(value: Any, scope: Scope) -> Any:
 def _bound(value: Any, limit: int = _MAX_ITEMS) -> Any:
     """Cap list-shaped payloads so a single tool call cannot dump the estate."""
     if isinstance(value, list):
-        return value[:limit]
+        return [_bound(child, limit) for child in value[:limit]]
     if isinstance(value, dict):
         return {key: _bound(child, limit) for key, child in value.items()}
     return value
@@ -92,12 +92,13 @@ def _bound_disclosure(
     path: str = "",
 ) -> str:
     """Describe every list the bounded payload helper will truncate."""
-    truncated: list[tuple[str, int]] = []
+    truncated: dict[str, int] = {}
 
     def walk(candidate: Any, candidate_path: str) -> None:
         if isinstance(candidate, list):
             if len(candidate) > limit:
-                truncated.append((candidate_path or "items", len(candidate)))
+                key = candidate_path or "items"
+                truncated[key] = max(truncated.get(key, 0), len(candidate))
             for item in candidate[:limit]:
                 walk(item, candidate_path)
         elif isinstance(candidate, dict):
@@ -112,7 +113,7 @@ def _bound_disclosure(
         return ""
     details = "; ".join(
         f"{item_path} showing {limit} of {total}"
-        for item_path, total in truncated
+        for item_path, total in truncated.items()
     )
     return f"Agent result bound {limit}: {details}."
 
