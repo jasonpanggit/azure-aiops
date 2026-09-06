@@ -39,7 +39,7 @@ def _relationship(**overrides) -> dict[str, object]:
         "ingestion_run_id": "run-1",
         "subject_id": "vm-1",
         "subject_type": "VirtualMachine",
-        "predicate": "dependsOn",
+        "predicate": "member_of",
         "object_id": "app-1",
         "object_type": "Application",
         "source": "test",
@@ -173,14 +173,14 @@ def test_active_relationship_type_mismatch_against_current_entity_fails() -> Non
 
 
 def test_retired_relationship_type_mismatch_against_current_entity_is_allowed() -> None:
-    # Identical type disagreement as the active case above, but on a
+    # An exact-vocabulary type disagreement, but on a
     # *retired* relationship -- OntologyValidator deliberately does not
     # enforce type agreement here, since the entity may have been
     # reclassified after the relationship was captured (documented exception
     # in ontology_validator.py).
     relationship = _relationship(
         subject_id="vm-1",
-        subject_type="Application",
+        subject_type="Resource",
         object_id="app-1",
         object_type="Application",
         lifecycle_status="retired",

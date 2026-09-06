@@ -30,7 +30,17 @@ MAX_CALLS = 100_000  # Coarse per-process circuit breaker, not a per-caller
 MAX_TOOL_NAME = 64
 
 _SPECIALIST_MANIFEST = load_specialist_manifest()
-REVIEWED_TOOLS = _SPECIALIST_MANIFEST.operations_tool_names()
+ONTOLOGY_CURATOR_TOOLS = (
+    "list_changed_entities",
+    "get_entity_evidence",
+    "get_ontology_vocabulary",
+    "search_relationship_history",
+)
+REVIEWED_TOOLS = tuple(
+    dict.fromkeys(
+        (*_SPECIALIST_MANIFEST.operations_tool_names(), *ONTOLOGY_CURATOR_TOOLS)
+    )
+)
 _LEGACY_REVIEWED_TOOLS = _SPECIALIST_MANIFEST.legacy_operations_mcp_tools
 
 
@@ -70,6 +80,7 @@ class ToolArguments(BaseModel):
     source_family: str | None = Field(default=None, min_length=1, max_length=64)
     sort_by: str | None = Field(default=None, min_length=1, max_length=64)
     sort_direction: str | None = Field(default=None, min_length=1, max_length=8)
+    entity_id: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 _REQUIRED: dict[str, tuple[str, ...]] = {
@@ -86,6 +97,8 @@ _REQUIRED: dict[str, tuple[str, ...]] = {
     "cve_attack_path": ("cve_id",),
     "remediation_business_decision": ("name",),
     "search": ("query",),
+    "get_entity_evidence": ("entity_id",),
+    "search_relationship_history": ("entity_id",),
 }
 
 # Optional (non-required) arguments per tool, kept separate from _REQUIRED so
@@ -142,6 +155,11 @@ def _tool_definitions_for_names(names: tuple[str, ...]) -> list[dict[str, Any]]:
 def reviewed_tools_for_specialist(specialist_id: str) -> tuple[str, ...]:
     """Return the exact reviewed Operations MCP grant for one specialist."""
 
+    if specialist_id == "ontology_curator":
+        # Plan 13-07 owns deployment-manifest provisioning. The runtime grant
+        # is fixed here first so Plan 13-04 can expose and test the governed
+        # boundary without prematurely creating a Foundry agent.
+        return ONTOLOGY_CURATOR_TOOLS
     try:
         specialist = load_specialist_manifest().require(specialist_id)
     except ValueError:
@@ -362,6 +380,7 @@ class MCPServer:
 
 __all__ = [
     "MCP_VERSION",
+    "ONTOLOGY_CURATOR_TOOLS",
     "REVIEWED_TOOLS",
     "MCPServer",
     "reviewed_tools_for_specialist",
