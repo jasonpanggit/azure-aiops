@@ -153,6 +153,33 @@ class TestScopeIsolation:
             },
         )
 
+    def test_scoped_flow_observations_keep_only_in_scope_endpoints(self) -> None:
+        observations = (
+            {
+                "subject_id": PROD_VNET,
+                "object_id": PROD_SUBNET,
+                "predicate": "trafficObserved",
+                "attributes": {"dataSource": "traffic_analytics"},
+            },
+            {
+                "subject_id": UAT_VNET,
+                "object_id": UAT_SUBNET,
+                "predicate": "trafficObserved",
+                "attributes": {"dataSource": "traffic_analytics"},
+            },
+        )
+        scoped = NetworkIntelligenceService.from_rows(
+            network_rows(),
+            semantic_relationships=observations,
+            flow_observations=observations,
+        ).scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
+
+        assert scoped.flow_observations == (observations[0],)
+        assert scoped.flow_log_provenance == {
+            "state": "analyzed",
+            "observed_flow_count": 1,
+        }
+
     def test_in_scope_private_endpoint_still_protects_its_target(self) -> None:
         scoped = self._service().scoped(NetworkScope(subscription_ids=(PROD_SUB,)))
 

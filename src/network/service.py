@@ -401,7 +401,14 @@ class NetworkIntelligenceService:
                 self.semantic_relationships,
                 snapshot,
             ),
-            flow_observations=self.flow_observations,
+            flow_observations=(
+                None
+                if self.flow_observations is None
+                else _scope_relationships(
+                    self.flow_observations,
+                    snapshot,
+                )
+            ),
             peer_resolutions=peer_resolutions,
         )
 
