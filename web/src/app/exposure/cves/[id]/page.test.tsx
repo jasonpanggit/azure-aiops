@@ -1,5 +1,5 @@
 import { FluentProvider, webLightTheme } from "@fluentui/react-components";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/types";
@@ -29,6 +29,12 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/lib/scope-context", () => ({
   useScope: () => ({ scope: authorizedScope }),
+}));
+
+vi.mock("@azure/msal-react", () => ({
+  useMsal: () => ({
+    accounts: [{ username: "operator@example.com", name: "Operations User" }],
+  }),
 }));
 
 vi.mock("@/lib/services", () => ({
@@ -352,5 +358,103 @@ describe("CVE detail", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("Exploit probability value")).toHaveTextContent(/73\s*%/),
     );
+  });
+
+  it("opens the governed risk dialog with exact represented scope and session identity", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const invoker = await screen.findByRole("button", {
+      name: "Record risk exception",
+    });
+    await user.click(invoker);
+
+    expect(screen.getByRole("dialog", { name: "Record risk exception" })).toBeInTheDocument();
+    expect(screen.getByText("CVE-2026-0001")).toBeInTheDocument();
+    expect(screen.getByText(/1 loaded target.*2 excluded/i)).toBeInTheDocument();
+    expect(screen.getByText(/Generation generation-25/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Session approver")).toHaveValue(
+      "operator@example.com",
+    );
+    expect(screen.getByLabelText("Session approver")).toHaveAttribute("readonly");
+    expect(screen.queryByLabelText("Approved by")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Reason")).toHaveFocus());
+
+    await user.click(screen.getByRole("button", { name: "Keep reviewing" }));
+    await waitFor(() => expect(invoker).toHaveFocus());
+  });
+
+  it("keeps entered risk context and focuses explicit API or audit failure", async () => {
+    api.acceptRisk.mockRejectedValueOnce(
+      new Error("Exposure audit is unavailable; risk exception was not created"),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", {
+      name: "Record risk exception",
+    }));
+    await user.type(
+      screen.getByLabelText("Reason"),
+      "Compensating network control is active",
+    );
+    fireEvent.change(screen.getByLabelText("Expiry (optional)"), {
+      target: { value: "2026-10-01T09:30" },
+    });
+    await user.click(screen.getByRole("button", { name: "Record exception" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Risk exception was not recorded");
+    expect(alert).toHaveTextContent("Exposure audit is unavailable");
+    expect(alert).toHaveFocus();
+    expect(screen.getByLabelText("Reason")).toHaveValue(
+      "Compensating network control is active",
+    );
+    expect(screen.getByLabelText("Expiry (optional)")).toHaveValue(
+      "2026-10-01T09:30",
+    );
+    expect(api.acceptRisk).toHaveBeenCalledWith({
+      cve_id: "CVE-2026-0001",
+      reason: "Compensating network control is active",
+      expires_at: "2026-10-01T09:30",
+    });
+  });
+
+  it("reports an audited success separately when post-record refresh fails", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("heading", { name: "Scoped findings" });
+    api.acceptRisk.mockResolvedValueOnce({
+      data: {
+        exception_id: "AUD-25",
+        cve_id: "CVE-2026-0001",
+        server_id: "",
+        reason: "Temporary exception",
+        approved_by: "operator@example.com",
+        created_at: "2026-09-06T08:05:00Z",
+        expires_at: "",
+        can_revoke: false,
+      },
+    });
+    api.exposureItems.mockRejectedValueOnce(new Error("Refresh unavailable"));
+
+    await user.click(screen.getByRole("button", {
+      name: "Record risk exception",
+    }));
+    await user.type(screen.getByLabelText("Reason"), "Temporary exception");
+    await user.click(screen.getByRole("button", { name: "Record exception" }));
+
+    const summary = await screen.findByRole("status", {
+      name: "Risk exception result",
+    });
+    expect(summary).toHaveTextContent("Risk exception recorded");
+    expect(summary).toHaveTextContent("Audit ID: AUD-25");
+    expect(summary).toHaveTextContent(
+      "Exception recorded; updated exposure counts could not be refreshed",
+    );
+    expect(summary).toHaveFocus();
+    expect(
+      screen.queryByRole("button", { name: "Revoke risk exception" }),
+    ).not.toBeInTheDocument();
   });
 });
