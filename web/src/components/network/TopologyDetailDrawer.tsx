@@ -502,19 +502,19 @@ function requestDetailPage(
   const pending = detailRequests.get(key);
   if (pending) return pending;
 
-  let request!: Promise<Envelope<NetworkTopologyResourceDetails>>;
-  request = networkApi
+  const request = networkApi
     .topologyResourceDetails(nodeId, scope, offset, DETAIL_PAGE_SIZE)
     .then((response) => {
       detailCache.set(key, response);
       return response;
-    })
-    .finally(() => {
-      if (detailRequests.get(key) === request) {
-        detailRequests.delete(key);
-      }
     });
   detailRequests.set(key, request);
+  const clearPending = () => {
+    if (detailRequests.get(key) === request) {
+      detailRequests.delete(key);
+    }
+  };
+  void request.then(clearPending, clearPending);
   return request;
 }
 
