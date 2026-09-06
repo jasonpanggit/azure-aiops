@@ -108,8 +108,8 @@ type InventorySnapshotEvidence = CopilotSnapshotEvidenceV2 & {
   selected: boolean;
   direct: boolean;
   actionable: boolean;
-  severity: "unknown";
-  quality: "high";
+  severity: CopilotSnapshotEvidenceV2["severity"];
+  quality: CopilotSnapshotEvidenceV2["quality"];
 };
 
 const PAGE_DISPOSITIONS = {
@@ -142,6 +142,19 @@ const STATUS_WARNING_PRIORITY: Record<CopilotSnapshotStatusV2, number> = {
   unavailable: 3,
   denied: 4,
 };
+
+const FRESHNESS_WARNING_PRIORITY: Record<CopilotFreshnessStatusV2, number> = {
+  fresh: 0,
+  partial: 1,
+  stale: 2,
+  unavailable: 3,
+};
+
+const INVENTORY_EVIDENCE_SOURCES = {
+  os: "inventory/os_observations",
+  software: "inventory/software_observations",
+  azure: "inventory/resource_observations",
+} as const;
 
 const PYTHON_312_UNCASED_CODE_POINTS = new Set([
   0x1c89,
@@ -474,6 +487,11 @@ function mergeDuplicateEvidence(
  */
 export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput): InventoryCopilotContext {
   assertBound("evidence rows", input.records.length, COPILOT_SNAPSHOT_LIMITS.evidenceRows);
+  assertBound(
+    "freshness records",
+    input.sourceStatuses.length,
+    COPILOT_SNAPSHOT_LIMITS.freshnessRecords,
+  );
   if (!Number.isInteger(input.totalCount) || input.totalCount < 0 || input.totalCount > 1_000_000) {
     throw new Error("total count is outside the server bounds");
   }
@@ -517,7 +535,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     const data = {
       ...record.data,
       inventory_context: inventoryContext,
-      selected,
+      selected: false,
     };
     assertEvidenceRowBound(data);
     const evidenceId = `browser:${sha256(asciiJson([stableId, stableJson(data)])).slice(0, 32)}`;
@@ -545,14 +563,32 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     );
   }
 
-  const evidence = Array.from(evidenceById.values()).sort((left, right) =>
+  const recordEvidence = Array.from(evidenceById.values()).sort((left, right) =>
     compareCodePoints(left.evidence_id, right.evidence_id));
-  assertBound("evidence rows", evidence.length, COPILOT_SNAPSHOT_LIMITS.evidenceRows);
-  if (evidence.length > input.totalCount) {
+  if (recordEvidence.length > input.totalCount) {
     throw new Error("visible count cannot exceed total count");
   }
+  const selectorMarkedEntities = new Set<string>();
+  const markedRecordEvidence = recordEvidence.map((item) => {
+    const key = entityKey(item.entity);
+    const selectorSelected = item.selected && !selectorMarkedEntities.has(key);
+    if (selectorSelected) selectorMarkedEntities.add(key);
+    return {
+      ...item,
+      data: {
+        ...item.data,
+        selected: selectorSelected,
+      },
+    };
+  });
+  const contextEvidence: InventorySnapshotEvidence[] = input.records.length === 0
+    ? [buildEmptyInventoryContextEvidence(input, inventoryContext)]
+    : [];
+  const evidence = [...markedRecordEvidence, ...contextEvidence].sort((left, right) =>
+    compareCodePoints(left.evidence_id, right.evidence_id));
+  assertBound("evidence rows", evidence.length, COPILOT_SNAPSHOT_LIMITS.evidenceRows);
 
-  const selectedEntities = evidence
+  const selectedEntities = recordEvidence
     .filter((item) => item.selected)
     .map((item) => item.entity)
     .filter((entity, index, entities) => {
@@ -566,19 +602,42 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     COPILOT_SNAPSHOT_LIMITS.selectedEntities,
   );
 
-  const freshness = input.sourceStatuses
-    .map((source) => {
-      const observedAt = source.observedAt || input.observedAt || "unknown";
-      return {
-        source: boundedString("freshness source", source.source, 1, 128),
-        observed_at: boundedString("freshness observation time", observedAt, 1, 128),
-        status: freshnessStatus(source.status),
-      };
-    })
-    .sort((left, right) =>
-      compareCodePoints(left.source, right.source)
-      || compareCodePoints(left.status, right.status)
-      || compareCodePoints(left.observed_at, right.observed_at));
+  const sourceObservations = input.sourceStatuses.map((source) => {
+    const observedAt = source.observedAt || input.observedAt || "unknown";
+    return {
+      source: boundedString("freshness source", source.source, 1, 128),
+      observed_at: boundedString("freshness observation time", observedAt, 1, 128),
+      status: freshnessStatus(source.status),
+    };
+  });
+  const aggregateStatus = sourceObservations.reduce<CopilotFreshnessStatusV2>(
+    (current, item) =>
+      FRESHNESS_WARNING_PRIORITY[current] >= FRESHNESS_WARNING_PRIORITY[item.status]
+        ? current
+        : item.status,
+    sourceObservations.length ? "fresh" : "unavailable",
+  );
+  const aggregateObservedAt = sourceObservations.reduce(
+    (latest, item) => latest >= item.observed_at ? latest : item.observed_at,
+    input.observedAt || "unknown",
+  );
+  const freshnessSources = Array.from(
+    new Set(
+      input.records.length
+        ? input.records.map((record) => boundedString("evidence source", record.source, 1, 128))
+        : [INVENTORY_EVIDENCE_SOURCES[input.tab]],
+    ),
+  ).sort(compareCodePoints);
+  const freshness = freshnessSources.map((source) => ({
+    source,
+    observed_at: boundedString(
+      "freshness observation time",
+      aggregateObservedAt,
+      1,
+      128,
+    ),
+    status: aggregateStatus,
+  }));
   assertBound(
     "freshness records",
     freshness.length,
@@ -590,9 +649,9 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     page_kind: "inventory",
     page_id: `inventory:${input.tab}`,
     coverage: {
-      visible_count: evidence.length,
+      visible_count: recordEvidence.length,
       total_count: input.totalCount,
-      complete: evidence.length === input.totalCount,
+      complete: recordEvidence.length === input.totalCount,
     },
     freshness,
     selected_entities: selectedEntities,
@@ -608,9 +667,12 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
 
   const uncertainty = [
     ...(snapshot.coverage.complete ? [] : ["visible subset is incomplete"]),
-    ...freshness
+    ...sourceObservations
       .filter((item) => item.status !== "fresh")
       .map((item) => `${item.source} freshness is ${item.status}`),
+    ...(!sourceObservations.length
+      ? [`${INVENTORY_EVIDENCE_SOURCES[input.tab]} freshness is unavailable`]
+      : []),
   ];
 
   return {
@@ -632,5 +694,44 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
         toolArguments: {},
       },
     ],
+  };
+}
+
+function buildEmptyInventoryContextEvidence(
+  input: InventoryCopilotAdapterInput,
+  inventoryContext: Record<string, unknown>,
+): InventorySnapshotEvidence {
+  const source = INVENTORY_EVIDENCE_SOURCES[input.tab];
+  const sourceKey = `page-context:${input.tab}`;
+  const entity: CopilotEntityRef = {
+    type: "domain",
+    namespace: "inventory",
+    kind: `${input.tab}_page_context`,
+    source_key: sourceKey,
+  };
+  const data = { inventory_context: inventoryContext, selected: false };
+  assertEvidenceRowBound(data);
+  const stableId = canonicalEvidenceStableId({
+    source,
+    sourceKey,
+    entity,
+    claimType: "page_context",
+  });
+  return {
+    evidence_id: `browser:${sha256(asciiJson([stableId, stableJson(data)])).slice(0, 32)}`,
+    source,
+    status: "empty",
+    observed_at: input.observedAt ?? "",
+    resource_id: "",
+    source_key: sourceKey,
+    entity,
+    claim_type: "page_context",
+    citations: [],
+    selected: false,
+    direct: false,
+    actionable: false,
+    severity: "unknown",
+    quality: "unknown",
+    data,
   };
 }

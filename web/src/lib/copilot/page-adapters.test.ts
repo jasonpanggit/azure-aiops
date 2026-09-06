@@ -250,7 +250,7 @@ describe("inventory Copilot page adapter", () => {
     });
     expect(context.snapshot.freshness).toEqual([
       {
-        source: "arc",
+        source: "inventory/os_observations",
         observed_at: "unknown",
         status: "unavailable",
       },
@@ -310,6 +310,38 @@ describe("inventory Copilot page adapter", () => {
     expect(new Set(snapshot.evidence.map((item) => item.claim_type))).toEqual(
       new Set(["os_group"]),
     );
+    expect(
+      snapshot.evidence.filter((item) => item.data.selected === true),
+    ).toHaveLength(1);
+  });
+
+  it("retains bounded filter context when the visible page is empty", () => {
+    const snapshot = buildInventoryCopilotContext({
+      ...baseInput,
+      records: [],
+      totalCount: 0,
+    }).snapshot;
+
+    expect(snapshot.coverage).toEqual({
+      visible_count: 0,
+      total_count: 0,
+      complete: true,
+    });
+    expect(snapshot.evidence).toHaveLength(1);
+    expect(snapshot.evidence[0]).toMatchObject({
+      source: "inventory/os_observations",
+      status: "empty",
+      claim_type: "page_context",
+      data: {
+        inventory_context: {
+          filters: { lifecycle: "supported", search: "windows" },
+          sort: { os_name: "asc" },
+          offset: 0,
+          limit: 50,
+        },
+        selected: false,
+      },
+    });
   });
 
   it("merges exact duplicates independently of input order", () => {
