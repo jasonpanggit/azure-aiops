@@ -124,6 +124,161 @@ describe("TablePagination", () => {
     expect(screen.getByText(/Showing 41–60 of 250 installations/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next page" })).toBeEnabled();
   });
+
+  it("renders exact cursor ranges, totals, loaded counts, and Exposure page sizes", () => {
+    render(
+      <TablePagination
+        mode="cursor"
+        cursor={{
+          total: 137,
+          returnedCount: 25,
+          first: 51,
+          last: 75,
+          hasMore: true,
+          hasPrevious: true,
+          historyDepth: 2,
+        }}
+        onPreviousCursor={() => {}}
+        onNextCursor={() => {}}
+        onPageSizeChange={() => {}}
+        label="exceptions"
+      />,
+    );
+
+    expect(screen.getByText("Showing 51–75 of 137 exceptions · 25 loaded")).toBeInTheDocument();
+    const pageSize = screen.getByRole("combobox", { name: "Rows per page for exceptions" });
+    expect(pageSize).toHaveValue("50");
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "25 / page",
+      "50 / page",
+      "100 / page",
+    ]);
+    expect(screen.queryByRole("button", { name: /^Page \d+$/ })).not.toBeInTheDocument();
+  });
+
+  it("delegates opaque cursor history and page-size reset without exposing a token", async () => {
+    const user = userEvent.setup();
+    const onPreviousCursor = vi.fn();
+    const onNextCursor = vi.fn();
+    const onPageSizeChange = vi.fn();
+
+    render(
+      <TablePagination
+        mode="cursor"
+        cursor={{
+          total: 137,
+          returnedCount: 25,
+          first: 26,
+          last: 50,
+          hasMore: true,
+          hasPrevious: true,
+          historyDepth: 1,
+        }}
+        onPreviousCursor={onPreviousCursor}
+        onNextCursor={onNextCursor}
+        onPageSizeChange={onPageSizeChange}
+        pageSize={25}
+        label="exceptions"
+      />,
+    );
+
+    const previous = screen.getByRole("button", { name: "Previous page" });
+    previous.focus();
+    await user.keyboard("{Enter}");
+    expect(onPreviousCursor).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    expect(onNextCursor).toHaveBeenCalledTimes(1);
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Rows per page for exceptions" }),
+      "100",
+    );
+    expect(onPageSizeChange).toHaveBeenCalledWith(100);
+    expect(document.body).not.toHaveTextContent("eyJvZmZzZXQi");
+  });
+
+  it("retains and announces the current cursor range while a request is busy", () => {
+    const onPreviousCursor = vi.fn();
+    const onNextCursor = vi.fn();
+    const { rerender } = render(
+      <TablePagination
+        mode="cursor"
+        cursor={{
+          total: 137,
+          returnedCount: 25,
+          first: 26,
+          last: 50,
+          hasMore: true,
+          hasPrevious: true,
+          historyDepth: 1,
+        }}
+        busy
+        onPreviousCursor={onPreviousCursor}
+        onNextCursor={onNextCursor}
+        onPageSizeChange={() => {}}
+        label="exceptions"
+      />,
+    );
+
+    expect(screen.getByRole("navigation", { name: "Pagination for exceptions" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Loading exceptions. Current result: Showing 26–50 of 137 exceptions · 25 loaded",
+    );
+    expect(screen.getByRole("button", { name: "Previous page" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
+
+    rerender(
+      <TablePagination
+        mode="cursor"
+        cursor={{
+          total: 137,
+          returnedCount: 25,
+          first: 51,
+          last: 75,
+          hasMore: true,
+          hasPrevious: true,
+          historyDepth: 2,
+        }}
+        onPreviousCursor={onPreviousCursor}
+        onNextCursor={onNextCursor}
+        onPageSizeChange={() => {}}
+        label="exceptions"
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Showing 51–75 of 137 exceptions · 25 loaded",
+    );
+  });
+
+  it("uses server history availability rather than deriving cursor navigation from rows", () => {
+    render(
+      <TablePagination
+        mode="cursor"
+        cursor={{
+          total: 100,
+          returnedCount: 0,
+          first: 0,
+          last: 0,
+          hasMore: false,
+          hasPrevious: false,
+          historyDepth: 0,
+        }}
+        onPreviousCursor={() => {}}
+        onNextCursor={() => {}}
+        onPageSizeChange={() => {}}
+        label="exceptions"
+      />,
+    );
+
+    expect(screen.getByText("Showing 0–0 of 100 exceptions · 0 loaded")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Previous page" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
+  });
 });
 
 describe("TableColumnFilters", () => {
