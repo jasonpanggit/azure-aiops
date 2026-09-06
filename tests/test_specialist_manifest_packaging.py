@@ -872,10 +872,36 @@ def test_create_agent_normalizes_a_path_shaped_provider_id(tmp_path):
     assert record.read_text(encoding="utf-8").strip().split("\t")[2] == "prov-1"
 
 
+def test_create_agent_normalizes_a_path_shaped_version_field(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={
+            "name": "aiops-network-agent",
+            "version": "agents/aiops-network-agent/versions/prov-__N__",
+            "id": "/agents/aiops-network-agent/versions/prov-__N__",
+        },
+    )
+    record = tmp_path / "versions.tsv"
+    env.update(
+        {
+            "FOUNDRY_AGENT_NAME": "aiops-network-agent",
+            "FOUNDRY_AGENT_SPECIALIST_ID": "network",
+            "FOUNDRY_AGENT_VERSION": "2026.09.1",
+            "FOUNDRY_AGENT_VERSION_RECORD": str(record),
+        }
+    )
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert record.read_text(encoding="utf-8").strip().split("\t")[2] == "prov-1"
+
+
 @pytest.mark.parametrize(
     "response",
     [
         {"name": "aiops-network-agent"},
+        {"name": "aiops-network-agent", "id": "/agents/aiops-network-agent"},
         {"name": "aiops-network-agent", "version": ""},
         {"name": "aiops-network-agent", "version": {"nested": "no"}},
         {"name": "aiops-network-agent", "version": "has space"},
@@ -1527,6 +1553,30 @@ def test_live_parity_requires_the_pinned_shared_coordinator(tmp_path, monkeypatc
         and failure["kind"] == "pinned_version_missing"
         for failure in report["failures"]
     )
+
+
+def test_live_provider_version_normalization_matches_rollout_capture():
+    module = _parity_module()
+
+    assert (
+        module._entry_provider_version_id(
+            {
+                "version": "agents/network/versions/provider-42",
+                "id": "/agents/network/versions/provider-42",
+            }
+        )
+        == "provider-42"
+    )
+    assert (
+        module._entry_provider_version_id(
+            {
+                "version": "has space",
+                "id": "/agents/network/versions/provider-42",
+            }
+        )
+        == "provider-42"
+    )
+    assert module._entry_provider_version_id({"id": "/agents/network"}) == ""
 
 
 def test_live_parity_fails_when_a_specialist_is_absent_from_the_mapping(
