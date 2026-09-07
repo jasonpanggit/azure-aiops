@@ -6,7 +6,7 @@ import copy
 import hashlib
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ontology.subscription_connection import SubscriptionConnection
@@ -107,6 +107,13 @@ class CommandIntakeService:
         if command_type == ROLLBACK:
             envelope["target_generation_id"] = _required(
                 values.get("target_generation_id"), "target_generation_id"
+            )
+            envelope["observed_active_generation"] = _required(
+                values.get("observed_active_generation"),
+                "observed_active_generation",
+            )
+            envelope["observed_pointer_etag"] = _required(
+                values.get("observed_pointer_etag"), "observed_pointer_etag"
             )
         identity = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
         command_id = "ODC-" + hashlib.sha256(identity.encode()).hexdigest()[:24].upper()
@@ -260,6 +267,124 @@ class CoordinatorCommandConsumer:
         return _mutate(self._documents, update)
 
 
+class PublisherCommandConsumer:
+    """Publisher-only rollback claim and terminal-status capability."""
+
+    _TYPES = frozenset({ROLLBACK})
+
+    def __init__(self, command_root: str) -> None:
+        self._documents = OneLakeDocumentStore(_required(command_root, "command_root"))
+
+    def list_due_rollback(
+        self, *, now: datetime, limit: int = 1
+    ) -> list[dict[str, Any]]:
+        moment = _aware(now, "now")
+        rows = [
+            copy.deepcopy(row)
+            for row in _read(self._documents)["commands"]
+            if row["type"] == ROLLBACK
+            and row["status"] == "pending"
+            and datetime.fromisoformat(row["issued_at"]) <= moment
+        ]
+        rows.sort(key=lambda row: (row["issued_at"], row["command_id"]))
+        return rows[: max(0, int(limit))]
+
+    def claim_rollback(
+        self,
+        command_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        now: datetime,
+        lease_seconds: int = 60,
+    ) -> dict[str, Any]:
+        moment = _aware(now, "now")
+
+        def claim(state: dict[str, Any]) -> dict[str, Any]:
+            row = _locate(state, command_id, self._TYPES)
+            if row["status"] != "pending" or row["revision"] != expected_revision:
+                raise CommandConflict("command_claim_conflict")
+            row["status"] = "claimed"
+            row["revision"] += 1
+            row["lease_owner"] = _required(owner, "owner")
+            row["lease_expires_at"] = (
+                moment + timedelta(seconds=max(1, int(lease_seconds)))
+            ).isoformat()
+            row["updated_at"] = moment.isoformat()
+            return copy.deepcopy(row)
+
+        return _mutate(self._documents, claim)
+
+    def complete(
+        self,
+        command_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        authorization_audit: Mapping[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        return self._terminal(
+            command_id,
+            expected_revision=expected_revision,
+            owner=owner,
+            status="completed",
+            reason_code="",
+            authorization_audit=authorization_audit,
+            now=now,
+        )
+
+    def deny(
+        self,
+        command_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        reason_code: str,
+        authorization_audit: Mapping[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        return self._terminal(
+            command_id,
+            expected_revision=expected_revision,
+            owner=owner,
+            status="denied",
+            reason_code=_required(reason_code, "reason_code")[:96],
+            authorization_audit=authorization_audit,
+            now=now,
+        )
+
+    def _terminal(
+        self,
+        command_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        status: str,
+        reason_code: str,
+        authorization_audit: Mapping[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        moment = _aware(now, "now")
+
+        def update(state: dict[str, Any]) -> dict[str, Any]:
+            row = _locate(state, command_id, self._TYPES)
+            if (
+                row["status"] != "claimed"
+                or row["revision"] != expected_revision
+                or row["lease_owner"] != owner
+            ):
+                raise CommandConflict("command_status_conflict")
+            row["status"] = status
+            row["reason_code"] = reason_code
+            row["authorization_audit"] = copy.deepcopy(dict(authorization_audit))
+            row["revision"] += 1
+            row["updated_at"] = moment.isoformat()
+            return copy.deepcopy(row)
+
+        return _mutate(self._documents, update)
+
+
 def _immutable(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: row.get(key)
@@ -276,6 +401,8 @@ def _immutable(row: Mapping[str, Any]) -> dict[str, Any]:
             "reason",
             "cadence_seconds",
             "target_generation_id",
+            "observed_active_generation",
+            "observed_pointer_etag",
         )
     }
 
@@ -340,5 +467,6 @@ __all__ = [
     "CommandConflict",
     "CommandIntakeService",
     "CoordinatorCommandConsumer",
+    "PublisherCommandConsumer",
     "scope_receipt",
 ]

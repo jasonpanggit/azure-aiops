@@ -140,6 +140,98 @@ class PublisherDispatchView:
         rows.sort(key=lambda row: (row["created_at"], row["dispatch_id"]))
         return rows[: max(0, int(limit))]
 
+    def create_rollback(
+        self,
+        *,
+        source_command_id: str,
+        connection_id: str,
+        target_generation_id: str,
+        source_generation_id: str,
+        observed_active_generation: str,
+        observed_pointer_etag: str,
+        reason_hash: str,
+        authorization_audit: Mapping[str, Any],
+        now: datetime,
+    ) -> tuple[dict[str, Any], bool]:
+        moment = _aware(now)
+        immutable = {
+            "type": "rollback",
+            "source_command_id": _required(
+                source_command_id, "source_command_id"
+            ),
+            "connection_id": _required(
+                connection_id, "connection_id"
+            ).casefold(),
+            "target_generation_id": _required(
+                target_generation_id, "target_generation_id"
+            ),
+            "source_generation_id": _required(
+                source_generation_id, "source_generation_id"
+            ),
+            "observed_active_generation": _required(
+                observed_active_generation, "observed_active_generation"
+            ),
+            "observed_pointer_etag": _required(
+                observed_pointer_etag, "observed_pointer_etag"
+            ),
+            "reason_hash": _required(reason_hash, "reason_hash"),
+            "authorization_audit": copy.deepcopy(dict(authorization_audit)),
+        }
+        canonical = json.dumps(
+            immutable, sort_keys=True, separators=(",", ":"), default=str
+        )
+        content_hash = hashlib.sha256(canonical.encode()).hexdigest()
+        dispatch_id = "ODR-" + content_hash[:24].upper()
+        record = {
+            "dispatch_id": dispatch_id,
+            **immutable,
+            "content_hash": content_hash,
+            "status": "pending",
+            "revision": 0,
+            "attempt_count": 0,
+            "lease_owner": "",
+            "lease_expires_at": "",
+            "created_at": moment.isoformat(),
+            "updated_at": moment.isoformat(),
+            "receipts": [],
+            "reason_code": "",
+        }
+
+        def add(state: dict[str, Any]):
+            existing = next(
+                (
+                    row
+                    for row in state["dispatches"]
+                    if row["dispatch_id"] == dispatch_id
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing["content_hash"] != content_hash:
+                    raise DispatchConflict("dispatch_identity_conflict")
+                return copy.deepcopy(existing), False
+            state["dispatches"].append(copy.deepcopy(record))
+            return copy.deepcopy(record), True
+
+        return _mutate(self._documents, add)
+
+    def list_due_rollback(
+        self, *, now: datetime, limit: int = 1
+    ) -> list[dict[str, Any]]:
+        moment = _aware(now)
+        rows = [
+            copy.deepcopy(row)
+            for row in _read(self._documents)["dispatches"]
+            if row["type"] == "rollback"
+            and row["status"] in {"pending", "retrying"}
+            and (
+                not row.get("next_attempt_at")
+                or datetime.fromisoformat(row["next_attempt_at"]) <= moment
+            )
+        ]
+        rows.sort(key=lambda row: (row["created_at"], row["dispatch_id"]))
+        return rows[: max(0, int(limit))]
+
     def claim_publish(
         self,
         dispatch_id: str,
@@ -163,6 +255,36 @@ class PublisherDispatchView:
                         and datetime.fromisoformat(row["lease_expires_at"]) <= moment
                     )
                 )
+            ):
+                raise DispatchConflict("dispatch_claim_conflict")
+            row["status"] = "claimed"
+            row["revision"] += 1
+            row["attempt_count"] += 1
+            row["lease_owner"] = _required(owner, "owner")
+            row["lease_expires_at"] = (
+                moment + timedelta(seconds=max(1, int(lease_seconds)))
+            ).isoformat()
+            row["updated_at"] = moment.isoformat()
+            return copy.deepcopy(row)
+
+        return _mutate(self._documents, claim)
+
+    def claim_rollback(
+        self,
+        dispatch_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        now: datetime,
+        lease_seconds: int = 60,
+    ) -> dict[str, Any]:
+        moment = _aware(now)
+
+        def claim(state: dict[str, Any]):
+            row = _locate(state, dispatch_id, "rollback")
+            if (
+                row["revision"] != expected_revision
+                or row["status"] not in {"pending", "retrying"}
             ):
                 raise DispatchConflict("dispatch_claim_conflict")
             row["status"] = "claimed"
@@ -282,8 +404,57 @@ class PublisherDispatchView:
 
         return _mutate(self._documents, fail)
 
+    def complete_rollback(
+        self,
+        dispatch_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        receipt: Mapping[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        moment = _aware(now)
+
+        def complete(state: dict[str, Any]):
+            row = _locate(state, dispatch_id, "rollback")
+            _assert_claim(row, expected_revision, owner, moment)
+            row["status"] = "succeeded"
+            row["revision"] += 1
+            row["terminal_receipt"] = copy.deepcopy(dict(receipt))
+            row["updated_at"] = moment.isoformat()
+            return copy.deepcopy(row)
+
+        return _mutate(self._documents, complete)
+
+    def fail_rollback(
+        self,
+        dispatch_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        reason_code: str,
+        receipt: Mapping[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        moment = _aware(now)
+
+        def fail(state: dict[str, Any]):
+            row = _locate(state, dispatch_id, "rollback")
+            _assert_claim(row, expected_revision, owner, moment)
+            row["status"] = "failed"
+            row["reason_code"] = _required(reason_code, "reason_code")[:96]
+            row["revision"] += 1
+            row["terminal_receipt"] = copy.deepcopy(dict(receipt))
+            row["updated_at"] = moment.isoformat()
+            return copy.deepcopy(row)
+
+        return _mutate(self._documents, fail)
+
     def get_publish(self, dispatch_id: str) -> dict[str, Any] | None:
         return _get(self._documents, dispatch_id, "publish")
+
+    def get_rollback(self, dispatch_id: str) -> dict[str, Any] | None:
+        return _get(self._documents, dispatch_id, "rollback")
 
 
 def _read(documents: OneLakeDocumentStore) -> dict[str, Any]:

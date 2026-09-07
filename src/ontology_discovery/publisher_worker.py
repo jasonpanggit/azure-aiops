@@ -8,9 +8,15 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from onboarding.registry import ConnectionNotFoundError, ConnectionRegistry
 from storage.datasets import GenerationPointerConditions
 from storage.locking import MonotonicFenceAllocator
 
+from .command_intake import (
+    CommandConflict,
+    PublisherCommandConsumer,
+    scope_receipt,
+)
 from .dispatch_store import DispatchConflict, PublisherDispatchView
 from .publisher import (
     APPROVED_PUBLICATION_CHECKPOINTS,
@@ -78,6 +84,39 @@ class PublisherWorker:
                         receipt={
                             "failure_class": _closed_reason(exc),
                             "command_hash": claimed["content_hash"],
+                            "failed_at": moment.isoformat(),
+                        },
+                        now=moment,
+                    )
+                result["failed"] += 1
+            else:
+                result["succeeded"] += 1
+        remaining = max(0, int(limit) - len(due))
+        for pending in self._dispatches.list_due_rollback(
+            now=moment, limit=remaining
+        ):
+            result["selected"] += 1
+            try:
+                claimed = self._dispatches.claim_rollback(
+                    pending["dispatch_id"],
+                    expected_revision=int(pending["revision"]),
+                    owner=self._owner_id,
+                    now=moment,
+                )
+                self._process_rollback(claimed, moment)
+            except DispatchConflict:
+                result["contended"] += 1
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                current = self._dispatches.get_rollback(pending["dispatch_id"])
+                if current is not None and current["status"] == "claimed":
+                    self._dispatches.fail_rollback(
+                        pending["dispatch_id"],
+                        expected_revision=int(current["revision"]),
+                        owner=self._owner_id,
+                        reason_code=_closed_reason(exc),
+                        receipt={
+                            "failure_class": _closed_reason(exc),
+                            "command_hash": pending["content_hash"],
                             "failed_at": moment.isoformat(),
                         },
                         now=moment,
@@ -178,6 +217,180 @@ class PublisherWorker:
             now=moment,
         )
 
+    def _process_rollback(
+        self, claimed: Mapping[str, Any], moment: datetime
+    ) -> None:
+        pointer = self._publisher._storage.read_pointer()
+        if (
+            pointer.pointer is None
+            or pointer.pointer.active_generation
+            != claimed["observed_active_generation"]
+            or pointer.etag != claimed["observed_pointer_etag"]
+        ):
+            raise PublicationSafetyError("stale rollback pointer observation")
+        fence = self._fences.allocate(
+            scope=str(claimed["connection_id"]),
+            owner_id=self._owner_id,
+        )
+        rolled_back = self._publisher.rollback(
+            target_generation_id=str(claimed["target_generation_id"]),
+            source_generation=str(claimed["source_generation_id"]),
+            publisher_identity=self._publisher_identity,
+            checkpoint_ids=APPROVED_PUBLICATION_CHECKPOINTS,
+            pointer_conditions=GenerationPointerConditions.from_snapshot(pointer),
+            owner_id=self._owner_id,
+            fence=fence.value,
+            cancellation_check=lambda: False,
+            lease_guard=lambda: None,
+        )
+        checks = dict(
+            self._consumer_check(
+                "post", str(claimed["target_generation_id"])
+            )
+        )
+        if set(checks) != set(CONSUMER_FAMILIES) or not all(checks.values()):
+            raise PublicationSafetyError("rollback consumer verification failed")
+        self._dispatches.complete_rollback(
+            str(claimed["dispatch_id"]),
+            expected_revision=int(claimed["revision"]),
+            owner=self._owner_id,
+            receipt={
+                "target_generation_hash": hashlib.sha256(
+                    str(claimed["target_generation_id"]).encode()
+                ).hexdigest(),
+                "pointer_etag": rolled_back.etag or "",
+                "fence": fence.value,
+                "consumer_hash": _hash_mapping(checks),
+                "completed_at": moment.isoformat(),
+            },
+            now=moment,
+        )
+
+
+class PublisherIntakeAdapter:
+    """Reauthorize untrusted rollback intake before authoritative dispatch."""
+
+    def __init__(
+        self,
+        *,
+        registry: ConnectionRegistry,
+        commands: PublisherCommandConsumer,
+        dispatches: PublisherDispatchView,
+        publication: Any,
+        owner_id: str,
+        now: Callable[[], datetime],
+    ) -> None:
+        self._registry = registry
+        self._commands = commands
+        self._dispatches = dispatches
+        self._publication = publication
+        self._owner_id = _required(owner_id, "owner_id")
+        self._now = now
+
+    def process_one(self) -> dict[str, int]:
+        moment = _aware(self._now())
+        due = self._commands.list_due_rollback(now=moment, limit=1)
+        result = {"accepted": 0, "denied": 0, "contended": 0}
+        if not due:
+            return result
+        pending = due[0]
+        try:
+            claimed = self._commands.claim_rollback(
+                pending["command_id"],
+                expected_revision=int(pending["revision"]),
+                owner=self._owner_id,
+                now=moment,
+            )
+        except CommandConflict:
+            result["contended"] = 1
+            return result
+        reason = self._authorize(claimed, moment)
+        audit = {
+            "event": "rollback_authorization",
+            "outcome": "authorized" if reason == "" else "denied",
+            "command_hash": _hash_mapping(_immutable_rollback_intake(claimed)),
+            "scope_hash": str(claimed["effective_scope_hash"]),
+            "target_generation_hash": hashlib.sha256(
+                str(claimed["target_generation_id"]).encode()
+            ).hexdigest(),
+            "observed_at": moment.isoformat(),
+            "reason_code": reason,
+        }
+        if reason:
+            self._commands.deny(
+                claimed["command_id"],
+                expected_revision=int(claimed["revision"]),
+                owner=self._owner_id,
+                reason_code=reason,
+                authorization_audit=audit,
+                now=moment,
+            )
+            result["denied"] = 1
+            return result
+        target = self._publication.read_generation(
+            str(claimed["target_generation_id"])
+        )
+        self._dispatches.create_rollback(
+            source_command_id=str(claimed["command_id"]),
+            connection_id=str(claimed["connection_id"]),
+            target_generation_id=str(claimed["target_generation_id"]),
+            source_generation_id=str(target["manifest"]["source_generation"]),
+            observed_active_generation=str(
+                claimed["observed_active_generation"]
+            ),
+            observed_pointer_etag=str(claimed["observed_pointer_etag"]),
+            reason_hash=hashlib.sha256(
+                str(claimed.get("reason") or "").encode()
+            ).hexdigest(),
+            authorization_audit=audit,
+            now=moment,
+        )
+        self._commands.complete(
+            claimed["command_id"],
+            expected_revision=int(claimed["revision"]),
+            owner=self._owner_id,
+            authorization_audit=audit,
+            now=moment,
+        )
+        result["accepted"] = 1
+        return result
+
+    def _authorize(self, command: Mapping[str, Any], moment: datetime) -> str:
+        if datetime.fromisoformat(str(command["expires_at"])) <= moment:
+            return "command_expired"
+        try:
+            connection = self._registry.get(str(command["connection_id"]))
+        except ConnectionNotFoundError:
+            return "connection_not_found"
+        if not connection.is_active:
+            return "connection_inactive"
+        if command["effective_scope_hash"] != scope_receipt(
+            connection, "ontology.publication.rollback"
+        ):
+            return "scope_receipt_mismatch"
+        pointer = self._publication.read_pointer()
+        if (
+            pointer.pointer is None
+            or pointer.pointer.active_generation
+            != command["observed_active_generation"]
+            or pointer.etag != command["observed_pointer_etag"]
+        ):
+            return "stale_pointer_observation"
+        try:
+            target = self._publication.read_generation(
+                str(command["target_generation_id"])
+            )
+        except (FileNotFoundError, TypeError, ValueError):
+            return "rollback_target_unavailable"
+        if (
+            target["manifest"].get("complete") is not True
+            or target["validation"].get("passed") is not True
+            or target["compatibility"].get("all_consumers_compatible") is not True
+            or not target.get("audit")
+        ):
+            return "rollback_target_ineligible"
+        return ""
+
 
 def _candidate_from_dispatch(row: Mapping[str, Any]) -> OntologyGenerationCandidate:
     raw = row.get("candidate")
@@ -233,6 +446,26 @@ def _closed_reason(exc: Exception) -> str:
     return "publisher_dependency_failure"
 
 
+def _immutable_rollback_intake(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: row.get(key)
+        for key in (
+            "command_id",
+            "connection_id",
+            "effective_scope_hash",
+            "target_generation_id",
+            "observed_active_generation",
+            "observed_pointer_etag",
+            "idempotency_key",
+        )
+    }
+
+
+def _hash_mapping(value: Mapping[str, Any]) -> str:
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def _required(value: object, name: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -246,4 +479,4 @@ def _aware(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-__all__ = ["PublisherWorker"]
+__all__ = ["PublisherIntakeAdapter", "PublisherWorker"]

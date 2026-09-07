@@ -5,8 +5,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from fabric.auth import FabricAuthConfig
+from fabric.config import FabricRuntimeConfig
+from onboarding.registry import ConnectionRegistry
 from ontology.ontology_validator import OntologyValidator
 from ontology.subscription_connection import SubscriptionConnection
+from ontology_discovery import publisher_cli
 from ontology_discovery.command_intake import (
     CommandIntakeService,
     PublisherCommandConsumer,
@@ -19,9 +23,6 @@ from ontology_discovery.publisher_cli import (
     publisher_fabric_config,
 )
 from ontology_discovery.publisher_worker import PublisherIntakeAdapter, PublisherWorker
-from onboarding.registry import ConnectionRegistry
-from fabric.auth import FabricAuthConfig
-from fabric.config import FabricRuntimeConfig
 from storage.datasets import DatasetStore
 from storage.locking import MonotonicFenceAllocator
 from storage.onelake_documents import OneLakeDocumentStore
@@ -390,4 +391,126 @@ def test_publisher_runtime_rebinds_fabric_managed_identity_and_exact_roots(tmp_p
             mode="managed_identity",
             managed_identity_client_id="publisher-client-id",
         ),
+    )
+
+
+def test_explicit_rollback_uses_newer_fence_and_restores_retained_generation(
+    tmp_path,
+):
+    events: list[str] = []
+    dispatch_root, storage, worker = _worker(tmp_path, events)
+    coordinator = PublisherDispatchStore(dispatch_root).coordinator()
+    coordinator.create_publish(
+        run_id="ODR-17",
+        connection_id="connection-a",
+        source_generation_id="source-17",
+        candidate=_candidate(),
+        now=NOW,
+    )
+    assert worker.run_once(now=NOW)["succeeded"] == 1
+    second_candidate = {
+        **_candidate(),
+        "generation_id": "ontology-generation-18",
+    }
+    coordinator.create_publish(
+        run_id="ODR-18",
+        connection_id="connection-a",
+        source_generation_id="source-18",
+        candidate=second_candidate,
+        now=NOW,
+    )
+    assert worker.run_once(now=NOW)["succeeded"] == 1
+    current = storage.read_pointer()
+    assert current.pointer.active_generation == "ontology-generation-18"
+
+    connection_root = str(tmp_path / "connections")
+    command_root = str(tmp_path / "commands")
+    registry = ConnectionRegistry(connection_root)
+    connection = SubscriptionConnection(
+        connection_id="connection-a",
+        name="connection-a",
+        tenant_id="tenant-a",
+        subscription_id="subscription-a",
+        metadata={"environment": "production"},
+    )
+    registry.add(connection)
+    CommandIntakeService(command_root).enqueue_rollback(
+        actor_hash="actor-hash",
+        connection_id="connection-a",
+        action="ontology.publication.rollback",
+        effective_scope_hash=scope_receipt(
+            connection, "ontology.publication.rollback"
+        ),
+        issued_at=NOW,
+        expires_at=NOW + timedelta(minutes=10),
+        idempotency_key="rollback-to-17",
+        reason="consumer regression",
+        target_generation_id="ontology-generation-17",
+        observed_active_generation="ontology-generation-18",
+        observed_pointer_etag=current.etag,
+    )
+    intake = PublisherIntakeAdapter(
+        registry=registry,
+        commands=PublisherCommandConsumer(command_root),
+        dispatches=PublisherDispatchStore(dispatch_root).publisher(),
+        publication=storage,
+        owner_id="publisher-worker-17",
+        now=lambda: NOW,
+    )
+    assert intake.process_one()["accepted"] == 1
+
+    assert worker.run_once(now=NOW)["succeeded"] == 1
+    restored = storage.read_pointer()
+    assert restored.pointer.active_generation == "ontology-generation-17"
+    assert restored.pointer.prior_generation == "ontology-generation-18"
+    assert restored.pointer.fence > current.pointer.fence
+
+
+def test_runtime_builder_passes_only_publisher_identity_to_fabric(
+    tmp_path, monkeypatch
+):
+    captured: list[FabricRuntimeConfig] = []
+    loaded = FabricRuntimeConfig(
+        auth=FabricAuthConfig(
+            mode="service_principal",
+            tenant_id="tenant",
+            client_id="api-client-id",
+        ),
+        source_data_root=tmp_path / "fabric-source",
+        local_onelake_root=tmp_path / "lakehouse",
+    )
+    monkeypatch.setattr(
+        publisher_cli.FabricRuntimeConfig,
+        "load",
+        lambda _path: loaded,
+    )
+
+    class Fabric:
+        service = object()
+
+    def capture(config):
+        captured.append(config)
+        return Fabric()
+
+    monkeypatch.setattr(publisher_cli, "build_runtime", capture)
+    config = PublisherRuntimeConfig.from_env(
+        {
+            "AIOPS_CONNECTION_HOME": str(tmp_path / "connections"),
+            "AIOPS_ONTOLOGY_COMMAND_HOME": str(tmp_path / "commands"),
+            "AIOPS_ONTOLOGY_DISPATCH_HOME": str(tmp_path / "dispatch"),
+            "AIOPS_ONTOLOGY_PUBLICATION_HOME": str(tmp_path / "publication"),
+            "AIOPS_FABRIC_CONFIG": str(tmp_path / "fabric.yaml"),
+            "AIOPS_IDENTITY_CLASS": "publisher",
+            "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID": "publisher-client-id",
+            "AZURE_CLIENT_ID": "publisher-client-id",
+            "AIOPS_RUNTIME_MODE": "local",
+        }
+    )
+
+    publisher_cli.build_publisher_runtime(config)
+
+    assert len(captured) == 1
+    assert captured[0].auth == FabricAuthConfig(
+        mode="managed_identity",
+        managed_identity_client_id="publisher-client-id",
     )
