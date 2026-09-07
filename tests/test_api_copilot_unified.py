@@ -134,10 +134,15 @@ def test_canonical_inventory_tracer_returns_citations_uncertainty_and_thread():
     assert result.coverage.complete is False
     assert "visible subset is incomplete" in result.uncertainty
     assert "inventory freshness is stale" in result.uncertainty
-    assert {item.citation_id for item in result.citations} >= {
-        "inventory:visible",
-        "tool:0:0:inventory_data_health:inventory_resources:0",
-    }
+    citation_ids = {item.citation_id for item in result.citations}
+    assert "inventory:visible" in citation_ids
+    tool_citation = next(
+        citation_id for citation_id in citation_ids if citation_id.startswith("tool:")
+    )
+    assert result.thread_id in tool_citation
+    assert tool_citation.endswith(
+        ":0:0:inventory_data_health:inventory_resources:0"
+    )
     assert result.thread_id.startswith("thr-")
     assert result.thread_revision == 1
     assert store.history(
@@ -385,10 +390,15 @@ def test_repeated_tool_calls_retain_distinct_citations():
         for citation in result.citations
         if citation.citation_id.startswith("tool:")
     ]
-    assert tool_citations == [
-        "tool:0:0:inventory_data_health:inventory_resources:0",
-        "tool:0:1:inventory_data_health:inventory_resources:0",
-    ]
+    assert len(tool_citations) == 2
+    assert len(set(tool_citations)) == 2
+    assert all(result.thread_id in citation_id for citation_id in tool_citations)
+    assert tool_citations[0].endswith(
+        ":0:0:inventory_data_health:inventory_resources:0"
+    )
+    assert tool_citations[1].endswith(
+        ":0:1:inventory_data_health:inventory_resources:0"
+    )
 
 
 def test_wall_clock_budget_stops_before_tool_io():

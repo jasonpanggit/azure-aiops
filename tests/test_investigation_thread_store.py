@@ -26,6 +26,7 @@ from operations.investigation_thread_store import (
     MAX_TURNS,
     OBSERVATION_CURRENT,
     OBSERVATION_HISTORICAL,
+    THREAD_INDEX_DOCUMENT,
     InvestigationThreadStore,
     ThreadNotFound,
     ThreadRevisionConflict,
@@ -137,7 +138,12 @@ def test_each_thread_is_its_own_document() -> None:
 
     assert thread_document_name(first.thread_id) in documents.documents
     assert thread_document_name(second.thread_id) in documents.documents
-    assert len(documents.documents) == 2
+    assert {
+        name for name in documents.documents if name.startswith("threads/")
+    } == {
+        thread_document_name(first.thread_id),
+        thread_document_name(second.thread_id),
+    }
 
 
 def test_durability_outcome_is_explicit() -> None:
@@ -361,7 +367,13 @@ def test_expired_documents_are_removed_by_bounded_cleanup() -> None:
     assert removed == 2
     assert len(documents.deleted) == 2
     assert store.cleanup(max_removals=100) == 3
-    assert documents.documents == {}
+    assert documents.documents == {
+        THREAD_INDEX_DOCUMENT: {
+            "schema_version": "1",
+            "revision": documents.documents[THREAD_INDEX_DOCUMENT]["revision"],
+            "thread_ids": [],
+        }
+    }
     for thread in threads:
         with pytest.raises(ThreadNotFound):
             store.authorize(thread.thread_id, "operator-a", SUB_A)
@@ -768,7 +780,10 @@ def test_legacy_import_is_bounded_and_skips_empty_conversations() -> None:
     thread = store.import_legacy_turns(
         "operator-a",
         SUB_A,
-        [{"question": str(index)} for index in range(30)],
+        [
+            {"question": str(index), "scope": SUB_A.to_dict()}
+            for index in range(30)
+        ],
     )
     history = store.history(thread.thread_id, "operator-a", SUB_A)
 

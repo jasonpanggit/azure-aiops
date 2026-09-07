@@ -37,6 +37,8 @@ MAX_TURNS = 12
 IDLE_TTL_SECONDS = 60 * 60
 ABSOLUTE_TTL_SECONDS = 24 * 60 * 60
 MAX_CLEANUP_PER_PASS = 64
+MAX_DURABLE_INDEX_ENTRIES = 100_000
+THREAD_INDEX_DOCUMENT = "thread-index/index.json"
 THREAD_SCHEMA_VERSION = "1"
 
 OBSERVATION_CURRENT = "current"
@@ -287,6 +289,7 @@ class InvestigationThreadStore:
         self._lock = threading.RLock()
         self._threads: OrderedDict[str, InvestigationThread] = OrderedDict()
         self.documents = documents
+        self._last_durable_sweep_at = 0.0
 
     @property
     def is_durable(self) -> bool:
@@ -334,23 +337,118 @@ class InvestigationThreadStore:
         record.storage_revision = expected_revision + 1
         record.durability = DURABILITY_DURABLE
 
-    def _forget_document(self, thread_id: str) -> None:
+    def _read_index(self) -> tuple[list[str], int]:
+        if self.documents is None:
+            return [], 0
+        payload = self._read_document(THREAD_INDEX_DOCUMENT)
+        if not payload:
+            return [], 0
+        raw_ids = payload.get("thread_ids")
+        if not isinstance(raw_ids, list):
+            raise ThreadStoreUnavailable()
+        thread_ids = list(
+            dict.fromkeys(
+                str(thread_id)
+                for thread_id in raw_ids
+                if str(thread_id).startswith("thr-")
+            )
+        )
+        return thread_ids, int(payload.get("revision") or 0)
+
+    def _write_index(
+        self,
+        thread_ids: Sequence[str],
+        *,
+        expected_revision: int,
+    ) -> None:
         if self.documents is None:
             return
+        self.documents.write(
+            THREAD_INDEX_DOCUMENT,
+            {
+                "schema_version": THREAD_SCHEMA_VERSION,
+                "revision": expected_revision + 1,
+                "thread_ids": list(thread_ids),
+            },
+            expected_revision=expected_revision,
+        )
+
+    def _register_document(self, thread_id: str) -> None:
+        if self.documents is None:
+            return
+        for _attempt in range(3):
+            try:
+                thread_ids, revision = self._read_index()
+                if thread_id in thread_ids:
+                    return
+                if len(thread_ids) >= MAX_DURABLE_INDEX_ENTRIES:
+                    raise ThreadStoreUnavailable()
+                self._write_index(
+                    [*thread_ids, thread_id],
+                    expected_revision=revision,
+                )
+                return
+            except DocumentConflictError:
+                continue
+            except ThreadStoreUnavailable:
+                raise
+            except Exception:
+                _LOGGER.warning("failed to register durable thread", exc_info=True)
+                raise ThreadStoreUnavailable() from None
+        raise ThreadStoreUnavailable()
+
+    def _rewrite_scanned_index(
+        self,
+        scanned: Sequence[str],
+        retained: Sequence[str],
+    ) -> None:
+        if self.documents is None or not scanned:
+            return
+        scanned_set = set(scanned)
+        retained_set = set(retained)
+        for _attempt in range(3):
+            try:
+                current, revision = self._read_index()
+                remaining = [
+                    thread_id for thread_id in current if thread_id not in scanned_set
+                ]
+                rotated = [
+                    thread_id
+                    for thread_id in scanned
+                    if thread_id in retained_set and thread_id in current
+                ]
+                updated = [*remaining, *rotated]
+                if updated == current:
+                    return
+                self._write_index(updated, expected_revision=revision)
+                return
+            except DocumentConflictError:
+                continue
+            except Exception:
+                _LOGGER.warning("failed to update durable thread index", exc_info=True)
+                return
+
+    def _forget_document(self, thread_id: str, *, update_index: bool = True) -> bool:
+        if self.documents is None:
+            return True
         delete = getattr(self.documents, "delete", None)
         name = thread_document_name(thread_id)
         try:
             if callable(delete):
                 delete(name)
-                return
-            current = int(self._read_document(name).get("revision") or 0)
-            self.documents.write(
-                name,
-                {"revision": current + 1, "deleted": True},
-                expected_revision=current,
-            )
+            else:
+                current = int(self._read_document(name).get("revision") or 0)
+                self.documents.write(
+                    name,
+                    {"revision": current + 1, "deleted": True},
+                    expected_revision=current,
+                )
         except Exception:  # Cleanup is best-effort.
             _LOGGER.warning("failed to remove expired thread document", exc_info=True)
+            return False
+        if update_index:
+            self._rewrite_scanned_index([thread_id], [])
+        return True
 
     def _load(self, thread_id: str) -> InvestigationThread | None:
         """Rehydrate an evicted or another replica's thread from storage."""
@@ -404,11 +502,80 @@ class InvestigationThreadStore:
                 removed += 1
         return removed
 
+    def _sweep_durable(
+        self,
+        now: float,
+        *,
+        max_removals: int,
+        max_scans: int,
+    ) -> int:
+        """Discover and remove absolutely expired documents across replicas."""
+
+        if self.documents is None or max_removals <= 0 or max_scans <= 0:
+            return 0
+        try:
+            thread_ids, _revision = self._read_index()
+        except Exception:
+            _LOGGER.warning("failed to read durable thread index", exc_info=True)
+            return 0
+        scanned = thread_ids[:max_scans]
+        retained: list[str] = []
+        removed = 0
+        for position, thread_id in enumerate(scanned):
+            if removed >= max_removals:
+                retained.extend(scanned[position:])
+                break
+            try:
+                payload = self._read_document(thread_document_name(thread_id))
+            except Exception:  # noqa: BLE001 - one bad record must not abort a sweep.
+                retained.append(thread_id)
+                continue
+            if not payload:
+                continue
+            if payload.get("thread_id") != thread_id:
+                retained.append(thread_id)
+                continue
+            try:
+                record = InvestigationThread.from_document(payload)
+            except (TypeError, ValueError):
+                retained.append(thread_id)
+                continue
+            if now - record.created_at < self._absolute_ttl_seconds:
+                retained.append(thread_id)
+                continue
+            self._threads.pop(thread_id, None)
+            if self._forget_document(thread_id, update_index=False):
+                removed += 1
+            else:
+                retained.append(thread_id)
+        self._rewrite_scanned_index(scanned, retained)
+        return removed
+
+    def _maybe_sweep_durable(self, now: float) -> None:
+        if self.documents is None or now - self._last_durable_sweep_at < 60:
+            return
+        self._last_durable_sweep_at = now
+        self._sweep_durable(
+            now,
+            max_removals=MAX_CLEANUP_PER_PASS,
+            max_scans=MAX_CLEANUP_PER_PASS,
+        )
+
     def cleanup(self, *, max_removals: int = MAX_CLEANUP_PER_PASS) -> int:
         """Remove up to ``max_removals`` expired threads and their documents."""
 
         with self._lock:
-            return self._sweep(self._clock(), limit=max(0, max_removals))
+            now = self._clock()
+            limit = max(0, max_removals)
+            removed = self._sweep(now, limit=limit)
+            remaining = max(0, limit - removed)
+            removed += self._sweep_durable(
+                now,
+                max_removals=remaining,
+                max_scans=max(MAX_CLEANUP_PER_PASS, remaining),
+            )
+            self._last_durable_sweep_at = now
+            return removed
 
     # -- access -----------------------------------------------------------
 
@@ -443,6 +610,8 @@ class InvestigationThreadStore:
             raise ThreadNotFound(reason="principal_mismatch")
         if not scope_within(current_scope, record.scope):
             raise ThreadNotFound(reason="scope_widened")
+        self._register_document(thread_id)
+        self._maybe_sweep_durable(now)
         return record
 
     def _age_retained_turns(self, record: InvestigationThread) -> None:
@@ -467,10 +636,17 @@ class InvestigationThreadStore:
         )
         with self._lock:
             self._sweep(now)
+            self._maybe_sweep_durable(now)
             self._cache(record)
             while len(self._threads) > self._max_threads:
                 self._threads.popitem(last=False)
-            self._persist(record)
+            try:
+                self._register_document(record.thread_id)
+                self._persist(record)
+            except Exception:
+                self._threads.pop(record.thread_id, None)
+                self._forget_document(record.thread_id)
+                raise
         return record
 
     def authorize(
@@ -621,11 +797,35 @@ class InvestigationThreadStore:
         with self._lock:
             now = self._clock()
             for payload in retained[-self._max_turns :]:
-                imported = deepcopy(dict(payload))
-                imported["imported_from"] = "legacy_conversation"
+                raw_scope = payload.get("scope") or payload.get("requested_scope")
+                legacy_scope: Scope | None = None
+                if isinstance(raw_scope, Mapping):
+                    try:
+                        legacy_scope = Scope.from_mapping(raw_scope)
+                    except (TypeError, ValueError):
+                        legacy_scope = None
+                if legacy_scope is None or not scope_within(legacy_scope, scope):
+                    imported = {
+                        "status": "historical_scope_unverified",
+                        "observation_status": OBSERVATION_HISTORICAL,
+                        "imported_from": "legacy_conversation",
+                        "tool_results": [],
+                        "citations": [],
+                        "uncertainty": [
+                            (
+                                "Historical content was withheld until its scope "
+                                "can be revalidated."
+                            )
+                        ],
+                    }
+                    turn_scope = scope
+                else:
+                    imported = deepcopy(dict(payload))
+                    imported["imported_from"] = "legacy_conversation"
+                    turn_scope = legacy_scope
                 record.turns.append(
                     InvestigationThreadTurn(
-                        scope=scope,
+                        scope=turn_scope,
                         payload=_age_payload(imported, OBSERVATION_HISTORICAL),
                         recorded_at=now,
                         observation_status=OBSERVATION_HISTORICAL,
@@ -744,6 +944,7 @@ def configure_thread_store(
     _THREAD_STORE.documents = documents
     if documents is not None:
         for record in list(_THREAD_STORE._threads.values()):
+            _THREAD_STORE._register_document(record.thread_id)
             _THREAD_STORE._persist(record)
     return _THREAD_STORE
 
@@ -754,9 +955,11 @@ __all__ = [
     "DURABILITY_MEMORY_ONLY",
     "IDLE_TTL_SECONDS",
     "MAX_CLEANUP_PER_PASS",
+    "MAX_DURABLE_INDEX_ENTRIES",
     "MAX_TURNS",
     "OBSERVATION_CURRENT",
     "OBSERVATION_HISTORICAL",
+    "THREAD_INDEX_DOCUMENT",
     "THREAD_MISS_REASONS",
     "InvestigationThread",
     "InvestigationThreadStore",

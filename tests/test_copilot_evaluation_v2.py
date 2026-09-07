@@ -92,13 +92,19 @@ class RecordingExecutive:
 
     def __init__(self, text: str = "") -> None:
         self.calls: list[dict[str, Any]] = []
-        self.text = text or json.dumps(
+        self.text = text
+
+    def answer(self, *, question: str, context: Any, **_: Any) -> Any:
+        self.calls.append({"question": question, "context": context})
+        text = self.text or json.dumps(
             {
                 "findings": [
                     {
                         "finding_id": "exec:1",
                         "summary": "Two domains agree the workload is exposed.",
-                        "evidence_refs": ["tool:0:0:vulnerability:cve_exposure:0"],
+                        "evidence_refs": [
+                            context["findings"][0]["evidence_refs"][0]
+                        ],
                         "confidence": "high",
                         "freshness": "fresh",
                         "uncertainty": [],
@@ -109,15 +115,14 @@ class RecordingExecutive:
             }
         )
 
-    def answer(self, *, question: str, context: Any, **_: Any) -> Any:
-        self.calls.append({"question": question, "context": context})
-
         class _Answer:
-            text = self.text
-            agent_name = EXECUTIVE_SPECIALIST_ID
-            model = "test-model"
-            grounded = True
-            agent_version = "1"
+            pass
+
+        _Answer.text = text
+        _Answer.agent_name = EXECUTIVE_SPECIALIST_ID
+        _Answer.model = "test-model"
+        _Answer.grounded = True
+        _Answer.agent_version = "1"
 
         return _Answer()
 
@@ -770,7 +775,8 @@ def test_cas_retry_persists_committed_revision_and_reconciliation_warning() -> N
 
 def test_turn_ids_do_not_collide_and_used_retained_citations_are_returned() -> None:
     class RetainedExecutive:
-        calls: list[dict[str, Any]] = []
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
 
         def answer(self, *, question: str, context: Any, **_: Any) -> Any:
             self.calls.append({"question": question, "context": context})

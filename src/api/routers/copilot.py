@@ -978,32 +978,43 @@ def investigate_context(
             str(exc),
             details={"field": "snapshot.scope"},
         ) from exc
-    if (
-        canonical_orchestration_enabled()
-        and snapshot.page_kind in CANONICAL_CONTEXT_PAGE_KINDS
-    ):
-        ledger = _run_context_via_canonical(
-            snapshot,
-            context=context,
-            scope=scope,
-            principal_subject=principal.subject,
-        )
-    else:
-        ledger = run_context_investigation(
-            snapshot,
-            context=context,
-            scope=scope,
-            principal_subject=principal.subject,
-        )
-        if canonical_orchestration_enabled():
-            ledger.setdefault("warnings", []).append(
-                f"Canonical context adapter unavailable for {snapshot.page_kind}; "
-                "used the explicit legacy rollback path."
+    try:
+        if (
+            canonical_orchestration_enabled()
+            and snapshot.page_kind in CANONICAL_CONTEXT_PAGE_KINDS
+        ):
+            ledger = _run_context_via_canonical(
+                snapshot,
+                context=context,
+                scope=scope,
+                principal_subject=principal.subject,
             )
-            ledger["orchestration"] = {
-                **dict(ledger.get("orchestration") or {}),
-                "fallback_reason": "unsupported_canonical_page_kind",
-            }
+        else:
+            ledger = run_context_investigation(
+                snapshot,
+                context=context,
+                scope=scope,
+                principal_subject=principal.subject,
+            )
+            if canonical_orchestration_enabled():
+                ledger.setdefault("warnings", []).append(
+                    f"Canonical context adapter unavailable for {snapshot.page_kind}; "
+                    "used the explicit legacy rollback path."
+                )
+                ledger["orchestration"] = {
+                    **dict(ledger.get("orchestration") or {}),
+                    "fallback_reason": "unsupported_canonical_page_kind",
+                }
+    except ThreadStoreUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Investigation continuity is temporarily unavailable",
+        ) from exc
+    except ThreadRevisionConflict as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Investigation thread changed; retry the request",
+        ) from exc
     ledger_store().add(ledger)
     evidence = [
         Evidence(

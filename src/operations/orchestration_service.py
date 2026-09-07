@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -343,6 +344,7 @@ class ExecutiveSynthesis:
     domain_count: int
     claims: list[dict[str, Any]] = field(default_factory=list)
     warning: str = ""
+    used_retained_evidence: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -476,6 +478,9 @@ class OrchestrationService:
         selected_specialists: list[str] = []
         selected_tools: list[str] = []
         budget_exhausted = False
+        turn_qualifier = (
+            f"{thread.thread_id}:rev-{thread.revision + 1}:turn-{uuid.uuid4().hex}"
+        )
 
         for step_index, step in enumerate(candidate.steps):
             selected_specialists.append(step.specialist_id)
@@ -502,7 +507,8 @@ class OrchestrationService:
                     evidence_count=len(result.evidence),
                 )
                 call_id = (
-                    f"{step_index}:{call_index}:{step.specialist_id}:{call.tool}"
+                    f"{turn_qualifier}:{step_index}:{call_index}:"
+                    f"{step.specialist_id}:{call.tool}"
                 )
                 tool_results.append(
                     {
@@ -543,13 +549,24 @@ class OrchestrationService:
             uncertainty,
             budget_exhausted=budget_exhausted,
         )
+        retained_evidence = self._retained_evidence(thread, requested_scope)
         synthesis = self._synthesize(
             request.question,
             tool_results,
-            retained_evidence=self._retained_evidence(thread, requested_scope),
+            retained_evidence=retained_evidence,
+            deadline=deadline,
         )
         if synthesis.warning:
             uncertainty = [*uncertainty, synthesis.warning]
+        citations.extend(
+            Citation(
+                citation_id=str(item["evidence_id"]),
+                source=str(item["source"]),
+                status=str(item["status"]),
+            )
+            for item in synthesis.used_retained_evidence
+        )
+        budget_exhausted = budget_exhausted or self.clock() >= deadline
         self._record_budget_metric(budget_exhausted, started)
         if policy_status == "fallback":
             self._record_fallback_metric(fallback_reason)
@@ -621,6 +638,7 @@ class OrchestrationService:
         tool_results: Sequence[Mapping[str, Any]],
         *,
         retained_evidence: Sequence[Mapping[str, Any]],
+        deadline: float | None = None,
     ) -> ExecutiveSynthesis:
         """Run at most one citation-closed aggregation call, or none at all."""
 
@@ -631,6 +649,18 @@ class OrchestrationService:
                 status="skipped",
                 reason=decision.reason,
                 domain_count=decision.domain_count,
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if deadline is not None and self.clock() >= deadline:
+            synthesis = ExecutiveSynthesis(
+                status="degraded",
+                reason=decision.reason,
+                domain_count=decision.domain_count,
+                warning=(
+                    "Executive synthesis was skipped because the canonical "
+                    "wall-clock budget was exhausted."
+                ),
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
@@ -647,7 +677,7 @@ class OrchestrationService:
             self._record_synthesis_metric(synthesis)
             return synthesis
 
-        stage_started = self.clock() if self.telemetry is not None else 0.0
+        stage_started = self.clock()
         synthesis_input = executive_synthesis_input(
             findings,
             retained_evidence=retained_evidence,
@@ -662,11 +692,31 @@ class OrchestrationService:
             for item in synthesis_input["retained_evidence"]
             if item.get("evidence_id")
         )
-        try:
-            answer = self.executive_agent.answer(
-                question=question,
-                context=synthesis_input,
+        remaining_seconds = (
+            max(0.0, deadline - self.clock())
+            if deadline is not None
+            else None
+        )
+        if remaining_seconds is not None and remaining_seconds <= 0:
+            synthesis = ExecutiveSynthesis(
+                status="degraded",
+                reason=decision.reason,
+                domain_count=decision.domain_count,
+                warning=(
+                    "Executive synthesis was skipped because the canonical "
+                    "wall-clock budget was exhausted."
+                ),
             )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        try:
+            answer_kwargs = {
+                "question": question,
+                "context": synthesis_input,
+            }
+            if remaining_seconds is not None:
+                answer_kwargs["timeout_seconds"] = remaining_seconds
+            answer = self.executive_agent.answer(**answer_kwargs)
             claims = validate_executive_synthesis(
                 getattr(answer, "text", ""),
                 evidence_refs=evidence_refs,
@@ -695,11 +745,21 @@ class OrchestrationService:
                 ),
             )
         else:
+            used_refs = {
+                str(ref)
+                for claim in claims
+                for ref in claim.get("evidence_refs") or []
+            }
             synthesis = ExecutiveSynthesis(
                 status="synthesized",
                 reason=decision.reason,
                 domain_count=decision.domain_count,
                 claims=claims,
+                used_retained_evidence=[
+                    dict(item)
+                    for item in synthesis_input["retained_evidence"]
+                    if item.get("evidence_id") in used_refs
+                ],
             )
         self._record_stage_metric("synthesis", stage_started)
         self._record_synthesis_metric(synthesis)
@@ -836,21 +896,31 @@ class OrchestrationService:
                 expected_revision=thread.revision,
             )
         except ThreadRevisionConflict as conflict:
+            reconciliation_warning = (
+                "A concurrent turn superseded this thread revision."
+            )
+            reconciled = result.model_copy(
+                update={
+                    "thread_revision": conflict.current_revision + 1,
+                    "uncertainty": [
+                        *result.uncertainty,
+                        reconciliation_warning,
+                    ],
+                }
+            )
+            reconciled_payload = {
+                "question": question,
+                **reconciled.model_dump(mode="json"),
+            }
             updated = self.thread_store.append(
                 thread.thread_id,
                 principal_subject,
                 requested_scope,
-                payload,
+                reconciled_payload,
                 expected_revision=conflict.current_revision,
             )
-            return result.model_copy(
-                update={
-                    "thread_revision": updated.revision,
-                    "uncertainty": [
-                        *result.uncertainty,
-                        "A concurrent turn superseded this thread revision.",
-                    ],
-                }
+            return reconciled.model_copy(
+                update={"thread_revision": updated.revision}
             )
         return result.model_copy(update={"thread_revision": updated.revision})
 
