@@ -136,6 +136,9 @@ class ApiContext:
     # context built without this provider simply never starts that thread
     # (mirrors provider_runtime's own optional-thread-start guard).
     verification_coordinator_provider: Callable[[], Any] | None = None
+    # Scope-enforced durable ontology lifecycle facade. The API-facing value
+    # intentionally has no DatasetStore publisher adapter or credential.
+    ontology_discovery_provider: Callable[[], Any] | None = None
 
     def resolve_provider(self, name: str, *, optional: bool = False) -> Any:
         """Resolve a provider through the managed runtime or legacy callable."""

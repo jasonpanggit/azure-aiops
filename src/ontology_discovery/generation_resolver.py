@@ -199,6 +199,30 @@ class GenerationResolver:
             rows.append(value)
         return rows
 
+    def read_metadata(
+        self,
+        name: str,
+        *,
+        selection: GenerationSelection | None = None,
+    ) -> dict[str, Any]:
+        """Read one safe metadata document from a captured generation."""
+
+        allowed = {
+            "manifest.json",
+            "validation.json",
+            "compatibility.json",
+            "lineage.json",
+            "audit-intent.json",
+            "audit-result.json",
+        }
+        if name not in allowed:
+            raise ValueError("Generation metadata name is not allowed")
+        selected = selection or self.resolve()
+        return self._read_json(
+            f"{selected.active_generation}/{name}",
+            required=False,
+        )
+
     def _pointer_payload(self) -> dict[str, Any]:
         if not getattr(self.store, "is_remote", False):
             pointer_path = getattr(self.store, "pointer_path", None)

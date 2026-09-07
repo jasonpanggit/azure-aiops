@@ -34,6 +34,7 @@ from .routers import (
     inventory,
     multi_agent,
     network,
+    ontology_discovery,
     operations,
     patching,
     planned,
@@ -302,6 +303,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     app.include_router(multi_agent.router)
     app.include_router(mcp_routes.router)
     app.include_router(network.router)
+    app.include_router(ontology_discovery.router)
     app.include_router(operations.router)
     app.include_router(patching.router)
     app.include_router(planned.router)

@@ -242,6 +242,33 @@ class OntologyRunStore:
         )
         return copy.deepcopy(latest)
 
+    def list_runs(self, *, connection_id: str | None = None) -> list[dict[str, Any]]:
+        """Return newest-first durable runs, optionally for one connection."""
+
+        connection = (
+            _required(connection_id, "connection_id").casefold()
+            if connection_id is not None
+            else None
+        )
+        with self._lock:
+            rows = self._read_state()["runs"]
+        selected = (
+            rows
+            if connection is None
+            else [row for row in rows if row["connection_id"] == connection]
+        )
+        return copy.deepcopy(
+            sorted(
+                selected,
+                key=lambda row: (
+                    str(row.get("updated_at") or ""),
+                    str(row.get("created_at") or ""),
+                    str(row.get("run_id") or ""),
+                ),
+                reverse=True,
+            )
+        )
+
     def save_proposal(
         self,
         *,
@@ -311,6 +338,45 @@ class OntologyRunStore:
             ),
             None,
         )
+
+    def list_proposals(self, *, scope: str | None = None) -> list[dict[str, Any]]:
+        """Return immutable proposals with their current durable review."""
+
+        normalized_scope = str(scope or "").strip().casefold()
+        with self._lock:
+            state = self._read_state()
+        reviews = {
+            row["proposal_id"]: row for row in state["proposal_reviews"]
+        }
+        rows = [
+            row
+            for row in state["proposals"]
+            if not normalized_scope
+            or str(row.get("scope") or "").casefold() == normalized_scope
+        ]
+        result = []
+        for row in sorted(
+            rows,
+            key=lambda item: (
+                str(item.get("created_at") or ""),
+                str(item.get("proposal_id") or ""),
+            ),
+            reverse=True,
+        ):
+            proposal = copy.deepcopy(row)
+            proposal["review"] = copy.deepcopy(
+                reviews.get(
+                    row["proposal_id"],
+                    {
+                        "proposal_id": row["proposal_id"],
+                        "status": "pending",
+                        "revision": 0,
+                        "events": [],
+                    },
+                )
+            )
+            result.append(proposal)
+        return result
 
     def get_review(self, proposal_id: str) -> dict[str, Any]:
         with self._lock:
@@ -1194,6 +1260,43 @@ class OntologyRunStore:
                 moment=moment,
                 checkpoint=record["checkpoint"]["name"],
                 failure_class="cancelled",
+                message=record["message"],
+            )
+            return copy.deepcopy(record)
+
+    def request_retry(
+        self,
+        run_id: str,
+        *,
+        expected_revision: int,
+        actor: str,
+        reason: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """CAS a terminal failed/cancelled run back to its durable checkpoint."""
+
+        moment = _aware(now)
+        with self._claim_lock():
+            state, index, record = self._locate(run_id)
+            if (
+                record["revision"] != expected_revision
+                or record["status"] not in {RUN_FAILED, RUN_CANCELLED}
+                or record["attempt_count"] >= record["max_attempts"]
+            ):
+                raise RunClaimConflict("run_retry_conflict", record)
+            record["cancel_requested"] = False
+            record["failure_class"] = ""
+            record["message"] = _bounded(reason or "Run retry requested", 1024)
+            record["next_attempt_at"] = moment.isoformat()
+            _clear_lease(record)
+            self._replace_record(
+                state,
+                index,
+                record,
+                status=RUN_RETRYING,
+                actor=actor,
+                moment=moment,
+                checkpoint=record["checkpoint"]["name"],
                 message=record["message"],
             )
             return copy.deepcopy(record)
