@@ -57,12 +57,13 @@ def test_ontology_jobs_have_an_independent_optional_immutable_image_tag() -> Non
     assert "default     = \"\"" in variable
     assert "validation {" in variable
     assert "^[0-9A-Za-z_][0-9A-Za-z_.-]{0,127}$" in variable
+    assert "var.ontology_discovery_image_digest != \"\"" in terraform
     assert (
-        "ontology_discovery_image = var.api_image_digest != \"\" ? "
-        "local.api_image : (var.ontology_discovery_image_tag != \"\" ? "
-        '"${local.registry_server}/${var.api_image_repository}:'
-        '${var.ontology_discovery_image_tag}" : local.api_image)'
+        '"${local.registry_server}/${var.api_image_repository}@'
+        '${var.ontology_discovery_image_digest}"'
     ) in terraform
+    assert "var.api_image_digest != \"\" ? local.api_image" in terraform
+    assert 'variable "ontology_discovery_image_digest"' in variables
     for job in (scheduled, validator):
         assert "local.ontology_discovery_image" in job
         assert "var.image_tag" not in job
