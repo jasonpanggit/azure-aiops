@@ -1,13 +1,27 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from ontology.ontology_validator import OntologyValidator
+from ontology.subscription_connection import SubscriptionConnection
+from ontology_discovery.command_intake import (
+    CommandIntakeService,
+    PublisherCommandConsumer,
+    scope_receipt,
+)
 from ontology_discovery.dispatch_store import PublisherDispatchStore
 from ontology_discovery.publisher import OntologyGenerationPublisher
-from ontology_discovery.publisher_worker import PublisherWorker
+from ontology_discovery.publisher_cli import (
+    PublisherRuntimeConfig,
+    publisher_fabric_config,
+)
+from ontology_discovery.publisher_worker import PublisherIntakeAdapter, PublisherWorker
+from onboarding.registry import ConnectionRegistry
+from fabric.auth import FabricAuthConfig
+from fabric.config import FabricRuntimeConfig
 from storage.datasets import DatasetStore
 from storage.locking import MonotonicFenceAllocator
 from storage.onelake_documents import OneLakeDocumentStore
@@ -211,3 +225,169 @@ def test_publisher_dispatch_view_cannot_create_or_replace_publish_payload(tmp_pa
     assert not hasattr(publisher, "replace_publish")
     with pytest.raises(TypeError):
         PublisherDispatchStore(state_root=str(tmp_path / "state"))  # type: ignore[call-arg]
+
+
+def test_rollback_intake_reauthorizes_before_authoritative_dispatch(tmp_path):
+    connection_root = str(tmp_path / "connections")
+    command_root = str(tmp_path / "commands")
+    dispatch_root = str(tmp_path / "dispatch")
+    registry = ConnectionRegistry(connection_root)
+    connection = SubscriptionConnection(
+        connection_id="connection-a",
+        name="connection-a",
+        tenant_id="tenant-a",
+        subscription_id="subscription-a",
+        metadata={"environment": "production"},
+    )
+    registry.add(connection)
+    _dispatch_root, storage, worker = _worker(tmp_path, [])
+    first, _ = PublisherDispatchStore(dispatch_root).coordinator().create_publish(
+        run_id="ODR-17",
+        connection_id="connection-a",
+        source_generation_id="source-17",
+        candidate=_candidate(),
+        now=NOW,
+    )
+    assert worker.run_once(now=NOW)["succeeded"] == 1
+    pointer = storage.read_pointer()
+    command = CommandIntakeService(command_root).enqueue_rollback(
+        actor_hash="actor-hash",
+        connection_id="connection-a",
+        action="ontology.publication.rollback",
+        effective_scope_hash=scope_receipt(
+            connection, "ontology.publication.rollback"
+        ),
+        issued_at=NOW,
+        expires_at=NOW + timedelta(minutes=10),
+        idempotency_key="rollback-17",
+        reason="validated recovery",
+        target_generation_id="ontology-generation-17",
+        observed_active_generation=pointer.pointer.active_generation,
+        observed_pointer_etag=pointer.etag,
+    )
+    intake = PublisherIntakeAdapter(
+        registry=ConnectionRegistry(connection_root),
+        commands=PublisherCommandConsumer(command_root),
+        dispatches=PublisherDispatchStore(dispatch_root).publisher(),
+        publication=storage,
+        owner_id="publisher-worker-17",
+        now=lambda: NOW,
+    )
+
+    assert intake.process_one() == {"accepted": 1, "denied": 0, "contended": 0}
+    durable = CommandIntakeService(command_root).get(command["command_id"])
+    assert durable["status"] == "completed"
+    assert durable["authorization_audit"]["outcome"] == "authorized"
+    rollback = PublisherDispatchStore(dispatch_root).publisher().list_due_rollback(
+        now=NOW
+    )
+    assert len(rollback) == 1
+    assert rollback[0]["target_generation_id"] == "ontology-generation-17"
+    assert rollback[0]["source_command_id"] == command["command_id"]
+    assert rollback[0]["reason_hash"]
+    assert first["candidate"] == _candidate()
+
+
+def test_stale_rollback_intake_is_denied_without_dispatch(tmp_path):
+    connection_root = str(tmp_path / "connections")
+    command_root = str(tmp_path / "commands")
+    dispatch_root = str(tmp_path / "dispatch")
+    registry = ConnectionRegistry(connection_root)
+    connection = SubscriptionConnection(
+        connection_id="connection-a",
+        name="connection-a",
+        tenant_id="tenant-a",
+        subscription_id="subscription-a",
+        metadata={"environment": "production"},
+    )
+    registry.add(connection)
+    _dispatch_root, storage, worker = _worker(tmp_path, [])
+    PublisherDispatchStore(dispatch_root).coordinator().create_publish(
+        run_id="ODR-17",
+        connection_id="connection-a",
+        source_generation_id="source-17",
+        candidate=_candidate(),
+        now=NOW,
+    )
+    worker.run_once(now=NOW)
+    command = CommandIntakeService(command_root).enqueue_rollback(
+        actor_hash="actor-hash",
+        connection_id="connection-a",
+        action="ontology.publication.rollback",
+        effective_scope_hash=scope_receipt(
+            connection, "ontology.publication.rollback"
+        ),
+        issued_at=NOW,
+        expires_at=NOW + timedelta(minutes=10),
+        idempotency_key="rollback-stale",
+        reason="stale request",
+        target_generation_id="ontology-generation-17",
+        observed_active_generation="older-generation",
+        observed_pointer_etag='"older-etag"',
+    )
+
+    result = PublisherIntakeAdapter(
+        registry=ConnectionRegistry(connection_root),
+        commands=PublisherCommandConsumer(command_root),
+        dispatches=PublisherDispatchStore(dispatch_root).publisher(),
+        publication=storage,
+        owner_id="publisher-worker-17",
+        now=lambda: NOW,
+    ).process_one()
+
+    assert result == {"accepted": 0, "denied": 1, "contended": 0}
+    assert CommandIntakeService(command_root).get(command["command_id"])[
+        "reason_code"
+    ] == "stale_pointer_observation"
+    assert (
+        PublisherDispatchStore(dispatch_root)
+        .publisher()
+        .list_due_rollback(now=NOW)
+        == []
+    )
+
+
+def test_publisher_runtime_rebinds_fabric_managed_identity_and_exact_roots(tmp_path):
+    roots = {
+        "AIOPS_CONNECTION_HOME": str(tmp_path / "connections"),
+        "AIOPS_ONTOLOGY_COMMAND_HOME": str(tmp_path / "commands"),
+        "AIOPS_ONTOLOGY_DISPATCH_HOME": str(tmp_path / "dispatch"),
+        "AIOPS_ONTOLOGY_PUBLICATION_HOME": str(tmp_path / "publication"),
+        "AIOPS_FABRIC_CONFIG": str(tmp_path / "fabric.yaml"),
+        "AIOPS_IDENTITY_CLASS": "publisher",
+        "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID": "publisher-client-id",
+        "AZURE_CLIENT_ID": "publisher-client-id",
+        "AIOPS_RUNTIME_MODE": "local",
+    }
+    config = PublisherRuntimeConfig.from_env(roots)
+    assert config.capabilities == {
+        "connection": frozenset({"read"}),
+        "command": frozenset({"claim_rollback", "status"}),
+        "state": frozenset(),
+        "dispatch": frozenset(
+            {"claim_publish", "claim_rollback", "status", "create_rollback"}
+        ),
+        "publication": frozenset({"read", "write", "stage", "pointer"}),
+    }
+    assert set(config.roots) == {
+        "connection",
+        "command",
+        "dispatch",
+        "publication",
+    }
+
+    loaded = FabricRuntimeConfig(
+        auth=FabricAuthConfig(
+            mode="managed_identity",
+            managed_identity_client_id="api-client-id",
+        ),
+        source_data_root=tmp_path / "source",
+    )
+    rebound = publisher_fabric_config(loaded, config.publisher_client_id)
+    assert rebound == replace(
+        loaded,
+        auth=FabricAuthConfig(
+            mode="managed_identity",
+            managed_identity_client_id="publisher-client-id",
+        ),
+    )
