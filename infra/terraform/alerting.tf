@@ -316,7 +316,9 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "ontology_discovery" {
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      let OntologyMetrics = datatable(Name:string, Properties:dynamic, Sum:real, Min:real, Max:real) []
+        | union isfuzzy=true AppMetrics;
+      OntologyMetrics
       | where Name == "ontology.discovery.alert.signal"
       | where tostring(Properties.rule) == each.key
       | summarize Signal=max(Max)
