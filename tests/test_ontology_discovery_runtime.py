@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,7 @@ from ontology_discovery.runtime import (
     validate_capability_roots,
 )
 from ontology_discovery.store import OntologyRunStore
+from storage.onelake_documents import OneLakeDocumentStore
 
 NOW = datetime(2026, 9, 7, 6, 30, tzinfo=UTC)
 
@@ -310,6 +312,142 @@ def test_cli_main_uses_production_runtime_and_closes_it(monkeypatch, capsys):
     assert cli.main(["run-once", "--limit", "1", "--owner", "test-worker"]) == 0
     assert events == ["run:1", "closed"]
     assert capsys.readouterr().out == '{"processed": 1, "selected": 1}\n'
+
+
+def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
+    tmp_path, monkeypatch, capsys
+):
+    connection_home = tmp_path / "connections"
+    command_home = tmp_path / "commands"
+    state_home = tmp_path / "state"
+    dispatch_home = tmp_path / "dispatch"
+    source_home = tmp_path / "source"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"storage:\n  output_dir: {source_home}\nazure:\n  subscriptions: []\n"
+    )
+    registry = ConnectionRegistry(str(connection_home))
+    registry.add(
+        SubscriptionConnection(
+            connection_id="connection-a",
+            name="connection-a",
+            tenant_id="tenant-a",
+            subscription_id="subscription-connection-a",
+            metadata={"environment": "validation"},
+        )
+    )
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "validation")
+    monkeypatch.setenv("AIOPS_CONNECTION_HOME", str(connection_home))
+    monkeypatch.setenv("AIOPS_ONTOLOGY_COMMAND_HOME", str(command_home))
+    monkeypatch.setenv("AIOPS_ONTOLOGY_STATE_HOME", str(state_home))
+    monkeypatch.setenv("AIOPS_ONTOLOGY_DISPATCH_HOME", str(dispatch_home))
+    monkeypatch.setenv(
+        "FOUNDRY_PROJECT_ENDPOINT",
+        "https://example.services.ai.azure.com/api/projects/p",
+    )
+    monkeypatch.setenv("FOUNDRY_ONTOLOGY_AGENT_NAME", "ontology-curator")
+    monkeypatch.setenv("FOUNDRY_ONTOLOGY_AGENT_VERSION", "7")
+    monkeypatch.setenv("AIOPS_CONFIG_PATH", str(config_path))
+
+    entities = [
+        _valid_ontology_entity("vm-a", "VirtualMachine"),
+        _valid_ontology_entity("app-a", "Application"),
+    ]
+
+    class FakeStore:
+        is_remote = False
+
+        def current_generation(self):
+            return str(source_home / "generation-1")
+
+    class FakePipeline:
+        store = FakeStore()
+
+        def refresh(self):
+            return SimpleNamespace(manifest={"runId": "inventory-1"})
+
+    class FakeMapper:
+        def load(self, *_args, **_kwargs):
+            return {
+                "ontology_entities": entities,
+                "ontology_relationships": [],
+            }
+
+    class FakeCurator:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def propose(self, _run, _batch):
+            return {
+                "status": "proposed",
+                "proposals": [
+                    {
+                        "subject_id": "vm-a",
+                        "subject_type": "VirtualMachine",
+                        "predicate": "member_of",
+                        "object_id": "app-a",
+                        "object_type": "Application",
+                        "evidence_refs": ["opaque-missing-evidence"],
+                        "confidence": 0.99,
+                    }
+                ],
+            }
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(
+        "ontology_discovery.runtime.build_connection_inventory_pipeline",
+        lambda *_args, **_kwargs: FakePipeline(),
+    )
+    monkeypatch.setattr("ontology_discovery.runtime.InventoryDatasetMapper", FakeMapper)
+    monkeypatch.setattr("ontology_discovery.runtime.OntologyCurator", FakeCurator)
+
+    assert cli.main(["run-once", "--limit", "1", "--owner", "worker-a"]) == 0
+
+    run_store = OntologyRunStore(
+        state_home,
+        document_store=OneLakeDocumentStore(state_home),
+    )
+    runs = run_store.list_runs()
+    dispatches = PublisherDispatchStore(str(dispatch_home)).coordinator().list_publish()
+    assert len(runs) == len(dispatches) == 1
+    assert runs[0]["status"] == "succeeded"
+    assert runs[0]["checkpoint"]["name"] == "publisher_dispatch_created"
+    assert run_store.list_evidence_batches(run_id=runs[0]["run_id"])
+    registry_scope = "tenant-a:subscription-connection-a:connection-a"
+    assert run_store.list_proposals(scope=registry_scope)
+    assert dispatches[0]["candidate"]["relationships"] == []
+    assert dispatches[0]["candidate"]["decision_lineage"][0].endswith(
+        ":shadow-excluded"
+    )
+    output = capsys.readouterr().out
+    assert "connection-a" not in output
+    assert "tenant-a" not in output
+    assert registry_scope not in output
+
+
+def _valid_ontology_entity(resource_id: str, entity_type: str) -> dict[str, object]:
+    return {
+        "tenant_id": "tenant-a",
+        "subscription_id": "subscription-connection-a",
+        "resource_id": resource_id,
+        "timestamp": NOW.isoformat(),
+        "change_version": "v1",
+        "ingestion_run_id": "inventory-1",
+        "entity_type": entity_type,
+        "name": resource_id,
+        "resource_type": "test/resource",
+        "location": "eastus",
+        "payload_json": "{}",
+        "lineage_json": "{}",
+        "semantic_metadata_json": "{}",
+        "lifecycle_status": "active",
+        "valid_from": NOW.isoformat(),
+        "retired_at": "",
+        "ontology_version": "v1",
+        "scope": "tenant-a:subscription-connection-a:connection-a",
+    }
 
 
 def test_reconciliation_cadence_watermark_and_drift_survive_restart(tmp_path):
