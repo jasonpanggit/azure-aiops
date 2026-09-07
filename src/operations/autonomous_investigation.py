@@ -1251,6 +1251,13 @@ def configure_ledger_store(
     """
     if documents is not None and not callable(getattr(documents, "write", None)):
         raise TypeError("durable orchestration storage requires thread compare-and-swap")
+    if documents is not None and (
+        not callable(getattr(documents, "list_names", None))
+        or not callable(getattr(documents, "delete", None))
+    ):
+        raise TypeError(
+            "durable orchestration storage requires bounded thread listing and deletion"
+        )
     _LEDGER_STORE.documents = documents
     configure_thread_store(documents)
     if documents is not None:

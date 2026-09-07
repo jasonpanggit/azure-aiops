@@ -46,6 +46,7 @@ class FakeDocuments:
         self.fail_reads = False
         self.conflict_writes = 0
         self.deleted: list[str] = []
+        self.list_calls: list[tuple[str, int, str | None]] = []
 
     def read(self, name: str) -> dict[str, Any]:
         if self.fail_reads:
@@ -74,7 +75,24 @@ class FakeDocuments:
             raise DocumentConflictError("revision conflict")
         self.documents[name] = deepcopy(payload)
 
-    def delete(self, name: str) -> None:
+    def list_names(
+        self,
+        prefix: str,
+        *,
+        limit: int,
+        continuation: str | None = None,
+    ) -> tuple[list[str], str | None]:
+        self.list_calls.append((prefix, limit, continuation))
+        names = sorted(name for name in self.documents if name.startswith(prefix))
+        offset = int(continuation or 0)
+        page = names[offset : offset + limit]
+        next_offset = offset + len(page)
+        return page, str(next_offset) if next_offset < len(names) else None
+
+    def delete(self, name: str, *, expected_revision: int | None = None) -> None:
+        current = int(self.documents.get(name, {}).get("revision") or 0)
+        if expected_revision is not None and current != expected_revision:
+            raise DocumentConflictError("revision conflict")
         self.deleted.append(name)
         self.documents.pop(name, None)
 
@@ -137,7 +155,12 @@ def test_each_thread_is_its_own_document() -> None:
 
     assert thread_document_name(first.thread_id) in documents.documents
     assert thread_document_name(second.thread_id) in documents.documents
-    assert len(documents.documents) == 2
+    assert {
+        name for name in documents.documents if name.startswith("threads/")
+    } == {
+        thread_document_name(first.thread_id),
+        thread_document_name(second.thread_id),
+    }
 
 
 def test_durability_outcome_is_explicit() -> None:
@@ -367,6 +390,80 @@ def test_expired_documents_are_removed_by_bounded_cleanup() -> None:
             store.authorize(thread.thread_id, "operator-a", SUB_A)
 
 
+def test_restart_cleanup_discovers_expired_durable_threads_outside_local_cache() -> None:
+    clock = FakeClock()
+    documents = FakeDocuments()
+    first = InvestigationThreadStore(documents=documents, clock=clock)
+    thread = first.create("operator-a", SUB_A)
+    prior_list_calls = len(documents.list_calls)
+
+    clock.advance(ABSOLUTE_TTL_SECONDS + 1)
+    restarted = InvestigationThreadStore(documents=documents, clock=clock)
+
+    assert restarted.cleanup(max_removals=1) == 1
+    assert thread_document_name(thread.thread_id) not in documents.documents
+    assert documents.list_calls[prior_list_calls:] == [("threads", 64, None)]
+
+
+def test_restart_cleanup_removes_idle_expired_durable_threads() -> None:
+    clock = FakeClock()
+    documents = FakeDocuments()
+    first = InvestigationThreadStore(documents=documents, clock=clock)
+    thread = first.create("operator-a", SUB_A)
+
+    clock.advance(IDLE_TTL_SECONDS + 1)
+    restarted = InvestigationThreadStore(documents=documents, clock=clock)
+
+    assert restarted.cleanup(max_removals=1) == 1
+    assert thread_document_name(thread.thread_id) not in documents.documents
+
+
+def test_cleanup_does_not_delete_a_thread_touched_by_another_replica() -> None:
+    class RacingDocuments(FakeDocuments):
+        race = True
+
+        def delete(self, name: str, *, expected_revision: int | None = None) -> None:
+            if self.race:
+                self.race = False
+                self.documents[name]["revision"] += 1
+                self.documents[name]["last_seen"] += IDLE_TTL_SECONDS
+            super().delete(name, expected_revision=expected_revision)
+
+    clock = FakeClock()
+    documents = RacingDocuments()
+    first = InvestigationThreadStore(documents=documents, clock=clock)
+    thread = first.create("operator-a", SUB_A)
+    clock.advance(IDLE_TTL_SECONDS + 1)
+
+    restarted = InvestigationThreadStore(documents=documents, clock=clock)
+
+    assert restarted.cleanup(max_removals=1) == 0
+    assert thread_document_name(thread.thread_id) in documents.documents
+
+
+def test_cleanup_bounds_failed_delete_attempts() -> None:
+    class FailingDeleteDocuments(FakeDocuments):
+        delete_attempts = 0
+
+        def delete(self, name: str, *, expected_revision: int | None = None) -> None:
+            self.delete_attempts += 1
+            raise RuntimeError("storage unavailable")
+
+    clock = FakeClock()
+    documents = FailingDeleteDocuments()
+    store = InvestigationThreadStore(
+        documents=documents,
+        clock=clock,
+        max_threads=200,
+    )
+    for _ in range(200):
+        store.create("operator-a", SUB_A)
+    clock.advance(ABSOLUTE_TTL_SECONDS + 1)
+
+    assert store.cleanup(max_removals=1) == 0
+    assert documents.delete_attempts == 1
+
+
 def test_stale_revision_raises_an_explicit_conflict() -> None:
     store = InvestigationThreadStore(documents=FakeDocuments())
     thread = store.create("operator-a", SUB_A)
@@ -469,6 +566,21 @@ def test_ledger_store_configuration_rejects_adapter_without_thread_cas() -> None
 
     with pytest.raises(TypeError, match="thread compare-and-swap"):
         configure_ledger_store(LedgerOnlyDocuments())
+
+
+def test_ledger_store_configuration_requires_bounded_cleanup_capabilities() -> None:
+    class CasOnlyDocuments:
+        def write(
+            self,
+            name: str,
+            payload: dict[str, Any],
+            *,
+            expected_revision: int,
+        ) -> None:
+            return None
+
+    with pytest.raises(TypeError, match="bounded thread listing and deletion"):
+        configure_ledger_store(CasOnlyDocuments())
 
 
 def test_history_retries_scope_narrowing_after_one_persistence_conflict() -> None:
@@ -703,8 +815,8 @@ def test_scope_narrowing_still_redacts_wider_historical_turns() -> None:
 def test_active_legacy_conversation_is_imported_without_mutating_it() -> None:
     store = InvestigationThreadStore(documents=FakeDocuments())
     legacy_turns = [
-        {"question": "first", "status": "ok"},
-        {"question": "second", "status": "ok"},
+        {"question": "first", "status": "ok", "scope": SUB_A.to_dict()},
+        {"question": "second", "status": "ok", "scope": SUB_A.to_dict()},
     ]
     original = deepcopy(legacy_turns)
 
@@ -717,6 +829,36 @@ def test_active_legacy_conversation_is_imported_without_mutating_it() -> None:
     assert history[-1]["observation_status"] == OBSERVATION_HISTORICAL
 
 
+def test_scope_less_legacy_turn_is_not_relabelled_as_current_authorized_evidence() -> None:
+    store = InvestigationThreadStore(documents=FakeDocuments())
+    legacy_turns = [
+        {
+            "question": "List every tenant resource.",
+            "status": "ok",
+            "tool_results": [{"data": {"secret": "cross-scope"}}],
+            "citations": [{"citation_id": "legacy-wide", "source": "inventory"}],
+        }
+    ]
+    original = deepcopy(legacy_turns)
+
+    thread = store.import_legacy_turns("operator-a", SUB_A, legacy_turns)
+    history = store.history(thread.thread_id, "operator-a", SUB_A)
+
+    assert legacy_turns == original
+    assert history == [
+        {
+            "status": "historical_scope_unverified",
+            "observation_status": OBSERVATION_HISTORICAL,
+            "imported_from": "legacy_conversation",
+            "tool_results": [],
+            "citations": [],
+            "uncertainty": [
+                "Historical content was withheld until its scope can be revalidated."
+            ],
+        }
+    ]
+
+
 def test_legacy_import_is_bounded_and_skips_empty_conversations() -> None:
     store = InvestigationThreadStore(documents=FakeDocuments())
 
@@ -725,7 +867,10 @@ def test_legacy_import_is_bounded_and_skips_empty_conversations() -> None:
     thread = store.import_legacy_turns(
         "operator-a",
         SUB_A,
-        [{"question": str(index)} for index in range(30)],
+        [
+            {"question": str(index), "scope": SUB_A.to_dict()}
+            for index in range(30)
+        ],
     )
     history = store.history(thread.thread_id, "operator-a", SUB_A)
 
