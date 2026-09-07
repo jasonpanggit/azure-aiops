@@ -5,12 +5,12 @@ milestone_name: milestone
 current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
 stopped_at: Completed 03.1-25-PLAN.md
-last_updated: "2026-09-06T16:35:45.198Z"
+last_updated: "2026-09-07T06:45:47.396Z"
 progress:
   total_phases: 17
-  completed_phases: 11
-  total_plans: 158
-  completed_plans: 142
+  completed_phases: 10
+  total_plans: 165
+  completed_plans: 141
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -25,6 +25,7 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-16** COMPLETE — OneLake-backed production coordinator with reauthorized command intake, fair restart-safe eligible epochs, durable reconciliation parity, hard-shadow Foundry curation, and publisher dispatch
 - **13-15** COMPLETE — Exact alert coverage and credentialed shadow validation with durable sanitized evidence, zero authoritative model edges, deterministic rollback, and every pair BLOCKED/PENDING
 - **13-14** COMPLETE — Proxy-locked Promptfoo/Phoenix evaluation, durable BLOCKED/PENDING snapshots, and loopback-only sanitized lifecycle trace inspection
 - **13-13** COMPLETE — Scoped `/connections` ontology automation workspace with independent durable lifecycle sections, server-owned eligibility/concurrency, and fail-closed EvaluationSnapshot freshness
@@ -183,6 +184,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P17 | 41 min | 2 tasks | 9 files |
 | Phase 03.1 P22 | 10min | 2 tasks | 9 files |
 | Phase 03.1 P25 | 25 min | 3 tasks | 13 files |
+| Phase 13 P16 | 15min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -300,6 +302,9 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: Use canonical Exposure item pages for detail finding totals and durable enrichment source records for local NVD, EPSS, KEV, and MSRC trust states. — Keeps pagination and completeness server-owned while allowing enrichment sections to fail independently.
 - [Phase 03.1]: Treat absent durable enrichment status as unavailable rather than rendering compatibility defaults as observed zero. — Avoids false healthy or zero claims when a feed has no proven result.
 - [Phase 03.1]: Use authenticated session identity in the shared risk dialog and expose revoke only when the server projects can_revoke. — Keeps attribution and transition authority out of browser-entered fields.
+- [Phase 13]: Coordinator authority uses only explicit distinct connection, command, state, and dispatch roots; publication authority is structurally absent.
+- [Phase 13]: Eligible-set membership is immutable within an epoch and advances by durable round-robin cursor across retries, duplicates, and exclusions.
+- [Phase 13]: Reconciliation watermarks advance only after durable dispatch; full reconstruction is authoritative when parity detects drift.
 
 ## Session
 

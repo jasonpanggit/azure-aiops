@@ -27,3 +27,16 @@
   `useSearchParams()` outside a Suspense boundary. Plan 13-13 does not modify
   any Exposure route; the full 54-file/520-test web regression suite,
   TypeScript, and ESLint gates pass.
+
+## Plan 13-16
+
+- **Pre-existing ontology graph regression failures:** The full `uv run pytest
+  -q` suite reaches three failures in
+  `tests/test_graph_network_traversal.py` and
+  `tests/test_operational_context_graph_v2_hardening.py`. They fail inside
+  unchanged `src/ontology/ontology_sync.py` validation paths; Plan 13-16 does
+  not modify those files. The complete 170-test Plan 13-16 gate passes.
+- **Pre-existing repository-wide Ruff findings:** `uv run ruff check .` still
+  reports the same 27 unrelated findings already recorded for Plan 13-07 in
+  legacy utility scripts. Ruff passes for every Plan 13-16 source and test
+  file.

@@ -806,7 +806,7 @@ Plans:
 **Goal:** Keep the Fabric ontology current without an open browser or manual Sync click by running durable, incremental discovery on a schedule, using a scoped Microsoft Foundry agent to propose evidence-backed relationships, and publishing only relationships that pass deterministic governance, validation, concurrency, and audit controls.
 **Requirements**: AUTO-ONT-01, AUTO-ONT-02, AUTO-ONT-03, AUTO-ONT-04, AUTO-ONT-05, AUTO-ONT-06, AUTO-ONT-07
 **Depends on:** Phase 10, Phase 12
-**Plans:** 15/21 numbered plans executed
+**Plans:** 16/21 numbered plans executed
 **Targeted review artifacts:** 1 (`13-07-TARGETED-PLAN.md`; review-only and excluded from the 21 numbered-plan denominator)
 
 Plans:
@@ -830,7 +830,7 @@ Targeted review artifact (not a numbered executable plan):
 - [x] 13-13-PLAN.md — Approved `/connections` ontology automation and evaluation UI
 - [x] 13-14-PLAN.md — Pinned Promptfoo evaluation and sanitized self-hosted Phoenix trace inspection
 - [x] 13-15-PLAN.md — Exact alerts, durable shadow metrics, authoritative exclusion, and blocked release evidence
-- [ ] 13-16-PLAN.md — Exact coordinator matrix, durable starvation-free one-connection-per-pass eligible-set draining, reauthorizing intake, dispatch-only store, full reconciliation, and corrected Foundry transport
+- [x] 13-16-PLAN.md — Exact coordinator matrix, durable starvation-free one-connection-per-pass eligible-set draining, reauthorizing intake, dispatch-only store, full reconciliation, and corrected Foundry transport
 - [ ] 13-17-PLAN.md — Exact publisher root/capability matrix, guarded publisher-only validation drill, ordered publication, and fenced rollback
 - [ ] 13-18-PLAN.md — Four-root read-only API, guarded maintenance intake, and reconstructed manual/publish/rollback topology tests
 - [ ] 13-19-PLAN.md — Exact process RBAC/env matrix, explicit dispatch deployment allowlist, isolated drill workspace, and immutable targeted rollout
