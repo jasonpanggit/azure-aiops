@@ -158,7 +158,11 @@ def _environment(container: Mapping[str, Any]) -> dict[str, str]:
             raise PlanValidationError("container environment row must be an object")
         name = str(row.get("name") or "")
         value = row.get("value")
-        if not name or not isinstance(value, str):
+        if not name:
+            raise PlanValidationError("container environment name must be explicit")
+        if not isinstance(value, str) and row.get("secret_name"):
+            continue
+        if not isinstance(value, str):
             raise PlanValidationError("all ontology environment values must be explicit")
         if name in result:
             raise PlanValidationError(f"duplicate environment variable: {name}")
