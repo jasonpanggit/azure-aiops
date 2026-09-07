@@ -144,6 +144,19 @@ def test_retired_relationship_with_reclassified_endpoint_type_passes_validation(
     assert retired_edge["object_type"] == "Application"  # stale, unchanged
 
 
+def test_retired_legacy_vocabulary_is_preserved_but_cannot_be_active():
+    resources = [entity("a"), entity("b")]
+    legacy_edge = relationship("legacy-edge", "a", "b")
+    retired_edge = {
+        **legacy_edge,
+        "lifecycle_status": "retired",
+        "retired_at": "2026-08-19T01:00:00Z",
+    }
+
+    assert SyncValidator().validate(resources, [retired_edge]).passed
+    assert not SyncValidator().validate(resources, [legacy_edge]).passed
+
+
 def test_sync_fails_closed_before_returning_an_invalid_graph():
     with pytest.raises(ValueError, match="ontology graph"):
         OntologyGraphSynchronizer(SyncValidator()).synchronize(

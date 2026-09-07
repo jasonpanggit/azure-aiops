@@ -200,11 +200,16 @@ class OntologyValidator:
                 str(row.get("predicate") or ""),
                 str(row.get("object_type") or ""),
             )
-            if triple not in self._allowed_triples:
-                invalid_relationships += 1
             if subject not in known or object_id not in known:
                 dangling += 1
             elif row.get("lifecycle_status") == "active":
+                # The current vocabulary is authoritative for active edges.
+                # Retired rows preserve the vocabulary and endpoint types that
+                # were valid when captured; historical rows are never queried
+                # as active topology and must survive additive vocabulary
+                # evolution for replay/audit.
+                if triple not in self._allowed_triples:
+                    invalid_relationships += 1
                 # Only active relationships must agree with the *current*
                 # entity_type. A retired relationship's subject_type/object_type
                 # reflects the type at the time it was captured; the referenced
