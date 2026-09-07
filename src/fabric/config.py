@@ -155,6 +155,17 @@ def freshness_source_family(source_family: str) -> str:
         # config data that changes about as often as container image scans,
         # not real-time workload telemetry, so it shares the "images" cadence.
         return "images"
+    if value in {"azure_resource", "log_analytics_workspace_discovery"}:
+        # Generic ARM resource/inventory discovery (semantic.live_provider's
+        # "azure_resource" family, and the Log Analytics workspace discovery
+        # query added to onboarding.ingestion_service) is ARM config data with
+        # the same update cadence as network topology and image scans.
+        return "images"
+    if value == "arg_activity_log":
+        # Azure Resource Graph change/activity-log evidence (see
+        # situations.materializer) tracks near-real-time resource changes,
+        # so it shares the "workloads" cadence rather than slow-moving config.
+        return "workloads"
     raise ValueError(f"Unknown Exposure freshness source family {source_family!r}")
 
 
