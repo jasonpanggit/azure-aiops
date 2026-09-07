@@ -25,8 +25,8 @@ from scripts.validate_ontology_discovery_live import (
     load_resume_checkpoint,
     main,
     sanitize_deployed_evidence,
-    validate_evidence_job_record,
     validate_azure_contexts,
+    validate_evidence_job_record,
     write_resume_checkpoint,
 )
 
@@ -393,6 +393,7 @@ def test_credential_contexts_are_distinct_private_and_non_bleeding(
     with pytest.raises(EvidenceError, match="0700"):
         validate_azure_contexts(env)
 
+    os.chmod(deployer, 0o700)
     duplicate_context = dict(env)
     duplicate_context["AIOPS_EVIDENCE_AZURE_CONFIG_DIR"] = str(deployer)
     with pytest.raises(EvidenceError, match="must not be configured"):

@@ -87,6 +87,12 @@ FIXED_JOB_NAMES = {
     "rbac_validator": "aiops-dev-ontology-rbac-check",
     "ontology_fixture_prepare": "ontology-fixture-prepare",
     "ontology_fixture_cleanup": "ontology-fixture-cleanup",
+    "evidence": "ontology-evidence-read",
+}
+BASELINE_FIXED_JOB_NAMES = {
+    name: job_name
+    for name, job_name in FIXED_JOB_NAMES.items()
+    if name != "evidence"
 }
 DEPLOYED_LIFECYCLE_SEQUENCE = (
     "preflight",
@@ -200,6 +206,7 @@ _RAW_DEPLOYED_EVIDENCE_KEYS = frozenset(
     {
         "access_token",
         "args",
+        "body",
         "command",
         "commands",
         "env",
@@ -233,10 +240,9 @@ class EvidenceError(RuntimeError):
 
 @dataclass(frozen=True)
 class AzureContexts:
-    """Canonical private Azure CLI homes for the two permitted identities."""
+    """Canonical private Azure CLI home for the deployment principal."""
 
     deployer: Path
-    evidence: Path
 
 
 @dataclass(frozen=True)
@@ -621,7 +627,12 @@ def _private_directory(
 def validate_azure_contexts(
     env: Mapping[str, str] | None = None,
 ) -> AzureContexts:
-    """Resolve two non-overlapping mode-0700 CLI homes without ambient auth."""
+    """Resolve one mode-0700 deployer CLI home without ambient auth.
+
+    The distinct evidence principal runs only inside the fixed managed-identity
+    Container Apps Job. A second local Azure CLI context would either be
+    impossible to provision or tempt an operator to clone the deployer.
+    """
 
     environment = dict(os.environ if env is None else env)
     ambient = sorted(
@@ -635,13 +646,12 @@ def validate_azure_contexts(
         environment.get("AIOPS_DEPLOYER_AZURE_CONFIG_DIR"),
         variable="AIOPS_DEPLOYER_AZURE_CONFIG_DIR",
     )
-    evidence = _private_directory(
-        environment.get("AIOPS_EVIDENCE_AZURE_CONFIG_DIR"),
-        variable="AIOPS_EVIDENCE_AZURE_CONFIG_DIR",
-    )
-    if deployer == evidence:
-        raise EvidenceError("deployer and evidence Azure contexts must be distinct")
-    return AzureContexts(deployer=deployer, evidence=evidence)
+    if environment.get("AIOPS_EVIDENCE_AZURE_CONFIG_DIR"):
+        raise EvidenceError(
+            "AIOPS_EVIDENCE_AZURE_CONFIG_DIR must not be configured; "
+            "evidence runs only as the fixed managed-identity Job"
+        )
+    return AzureContexts(deployer=deployer)
 
 
 def isolated_azure_environment(
@@ -799,10 +809,12 @@ def load_plan19_deployment_contract(
     after = live.get("template_hashes_after")
     if not isinstance(before, Mapping) or not isinstance(after, Mapping):
         raise EvidenceError("Plan 19 template hashes are missing")
-    expected_names = set(FIXED_JOB_NAMES)
+    expected_names = set(BASELINE_FIXED_JOB_NAMES)
     if set(before) != expected_names or set(after) != expected_names:
         raise EvidenceError("Plan 19 fixed Job registry is not exact")
-    template_hashes = {name: str(before[name]) for name in FIXED_JOB_NAMES}
+    template_hashes = {
+        name: str(before[name]) for name in BASELINE_FIXED_JOB_NAMES
+    }
     if (
         before != after
         or any(not _require_hash(value) for value in template_hashes.values())
@@ -890,6 +902,82 @@ def sanitize_deployed_evidence(value: object, *, key: str = "") -> object:
     return value
 
 
+def validate_evidence_job_record(
+    record: Mapping[str, object],
+    *,
+    expected_object_id_hash: str,
+) -> dict[str, str]:
+    """Verify a closed console record is bound to the deployed evidence UAI."""
+
+    from scripts.collect_ontology_evidence import EXPECTED_CAPABILITIES
+
+    sanitized = sanitize_deployed_evidence(record)
+    if not isinstance(sanitized, Mapping):
+        raise EvidenceError("evidence Job record is not an object")
+    if (
+        sanitized.get("schema_version") != "ontology-evidence-read.v1"
+        or sanitized.get("mode") != "fixed-read-only"
+        or sanitized.get("sanitized") is not True
+    ):
+        raise EvidenceError("evidence Job record schema is invalid")
+    identity = sanitized.get("identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    if (
+        not _require_hash(expected_object_id_hash)
+        or identity.get("object_id_hash") != expected_object_id_hash
+        or set(identity)
+        != {
+            "client_id_hash",
+            "object_id_hash",
+            "managed_identity_resource_hash",
+            "entra_signature_hash",
+        }
+        or any(not _require_hash(value) for value in identity.values())
+    ):
+        raise EvidenceError("evidence Job identity does not match its fixed UAI")
+    if sanitized.get("capabilities") != EXPECTED_CAPABILITIES:
+        raise EvidenceError("evidence Job record is not read-only")
+    observations = sanitized.get("observations")
+    observations = observations if isinstance(observations, Mapping) else {}
+    if set(observations) != {"arg", "fabric", "onelake", "api"}:
+        raise EvidenceError("evidence Job observations are incomplete")
+    for row in observations.values():
+        if not isinstance(row, Mapping):
+            raise EvidenceError("evidence Job observation is invalid")
+        hashes = row.get("hashes")
+        if (
+            set(row) != {"count", "hashes"}
+            or not isinstance(row.get("count"), int)
+            or int(row["count"]) < 0
+            or not isinstance(hashes, list)
+            or any(not _require_hash(value) for value in hashes)
+        ):
+            raise EvidenceError("evidence Job observation is not closed")
+
+    unsigned = {
+        key: value
+        for key, value in sanitized.items()
+        if key not in {"record_hash", "entra_bound_record_hash"}
+    }
+    expected_record_hash = _full_opaque(unsigned)
+    expected_bound_hash = _full_opaque(
+        {
+            "record_hash": expected_record_hash,
+            "entra_signature_hash": identity["entra_signature_hash"],
+        }
+    )
+    if (
+        sanitized.get("record_hash") != expected_record_hash
+        or sanitized.get("entra_bound_record_hash") != expected_bound_hash
+    ):
+        raise EvidenceError("evidence Job record signature binding is invalid")
+    return {
+        "record_hash": expected_record_hash,
+        "entra_bound_record_hash": expected_bound_hash,
+        "identity_hash": str(identity["object_id_hash"]),
+    }
+
+
 def write_resume_checkpoint(
     path: Path,
     *,
@@ -973,9 +1061,9 @@ def evaluate_lifecycle_evidence(
     credentials = credentials if isinstance(credentials, Mapping) else {}
     modes = credentials.get("modes")
     modes = modes if isinstance(modes, Mapping) else {}
-    require(credentials.get("contexts_distinct") is True, "isolated_credentials")
+    require(credentials.get("local_context_count") == 1, "single_local_context")
     require(
-        modes.get("deployer") == "0700" and modes.get("evidence") == "0700",
+        modes == {"deployer": "0700"},
         "private_credential_contexts",
     )
     require(
@@ -991,6 +1079,10 @@ def evaluate_lifecycle_evidence(
         and _require_hash(evidence_identity)
         and deployer_identity != evidence_identity,
         "distinct_azure_identities",
+    )
+    require(
+        credentials.get("evidence_source") == "fixed_job",
+        "fixed_evidence_job_source",
     )
     require(
         set(credentials.get("deployer_actions") or ())
@@ -1010,6 +1102,44 @@ def evaluate_lifecycle_evidence(
     require(
         not credentials.get("runtime_job_start_grants"),
         "no_runtime_job_start_grants",
+    )
+
+    evidence_job = evidence.get("evidence_job")
+    evidence_job = (
+        evidence_job if isinstance(evidence_job, Mapping) else {}
+    )
+    require(
+        evidence_job.get("identity_hash") == evidence_identity
+        and evidence_job.get("identity_hash")
+        == evidence_job.get("expected_identity_hash")
+        and evidence_job.get("attached_identity_count") == 1,
+        "evidence_job_exact_identity",
+    )
+    require(
+        _require_hash(evidence_job.get("template_hash"))
+        and evidence_job.get("template_hash")
+        == evidence_job.get("expected_template_hash")
+        and evidence_job.get("template_unchanged") is True
+        and evidence_job.get("trigger") == "Manual"
+        and evidence_job.get("overrides") == [],
+        "evidence_job_fixed_template",
+    )
+    require(
+        evidence_job.get("workspace_roles") == ["Viewer"] * 5
+        and evidence_job.get("onelake_actions") == ["Read"] * 5
+        and evidence_job.get("onelake_paths") == ["*"] * 5
+        and evidence_job.get("job_control_actions") == []
+        and evidence_job.get("mutation_actions") == [],
+        "evidence_job_read_only_roles",
+    )
+    require(
+        evidence_job.get("production_workspace_access") is False,
+        "evidence_job_no_production_workspace",
+    )
+    require(
+        _require_hash(evidence_job.get("record_hash"))
+        and _require_hash(evidence_job.get("entra_bound_record_hash")),
+        "evidence_job_signed_record",
     )
 
     templates = evidence.get("templates")
