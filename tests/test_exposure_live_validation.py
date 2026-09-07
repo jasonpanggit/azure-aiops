@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from api.runtime import (
     ExposurePromotionEvidence,
@@ -274,3 +275,228 @@ def test_rollout_code_preserves_remediation_lifecycle_guards() -> None:
     coordinator = runtime.split("def _verification_coordinator()", 1)[1]
     assert "plan_repository=None" in coordinator
     assert "patching_service=None" in coordinator
+
+
+def _complete_live_evidence() -> dict[str, object]:
+    return {
+        "schema_version": "1.0.0",
+        "binding": {
+            "commit": "abcdef12",
+            "config_digest": "sha256:" + ("a" * 64),
+            "generation_id": "generation-live",
+        },
+        "sources": {
+            "aum": {"status": "pass"},
+            "defender_digest": {
+                "status": "pass",
+                "evidence_kind": "exact_digest",
+            },
+            "container_insights": {
+                "status": "pass",
+                "supported": True,
+                "deployment_match": "exact",
+            },
+            "fabric_sql": {
+                "status": "pass",
+                "adapter": "fabric_sql",
+                "driver": "ODBC Driver 18 for SQL Server",
+            },
+        },
+        "persistence": {
+            "status": "pass",
+            "generation_id": "generation-live",
+        },
+        "ontology": {
+            "status": "pass",
+            "generation_id": "generation-live",
+        },
+        "scope_identity": {
+            "status": "pass",
+            "api_scope_hash": "sha256:" + ("b" * 64),
+            "web_scope_hash": "sha256:" + ("b" * 64),
+        },
+        "ui_suites": {
+            "shared_primitives": "pass",
+            "overview": "pass",
+            "cve": "pass",
+            "kb": "pass",
+            "risk_dialog": "pass",
+        },
+        "cursor": {
+            "status": "pass",
+            "active_ref": "exposure-cursor-active",
+            "previous_ref": "exposure-cursor-previous",
+            "active_kid": "cursor-active-20260907",
+            "previous_kid": "cursor-previous-20260907",
+            "ttl_minutes": 15,
+            "overlap_minutes": 30,
+            "rotation_verified": True,
+            "expiry_verified": True,
+            "secret_values_exposed": False,
+        },
+        "governance": {
+            "status": "pass",
+            "executable_action_ids": [
+                "controlled-patch-recovery",
+                "defender-enable-servers-plan-p1",
+                "defender-enable-storage-plan-v2",
+            ],
+            "container_handoff": "review_handoff",
+            "container_operation_calls": 0,
+        },
+        "telemetry": {"status": "pass"},
+        "alerts": {
+            "status": "pass",
+            "enabled": True,
+            "one_cycle": True,
+        },
+        "benchmark": {
+            "status": "pass",
+            "adapter": {
+                "adapter_id": "fabric_sql",
+                "production_slo_evidence": True,
+                "delta_selected": False,
+            },
+            "dataset": {
+                "row_count": 100_000,
+                "generation_id": "generation-live",
+                "target_kind_counts": {
+                    "server": 80_000,
+                    "container_image": 20_000,
+                },
+            },
+            "full_walk": {
+                "duplicate_count": 0,
+                "omission_count": 0,
+            },
+            "slo": {
+                "target_p95_ms": 2_000,
+                "observed_under_target": True,
+                "production_certified": True,
+            },
+        },
+        "phase4": {
+            "status": "pass",
+            "digest_to_workload": {
+                "evidence_kind": "exact_digest",
+                "source": "container_insights",
+                "supported": True,
+                "round_trip": True,
+                "represented": 1,
+                "total": 1,
+            },
+        },
+    }
+
+
+def test_deploy_config_pins_authoritative_fabric_sql_endpoint() -> None:
+    config = yaml.safe_load(
+        (ROOT / "fabric.config.deploy.yaml").read_text(encoding="utf-8")
+    )
+
+    assert config["fabric"]["sql_endpoint"] == {
+        "server": (
+            "a4y4r76a7qxe3b4y2wbnunsqly-u6gteheqetoerg5g32gb6mzxky."
+            "datawarehouse.fabric.microsoft.com"
+        ),
+        "database": "b4089445-1001-45a6-a0ea-2b4a0851eace",
+        "schema": "dbo",
+    }
+
+
+def test_alerts_can_reuse_existing_action_group_without_email_receivers() -> None:
+    alerting = (ROOT / "infra/terraform/alerting.tf").read_text(encoding="utf-8")
+    variables = (ROOT / "infra/terraform/variables.tf").read_text(encoding="utf-8")
+
+    assert 'variable "existing_alert_action_group_id"' in variables
+    assert "local.alerting_enabled" in alerting
+    assert "local.alert_action_group_id" in alerting
+    assert (
+        'count               = local.create_alert_action_group ? 1 : 0'
+        in alerting
+    )
+    assert alerting.count("count                = local.alerting_enabled ? 1 : 0") == 9
+    assert "[local.alert_action_group_id]" in alerting
+    assert "action_group_id = local.alert_action_group_id" in alerting
+
+
+def test_cursor_kids_are_validated_non_secret_variables_not_placeholders() -> None:
+    container_apps = (ROOT / "infra/terraform/container_apps.tf").read_text(
+        encoding="utf-8"
+    )
+    variables = (ROOT / "infra/terraform/variables.tf").read_text(encoding="utf-8")
+
+    assert 'variable "exposure_cursor_active_kid"' in variables
+    assert 'variable "exposure_cursor_previous_kid"' in variables
+    assert "var.exposure_cursor_active_kid" in container_apps
+    assert "var.exposure_cursor_previous_kid" in container_apps
+    assert "unprovisioned" not in container_apps
+    assert "exposure_cursor_active_kid != var.exposure_cursor_previous_kid" in variables
+
+
+def test_api_image_contains_live_validator_and_benchmark() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert (
+        "COPY scripts/benchmark_exposure_read_model.py "
+        "/app/scripts/benchmark_exposure_read_model.py"
+    ) in dockerfile
+    assert (
+        "COPY scripts/validate_exposure_live.py "
+        "/app/scripts/validate_exposure_live.py"
+    ) in dockerfile
+
+
+def test_complete_live_evidence_passes_without_leaking_scoped_values() -> None:
+    from scripts.validate_exposure_live import evaluate_live_evidence
+
+    report = evaluate_live_evidence(_complete_live_evidence())
+
+    assert report["status"] == "pass"
+    assert report["phase4_ready"] is True
+    assert report["missing_evidence"] == []
+    assert report["sanitized"] is True
+    serialized = str(report).casefold()
+    for forbidden in ("access_token", "client_secret", "cursor_key", "raw_payload"):
+        assert forbidden not in serialized
+
+
+def test_typed_unknown_digest_to_workload_evidence_blocks_phase4() -> None:
+    from scripts.validate_exposure_live import evaluate_live_evidence
+
+    evidence = _complete_live_evidence()
+    phase4 = dict(evidence["phase4"])
+    phase4["status"] = "blocked"
+    phase4["digest_to_workload"] = {
+        "evidence_kind": "typed_unknown",
+        "source": "container_insights",
+        "supported": True,
+        "round_trip": False,
+        "represented": 0,
+        "total": 1,
+    }
+    evidence["phase4"] = phase4
+
+    report = evaluate_live_evidence(evidence)
+
+    assert report["status"] == "blocked"
+    assert report["phase4_ready"] is False
+    assert report["missing_evidence"] == [
+        "exact_supported_defender_digest_to_container_insights_workload_round_trip"
+    ]
+
+
+@pytest.mark.parametrize(
+    "unsafe_key",
+    ["access_token", "client_secret", "cursor_key", "raw_payload"],
+)
+def test_live_validator_rejects_secret_or_raw_payload_fields(
+    unsafe_key: str,
+) -> None:
+    from scripts.validate_exposure_live import evaluate_live_evidence
+
+    evidence = _complete_live_evidence()
+    evidence["unsafe"] = {unsafe_key: "must-never-be-emitted"}
+
+    with pytest.raises(ValueError, match="unsafe evidence field"):
+        evaluate_live_evidence(evidence)
