@@ -168,7 +168,7 @@ def test_validation_fixture_jobs_are_fixed_manual_templates() -> None:
         assert "schedule_trigger_config" not in job
         assert "parallelism              = 1" in job
         assert "replica_completion_count = 1" in job
-        assert "replica_retry_limit        = 0" in job
+        assert "replica_retry_limit          = 0" in job
         assert (
             "identity_ids = [azurerm_user_assigned_identity.ontology_coordinator.id]"
             in job

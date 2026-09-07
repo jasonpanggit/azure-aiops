@@ -861,6 +861,38 @@ class OntologyRunStore:
         active = next((row for row in epochs if row["status"] == "active"), None)
         return copy.deepcopy(active or epochs[-1])
 
+    def remove_fixture_epoch(
+        self,
+        epoch_id: str,
+        *,
+        expected_member_ids: list[str],
+        now: datetime,
+    ) -> None:
+        """Delete only an exact validation fixture epoch after fenced cleanup."""
+
+        moment = _aware(now)
+        expected = sorted(
+            _required(value, "connection_id").casefold()
+            for value in expected_member_ids
+        )
+        with self._claim_lock():
+            state = self._read_state()
+            matches = [
+                row
+                for row in state["eligible_epochs"]
+                if row["epoch_id"] == epoch_id
+            ]
+            if len(matches) != 1:
+                raise RunClaimConflict("fixture_epoch_not_unique", {})
+            if sorted(matches[0]["member_order"]) != expected:
+                raise RunClaimConflict("fixture_epoch_members_changed", matches[0])
+            state["eligible_epochs"] = [
+                row
+                for row in state["eligible_epochs"]
+                if row["epoch_id"] != epoch_id
+            ]
+            self._persist_advanced(state, moment)
+
     def get_reconciliation_control(
         self, connection_id: str
     ) -> dict[str, Any] | None:
