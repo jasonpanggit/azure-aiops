@@ -258,7 +258,7 @@ def test_evidence_identity_has_exact_viewer_and_onelake_read_only_roles() -> Non
         "ontology_rbac_validation",
     )
 
-    assert "preview       = true" in providers
+    assert "preview = true" in providers
     for root in exact_roots:
         viewer = _resource(
             terraform,
