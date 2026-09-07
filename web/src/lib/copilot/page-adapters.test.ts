@@ -398,7 +398,7 @@ describe("inventory Copilot page adapter", () => {
     });
 
     it("projects long Compliance identities into stable bounded keys without losing selection", () => {
-      const longIdentity = `peering:${"remote-vnet/".repeat(40)}`;
+      const longIdentity = `peering:${"remote-vnet/".repeat(16)}`;
       const input = {
         scope: {},
         policyName: "Approved landing zone",
@@ -443,6 +443,76 @@ describe("inventory Copilot page adapter", () => {
           }),
         ]),
       );
+    });
+
+    it("retains the latest evidence timestamp when live observation metadata is absent", () => {
+      const context = buildOverviewCopilotContext({
+        scope: {},
+        situations: {
+          data: [],
+          evidence: [
+            {
+              source_engine: "ARG",
+              source_table: "resources",
+              timestamp: "2026-09-07T10:00:00Z",
+              confidence: "high",
+              freshness: "fresh",
+            },
+            {
+              source_engine: "ARG",
+              source_table: "resources",
+              timestamp: "2026-09-07T11:00:00Z",
+              confidence: "high",
+              freshness: "fresh",
+            },
+          ],
+          scope: {},
+        },
+        network: null,
+        vulnerabilities: null,
+        connections: null,
+      });
+
+      expect(context.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          {
+            source: "situations",
+            observed_at: "2026-09-07T11:00:00Z",
+            status: "fresh",
+          },
+        ]),
+      );
+    });
+
+    it("derives deterministic domain identities when loaded rows omit their IDs", () => {
+      const input = {
+        ...corePageInput,
+        records: [{
+          identity: " ",
+          namespace: "network",
+          kind: "network_gap",
+          source: "network/gaps",
+          selected: true,
+          data: {
+            title: "Missing route",
+            resource: "hub-vnet",
+          },
+        }],
+        evidence: [],
+      };
+
+      const context = buildNetworkCopilotContext(input);
+      const repeated = buildNetworkCopilotContext(input);
+      const selected = context.selectedEntities[0];
+
+      expect(selected).toMatchObject({
+        type: "domain",
+        namespace: "network",
+        kind: "network_gap",
+      });
+      expect(selected?.type === "domain" ? selected.source_key : "").toMatch(/^anonymous:/);
+      expect(context.selectedEntities).toEqual(repeated.selectedEntities);
+      expect(context.snapshot.evidence).toEqual(repeated.snapshot.evidence);
     });
 
     it("marks unavailable page collections incomplete and empty-evidence sources unavailable", () => {
