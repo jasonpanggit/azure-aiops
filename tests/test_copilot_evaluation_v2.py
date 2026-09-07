@@ -290,6 +290,47 @@ def test_executive_claim_can_cite_authorized_retained_evidence() -> None:
     assert synthesis.claims[0]["evidence_refs"] == ["thread:prior:0"]
 
 
+def test_executive_rejects_retained_citation_not_transmitted_to_provider() -> None:
+    retained = [
+        {
+            "evidence_id": f"thread:prior:{index}",
+            "source": "network",
+            "status": "ok",
+            "observation_status": "historical",
+        }
+        for index in range(51)
+    ]
+    executive = RecordingExecutive(
+        text=json.dumps(
+            {
+                "findings": [
+                    {
+                        "finding_id": "exec:truncated",
+                        "summary": "Cites evidence outside the provider payload.",
+                        "evidence_refs": ["thread:prior:50"],
+                        "confidence": "medium",
+                        "freshness": "stale",
+                        "uncertainty": [],
+                        "actionable": False,
+                        "next_check": "Recheck the prior observation.",
+                    }
+                ]
+            }
+        )
+    )
+    service = _service(executive_agent=executive)
+
+    synthesis = service._synthesize(
+        "Give me an executive summary.",
+        _tool_results(),
+        retained_evidence=retained,
+    )
+
+    assert len(executive.calls[0]["context"]["retained_evidence"]) == 50
+    assert synthesis.status == "degraded"
+    assert synthesis.claims == []
+
+
 # ---------------------------------------------------------------------------
 # Citation closure
 # ---------------------------------------------------------------------------

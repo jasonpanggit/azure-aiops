@@ -54,6 +54,9 @@ class FakeDocuments:
         # an in-memory mutation can never masquerade as a durable write.
         return deepcopy(self.documents.get(name, {}))
 
+    def read_or_raise(self, name: str) -> dict[str, Any]:
+        return self.read(name)
+
     def write(
         self,
         name: str,
@@ -179,6 +182,29 @@ def test_configured_storage_read_outage_is_controlled_unavailable() -> None:
     restarted = InvestigationThreadStore(documents=documents)
     with pytest.raises(ThreadStoreUnavailable):
         restarted.authorize(thread.thread_id, "operator-a", SUB_A)
+
+
+def test_continuity_prefers_strict_read_when_adapter_suppresses_errors() -> None:
+    class SuppressingDocuments(FakeDocuments):
+        def read(self, name: str) -> dict[str, Any]:
+            if self.fail_reads:
+                return {}
+            return super().read(name)
+
+        def read_or_raise(self, name: str) -> dict[str, Any]:
+            if self.fail_reads:
+                raise RuntimeError("transport unavailable")
+            return super().read(name)
+
+    documents = SuppressingDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    thread = store.create("operator-a", SUB_A)
+    documents.fail_reads = True
+
+    with pytest.raises(ThreadStoreUnavailable):
+        store.authorize(thread.thread_id, "operator-a", SUB_A)
+    with pytest.raises(ThreadStoreUnavailable):
+        store.resolve_legacy_binding("legacy-session", "operator-a")
 
 
 def test_corrupt_document_is_not_served_as_a_thread() -> None:

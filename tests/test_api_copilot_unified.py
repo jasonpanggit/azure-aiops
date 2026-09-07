@@ -1888,6 +1888,27 @@ def test_canonical_history_projects_thread_storage_outage_as_unavailable(
     assert response.json()["error"]["code"] == "provider_unavailable"
 
 
+def test_canonical_history_projects_binding_contention_as_conflict(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.copilot.legacy_session_history",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ThreadRevisionConflict(current_revision=4)
+        ),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/copilot/history/contention-session?subscription=sub-a",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conflict"
+
+
 def test_canonical_endpoint_projects_thread_storage_outage_as_unavailable(
     tmp_path, monkeypatch
 ):
