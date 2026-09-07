@@ -7,28 +7,9 @@ import asyncio
 import json
 import socket
 from datetime import datetime
-from pathlib import Path
-from typing import Any
 
-from .contracts import CheckpointResult
 from .coordinator import OntologyDiscoveryCoordinator
-from .store import OntologyRunStore
-
-
-class _RecordOnlyProcessor:
-    """Close the foundation run without invoking any publication capability.
-
-    Later Phase 13 plans replace this composition with the evidence and
-    proposal pipeline. Keeping this processor explicit makes the initial CLI
-    useful for proving durable dispatch while remaining non-authoritative.
-    """
-
-    async def advance(self, run: dict[str, Any]) -> CheckpointResult:
-        return CheckpointResult(
-            checkpoint="intake_recorded",
-            payload={"source_generation_id": run["source_generation_id"]},
-            complete=True,
-        )
+from .runtime import build_production_runtime
 
 
 async def run_once(
@@ -53,24 +34,27 @@ def _parser() -> argparse.ArgumentParser:
         help="Execute exactly one finite coordinator pass",
     )
     parser.add_argument(
-        "--store",
-        default=".aiops-local/state/ontology_discovery_runs.json",
-        help="Path to the durable ontology discovery run ledger",
+        "--limit",
+        type=int,
+        choices=(1,),
+        default=1,
+        help="Production safety bound; exactly one connection per pass",
     )
-    parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--owner", default=socket.gethostname())
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    store = OntologyRunStore(Path(args.store).expanduser())
-    coordinator = OntologyDiscoveryCoordinator(
-        store=store,
-        processor=_RecordOnlyProcessor(),
-        owner=args.owner,
-    )
-    result = asyncio.run(run_once(coordinator, limit=args.limit))
+
+    async def execute() -> dict[str, int | bool]:
+        runtime = build_production_runtime(owner=args.owner)
+        try:
+            return await runtime.run_once(limit=args.limit)
+        finally:
+            await runtime.aclose()
+
+    result = asyncio.run(execute())
     print(json.dumps(result, sort_keys=True))
     return 0
 

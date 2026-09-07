@@ -8,6 +8,7 @@ import pytest
 
 from onboarding.registry import ConnectionRegistry
 from ontology.subscription_connection import SubscriptionConnection
+from ontology_discovery import cli
 from ontology_discovery.command_intake import (
     CommandIntakeService,
     CoordinatorCommandConsumer,
@@ -198,7 +199,7 @@ def test_publish_dispatch_is_content_addressed_and_restart_durable(tmp_path):
 
 
 def test_eligible_epoch_rotates_retrying_head_and_survives_every_restart(tmp_path):
-    registry = _registry(
+    _registry(
         tmp_path / "connections",
         "connection-a",
         "connection-b",
@@ -282,3 +283,25 @@ def test_production_config_requires_all_roots_and_agent_version(monkeypatch):
     invalid["AIOPS_ONTOLOGY_PUBLICATION_HOME"] = "abfss://forbidden"
     with pytest.raises(ValueError, match="publication"):
         ProductionRuntimeConfig.from_environ(invalid)
+
+
+def test_cli_main_uses_production_runtime_and_closes_it(monkeypatch, capsys):
+    events: list[str] = []
+
+    class Runtime:
+        async def run_once(self, *, limit):
+            events.append(f"run:{limit}")
+            return {"selected": 1, "processed": 1}
+
+        async def aclose(self):
+            events.append("closed")
+
+    monkeypatch.setattr(
+        cli,
+        "build_production_runtime",
+        lambda *, owner: Runtime(),
+    )
+
+    assert cli.main(["run-once", "--limit", "1", "--owner", "test-worker"]) == 0
+    assert events == ["run:1", "closed"]
+    assert capsys.readouterr().out == '{"processed": 1, "selected": 1}\n'

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from storage.locking import RunLock
+from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
 RUN_QUEUED = "queued"
 RUN_RUNNING = "running"
@@ -98,7 +99,7 @@ class PairReleaseConflict(RuntimeError):
 class OntologyRunStore:
     """Versioned run records with deterministic identity and fenced ownership."""
 
-    SCHEMA_VERSION = "1.2.0"
+    SCHEMA_VERSION = "1.3.0"
 
     def __init__(
         self,
@@ -110,6 +111,8 @@ class OntologyRunStore:
         retry_max_seconds: int = 300,
         default_deadline_seconds: int = 1800,
         allow_pair_release_testing: bool = False,
+        document_store: OneLakeDocumentStore | None = None,
+        document_name: str = "ontology/coordinator-state.json",
     ) -> None:
         for name, value in {
             "max_runs": max_runs,
@@ -121,6 +124,10 @@ class OntologyRunStore:
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
         self.path = Path(path)
+        self._documents = document_store
+        self._document_name = str(document_name or "").strip()
+        if self._documents is not None and not self._document_name:
+            raise ValueError("document_name must not be empty")
         self.max_runs = max_runs
         self.max_attempts = max_attempts
         self.retry_base_seconds = retry_base_seconds
@@ -683,6 +690,176 @@ class OntologyRunStore:
             )
         )
         return copy.deepcopy(due[:limit])
+
+    def ensure_eligible_epoch(
+        self,
+        *,
+        member_ids: list[str],
+        registry_revision: int,
+        registry_hash: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Create one immutable eligible-set snapshot or return the active epoch."""
+
+        moment = _aware(now)
+        normalized = sorted(
+            {
+                _required(value, "connection_id").casefold()
+                for value in member_ids
+            }
+        )
+        identity_payload = json.dumps(
+            {
+                "members": normalized,
+                "registry_revision": int(registry_revision),
+                "registry_hash": _required(registry_hash, "registry_hash"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        epoch_id = "ODE-" + hashlib.sha256(
+            identity_payload.encode()
+        ).hexdigest()[:20].upper()
+        with self._claim_lock():
+            state = self._read_state()
+            active = next(
+                (
+                    row
+                    for row in state["eligible_epochs"]
+                    if row["status"] == "active"
+                ),
+                None,
+            )
+            if active is not None:
+                return copy.deepcopy(active)
+            record = {
+                "epoch_id": epoch_id,
+                "registry_revision": int(registry_revision),
+                "registry_hash": registry_hash,
+                "member_order": normalized,
+                "cursor": 0,
+                "status": "active" if normalized else "drained",
+                "revision": 0,
+                "created_at": moment.isoformat(),
+                "updated_at": moment.isoformat(),
+                "members": {
+                    connection_id: {
+                        "connection_id": connection_id,
+                        "outcome": "pending",
+                        "reason_code": "",
+                        "attempt_count": 0,
+                        "next_attempt_at": moment.isoformat(),
+                        "updated_at": moment.isoformat(),
+                    }
+                    for connection_id in normalized
+                },
+            }
+            state["eligible_epochs"].append(record)
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record)
+
+    def claim_next_epoch_member(
+        self,
+        epoch_id: str,
+        *,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        """Advance the durable cursor and return one due non-terminal member."""
+
+        moment = _aware(now)
+        with self._claim_lock():
+            state = self._read_state()
+            epoch = next(
+                (
+                    row
+                    for row in state["eligible_epochs"]
+                    if row["epoch_id"] == epoch_id
+                ),
+                None,
+            )
+            if epoch is None or epoch["status"] != "active":
+                return None
+            order = epoch["member_order"]
+            for _ in range(len(order)):
+                index = int(epoch["cursor"]) % len(order)
+                connection_id = order[index]
+                epoch["cursor"] = (index + 1) % len(order)
+                member = epoch["members"][connection_id]
+                if member["outcome"] != "pending":
+                    continue
+                next_attempt = datetime.fromisoformat(member["next_attempt_at"])
+                if next_attempt > moment:
+                    continue
+                epoch["revision"] += 1
+                epoch["updated_at"] = moment.isoformat()
+                self._persist_advanced(state, moment)
+                return copy.deepcopy(member)
+            return None
+
+    def record_epoch_outcome(
+        self,
+        epoch_id: str,
+        connection_id: str,
+        *,
+        outcome: str,
+        reason_code: str = "",
+        next_attempt_at: datetime | None = None,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Persist one exact terminal/exclusion result or a rotated retry."""
+
+        allowed = {
+            "pending",
+            "succeeded",
+            "duplicate",
+            "exhausted_failure",
+            "excluded",
+        }
+        if outcome not in allowed:
+            raise ValueError("unsupported eligible-set member outcome")
+        moment = _aware(now)
+        connection = _required(connection_id, "connection_id").casefold()
+        with self._claim_lock():
+            state = self._read_state()
+            epoch = next(
+                (
+                    row
+                    for row in state["eligible_epochs"]
+                    if row["epoch_id"] == epoch_id
+                ),
+                None,
+            )
+            if epoch is None or connection not in epoch["members"]:
+                raise RunClaimConflict("eligible_epoch_member_missing", {})
+            member = epoch["members"][connection]
+            if member["outcome"] != "pending":
+                return copy.deepcopy(epoch)
+            member["attempt_count"] += 1
+            member["outcome"] = outcome
+            member["reason_code"] = str(reason_code or "")[:96]
+            member["next_attempt_at"] = (
+                _aware(next_attempt_at).isoformat()
+                if next_attempt_at is not None
+                else moment.isoformat()
+            )
+            member["updated_at"] = moment.isoformat()
+            if all(
+                value["outcome"] != "pending"
+                for value in epoch["members"].values()
+            ):
+                epoch["status"] = "drained"
+            epoch["revision"] += 1
+            epoch["updated_at"] = moment.isoformat()
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(epoch)
+
+    def active_or_latest_epoch(self) -> dict[str, Any] | None:
+        with self._lock:
+            epochs = self._read_state()["eligible_epochs"]
+        if not epochs:
+            return None
+        active = next((row for row in epochs if row["status"] == "active"), None)
+        return copy.deepcopy(active or epochs[-1])
 
     def list_pending_relationships(
         self, *, include_terminal: bool = False
@@ -1421,6 +1598,9 @@ class OntologyRunStore:
     @contextmanager
     def _claim_lock(self) -> Iterator[None]:
         with self._lock:
+            if self._documents is not None:
+                yield
+                return
             deadline = time.monotonic() + 5.0
             while True:
                 lock = RunLock(
@@ -1441,12 +1621,17 @@ class OntologyRunStore:
                 return
 
     def _read_state(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return _initial_state()
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError("Ontology discovery run state is not valid JSON") from exc
+        if self._documents is not None:
+            payload = self._documents.read_or_raise(self._document_name)
+            if not payload:
+                return _initial_state()
+        else:
+            if not self.path.exists():
+                return _initial_state()
+            try:
+                payload = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("Ontology discovery run state is not valid JSON") from exc
         if not isinstance(payload, dict):
             raise TypeError("Ontology discovery run state must be an object")
         rows = payload.get("runs", [])
@@ -1477,6 +1662,21 @@ class OntologyRunStore:
             not isinstance(row, dict) for row in releases
         ):
             raise TypeError("Admission releases must be a list of objects")
+        epochs = payload.get("eligible_epochs", [])
+        if not isinstance(epochs, list) or any(
+            not isinstance(row, dict) for row in epochs
+        ):
+            raise TypeError("Eligible-set epochs must be a list of objects")
+        controls = payload.get("reconciliation_controls", [])
+        if not isinstance(controls, list) or any(
+            not isinstance(row, dict) for row in controls
+        ):
+            raise TypeError("Reconciliation controls must be a list of objects")
+        results = payload.get("reconciliation_results", [])
+        if not isinstance(results, list) or any(
+            not isinstance(row, dict) for row in results
+        ):
+            raise TypeError("Reconciliation results must be a list of objects")
         return {
             "revision": _nonnegative_int(payload.get("revision", 0)),
             "next_fencing_token": _nonnegative_int(
@@ -1496,6 +1696,9 @@ class OntologyRunStore:
             "admission_releases": [
                 _release_with_defaults(row) for row in releases
             ],
+            "eligible_epochs": [_epoch_with_defaults(row) for row in epochs],
+            "reconciliation_controls": copy.deepcopy(controls),
+            "reconciliation_results": copy.deepcopy(results),
             "updated_at": str(payload.get("updated_at") or ""),
         }
 
@@ -1506,16 +1709,6 @@ class OntologyRunStore:
         self._write_state(state, expected_revision=expected_revision)
 
     def _write_state(self, state: dict[str, Any], *, expected_revision: int) -> None:
-        if self.path.exists():
-            try:
-                current = json.loads(self.path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise ValueError("Ontology discovery run state is not valid JSON") from exc
-            observed_revision = _nonnegative_int(current.get("revision", 0))
-            if observed_revision != expected_revision:
-                raise RunClaimConflict("run_store_revision_conflict", {})
-        elif expected_revision != 0:
-            raise RunClaimConflict("run_store_revision_conflict", {})
         payload = {
             "schema_version": self.SCHEMA_VERSION,
             "revision": state["revision"],
@@ -1526,8 +1719,33 @@ class OntologyRunStore:
             "proposals": state["proposals"],
             "proposal_reviews": state["proposal_reviews"],
             "admission_releases": state["admission_releases"],
+            "eligible_epochs": state["eligible_epochs"],
+            "reconciliation_controls": state["reconciliation_controls"],
+            "reconciliation_results": state["reconciliation_results"],
             "updated_at": state["updated_at"],
         }
+        if self._documents is not None:
+            try:
+                self._documents.write(
+                    self._document_name,
+                    payload,
+                    expected_revision=expected_revision,
+                )
+            except DocumentConflictError as exc:
+                raise RunClaimConflict(
+                    "run_store_revision_conflict", {}
+                ) from exc
+            return
+        if self.path.exists():
+            try:
+                current = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("Ontology discovery run state is not valid JSON") from exc
+            observed_revision = _nonnegative_int(current.get("revision", 0))
+            if observed_revision != expected_revision:
+                raise RunClaimConflict("run_store_revision_conflict", {})
+        elif expected_revision != 0:
+            raise RunClaimConflict("run_store_revision_conflict", {})
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(
             dir=self.path.parent,
@@ -1556,8 +1774,41 @@ def _initial_state() -> dict[str, Any]:
         "proposals": [],
         "proposal_reviews": [],
         "admission_releases": [],
+        "eligible_epochs": [],
+        "reconciliation_controls": [],
+        "reconciliation_results": [],
         "updated_at": "",
     }
+
+
+def _epoch_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    record = copy.deepcopy(dict(row))
+    record.setdefault("epoch_id", "")
+    record.setdefault("registry_revision", 0)
+    record.setdefault("registry_hash", "")
+    record["member_order"] = [
+        str(value).casefold() for value in record.get("member_order", ())
+    ]
+    members = record.get("members", {})
+    if not isinstance(members, Mapping):
+        raise TypeError("Eligible-set epoch members must be an object")
+    normalized: dict[str, dict[str, Any]] = {}
+    for connection_id in record["member_order"]:
+        member = copy.deepcopy(dict(members.get(connection_id) or {}))
+        member.setdefault("connection_id", connection_id)
+        member.setdefault("outcome", "pending")
+        member.setdefault("reason_code", "")
+        member.setdefault("attempt_count", 0)
+        member.setdefault("next_attempt_at", record.get("created_at") or "")
+        member.setdefault("updated_at", record.get("updated_at") or "")
+        normalized[connection_id] = member
+    record["members"] = normalized
+    record.setdefault("cursor", 0)
+    record.setdefault("status", "active")
+    record.setdefault("revision", 0)
+    record.setdefault("created_at", "")
+    record.setdefault("updated_at", "")
+    return record
 
 
 def _pending_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
