@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider, useScope } from "@/lib/scope-context";
@@ -182,11 +182,11 @@ describe("ThreadContinuityProvider", () => {
     render(<App><Harness route="/inventory" /></App>);
     fireEvent.click(screen.getByRole("button", { name: "Accept server thread" }));
 
-    authEvents.forEach((callback) => callback({ eventType: "msal:logoutStart" }));
-
-    await waitFor(() => {
-      expect(screen.getByLabelText("thread")).toHaveTextContent("none");
+    act(() => {
+      authEvents.forEach((callback) => callback({ eventType: "msal:logoutStart" }));
     });
+
+    expect(screen.getByLabelText("thread")).toHaveTextContent("none");
     expect(window.sessionStorage.getItem(COPILOT_THREAD_STORAGE_KEY)).toBeNull();
     expect(screen.getByLabelText("reset reason")).toHaveTextContent("session_end");
   });

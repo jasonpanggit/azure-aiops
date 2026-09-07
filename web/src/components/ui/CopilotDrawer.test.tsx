@@ -268,6 +268,34 @@ describe("CopilotDrawer", () => {
     expect(screen.queryByRole("button", { name: /execute/i })).not.toBeInTheDocument();
   });
 
+  it("supports isolated direct renders without making browser continuity authoritative", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    investigateCanonical.mockResolvedValue(
+      canonicalResult(
+        "thr-77777777777777777777777777777777",
+        "server:isolated",
+      ),
+    );
+
+    render(
+      <ScopeProvider>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Inventory"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={canonicalSnapshot("os")}
+          starterQuestions={[{ label: "Review isolated evidence" }]}
+        />
+      </ScopeProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Review isolated evidence/ }));
+
+    expect(await screen.findByText("server:isolated")).toBeInTheDocument();
+    expect(window.sessionStorage).toHaveLength(0);
+  });
+
   it("labels evidence age only from server-returned citation state", async () => {
     investigateCanonical.mockClear();
     window.sessionStorage.clear();

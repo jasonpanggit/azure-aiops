@@ -259,3 +259,14 @@ export function useThreadContinuity(): ThreadContinuityContextValue {
   }
   return context;
 }
+
+/**
+ * Returns the continuity provider when present, or null for isolated renders.
+ *
+ * Production composition always supplies {@link ThreadContinuityProvider};
+ * this seam lets leaf components remain testable without weakening the strict
+ * {@link useThreadContinuity} contract.
+ */
+export function useOptionalThreadContinuity(): ThreadContinuityContextValue | null {
+  return useContext(ThreadContext);
+}

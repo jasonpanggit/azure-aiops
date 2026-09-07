@@ -5,7 +5,10 @@ import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MarkdownLite } from "@/components/ui/MarkdownLite";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
-import { useThreadContinuity } from "@/lib/copilot/thread-context";
+import {
+  type ThreadContinuityContextValue,
+  useOptionalThreadContinuity,
+} from "@/lib/copilot/thread-context";
 import { useScope } from "@/lib/scope-context";
 import { copilotApi } from "@/lib/services";
 import type { CopilotAnswer, CopilotToolCall } from "@/lib/services";
@@ -82,6 +85,13 @@ const MIN_WIDTH = 420;
 const MAX_WIDTH = 1100;
 const WIDE_WIDTH = 760;
 const THREAD_RESET_MESSAGE = "This investigation is no longer available. Start a new investigation to continue.";
+const INERT_THREAD_CONTINUITY: ThreadContinuityContextValue = {
+  thread: null,
+  requiresServerRevalidation: false,
+  resetReason: null,
+  acceptServerState: () => false,
+  resetContinuity: () => undefined,
+};
 
 function uniqueWarnings(...groups: Array<string[] | undefined>): string[] {
   return Array.from(new Set(
@@ -138,7 +148,7 @@ export function CopilotDrawer({
   requestedScope,
 }: CopilotDrawerProps) {
   const { scope } = useScope();
-  const threadContinuity = useThreadContinuity();
+  const threadContinuity = useOptionalThreadContinuity() ?? INERT_THREAD_CONTINUITY;
   const effectiveRequestedScope = requestedScope ?? scope;
   const canonicalSnapshot = isCanonicalSnapshot(snapshot) ? snapshot : null;
   const contextFingerprint = stableJson({
