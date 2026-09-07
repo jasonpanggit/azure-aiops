@@ -10,6 +10,7 @@ statuses, counts, timestamps, hashes, and closed-vocabulary reason codes.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -117,6 +118,15 @@ EXPECTED_EVIDENCE_DENIALS = frozenset(
     }
 )
 EXPECTED_TAG_LINEAGE = ("terraform", "arg", "inventory", "evidence", "curator")
+EXPECTED_COMMAND_TOPOLOGY = (
+    "api_intake",
+    "coordinator_claim",
+    "coordinator_reauthorization",
+    "publish_dispatch",
+    "publisher_claim",
+    "publisher_status",
+    "api_reload",
+)
 REQUIRED_JOB_TEMPLATES = tuple(FIXED_JOB_NAMES)
 AZURE_AMBIENT_CREDENTIAL_KEYS = frozenset(
     {
@@ -1057,6 +1067,12 @@ def evaluate_lifecycle_evidence(
         "production_registry_path",
     )
     require(
+        drain.get("registry_provider_module") == "onboarding.registry"
+        and drain.get("registry_store_class") == "OneLakeRegistryStore"
+        and _require_hash(drain.get("connection_root_hash")),
+        "production_registry_path",
+    )
+    require(
         drain.get("normal_selection") is True
         and drain.get("normal_reauthorization") is True,
         "normal_selection_reauthorization",
@@ -1070,6 +1086,61 @@ def evaluate_lifecycle_evidence(
     )
     require(drain.get("retry_rotated") is True, "retry_rotation")
     require(drain.get("later_member_progress") is True, "later_member_progress")
+    selection_receipts = drain.get("selection_receipts")
+    selection_receipts = (
+        selection_receipts if isinstance(selection_receipts, list) else []
+    )
+    receipt_rows = [
+        row for row in selection_receipts if isinstance(row, Mapping)
+    ]
+    receipt_records = [row.get("record_hash") for row in receipt_rows]
+    retry_indexes = [
+        index
+        for index, row in enumerate(receipt_rows)
+        if row.get("outcome") == "retrying"
+    ]
+    starvation_free = False
+    for retry_index in retry_indexes:
+        retry_record = receipt_rows[retry_index].get("record_hash")
+        resumed_index = next(
+            (
+                index
+                for index in range(retry_index + 1, len(receipt_rows))
+                if receipt_rows[index].get("record_hash") == retry_record
+            ),
+            None,
+        )
+        if resumed_index is not None and any(
+            receipt_rows[index].get("record_hash") != retry_record
+            for index in range(retry_index + 1, resumed_index)
+        ):
+            starvation_free = True
+            break
+    require(
+        bool(receipt_rows)
+        and set(receipt_records) == set(record_hashes)
+        and all(
+            _require_hash(row.get("record_hash"))
+            and _require_hash(row.get("epoch_hash"))
+            and _require_hash(row.get("snapshot_hash"))
+            and _require_hash(row.get("authorization_hash"))
+            and _require_hash(row.get("process_hash"))
+            and isinstance(row.get("cursor_before"), int)
+            and isinstance(row.get("cursor_after"), int)
+            and isinstance(row.get("attempt"), int)
+            and row.get("outcome")
+            in {
+                "duplicate",
+                "retrying",
+                "succeeded",
+                "exhausted_failure",
+                "excluded",
+            }
+            for row in receipt_rows
+        ),
+        "authoritative_selection_receipts",
+    )
+    require(starvation_free, "starvation_free_selection_order")
     require(
         set(drain.get("prepared_record_hashes") or ()) == set(record_hashes)
         and set(drain.get("terminal_record_hashes") or ()) == set(record_hashes),
@@ -1085,6 +1156,13 @@ def evaluate_lifecycle_evidence(
     )
     require(
         drain.get("restart_lineage_preserved") is True,
+        "restart_lineage",
+    )
+    require(
+        bool(receipt_rows)
+        and len({row.get("epoch_hash") for row in receipt_rows}) == 1
+        and len({row.get("snapshot_hash") for row in receipt_rows}) == 1
+        and len({row.get("process_hash") for row in receipt_rows}) >= 2,
         "restart_lineage",
     )
     require(
@@ -1106,6 +1184,16 @@ def evaluate_lifecycle_evidence(
     require(
         injection.get("lineage") == list(EXPECTED_TAG_LINEAGE),
         "real_tag_lineage",
+    )
+    tag_hashes = injection.get("tag_hashes")
+    tag_hashes = tag_hashes if isinstance(tag_hashes, Mapping) else {}
+    require(
+        _require_hash(injection.get("resource_hash"))
+        and _require_hash(injection.get("scope_hash"))
+        and set(tag_hashes) == set(EXPECTED_TAG_LINEAGE)
+        and len(set(tag_hashes.values())) == 1
+        and all(_require_hash(value) for value in tag_hashes.values()),
+        "exact_tag_lineage",
     )
     require(
         injection.get("curator_source_class") == "OntologyCurator",
@@ -1154,6 +1242,14 @@ def evaluate_lifecycle_evidence(
         "retained_fixture_audit",
     )
     require(cleanup.get("audit_immutable") is True, "immutable_fixture_audit")
+    require(
+        cleanup.get("independent_observer") == "evidence",
+        "independent_empty_registry_observation",
+    )
+    require(
+        cleanup.get("tag_hash_unchanged") is True,
+        "terraform_tag_unchanged",
+    )
 
     maintenance = evidence.get("maintenance")
     maintenance = maintenance if isinstance(maintenance, Mapping) else {}
@@ -1180,6 +1276,182 @@ def evaluate_lifecycle_evidence(
     )
     return {
         "schema_version": "ontology-deployed-lifecycle-validation.v1",
+        "status": "PASS" if not missing else "FAIL",
+        "sanitized": True,
+        "release_status": "BLOCKED/PENDING",
+        "missing_evidence": sorted(missing),
+    }
+
+
+def _action_matches(action: str, pattern: str) -> bool:
+    """Case-insensitive ARM action matching with Azure's wildcard semantics."""
+
+    return fnmatch.fnmatchcase(action.casefold(), pattern.casefold())
+
+
+def expand_role_actions(
+    role_definitions: Sequence[Mapping[str, object]],
+) -> dict[str, bool]:
+    """Classify effective role actions without pretending deny probes are safe.
+
+    A live ``start`` probe is a mutation when it succeeds.  The validator
+    therefore expands role definitions read through ARM/ARG and fails closed
+    on wildcard actions rather than attempting a destructive permission test.
+    """
+
+    effective: set[str] = set()
+    wildcard = False
+    for role in role_definitions:
+        actions = [
+            str(value)
+            for value in (
+                list(role.get("actions") or ())
+                + list(role.get("data_actions") or ())
+            )
+        ]
+        exclusions = [
+            str(value)
+            for value in (
+                list(role.get("not_actions") or ())
+                + list(role.get("not_data_actions") or ())
+            )
+        ]
+        for action in actions:
+            if action == "*":
+                wildcard = True
+            if not any(_action_matches(action, excluded) for excluded in exclusions):
+                effective.add(action)
+
+    job_start_patterns = (
+        "microsoft.app/jobs/start/action",
+        "microsoft.app/jobs/executions/write",
+        "microsoft.app/containerapps/jobs/start/action",
+    )
+    job_read_patterns = (
+        "microsoft.app/jobs/read",
+        "microsoft.app/jobs/executions/read",
+        "microsoft.app/containerapps/jobs/read",
+    )
+
+    def permits(patterns: Sequence[str]) -> bool:
+        return wildcard or any(
+            _action_matches(pattern, action) or _action_matches(action, pattern)
+            for action in effective
+            for pattern in patterns
+        )
+
+    mutation = wildcard or any(
+        not action.casefold().endswith(("/read", "/list/action"))
+        for action in effective
+    )
+    return {
+        "wildcard": wildcard,
+        "job_read": permits(job_read_patterns),
+        "job_start": permits(job_start_patterns),
+        "mutation": mutation,
+    }
+
+
+def evaluate_publication_evidence(
+    evidence: Mapping[str, object],
+) -> dict[str, object]:
+    """Evaluate only direct deployed publication and rollback receipts."""
+
+    missing: list[str] = []
+
+    def require(condition: bool, code: str) -> None:
+        if not condition and code not in missing:
+            missing.append(code)
+
+    require(
+        evidence.get("command_topology") == list(EXPECTED_COMMAND_TOPOLOGY),
+        "command_topology",
+    )
+    process_hashes = evidence.get("process_hashes")
+    process_hashes = process_hashes if isinstance(process_hashes, Mapping) else {}
+    require(
+        set(process_hashes)
+        == {"api", "coordinator", "publisher", "api_reload"}
+        and all(_require_hash(value) for value in process_hashes.values())
+        and len(set(process_hashes.values())) == 4,
+        "distinct_process_reconstruction",
+    )
+    templates = evidence.get("templates")
+    templates = templates if isinstance(templates, Mapping) else {}
+    for name in REQUIRED_JOB_TEMPLATES:
+        row = templates.get(name)
+        row = row if isinstance(row, Mapping) else {}
+        require(
+            _require_hash(row.get("expected"))
+            and row.get("before") == row.get("expected")
+            and row.get("after") == row.get("expected"),
+            f"fixed_template_{name}",
+        )
+        require(row.get("override_fields") == [], f"no_overrides_{name}")
+
+    receipts = evidence.get("receipts")
+    receipts = receipts if isinstance(receipts, Mapping) else {}
+    for name in (
+        "immutable_stage",
+        "validation",
+        "five_consumer_compatibility",
+        "fabric_materialization",
+        "final_precondition",
+        "pointer_cas",
+        "post_check",
+    ):
+        require(receipts.get(name) is True, f"receipt_{name}")
+
+    stale = evidence.get("stale_writer")
+    stale = stale if isinstance(stale, Mapping) else {}
+    for name in (
+        "pre_cas_pause",
+        "stale_fence_rejected",
+        "stale_etag_rejected",
+        "one_shot_consumed",
+        "cleaned",
+    ):
+        require(stale.get(name) is True, f"stale_writer_{name}")
+
+    rollback = evidence.get("rollback")
+    rollback = rollback if isinstance(rollback, Mapping) else {}
+    require(
+        rollback.get("allowlisted_post_check_failure") is True,
+        "allowlisted_post_check_failure",
+    )
+    require(rollback.get("automatic") is True, "automatic_rollback")
+    require(rollback.get("order") == ["old", "new", "old"], "old_new_old")
+    require(
+        rollback.get("one_shot_consumed") is True
+        and rollback.get("cleaned") is True,
+        "drill_cleanup",
+    )
+
+    consumers = evidence.get("consumers")
+    consumers = consumers if isinstance(consumers, Mapping) else {}
+    require(
+        set(consumers) == set(EXPECTED_CONSUMERS)
+        and all(consumers.get(name) == "PASS" for name in EXPECTED_CONSUMERS),
+        "five_consumer_convergence",
+    )
+
+    final = evidence.get("final")
+    final = final if isinstance(final, Mapping) else {}
+    require(final.get("fixture_registry_empty") is True, "fixture_registry_empty")
+    require(final.get("fixture_audit_retained") is True, "fixture_audit_retained")
+    require(final.get("terraform_tag_unchanged") is True, "terraform_tag_unchanged")
+    require(not final.get("runtime_job_start_grants"), "no_runtime_job_start_grants")
+    require(
+        final.get("authoritative_model_edges") == 0,
+        "zero_authoritative_model_edges",
+    )
+    require(final.get("local_substitution") is False, "no_local_substitution")
+    require(
+        evidence.get("release_status") == "BLOCKED/PENDING",
+        "release_blocked_pending",
+    )
+    return {
+        "schema_version": "ontology-deployed-publication-validation.v1",
         "status": "PASS" if not missing else "FAIL",
         "sanitized": True,
         "release_status": "BLOCKED/PENDING",
