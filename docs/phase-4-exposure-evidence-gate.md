@@ -104,13 +104,14 @@ The authoritative artifact for Plan 03.1-19 is:
 
 ## Current disposition
 
-The current artifact is blocked. Live source refresh, Fabric SQL connectivity,
-ontology validation, Gold schema publication, and all automated suites pass.
-The live exact source chain is empty for the authorized dev scope: the
-qualified query sees zero server and container-image Gold facts, so no exact
-Defender digest-to-supported-workload round trip exists. Phase 4 remains
-blocked; repository, tag, unknown, or incomplete evidence must not be
-substituted.
+The current artifact is blocked. Live source refresh, the 435-table Fabric
+publication, Fabric SQL connectivity, ontology validation, Gold schema
+publication, and all automated suites pass. The live exact source chain is
+empty for the authorized dev scope: the qualified query sees zero server and
+container-image Gold facts, zero active digest-to-deployment edges, and zero
+deployment-to-application edges. No exact Defender
+digest-to-supported-workload round trip exists. Phase 4 remains blocked;
+repository, tag, unknown, or incomplete evidence must not be substituted.
 
 ## Unblocking sequence
 
