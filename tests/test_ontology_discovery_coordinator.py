@@ -236,15 +236,24 @@ def test_manual_and_scheduled_sync_intake_share_one_durable_run_without_executor
 
 
 def test_manual_sync_route_preserves_authorization_and_uses_durable_intake():
+    """The Sync route must keep its authorization checks and must resync
+    everything: real inventory ingestion plus the durable ontology refresh,
+    delegated through :meth:`SubscriptionOnboardingService.enqueue_full_sync`
+    rather than triggering ingestion directly."""
     source = inspect.getsource(sync_connection)
     signature = inspect.signature(sync_connection)
+    service_source = inspect.getsource(
+        SubscriptionOnboardingService.enqueue_full_sync
+    )
 
     assert "principal" in signature.parameters
     assert signature.parameters["principal"].annotation == "OperatePrincipal"
     assert "_authorize_action" in source
     assert "ACTION_OPERATE" in source
-    assert "enqueue_ontology_refresh" in source
+    assert "enqueue_full_sync" in source
     assert "sync_async" not in source
+    assert "enqueue_ontology_refresh" in service_source
+    assert "sync_async" in service_source
 
 
 def test_sync_run_once_cli_delegates_one_finite_bounded_pass():

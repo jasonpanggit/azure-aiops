@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import threading
 import time
@@ -930,6 +931,75 @@ def test_sync_async_returns_running_state_immediately(tmp_path: Path) -> None:
             break
         time.sleep(0.05)
     assert service.detail("prod-core")["sync_status"] == "succeeded"
+
+
+def test_enqueue_full_sync_restarts_inventory_and_enqueues_ontology(
+    tmp_path: Path,
+) -> None:
+    """The Sync action must resync everything: real inventory ingestion,
+    not just the durable ontology refresh -- this is the fix for stale
+    connections whose one-and-only initial sync failed with no retry path.
+    """
+    service = build_service(tmp_path)
+    onboard(service)
+    connection, revision = service.registry.get_with_revision("prod-core")
+    service.registry.save(
+        dataclasses.replace(
+            connection,
+            sync_state=SyncState(status="failed", message="initial sync failed"),
+        ),
+        expected_revision=revision,
+    )
+    assert service.detail("prod-core")["sync_status"] == "failed"
+
+    result = service.enqueue_full_sync(
+        "prod-core", mode="manual", requested_by="operator@example.com"
+    )
+
+    assert "inventory_sync" in result
+    assert result["inventory_sync"]["status"] == "running"
+    assert result["durable_run"]["status"] in {"queued", "claimed", "running"}
+
+    for _ in range(50):
+        legacy = service.registry.get("prod-core").sync_state
+        if legacy is not None and legacy.status in {"succeeded", "failed"}:
+            break
+        time.sleep(0.05)
+    legacy = service.registry.get("prod-core").sync_state
+    assert legacy.status == "succeeded"
+    assert legacy.record_count > 0
+
+
+def test_enqueue_full_sync_does_not_double_start_a_live_inventory_sync(
+    tmp_path: Path,
+) -> None:
+    release = threading.Event()
+
+    class BlockingIngestion:
+        def run(self):
+            release.wait(timeout=5)
+            return {"queryVersion": "1.0.0", "datasets": {"entities/resource": {"rowCount": 1}}}
+
+    service = build_service(tmp_path, ingestion=BlockingIngestion())
+    onboard(service)
+
+    try:
+        first = service.sync_async("prod-core", mode="manual")
+        result = service.enqueue_full_sync("prod-core", mode="manual")
+
+        assert result["inventory_sync"]["status"] == "already_running"
+        assert result["inventory_sync"]["run_id"] == first["run_id"]
+        assert "durable_run" in result
+    finally:
+        release.set()
+
+    for _ in range(50):
+        legacy = service.registry.get("prod-core").sync_state
+        if legacy is not None and legacy.status in {"succeeded", "failed"}:
+            break
+        time.sleep(0.05)
+    legacy = service.registry.get("prod-core").sync_state
+    assert legacy.status == "succeeded"
 
 
 def test_sync_async_persists_failure_from_background_job(tmp_path: Path) -> None:

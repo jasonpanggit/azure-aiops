@@ -243,12 +243,13 @@ def sync_connection(
     principal: OperatePrincipal,
     payload: ConnectionSyncRequest | None = None,
 ) -> dict[str, Any]:
-    """Enqueue a durable ontology refresh and return immediately."""
+    """Resync everything: restart inventory ingestion and enqueue a durable
+    ontology refresh, then return immediately."""
     scope = _authorize_action(
         context, principal, ACTION_OPERATE, context.onboarding.detail(connection_id)
     )
     mode = payload.mode if payload else "manual"
-    result = context.onboarding.enqueue_ontology_refresh(
+    result = context.onboarding.enqueue_full_sync(
         connection_id,
         mode=mode,
         requested_by=principal.subject,
