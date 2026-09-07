@@ -158,6 +158,7 @@ def build_publisher_runtime(config: PublisherRuntimeConfig):
         )
         return {family: passed for family in CONSUMER_FAMILIES}
 
+    drill_control = build_drill_control(config)
     worker = PublisherWorker(
         dispatches=dispatches,
         publisher=publisher,
@@ -171,22 +172,7 @@ def build_publisher_runtime(config: PublisherRuntimeConfig):
         ),
         consumer_check=check,
         now=now,
-        drill_control=(
-            PublisherDrillControl(
-                DrillControlConfig(
-                    enabled=True,
-                    environment=config.environment,
-                    connection_environment=config.drill_connection_environment,
-                    workspace_environment=config.drill_workspace_environment,
-                    publisher_client_id=config.publisher_client_id,
-                    azure_client_id=config.publisher_client_id,
-                    drill_root=config.drill_root,
-                    protected_roots=tuple(config.roots.values()),
-                )
-            )
-            if config.drill_enabled
-            else None
-        ),
+        drill_control=drill_control,
     )
     intake = PublisherIntakeAdapter(
         registry=ConnectionRegistry(config.roots["connection"]),
@@ -199,12 +185,75 @@ def build_publisher_runtime(config: PublisherRuntimeConfig):
     return worker, intake
 
 
+def build_drill_control(
+    config: PublisherRuntimeConfig,
+) -> PublisherDrillControl | None:
+    if not config.drill_enabled:
+        return None
+    return PublisherDrillControl(
+        DrillControlConfig(
+            enabled=True,
+            environment=config.environment,
+            connection_environment=config.drill_connection_environment,
+            workspace_environment=config.drill_workspace_environment,
+            publisher_client_id=config.publisher_client_id,
+            azure_client_id=config.publisher_client_id,
+            drill_root=config.drill_root,
+            protected_roots=tuple(config.roots.values()),
+        )
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ontology-publisher")
-    parser.add_argument("command", choices=("run-once",))
+    parser.add_argument(
+        "command",
+        choices=(
+            "run-once",
+            "drill-arm",
+            "drill-inspect",
+            "drill-resume",
+            "drill-clean",
+        ),
+    )
     parser.add_argument("--limit", type=int, default=1)
+    parser.add_argument("--drill-id", default="")
+    parser.add_argument("--command-hash", default="")
+    parser.add_argument("--fault", default="")
+    parser.add_argument("--expires-at", default="")
     args = parser.parse_args(argv)
     config = PublisherRuntimeConfig.from_env()
+    if args.command != "run-once":
+        control = build_drill_control(config)
+        if control is None:
+            raise PermissionError("publisher drill control is disabled")
+        moment = datetime.now(UTC)
+        if args.command == "drill-arm":
+            result = control.arm(
+                drill_id=args.drill_id,
+                target_command_hash=args.command_hash,
+                fault=args.fault,
+                issued_at=moment,
+                expires_at=datetime.fromisoformat(args.expires_at),
+            )
+        elif args.command == "drill-inspect":
+            result = control.inspect(now=moment)
+        elif args.command == "drill-resume":
+            control.resume(
+                drill_id=args.drill_id,
+                actor_client_id=config.publisher_client_id,
+                now=moment,
+            )
+            result = control.inspect(now=moment)
+        else:
+            result = {
+                "cleaned": control.clean(
+                    actor_client_id=config.publisher_client_id,
+                    now=moment,
+                )
+            }
+        print(json.dumps(result, sort_keys=True))
+        return 0
     worker, intake = build_publisher_runtime(config)
     intake_result = intake.process_one()
     worker_result = worker.run_once(limit=max(1, args.limit))

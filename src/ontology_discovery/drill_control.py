@@ -193,6 +193,15 @@ class PublisherDrillControl:
         row = self._require_enabled().read_snapshot(_DOCUMENT).payload
         return [dict(item) for item in row.get("audit", [])]
 
+    def clean(self, *, actor_client_id: str, now: datetime) -> bool:
+        if actor_client_id != self.config.publisher_client_id:
+            raise PermissionError("only the publisher identity may clean a drill")
+        snapshot = self._require_enabled().read_snapshot(_DOCUMENT)
+        if not snapshot.exists or snapshot.payload.get("status") == "cleaned":
+            return False
+        self._transition(snapshot.payload, snapshot.etag, "cleaned", now)
+        return True
+
     def _active(
         self, command_hash: str, now: datetime
     ) -> tuple[dict[str, object] | None, str | None]:
