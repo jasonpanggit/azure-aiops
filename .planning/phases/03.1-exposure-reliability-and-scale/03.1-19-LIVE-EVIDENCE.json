@@ -12,12 +12,12 @@
     }
   ],
   "release": {
-    "tag": "phase031-final-gates-20260907-1525",
+    "tag": "phase031-plan19-live-20260907-074928",
     "images": {
-      "api": "sha256:24a26f7fe98cdc60c109411d4c0f4a2b726831482f92bcdd04e44e5b7dde4f03",
-      "web": "sha256:a35c4451d18a8af346749d2d80ba225fde380849f0bbaaba909266e64976bcd9",
-      "mcp_server": "sha256:4938ad7870199a37184be237d2372a391a5aa4ceb3d07b10e1b271ca59a1df32",
-      "azure_mcp": "sha256:f2c308bc0a293041f343a98390f547b53e79d87e01c195b1e6a62bfc389ea9b1"
+      "api": "sha256:d59b8364258c6753462bfca468702d27f944d6277020b0a2e9acc569b81749c5",
+      "web": "sha256:828ebd77e08dcca60d69395def423b08e9fce4fe669c8407f5dbf25ba03c93c4",
+      "mcp_server": "sha256:cbbbab62eefe2da583651344f6c91c844a97e515809295c875d1c64b281b9856",
+      "azure_mcp": "sha256:4620fcda499681eb188fa88d2b8a1cc5f5fca2f6c91ed7312b573aa53e30cf83"
     },
     "all_apps_running": true,
     "api_health": "pass",
