@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
+from api.governance_snapshot import GovernanceSnapshot
 from api.rbac import Authorizer, Grant, Principal
 from api.routers.ontology_discovery import OntologyDiscoveryApi
 from api.runtime import build_context
@@ -133,6 +134,20 @@ def api_fixture(tmp_path: Path) -> dict[str, Any]:
         policy_version="policy-v1",
         now=NOW,
     )
+    collision_proposal, _ = run_store.save_proposal(
+        proposal={
+            "subject_id": "vm-collision",
+            "subject_type": "VirtualMachine",
+            "predicate": "member_of",
+            "object_id": "app-collision",
+            "object_type": "Application",
+        },
+        scope=f"{TENANT}/{SUB_A}0",
+        source_generation_id="source-collision",
+        schema_version="proposal-v1",
+        policy_version="policy-v1",
+        now=NOW,
+    )
     rollback_calls: list[dict[str, Any]] = []
 
     def rollback_action(**kwargs: Any) -> dict[str, Any]:
@@ -182,12 +197,14 @@ def api_fixture(tmp_path: Path) -> dict[str, Any]:
     )
     return {
         "client": TestClient(create_app(context), raise_server_exceptions=False),
+        "context": context,
         "provider": provider,
         "run_store": run_store,
         "run_a": run_a,
         "run_b": run_b,
         "proposal_a": proposal_a,
         "proposal_b": proposal_b,
+        "collision_proposal": collision_proposal,
         "rollback_calls": rollback_calls,
     }
 
@@ -213,7 +230,7 @@ def test_status_and_history_are_bounded_scoped_and_server_projected(
         headers=_headers("reader"),
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     body = response.json()
     assert body["scope"] == {"subscription": [SUB_A]}
     assert body["data"]["scheduler"]["owner"] == "external_job"
@@ -253,6 +270,11 @@ def test_out_of_scope_ids_are_not_found_without_disclosure(
         params=_scope(),
         headers=_headers("reader"),
     )
+    collision_response = client.get(
+        f"/api/v1/ontology-discovery/proposals/{api_fixture['collision_proposal']['proposal_id']}",
+        params=_scope(),
+        headers=_headers("reader"),
+    )
     connection_response = client.get(
         "/api/v1/ontology-discovery/status",
         params=_scope("conn-b", SUB_A),
@@ -261,6 +283,7 @@ def test_out_of_scope_ids_are_not_found_without_disclosure(
 
     assert run_response.status_code == 404
     assert proposal_response.status_code == 404
+    assert collision_response.status_code == 404
     assert connection_response.status_code == 404
     assert "conn-b" not in connection_response.text
 
@@ -411,6 +434,38 @@ def test_mutation_payloads_reject_unknown_fields(api_fixture: dict[str, Any]) ->
     assert response.status_code == 400
 
 
+def test_governance_export_resolves_one_request_scoped_snapshot(
+    api_fixture: dict[str, Any],
+) -> None:
+    calls: list[Scope] = []
+
+    def generation_provider(scope: Scope) -> GovernanceSnapshot:
+        calls.append(scope)
+        return GovernanceSnapshot(
+            [],
+            observed_at="2026-09-07T01:00:00+00:00",
+            connections=[],
+        )
+
+    api_fixture["context"].governance_generation_provider = generation_provider
+    response = api_fixture["client"].get(
+        "/api/v1/governance/exports/identity",
+        params={
+            "subscription": SUB_A,
+            "subscription_connection": "conn-a",
+        },
+        headers=_headers("reader"),
+    )
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert calls[0].to_dict() == {
+        "subscription": [SUB_A],
+        "subscription_connection": ["conn-a"],
+    }
+    assert response.json()["data"]["kind"] == "identity"
+
+
 def test_default_runtime_registers_read_action_facade_without_publisher_authority(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -482,7 +537,7 @@ def test_default_runtime_degrades_missing_sections_without_hiding_durable_runs(
         params={"connection_id": "conn-a"},
         headers=_headers("admin"),
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["current_run"]["run_id"] == created["run_id"]
     assert data["generation"]["status"] == "unavailable"

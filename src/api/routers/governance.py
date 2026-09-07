@@ -58,7 +58,11 @@ _NO_IDENTITY_DATA = (
 
 def _snapshot(context: Context, scope: Scope) -> GovernanceSnapshot:
     """Resolve the governance snapshot already narrowed to the caller's scope."""
-    provider = context.resolve_provider("governance", optional=True)
+    provider = (
+        context.governance_generation_provider(scope)
+        if context.governance_generation_provider is not None
+        else context.resolve_provider("governance", optional=True)
+    )
     if provider is None:
         raise ApiError(
             ErrorCode.PROVIDER_UNAVAILABLE,

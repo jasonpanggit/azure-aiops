@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePath
@@ -36,7 +37,7 @@ from ..dependencies import (
     ReadScope,
     RequestedScope,
 )
-from ..errors import ApiError, ErrorCode
+from ..errors import ApiError, ErrorCode, scrub
 from ..evidence import CONFIDENCE_HIGH, Evidence, envelope
 from ..models import (
     OntologyProposalReviewRequest,
@@ -84,6 +85,17 @@ _PROPOSAL_FIELDS = (
     "rationale",
     "confidence",
     "freshness",
+)
+_CHECKPOINT_PAYLOAD_FIELDS = (
+    "generation_id",
+    "active_generation",
+    "source_generation",
+    "pointer_etag",
+    "fabric_run_id",
+    "fabric_status",
+    "proposal_count",
+    "accepted_count",
+    "published_count",
 )
 
 
@@ -443,6 +455,21 @@ class OntologyDiscoveryApi:
     @staticmethod
     def _project_run(record: Mapping[str, Any]) -> dict[str, Any]:
         projected = {field: record.get(field) for field in _RUN_FIELDS}
+        checkpoint = record.get("checkpoint")
+        payload = checkpoint.get("payload") if isinstance(checkpoint, Mapping) else {}
+        projected["checkpoint"] = {
+            "name": (
+                str(checkpoint.get("name") or "")
+                if isinstance(checkpoint, Mapping)
+                else ""
+            ),
+            "payload": {
+                field: payload.get(field)
+                for field in _CHECKPOINT_PAYLOAD_FIELDS
+                if isinstance(payload, Mapping) and field in payload
+            },
+        }
+        projected["message"] = scrub(record.get("message"))
         status = str(record.get("status") or "")
         can_cancel = status in {RUN_QUEUED, RUN_RUNNING, RUN_RETRYING}
         can_retry = (
@@ -545,12 +572,16 @@ class OntologyDiscoveryApi:
         value: str,
         connection: Mapping[str, Any],
     ) -> bool:
-        normalized = value.casefold()
+        tokens = {
+            token
+            for token in re.split(r"[^a-z0-9_.-]+", value.casefold())
+            if token
+        }
         identifiers = {
             str(connection.get("connection_id") or "").casefold(),
             str(connection.get("subscription_id") or "").casefold(),
         }
-        return any(identifier and identifier in normalized for identifier in identifiers)
+        return any(identifier and identifier in tokens for identifier in identifiers)
 
     @staticmethod
     def _missing_generation(reason: str) -> dict[str, Any]:
@@ -587,7 +618,8 @@ def _evaluation_missing(reason: str) -> dict[str, Any]:
 
 
 def _provider(context: Context) -> OntologyDiscoveryApi:
-    provider = context.resolve_provider("ontology_discovery", optional=True)
+    factory = context.ontology_discovery_provider
+    provider = factory() if factory is not None else None
     if provider is None:
         raise ApiError(
             ErrorCode.PROVIDER_UNAVAILABLE,
