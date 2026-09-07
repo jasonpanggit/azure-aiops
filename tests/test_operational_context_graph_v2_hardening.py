@@ -41,6 +41,9 @@ def relationship(
     object_id: str,
     *,
     confidence=1.0,
+    subject_type: str = "Resource",
+    object_type: str = "Resource",
+    predicate: str = "depends_on",
 ) -> dict:
     return {
         "tenant_id": "tenant-1",
@@ -50,10 +53,10 @@ def relationship(
         "change_version": "v1",
         "ingestion_run_id": "run-1",
         "subject_id": subject_id,
-        "subject_type": "Resource",
-        "predicate": "depends_on",
+        "subject_type": subject_type,
+        "predicate": predicate,
         "object_id": object_id,
-        "object_type": "Resource",
+        "object_type": object_type,
         "confidence": confidence,
         "source": "test",
         "payload_json": "{}",
@@ -112,12 +115,18 @@ def test_retired_relationship_with_reclassified_endpoint_type_passes_validation(
     stale subject_type/object_type no longer matches the entity's *current*
     type -- only active relationships must agree with the live entity_type.
     """
-    previous_a = entity("a", entity_type="Resource")
-    previous_b = entity("b", entity_type="Resource")
-    stale_edge = relationship("edge", "a", "b")
+    previous_a = entity("a", entity_type="Application")
+    previous_b = entity("b", entity_type="Application")
+    stale_edge = relationship(
+        "edge",
+        "a",
+        "b",
+        subject_type="Application",
+        object_type="Application",
+    )
 
     reclassified_b = entity("b", entity_type="ManagedIdentity")
-    current_a = entity("a", entity_type="Resource")
+    current_a = entity("a", entity_type="Application")
 
     result = OntologyGraphSynchronizer(SyncValidator()).synchronize(
         [current_a, reclassified_b],
@@ -132,7 +141,20 @@ def test_retired_relationship_with_reclassified_endpoint_type_passes_validation(
         row for row in result.relationships if row["resource_id"] == "edge"
     )
     assert retired_edge["lifecycle_status"] == "retired"
-    assert retired_edge["object_type"] == "Resource"  # stale, unchanged
+    assert retired_edge["object_type"] == "Application"  # stale, unchanged
+
+
+def test_retired_legacy_vocabulary_is_preserved_but_cannot_be_active():
+    resources = [entity("a"), entity("b")]
+    legacy_edge = relationship("legacy-edge", "a", "b")
+    retired_edge = {
+        **legacy_edge,
+        "lifecycle_status": "retired",
+        "retired_at": "2026-08-19T01:00:00Z",
+    }
+
+    assert SyncValidator().validate(resources, [retired_edge]).passed
+    assert not SyncValidator().validate(resources, [legacy_edge]).passed
 
 
 def test_sync_fails_closed_before_returning_an_invalid_graph():
@@ -324,8 +346,14 @@ def test_synchronize_defers_dangling_edge_instead_of_dropping_it():
     from ontology.pending_relationships import PendingRelationshipStore
 
     store = PendingRelationshipStore()
-    a = entity("a")
-    edge_to_missing_b = relationship("edge-ab", "a", "b")
+    a = entity("a", "Application")
+    edge_to_missing_b = relationship(
+        "edge-ab",
+        "a",
+        "b",
+        subject_type="Application",
+        object_type="Application",
+    )
 
     result = OntologyGraphSynchronizer(SyncValidator(), pending_relationships=store).synchronize(
         [a], [edge_to_missing_b]
@@ -341,14 +369,20 @@ def test_synchronize_resolves_deferred_edge_once_target_entity_appears():
     from ontology.pending_relationships import PendingRelationshipStore
 
     store = PendingRelationshipStore()
-    a = entity("a")
-    edge_to_missing_b = relationship("edge-ab", "a", "b")
+    a = entity("a", "Application")
+    edge_to_missing_b = relationship(
+        "edge-ab",
+        "a",
+        "b",
+        subject_type="Application",
+        object_type="Application",
+    )
     synchronizer = OntologyGraphSynchronizer(SyncValidator(), pending_relationships=store)
 
     first = synchronizer.synchronize([a], [edge_to_missing_b])
     assert len(first.pending_relationships) == 1
 
-    b = entity("b")
+    b = entity("b", "Application")
     second = synchronizer.synchronize([a, b], [])
 
     assert any(row["resource_id"] == "edge-ab" for row in second.relationships)

@@ -748,7 +748,7 @@ def run_fabric_sql_benchmark(
     authorization: ExposureAuthorization,
     *,
     generation_id: str,
-    expected_rows_per_kind: int,
+    expected_rows: int,
     page_size: int,
     warmups: int,
     measurements: int,
@@ -770,31 +770,59 @@ def run_fabric_sql_benchmark(
         )
         for target_kind in ("server", "container_image")
     }
+
+    def run_page(query: ExposureQuery) -> Any:
+        # The deterministic contract reader used by tests needs the semantic
+        # query supplied out-of-band; the production reader ignores this.
+        if hasattr(reader, "spec"):
+            target_kind = next(
+                (
+                    str(item.value)
+                    for item in query.filters
+                    if item.field == "target_kind"
+                ),
+                None,
+            )
+            reader.spec = QuerySpec(
+                subscriptions=tuple(
+                    str(value)
+                    for value in authorization.scope.get("subscription", ())
+                ),
+                target_kind=target_kind,
+                page_size=query.page_size,
+            )
+        return service.list_page(
+            authorization,
+            generation_id=generation_id,
+            query=query,
+        )
+
     timings = {
         f"{name}_cold_warm_count_page": _measure(
-            lambda query=query: service.list_page(
-                authorization,
-                generation_id=generation_id,
-                query=query,
-            ),
+            lambda query=query: run_page(query),
             warmups=warmups,
             measurements=measurements,
         )
         for name, query in scenarios.items()
     }
-    walks = {
-        name: _exact_service_walk(
+    walks: dict[str, dict[str, Any]] = {}
+    for name, query in scenarios.items():
+        run_page(query)
+        walks[name] = _exact_service_walk(
             service,
             authorization,
             query,
             generation_id=generation_id,
         )
-        for name, query in scenarios.items()
+    target_kind_counts = {
+        name: int(walk["expected_total"] or 0)
+        for name, walk in walks.items()
     }
-    exact = all(
-        walk["status"] == "pass"
-        and walk["expected_total"] == expected_rows_per_kind
-        for walk in walks.values()
+    row_count = sum(target_kind_counts.values())
+    exact = (
+        all(walk["status"] == "pass" for walk in walks.values())
+        and row_count == expected_rows
+        and all(count > 0 for count in target_kind_counts.values())
     )
     under_budget = all(
         timing["p95_ms"] < SLO_MILLISECONDS
@@ -821,9 +849,10 @@ def run_fabric_sql_benchmark(
             "delta_selected": False,
         },
         "dataset": {
-            "expected_rows_per_kind": expected_rows_per_kind,
+            "row_count": row_count,
+            "expected_rows": expected_rows,
             "generation_id": generation_id,
-            "target_kinds": sorted(scenarios),
+            "target_kind_counts": target_kind_counts,
         },
         "query_contract": {
             "page_size": page_size,
@@ -832,6 +861,20 @@ def run_fabric_sql_benchmark(
         },
         "timings": timings,
         "full_walks": walks,
+        "full_walk": {
+            "returned_count": sum(
+                int(walk["returned_count"]) for walk in walks.values()
+            ),
+            "unique_count": sum(
+                int(walk["unique_count"]) for walk in walks.values()
+            ),
+            "duplicate_count": sum(
+                int(walk["duplicate_count"]) for walk in walks.values()
+            ),
+            "omission_count": sum(
+                int(walk["omission_count"]) for walk in walks.values()
+            ),
+        },
         "work": {
             "query_count": instrumented.query_count,
             "rows_fetched": instrumented.rows_fetched,
@@ -865,6 +908,80 @@ def run_fabric_sql_benchmark(
             ),
         },
     }
+
+
+def derive_benchmark_authorization(
+    connections: Iterable[Any],
+) -> ExposureAuthorization:
+    """Build benchmark scope only from active connection-registry records."""
+    active = tuple(
+        connection
+        for connection in connections
+        if bool(getattr(connection, "is_active", False))
+    )
+    if not active:
+        raise ValueError("benchmark requires active connection metadata")
+    tenants = {
+        str(getattr(connection, "tenant_id", "") or "").strip()
+        for connection in active
+        if str(getattr(connection, "tenant_id", "") or "").strip()
+    }
+    if len(tenants) != 1:
+        raise ValueError("benchmark metadata must resolve to one tenant")
+    connection_ids = tuple(
+        sorted(
+            {
+                str(getattr(connection, "connection_id", "") or "").strip()
+                for connection in active
+                if str(getattr(connection, "connection_id", "") or "").strip()
+            }
+        )
+    )
+    subscription_ids = tuple(
+        sorted(
+            {
+                str(getattr(connection, "subscription_id", "") or "").strip()
+                for connection in active
+                if str(getattr(connection, "subscription_id", "") or "").strip()
+            }
+        )
+    )
+    if not connection_ids or not subscription_ids:
+        raise ValueError(
+            "benchmark requires active connection and subscription metadata"
+        )
+    return ExposureAuthorization(
+        subject="exposure-live-benchmark",
+        tenant_id=next(iter(tenants)),
+        connection_ids=connection_ids,
+        scope={
+            "subscription": subscription_ids,
+            "subscription_connection": connection_ids,
+        },
+    )
+
+
+def derive_live_benchmark_inputs() -> tuple[ExposureAuthorization, str]:
+    """Resolve scope and readable generation from deployed durable metadata."""
+    from fabric_pipelines.vulnerability_pipeline import (
+        EXPOSURE_GOLD_POINTER_DOCUMENT,
+    )
+    from onboarding.registry import ConnectionRegistry
+    from onboarding.store import OneLakeDocumentStore
+
+    root = os.environ.get("AIOPS_HOME", "").strip()
+    if not root:
+        raise ValueError("AIOPS_HOME is required to derive live benchmark metadata")
+    authorization = derive_benchmark_authorization(
+        ConnectionRegistry(root).list(include_disabled=False)
+    )
+    pointer = OneLakeDocumentStore(root).read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+    generation_id = str(pointer.get("readable_generation_id") or "").strip()
+    if not generation_id:
+        raise ValueError(
+            "live Exposure readable generation is missing from durable metadata"
+        )
+    return authorization, generation_id
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -1024,28 +1141,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.probe_production_adapter:
             return 0
         if args.require_ready:
-            tenant_id = str(args.tenant_id or "").strip()
-            connection_ids = tuple(args.connection_id or ())
-            subscription_ids = tuple(args.subscription_id or ())
-            generation_id = str(args.generation_id or "").strip()
-            missing = [
-                name
-                for name, present in (
-                    ("tenant_id", bool(tenant_id)),
-                    ("connection_ids", bool(connection_ids)),
-                    ("subscription_ids", bool(subscription_ids)),
-                    ("generation_id", bool(generation_id)),
-                )
-                if not present
-            ]
-            if missing:
+            supplied = (
+                bool(str(args.tenant_id or "").strip()),
+                bool(args.connection_id),
+                bool(args.subscription_id),
+                bool(str(args.generation_id or "").strip()),
+            )
+            try:
+                if any(supplied):
+                    if not all(supplied):
+                        raise ValueError(
+                            "explicit benchmark scope must provide tenant, "
+                            "connection, subscription, and generation together"
+                        )
+                    authorization = ExposureAuthorization(
+                        subject="exposure-live-benchmark",
+                        tenant_id=str(args.tenant_id).strip(),
+                        connection_ids=tuple(args.connection_id),
+                        scope={
+                            "subscription": tuple(args.subscription_id),
+                            "subscription_connection": tuple(args.connection_id),
+                        },
+                    )
+                    generation_id = str(args.generation_id).strip()
+                else:
+                    authorization, generation_id = (
+                        derive_live_benchmark_inputs()
+                    )
+            except (OSError, RuntimeError, TypeError, ValueError):
                 _emit(
                     {
                         "schema_version": "1.0.0",
                         "status": "not_ready",
                         "adapter": PRODUCTION_ADAPTER_ID,
                         "reason_code": "benchmark_scope_missing",
-                        "missing": missing,
+                        "metadata_source": "deployed_connection_registry_and_gold_pointer",
                         "sanitized": True,
                     },
                     as_json=args.json,
@@ -1053,17 +1183,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 3
             production_report = run_fabric_sql_benchmark(
                 _require_production_reader(config_path),
-                ExposureAuthorization(
-                    subject="exposure-benchmark",
-                    tenant_id=tenant_id,
-                    connection_ids=connection_ids,
-                    scope={
-                        "subscription": subscription_ids,
-                        "subscription_connection": connection_ids,
-                    },
-                ),
+                authorization,
                 generation_id=generation_id,
-                expected_rows_per_kind=args.rows,
+                expected_rows=args.rows,
                 page_size=args.page_size,
                 warmups=args.warmups,
                 measurements=args.measurements,

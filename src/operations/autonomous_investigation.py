@@ -22,6 +22,11 @@ from typing import Any, Protocol
 
 from api.scope import Scope
 from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
+from operations.investigation_thread_store import (
+    OBSERVATION_HISTORICAL,
+    ThreadDocumentStore,
+    configure_thread_store,
+)
 from operations.maf_orchestrator import maf_mode_enabled, select_specialists_for_turn
 from operations.mcp_server import validate_tool_arguments
 from operations.page_context import PageSnapshot, deterministic_network_findings
@@ -1096,6 +1101,10 @@ class LedgerDocumentStore(Protocol):
     def put(self, name: str, payload: dict[str, Any]) -> None: ...
 
 
+class OrchestrationDocumentStore(LedgerDocumentStore, ThreadDocumentStore, Protocol):
+    """Durable document operations required by ledgers and thread continuity."""
+
+
 def _ledger_document_name(ledger_id: str) -> str:
     """Map a ledger id to its document path.
 
@@ -1107,6 +1116,24 @@ def _ledger_document_name(ledger_id: str) -> str:
     ``put`` is safe: two writers cannot target the same document.
     """
     return f"ledgers/{ledger_id}.json"
+
+
+def project_ledger_read_only(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a stored ledger for continuity reads without touching it.
+
+    A ledger is the audit record of what was observed and decided at one
+    moment, so continuity may read it but must never rewrite it: the returned
+    projection is a deep copy whose findings and tool calls are stamped
+    historical, leaving the stored document byte-for-byte identical.
+    """
+
+    projection = copy.deepcopy(dict(ledger))
+    projection["observation_status"] = OBSERVATION_HISTORICAL
+    for key in ("findings", "tool_calls", "agent_runs"):
+        for item in projection.get(key) or []:
+            if isinstance(item, dict):
+                item["observation_status"] = OBSERVATION_HISTORICAL
+    return projection
 
 
 @dataclass
@@ -1213,14 +1240,26 @@ def ledger_store() -> InvestigationLedgerStore:
     return _LEDGER_STORE
 
 
-def configure_ledger_store(documents: LedgerDocumentStore | None) -> InvestigationLedgerStore:
+def configure_ledger_store(
+    documents: OrchestrationDocumentStore | None,
+) -> InvestigationLedgerStore:
     """Attach durable storage to the process-wide ledger store.
 
     Called once during API startup. Ledgers already held in memory are flushed
     so a store configured after the first investigation does not leave a gap
     at the head of the audit trail.
     """
+    if documents is not None and not callable(getattr(documents, "write", None)):
+        raise TypeError("durable orchestration storage requires thread compare-and-swap")
+    if documents is not None and (
+        not callable(getattr(documents, "list_names", None))
+        or not callable(getattr(documents, "delete", None))
+    ):
+        raise TypeError(
+            "durable orchestration storage requires bounded thread listing and deletion"
+        )
     _LEDGER_STORE.documents = documents
+    configure_thread_store(documents)
     if documents is not None:
         for ledger in list(_LEDGER_STORE.ledgers.values()):
             _LEDGER_STORE._persist(ledger)

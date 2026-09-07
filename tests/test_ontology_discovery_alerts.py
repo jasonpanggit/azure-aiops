@@ -173,8 +173,8 @@ def test_telemetry_emits_only_closed_low_cardinality_dimensions() -> None:
 def test_terraform_defines_actioned_rule_for_every_catalog_entry() -> None:
     terraform = ALERTING_TF.read_text(encoding="utf-8")
     assert 'resource "azurerm_monitor_scheduled_query_rules_alert_v2" "ontology_discovery"' in terraform
-    assert "for_each = local.ontology_discovery_alert_rules" in terraform
-    assert 'action_groups = [azurerm_monitor_action_group.ops[0].id]' in terraform
+    assert "for_each = local.alerting_enabled ? local.ontology_discovery_alert_rules : {}" in terraform
+    assert "action_groups = [local.alert_action_group_id]" in terraform
     assert 'Name == "ontology.discovery.alert.signal"' in terraform
     assert "tostring(Properties.rule) == each.key" in terraform
     assert "ontology-operations" in terraform

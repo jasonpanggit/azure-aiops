@@ -706,6 +706,23 @@ variable "alert_email_addresses" {
   default     = []
 }
 
+variable "existing_alert_action_group_id" {
+  description = "Optional existing Azure Monitor action-group resource ID. When set, alerts reuse it and Terraform does not create an email-backed action group."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.existing_alert_action_group_id == "" ||
+      can(regex(
+        "(?i)^/subscriptions/[0-9a-f-]{36}/resourcegroups/[^/]+/providers/microsoft\\.insights/actiongroups/[^/]+$",
+        var.existing_alert_action_group_id,
+      ))
+    )
+    error_message = "existing_alert_action_group_id must be empty or a complete Microsoft.Insights/actionGroups resource ID."
+  }
+}
+
 variable "alert_provider_stale_threshold_hours" {
   description = "Hours a required provider may stay stale before the freshness alert fires."
   type        = number
@@ -844,6 +861,113 @@ variable "exposure_alert_max_query_errors" {
   validation {
     condition     = var.exposure_alert_max_query_errors >= 0
     error_message = "exposure_alert_max_query_errors must be non-negative."
+  }
+}
+
+variable "exposure_rollout_authorized" {
+  description = "Explicit deployment authorization for any non-off Exposure rollout stage."
+  type        = bool
+  default     = false
+}
+
+variable "exposure_write_stage" {
+  description = "Exposure v2 projection writer stage: off, shadow, canary, or on."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow", "canary", "on"], lower(var.exposure_write_stage))
+    error_message = "exposure_write_stage must be off, shadow, canary, or on."
+  }
+}
+
+variable "exposure_read_stage" {
+  description = "Exposure v2 API reader stage: off, shadow, canary, or on."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow", "canary", "on"], lower(var.exposure_read_stage))
+    error_message = "exposure_read_stage must be off, shadow, canary, or on."
+  }
+}
+
+variable "exposure_web_stage" {
+  description = "Exposure v2 web surface stage: off, shadow, canary, or on."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow", "canary", "on"], lower(var.exposure_web_stage))
+    error_message = "exposure_web_stage must be off, shadow, canary, or on."
+  }
+}
+
+variable "exposure_handoff_stage" {
+  description = "Exposure governed handoff stage: off, shadow, canary, or on."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow", "canary", "on"], lower(var.exposure_handoff_stage))
+    error_message = "exposure_handoff_stage must be off, shadow, canary, or on."
+  }
+}
+
+variable "exposure_write_generation_id" {
+  description = "Candidate generation receiving additive Exposure v2 writes."
+  type        = string
+  default     = ""
+}
+
+variable "exposure_read_generation_id" {
+  description = "Candidate generation selected by the Exposure v2 reader."
+  type        = string
+  default     = ""
+}
+
+variable "exposure_rollback_generation_id" {
+  description = "Retained prior generation selected by non-destructive rollback."
+  type        = string
+  default     = ""
+}
+
+variable "exposure_cursor_active_kid" {
+  description = "Non-secret identifier for the active Exposure cursor signing-key version."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.exposure_cursor_active_kid == "" ||
+      can(regex("^[0-9A-Za-z][0-9A-Za-z._-]{2,127}$", var.exposure_cursor_active_kid))
+    )
+    error_message = "exposure_cursor_active_kid must be empty or a 3-128 character non-secret identifier."
+  }
+}
+
+variable "exposure_cursor_previous_kid" {
+  description = "Non-secret identifier for the previous Exposure cursor signing-key version retained during overlap."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.exposure_cursor_previous_kid == "" ||
+      can(regex("^[0-9A-Za-z][0-9A-Za-z._-]{2,127}$", var.exposure_cursor_previous_kid))
+    )
+    error_message = "exposure_cursor_previous_kid must be empty or a 3-128 character non-secret identifier."
+  }
+}
+
+check "exposure_cursor_kids_distinct" {
+  assert {
+    condition = (
+      var.exposure_cursor_active_kid == "" ||
+      var.exposure_cursor_previous_kid == "" ||
+      var.exposure_cursor_active_kid != var.exposure_cursor_previous_kid
+    )
+    error_message = "Active and previous Exposure cursor kid values must be distinct."
   }
 }
 

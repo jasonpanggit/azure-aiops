@@ -1,0 +1,99 @@
+{
+  "schema_version": "1.0.0",
+  "plan": "03.1-19",
+  "captured_at": "2026-09-07T05:18:00Z",
+  "status": "blocked",
+  "sanitized": true,
+  "residual_blockers": [
+    {
+      "code": "exact_supported_defender_digest_to_container_insights_workload_round_trip",
+      "status": "blocked",
+      "summary": "No generation-bound live exact Defender digest to supported Container Insights workload traversal reached Fabric Gold and ontology. Unknown or incomplete evidence cannot satisfy the Phase 4 gate."
+    }
+  ],
+  "release": {
+    "tag": "phase031-plan19-p11-20260907-051230",
+    "images": {
+      "api": "sha256:180821e629eb41aa3e150e527085cfb1a2ce52113d4455ea481661b5b8d91c16",
+      "web": "sha256:743cc8ac232ab6990483c341c8772a2d5859a6d7839b4e59cdd7984587519932",
+      "mcp_server": "sha256:831907265456f6752f03028e3a719b18240cb3382c2df22633e5db8a203afbea",
+      "azure_mcp": "sha256:7f5af735a723deba87e2e4e58c021c0fac9a57a207ddfa920d0760940b9b0424"
+    },
+    "all_apps_running": true,
+    "api_health": "pass",
+    "api_readiness": "pass",
+    "web_root": "pass",
+    "temporary_validation_job_removed": true
+  },
+  "phase11_mainline": {
+    "merged_sha": "c463432f",
+    "merge_strategy": "merge_not_rebase",
+    "backend_hardening_sha": "8ce485ae",
+    "browser_continuity_sha": "1359e0c2",
+    "backend_contract_preserved": true,
+    "browser_contract_preserved": true,
+    "affected_backend_tests": "pass",
+    "affected_browser_tests": "pass",
+    "deployed_in_final_release": true
+  },
+  "deployment_safety": {
+    "saved_plan_destroy_count": 0,
+    "saved_plan_replacement_count": 0,
+    "phase13_role_job_capacity_changes": 0,
+    "terraform_owned_action_group_created": false,
+    "existing_action_group_enabled": true,
+    "existing_action_group_arm_role_receivers": 2,
+    "enabled_alert_rules": 11
+  },
+  "phase13_preservation": {
+    "ontology_job_tag": "phase13-ontology-split-20260906-173930",
+    "ontology_job_digest": "sha256:865bc6aed31e7eb0930962cf825b87aeac7d8526a903ab73d6bf8bc7a3fd3ba1",
+    "recent_successful_runs": 5,
+    "fabric_capacity_sku": "F4",
+    "fabric_capacity_state": "Active",
+    "identities_and_rbac_unchanged": true
+  },
+  "checks": {
+    "fabric_sql_endpoint_metadata": "pass",
+    "odbc_driver_18_and_managed_identity_connectivity": "pass",
+    "live_connection_source_refresh": "pass",
+    "gold_schema_and_100k_benchmark": "blocked_by_residual",
+    "exact_digest_workload_ontology_round_trip": "blocked_by_residual",
+    "cursor_key_vault_refs": "pass",
+    "cursor_active_previous_kids_distinct": "pass",
+    "cursor_ttl_15_minutes": "pass",
+    "cursor_previous_overlap_30_minutes": "pass",
+    "api_web_managed_identity_match": "pass",
+    "ui_unit_suite": "pass",
+    "ui_e2e_suite": "pass",
+    "ui_typecheck_lint_build": "pass",
+    "executable_action_allowlist_exact_three": "pass",
+    "container_operation_calls": 0,
+    "alerts_enabled_and_routed": "pass",
+    "rollout_controls": "fail_closed_off"
+  },
+  "publication_observation": {
+    "source_refresh": "succeeded",
+    "gold_tables_present": false,
+    "sanitized_failure_class": "previous_ontology_snapshot_validation_failed",
+    "provider_payload_retained": false,
+    "scope_identifiers_retained": false,
+    "secret_values_retained": false
+  },
+  "verification": {
+    "plan19_focused_tests": "pass",
+    "terraform_fmt_validate_test": "pass",
+    "phase11_regressions": "pass",
+    "phase12_regressions": "pass",
+    "phase13_regressions": "pass",
+    "remediation_regressions": "pass",
+    "full_web_gates": "pass",
+    "post_merge_full_web_gates": "pass",
+    "full_backend": {
+      "status": "pre_existing_failures",
+      "count": 3,
+      "plan19_files_touched": false,
+      "affected_area": "ontology graph validation"
+    }
+  }
+}

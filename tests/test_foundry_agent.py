@@ -1,11 +1,144 @@
+import json
+import time
+
+import pytest
+
 from operations.foundry_agent import (
     SPECIALIST_IDS,
     AgentAnswer,
+    FoundryAgentError,
     FoundryPromptAgent,
     MicrosoftAgentFrameworkFoundryAgent,
     select_foundry_agent_class,
     specialist_catalog,
 )
+
+
+def test_large_executive_context_is_transmitted_as_bounded_valid_json() -> None:
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="executive-agent",
+        specialist_id="executive_summary",
+    )
+    context = {
+        "findings": [],
+        "retained_evidence": [
+            {
+                "evidence_id": f"thread:prior:{index}",
+                "source": "x" * 2_000,
+                "status": "ok",
+                "observation_status": "historical",
+            }
+            for index in range(50)
+        ],
+    }
+
+    prompt = agent.build_prompt("Summarize.", context)
+    serialized = prompt.split("PAGE CONTEXT (JSON):\n", 1)[1]
+
+    transmitted = json.loads(serialized)
+    assert len(serialized) <= 24_000
+    assert {
+        item["evidence_id"] for item in transmitted["retained_evidence"]
+    } <= {
+        item["evidence_id"] for item in context["retained_evidence"]
+    }
+
+
+def test_many_list_valued_context_keys_remain_within_prompt_limit() -> None:
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="network-agent",
+    )
+    context = {f"field-{index}": [] for index in range(4_000)}
+
+    prompt = agent.build_prompt("Summarize.", context)
+    serialized = prompt.split("PAGE CONTEXT (JSON):\n", 1)[1]
+
+    assert len(serialized) <= 24_000
+    assert json.loads(serialized)["_truncation"] == "(truncated)"
+
+
+def test_rest_agent_honors_per_call_timeout_override(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="executive-agent",
+        timeout_seconds=60,
+    )
+
+    def fake_post(path, payload, *, versioned=True, timeout_seconds=None):
+        captured["timeout_seconds"] = timeout_seconds
+        return {"output_text": "Bounded response", "model": "test"}
+
+    monkeypatch.setattr(agent, "_post", fake_post)
+
+    agent.answer(
+        question="Summarize.",
+        context={"findings": []},
+        timeout_seconds=0.25,
+    )
+
+    assert captured["timeout_seconds"] == 0.25
+
+
+def test_rest_agent_enforces_end_to_end_call_deadline(monkeypatch) -> None:
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="executive-agent",
+        timeout_seconds=60,
+    )
+
+    def slow_post(path, payload, *, versioned=True, timeout_seconds=None):
+        time.sleep(0.25)
+        return {"output_text": "Late response", "model": "test"}
+
+    monkeypatch.setattr(agent, "_post", slow_post)
+    started = time.monotonic()
+
+    with pytest.raises(FoundryAgentError, match="exceeded its time budget"):
+        agent.answer(
+            question="Summarize.",
+            context={"findings": []},
+            timeout_seconds=0.02,
+        )
+
+    assert time.monotonic() - started < 0.15
+
+
+def test_rest_agent_deadline_is_not_reset_by_slow_response_chunks(monkeypatch) -> None:
+    class SlowResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read1(self, size):
+            time.sleep(0.01)
+            return b" "
+
+    monkeypatch.setattr(
+        "operations.foundry_agent.urllib.request.urlopen",
+        lambda request, timeout: SlowResponse(),
+    )
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="executive-agent",
+        timeout_seconds=60,
+        max_retries=0,
+    )
+    monkeypatch.setattr(agent._tokens, "token", lambda: "test-token")
+    started = time.monotonic()
+
+    with pytest.raises(FoundryAgentError, match="exceeded its time budget"):
+        agent.answer(
+            question="Summarize.",
+            context={"findings": []},
+            timeout_seconds=0.04,
+        )
+
+    assert time.monotonic() - started < 0.15
 
 
 def test_specialist_catalog_has_independent_names_and_versions(monkeypatch) -> None:

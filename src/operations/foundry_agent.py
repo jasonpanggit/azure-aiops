@@ -28,7 +28,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +54,11 @@ _SPECIALIST_MANIFEST = load_specialist_manifest()
 SPECIALIST_IDS = _SPECIALIST_MANIFEST.specialist_ids
 DEFAULT_TIMEOUT_SECONDS = 60.0
 SPECIALIST_CONTRACT_VERSION = "network-finding.v1"
+EXECUTIVE_SPECIALIST_ID = "executive_summary"
+MAX_SYNTHESIS_FINDINGS = 25
+MAX_RETAINED_SYNTHESIS_EVIDENCE = 50
+MAX_CONTEXT_CHARS = 24_000
+_MAX_CONTEXT_CHARS = MAX_CONTEXT_CHARS
 _MUTATION_WORDS = ("delete", "create", "update", "modify", "execute", "apply", "remediate")
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
@@ -84,6 +92,34 @@ DEFAULT_CIRCUIT_BREAKER_RESET_SECONDS = 60.0
 # HTTP status codes worth retrying: request-rate/backpressure and transient
 # upstream failures. 4xx client errors (bad prompt, auth) are not retried.
 _RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+_FOUNDRY_CALL_EXECUTOR = ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="foundry-call",
+)
+
+
+def _set_response_socket_timeout(response: Any, timeout: float) -> None:
+    """Narrow the active HTTP socket timeout as the wall-clock budget shrinks."""
+
+    socket = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+    if socket is not None:
+        socket.settimeout(max(0.001, timeout))
+
+
+def _read_response_until(response: Any, *, deadline: float) -> bytes:
+    """Read one available chunk at a time without letting drip traffic reset expiry."""
+
+    chunks: list[bytes] = []
+    read_chunk = getattr(response, "read1", None) or response.read
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Foundry response exceeded its time budget")
+        _set_response_socket_timeout(response, remaining)
+        chunk = read_chunk(64 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
 
 
 class FoundryAgentError(RuntimeError):
@@ -261,6 +297,145 @@ def parse_specialist_findings(
     return validated
 
 
+def normalize_cited_findings(
+    tool_results: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project specialist tool results into normalized, cited findings.
+
+    Executive synthesis is the one place a second model sees the output of the
+    first, so it is given the smallest honest projection: who reported it, what
+    status it carried, and which evidence identifiers back it. Tool arguments,
+    raw provider payloads, and anything the specialist said about its own
+    reasoning are dropped here rather than filtered later, because a field that
+    is never assembled cannot leak. A result with no evidence is not a
+    material finding and is omitted entirely.
+    """
+
+    findings: list[dict[str, Any]] = []
+    for result in tool_results:
+        if not isinstance(result, Mapping):
+            continue
+        specialist_id = str(result.get("specialist_id") or "")
+        tool = str(result.get("tool") or "")
+        call_id = str(result.get("call_id") or f"{specialist_id}:{tool}")
+        refs = [
+            # The orchestrator mints one citation per evidence row as
+            # `tool:<call_id>:<index>`, so derive the same identifier here:
+            # synthesis must cite what the result actually published, not a
+            # parallel naming scheme that could never be closed against it.
+            str(item.get("evidence_id") or f"tool:{call_id}:{index}")
+            for index, item in enumerate(result.get("evidence") or [])
+            if isinstance(item, Mapping)
+        ]
+        if not refs:
+            continue
+        status = str(result.get("status") or "")
+        findings.append(
+            {
+                "finding_id": call_id,
+                "specialist_id": specialist_id,
+                "status": status,
+                "summary": f"{specialist_id} reported {status} from {tool}.",
+                "evidence_refs": refs,
+                "observation_status": str(
+                    result.get("observation_status") or "current"
+                ),
+            }
+        )
+        if len(findings) >= MAX_SYNTHESIS_FINDINGS:
+            break
+    return findings
+
+
+def executive_synthesis_input(
+    findings: Iterable[Mapping[str, Any]],
+    *,
+    retained_evidence: Iterable[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Build the bounded, citation-only context handed to executive synthesis.
+
+    Retained evidence is carried so synthesis can reconcile this turn against
+    what the thread already holds, but it is reduced to its identity, source,
+    status, and observation status: continuity must not become a channel for
+    replaying raw provider payloads into a second model.
+    """
+
+    payload: dict[str, list[dict[str, Any]]] = {
+        "findings": [],
+        "retained_evidence": [],
+    }
+
+    def fits(candidate: dict[str, list[dict[str, Any]]]) -> bool:
+        return len(json.dumps(candidate, default=str, ensure_ascii=False)) <= (
+            MAX_CONTEXT_CHARS
+        )
+
+    for item in list(findings)[:MAX_SYNTHESIS_FINDINGS]:
+        if not isinstance(item, Mapping):
+            continue
+        finding = {
+            "finding_id": str(item.get("finding_id") or ""),
+            "specialist_id": str(item.get("specialist_id") or ""),
+            "status": str(item.get("status") or ""),
+            "summary": str(item.get("summary") or ""),
+            "evidence_refs": [],
+            "observation_status": str(item.get("observation_status") or "current"),
+        }
+        for ref in item.get("evidence_refs") or []:
+            candidate = deepcopy(payload)
+            candidate_finding = deepcopy(finding)
+            candidate_finding["evidence_refs"].append(str(ref))
+            candidate["findings"].append(candidate_finding)
+            if not fits(candidate):
+                break
+            finding = candidate_finding
+        if not finding["evidence_refs"]:
+            continue
+        candidate = deepcopy(payload)
+        candidate["findings"].append(finding)
+        if not fits(candidate):
+            break
+        payload = candidate
+
+    for item in list(retained_evidence)[:MAX_RETAINED_SYNTHESIS_EVIDENCE]:
+        if not isinstance(item, Mapping):
+            continue
+        retained = {
+            "evidence_id": str(item.get("evidence_id") or ""),
+            "source": str(item.get("source") or ""),
+            "status": str(item.get("status") or ""),
+            "observation_status": str(
+                item.get("observation_status") or "historical"
+            ),
+        }
+        candidate = deepcopy(payload)
+        candidate["retained_evidence"].append(retained)
+        if not fits(candidate):
+            break
+        payload = candidate
+    return payload
+
+
+def validate_executive_synthesis(
+    text: str,
+    *,
+    evidence_refs: set[str],
+) -> list[dict[str, Any]]:
+    """Citation-close executive claims against the specialists' own references.
+
+    The executive agent aggregates; it does not observe. Any claim pointing at
+    an identifier no specialist reported is a fabrication regardless of how
+    plausible it reads, so the whole synthesis is rejected rather than
+    partially accepted.
+    """
+
+    return parse_specialist_findings(
+        text,
+        evidence_refs=set(evidence_refs),
+        agent_id=EXECUTIVE_SPECIALIST_ID,
+    )
+
+
 class _TokenProvider:
     """Caches an Entra access token for the Foundry data plane.
 
@@ -405,7 +580,19 @@ class FoundryPromptAgent:
             agent_version=agent_version,
         )
 
-    def _post_once(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post_once(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        timeout = (
+            self.timeout_seconds
+            if timeout_seconds is None
+            else min(self.timeout_seconds, max(0.001, timeout_seconds))
+        )
+        deadline = time.monotonic() + timeout
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -416,10 +603,18 @@ class FoundryPromptAgent:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                body = response.read().decode("utf-8")
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = _read_response_until(response, deadline=deadline).decode("utf-8")
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            try:
+                detail = _read_response_until(
+                    exc,
+                    deadline=deadline,
+                ).decode("utf-8", errors="replace")[:500]
+            except TimeoutError as timeout_exc:
+                raise _RetryableFoundryError(
+                    "Foundry agent request exceeded its time budget"
+                ) from timeout_exc
             if exc.code in _RETRYABLE_HTTP_STATUS:
                 raise _RetryableFoundryError(
                     f"Foundry agent request failed with HTTP {exc.code}: {detail}"
@@ -427,7 +622,11 @@ class FoundryPromptAgent:
             raise FoundryAgentError(
                 f"Foundry agent request failed with HTTP {exc.code}: {detail}"
             ) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except TimeoutError as exc:
+            raise _RetryableFoundryError(
+                "Foundry agent request exceeded its time budget"
+            ) from exc
+        except urllib.error.URLError as exc:
             raise _RetryableFoundryError("Foundry agent endpoint is unreachable") from exc
         try:
             parsed = json.loads(body or "{}")
@@ -435,7 +634,14 @@ class FoundryPromptAgent:
             raise FoundryAgentError("Foundry agent returned a malformed response") from exc
         return parsed if isinstance(parsed, dict) else {}
 
-    def _post(self, path: str, payload: dict[str, Any], *, versioned: bool = True) -> dict[str, Any]:
+    def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        versioned: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         url = f"{self.project_endpoint}{path}"
         if versioned:
             separator = "&" if "?" in url else "?"
@@ -447,15 +653,41 @@ class FoundryPromptAgent:
         self._breaker.before_call()
 
         attempt = 0
+        deadline = (
+            time.monotonic() + max(0.0, timeout_seconds)
+            if timeout_seconds is not None
+            else None
+        )
         while True:
             try:
-                result = self._post_once(url, payload)
+                if deadline is None:
+                    result = self._post_once(url, payload)
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise _RetryableFoundryError(
+                            "Foundry agent request exceeded its time budget"
+                        )
+                    result = self._post_once(
+                        url,
+                        payload,
+                        timeout_seconds=remaining,
+                    )
             except _RetryableFoundryError as exc:
                 attempt += 1
                 if attempt > self.max_retries:
                     self._breaker.record_failure()
                     raise FoundryAgentError(str(exc)) from exc
-                self._sleep(self.retry_backoff_seconds * (2 ** (attempt - 1)))
+                backoff = self.retry_backoff_seconds * (2 ** (attempt - 1))
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._breaker.record_failure()
+                        raise FoundryAgentError(
+                            "Foundry agent request exceeded its time budget"
+                        ) from exc
+                    backoff = min(backoff, remaining)
+                self._sleep(backoff)
                 continue
             except FoundryAgentError:
                 self._breaker.record_failure()
@@ -474,6 +706,7 @@ class FoundryPromptAgent:
         question: str,
         context: Any,
         max_output_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> AgentAnswer:
         """Narrate ``context`` in response to ``question``.
 
@@ -491,7 +724,24 @@ class FoundryPromptAgent:
             payload["agent_reference"]["version"] = self.agent_version
         if max_output_tokens is not None:
             payload["max_output_tokens"] = max(1, int(max_output_tokens))
-        response = self._post("/openai/v1/responses", payload, versioned=False)
+        if timeout_seconds is None:
+            response = self._post("/openai/v1/responses", payload, versioned=False)
+        else:
+            budget = max(0.001, timeout_seconds)
+            future = _FOUNDRY_CALL_EXECUTOR.submit(
+                self._post,
+                "/openai/v1/responses",
+                payload,
+                versioned=False,
+                timeout_seconds=budget,
+            )
+            try:
+                response = future.result(timeout=budget)
+            except FutureTimeoutError as exc:
+                future.cancel()
+                raise FoundryAgentError(
+                    "Foundry agent request exceeded its time budget"
+                ) from exc
         text = _extract_text(response)
         if not text:
             raise FoundryAgentError("Foundry agent returned an empty answer")
@@ -511,12 +761,14 @@ class FoundryPromptAgent:
         evidence_refs: set[str],
         resource_ids: set[str] | None = None,
         max_output_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> AgentAnswer:
         """Request and strictly validate a specialist finding response."""
         answer = self.answer(
             question=question,
             context=context,
             max_output_tokens=max_output_tokens,
+            timeout_seconds=timeout_seconds,
         )
         # Parsing enforces strict validation as a side effect; the parsed
         # findings themselves are not needed by this contract check.
@@ -655,12 +907,23 @@ class MicrosoftAgentFrameworkFoundryAgent:
         question: str,
         context: Any,
         max_output_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> AgentAnswer:
         prompt = self.build_prompt(question, context)
         try:
-            response = _run_awaitable(
-                self._run_agent(prompt, max_output_tokens=max_output_tokens)
+            awaitable = self._run_agent(
+                prompt,
+                max_output_tokens=max_output_tokens,
             )
+            if timeout_seconds is not None:
+                awaitable = asyncio.wait_for(
+                    awaitable,
+                    timeout=min(
+                        self.timeout_seconds,
+                        max(0.001, timeout_seconds),
+                    ),
+                )
+            response = _run_awaitable(awaitable)
         except Exception as exc:
             raise FoundryAgentError(
                 "Microsoft Agent Framework Foundry agent request failed"
@@ -684,11 +947,13 @@ class MicrosoftAgentFrameworkFoundryAgent:
         evidence_refs: set[str],
         resource_ids: set[str] | None = None,
         max_output_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> AgentAnswer:
         answer = self.answer(
             question=question,
             context=context,
             max_output_tokens=max_output_tokens,
+            timeout_seconds=timeout_seconds,
         )
         parse_specialist_findings(
             answer.text,
@@ -739,10 +1004,48 @@ def _run_awaitable(awaitable: Any) -> Any:
     return asyncio.run(awaitable)
 
 
-# Cap the grounding payload. A very large context both costs tokens and pushes
-# the governed instructions out of the model's attention; the knowledge layer
-# already bounds its own results, this is a second, hard ceiling.
-_MAX_CONTEXT_CHARS = 24_000
+def _serialize_bounded_context(context: Any) -> str:
+    """Serialize context as valid JSON without slicing through its structure."""
+
+    serialized = json.dumps(context, default=str, ensure_ascii=False)
+    if len(serialized) <= MAX_CONTEXT_CHARS:
+        return serialized
+    if not isinstance(context, Mapping):
+        return json.dumps({"truncated": True}, ensure_ascii=False)
+
+    bounded: dict[str, Any] = {"_truncation": "(truncated)"}
+    for raw_key, value in context.items():
+        key = str(raw_key)
+        if isinstance(value, list):
+            candidate = {**bounded, key: []}
+            if len(
+                json.dumps(candidate, default=str, ensure_ascii=False)
+            ) > MAX_CONTEXT_CHARS:
+                break
+            bounded = candidate
+            for item in value:
+                candidate = deepcopy(bounded)
+                candidate[key].append(item)
+                candidate_serialized = json.dumps(
+                    candidate,
+                    default=str,
+                    ensure_ascii=False,
+                )
+                if len(candidate_serialized) > MAX_CONTEXT_CHARS:
+                    break
+                bounded = candidate
+            continue
+        candidate = {**bounded, key: value}
+        candidate_serialized = json.dumps(
+            candidate,
+            default=str,
+            ensure_ascii=False,
+        )
+        if len(candidate_serialized) <= MAX_CONTEXT_CHARS:
+            bounded = candidate
+        else:
+            break
+    return json.dumps(bounded, default=str, ensure_ascii=False)
 
 
 def _build_prompt(
@@ -759,9 +1062,7 @@ def _build_prompt(
     are already scope-bound and allowlisted by APIM, so letting the agent
     reach for them is governed, not unbounded.
     """
-    serialized = json.dumps(context, default=str, ensure_ascii=False)
-    if len(serialized) > _MAX_CONTEXT_CHARS:
-        serialized = serialized[:_MAX_CONTEXT_CHARS] + "\u2026(truncated)"
+    serialized = _serialize_bounded_context(context)
     if specialist_id == "operations_copilot":
         display_name = "Operations Copilot"
         purpose = "Coordinate bounded, cited operational analysis."

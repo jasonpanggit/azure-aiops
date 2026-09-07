@@ -381,6 +381,18 @@ _SUBNET_ATTACHED = (
     "LoadBalancer",
 )
 
+# Private Link targets the concrete service resource, including PaaS entity
+# types. Restricting this edge to only generic compute assets rejects rows the
+# relationship builder itself emits for SQL, Storage, Key Vault, and the other
+# normalized PaaS services.
+_PRIVATE_ENDPOINT_TARGETS = (
+    "Resource",
+    "VirtualMachine",
+    "ArcServer",
+    "KubernetesCluster",
+    *sorted(PAAS_ENTITY_TYPES),
+)
+
 ONTOLOGY_RELATIONSHIP_TYPES = (
     ("Tenant", "owns", "Subscription"),
     ("ManagementGroup", "contains", "Subscription"),
@@ -518,7 +530,7 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     *((entity, "attachedTo", "Subnet") for entity in _SUBNET_ATTACHED),
     *(
         ("PrivateEndpoint", "exposesPrivately", asset)
-        for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")
+        for asset in _PRIVATE_ENDPOINT_TARGETS
     ),
     *(
         (asset, "hasNetworkInterface", "NetworkInterface")

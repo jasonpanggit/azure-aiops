@@ -507,19 +507,11 @@ def test_every_required_metric_is_linked_to_an_exposure_alert() -> None:
         block = blocks[resource_name]
         assert metric_names <= set(EXPOSURE_METRIC_SPECS)
         assert all(metric_name in block for metric_name in metric_names)
-        assert (
-            "evaluation_frequency = "
-            "local.exposure_alert_evaluation_frequency"
-        ) in block
-        assert (
-            "window_duration      = "
-            "local.exposure_ingestion_cycle_window"
-        ) in block
+        assert "local.exposure_alert_evaluation_frequency" in block
+        assert "local.exposure_ingestion_cycle_window" in block
         assert "minimum_failing_periods_to_trigger_alert = 1" in block
         assert "number_of_evaluation_periods             = 1" in block
-        assert (
-            "action_groups = [azurerm_monitor_action_group.ops[0].id]"
-        ) in block
+        assert "action_groups = [local.alert_action_group_id]" in block
         assert "severity" in block
 
 

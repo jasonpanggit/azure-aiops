@@ -20,13 +20,19 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 from typing import Any
 
 from fabric.auth import FabricAuthConfig
-from fabric.config import FabricRuntimeConfig, OntologyRuntimeConfig
+from fabric.config import (
+    ExposureRolloutRuntimeConfig,
+    ExposureRolloutStage,
+    FabricRuntimeConfig,
+    OntologyRuntimeConfig,
+)
 from fabric.dataset_mapper import ExposureOntologyMapper, InventoryDatasetMapper
 from fabric.runtime import FabricRuntime, build_runtime
 from intelligence.governance import EnterpriseSettingsStore
@@ -170,6 +176,14 @@ ENV_CONNECTION_HOME = "AIOPS_CONNECTION_HOME"
 ENV_ONTOLOGY_STATE_HOME = "AIOPS_ONTOLOGY_STATE_HOME"
 ENV_ONTOLOGY_PUBLICATION_HOME = "AIOPS_ONTOLOGY_PUBLICATION_HOME"
 ENV_ONTOLOGY_COMMAND_HOME = "AIOPS_ONTOLOGY_COMMAND_HOME"
+ENV_EXPOSURE_ROLLOUT_AUTHORIZED = "AIOPS_EXPOSURE_ROLLOUT_AUTHORIZED"
+ENV_EXPOSURE_WRITE_STAGE = "AIOPS_EXPOSURE_WRITE_STAGE"
+ENV_EXPOSURE_READ_STAGE = "AIOPS_EXPOSURE_READ_STAGE"
+ENV_EXPOSURE_WEB_STAGE = "AIOPS_EXPOSURE_WEB_STAGE"
+ENV_EXPOSURE_HANDOFF_STAGE = "AIOPS_EXPOSURE_HANDOFF_STAGE"
+ENV_EXPOSURE_WRITE_GENERATION_ID = "AIOPS_EXPOSURE_WRITE_GENERATION_ID"
+ENV_EXPOSURE_READ_GENERATION_ID = "AIOPS_EXPOSURE_READ_GENERATION_ID"
+ENV_EXPOSURE_ROLLBACK_GENERATION_ID = "AIOPS_EXPOSURE_ROLLBACK_GENERATION_ID"
 
 
 def _load_governance_generation_snapshot(
@@ -318,6 +332,39 @@ def _ontology_api_roots(
 AUTH_GATEWAY = "gateway"
 AUTH_ENTRA = "entra"
 AUTH_TOKEN = "token"
+
+
+@dataclass(frozen=True, slots=True)
+class ExposurePromotionEvidence:
+    """Redacted prerequisite outcomes consumed by the rollout decision."""
+
+    adapter_ready: bool
+    cursor_keys_ready: bool
+    source_coverage_ready: bool
+    reconciliation_passed: bool
+    telemetry_ready: bool
+    alerts_ready: bool
+    slo_passed: bool
+    ui_api_contract_passed: bool
+    live_validation_passed: bool
+    ingestion_healthy: bool
+    read_path_healthy: bool
+    key_rotation_healthy: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ExposurePromotionDecision:
+    """Fail-closed effective pointers for one evaluated rollout."""
+
+    allowed: bool
+    blocked_reasons: tuple[str, ...]
+    active_writer_generation_id: str
+    active_reader_generation_id: str
+    candidate_generation_id: str
+    rollback_required: bool
+    preserve_evidence: bool = True
+    destructive_actions: tuple[str, ...] = ()
+
 
 # Sentinel distinguishing "not yet resolved" from a resolved-but-absent agent,
 # so an unconfigured deployment is probed once rather than on every request.
@@ -1968,7 +2015,14 @@ def _temporal_exposure_reader_enabled() -> bool:
     if not config_path:
         return False
     exposure = FabricRuntimeConfig.load(config_path).exposure
-    return exposure.enabled and not exposure.rollback_mode
+    rollout = exposure_rollout_from_environment(exposure.rollout)
+    return (
+        exposure.enabled
+        and not exposure.rollback_mode
+        and rollout.authorized
+        and rollout.read_stage
+        in {ExposureRolloutStage.CANARY, ExposureRolloutStage.ON}
+    )
 
 
 # Risk exceptions are user-submitted mutations that must survive both a
@@ -2368,6 +2422,159 @@ def _load_foundry_specialist_agent(specialist_id: str) -> FoundryPromptAgent | N
 def _truthy(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     return default if raw is None else raw.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _strict_boolean_environment(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a strict boolean value")
+
+
+def _rollout_stage_environment(
+    name: str,
+    default: ExposureRolloutStage,
+) -> ExposureRolloutStage:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return ExposureRolloutStage(raw.strip().casefold())
+    except ValueError as exc:
+        allowed = ", ".join(stage.value for stage in ExposureRolloutStage)
+        raise ValueError(f"{name} must be one of: {allowed}") from exc
+
+
+def exposure_rollout_from_environment(
+    base: ExposureRolloutRuntimeConfig | None = None,
+) -> ExposureRolloutRuntimeConfig:
+    """Resolve one centralized, strict deployment override.
+
+    The YAML contract remains authoritative for typed configuration. Container
+    Apps can override only the non-secret stage and generation metadata needed
+    to advance or roll back a revision.
+    """
+
+    rollout = base or ExposureRolloutRuntimeConfig()
+    resolved = replace(
+        rollout,
+        authorized=_strict_boolean_environment(
+            ENV_EXPOSURE_ROLLOUT_AUTHORIZED,
+            rollout.authorized,
+        ),
+        write_stage=_rollout_stage_environment(
+            ENV_EXPOSURE_WRITE_STAGE,
+            rollout.write_stage,
+        ),
+        read_stage=_rollout_stage_environment(
+            ENV_EXPOSURE_READ_STAGE,
+            rollout.read_stage,
+        ),
+        web_stage=_rollout_stage_environment(
+            ENV_EXPOSURE_WEB_STAGE,
+            rollout.web_stage,
+        ),
+        handoff_stage=_rollout_stage_environment(
+            ENV_EXPOSURE_HANDOFF_STAGE,
+            rollout.handoff_stage,
+        ),
+        write_generation_id=os.environ.get(
+            ENV_EXPOSURE_WRITE_GENERATION_ID,
+            rollout.write_generation_id,
+        ).strip(),
+        read_generation_id=os.environ.get(
+            ENV_EXPOSURE_READ_GENERATION_ID,
+            rollout.read_generation_id,
+        ).strip(),
+        rollback_generation_id=os.environ.get(
+            ENV_EXPOSURE_ROLLBACK_GENERATION_ID,
+            rollout.rollback_generation_id,
+        ).strip(),
+    )
+    resolved.validate()
+    return resolved
+
+
+def evaluate_exposure_promotion(
+    rollout: ExposureRolloutRuntimeConfig,
+    evidence: ExposurePromotionEvidence,
+) -> ExposurePromotionDecision:
+    """Return effective non-destructive pointers for a requested promotion."""
+
+    rollout.validate()
+    stages = (
+        rollout.write_stage,
+        rollout.read_stage,
+        rollout.web_stage,
+        rollout.handoff_stage,
+    )
+    if all(stage is ExposureRolloutStage.OFF for stage in stages):
+        return ExposurePromotionDecision(
+            allowed=True,
+            blocked_reasons=(),
+            active_writer_generation_id="",
+            active_reader_generation_id=rollout.rollback_generation_id,
+            candidate_generation_id=(
+                rollout.read_generation_id or rollout.write_generation_id
+            ),
+            rollback_required=False,
+        )
+
+    checks = (
+        ("adapter_not_ready", evidence.adapter_ready),
+        ("cursor_keys_not_ready", evidence.cursor_keys_ready),
+        ("source_coverage_incomplete", evidence.source_coverage_ready),
+        ("semantic_reconciliation_failed", evidence.reconciliation_passed),
+        ("telemetry_missing", evidence.telemetry_ready),
+        ("alerts_missing", evidence.alerts_ready),
+        ("slo_failed", evidence.slo_passed),
+        ("ui_api_contract_failed", evidence.ui_api_contract_passed),
+        ("live_validation_failed", evidence.live_validation_passed),
+        ("ingestion_unhealthy", evidence.ingestion_healthy),
+        ("read_path_unhealthy", evidence.read_path_healthy),
+        ("key_rotation_unhealthy", evidence.key_rotation_healthy),
+    )
+    blocked_reasons = tuple(reason for reason, passed in checks if not passed)
+    rollback_required = bool(
+        blocked_reasons
+        and rollout.read_stage
+        in {ExposureRolloutStage.CANARY, ExposureRolloutStage.ON}
+    )
+    if blocked_reasons:
+        return ExposurePromotionDecision(
+            allowed=False,
+            blocked_reasons=blocked_reasons,
+            active_writer_generation_id="",
+            active_reader_generation_id=rollout.rollback_generation_id,
+            candidate_generation_id=(
+                rollout.read_generation_id or rollout.write_generation_id
+            ),
+            rollback_required=rollback_required,
+        )
+    return ExposurePromotionDecision(
+        allowed=True,
+        blocked_reasons=(),
+        active_writer_generation_id=(
+            rollout.write_generation_id
+            if rollout.write_stage is not ExposureRolloutStage.OFF
+            else ""
+        ),
+        active_reader_generation_id=(
+            rollout.read_generation_id
+            if rollout.read_stage
+            in {ExposureRolloutStage.CANARY, ExposureRolloutStage.ON}
+            else rollout.rollback_generation_id
+        ),
+        candidate_generation_id=(
+            rollout.read_generation_id or rollout.write_generation_id
+        ),
+        rollback_required=False,
+    )
 
 
 def _fabric_is_configured() -> bool:
@@ -3136,7 +3343,11 @@ def _remediation_decision_store() -> RemediationDecisionStore:
     if _REMEDIATION_DECISION_STORE is None:
         root = aiops_home()
         documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
-        path = None if documents is not None else root / "state" / "remediation_decisions.json"
+        path = (
+            None
+            if documents is not None
+            else Path(str(root)) / "state" / "remediation_decisions.json"
+        )
         _REMEDIATION_DECISION_STORE = RemediationDecisionStore(
             path=path,
             document_store=documents,
@@ -3152,7 +3363,11 @@ def _remediation_execution_store() -> RemediationExecutionStore:
     if _REMEDIATION_EXECUTION_STORE is None:
         root = aiops_home()
         documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
-        path = None if documents is not None else root / "state" / "remediation_executions.json"
+        path = (
+            None
+            if documents is not None
+            else Path(str(root)) / "state" / "remediation_executions.json"
+        )
         _REMEDIATION_EXECUTION_STORE = RemediationExecutionStore(
             path=path,
             document_store=documents,

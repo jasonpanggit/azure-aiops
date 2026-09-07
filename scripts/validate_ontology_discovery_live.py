@@ -167,7 +167,7 @@ def _alert_smoke() -> dict[str, object]:
     }
     action_observed = (
         set(ALERT_RULES)
-        if "azurerm_monitor_action_group.ops[0].id" in terraform
+        if "action_groups = [local.alert_action_group_id]" in terraform
         and "ontology-operations" in terraform
         else set()
     )

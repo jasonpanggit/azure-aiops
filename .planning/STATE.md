@@ -337,3 +337,4 @@ current_phase_name: Exposure Reliability and Scale
 ### Blockers
 
 - Phase 13 Plan 19 Task 2: immutable targeted deployment is blocked because this worktree has no Terraform state or protected deployment env; Azure/Fabric CLI can read live resources but cannot prove the zero-destroy exact-address plan required before apply.
+- Plan 03.1-19: exact supported Defender digest to Container Insights workload round trip is unavailable; Phase 4 remains blocked.

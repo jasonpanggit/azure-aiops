@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -25,7 +26,14 @@ from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
-from scripts.benchmark_exposure_read_model import run_local_benchmark
+from scripts.benchmark_exposure_read_model import (
+    DeterministicFabricSqlReader,
+    DeterministicMemoryAdapter,
+    derive_benchmark_authorization,
+    generate_exposure_rows,
+    run_fabric_sql_benchmark,
+    run_local_benchmark,
+)
 
 
 class PageReader:
@@ -392,3 +400,98 @@ def test_100k_server_and_image_benchmark_is_exact_bounded_and_under_budget() -> 
         timing["p95_ms"] < 2_000
         for timing in report["timings"].values()
     )
+
+
+def test_benchmark_scope_is_derived_from_active_connection_metadata() -> None:
+    authorization = derive_benchmark_authorization(
+        [
+            SimpleNamespace(
+                tenant_id="tenant-live",
+                subscription_id="subscription-a",
+                connection_id="connection-a",
+                is_active=True,
+            ),
+            SimpleNamespace(
+                tenant_id="tenant-live",
+                subscription_id="subscription-b",
+                connection_id="connection-b",
+                is_active=True,
+            ),
+            SimpleNamespace(
+                tenant_id="tenant-live",
+                subscription_id="subscription-disabled",
+                connection_id="connection-disabled",
+                is_active=False,
+            ),
+        ],
+    )
+
+    assert authorization.tenant_id == "tenant-live"
+    assert authorization.connection_ids == ("connection-a", "connection-b")
+    assert authorization.scope == {
+        "subscription": ("subscription-a", "subscription-b"),
+        "subscription_connection": ("connection-a", "connection-b"),
+    }
+
+
+def test_benchmark_scope_refuses_mixed_tenants_or_empty_live_metadata() -> None:
+    with pytest.raises(ValueError, match="one tenant"):
+        derive_benchmark_authorization(
+            [
+                SimpleNamespace(
+                    tenant_id="tenant-a",
+                    subscription_id="subscription-a",
+                    connection_id="connection-a",
+                    is_active=True,
+                ),
+                SimpleNamespace(
+                    tenant_id="tenant-b",
+                    subscription_id="subscription-b",
+                    connection_id="connection-b",
+                    is_active=True,
+                ),
+            ],
+        )
+
+    with pytest.raises(ValueError, match="active connection"):
+        derive_benchmark_authorization([])
+
+
+def test_qualified_benchmark_requires_100k_total_with_both_target_kinds() -> None:
+    rows = generate_exposure_rows(100_000)
+    adapter = DeterministicMemoryAdapter(rows)
+    report = run_fabric_sql_benchmark(
+        DeterministicFabricSqlReader(adapter),
+        ExposureAuthorization(
+            subject="exposure-benchmark",
+            tenant_id="benchmark-tenant",
+            connection_ids=("benchmark-connection-1", "benchmark-connection-2"),
+            scope={
+                "subscription": tuple(
+                    sorted({row.subscription_id for row in rows})
+                ),
+                "subscription_connection": (
+                    "benchmark-connection-1",
+                    "benchmark-connection-2",
+                ),
+            },
+        ),
+        generation_id="benchmark-generation-0001",
+        expected_rows=100_000,
+        page_size=100,
+        warmups=1,
+        measurements=2,
+    )
+
+    assert report["status"] == "pass"
+    assert report["dataset"]["row_count"] == 100_000
+    assert report["dataset"]["target_kind_counts"] == {
+        "container_image": 20_000,
+        "server": 80_000,
+    }
+    assert report["full_walk"] == {
+        "duplicate_count": 0,
+        "omission_count": 0,
+        "returned_count": 100_000,
+        "unique_count": 100_000,
+    }

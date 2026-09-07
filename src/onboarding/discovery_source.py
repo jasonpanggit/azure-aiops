@@ -94,7 +94,7 @@ class AzureResourceGraphSource:
                     results[spec.name] = AcquisitionSuccess(
                         connection_id=self.connection_id,
                         query_name=spec.name,
-                        source_family=spec.source_family or spec.name,
+                        source_family=getattr(spec, "source_family", "") or spec.name,
                         scope=scope_by_name[spec.name],
                         attempted_at=attempted_at_by_name[spec.name],
                         completed_at=completed_at,
@@ -119,7 +119,7 @@ class AzureResourceGraphSource:
                     results[spec.name] = AcquisitionFailure(
                         connection_id=self.connection_id,
                         query_name=spec.name,
-                        source_family=spec.source_family or spec.name,
+                        source_family=getattr(spec, "source_family", "") or spec.name,
                         scope=scope_by_name[spec.name],
                         attempted_at=attempted_at_by_name[spec.name],
                         completed_at=completed_at,

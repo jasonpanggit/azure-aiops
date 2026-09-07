@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { AppShell } from "@/components/AppShell";
 import { Providers } from "@/components/Providers";
+import { ThreadContinuityProvider } from "@/lib/copilot/thread-context";
 import { ScopeProvider } from "@/lib/scope-context";
 import "./globals.css";
 
@@ -15,7 +16,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body>
         <Providers>
           <ScopeProvider>
-            <AppShell>{children}</AppShell>
+            <ThreadContinuityProvider>
+              <AppShell>{children}</AppShell>
+            </ThreadContinuityProvider>
           </ScopeProvider>
         </Providers>
       </body>

@@ -8,8 +8,24 @@
 # dev/test deployment isn't forced to configure an on-call address.
 # ---------------------------------------------------------------------------
 
+locals {
+  create_alert_action_group = (
+    var.existing_alert_action_group_id == "" &&
+    length(var.alert_email_addresses) > 0
+  )
+  alerting_enabled = (
+    var.existing_alert_action_group_id != "" ||
+    length(var.alert_email_addresses) > 0
+  )
+  alert_action_group_id = (
+    var.existing_alert_action_group_id != ""
+    ? var.existing_alert_action_group_id
+    : try(one(azurerm_monitor_action_group.ops[*].id), "")
+  )
+}
+
 resource "azurerm_monitor_action_group" "ops" {
-  count               = 1
+  count               = local.create_alert_action_group ? 1 : 0
   name                = "${local.base}-ops-ag"
   resource_group_name = azurerm_resource_group.main.name
   short_name          = "aiopsops"
@@ -287,7 +303,7 @@ locals {
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "ontology_discovery" {
-  for_each = local.ontology_discovery_alert_rules
+  for_each = local.alerting_enabled ? local.ontology_discovery_alert_rules : {}
 
   name                 = "${local.base}-ontology-${replace(each.key, "_", "-")}"
   resource_group_name  = azurerm_resource_group.main.name
@@ -318,7 +334,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "ontology_discovery" {
   }
 
   action {
-    action_groups = [azurerm_monitor_action_group.ops[0].id]
+    action_groups = [local.alert_action_group_id]
   }
 
   tags = local.tags
@@ -329,7 +345,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "ontology_discovery" {
 # dimension through the Log Analytics-backed diagnostic settings on the
 # Container App Environment.
 resource "azurerm_monitor_metric_alert" "api_availability" {
-  count               = length(var.alert_email_addresses) > 0 ? 1 : 0
+  count               = local.alerting_enabled ? 1 : 0
   name                = "${local.base}-api-availability"
   resource_group_name = azurerm_resource_group.main.name
   scopes              = [azurerm_container_app.api.id]
@@ -347,14 +363,14 @@ resource "azurerm_monitor_metric_alert" "api_availability" {
   }
 
   action {
-    action_group_id = azurerm_monitor_action_group.ops[0].id
+    action_group_id = local.alert_action_group_id
   }
 
   tags = local.tags
 }
 
 resource "azurerm_monitor_metric_alert" "web_availability" {
-  count               = length(var.alert_email_addresses) > 0 ? 1 : 0
+  count               = local.alerting_enabled ? 1 : 0
   name                = "${local.base}-web-availability"
   resource_group_name = azurerm_resource_group.main.name
   scopes              = [azurerm_container_app.web.id]
@@ -372,7 +388,7 @@ resource "azurerm_monitor_metric_alert" "web_availability" {
   }
 
   action {
-    action_group_id = azurerm_monitor_action_group.ops[0].id
+    action_group_id = local.alert_action_group_id
   }
 
   tags = local.tags
@@ -385,7 +401,7 @@ resource "azurerm_monitor_metric_alert" "web_availability" {
 # `/ready` returning 503 for a sustained period means at least one required
 # provider is `degraded`/`unavailable`/stale past its freshness threshold.
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "provider_health" {
-  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
+  count                = local.alerting_enabled ? 1 : 0
   name                 = "${local.base}-provider-health"
   resource_group_name  = azurerm_resource_group.main.name
   location             = azurerm_resource_group.main.location
@@ -414,7 +430,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "provider_health" {
   }
 
   action {
-    action_groups = [azurerm_monitor_action_group.ops[0].id]
+    action_groups = [local.alert_action_group_id]
   }
 
   tags = local.tags
@@ -443,7 +459,7 @@ locals {
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_zero" {
-  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
+  count                = local.alerting_enabled ? 1 : 0
   name                 = "${local.base}-exposure-row-zero"
   resource_group_name  = azurerm_resource_group.main.name
   location             = azurerm_resource_group.main.location
@@ -452,10 +468,15 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_zero" {
   scopes               = [azurerm_application_insights.main.id]
   severity             = 0
   description          = "Exposure effective rows reached the configured false-clear floor in one ingestion cycle."
+  # AppMetrics is materialized in the workspace only after the first custom
+  # metric arrives. Provision the fail-closed rule before that first cycle.
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      let ExposureMetrics = datatable(Name:string, Properties:dynamic, Sum:real, Min:real, Max:real) []
+        | union isfuzzy=true AppMetrics;
+      ExposureMetrics
       | where Name == "aiops.exposure.ingestion.rows"
       | where tostring(Properties.environment) == "${var.environment}"
       | where tostring(Properties.outcome) == "effective"
@@ -474,26 +495,29 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_zero" {
   }
 
   action {
-    action_groups = [azurerm_monitor_action_group.ops[0].id]
+    action_groups = [local.alert_action_group_id]
   }
 
   tags = local.tags
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_drop" {
-  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
-  name                 = "${local.base}-exposure-row-drop"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 0
-  description          = "Exposure effective-row drop exceeded the configured last-known-good ratio in one ingestion cycle."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-row-drop"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 0
+  description           = "Exposure effective-row drop exceeded the configured last-known-good ratio in one ingestion cycle."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      let ExposureMetrics = datatable(Name:string, Properties:dynamic, Sum:real, Min:real, Max:real) []
+        | union isfuzzy=true AppMetrics;
+      ExposureMetrics
       | where Name == "aiops.exposure.ingestion.drop.ratio"
       | where tostring(Properties.environment) == "${var.environment}"
       | summarize DropRatio=max(Max)
@@ -511,32 +535,35 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_drop" {
   }
 
   action {
-    action_groups = [azurerm_monitor_action_group.ops[0].id]
+    action_groups = [local.alert_action_group_id]
   }
 
   tags = local.tags
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_source_health" {
-  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
-  name                 = "${local.base}-exposure-source-health"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 1
-  description          = "An Exposure source failed, became unavailable, or exceeded its allowed age in one ingestion cycle."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-source-health"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 1
+  description           = "An Exposure source failed, became unavailable, or exceeded its allowed age in one ingestion cycle."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
-      let FailedCycles = AppMetrics
+      let ExposureMetrics = datatable(Name:string, Properties:dynamic, Sum:real, Min:real, Max:real) []
+        | union isfuzzy=true AppMetrics;
+      let FailedCycles = ExposureMetrics
         | where Name == "aiops.exposure.source.cycles"
         | where tostring(Properties.environment) == "${var.environment}"
         | where tostring(Properties.outcome) in ("failed", "partial", "unavailable")
         | summarize Signal=sum(Sum)
         | where Signal > 0;
-      let StaleSources = AppMetrics
+      let StaleSources = ExposureMetrics
         | where Name == "aiops.exposure.source.age"
         | where tostring(Properties.environment) == "${var.environment}"
         | summarize Signal=max(Max)
@@ -555,26 +582,29 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_source_healt
   }
 
   action {
-    action_groups = [azurerm_monitor_action_group.ops[0].id]
+    action_groups = [local.alert_action_group_id]
   }
 
   tags = local.tags
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_merge_conflict" {
-  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
-  name                 = "${local.base}-exposure-merge-conflict"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 0
-  description          = "Exposure Gold merge or generation activation reported a conflict."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-merge-conflict"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 0
+  description           = "Exposure Gold merge or generation activation reported a conflict."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      let ExposureMetrics = datatable(Name:string, Properties:dynamic, Sum:real, Min:real, Max:real) []
+        | union isfuzzy=true AppMetrics;
+      ExposureMetrics
       | where Name == "aiops.exposure.merge.rows"
       | where tostring(Properties.environment) == "${var.environment}"
       | where tostring(Properties.outcome) == "conflict"
@@ -593,26 +623,29 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_merge_confli
   }
 
   action {
-    action_groups = [azurerm_monitor_action_group.ops[0].id]
+    action_groups = [local.alert_action_group_id]
   }
 
   tags = local.tags
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_enrichment_quality" {
-  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
-  name                 = "${local.base}-exposure-enrichment-quality"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 2
-  description          = "Exposure enrichment success ratio degraded below its one-cycle quality threshold."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-enrichment-quality"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 2
+  description           = "Exposure enrichment success ratio degraded below its one-cycle quality threshold."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      let ExposureMetrics = datatable(Name:string, Properties:dynamic, Sum:real, Min:real, Max:real) []
+        | union isfuzzy=true AppMetrics;
+      ExposureMetrics
       | where Name == "aiops.exposure.enrichment.quality"
       | where tostring(Properties.environment) == "${var.environment}"
       | summarize Quality=min(Min)
@@ -630,26 +663,29 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_enrichment_q
   }
 
   action {
-    action_groups = [azurerm_monitor_action_group.ops[0].id]
+    action_groups = [local.alert_action_group_id]
   }
 
   tags = local.tags
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_coverage_ratio" {
-  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
-  name                 = "${local.base}-exposure-coverage-ratio"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 1
-  description          = "Exposure represented-to-total coverage degraded below its one-cycle threshold."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-coverage-ratio"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 1
+  description           = "Exposure represented-to-total coverage degraded below its one-cycle threshold."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      let ExposureMetrics = datatable(Name:string, Properties:dynamic, Sum:real, Min:real, Max:real) []
+        | union isfuzzy=true AppMetrics;
+      ExposureMetrics
       | where Name == "aiops.exposure.coverage.ratio"
       | where tostring(Properties.environment) == "${var.environment}"
       | summarize RepresentedRatio=min(Min)
@@ -667,32 +703,35 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_coverage_rat
   }
 
   action {
-    action_groups = [azurerm_monitor_action_group.ops[0].id]
+    action_groups = [local.alert_action_group_id]
   }
 
   tags = local.tags
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_reconciliation_drift" {
-  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
-  name                 = "${local.base}-exposure-reconciliation-drift"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 0
-  description          = "Exposure old/new semantic reconciliation exceeded its exact mismatch policy."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-reconciliation-drift"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 0
+  description           = "Exposure old/new semantic reconciliation exceeded its exact mismatch policy."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
-      let MismatchCount = AppMetrics
+      let ExposureMetrics = datatable(Name:string, Properties:dynamic, Sum:real, Min:real, Max:real) []
+        | union isfuzzy=true AppMetrics;
+      let MismatchCount = ExposureMetrics
         | where Name == "aiops.exposure.reconciliation.mismatches"
         | where tostring(Properties.environment) == "${var.environment}"
         | where tostring(Properties.outcome) == "unexpected_drift"
         | summarize Signal=sum(Sum)
         | where Signal > ${var.exposure_alert_max_reconciliation_mismatches};
-      let DriftRatio = AppMetrics
+      let DriftRatio = ExposureMetrics
         | where Name == "aiops.exposure.reconciliation.drift.ratio"
         | where tostring(Properties.environment) == "${var.environment}"
         | where tostring(Properties.outcome) == "unexpected_drift"
@@ -712,31 +751,34 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_reconciliati
   }
 
   action {
-    action_groups = [azurerm_monitor_action_group.ops[0].id]
+    action_groups = [local.alert_action_group_id]
   }
 
   tags = local.tags
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_query_slo" {
-  count                = length(var.alert_email_addresses) > 0 ? 1 : 0
-  name                 = "${local.base}-exposure-query-slo"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 1
-  description          = "Exposure scoped query latency or error count exceeded its one-cycle budget."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-query-slo"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 1
+  description           = "Exposure scoped query latency or error count exceeded its one-cycle budget."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
-      let SlowQueries = AppMetrics
+      let ExposureMetrics = datatable(Name:string, Properties:dynamic, Sum:real, Min:real, Max:real) []
+        | union isfuzzy=true AppMetrics;
+      let SlowQueries = ExposureMetrics
         | where Name == "aiops.exposure.query.duration"
         | where tostring(Properties.environment) == "${var.environment}"
         | summarize Signal=percentile(Max, 95)
         | where Signal > ${var.exposure_alert_query_p95_ms};
-      let QueryErrors = AppMetrics
+      let QueryErrors = ExposureMetrics
         | where Name == "aiops.exposure.query.events"
         | where tostring(Properties.environment) == "${var.environment}"
         | where tostring(Properties.outcome) == "error"
@@ -756,7 +798,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_query_slo" {
   }
 
   action {
-    action_groups = [azurerm_monitor_action_group.ops[0].id]
+    action_groups = [local.alert_action_group_id]
   }
 
   tags = local.tags

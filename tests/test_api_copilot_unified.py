@@ -14,6 +14,8 @@ from operations.foundry_agent import FoundryAgentError
 from operations.investigation_thread_store import (
     InvestigationThreadStore,
     ThreadNotFound,
+    ThreadRevisionConflict,
+    ThreadStoreUnavailable,
 )
 from operations.orchestration_contract import (
     CandidatePlan,
@@ -132,10 +134,15 @@ def test_canonical_inventory_tracer_returns_citations_uncertainty_and_thread():
     assert result.coverage.complete is False
     assert "visible subset is incomplete" in result.uncertainty
     assert "inventory freshness is stale" in result.uncertainty
-    assert {item.citation_id for item in result.citations} >= {
-        "inventory:visible",
-        "tool:0:0:inventory_data_health:inventory_resources:0",
-    }
+    citation_ids = {item.citation_id for item in result.citations}
+    assert "inventory:visible" in citation_ids
+    tool_citation = next(
+        citation_id for citation_id in citation_ids if citation_id.startswith("tool:")
+    )
+    assert result.thread_id in tool_citation
+    assert tool_citation.endswith(
+        ":0:0:inventory_data_health:inventory_resources:0"
+    )
     assert result.thread_id.startswith("thr-")
     assert result.thread_revision == 1
     assert store.history(
@@ -383,10 +390,15 @@ def test_repeated_tool_calls_retain_distinct_citations():
         for citation in result.citations
         if citation.citation_id.startswith("tool:")
     ]
-    assert tool_citations == [
-        "tool:0:0:inventory_data_health:inventory_resources:0",
-        "tool:0:1:inventory_data_health:inventory_resources:0",
-    ]
+    assert len(tool_citations) == 2
+    assert len(set(tool_citations)) == 2
+    assert all(result.thread_id in citation_id for citation_id in tool_citations)
+    assert tool_citations[0].endswith(
+        ":0:0:inventory_data_health:inventory_resources:0"
+    )
+    assert tool_citations[1].endswith(
+        ":0:1:inventory_data_health:inventory_resources:0"
+    )
 
 
 def test_wall_clock_budget_stops_before_tool_io():
@@ -983,6 +995,49 @@ def test_investigate_context_canonical_stamps_contract_version(tmp_path, monkeyp
     assert response.status_code == 200
     data = response.json()["data"]
     assert data.get("contract_version") == "1"
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_status", "expected_code"),
+    [
+        (ThreadStoreUnavailable(), 503, "provider_unavailable"),
+        (ThreadRevisionConflict(current_revision=3), 409, "conflict"),
+    ],
+)
+def test_investigate_context_maps_canonical_continuity_failures(
+    tmp_path,
+    monkeypatch,
+    failure,
+    expected_status,
+    expected_code,
+):
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.copilot._run_context_via_canonical",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate-context?subscription=sub-a",
+        json={
+            "snapshot": {
+                "version": "1",
+                "page_kind": "network",
+                "page_id": "topology",
+                "question": "What firewall gaps exist?",
+                "scope": {"declared": {}},
+                "evidence": [],
+                "selected_resources": [],
+                "freshness": [],
+                "rechecks": [],
+            }
+        },
+        headers=HEADERS,
+    )
+
+    assert response.status_code == expected_status
+    assert response.json()["error"]["code"] == expected_code
 
 
 def test_multi_agent_canonical_stamps_contract_version(tmp_path, monkeypatch):
@@ -1842,6 +1897,238 @@ def test_investigate_canonical_session_continuity_and_stale_hint(
     )
     assert history_response.status_code == 200
     assert len(history_response.json()["data"]["turns"]) == 2
+
+
+def test_canonical_investigate_projects_thread_storage_outage_as_unavailable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.copilot.execute_from_question",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        headers=HEADERS,
+        json={
+            "question": "Show inventory health",
+            "session_id": "outage-session",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+def test_canonical_history_projects_thread_storage_outage_as_unavailable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.copilot.legacy_session_history",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/copilot/history/outage-session?subscription=sub-a",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+def test_canonical_history_projects_binding_contention_as_conflict(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.copilot.legacy_session_history",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ThreadRevisionConflict(current_revision=4)
+        ),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/copilot/history/contention-session?subscription=sub-a",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conflict"
+
+
+def test_canonical_endpoint_projects_thread_storage_outage_as_unavailable(
+    tmp_path, monkeypatch
+):
+    context = _context(tmp_path, None)
+    monkeypatch.setattr(
+        OrchestrationService,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_canonical_body(),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+def test_canonical_endpoint_projects_sustained_thread_contention_as_conflict(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        OrchestrationService,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ThreadRevisionConflict(current_revision=3)
+        ),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_canonical_body(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conflict"
+
+
+def test_canonical_endpoint_preserves_used_retained_citations(
+    tmp_path, monkeypatch
+):
+    from operations.orchestration_contract import Citation, OrchestrationResult
+
+    retained_id = f"retained:thr-{'a' * 32}:rev-1:citation-0"
+    result = OrchestrationResult(
+        status="ok",
+        policy_status="accepted",
+        coverage=SnapshotCoverage(
+            visible_count=0,
+            total_count=0,
+            complete=True,
+        ),
+        citations=[
+            Citation(
+                citation_id="snapshot:coverage",
+                source="page_snapshot:inventory:coverage",
+                status="empty",
+            ),
+            Citation(
+                citation_id=retained_id,
+                source="page_snapshot:vulnerability:coverage",
+                status="ok",
+            ),
+        ],
+        thread_id="thr-" + "a" * 32,
+        thread_revision=2,
+    )
+    monkeypatch.setattr(
+        OrchestrationService,
+        "execute",
+        lambda *_args, **_kwargs: result,
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_canonical_body(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["citations"] == [
+        {
+            "citation_id": retained_id,
+            "source": "page_snapshot:vulnerability:coverage",
+            "status": "ok",
+            "observed_at": "",
+            "resource_id": "",
+        }
+    ]
+
+
+def test_multi_agent_projects_thread_storage_outage_as_unavailable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={"objective": "Show inventory health"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+def test_legacy_adapter_does_not_reset_thread_on_storage_outage(monkeypatch):
+    from operations.orchestration_service import execute_from_question
+
+    calls = 0
+
+    def _execute(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise ThreadStoreUnavailable()
+
+    monkeypatch.setattr(OrchestrationService, "execute", _execute)
+    monkeypatch.setattr(
+        "operations.orchestration_service._legacy_session_thread_for_execution",
+        lambda *_args, **_kwargs: "thr-" + "a" * 32,
+    )
+
+    with pytest.raises(ThreadStoreUnavailable):
+        execute_from_question(
+            "Show inventory health",
+            scope=Scope({"subscription": ["sub-a"]}),
+            context=object(),
+            principal_subject="operator@example.com",
+            session_id="outage-session",
+        )
+
+    assert calls == 1
+
+
+def test_legacy_history_does_not_hide_thread_storage_outage(monkeypatch):
+    from operations.orchestration_service import legacy_session_history
+
+    class UnavailableStore:
+        def history(self, *_args, **_kwargs):
+            raise ThreadStoreUnavailable()
+
+    monkeypatch.setattr(
+        "operations.orchestration_service._legacy_session_thread",
+        lambda *_args, **_kwargs: "thr-" + "a" * 32,
+    )
+    monkeypatch.setattr(
+        "operations.orchestration_service.investigation_thread_store",
+        UnavailableStore,
+    )
+
+    with pytest.raises(ThreadStoreUnavailable):
+        legacy_session_history(
+            "outage-session",
+            principal_subject="operator@example.com",
+            scope=Scope({"subscription": ["sub-a"]}),
+        )
 
 
 def test_multi_agent_canonical_projection_retains_complete_results(

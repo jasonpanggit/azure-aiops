@@ -103,6 +103,19 @@ registry_name="${registry%%.*}"
 # enabled and a Docker VM with >=12 GB RAM to beat ACR.
 platform="linux/amd64"
 build_mode="${AIOPS_BUILD_MODE:-acr}"
+acr_context=""
+
+prepare_acr_context() {
+  [[ "${build_mode}" == "acr" ]] || return 0
+  # Azure CLI archives the source tree before ACR sees .dockerignore. A live
+  # Git fsmonitor socket is not a tar-compatible file and can abort that
+  # upload. Build from an immutable archive of HEAD instead: this also keeps
+  # ignored credentials, local evidence, and unrelated working-tree files out
+  # of the remote build context.
+  acr_context="$(mktemp -d)"
+  git -C "${repo_root}" archive HEAD | tar -x -C "${acr_context}"
+  trap '[[ -z "${acr_context}" ]] || rm -rf "${acr_context}"' EXIT
+}
 
 build_image() {
   local image="$1" dockerfile="$2" context="$3"
@@ -130,13 +143,27 @@ build_image() {
 
   echo "build-and-push: building ${registry}/${image}:${tag} (${build_mode})"
   if [[ "${build_mode}" == "acr" ]]; then
-    az acr build \
-      --registry "${registry_name}" \
-      --image "${image}:${tag}" \
-      --platform "${platform}" \
-      --file "${dockerfile}" \
-      ${build_args[@]+"${build_args[@]}"} \
-      "${context}"
+    local build_context dockerfile_arg
+    if [[ "${context}" == "${repo_root}" ]]; then
+      build_context="${acr_context}"
+      dockerfile_arg="${dockerfile#"${repo_root}/"}"
+    elif [[ "${context}" == "${repo_root}/"* ]]; then
+      build_context="${acr_context}/${context#"${repo_root}/"}"
+      dockerfile_arg="${dockerfile#"${context}/"}"
+    else
+      echo "build-and-push: ACR context must be inside ${repo_root}" >&2
+      return 1
+    fi
+    (
+      cd "${build_context}"
+      az acr build \
+        --registry "${registry_name}" \
+        --image "${image}:${tag}" \
+        --platform "${platform}" \
+        --file "${dockerfile_arg}" \
+        ${build_args[@]+"${build_args[@]}"} \
+        .
+    )
   else
     # --cache-from/--cache-to against the registry means an incremental local
     # build reuses layers from the last push instead of rebuilding the whole
@@ -194,6 +221,8 @@ if [[ "${build_mode}" == "local" ]]; then
   echo "build-and-push: authenticating to ${registry}"
   az acr login --name "${registry_name}"
 fi
+
+prepare_acr_context
 
 build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
 build_image aiops-web "${repo_root}/web/Dockerfile" "${repo_root}/web"

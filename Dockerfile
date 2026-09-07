@@ -53,7 +53,8 @@ RUN apt-get update \
     && dpkg -i /tmp/packages-microsoft-prod.deb \
     && rm -f /tmp/packages-microsoft-prod.deb \
     && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends \
+        msodbcsql18 libgssapi-krb5-2 \
     && curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
     && az extension add --name resource-graph --only-show-errors \
     && apt-get purge -y curl \
@@ -70,6 +71,8 @@ COPY src/ /app/src/
 COPY skills/ /app/skills/
 COPY scripts/refresh_exposure_enrichment.py /app/scripts/refresh_exposure_enrichment.py
 COPY scripts/validate_ontology_publisher_rbac.py /app/scripts/validate_ontology_publisher_rbac.py
+COPY scripts/benchmark_exposure_read_model.py /app/scripts/benchmark_exposure_read_model.py
+COPY scripts/validate_exposure_live.py /app/scripts/validate_exposure_live.py
 
 # The specialist contract is the deployment's single source of truth for agent
 # identity, grants, and versions. Fail the image build -- not a production

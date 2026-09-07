@@ -12,11 +12,13 @@ import dataclasses
 import hashlib
 import logging
 import re
+import tempfile
 import threading
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, ClassVar
 
 from ontology.subscription_connection import (
@@ -31,7 +33,7 @@ from ontology_discovery.command_intake import (
     scope_receipt,
 )
 from ontology_discovery.store import OntologyRunStore
-from storage.fs import resolve_root
+from storage.fs import is_onelake_uri, resolve_root
 
 from .credentials import (
     CredentialResolver,
@@ -120,11 +122,31 @@ class SubscriptionOnboardingService:
         self.secret_writer = secret_writer
         self.health = health_evaluator or HealthEvaluator(clock=clock)
         self.ontology_run_store = ontology_run_store or OntologyRunStore(
-            self.output_dir / "state" / "ontology_discovery_runs.json"
+            self._default_ontology_run_store_path(self.output_dir)
         )
         self.ontology_command_intake = ontology_command_intake
         self.clock = clock or (lambda: datetime.now(UTC))
         self._reconcile_orphaned_syncs()
+
+    @staticmethod
+    def _default_ontology_run_store_path(output_dir: Path | str) -> Path:
+        """Resolve the on-disk path for the default `OntologyRunStore`.
+
+        `OntologyRunStore` is a local JSON-file store with no OneLake backend
+        (unlike the registry/publication-state stores, it has no document-store
+        variant). When `output_dir` is a local path this mirrors it directly
+        under `state/`. When `output_dir` is a OneLake URI, `output_dir / ...`
+        would raise (a `str` has no `/` operator), so this keeps the run
+        ledger on local container disk instead -- acceptable because it is
+        single-replica, in-flight run bookkeeping (see the `_live_run_ids`
+        docstring above) that is not expected to survive a container restart
+        either way.
+        """
+        if is_onelake_uri(output_dir):
+            local_dir = Path(tempfile.gettempdir()) / "aiops-onboarding-state"
+            local_dir.mkdir(parents=True, exist_ok=True)
+            return local_dir / "ontology_discovery_runs.json"
+        return Path(output_dir) / "state" / "ontology_discovery_runs.json"
 
     def _reconcile_orphaned_syncs(self) -> None:
         """Fail any connection left mid-sync by a process that no longer exists.
