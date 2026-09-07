@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -15,6 +16,7 @@ from api.routers.ontology_discovery import (
     OntologyDiscoveryApi,
     evaluation_scope_key,
 )
+from api.runtime import build_context
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
@@ -282,3 +284,48 @@ def test_evaluation_history_is_bounded_and_scope_checked(tmp_path: Path) -> None
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
     assert denied.status_code == 403
+
+
+def test_default_runtime_reconstructs_evaluation_from_disk_on_each_provider_instance(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "runtime"
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv(
+        "AIOPS_API_TOKENS",
+        json.dumps(
+            {
+                TOKEN: {
+                    "subject": "reader@example.com",
+                    "grants": [{"role": "reader", "scope": {}}],
+                }
+            }
+        ),
+    )
+    first_context = build_context()
+    first_context.onboarding.add(
+        connection_id="conn-a",
+        name="Connection A",
+        tenant_id=TENANT,
+        subscription_id=SUBSCRIPTION,
+        client_id=CLIENT_ID,
+        secret_ref="kv://test/credential",
+    )
+    first_provider = first_context.ontology_discovery_provider()
+    snapshot = _snapshot(
+        first_context.onboarding.detail("conn-a"),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    first_provider.evaluation_store.write(snapshot, expected_revision=0)
+
+    restarted_context = build_context()
+    restarted_provider = restarted_context.ontology_discovery_provider()
+    result = restarted_provider.evaluation(
+        restarted_context.onboarding.detail("conn-a")
+    )
+
+    assert restarted_provider is not first_provider
+    assert result["status"] == "fresh"
+    assert result["snapshot"]["snapshot_id"] == snapshot.snapshot_id

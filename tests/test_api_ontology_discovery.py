@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.routers.ontology_discovery import OntologyDiscoveryApi
+from api.runtime import build_context
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
@@ -407,3 +409,83 @@ def test_mutation_payloads_reject_unknown_fields(api_fixture: dict[str, Any]) ->
         json={"expected_revision": 0, "reason": "stop", "can_cancel": True},
     )
     assert response.status_code == 400
+
+
+def test_default_runtime_registers_read_action_facade_without_publisher_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "runtime"
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv(
+        "AIOPS_API_TOKENS",
+        json.dumps(
+            {
+                TOKENS["admin"]: {
+                    "subject": "admin@example.com",
+                    "grants": [{"role": "admin", "scope": {}}],
+                }
+            }
+        ),
+    )
+    context = build_context()
+
+    assert context.ontology_discovery_provider is not None
+    provider = context.ontology_discovery_provider()
+    assert isinstance(provider, OntologyDiscoveryApi)
+    assert provider._rollback_action is None
+    assert not hasattr(provider, "publisher_identity")
+    assert not hasattr(provider, "stage_generation")
+    assert not hasattr(provider, "conditional_promote")
+
+    app = create_app(context)
+    assert not hasattr(app.state, "ontology_scheduler_thread")
+    assert not hasattr(app.state, "ontology_publisher")
+
+
+def test_default_runtime_degrades_missing_sections_without_hiding_durable_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "runtime"
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv(
+        "AIOPS_API_TOKENS",
+        json.dumps(
+            {
+                TOKENS["admin"]: {
+                    "subject": "admin@example.com",
+                    "grants": [{"role": "admin", "scope": {}}],
+                }
+            }
+        ),
+    )
+    context = build_context()
+    context.onboarding.add(
+        connection_id="conn-a",
+        name="Connection A",
+        tenant_id=TENANT,
+        subscription_id=SUB_A,
+        client_id=CLIENT,
+        secret_ref="kv://test/credential",
+    )
+    created = context.onboarding.enqueue_ontology_refresh(
+        "conn-a",
+        requested_by="admin@example.com",
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/ontology-discovery/status",
+        params={"connection_id": "conn-a"},
+        headers=_headers("admin"),
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["current_run"]["run_id"] == created["run_id"]
+    assert data["generation"]["status"] == "unavailable"
+    assert data["generation"]["rollback_disabled_reason"]
+    assert data["evaluation"]["status"] == "missing"
+    assert data["evaluation"]["release_eligible"] is False
