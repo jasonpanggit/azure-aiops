@@ -187,13 +187,13 @@ variable "deploy_images" {
 variable "api_cpu" {
   description = "vCPU allocated to the API container."
   type        = number
-  default     = 1.0
+  default     = 2.0
 }
 
 variable "api_memory" {
   description = "Memory allocated to the API container. Must pair with api_cpu per the Container Apps ratio (2Gi per vCPU)."
   type        = string
-  default     = "2Gi"
+  default     = "4Gi"
 }
 
 variable "api_min_replicas" {

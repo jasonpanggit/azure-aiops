@@ -23,6 +23,7 @@ a path through :meth:`ls` and back into :meth:`info`/:meth:`rm` keep working.
 from __future__ import annotations
 
 import io
+from contextlib import suppress
 from typing import Any
 
 from azure.core.exceptions import (
@@ -32,15 +33,11 @@ from azure.core.exceptions import (
 )
 
 ONELAKE_HOST = "onelake.dfs.fabric.microsoft.com"
+_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
 
 
 class _UploadBuffer(io.BytesIO):
-    """Buffers a write and uploads it to OneLake on close.
-
-    Writes are whole-file uploads rather than staged blocks: the datasets
-    written through here are small enough, and staged-block commits are one of
-    the Blob-only operations OneLake rejects.
-    """
+    """Buffer a small control file and replace it with one SDK upload."""
 
     def __init__(self, file_client: Any) -> None:
         super().__init__()
@@ -52,6 +49,81 @@ class _UploadBuffer(io.BytesIO):
             self._uploaded = True
             self._file_client.upload_data(self.getvalue(), overwrite=True)
         super().close()
+
+
+class _StreamingUpload(io.RawIOBase):
+    """Append a bounded buffer to OneLake through the DFS file API.
+
+    OneLake rejects Blob staged-block operations, but supports the native DFS
+    create/append/flush sequence. Keeping only one chunk resident prevents
+    large JSONL and Parquet artifacts from being copied into a whole-file
+    ``BytesIO`` before upload.
+    """
+
+    def __init__(self, file_client: Any, *, chunk_size: int | None = None) -> None:
+        super().__init__()
+        self._file_client = file_client
+        self._chunk_size = chunk_size or _UPLOAD_CHUNK_BYTES
+        self._buffer = bytearray()
+        self._offset = 0
+        self._finalized = False
+        self._failed = False
+        self._file_client.create_file()
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def tell(self) -> int:
+        return self._offset + len(self._buffer)
+
+    def write(self, value: bytes | bytearray | memoryview) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file")
+        payload = memoryview(value).cast("B")
+        size = len(payload)
+        while payload:
+            capacity = self._chunk_size - len(self._buffer)
+            consumed = min(capacity, len(payload))
+            self._buffer.extend(payload[:consumed])
+            payload = payload[consumed:]
+            if len(self._buffer) == self._chunk_size:
+                self._append(self._chunk_size)
+        return size
+
+    def flush(self) -> None:
+        if self.closed or self._finalized or self._failed:
+            return
+        self._append(len(self._buffer))
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            self.flush()
+            self._file_client.flush_data(self._offset, close=True)
+            self._finalized = True
+        except Exception:
+            self._failed = True
+            with suppress(Exception):
+                self._file_client.delete_file()
+            raise
+        finally:
+            super().close()
+
+    def _append(self, size: int) -> None:
+        if size <= 0:
+            return
+        payload = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        self._file_client.append_data(
+            payload,
+            offset=self._offset,
+            length=len(payload),
+        )
+        self._offset += len(payload)
 
 
 class OneLakeFileSystem:
@@ -156,11 +228,22 @@ class OneLakeFileSystem:
             for entry in entries
         ]
 
-    def open(self, path: str, mode: str = "rb", **_: Any) -> Any:
+    def open(
+        self,
+        path: str,
+        mode: str = "rb",
+        *,
+        streaming: bool = False,
+        **_: Any,
+    ) -> Any:
         relative = self._relative(path)
         file_client = self._client.get_file_client(relative)
         if "w" in mode:
-            buffer: Any = _UploadBuffer(file_client)
+            buffer: Any = (
+                _StreamingUpload(file_client)
+                if streaming
+                else _UploadBuffer(file_client)
+            )
             return io.TextIOWrapper(buffer, encoding="utf-8") if "b" not in mode else buffer
         try:
             content = file_client.download_file().readall()
