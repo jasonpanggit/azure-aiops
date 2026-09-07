@@ -104,19 +104,20 @@ The authoritative artifact for Plan 03.1-19 is:
 
 ## Current disposition
 
-The current artifact is blocked. Live source refresh and Fabric SQL
-connectivity succeeded, but the exact source chain did not reach reconciled
-Gold and ontology. The publication attempt stopped at sanitized previous
-ontology snapshot validation, so no exact digest-to-supported-workload round
-trip exists for this release. Phase 4 remains blocked; repository, tag,
-unknown, or incomplete evidence must not be substituted.
+The current artifact is blocked. Live source refresh, Fabric SQL connectivity,
+ontology validation, Gold schema publication, and all automated suites pass.
+The live exact source chain is empty for the authorized dev scope: the
+qualified query sees zero server and container-image Gold facts, so no exact
+Defender digest-to-supported-workload round trip exists. Phase 4 remains
+blocked; repository, tag, unknown, or incomplete evidence must not be
+substituted.
 
 ## Unblocking sequence
 
-1. Repair and verify the pre-existing ontology snapshot validation failures
-   without weakening relationship integrity.
+1. Add or observe exact supported Defender digest and Container Insights
+   deployment/workload evidence in the authorized dev scope.
 2. Re-run the deployed managed-identity source sync.
-3. Confirm all required Gold tables and a retained readable generation.
+3. Publish and reconcile a non-empty retained Gold generation.
 4. Run the derived-scope 100k Fabric SQL benchmark.
 5. Run the live validator and exact forward/reverse traversal.
 6. Require represented/total completeness and a single generation.
