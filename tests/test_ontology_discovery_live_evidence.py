@@ -23,6 +23,7 @@ from scripts.validate_ontology_discovery_live import (
     job_template_hash,
     load_plan19_deployment_contract,
     load_resume_checkpoint,
+    main,
     sanitize_deployed_evidence,
     validate_azure_contexts,
     write_resume_checkpoint,
@@ -683,3 +684,40 @@ def test_publication_requires_real_topology_drills_rollback_and_consumers() -> N
     report = evaluate_publication_evidence(changed)
     assert report["status"] == "FAIL"
     assert "old_new_old" in report["missing_evidence"]
+
+
+def test_deployed_stage_fails_before_legacy_shadow_or_cloud_action(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "deployed.json"
+
+    def forbidden_shadow(_: object) -> object:
+        raise AssertionError("legacy shadow collector must not run for a deployed stage")
+
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live._shadow",
+        forbidden_shadow,
+    )
+    monkeypatch.delenv("AIOPS_DEPLOYER_AZURE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("AIOPS_EVIDENCE_AZURE_CONFIG_DIR", raising=False)
+    result = main(
+        [
+            "--stage",
+            "lifecycle",
+            "--environment",
+            "validation",
+            "--shadow",
+            "--resume-file",
+            str(tmp_path / "resume.json"),
+            "--output",
+            str(output),
+            "--fail-on-missing-evidence",
+        ]
+    )
+    assert result == 1
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["mode"] == "deployed-fixed-template"
+    assert report["status"] == "FAIL"
+    assert report["missing_evidence"] == ["EvidenceError"]
+    assert "AIOPS_DEPLOYER_AZURE_CONFIG_DIR" in report["blocker"]
