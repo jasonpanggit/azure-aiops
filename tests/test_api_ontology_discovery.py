@@ -526,9 +526,11 @@ def test_default_runtime_degrades_missing_sections_without_hiding_durable_runs(
         client_id=CLIENT,
         secret_ref="kv://test/credential",
     )
-    created = context.onboarding.enqueue_ontology_refresh(
+    created = context.ontology_discovery_provider().run_now(
         "conn-a",
-        requested_by="admin@example.com",
+        actor="admin@example.com",
+        idempotency_key="manual-command-degraded-sections",
+        reason="exercise durable command intake",
     )
     client = TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -539,7 +541,9 @@ def test_default_runtime_degrades_missing_sections_without_hiding_durable_runs(
     )
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    assert data["current_run"]["run_id"] == created["run_id"]
+    assert created["type"] == "manual_run"
+    assert created["status"] == "pending"
+    assert data["current_run"] is None
     assert data["generation"]["status"] == "unavailable"
     assert data["generation"]["rollback_disabled_reason"]
     assert data["evaluation"]["status"] == "missing"
@@ -586,7 +590,7 @@ def test_default_runtime_enqueues_manual_and_rollback_commands_without_authority
 ) -> None:
     home = tmp_path / "runtime"
     monkeypatch.setenv("AIOPS_HOME", str(home))
-    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "validation")
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "demo")
     monkeypatch.setenv("AIOPS_API_AUTH", "token")
     monkeypatch.setenv(
         "AIOPS_API_TOKENS",

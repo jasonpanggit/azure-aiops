@@ -115,7 +115,15 @@ class CommandIntakeService:
             envelope["observed_pointer_etag"] = _required(
                 values.get("observed_pointer_etag"), "observed_pointer_etag"
             )
-        identity = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+        identity = json.dumps(
+            {
+                "type": command_type,
+                "connection_id": envelope["connection_id"],
+                "idempotency_key": envelope["idempotency_key"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         command_id = "ODC-" + hashlib.sha256(identity.encode()).hexdigest()[:24].upper()
         command = {
             "command_id": command_id,
@@ -395,8 +403,6 @@ def _immutable(row: Mapping[str, Any]) -> dict[str, Any]:
             "effective_scope_hash",
             "connection_id",
             "action",
-            "issued_at",
-            "expires_at",
             "idempotency_key",
             "reason",
             "cadence_seconds",

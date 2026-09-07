@@ -6,12 +6,16 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
 
+from ontology_discovery.command_intake import (
+    CommandIntakeService,
+    scope_receipt,
+)
 from ontology_discovery.evaluation import EvaluationSnapshot
 from ontology_discovery.evaluation_store import (
     EvaluationSnapshotStore,
@@ -123,6 +127,8 @@ class OntologyDiscoveryApi:
         evaluation_store: EvaluationSnapshotStore | None = None,
         generation_resolver_factory: Callable[[str], Any | None] | None = None,
         rollback_action: Callable[..., Mapping[str, Any]] | None = None,
+        command_intake: CommandIntakeService | None = None,
+        connection_reader: Callable[[str], Any] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.onboarding = onboarding
@@ -130,10 +136,28 @@ class OntologyDiscoveryApi:
         self.evaluation_store = evaluation_store
         self._generation_resolver_factory = generation_resolver_factory
         self._rollback_action = rollback_action
+        self.command_intake = command_intake
+        self._connection_reader = connection_reader
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def connection(self, connection_id: str) -> dict[str, Any]:
+        if self._connection_reader is not None:
+            connection = self._connection_reader(connection_id)
+            if hasattr(connection, "to_dict"):
+                return dict(connection.to_dict())
+            return dict(connection)
         return self.onboarding.detail(connection_id)
+
+    def _command_connection(self, connection_id: str) -> Any:
+        if self._connection_reader is not None:
+            return self._connection_reader(connection_id)
+        return self.onboarding.registry.get(connection_id)
+
+    def command(self, command_id: str) -> dict[str, Any] | None:
+        if self.command_intake is None:
+            return None
+        command = self.command_intake.get(command_id)
+        return self._project_command(command) if command is not None else None
 
     def runs(self, connection_id: str) -> list[dict[str, Any]]:
         return [
@@ -165,6 +189,22 @@ class OntologyDiscoveryApi:
         )
         if active is not None:
             raise RunClaimConflict("active_run_exists", active)
+        if self.command_intake is not None:
+            connection = self._command_connection(connection_id)
+            moment = self._clock()
+            command = self.command_intake.enqueue_manual_run(
+                actor_hash=_opaque_hash(actor),
+                effective_scope_hash=scope_receipt(
+                    connection, "ontology.discovery.run"
+                ),
+                connection_id=connection_id,
+                action="ontology.discovery.run",
+                issued_at=moment,
+                expires_at=moment + timedelta(minutes=15),
+                idempotency_key=idempotency_key,
+                reason=reason,
+            )
+            return self._project_command(command)
         result = self.onboarding.enqueue_ontology_refresh(
             connection_id,
             mode="manual",
@@ -289,14 +329,17 @@ class OntologyDiscoveryApi:
         can_rollback = bool(
             prior_generation
             and selection.pointer_etag
-            and self._rollback_action is not None
+            and (
+                self.command_intake is not None
+                or self._rollback_action is not None
+            )
         )
         reason = ""
         if not prior_generation:
             reason = "prior_generation_unavailable"
         elif not selection.pointer_etag:
             reason = "generation_pointer_etag_unavailable"
-        elif self._rollback_action is None:
+        elif self.command_intake is None and self._rollback_action is None:
             reason = "publisher_action_unavailable"
         return {
             "status": "active",
@@ -348,11 +391,39 @@ class OntologyDiscoveryApi:
                     "current_etag": generation.get("pointer_etag") or "",
                 },
             )
-        if not generation["can_rollback"] or self._rollback_action is None:
+        if not generation["can_rollback"]:
             raise ApiError(
                 ErrorCode.CONFLICT,
                 "Rollback is not currently eligible",
                 {"reason": generation["rollback_disabled_reason"]},
+            )
+        if self.command_intake is not None:
+            connection = self._command_connection(connection_id)
+            moment = self._clock()
+            return self._project_command(
+                self.command_intake.enqueue_rollback(
+                    actor_hash=_opaque_hash(actor),
+                    effective_scope_hash=scope_receipt(
+                        connection, "ontology.publication.rollback"
+                    ),
+                    connection_id=connection_id,
+                    action="ontology.publication.rollback",
+                    issued_at=moment,
+                    expires_at=moment + timedelta(minutes=15),
+                    idempotency_key=idempotency_key,
+                    reason=reason,
+                    target_generation_id=generation_id,
+                    observed_active_generation=str(
+                        generation["active_generation"]
+                    ),
+                    observed_pointer_etag=expected_etag,
+                )
+            )
+        if self._rollback_action is None:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "Rollback command intake is unavailable",
+                {"reason": "command_intake_unavailable"},
             )
         return dict(
             self._rollback_action(
@@ -556,6 +627,26 @@ class OntologyDiscoveryApi:
         }
 
     @staticmethod
+    def _project_command(record: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: record.get(key)
+            for key in (
+                "command_id",
+                "type",
+                "connection_id",
+                "status",
+                "revision",
+                "reason_code",
+                "created_at",
+                "updated_at",
+                "target_generation_id",
+                "observed_active_generation",
+                "observed_pointer_etag",
+            )
+            if key in record
+        }
+
+    @staticmethod
     def _project_snapshot(snapshot: EvaluationSnapshot) -> dict[str, Any]:
         return snapshot.model_dump(mode="json")
 
@@ -604,6 +695,10 @@ class OntologyDiscoveryApi:
 def _generation_id(value: object) -> str:
     text = str(value or "").rstrip("/")
     return PurePath(text).name if text else ""
+
+
+def _opaque_hash(value: object) -> str:
+    return hashlib.sha256(str(value or "").strip().encode()).hexdigest()
 
 
 def _evaluation_missing(reason: str) -> dict[str, Any]:
