@@ -116,6 +116,31 @@ def test_provider_failures_are_control_plane_outcomes_not_domain_rows() -> None:
         outcome.error_summary = secret  # type: ignore[misc]
 
 
+def test_legacy_inventory_specs_fall_back_to_query_name_for_source_family() -> None:
+    from intelligence.inventory.sources.arg import InventoryQuerySpec
+    from intelligence.vulnerability.acquisition import (
+        AcquisitionFailure,
+        ProviderQueryError,
+    )
+    from onboarding.discovery_source import AzureResourceGraphSource
+
+    source = AzureResourceGraphSource(
+        mcp=None,
+        arg=_PagedArg(error=ProviderQueryError("provider_timeout")),
+        connection_id="connection-inventory",
+    )
+    spec = InventoryQuerySpec(
+        "inventory_resources",
+        "Resources",
+        "Resources | project id",
+    )
+
+    outcome = source.fetch((spec,), ["subscription-inventory"])[spec.name]
+
+    assert isinstance(outcome, AcquisitionFailure)
+    assert outcome.source_family == spec.name
+
+
 @pytest.mark.parametrize(
     ("error", "expected_code", "expected_summary"),
     [
