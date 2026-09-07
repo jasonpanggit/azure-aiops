@@ -87,6 +87,41 @@ for var in FOUNDRY_PROJECT_ENDPOINT FOUNDRY_AGENT_NAME FOUNDRY_AGENT_MODEL \
   fi
 done
 
+# The ontology curator is a security boundary, not a general specialist.  A
+# hand-edited Terraform payload must not be able to add a writer/general-query
+# tool or silently change its reviewed model before the request reaches
+# Foundry.
+if [[ "${FOUNDRY_AGENT_SPECIALIST_ID:-}" == "ontology_curator" ]]; then
+  if [[ "${FOUNDRY_AGENT_MODEL}" != "${FOUNDRY_EXPECTED_CURATOR_MODEL:-gpt-5.4-mini}" ]]; then
+    echo "create-foundry-agent: ontology_curator model mismatch" >&2
+    exit 1
+  fi
+  FOUNDRY_AGENT_TOOLS_JSON_B64="${FOUNDRY_AGENT_TOOLS_JSON_B64:-}" \
+  FOUNDRY_EXPECTED_CURATOR_TOOL_NAMES="${FOUNDRY_EXPECTED_CURATOR_TOOL_NAMES:-}" \
+  python3 -c '
+import base64
+import json
+import os
+
+expected = [item for item in os.environ["FOUNDRY_EXPECTED_CURATOR_TOOL_NAMES"].split(",") if item]
+if len(expected) != 4 or len(set(expected)) != 4:
+    raise SystemExit("ontology_curator requires exactly four distinct expected tools")
+try:
+    definitions = json.loads(
+        base64.b64decode(os.environ["FOUNDRY_AGENT_TOOLS_JSON_B64"], validate=True)
+    )
+except (ValueError, json.JSONDecodeError) as exc:
+    raise SystemExit("ontology_curator tool payload is invalid") from exc
+if not isinstance(definitions, list) or len(definitions) != 1:
+    raise SystemExit("ontology_curator requires exactly one MCP tool definition")
+definition = definitions[0]
+if not isinstance(definition, dict) or definition.get("type") != "mcp":
+    raise SystemExit("ontology_curator accepts only the Operations MCP tool type")
+if definition.get("allowed_tools") != expected:
+    raise SystemExit("ontology_curator tool allowlist mismatch")
+' || exit 1
+fi
+
 # A deployment may provide a catalog of independently released specialists.
 # Reuse this idempotent single-agent path for each entry so old callers that
 # provide only FOUNDRY_AGENT_NAME remain fully compatible.

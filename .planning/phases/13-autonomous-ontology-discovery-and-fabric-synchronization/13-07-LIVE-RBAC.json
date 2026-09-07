@@ -1,0 +1,39 @@
+{
+  "status": "passed",
+  "completed_at": "2026-09-07T01:32:34Z",
+  "subscription_id": "a87a8e64-a52a-4aa8-a760-5e8919d23cd1",
+  "resource_group": "aiops-dev-rg",
+  "image": {
+    "tag": "phase13-ontology-split-20260906-173930",
+    "digest": "sha256:865bc6aed31e7eb0930962cf825b87aeac7d8526a903ab73d6bf8bc7a3fd3ba1"
+  },
+  "write_matrix": {
+    "execution": "aiops-dev-ontology-rbac-check-yuywrdn",
+    "status": "passed",
+    "evidence": [
+      {"identity_class": "api", "operation": "stage_create_only", "result": "denied", "correlation_evidence": "sha256:8fe99c7cac7aeee51a9ed454135d1ff6e51265576f5efec27f396a0e447d19d7"},
+      {"identity_class": "api", "operation": "pointer_cas", "result": "denied", "correlation_evidence": "sha256:716c0435cc1c2861cb11102cf90539f3a0952c17488452db941775488f8879f6"},
+      {"identity_class": "coordinator", "operation": "stage_create_only", "result": "denied", "correlation_evidence": "sha256:0d035be0b0cceee9a0272fb98b328083f3398d7078a408119ca58432ef2ec75e"},
+      {"identity_class": "coordinator", "operation": "pointer_cas", "result": "denied", "correlation_evidence": "sha256:1d7fd164b7e95845cd9e54934372599e2e04c66694fc28978b1085d7af910f06"},
+      {"identity_class": "publisher", "operation": "stage_create_only", "result": "authorized", "correlation_evidence": "sha256:8c3652dd515f562074ac7dca34ec08d25a75821a6d3fee20440d622e6ba79432"},
+      {"identity_class": "publisher", "operation": "pointer_cas", "result": "authorized", "correlation_evidence": "sha256:0207cbeb97ab40680db4677d9f2f9f7c07390fb74068c59ba924dd9eae01c1bd"},
+      {"identity_class": "publisher", "operation": "rollback_cas", "result": "authorized", "correlation_evidence": "sha256:7b2635dc11a89c63eabe70cc542dd45c7ef97e460f8fc0072b8282f763058eed"},
+      {"identity_class": "publisher", "operation": "canary_cleanup", "result": "authorized", "correlation_evidence": "sha256:36ead44dca8eb88adacc919444e7ea131f37341d773a405cc9e189fca1c581c5"}
+    ]
+  },
+  "control_plane_audit": {
+    "status": "passed",
+    "evidence": [
+      {"identity_class": "api", "operation": "workspace_writer_role", "result": "absent", "correlation_evidence": "sha256:96d58513b586849f2555bbb5f2e03ef8f00fad7d59fc21613f8170836167755e"},
+      {"identity_class": "coordinator", "operation": "workspace_writer_role", "result": "absent", "correlation_evidence": "sha256:96d58513b586849f2555bbb5f2e03ef8f00fad7d59fc21613f8170836167755e"},
+      {"identity_class": "curator", "operation": "workspace_writer_role", "result": "absent", "correlation_evidence": "sha256:96d58513b586849f2555bbb5f2e03ef8f00fad7d59fc21613f8170836167755e"},
+      {"identity_class": "publisher", "operation": "workspace_writer_role", "result": "contributor", "correlation_evidence": "sha256:96d58513b586849f2555bbb5f2e03ef8f00fad7d59fc21613f8170836167755e"},
+      {"identity_class": "curator", "operation": "deployed_tool_allowlist", "result": "read_only", "correlation_evidence": "sha256:64ec99fe226c1f2660a6bbcdb3f2ad0ee3f8c510ad2827c272320b4849449fdb"}
+    ]
+  },
+  "scheduled_job": {
+    "name": "aiops-dev-ontology-discovery",
+    "schedule": "*/15 * * * *",
+    "recent_execution_statuses": ["Succeeded", "Succeeded", "Succeeded", "Succeeded", "Succeeded"]
+  }
+}

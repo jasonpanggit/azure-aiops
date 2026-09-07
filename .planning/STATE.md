@@ -10,7 +10,7 @@ progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 131
+  completed_plans: 135
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -25,6 +25,10 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-07** COMPLETE — Scheduled finite ontology Job, proposal-only Foundry curator, isolated Fabric state/canary workspaces, and live publisher separation evidence
+- **13-06** COMPLETE — Generation resolver and five-family consumer cutover compatibility with old/new/rollback contract coverage
+- **13-05** COMPLETE — Durable proposal lifecycle and hard shadow admission that excludes all model edges from authoritative candidates
+- **13-04** COMPLETE — Bounded proposal-only curator and exactly four scoped read-only ontology evidence tools
 - **13-02** COMPLETE — Durable run identity, CAS claims, renewable leases/fences, bounded lifecycle controls, enqueue-only Manual Sync, and finite run-once CLI
 - **13-03** COMPLETE — Five-way incremental discovery, exact 50/200/40 evidence bounds, and restart-durable pending edges and batches
 - **13-11** COMPLETE — Content-addressed immutable EvaluationSnapshots, CAS latest pointer, and fail-closed freshness reconstruction

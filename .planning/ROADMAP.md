@@ -806,17 +806,17 @@ Plans:
 **Goal:** Keep the Fabric ontology current without an open browser or manual Sync click by running durable, incremental discovery on a schedule, using a scoped Microsoft Foundry agent to propose evidence-backed relationships, and publishing only relationships that pass deterministic governance, validation, concurrency, and audit controls.
 **Requirements**: AUTO-ONT-01, AUTO-ONT-02, AUTO-ONT-03, AUTO-ONT-04, AUTO-ONT-05, AUTO-ONT-06, AUTO-ONT-07
 **Depends on:** Phase 10, Phase 12
-**Plans:** 4/15 plans executed
+**Plans:** 8/15 plans executed
 
 Plans:
 
 - [x] 13-01-PLAN.md — Fail-fast Phase 10/12 preflight and non-authoritative Wave 0 contract tracer
 - [x] 13-02-PLAN.md — Durable coordinator, run-once CLI, and enqueue-only Manual Sync intake
 - [x] 13-03-PLAN.md — Incremental evidence, exact batch bounds, pending edges, and reconciliation
-- [ ] 13-04-PLAN.md — Bounded proposal-only prompt curator and four read-only tools
-- [ ] 13-05-PLAN.md — Hard server-side shadow admission and disabled pair-release eligibility machinery
-- [ ] 13-06-PLAN.md — Complete consumer inventory, generation resolver, and cutover compatibility
-- [ ] 13-07-PLAN.md — ACA Job, prompt-agent provisioning, publisher identity, and live RBAC evidence
+- [x] 13-04-PLAN.md — Bounded proposal-only prompt curator and four read-only tools
+- [x] 13-05-PLAN.md — Hard server-side shadow admission and disabled pair-release eligibility machinery
+- [x] 13-06-PLAN.md — Complete consumer inventory, generation resolver, and cutover compatibility
+- [x] 13-07-PLAN.md — ACA Job, prompt-agent provisioning, publisher identity, and live RBAC evidence
 - [ ] 13-08-PLAN.md — Blocking consumer-cutover, publisher-RBAC, and agent-runtime decisions
 - [ ] 13-09-PLAN.md — Service-enforced CAS/fencing, immutable deterministic publication tracer, and rollback
 - [ ] 13-10-PLAN.md — Manual Sync delegation through the dedicated publisher

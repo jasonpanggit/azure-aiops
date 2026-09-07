@@ -108,6 +108,20 @@ variable "image_tag" {
   default     = "v1"
 }
 
+variable "ontology_discovery_image_tag" {
+  description = "Optional immutable API image tag used only by the Phase 13 ontology coordinator and RBAC-validation Jobs. Empty inherits image_tag."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.ontology_discovery_image_tag == "" ||
+      can(regex("^[0-9A-Za-z_][0-9A-Za-z_.-]{0,127}$", var.ontology_discovery_image_tag))
+    )
+    error_message = "ontology_discovery_image_tag must be empty or a valid 1-128 character OCI/Docker tag."
+  }
+}
+
 variable "api_image_repository" {
   description = "Repository name for the Operations API image."
   type        = string
@@ -574,6 +588,18 @@ variable "create_foundry_agent" {
   EOT
   type        = bool
   default     = true
+}
+
+variable "enable_ontology_curator_agent" {
+  description = <<-EOT
+    Independently publish the Phase 13 ontology curator prompt agent.
+
+    This switch is intentionally separate from
+    enable_foundry_specialist_candidate_publish: enabling the ontology curator
+    must not publish or promote the complete interactive specialist portfolio.
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "enable_foundry_knowledge_search" {
