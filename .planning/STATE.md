@@ -10,7 +10,7 @@ progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 137
+  completed_plans: 138
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -25,6 +25,7 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-10** COMPLETE — Manual and scheduled durable runs share one identity-bound publisher path, with restart-safe Sync/health compatibility and no API-owned authoritative writer
 - **13-09** COMPLETE — Service-enforced ETag CAS, immutable audited deterministic generations, hard shadow exclusion, five-family consumer cutover, stale-writer fencing, and rollback
 - **13-08** COMPLETE — Approved pointer cutover and publisher RBAC from executed evidence; retained the proposal-only prompt-agent runtime
 - **13-07** COMPLETE — Scheduled finite ontology Job, proposal-only Foundry curator, isolated Fabric state/canary workspaces, and live publisher separation evidence

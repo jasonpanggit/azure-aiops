@@ -96,7 +96,7 @@ Requirements for the controlled Azure pilot.
 
 ### Autonomous Ontology Discovery
 
-- [ ] **AUTO-ONT-01**: A durable, browser-independent scheduler discovers due connection work, prevents concurrent publication for the same scope, resumes safely after restart, and exposes bounded retry, timeout, cancellation, and run-now controls.
+- [x] **AUTO-ONT-01**: A durable, browser-independent scheduler discovers due connection work, prevents concurrent publication for the same scope, resumes safely after restart, and exposes bounded retry, timeout, cancellation, and run-now controls.
 - [ ] **AUTO-ONT-02**: Incremental discovery identifies added, changed, retired, unresolved, and stale ontology inputs from authoritative inventory and operational evidence, while scheduled full reconciliation detects drift.
 - [ ] **AUTO-ONT-03**: A versioned Microsoft Foundry ontology agent receives only scope-filtered read-only evidence and the approved ontology contract, and returns structured, cited relationship proposals without direct authoritative Fabric write access.
 - [ ] **AUTO-ONT-04**: Relationship proposals have deterministic identity, provenance, confidence, evidence, lifecycle, and review state; promotion enforces known endpoints, approved predicates and type pairs, scope, contradiction checks, and explicit human-review or allowlisted auto-accept policy.
@@ -209,7 +209,7 @@ Traceability is populated during roadmap creation.
 | TOPO-03 | Phase 12 | Complete |
 | TOPO-04 | Phase 12 | Complete |
 | TOPO-05 | Phase 12 | Complete |
-| AUTO-ONT-01 | Phase 13 | Pending |
+| AUTO-ONT-01 | Phase 13 | Complete |
 | AUTO-ONT-02 | Phase 13 | Pending |
 | AUTO-ONT-03 | Phase 13 | Pending |
 | AUTO-ONT-04 | Phase 13 | Pending |
