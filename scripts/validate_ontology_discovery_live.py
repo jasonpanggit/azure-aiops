@@ -736,7 +736,7 @@ def _template_projection(job: Mapping[str, object]) -> dict[str, object]:
         )
     manual = configuration.get("manualTriggerConfig")
     manual = manual if isinstance(manual, Mapping) else {}
-    identity = properties.get("identity")
+    identity = job.get("identity") or properties.get("identity")
     identity = identity if isinstance(identity, Mapping) else {}
     assigned = identity.get("userAssignedIdentities")
     assigned = assigned if isinstance(assigned, Mapping) else {}
@@ -746,7 +746,10 @@ def _template_projection(job: Mapping[str, object]) -> dict[str, object]:
             "type": identity.get("type"),
             "user_assigned_identity_keys": sorted(str(key) for key in assigned),
         },
-        "trigger_type": properties.get("triggerType"),
+        "trigger_type": (
+            configuration.get("triggerType")
+            or properties.get("triggerType")
+        ),
         "timeout": configuration.get("replicaTimeout"),
         "retry_limit": configuration.get("replicaRetryLimit"),
         "parallelism": manual.get("parallelism"),
@@ -982,6 +985,136 @@ def validate_evidence_job_record(
         "record_hash": expected_record_hash,
         "entra_bound_record_hash": expected_bound_hash,
         "identity_hash": str(identity["object_id_hash"]),
+    }
+
+
+def _log_strings(value: object) -> list[str]:
+    if isinstance(value, Mapping):
+        rows: list[str] = []
+        for key, child in value.items():
+            if str(key).casefold() in {"log", "log_s", "message"} and isinstance(
+                child, str
+            ):
+                rows.append(child)
+            else:
+                rows.extend(_log_strings(child))
+        return rows
+    if isinstance(value, list):
+        rows = []
+        for child in value:
+            rows.extend(_log_strings(child))
+        return rows
+    if isinstance(value, str):
+        return value.splitlines()
+    return []
+
+
+def extract_evidence_job_record(logs: object) -> dict[str, object]:
+    """Extract exactly one closed collector record from ACA Job logs."""
+
+    matches: list[dict[str, object]] = []
+    for line in _log_strings(logs):
+        candidate = line.strip()
+        if not candidate.startswith("{") or not candidate.endswith("}"):
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(payload, dict)
+            and payload.get("schema_version") == "ontology-evidence-read.v1"
+        ):
+            matches.append(payload)
+    if len(matches) != 1:
+        raise EvidenceError(
+            "evidence Job logs must contain exactly one closed console record"
+        )
+    sanitize_deployed_evidence(matches[0])
+    return matches[0]
+
+
+def validate_evidence_job_boundary(
+    *,
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+    expected_template_hash: str,
+    expected_identity_resource_hash: str,
+    expected_principal_hash: str,
+    role_snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate the live fixed Job plus normalized Fabric/OneLake role rows."""
+
+    assert_fixed_template(expected_template_hash, before, after)
+    projection = _template_projection(before)
+    identity = projection.get("identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    identity_keys = identity.get("user_assigned_identity_keys")
+    identity_keys = identity_keys if isinstance(identity_keys, list) else []
+    if (
+        identity.get("type") != "UserAssigned"
+        or len(identity_keys) != 1
+        or _full_opaque(identity_keys[0]) != expected_identity_resource_hash
+    ):
+        raise EvidenceError("evidence Job live identity is not exact")
+    if (
+        projection.get("trigger_type") != "Manual"
+        or projection.get("retry_limit") != 0
+        or projection.get("parallelism") != 1
+        or projection.get("completion_count") != 1
+    ):
+        raise EvidenceError("evidence Job live template is not fixed manual-only")
+
+    workspace_roles = role_snapshot.get("workspace_roles")
+    workspace_roles = (
+        workspace_roles if isinstance(workspace_roles, list) else []
+    )
+    onelake_roles = role_snapshot.get("onelake_roles")
+    onelake_roles = onelake_roles if isinstance(onelake_roles, list) else []
+    if (
+        len(workspace_roles) != 5
+        or any(
+            not isinstance(row, Mapping)
+            or row.get("role") != "Viewer"
+            or row.get("principal_hash") != expected_principal_hash
+            or row.get("production_workspace") is not False
+            for row in workspace_roles
+        )
+    ):
+        raise EvidenceError("evidence Job Fabric Viewer roles are not exact")
+    if (
+        len(onelake_roles) != 5
+        or any(
+            not isinstance(row, Mapping)
+            or row.get("actions") != ["Read"]
+            or row.get("paths") != ["*"]
+            or row.get("object_type") != "ManagedIdentity"
+            or row.get("principal_hash") != expected_principal_hash
+            or row.get("production_workspace") is not False
+            for row in onelake_roles
+        )
+    ):
+        raise EvidenceError("evidence Job OneLake Read roles are not exact")
+    if role_snapshot.get("job_control_actions") != []:
+        raise EvidenceError("evidence Job has Job-control authority")
+    if role_snapshot.get("mutation_actions") != []:
+        raise EvidenceError("evidence Job has mutation authority")
+
+    return {
+        "identity_hash": expected_principal_hash,
+        "expected_identity_hash": expected_principal_hash,
+        "template_hash": expected_template_hash,
+        "expected_template_hash": expected_template_hash,
+        "template_unchanged": True,
+        "attached_identity_count": 1,
+        "trigger": "Manual",
+        "overrides": [],
+        "workspace_roles": ["Viewer"] * 5,
+        "onelake_actions": ["Read"] * 5,
+        "onelake_paths": ["*"] * 5,
+        "job_control_actions": [],
+        "mutation_actions": [],
+        "production_workspace_access": False,
     }
 
 

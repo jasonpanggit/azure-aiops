@@ -621,6 +621,7 @@ def test_evidence_job_log_parser_accepts_exactly_one_closed_console_record() -> 
 def test_evidence_job_boundary_requires_fixed_identity_template_and_roles() -> None:
     before = _template()
     before["properties"]["triggerType"] = "Manual"
+    before["properties"]["configuration"]["replicaRetryLimit"] = 0
     before["properties"]["identity"]["userAssignedIdentities"] = {
         "/subscriptions/sub/resourceGroups/rg/providers/"
         "Microsoft.ManagedIdentity/userAssignedIdentities/azure-mcp": {}
