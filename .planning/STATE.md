@@ -5,7 +5,7 @@ milestone_name: milestone
 current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
 stopped_at: Blocked at 03.1-19 exact live source evidence after successful Fabric publication
-last_updated: "2026-09-07T15:14:35Z"
+last_updated: "2026-09-07T15:53:56Z"
 progress:
   total_phases: 17
   completed_phases: 10
@@ -25,6 +25,7 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-19** COMPLETE — Exact production API/coordinator/publisher roots, fixed coordinator-UAI fixture Jobs, isolated Fabric capabilities, immutable integrated images, zero-destroy apply, and sanitized live template/RBAC proof
 - **13-18** COMPLETE — Four-root read-only API, immutable run/rollback/maintenance intake, distinct maintenance RBAC, and reconstructed API/coordinator/publisher topology
 - **13-16** COMPLETE — OneLake-backed production coordinator with reauthorized command intake, fair restart-safe eligible epochs, durable reconciliation parity, hard-shadow Foundry curation, and publisher dispatch
 - **13-15** COMPLETE — Exact alert coverage and credentialed shadow validation with durable sanitized evidence, zero authoritative model edges, deterministic rollback, and every pair BLOCKED/PENDING
@@ -313,6 +314,9 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 13]: Plan 13-17: publisher Fabric auth always replaces shared YAML identity with AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID.
 - [Phase 13]: API ontology authority is limited to four explicit roots: connection read, state read, publication read, and command create/read/status; dispatch and publisher capabilities remain absent.
 - [Phase 13]: Ontology maintenance is a non-inherited grant; only the coordinator may reauthorize the command and CAS the reconciliation cadence.
+- [Phase 13]: Plan 13-19 validation changes only the coordinator environment and ConnectionRegistry root; production registry construction, eligibility, reauthorization, retry, and restart logic remain identical.
+- [Phase 13]: Plan 13-19 fixture preparation and cleanup use fixed templates under the existing coordinator UAI; no fixture identity or runtime Job-start grant exists.
+- [Phase 13]: Plan 13-19 deployment evidence is hash-only and fails closed when superseded; completion requires a fresh applied snapshot bound to exact immutable image and template digests.
 
 ## Session
 
@@ -336,5 +340,4 @@ current_phase_name: Exposure Reliability and Scale
 
 ### Blockers
 
-- Phase 13 Plan 19 Task 2: local implementation and exact zero-destroy plan validation are complete, and all Plan 19 Jobs/Fabric roots were provisioned, but the retained live-image snapshot is superseded by concurrent Exposure deployment work. Shared deployment freeze is active. Do not build, plan against cloud, apply, mutate Azure/Fabric, or start a Job until Exposure reconciliation finishes, shared main is clean, and the deployment lane is explicitly released.
 - Plan 03.1-19: exact supported Defender digest to Container Insights workload round trip is unavailable; Phase 4 remains blocked.
