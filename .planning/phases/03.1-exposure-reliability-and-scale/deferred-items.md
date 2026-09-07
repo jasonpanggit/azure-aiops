@@ -20,3 +20,16 @@
   traversal assertion. Plan 03.1-25 changes only web detail routes, query
   continuity, shared web types/services, and tests; no ontology, network, backend,
   or deployment file was modified, so the unrelated failure was not changed.
+
+## 2026-09-07 — Plan 03.1-19
+
+- The full backend suite retained the previously recorded
+  `tests/test_graph_network_traversal.py::test_private_endpoint_exposure_path_reaches_the_backing_resource`
+  failure and also reported two failures in
+  `tests/test_operational_context_graph_v2_hardening.py`:
+  `test_retired_relationship_with_reclassified_endpoint_type_passes_validation`
+  and `test_synchronize_resolves_deferred_edge_once_target_entity_appears`.
+  All three stop at ontology graph validation. Plan 03.1-19 did not modify
+  `src/ontology/graph_queries.py`, `src/ontology/ontology_sync.py`, or either
+  failing test file; focused Phase 11, Phase 12, Phase 13, remediation, Plan 19,
+  Terraform, and web suites passed.

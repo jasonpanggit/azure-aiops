@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
-stopped_at: Completed 03.1-25-PLAN.md
-last_updated: "2026-09-06T16:35:45.198Z"
+stopped_at: Blocked at 03.1-19 live exact-evidence gate
+last_updated: "2026-09-07T05:02:54.758Z"
 progress:
   total_phases: 17
   completed_phases: 10
-  total_plans: 158
-  completed_plans: 135
+  total_plans: 159
+  completed_plans: 134
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -291,9 +291,9 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Session
 
-**Last session:** 2026-09-06T16:35:45.182Z
-**Stopped at:** Completed 03.1-25-PLAN.md
-**Resume file:** None
+**Last session:** 2026-09-07T05:02:54.739Z
+**Stopped at:** Blocked at 03.1-19 live exact-evidence gate
+**Resume file:** .planning/phases/03.1-exposure-reliability-and-scale/03.1-19-LIVE-EVIDENCE.json
 
 ## Accumulated Context
 
@@ -311,4 +311,4 @@ current_phase_name: Exposure Reliability and Scale
 
 ### Blockers
 
-None
+- Plan 03.1-19: exact supported Defender digest to Container Insights workload round trip is unavailable; Phase 4 remains blocked.
