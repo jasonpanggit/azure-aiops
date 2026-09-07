@@ -12,6 +12,7 @@ from scripts.validate_ontology_discovery_live import (
     EXPECTED_CURATOR_TOOLS,
     FIXED_JOB_NAMES,
     EvidenceError,
+    _full_opaque,
     _parser,
     assert_fixed_template,
     assert_stage_transition,
@@ -19,6 +20,7 @@ from scripts.validate_ontology_discovery_live import (
     evaluate_lifecycle_evidence,
     evaluate_publication_evidence,
     expand_role_actions,
+    extract_evidence_job_record,
     isolated_azure_environment,
     job_template_hash,
     load_plan19_deployment_contract,
@@ -26,6 +28,7 @@ from scripts.validate_ontology_discovery_live import (
     main,
     sanitize_deployed_evidence,
     validate_azure_contexts,
+    validate_evidence_job_boundary,
     validate_evidence_job_record,
     write_resume_checkpoint,
 )
@@ -570,6 +573,108 @@ def test_evidence_job_record_is_entra_bound_closed_and_exact_identity() -> None:
         validate_evidence_job_record(
             wrong,
             expected_object_id_hash=identity_hash,
+        )
+
+
+def test_evidence_job_log_parser_accepts_exactly_one_closed_console_record() -> None:
+    from scripts.collect_ontology_evidence import build_closed_record
+
+    record = build_closed_record(
+        identity={
+            "client_id_hash": "sha256:" + "1" * 64,
+            "object_id_hash": "sha256:" + "2" * 64,
+            "managed_identity_resource_hash": "sha256:" + "3" * 64,
+            "entra_signature_hash": "sha256:" + "4" * 64,
+        },
+        observations={
+            name: {"count": 1, "hashes": ["sha256:" + char * 64]}
+            for name, char in zip(
+                ("arg", "fabric", "onelake", "api"),
+                ("5", "6", "7", "8"),
+                strict=True,
+            )
+        },
+        capabilities={
+            "azure": ["read"],
+            "fabric": ["Viewer"],
+            "onelake": ["Read"],
+            "denied": ["job_start", "mutation"],
+        },
+        facts={
+            "fixture": {"active_drill_count": 0},
+            "registry": {"active_fixture_count": 0},
+            "epoch": {"active_epoch_count": 0},
+        },
+    )
+    logs = [
+        {"Log_s": "system startup"},
+        {"Log_s": json.dumps(record, separators=(",", ":"))},
+    ]
+
+    assert extract_evidence_job_record(logs) == record
+    with pytest.raises(EvidenceError, match="exactly one"):
+        extract_evidence_job_record(
+            [*logs, {"Log_s": json.dumps(record, separators=(",", ":"))}]
+        )
+
+
+def test_evidence_job_boundary_requires_fixed_identity_template_and_roles() -> None:
+    before = _template()
+    before["properties"]["triggerType"] = "Manual"
+    before["properties"]["identity"]["userAssignedIdentities"] = {
+        "/subscriptions/sub/resourceGroups/rg/providers/"
+        "Microsoft.ManagedIdentity/userAssignedIdentities/azure-mcp": {}
+    }
+    after = json.loads(json.dumps(before))
+    identity_resource = next(
+        iter(
+            before["properties"]["identity"]["userAssignedIdentities"]
+        )
+    )
+    expected_identity_hash = "sha256:" + "1" * 64
+    roles = {
+        "workspace_roles": [
+            {
+                "role": "Viewer",
+                "principal_hash": expected_identity_hash,
+                "production_workspace": False,
+            }
+            for _ in range(5)
+        ],
+        "onelake_roles": [
+            {
+                "actions": ["Read"],
+                "paths": ["*"],
+                "object_type": "ManagedIdentity",
+                "principal_hash": expected_identity_hash,
+                "production_workspace": False,
+            }
+            for _ in range(5)
+        ],
+        "job_control_actions": [],
+        "mutation_actions": [],
+    }
+    result = validate_evidence_job_boundary(
+        before=before,
+        after=after,
+        expected_template_hash=job_template_hash(before),
+        expected_identity_resource_hash=_full_opaque(identity_resource),
+        expected_principal_hash=expected_identity_hash,
+        role_snapshot=roles,
+    )
+    assert result["workspace_roles"] == ["Viewer"] * 5
+    assert result["onelake_actions"] == ["Read"] * 5
+
+    widened = json.loads(json.dumps(roles))
+    widened["onelake_roles"][0]["actions"] = ["ReadWrite"]
+    with pytest.raises(EvidenceError, match="OneLake"):
+        validate_evidence_job_boundary(
+            before=before,
+            after=after,
+            expected_template_hash=job_template_hash(before),
+            expected_identity_resource_hash=_full_opaque(identity_resource),
+            expected_principal_hash=expected_identity_hash,
+            role_snapshot=widened,
         )
 
 
