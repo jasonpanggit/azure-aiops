@@ -169,6 +169,9 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_zero" {
   scopes               = [azurerm_application_insights.main.id]
   severity             = 0
   description          = "Exposure effective rows reached the configured false-clear floor in one ingestion cycle."
+  # AppMetrics is materialized in the workspace only after the first custom
+  # metric arrives. Provision the fail-closed rule before that first cycle.
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
@@ -198,15 +201,16 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_zero" {
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_drop" {
-  count                = local.alerting_enabled ? 1 : 0
-  name                 = "${local.base}-exposure-row-drop"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 0
-  description          = "Exposure effective-row drop exceeded the configured last-known-good ratio in one ingestion cycle."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-row-drop"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 0
+  description           = "Exposure effective-row drop exceeded the configured last-known-good ratio in one ingestion cycle."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
@@ -235,15 +239,16 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_drop" {
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_source_health" {
-  count                = local.alerting_enabled ? 1 : 0
-  name                 = "${local.base}-exposure-source-health"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 1
-  description          = "An Exposure source failed, became unavailable, or exceeded its allowed age in one ingestion cycle."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-source-health"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 1
+  description           = "An Exposure source failed, became unavailable, or exceeded its allowed age in one ingestion cycle."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
@@ -279,15 +284,16 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_source_healt
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_merge_conflict" {
-  count                = local.alerting_enabled ? 1 : 0
-  name                 = "${local.base}-exposure-merge-conflict"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 0
-  description          = "Exposure Gold merge or generation activation reported a conflict."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-merge-conflict"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 0
+  description           = "Exposure Gold merge or generation activation reported a conflict."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
@@ -317,15 +323,16 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_merge_confli
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_enrichment_quality" {
-  count                = local.alerting_enabled ? 1 : 0
-  name                 = "${local.base}-exposure-enrichment-quality"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 2
-  description          = "Exposure enrichment success ratio degraded below its one-cycle quality threshold."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-enrichment-quality"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 2
+  description           = "Exposure enrichment success ratio degraded below its one-cycle quality threshold."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
@@ -354,15 +361,16 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_enrichment_q
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_coverage_ratio" {
-  count                = local.alerting_enabled ? 1 : 0
-  name                 = "${local.base}-exposure-coverage-ratio"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 1
-  description          = "Exposure represented-to-total coverage degraded below its one-cycle threshold."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-coverage-ratio"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 1
+  description           = "Exposure represented-to-total coverage degraded below its one-cycle threshold."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
@@ -391,15 +399,16 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_coverage_rat
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_reconciliation_drift" {
-  count                = local.alerting_enabled ? 1 : 0
-  name                 = "${local.base}-exposure-reconciliation-drift"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 0
-  description          = "Exposure old/new semantic reconciliation exceeded its exact mismatch policy."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-reconciliation-drift"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 0
+  description           = "Exposure old/new semantic reconciliation exceeded its exact mismatch policy."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
@@ -436,15 +445,16 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_reconciliati
 }
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_query_slo" {
-  count                = local.alerting_enabled ? 1 : 0
-  name                 = "${local.base}-exposure-query-slo"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  evaluation_frequency = local.exposure_alert_evaluation_frequency
-  window_duration      = local.exposure_ingestion_cycle_window
-  scopes               = [azurerm_application_insights.main.id]
-  severity             = 1
-  description          = "Exposure scoped query latency or error count exceeded its one-cycle budget."
+  count                 = local.alerting_enabled ? 1 : 0
+  name                  = "${local.base}-exposure-query-slo"
+  resource_group_name   = azurerm_resource_group.main.name
+  location              = azurerm_resource_group.main.location
+  evaluation_frequency  = local.exposure_alert_evaluation_frequency
+  window_duration       = local.exposure_ingestion_cycle_window
+  scopes                = [azurerm_application_insights.main.id]
+  severity              = 1
+  description           = "Exposure scoped query latency or error count exceeded its one-cycle budget."
+  skip_query_validation = true
 
   criteria {
     query = <<-KQL
