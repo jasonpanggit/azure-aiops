@@ -95,6 +95,17 @@ import type {
   OsInventoryCollection,
   OsInventoryDetail,
   InventoryNarrative,
+  OntologyAutomationStatus,
+  OntologyEvaluation,
+  OntologyEvaluationSnapshot,
+  OntologyGeneration,
+  OntologyProposal,
+  OntologyProposalReview,
+  OntologyProposalReviewRequest,
+  OntologyRollbackRequest,
+  OntologyRun,
+  OntologyRunMutationRequest,
+  OntologyRunNowRequest,
   SoftwareInventoryCollection,
   SoftwareInventoryDetail,
   SoftwareMapping,
@@ -222,6 +233,133 @@ export const fabricMedallionApi = {
   capabilities: (scope: ScopeSelection = {}) =>
     apiRequest<FabricCapabilities>("/fabric-medallion/capabilities", {
       query: scopeToSearchParams(scope),
+    }),
+};
+
+function ontologyQuery(
+  connectionId: string,
+  scope: ScopeSelection,
+  offset?: number,
+  limit?: number,
+): URLSearchParams {
+  const query = scopeToSearchParams(scope);
+  query.set("connection_id", connectionId);
+  if (offset !== undefined) query.set("offset", String(offset));
+  if (limit !== undefined) query.set("limit", String(limit));
+  return query;
+}
+
+/**
+ * Connection-scoped client for durable ontology state. Callers must pass the
+ * effective UI scope and the selected connection on every request; mutations
+ * additionally carry the server revision or pointer ETag they observed.
+ */
+export const ontologyAutomationApi = {
+  status: (connectionId: string, scope: ScopeSelection) =>
+    apiRequest<OntologyAutomationStatus>("/ontology-discovery/status", {
+      query: ontologyQuery(connectionId, scope),
+    }),
+
+  runs: (connectionId: string, scope: ScopeSelection, offset = 0, limit = 100) =>
+    apiRequest<OntologyRun[]>("/ontology-discovery/runs", {
+      query: ontologyQuery(connectionId, scope, offset, limit),
+    }),
+
+  run: (connectionId: string, runId: string, scope: ScopeSelection) =>
+    apiRequest<OntologyRun>(`/ontology-discovery/runs/${encodeURIComponent(runId)}`, {
+      query: ontologyQuery(connectionId, scope),
+    }),
+
+  runNow: (connectionId: string, scope: ScopeSelection, payload: OntologyRunNowRequest) =>
+    apiRequest<OntologyRun>("/ontology-discovery/runs", {
+      method: "POST",
+      query: ontologyQuery(connectionId, scope),
+      body: payload,
+    }),
+
+  cancelRun: (
+    connectionId: string,
+    runId: string,
+    scope: ScopeSelection,
+    payload: OntologyRunMutationRequest,
+  ) =>
+    apiRequest<OntologyRun>(`/ontology-discovery/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+      query: ontologyQuery(connectionId, scope),
+      body: payload,
+    }),
+
+  retryRun: (
+    connectionId: string,
+    runId: string,
+    scope: ScopeSelection,
+    payload: OntologyRunMutationRequest,
+  ) =>
+    apiRequest<OntologyRun>(`/ontology-discovery/runs/${encodeURIComponent(runId)}/retry`, {
+      method: "POST",
+      query: ontologyQuery(connectionId, scope),
+      body: payload,
+    }),
+
+  proposals: (connectionId: string, scope: ScopeSelection, offset = 0, limit = 100) =>
+    apiRequest<OntologyProposal[]>("/ontology-discovery/proposals", {
+      query: ontologyQuery(connectionId, scope, offset, limit),
+    }),
+
+  proposal: (connectionId: string, proposalId: string, scope: ScopeSelection) =>
+    apiRequest<OntologyProposal>(
+      `/ontology-discovery/proposals/${encodeURIComponent(proposalId)}`,
+      { query: ontologyQuery(connectionId, scope) },
+    ),
+
+  reviewProposal: (
+    connectionId: string,
+    proposalId: string,
+    scope: ScopeSelection,
+    payload: OntologyProposalReviewRequest,
+  ) =>
+    apiRequest<OntologyProposalReview>(
+      `/ontology-discovery/proposals/${encodeURIComponent(proposalId)}/review`,
+      {
+        method: "POST",
+        query: ontologyQuery(connectionId, scope),
+        body: payload,
+      },
+    ),
+
+  generation: (connectionId: string, scope: ScopeSelection) =>
+    apiRequest<OntologyGeneration>("/ontology-discovery/generations", {
+      query: ontologyQuery(connectionId, scope),
+    }),
+
+  publications: (connectionId: string, scope: ScopeSelection, offset = 0, limit = 100) =>
+    apiRequest<OntologyRun[]>("/ontology-discovery/publications", {
+      query: ontologyQuery(connectionId, scope, offset, limit),
+    }),
+
+  rollbackGeneration: (
+    connectionId: string,
+    generationId: string,
+    scope: ScopeSelection,
+    payload: OntologyRollbackRequest,
+  ) =>
+    apiRequest<OntologyGeneration>(
+      `/ontology-discovery/generations/${encodeURIComponent(generationId)}/rollback`,
+      {
+        method: "POST",
+        query: ontologyQuery(connectionId, scope),
+        body: payload,
+      },
+    ),
+
+  evaluation: (connectionId: string, scope: ScopeSelection) =>
+    apiRequest<OntologyEvaluation>("/ontology-discovery/evaluation", {
+      query: ontologyQuery(connectionId, scope),
+    }),
+
+  evaluations: (connectionId: string, scope: ScopeSelection, offset = 0, limit = 100) =>
+    apiRequest<OntologyEvaluationSnapshot[]>("/ontology-discovery/evaluations", {
+      query: ontologyQuery(connectionId, scope, offset, limit),
     }),
 };
 
