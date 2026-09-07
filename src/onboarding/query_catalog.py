@@ -53,6 +53,13 @@ class QueryCatalog:
                 "defender",
                 "SecurityResources",
                 "SecurityResources | where type startswith 'microsoft.security/' "
+                "| where type !in~ ("
+                "'microsoft.security/assessments', "
+                "'microsoft.security/assessments/subassessments', "
+                "'microsoft.security/locations/alerts', "
+                "'microsoft.security/attackpaths', "
+                "'microsoft.security/securescores', "
+                "'microsoft.security/securescores/securescorecontrols') "
                 "| extend resourceId=tostring(properties.resourceDetails.Id) "
                 "| project id, name, type, subscriptionId, resourceId, properties",
                 False,
