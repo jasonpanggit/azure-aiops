@@ -149,6 +149,12 @@ def freshness_source_family(source_family: str) -> str:
         return "enrichment"
     if value.startswith("defender"):
         return "defender"
+    if value.startswith("network_"):
+        # Network topology inventory (VNets, NSGs, firewall policies, gateways,
+        # etc. -- see onboarding.query_catalog.NETWORK_RESOURCE_TYPES) is ARM
+        # config data that changes about as often as container image scans,
+        # not real-time workload telemetry, so it shares the "images" cadence.
+        return "images"
     raise ValueError(f"Unknown Exposure freshness source family {source_family!r}")
 
 

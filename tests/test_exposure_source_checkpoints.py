@@ -798,6 +798,26 @@ def test_each_source_family_is_fresh_at_threshold_and_stale_at_plus_one_second(
     assert plus_one["freshness_source_family"] == source_family
 
 
+def test_network_topology_families_map_to_the_images_freshness_bucket() -> None:
+    """Regression: network ARG specs left `source_family` unset, so
+    ``AzureResourceGraphSource`` fell back to the query name (e.g.
+    ``network_firewall_policies``, per ``onboarding.query_catalog
+    .NETWORK_RESOURCE_TYPES``). ``_source_partition_status`` then called
+    ``freshness_source_family`` on that raw name for every ARG-backed
+    connection, and every network family raised ``ValueError`` because none
+    of the five governed Exposure buckets recognized a ``network_`` prefix
+    -- crashing the whole inventory sync (not just the network partition)
+    with "Unknown Exposure freshness source family 'network_firewall_policies'".
+    """
+
+    from fabric.config import SourceFreshnessThresholds, freshness_source_family
+    from onboarding.query_catalog import NETWORK_RESOURCE_TYPES
+
+    for family_name in NETWORK_RESOURCE_TYPES:
+        assert freshness_source_family(family_name) == "images"
+        assert SourceFreshnessThresholds().threshold_for(family_name) == 86400
+
+
 def test_fabric_source_freshness_defaults_and_positive_overrides(tmp_path) -> None:
     from fabric.config import FabricRuntimeConfig
 
