@@ -12,14 +12,17 @@ requires:
     provides: Manifest-derived specialist and Foundry runtime contracts
 provides:
   - Durable principal- and scope-bound investigation threads across restart and replicas
+  - Bounded durable namespace cleanup with revision-conditional deletion
   - Fixed 12-turn, 1-hour idle, and 24-hour absolute continuity bounds with evidence aging
   - Conditional citation-closed executive synthesis over normalized transmitted evidence
+  - Canonical wall-clock enforcement across executive admission and provider I/O
+  - Collision-free current and retained citations across turns
   - Privacy-safe low-cardinality orchestration telemetry
   - Controlled continuity-unavailable and optimistic-conflict production responses
 affects: [11-14, 11-15, 11-16]
 actuals:
   tasks: 2
-  commits: 18
+  commits: 26
 tech-stack:
   added: []
   patterns:
@@ -28,6 +31,9 @@ tech-stack:
     - Principal and effective scope are revalidated from durable state on every operation
     - Scope narrowing is persisted before history or turn success and can never widen back
     - Executive validation uses only evidence IDs present in the exact bounded provider payload
+    - Foundry JSON is structurally bounded before serialization and never character-sliced
+    - Durable cleanup pages the thread namespace and conditionally deletes the exact revision inspected
+    - Retained citations use deterministic thread/turn-qualified aliases while preserving source identity
     - Production continuity prefers strict document reads that distinguish absent data from unavailable or malformed data
     - Telemetry records controlled status and timing dimensions without prompts, identities, resource IDs, or evidence payloads
 key-files:
@@ -38,6 +44,7 @@ key-files:
     - src/operations/orchestration_service.py
     - src/operations/foundry_agent.py
     - src/operations/autonomous_investigation.py
+    - src/storage/onelake_documents.py
     - src/operations/orchestration_contract.py
     - src/api/telemetry.py
     - src/api/routers/copilot.py
@@ -45,6 +52,8 @@ key-files:
     - tests/test_investigation_thread_store.py
     - tests/test_copilot_evaluation_v2.py
     - tests/test_api_copilot_unified.py
+    - tests/test_foundry_agent.py
+    - tests/test_onelake_documents.py
 key-decisions:
   - "Thread state uses OneLakeDocumentStore.write(expected_revision=...) rather than last-writer-wins put(), with distinct thread_revision and storage revision fields."
   - "A configured durable store never returns a successful memory-only turn after read, write, or CAS failure; local memory-only behavior exists only when no durable adapter is configured."
@@ -53,6 +62,9 @@ key-decisions:
   - "Retained evidence is filtered by each turn's stored scope and marked historical until rechecked."
   - "Executive synthesis runs zero times for ordinary single-domain turns and at most once for explicit executive intent or two material cited domains."
   - "The synthesis allowlist is derived from the exact bounded normalized payload sent to the provider, preventing citations to retained entries truncated after the first 50."
+  - "The REST provider path has both caller-level wall-clock enforcement and deadline-aware response streaming, so slow-drip responses cannot reset the canonical deadline."
+  - "Durable expiry cleanup uses bounded OneLake namespace pages instead of a contended global index, covers idle and absolute expiry, and deletes only the inspected storage revision."
+  - "Every retained citation receives a deterministic thread/turn-qualified alias before synthesis; aliases actually used by synthesis are returned and persisted."
   - "Validated synthesis is stored on the canonical result and projected through Copilot and multi-agent production responses as an optional backward-compatible field."
   - "Continuity storage outages project as HTTP 503 and unresolved optimistic conflicts as HTTP 409."
 requirements-completed: [COP-01, COP-05]
@@ -76,7 +88,7 @@ coverage:
         ref: "tests/test_copilot_evaluation_v2.py tests/test_foundry_agent.py"
         status: pass
       - kind: api
-        ref: "tests/test_api_copilot_unified.py tests/test_api_multi_agent.py"
+        ref: "tests/test_api_copilot_unified.py tests/test_orchestration_parity.py"
         status: pass
     human_judgment: false
   - id: 11-06-03
@@ -93,7 +105,25 @@ status: complete
 
 # Phase 11 Plan 06: Durable Continuity, Conditional Synthesis, and Safe Telemetry Summary
 
+> **Corrective supersession (2026-09-07):** The prior completion evidence through
+> `6c3d5fbb` and its reported 290-test matrix is superseded. A late independent
+> review found seven defects that invalidated that completion claim. The
+> corrective pass from `f3d8a502` through `ff86b35c` reproduced the defects
+> test-first, fixed them, remediated all follow-up review findings, passed the
+> expanded 375-test backend matrix, and received a final independent no-findings
+> verdict. The authoritative evidence is recorded below.
+
 **Operations Copilot now carries an authorized investigation thread safely across navigation, replicas, and restart, while optional executive synthesis remains conditional and citation-closed and orchestration telemetry remains low-cardinality and privacy-safe.**
+
+## Corrective Pass
+
+- Replaced raw 24k character slicing with structurally bounded valid JSON. The executive citation allowlist is derived only from findings and retained entries present in the exact serialized payload.
+- Enforced remaining canonical wall-clock budget before executive admission and across provider execution. REST calls use a bounded worker guard plus deadline-aware chunk reads, and Agent Framework calls use `asyncio.wait_for`.
+- Replaced the process-wide durable thread index with bounded OneLake namespace paging. Cleanup discovers pre-existing documents after restart, covers idle and absolute expiry, limits scans and deletion attempts, and uses ETag/revision-conditional deletion so a refreshed thread survives a stale cleanup pass.
+- Redacted scope-less legacy turns to `historical_scope_unverified` with no evidence or citations instead of relabeling historical payload as current authorized evidence. Source ledgers remain unchanged.
+- Rebuilt CAS retry results before the retry append so the returned and persisted `thread_revision` matches the committed winner and both projections include a controlled reconciliation warning.
+- Qualified current tool citations by thread, predicted revision, and unique turn token. Retained citations receive deterministic thread/turn-qualified aliases, and authorized retained aliases actually used by synthesis are returned, persisted, and preserved by canonical route projection.
+- Added `/copilot/investigate-context` parity for `ThreadStoreUnavailable` as 503 and `ThreadRevisionConflict` as 409.
 
 ## Accomplishments
 
@@ -137,17 +167,28 @@ Canonical merge commits:
 - `e38dadd0` — merged manifest parity baseline `4446e098`
 - `2a24f602` — merged latest `origin/main` baseline `be8162eb`
 
+Corrective commits (authoritative):
+
+1. **Seven-defect RED:** `f3d8a502` — `test(11-06): reproduce continuity review defects`
+2. **Seven-defect GREEN:** `94da1f6d` — `fix(11-06): harden continuity review boundaries`
+3. **Bounded JSON compatibility:** `326c0e21` — `fix(11-06): preserve bounded prompt disclosure`
+4. **First-review remediation:** `19dd9932` — `fix(11-06): close independent review gaps`
+5. **Retained-citation RED:** `65d2cd82` — `test(11-06): reproduce retained citation collisions`
+6. **Retained-citation GREEN:** `3fe6b843` — `fix(11-06): qualify retained citations`
+7. **Final boundedness RED:** `2a7b2b09` — `test(11-06): reproduce boundedness review gaps`
+8. **Final boundedness GREEN:** `ff86b35c` — `fix(11-06): bound serialization and cleanup attempts`
+
 ## Verification
 
 | Gate | Command / scope | Result |
 |---|---|---|
-| Focused latest regressions | strict OneLake reads, bounded retained citation, history conflict projection, history narrowing CAS | pass |
-| Plan 11-06 focused suites | `test_investigation_thread_store.py`, `test_copilot_evaluation_v2.py`, `test_api_copilot_unified.py` | pass |
-| Final combined regression matrix | thread, synthesis, canonical Copilot, Foundry, orchestration parity/policy, multi-agent, ledger, legacy Copilot, MCP registry, and OneLake suites | **290 passed**, 1 pre-existing Starlette/httpx deprecation warning |
-| Lint | Ruff on all Plan 11-06 source and focused test files | pass |
-| Bytecode | `compileall` on `src` and focused tests | pass |
+| Focused corrective regressions | all seven late-review defects plus retained-citation, slow-drip timeout, restart cleanup, conditional-delete race, and bounded-failure tests | pass |
+| Plan 11-06 focused suites | `test_investigation_thread_store.py`, `test_copilot_evaluation_v2.py`, `test_api_copilot_unified.py`, `test_foundry_agent.py`, `test_onelake_documents.py` | pass |
+| Final combined regression matrix | current thread, synthesis, canonical Copilot, Foundry, orchestration parity/policy, ledger, context-specialist, incident, MCP registry, and OneLake suites | **375 passed**, 1 pre-existing Starlette/httpx deprecation warning |
+| Lint | `python3 -m ruff check src tests` | pass |
+| Bytecode | `python3 -m compileall -q src` | pass |
 | Whitespace | `git diff --check` | clean |
-| Independent comprehensive review | final branch through `6c3d5fbb` | pass; no remaining blockers |
+| Independent comprehensive review | complete corrective diff through `ff86b35c` | initial findings fixed; final focused re-review reports no significant issues |
 
 ## Review Hardening
 
@@ -162,6 +203,12 @@ The final behavior includes all review-mandated fixes:
 7. Production OneLake strict reads distinguish missing continuity from malformed or unavailable storage.
 8. Thread and legacy-binding conflicts project as controlled 409 responses; unavailable continuity projects as 503.
 9. History scope narrowing cannot return 200 until the narrowed durable scope is persisted, including one-retry/two-conflict behavior.
+10. Generic Foundry context remains valid JSON and at most 24,000 characters even with thousands of list-valued keys.
+11. Executive calls cannot outlive the canonical caller budget, including slow-drip REST responses.
+12. Cleanup discovers durable records without a global index and bounds scans and deletion attempts even when every delete fails.
+13. Scope-less historical payload is redacted until revalidated rather than imported under current authority.
+14. CAS retry persists the committed winner revision and reconciliation warning.
+15. Current and retained citation IDs cannot collide across turns; used retained aliases survive result and route projection.
 
 ## Deviations from Plan
 
@@ -180,11 +227,11 @@ The final behavior includes all review-mandated fixes:
 - **Issue:** Returning history after a CAS conflict could expose a narrowed projection while durable authority remained broad.
 - **Fix:** Authorization and history reload and retry narrowing once; sustained contention fails closed with a controlled conflict.
 
-## Baseline and Delivery Status
+## Corrective Baseline and Delivery Status
 
-- Final implementation HEAD before this summary: `6c3d5fbb0578a7762cdcff26f76f113ae4f68ef4`
-- Latest fetched and merged `origin/main`: `be8162eb3c8cb29a03c842da91bb17e4402dad25`
-- Merge-base with `origin/main`: `be8162eb3c8cb29a03c842da91bb17e4402dad25`
-- Concurrent Exposure work remained disjoint; no web, exposure, vulnerability, remediation, network, or Terraform implementation was changed by Plan 11-06 commits.
-- No shared planning state or roadmap file was edited by Plan 11-06; upstream planning changes entered only through the requested canonical merges.
+- Corrective implementation HEAD before this summary: `ff86b35c3709f8017da45b7a203854334946ad60`
+- Corrective range: `c5595f7a7790d7b6cd86cff8e6d53e10d38b314b..ff86b35c3709f8017da45b7a203854334946ad60`
+- Latest fetched `origin/main`: `c5595f7a7790d7b6cd86cff8e6d53e10d38b314b`
+- Merge-base with `origin/main`: `c5595f7a7790d7b6cd86cff8e6d53e10d38b314b`
+- The corrective pass remained backend-only; no Plan 11-14 web, Exposure, ontology, network, remediation, Terraform, `STATE.md`, or `ROADMAP.md` files were changed.
 - Nothing was pushed or deployed.
