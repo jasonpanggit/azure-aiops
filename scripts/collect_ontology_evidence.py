@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 
 import httpx
 from azure.identity import ManagedIdentityCredential
@@ -194,6 +195,7 @@ def build_closed_record(
     identity: Mapping[str, object],
     observations: Mapping[str, object],
     capabilities: Mapping[str, object],
+    facts: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Build the only console schema accepted by the Plan 20 validator."""
 
@@ -226,6 +228,11 @@ def build_closed_record(
         "capabilities": dict(capabilities),
         "observations": dict(observations),
     }
+    if facts is not None:
+        sanitized_facts = sanitize_closed_record(facts)
+        if not isinstance(sanitized_facts, Mapping):
+            raise EvidenceCollectionError("lifecycle facts are not closed")
+        record["facts"] = dict(sanitized_facts)
     record["record_hash"] = _hash(record)
     record["entra_bound_record_hash"] = _hash(
         {
@@ -234,6 +241,137 @@ def build_closed_record(
         }
     )
     return sanitize_closed_record(record)  # type: ignore[return-value]
+
+
+def _closed_hash(value: object) -> str:
+    return _hash(value) if value not in (None, "") else ""
+
+
+def summarize_lifecycle_documents(
+    *,
+    fixture: Mapping[str, object],
+    registry: Mapping[str, object],
+    state: Mapping[str, object],
+) -> dict[str, object]:
+    """Reduce durable lifecycle documents without retaining raw identifiers."""
+
+    drills_value = fixture.get("drills")
+    drills = (
+        [row for row in drills_value if isinstance(row, Mapping)]
+        if isinstance(drills_value, list)
+        else []
+    )
+    active = [row for row in drills if row.get("status") == "prepared"]
+    latest = drills[-1] if drills else {}
+    connection_ids = latest.get("connection_ids")
+    connection_ids = (
+        [str(value) for value in connection_ids]
+        if isinstance(connection_ids, list)
+        else []
+    )
+    receipts_value = latest.get("receipts")
+    receipts = (
+        [row for row in receipts_value if isinstance(row, Mapping)]
+        if isinstance(receipts_value, list)
+        else []
+    )
+    receipt_events = [
+        str(row.get("event") or "")
+        for row in receipts
+        if str(row.get("event") or "") in {"prepared", "cleaned", "swept"}
+    ]
+    ttl_bounded = False
+    try:
+        prepared_at = datetime.fromisoformat(str(latest.get("prepared_at")))
+        expires_at = datetime.fromisoformat(str(latest.get("expires_at")))
+        ttl_seconds = (expires_at - prepared_at).total_seconds()
+        ttl_bounded = 0 < ttl_seconds <= 7200
+    except (TypeError, ValueError):
+        pass
+
+    registry_rows_value = registry.get("connections")
+    registry_rows = (
+        [row for row in registry_rows_value if isinstance(row, Mapping)]
+        if isinstance(registry_rows_value, list)
+        else []
+    )
+    fixture_connections = [
+        row
+        for row in registry_rows
+        if str(row.get("connection_id") or "").startswith("ontology-fixture-")
+    ]
+
+    epochs_value = state.get("eligible_epochs")
+    epochs = (
+        [row for row in epochs_value if isinstance(row, Mapping)]
+        if isinstance(epochs_value, list)
+        else []
+    )
+    active_epochs = [row for row in epochs if row.get("status") == "active"]
+    latest_epoch = epochs[-1] if epochs else {}
+    members_value = latest_epoch.get("members")
+    members = members_value if isinstance(members_value, Mapping) else {}
+    member_rows: list[dict[str, object]] = []
+    order_value = latest_epoch.get("member_order")
+    order = (
+        [str(value) for value in order_value]
+        if isinstance(order_value, list)
+        else sorted(str(value) for value in members)
+    )
+    for member_id in order:
+        row = members.get(member_id)
+        row = row if isinstance(row, Mapping) else {}
+        outcome = str(row.get("outcome") or "")
+        reason = str(row.get("reason_code") or "")
+        if outcome not in {
+            "pending",
+            "succeeded",
+            "duplicate",
+            "exhausted_failure",
+            "excluded",
+        }:
+            outcome = "unknown"
+        member_rows.append(
+            {
+                "record_hash": _hash(member_id),
+                "outcome": outcome,
+                "attempt_count": int(row.get("attempt_count") or 0),
+                "reason_hash": _closed_hash(reason),
+                "updated_at_hash": _closed_hash(row.get("updated_at")),
+            }
+        )
+
+    return {
+        "fixture": {
+            "drill_count": len(drills),
+            "active_drill_count": len(active),
+            "status": str(latest.get("status") or "absent"),
+            "drill_hash": _closed_hash(latest.get("drill_hash")),
+            "owner_hash": _closed_hash(latest.get("owner_hash")),
+            "fence_hash": _closed_hash(latest.get("fence")),
+            "epoch_hash": _closed_hash(latest.get("epoch_id")),
+            "record_count": len(connection_ids),
+            "record_hashes": [_hash(value) for value in connection_ids],
+            "ttl_bounded": ttl_bounded,
+            "receipt_events": receipt_events,
+        },
+        "registry": {
+            "revision": int(registry.get("revision") or 0),
+            "active_fixture_count": len(fixture_connections),
+            "fixture_record_hashes": [
+                _hash(row.get("connection_id")) for row in fixture_connections
+            ],
+        },
+        "epoch": {
+            "active_epoch_count": len(active_epochs),
+            "epoch_hash": _closed_hash(latest_epoch.get("epoch_id")),
+            "status": str(latest_epoch.get("status") or "absent"),
+            "cursor": int(latest_epoch.get("cursor") or 0),
+            "revision": int(latest_epoch.get("revision") or 0),
+            "member_count": len(members),
+            "members": member_rows,
+        },
+    }
 
 
 def _required_environment() -> dict[str, str]:
@@ -271,8 +409,18 @@ def _request_json(
     token: str | None = None,
     json_body: Mapping[str, object] | None = None,
 ) -> object:
-    if method not in {"GET", "POST"} or (method == "POST" and json_body is None):
+    is_arg_query = (
+        method == "POST"
+        and url.startswith(
+            "https://management.azure.com/providers/"
+            "Microsoft.ResourceGraph/resources?"
+        )
+        and json_body is not None
+    )
+    if method != "GET" and not is_arg_query:
         raise EvidenceCollectionError("collector permits only GET and fixed ARG query")
+    if not url.startswith("https://"):
+        raise EvidenceCollectionError("collector permits only HTTPS reads")
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -338,11 +486,36 @@ def _collect_fabric(env: Mapping[str, str], token: str) -> dict[str, object]:
     }
 
 
+def _read_json_document(
+    client: FileSystemClient,
+    path: str,
+) -> Mapping[str, object]:
+    """Read one bounded JSON document without exposing its body."""
+
+    try:
+        body = client.get_file_client(path).download_file().readall()
+    except Exception as exc:
+        status_code = getattr(exc, "status_code", None)
+        if status_code == 404:
+            return {}
+        raise EvidenceCollectionError("fixed OneLake document read failed") from exc
+    if len(body) > 2_000_000:
+        raise EvidenceCollectionError("fixed OneLake document exceeds evidence bound")
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise EvidenceCollectionError("fixed OneLake document is not JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise EvidenceCollectionError("fixed OneLake document is not an object")
+    return payload
+
+
 def _collect_onelake(
     env: Mapping[str, str],
     credential: ManagedIdentityCredential,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], dict[str, object]]:
     hashes: list[str] = []
+    clients: dict[str, FileSystemClient] = {}
     for root in ROOT_NAMES:
         prefix = f"AIOPS_EVIDENCE_{root.upper()}"
         workspace = env[f"{prefix}_WORKSPACE_ID"]
@@ -352,6 +525,7 @@ def _collect_onelake(
             file_system_name=workspace,
             credential=credential,
         )
+        clients[root] = client
         for relative_path in ROOT_PATHS[root]:
             full_path = f"{lakehouse}/{relative_path}"
             try:
@@ -383,7 +557,28 @@ def _collect_onelake(
                     }
                 )
             )
-    return {"count": len(hashes), "hashes": hashes}
+    state_lakehouse = env["AIOPS_EVIDENCE_STATE_LAKEHOUSE_ID"]
+    fixture = _read_json_document(
+        clients["state"],
+        f"{state_lakehouse}/Files/aiops/validation/fixture-control/"
+        "ontology/validation-fixtures.json",
+    )
+    registry = _read_json_document(
+        clients["state"],
+        f"{state_lakehouse}/Files/aiops/validation/connection-registry/"
+        "state/subscription_connections.json",
+    )
+    state = _read_json_document(
+        clients["state"],
+        f"{state_lakehouse}/Files/aiops/ontology/state/"
+        "ontology/coordinator-state.json",
+    )
+    facts = summarize_lifecycle_documents(
+        fixture=fixture,
+        registry=registry,
+        state=state,
+    )
+    return {"count": len(hashes), "hashes": hashes}, facts
 
 
 def _collect_api(env: Mapping[str, str]) -> dict[str, object]:
@@ -400,16 +595,18 @@ def collect() -> dict[str, object]:
         identity = decode_identity_claims(management_token)
         if identity["object_id_hash"] != _hash(env["AIOPS_EVIDENCE_OBJECT_ID"]):
             raise EvidenceCollectionError("live identity does not match fixed Job identity")
+        onelake_observation, facts = _collect_onelake(env, credential)
         observations = {
             "arg": _collect_arg(env, management_token),
             "fabric": _collect_fabric(env, _token(credential, FABRIC_SCOPE)),
-            "onelake": _collect_onelake(env, credential),
+            "onelake": onelake_observation,
             "api": _collect_api(env),
         }
         return build_closed_record(
             identity=identity,
             observations=observations,
             capabilities=EXPECTED_CAPABILITIES,
+            facts=facts,
         )
     finally:
         credential.close()
