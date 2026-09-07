@@ -1,6 +1,20 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
+import type { ScopeSelection } from "@/lib/scope";
+import type {
+  Envelope,
+  OntologyAutomationStatus,
+  OntologyEvaluation,
+  OntologyEvaluationSnapshot,
+  OntologyGeneration,
+  OntologyProposal,
+  OntologyProposalReviewRequest,
+  OntologyRollbackRequest,
+  OntologyRun,
+  OntologyRunMutationRequest,
+  OntologyRunNowRequest,
+} from "@/lib/types";
 
 const {
   create,
@@ -94,7 +108,7 @@ const connection = {
 };
 
 
-type Envelope<T> = {
+type TestEnvelope<T> = {
   data: T;
   evidence: Array<{ source_engine: string; source_table: string; timestamp: string; confidence: string }>;
   scope: Record<string, string[]>;
@@ -102,7 +116,7 @@ type Envelope<T> = {
   warnings: string[];
 };
 
-function envelope<T>(data: T): Envelope<T> {
+function envelope<T>(data: T): TestEnvelope<T> {
   return {
     data,
     evidence: [{ source_engine: "fabric.medallion_health", source_table: "metadata_source_status", timestamp: "2026-01-01T00:00:00Z", confidence: "high" }],
@@ -156,6 +170,68 @@ function mockFabricHealth(tableNames: string[] = ["bronze_resources", "silver_in
   fabricIngestionHistory.mockResolvedValue(envelope({ runs: [] }));
   fabricDataset.mockImplementation((tableName: string) => Promise.resolve(envelope(dataset(tableName, "healthy", 12))));
 }
+
+describe("Ontology automation typed client contract", () => {
+  it("requires a selected connection and effective scope for every durable read", () => {
+    type OntologyApi = typeof import("@/lib/services").ontologyAutomationApi;
+
+    expectTypeOf<Parameters<OntologyApi["status"]>>().toEqualTypeOf<
+      [connectionId: string, scope: ScopeSelection]
+    >();
+    expectTypeOf<Parameters<OntologyApi["run"]>>().toEqualTypeOf<
+      [connectionId: string, runId: string, scope: ScopeSelection]
+    >();
+    expectTypeOf<Parameters<OntologyApi["proposal"]>>().toEqualTypeOf<
+      [connectionId: string, proposalId: string, scope: ScopeSelection]
+    >();
+    expectTypeOf<Parameters<OntologyApi["generation"]>>().toEqualTypeOf<
+      [connectionId: string, scope: ScopeSelection]
+    >();
+    expectTypeOf<Parameters<OntologyApi["evaluation"]>>().toEqualTypeOf<
+      [connectionId: string, scope: ScopeSelection]
+    >();
+
+    expectTypeOf<ReturnType<OntologyApi["status"]>>().toEqualTypeOf<
+      Promise<Envelope<OntologyAutomationStatus>>
+    >();
+    expectTypeOf<ReturnType<OntologyApi["generation"]>>().toEqualTypeOf<
+      Promise<Envelope<OntologyGeneration>>
+    >();
+    expectTypeOf<ReturnType<OntologyApi["evaluation"]>>().toEqualTypeOf<
+      Promise<Envelope<OntologyEvaluation>>
+    >();
+    expectTypeOf<ReturnType<OntologyApi["evaluations"]>>().toEqualTypeOf<
+      Promise<Envelope<OntologyEvaluationSnapshot[]>>
+    >();
+  });
+
+  it("requires server concurrency values on every ontology mutation", () => {
+    type OntologyApi = typeof import("@/lib/services").ontologyAutomationApi;
+
+    expectTypeOf<Parameters<OntologyApi["runNow"]>>().toEqualTypeOf<
+      [connectionId: string, scope: ScopeSelection, payload: OntologyRunNowRequest]
+    >();
+    expectTypeOf<Parameters<OntologyApi["cancelRun"]>>().toEqualTypeOf<
+      [connectionId: string, runId: string, scope: ScopeSelection, payload: OntologyRunMutationRequest]
+    >();
+    expectTypeOf<Parameters<OntologyApi["retryRun"]>>().toEqualTypeOf<
+      [connectionId: string, runId: string, scope: ScopeSelection, payload: OntologyRunMutationRequest]
+    >();
+    expectTypeOf<Parameters<OntologyApi["reviewProposal"]>>().toEqualTypeOf<
+      [connectionId: string, proposalId: string, scope: ScopeSelection, payload: OntologyProposalReviewRequest]
+    >();
+    expectTypeOf<Parameters<OntologyApi["rollbackGeneration"]>>().toEqualTypeOf<
+      [connectionId: string, generationId: string, scope: ScopeSelection, payload: OntologyRollbackRequest]
+    >();
+
+    expectTypeOf<ReturnType<OntologyApi["runNow"]>>().toEqualTypeOf<
+      Promise<Envelope<OntologyRun>>
+    >();
+    expectTypeOf<ReturnType<OntologyApi["reviewProposal"]>>().toEqualTypeOf<
+      Promise<Envelope<OntologyProposal["review"]>>
+    >();
+  });
+});
 
 describe("Connections page Fabric Medallion tab", () => {
   beforeEach(() => {
