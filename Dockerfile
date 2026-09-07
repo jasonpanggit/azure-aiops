@@ -53,7 +53,8 @@ RUN apt-get update \
     && dpkg -i /tmp/packages-microsoft-prod.deb \
     && rm -f /tmp/packages-microsoft-prod.deb \
     && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends \
+        msodbcsql18 libgssapi-krb5-2 \
     && curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
     && az extension add --name resource-graph --only-show-errors \
     && apt-get purge -y curl \

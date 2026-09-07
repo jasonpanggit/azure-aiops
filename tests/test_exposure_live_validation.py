@@ -446,6 +446,7 @@ def test_api_image_contains_live_validator_and_benchmark() -> None:
         "COPY scripts/validate_exposure_live.py "
         "/app/scripts/validate_exposure_live.py"
     ) in dockerfile
+    assert "msodbcsql18 libgssapi-krb5-2" in dockerfile
 
 
 def test_complete_live_evidence_passes_without_leaking_scoped_values() -> None:
