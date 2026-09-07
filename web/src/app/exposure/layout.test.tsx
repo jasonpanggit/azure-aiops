@@ -5,11 +5,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const navigation = vi.hoisted(() => ({
   pathname: "/exposure",
   params: new URLSearchParams(),
+  suspend: false,
 }));
 
 vi.mock("next/navigation", () => ({
   usePathname: () => navigation.pathname,
-  useSearchParams: () => navigation.params,
+  useSearchParams: () => {
+    if (navigation.suspend) {
+      throw new Promise(() => undefined);
+    }
+    return navigation.params;
+  },
 }));
 
 import ExposureLayout from "./layout";
@@ -26,6 +32,16 @@ describe("ExposureLayout", () => {
   beforeEach(() => {
     navigation.pathname = "/exposure";
     navigation.params = new URLSearchParams();
+    navigation.suspend = false;
+  });
+
+  it("renders an accessible fallback while route search parameters resolve", () => {
+    navigation.suspend = true;
+
+    renderLayout();
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading exposure view…");
+    expect(screen.queryByText("Exposure content")).not.toBeInTheDocument();
   });
 
   it.each([
