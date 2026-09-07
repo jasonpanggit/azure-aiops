@@ -73,6 +73,39 @@ def test_put_is_last_writer_wins_and_bumps_revision(tmp_path):
     assert document["revision"] == 2
 
 
+def test_list_names_pages_documents_under_prefix(tmp_path):
+    store = OneLakeDocumentStore(tmp_path)
+    for index in range(3):
+        store.write(
+            f"threads/thread-{index}.json",
+            {"revision": 1},
+            expected_revision=0,
+        )
+    store.write("other/ignored.json", {"revision": 1}, expected_revision=0)
+
+    first, continuation = store.list_names("threads", limit=2)
+    second, final = store.list_names(
+        "threads",
+        limit=2,
+        continuation=continuation,
+    )
+
+    assert first == ["threads/thread-0.json", "threads/thread-1.json"]
+    assert second == ["threads/thread-2.json"]
+    assert final is None
+
+
+def test_delete_rejects_stale_revision_and_removes_matching_document(tmp_path):
+    store = OneLakeDocumentStore(tmp_path)
+    store.write("threads/thread.json", {"revision": 1}, expected_revision=0)
+
+    with pytest.raises(DocumentConflictError):
+        store.delete("threads/thread.json", expected_revision=0)
+
+    store.delete("threads/thread.json", expected_revision=1)
+    assert store.read("threads/thread.json") == {}
+
+
 @pytest.mark.parametrize("name", ["/absolute.json", "../escape.json", "state/../../escape.json"])
 def test_document_names_cannot_escape_the_root(tmp_path, name):
     with pytest.raises(ValueError):
@@ -210,6 +243,88 @@ def test_remote_conditional_write_rejects_a_replica_that_lost_the_race(
         "revision": 2,
         "writer": "competitor",
     }
+
+
+def test_remote_list_names_uses_bounded_dfs_paging(tmp_path):
+    class _PageIterator:
+        continuation_token = "next-page"
+
+        def __init__(self):
+            self._served = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self._served:
+                raise StopIteration
+            self._served = True
+            return [
+                SimpleNamespace(name=f"{tmp_path}/threads/one.json", is_directory=False),
+                SimpleNamespace(name=f"{tmp_path}/threads/nested", is_directory=True),
+            ]
+
+    class _Paths:
+        def by_page(self, *, continuation_token):
+            assert continuation_token == "prior-page"
+            return _PageIterator()
+
+    class _FakeFsClient:
+        def get_paths(self, *, path, recursive, max_results):
+            assert path == f"{tmp_path}/threads"
+            assert recursive is True
+            assert max_results == 2
+            return _Paths()
+
+    store = OneLakeDocumentStore(tmp_path)
+    store.is_remote = True
+    store._file_system_client = _FakeFsClient()
+    store._base = str(tmp_path)
+
+    names, continuation = store.list_names(
+        "threads",
+        limit=2,
+        continuation="prior-page",
+    )
+
+    assert names == ["threads/one.json"]
+    assert continuation == "next-page"
+
+
+def test_remote_delete_rejects_etag_race(tmp_path):
+    from azure.core import MatchConditions
+    from azure.core.exceptions import ResourceModifiedError
+
+    class _Download:
+        def readall(self):
+            return json.dumps({"revision": 1}).encode()
+
+    class _RacingFileClient:
+        def get_file_properties(self):
+            return SimpleNamespace(etag='"etag-1"')
+
+        def download_file(self, *, etag, match_condition):
+            assert etag == '"etag-1"'
+            assert match_condition is MatchConditions.IfNotModified
+            return _Download()
+
+        def delete_file(self, *, etag, match_condition):
+            assert etag == '"etag-1"'
+            assert match_condition is MatchConditions.IfNotModified
+            raise ResourceModifiedError("condition not met")
+
+    class _FakeFsClient:
+        def get_file_client(self, path):
+            assert path == f"{tmp_path}/threads/thread.json"
+            return _RacingFileClient()
+
+    store = OneLakeDocumentStore(tmp_path)
+    store.is_remote = True
+    store._file_system_client = _FakeFsClient()
+    store._base = str(tmp_path)
+
+    with pytest.raises(DocumentConflictError):
+        store.delete("threads/thread.json", expected_revision=1)
 
 
 def test_concurrent_read_does_not_observe_partial_write(tmp_path):

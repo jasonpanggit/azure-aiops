@@ -283,6 +283,117 @@ class OneLakeDocumentStore:
                         if temporary_path:
                             Path(temporary_path).unlink(missing_ok=True)
 
+    def list_names(
+        self,
+        prefix: str,
+        *,
+        limit: int,
+        continuation: str | None = None,
+    ) -> tuple[list[str], str | None]:
+        """List a bounded page of document names below ``prefix``."""
+
+        page_size = max(0, int(limit))
+        if page_size == 0:
+            return [], continuation
+        with self._lock:
+            path = self._path(prefix)
+            if self.is_remote:
+                pages = self._client().get_paths(
+                    path=path,
+                    recursive=True,
+                    max_results=page_size,
+                ).by_page(continuation_token=continuation)
+                try:
+                    page = next(pages)
+                except StopIteration:
+                    return [], None
+                base_prefix = f"{self._base}/"
+                names = [
+                    str(item.name)[len(base_prefix) :]
+                    for item in page
+                    if not bool(getattr(item, "is_directory", False))
+                    and str(item.name).startswith(base_prefix)
+                ]
+                return names[:page_size], pages.continuation_token
+
+            base = Path(path)
+            if not base.exists():
+                return [], None
+            root = Path(str(self._base))
+            names = sorted(
+                candidate.relative_to(root).as_posix()
+                for candidate in base.rglob("*")
+                if candidate.is_file() and not candidate.name.endswith(".lock")
+            )
+            try:
+                offset = max(0, int(continuation or 0))
+            except ValueError:
+                offset = 0
+            page = names[offset : offset + page_size]
+            next_offset = offset + len(page)
+            next_token = str(next_offset) if next_offset < len(names) else None
+            return page, next_token
+
+    def delete(self, name: str, *, expected_revision: int | None = None) -> None:
+        """Delete a document, optionally only at the observed revision."""
+
+        with self._lock:
+            path = self._path(name)
+            if self.is_remote:
+                file_client = self._client().get_file_client(path)
+                try:
+                    properties = file_client.get_file_properties()
+                    etag = str(properties.etag)
+                    if expected_revision is not None:
+                        downloaded = file_client.download_file(
+                            etag=etag,
+                            match_condition=MatchConditions.IfNotModified,
+                        )
+                        payload = json.loads(downloaded.readall())
+                        current = int(
+                            (
+                                payload.get("revision")
+                                if isinstance(payload, dict)
+                                else 0
+                            )
+                            or 0
+                        )
+                        if current != expected_revision:
+                            raise DocumentConflictError(
+                                f"Document {name} changed during deletion "
+                                f"(revision {current}, expected {expected_revision})"
+                            )
+                    file_client.delete_file(
+                        etag=etag,
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                except ResourceNotFoundError:
+                    return
+                except ResourceModifiedError as exc:
+                    raise DocumentConflictError(
+                        f"Document {name} changed during deletion; reload and retry"
+                    ) from exc
+                return
+
+            local_path = Path(path)
+            with _interprocess_lock(local_path):
+                if not local_path.exists():
+                    return
+                if expected_revision is not None:
+                    current = int(
+                        self._read_locked(
+                            name,
+                            suppress_errors=False,
+                        ).get("revision")
+                        or 0
+                    )
+                    if current != expected_revision:
+                        raise DocumentConflictError(
+                            f"Document {name} changed during deletion "
+                            f"(revision {current}, expected {expected_revision})"
+                        )
+                local_path.unlink()
+
     def put(self, name: str, payload: dict[str, Any]) -> None:
         """Write ``payload`` unconditionally, bumping its revision.
 
