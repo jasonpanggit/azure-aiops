@@ -80,7 +80,9 @@ def _plan(environment: str) -> dict[str, object]:
     state = "abfss://state@onelake/state"
     dispatch = "abfss://dispatch@onelake/dispatch"
     publication = "abfss://publication@onelake/publication"
-    validation_connection = "abfss://state@onelake/validation/connection-registry"
+    validation_connection = (
+        "abfss://state@onelake/Files/aiops/validation/connection-registry"
+    )
     coordinator_connection = (
         validation_connection if environment == "validation" else connection
     )
@@ -164,8 +166,9 @@ def _plan(environment: str) -> dict[str, object]:
             "AIOPS_CONNECTION_HOME": validation_connection,
             "AIOPS_ONTOLOGY_STATE_HOME": state,
             "AIOPS_ONTOLOGY_FIXTURE_HOME": (
-                "abfss://state@onelake/validation/fixture-control"
+                "abfss://state@onelake/Files/aiops/validation/fixture-control"
             ),
+            "AZURE_CLIENT_ID": "coordinator-client",
         }
         values_by_address.update(
             {

@@ -94,11 +94,13 @@ class ProductionRuntimeConfig:
     ) -> ProductionRuntimeConfig:
         values = dict(os.environ if environ is None else environ)
         runtime_mode = _required(
-            values.get("AIOPS_RUNTIME_MODE"), "AIOPS_RUNTIME_MODE"
+            values.get("AIOPS_ONTOLOGY_ENVIRONMENT")
+            or values.get("AIOPS_RUNTIME_MODE"),
+            "AIOPS_ONTOLOGY_ENVIRONMENT",
         ).casefold()
         if runtime_mode not in _ALLOWED_RUNTIME_MODES:
             raise ValueError(
-                "AIOPS_RUNTIME_MODE must be production or validation"
+                "AIOPS_ONTOLOGY_ENVIRONMENT must be production or validation"
             )
         for forbidden in _FORBIDDEN_COORDINATOR_ENV:
             if str(values.get(forbidden) or "").strip():
