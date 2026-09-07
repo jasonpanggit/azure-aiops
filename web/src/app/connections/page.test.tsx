@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import { ScopeProvider } from "@/lib/scope-context";
+import { ScopeProvider, useScope } from "@/lib/scope-context";
 import type { ScopeSelection } from "@/lib/scope";
 import type {
   Envelope,
@@ -36,6 +36,7 @@ const {
   ontologyPublications,
   ontologyRetryRun,
   ontologyReviewProposal,
+  ontologyRollbackGeneration,
   ontologyRunNow,
   ontologyRuns,
   ontologyStatus,
@@ -61,6 +62,7 @@ const {
   ontologyPublications: vi.fn(),
   ontologyRetryRun: vi.fn(),
   ontologyReviewProposal: vi.fn(),
+  ontologyRollbackGeneration: vi.fn(),
   ontologyRunNow: vi.fn(),
   ontologyRuns: vi.fn(),
   ontologyStatus: vi.fn(),
@@ -99,7 +101,7 @@ vi.mock("@/lib/services", () => ({
     reviewProposal: ontologyReviewProposal,
     generation: ontologyGeneration,
     publications: ontologyPublications,
-    rollbackGeneration: vi.fn(),
+    rollbackGeneration: ontologyRollbackGeneration,
     evaluation: ontologyEvaluation,
     evaluations: ontologyEvaluations,
   },
@@ -191,6 +193,53 @@ function capabilitiesFor(tableNames: string[]) {
       native_lineage_url: "https://fabric.microsoft.com/workspace/workspace-abc",
       datasets: tableNames.map((table_name) => ({ table_name, status: "healthy", lineage_ref: `lineage://${table_name}`, lineage: {} })),
     },
+  });
+
+  it("invalidates the selected connection and pending section reads when effective scope changes", async () => {
+    const secondConnection = {
+      ...connection,
+      connection_id: "nonprod",
+      name: "Non-production",
+      subscription_id: "00000000-0000-0000-0000-000000000099",
+    };
+    list.mockImplementation((scope: ScopeSelection) =>
+      Promise.resolve({
+        ...emptyEnvelope,
+        data: scope.subscription?.includes(secondConnection.subscription_id)
+          ? [secondConnection]
+          : [connection],
+      }),
+    );
+
+    function ScopeSwitch() {
+      const { setScope } = useScope();
+      return (
+        <>
+          <button type="button" onClick={() => setScope({ subscription: [secondConnection.subscription_id] })}>
+            Narrow scope
+          </button>
+          <ConnectionsPage />
+        </>
+      );
+    }
+
+    render(
+      <ScopeProvider initialScope={{ subscription: [connection.subscription_id] }}>
+        <ScopeSwitch />
+      </ScopeProvider>,
+    );
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    expect(await screen.findByRole("combobox", { name: "Connection" })).toHaveValue(connection.connection_id);
+
+    fireEvent.click(screen.getByRole("button", { name: "Narrow scope" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Connection" })).toHaveValue(secondConnection.connection_id);
+      expect(ontologyEvaluation).toHaveBeenLastCalledWith(
+        secondConnection.connection_id,
+        { subscription: [secondConnection.subscription_id] },
+      );
+    });
   });
 }
 
@@ -351,6 +400,7 @@ function mockOntologyAutomation() {
   ontologyReviewProposal.mockResolvedValue(
     envelope({ proposal_id: "OPR-1", status: "accepted", revision: 2, events: [] }),
   );
+  ontologyRollbackGeneration.mockResolvedValue(envelope(ontologyGenerationData));
 }
 
 describe("Ontology automation typed client contract", () => {
@@ -429,6 +479,7 @@ describe("Connections page Ontology automation tab", () => {
     ontologyCancelRun.mockReset();
     ontologyRetryRun.mockReset();
     ontologyReviewProposal.mockReset();
+    ontologyRollbackGeneration.mockReset();
     list.mockResolvedValue({ ...emptyEnvelope, data: [connection] });
     mockOntologyAutomation();
   });
@@ -512,7 +563,7 @@ describe("Connections page Ontology automation tab", () => {
     expect(screen.getByText("Discovery run history is unavailable. Current run state was not changed. Refresh run history.")).toBeInTheDocument();
     expect(screen.getByText("Publication attempt history is unavailable. The active generation was not changed. Refresh publication history.")).toBeInTheDocument();
     expect(screen.getByText("Agent evaluation status is unavailable. Auto-accept remains disabled until evaluation evidence is restored.")).toBeInTheDocument();
-    expect(screen.getByText("Scheduler state")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Scheduler state" })).toBeInTheDocument();
     expect(screen.getByText("Incremental discovery")).toBeInTheDocument();
   });
 
@@ -570,11 +621,24 @@ describe("Connections page Ontology automation tab", () => {
         expect.objectContaining({ expected_revision: 4 }),
       );
     });
+    expect(await screen.findByText("Cancellation requested for run ODR-001.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Roll back generation" }));
     expect(confirm).toHaveBeenCalledWith(
       "Roll back to generation generation-1? This changes the active pointer and preserves both generations and the audit history.",
     );
+    await waitFor(() => {
+      expect(ontologyRollbackGeneration).toHaveBeenCalledWith(
+        connection.connection_id,
+        ontologyGenerationData.prior_generation,
+        {},
+        expect.objectContaining({
+          expected_etag: ontologyGenerationData.pointer_etag,
+          idempotency_key: expect.any(String),
+        }),
+      );
+    });
+    expect(await screen.findByText("Rollback requested for generation generation-1.")).toBeInTheDocument();
     confirm.mockRestore();
   });
 });

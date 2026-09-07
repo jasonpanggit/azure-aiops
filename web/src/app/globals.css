@@ -3029,6 +3029,99 @@ textarea:focus-visible {
   }
 }
 
+/* Ontology automation composes the shared cards, tables, controls, and status
+   primitives; these rules only provide the approved section rhythm and
+   bounded long-value behavior. */
+.ontology-automation {
+  display: grid;
+  gap: 24px;
+}
+
+.ontology-connection-selector,
+.ontology-header-action {
+  display: grid;
+  gap: 4px;
+  min-width: min(100%, 280px);
+}
+
+.ontology-connection-selector > span,
+.ontology-header-action > span {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.ontology-current-run {
+  border-color: var(--color-brand);
+}
+
+.ontology-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 16px;
+  margin: 0;
+}
+
+.ontology-facts > div {
+  min-width: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.ontology-facts dt {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.ontology-facts dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.ontology-action-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.ontology-action-line > span,
+.ontology-action-line > strong {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ontology-long-value {
+  max-width: 320px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ontology-automation details {
+  margin-top: 16px;
+}
+
+.ontology-automation details > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+@media (max-width: 480px) {
+  .ontology-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .ontology-action-line,
+  .ontology-action-line > .button {
+    width: 100%;
+  }
+}
+
 /* Phase 03.1 Exposure action surfaces: dense desktop context, deliberate
  * tablet overflow, and true mobile row cards without page-level clipping. */
 .exposure-responsive-table {

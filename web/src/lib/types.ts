@@ -1597,6 +1597,8 @@ export interface OntologyEvaluation {
   snapshot: OntologyEvaluationSnapshot | null;
   release_eligible: boolean;
   release_disabled_reason: string;
+  agent_mode?: OntologyAgentMode;
+  agent_status?: "available" | "degraded" | "unavailable";
 }
 
 export interface OntologySchedulerStatus {
