@@ -749,3 +749,26 @@ or existing Container Apps.
 - Issues fixed: removed the ineffective Azure resource-group custom data role,
   decoupled curator deployment from Phase 11 specialist-candidate publication,
   and eliminated the premature production API Contributor-to-Viewer cutover.
+
+## Deployment Proof (Phase 13 ontology discovery — 2026-09-07)
+
+- Immutable Job image:
+  `aiopsdevacrg6ludc.azurecr.io/aiops-api:phase13-ontology-split-20260906-173930`
+  (`sha256:865bc6aed31e7eb0930962cf825b87aeac7d8526a903ab73d6bf8bc7a3fd3ba1`).
+- Targeted infrastructure apply created 12 additive Phase 13 resources in two
+  passes (the Fabric capacity was resumed after the first pass): 12 added,
+  0 existing resources changed, 0 destroyed.
+- Two later targeted applies updated only the two ontology Job images/arguments;
+  0 resources were destroyed.
+- `aiops-dev-ontology-discovery` is healthy, scheduled every 15 minutes, and its
+  five most recent executions succeeded.
+- Live write matrix execution `aiops-dev-ontology-rbac-check-yuywrdn` succeeded:
+  API and coordinator stage/pointer writes were denied; publisher
+  stage/pointer/rollback/cleanup was authorized.
+- Separate deployer audit succeeded: API, coordinator, and curator have no
+  validation-workspace writer role; publisher is Contributor; curator has
+  exactly the expected four read-only tools, model, and prompt hash.
+- Sanitized evidence is retained in Phase 13 `13-07-LIVE-RBAC.json`.
+- Existing API/web Container Apps, APIM, Foundry account/project, production
+  Fabric workspace/lakehouse/roles, and global API/web image outputs were
+  unchanged.
