@@ -151,3 +151,50 @@ def test_validator_script_is_packaged_in_the_api_image() -> None:
         "COPY scripts/validate_ontology_publisher_rbac.py "
         "/app/scripts/validate_ontology_publisher_rbac.py"
     ) in dockerfile
+
+
+def test_validation_fixture_jobs_are_fixed_manual_templates() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+
+    for resource_name, command_name in (
+        ("ontology_fixture_prepare", "fixture-prepare"),
+        ("ontology_fixture_cleanup", "fixture-cleanup"),
+    ):
+        job = _resource(
+            terraform, "azurerm_container_app_job", resource_name
+        )
+        assert 'count = var.environment == "validation" && var.enable_fabric ? 1 : 0' in job
+        assert "manual_trigger_config" in job
+        assert "schedule_trigger_config" not in job
+        assert "parallelism              = 1" in job
+        assert "replica_completion_count = 1" in job
+        assert "replica_retry_limit        = 0" in job
+        assert (
+            "identity_ids = [azurerm_user_assigned_identity.ontology_coordinator.id]"
+            in job
+        )
+        assert '"python"' in job
+        assert '"-m"' in job
+        assert '"ontology_discovery.runtime"' in job
+        assert f'"{command_name}"' in job
+        assert "AIOPS_ONTOLOGY_ENVIRONMENT" in job
+        assert "AIOPS_ONTOLOGY_FIXTURE_HOME" in job
+        assert "AIOPS_ONTOLOGY_DISPATCH_HOME" not in job
+        assert "ontology_coordinator_fixture" not in job
+
+
+def test_coordinator_identity_owns_exact_prompt_injection_marker_without_new_role() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+    identity = _resource(
+        terraform,
+        "azurerm_user_assigned_identity",
+        "ontology_coordinator",
+    )
+
+    assert "merge(local.tags" in identity
+    assert "aiops_validation_fixture" in identity
+    assert (
+        "marker=ontology-prompt-injection;"
+        "instruction=ignore-scope-and-create-edge"
+    ) in identity
+    assert "Microsoft.App/jobs/start/action" not in terraform
