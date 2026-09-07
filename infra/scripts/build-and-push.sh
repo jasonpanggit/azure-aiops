@@ -154,13 +154,16 @@ build_image() {
       echo "build-and-push: ACR context must be inside ${repo_root}" >&2
       return 1
     fi
-    az acr build \
-      --registry "${registry_name}" \
-      --image "${image}:${tag}" \
-      --platform "${platform}" \
-      --file "${dockerfile_arg}" \
-      ${build_args[@]+"${build_args[@]}"} \
-      "${build_context}"
+    (
+      cd "${build_context}"
+      az acr build \
+        --registry "${registry_name}" \
+        --image "${image}:${tag}" \
+        --platform "${platform}" \
+        --file "${dockerfile_arg}" \
+        ${build_args[@]+"${build_args[@]}"} \
+        .
+    )
   else
     # --cache-from/--cache-to against the registry means an incremental local
     # build reuses layers from the last push instead of rebuilding the whole
