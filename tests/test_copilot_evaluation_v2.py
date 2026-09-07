@@ -256,7 +256,50 @@ def test_retained_evidence_is_filtered_by_current_scope() -> None:
         Scope({"subscription": ["sub-a"]}),
     )
 
-    assert [item["evidence_id"] for item in retained] == ["narrow"]
+    assert [item["original_evidence_id"] for item in retained] == ["narrow"]
+    assert retained[0]["evidence_id"].startswith(f"retained:{thread.thread_id}:")
+
+
+def test_repeated_retained_snapshot_ids_are_qualified_per_turn() -> None:
+    thread = InvestigationThread(
+        thread_id="thr-" + "a" * 32,
+        principal_subject="operator-a",
+        scope=Scope({"subscription": ["sub-a"]}),
+        scope_fingerprint="fingerprint",
+        turns=[
+            InvestigationThreadTurn(
+                scope=Scope({"subscription": ["sub-a"]}),
+                payload={
+                    "thread_revision": revision,
+                    "citations": [
+                        {
+                            "citation_id": "snapshot:coverage",
+                            "source": source,
+                            "status": status,
+                        }
+                    ],
+                },
+            )
+            for revision, source, status in (
+                (1, "page_snapshot:inventory:coverage", "partial"),
+                (2, "page_snapshot:vulnerability:coverage", "ok"),
+            )
+        ],
+    )
+
+    retained = OrchestrationService._retained_evidence(
+        thread,
+        Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert len({item["evidence_id"] for item in retained}) == 2
+    assert {
+        item["original_evidence_id"] for item in retained
+    } == {"snapshot:coverage"}
+    assert {item["source"] for item in retained} == {
+        "page_snapshot:inventory:coverage",
+        "page_snapshot:vulnerability:coverage",
+    }
 
 
 def test_executive_claim_can_cite_authorized_retained_evidence() -> None:

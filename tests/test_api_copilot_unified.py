@@ -2005,6 +2005,60 @@ def test_canonical_endpoint_projects_sustained_thread_contention_as_conflict(
     assert response.json()["error"]["code"] == "conflict"
 
 
+def test_canonical_endpoint_preserves_used_retained_citations(
+    tmp_path, monkeypatch
+):
+    from operations.orchestration_contract import Citation, OrchestrationResult
+
+    retained_id = f"retained:thr-{'a' * 32}:rev-1:citation-0"
+    result = OrchestrationResult(
+        status="ok",
+        policy_status="accepted",
+        coverage=SnapshotCoverage(
+            visible_count=0,
+            total_count=0,
+            complete=True,
+        ),
+        citations=[
+            Citation(
+                citation_id="snapshot:coverage",
+                source="page_snapshot:inventory:coverage",
+                status="empty",
+            ),
+            Citation(
+                citation_id=retained_id,
+                source="page_snapshot:vulnerability:coverage",
+                status="ok",
+            ),
+        ],
+        thread_id="thr-" + "a" * 32,
+        thread_revision=2,
+    )
+    monkeypatch.setattr(
+        OrchestrationService,
+        "execute",
+        lambda *_args, **_kwargs: result,
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_canonical_body(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["citations"] == [
+        {
+            "citation_id": retained_id,
+            "source": "page_snapshot:vulnerability:coverage",
+            "status": "ok",
+            "observed_at": "",
+            "resource_id": "",
+        }
+    ]
+
+
 def test_multi_agent_projects_thread_storage_outage_as_unavailable(
     tmp_path, monkeypatch
 ):
