@@ -175,7 +175,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_zero" {
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      union isfuzzy=true AppMetrics
       | where Name == "aiops.exposure.ingestion.rows"
       | where tostring(Properties.environment) == "${var.environment}"
       | where tostring(Properties.outcome) == "effective"
@@ -214,7 +214,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_row_drop" {
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      union isfuzzy=true AppMetrics
       | where Name == "aiops.exposure.ingestion.drop.ratio"
       | where tostring(Properties.environment) == "${var.environment}"
       | summarize DropRatio=max(Max)
@@ -252,13 +252,13 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_source_healt
 
   criteria {
     query = <<-KQL
-      let FailedCycles = AppMetrics
+      let FailedCycles = union isfuzzy=true AppMetrics
         | where Name == "aiops.exposure.source.cycles"
         | where tostring(Properties.environment) == "${var.environment}"
         | where tostring(Properties.outcome) in ("failed", "partial", "unavailable")
         | summarize Signal=sum(Sum)
         | where Signal > 0;
-      let StaleSources = AppMetrics
+      let StaleSources = union isfuzzy=true AppMetrics
         | where Name == "aiops.exposure.source.age"
         | where tostring(Properties.environment) == "${var.environment}"
         | summarize Signal=max(Max)
@@ -297,7 +297,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_merge_confli
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      union isfuzzy=true AppMetrics
       | where Name == "aiops.exposure.merge.rows"
       | where tostring(Properties.environment) == "${var.environment}"
       | where tostring(Properties.outcome) == "conflict"
@@ -336,7 +336,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_enrichment_q
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      union isfuzzy=true AppMetrics
       | where Name == "aiops.exposure.enrichment.quality"
       | where tostring(Properties.environment) == "${var.environment}"
       | summarize Quality=min(Min)
@@ -374,7 +374,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_coverage_rat
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      union isfuzzy=true AppMetrics
       | where Name == "aiops.exposure.coverage.ratio"
       | where tostring(Properties.environment) == "${var.environment}"
       | summarize RepresentedRatio=min(Min)
@@ -412,13 +412,13 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_reconciliati
 
   criteria {
     query = <<-KQL
-      let MismatchCount = AppMetrics
+      let MismatchCount = union isfuzzy=true AppMetrics
         | where Name == "aiops.exposure.reconciliation.mismatches"
         | where tostring(Properties.environment) == "${var.environment}"
         | where tostring(Properties.outcome) == "unexpected_drift"
         | summarize Signal=sum(Sum)
         | where Signal > ${var.exposure_alert_max_reconciliation_mismatches};
-      let DriftRatio = AppMetrics
+      let DriftRatio = union isfuzzy=true AppMetrics
         | where Name == "aiops.exposure.reconciliation.drift.ratio"
         | where tostring(Properties.environment) == "${var.environment}"
         | where tostring(Properties.outcome) == "unexpected_drift"
@@ -458,12 +458,12 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "exposure_query_slo" {
 
   criteria {
     query = <<-KQL
-      let SlowQueries = AppMetrics
+      let SlowQueries = union isfuzzy=true AppMetrics
         | where Name == "aiops.exposure.query.duration"
         | where tostring(Properties.environment) == "${var.environment}"
         | summarize Signal=percentile(Max, 95)
         | where Signal > ${var.exposure_alert_query_p95_ms};
-      let QueryErrors = AppMetrics
+      let QueryErrors = union isfuzzy=true AppMetrics
         | where Name == "aiops.exposure.query.events"
         | where tostring(Properties.environment) == "${var.environment}"
         | where tostring(Properties.outcome) == "error"
