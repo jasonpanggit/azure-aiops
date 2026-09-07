@@ -10,7 +10,7 @@ progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 158
-  completed_plans: 139
+  completed_plans: 140
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -25,6 +25,7 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-13** COMPLETE — Scoped `/connections` ontology automation workspace with independent durable lifecycle sections, server-owned eligibility/concurrency, and fail-closed EvaluationSnapshot freshness
 - **13-12** COMPLETE — Scope-first durable lifecycle, proposal, generation/publication, rollback, and EvaluationSnapshot APIs with server-owned eligibility and no API publisher authority
 - **13-10** COMPLETE — Manual and scheduled durable runs share one identity-bound publisher path, with restart-safe Sync/health compatibility and no API-owned authoritative writer
 - **13-09** COMPLETE — Service-enforced ETag CAS, immutable audited deterministic generations, hard shadow exclusion, five-family consumer cutover, stale-writer fencing, and rollback
