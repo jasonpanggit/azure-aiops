@@ -163,7 +163,7 @@ def _alert_smoke() -> dict[str, object]:
         for rule_id in ALERT_RULES
         if f"{rule_id} = {{" in terraform
         and 'Name == "ontology.discovery.alert.signal"' in terraform
-        and "tostring(Properties.rule) == each.key" in terraform
+        and 'tostring(Properties.rule) == "${each.key}"' in terraform
     }
     action_observed = (
         set(ALERT_RULES)

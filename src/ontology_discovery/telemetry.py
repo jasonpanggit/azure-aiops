@@ -106,25 +106,25 @@ ALERT_RULES: Mapping[str, AlertRule] = MappingProxyType(
         ),
         "cap_violation": _rule("hour", 0, "GreaterThan", "PT1H", 1),
         "overall_precision": _rule(
-            "weekly", 0.98, "LessThan", "P7D", 1, shadow_reset=True
+            "weekly", 0.98, "LessThan", "P2D", 1, shadow_reset=True
         ),
         "critical_precision": _rule(
-            "weekly", 0.95, "LessThan", "P7D", 1, shadow_reset=True
+            "weekly", 0.95, "LessThan", "P2D", 1, shadow_reset=True
         ),
         "overall_recall": _rule(
-            "weekly", 0.90, "LessThan", "P7D", 2, shadow_reset=True
+            "weekly", 0.90, "LessThan", "P2D", 2, shadow_reset=True
         ),
         "critical_recall": _rule(
-            "weekly", 0.85, "LessThan", "P7D", 2, shadow_reset=True
+            "weekly", 0.85, "LessThan", "P2D", 2, shadow_reset=True
         ),
         "escalation_f1": _rule(
-            "weekly", 0.95, "LessThan", "P7D", 1, shadow_reset=True
+            "weekly", 0.95, "LessThan", "P2D", 1, shadow_reset=True
         ),
         "mandatory_review_recall": _rule(
-            "weekly", 1, "LessThan", "P7D", 0, shadow_reset=True
+            "weekly", 1, "LessThan", "P2D", 0, shadow_reset=True
         ),
         "pair_precision_wilson_lower_bound": _rule(
-            "weekly", 0.98, "LessThan", "P7D", 1, shadow_reset=True
+            "weekly", 0.98, "LessThan", "P2D", 1, shadow_reset=True
         ),
     }
 )

@@ -650,6 +650,7 @@ describe("Connections page Fabric Medallion tab", () => {
     health.mockReset();
     list.mockReset();
     mapMetadata.mockReset();
+    sync.mockReset();
     updateConnection.mockReset();
     fabricLayers.mockReset();
     fabricCapabilities.mockReset();
@@ -681,6 +682,59 @@ describe("Connections page Fabric Medallion tab", () => {
 
     expect(screen.getByText("Production")).toBeInTheDocument();
     expect(screen.getByRole("tabpanel", { name: "Subscriptions" })).not.toHaveAttribute("hidden");
+  });
+
+  it("clears manual sync progress when inventory is terminal but ontology remains queued", async () => {
+    const failedConnection = {
+      ...connection,
+      health_status: "failed",
+      sync_status: "failed",
+    };
+    list.mockResolvedValue({ ...emptyEnvelope, data: [failedConnection] });
+    sync.mockResolvedValue({
+      data: {
+        sync_state: {
+          status: "running",
+          stage: "queued",
+          stage_message: "manual sync queued",
+          progress_pct: 0,
+          record_count: 12605,
+        },
+      },
+    });
+    health.mockResolvedValue({
+      data: {
+        connections: [
+          {
+            connection_id: failedConnection.connection_id,
+            sync: {
+              status: "failed",
+              stage: "failed",
+              stage_message: "inventory failed",
+              message: "inventory failed",
+              progress_pct: 100,
+              record_count: 12605,
+            },
+            durable_run: {
+              run_id: "ODR-QUEUED",
+              status: "queued",
+              checkpoint: "queued",
+            },
+          },
+        ],
+      },
+    });
+
+    renderConnectionsPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sync now" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Sync now" })).toBeEnabled();
+      expect(screen.getByText("inventory failed")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Sync in progress:/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Syncing…" })).not.toBeInTheDocument();
   });
 
   it("passes subscription scope to every Fabric Medallion API call", async () => {

@@ -149,6 +149,33 @@ def freshness_source_family(source_family: str) -> str:
         return "enrichment"
     if value.startswith("defender"):
         return "defender"
+    if value.startswith("network_"):
+        # Network topology inventory (VNets, NSGs, firewall policies, gateways,
+        # etc. -- see onboarding.query_catalog.NETWORK_RESOURCE_TYPES) is ARM
+        # config data that changes about as often as container image scans,
+        # not real-time workload telemetry, so it shares the "images" cadence.
+        return "images"
+    if value in {
+        "advisor_recommendations",
+        "azure_resource",
+        "log_analytics_workspace_discovery",
+        "managed_identities",
+        "policy",
+        "resource_containers",
+        "resources",
+        "role_assignments",
+        "role_definitions",
+    }:
+        # Generic ARM resource/inventory discovery (semantic.live_provider's
+        # "azure_resource" family, and the Log Analytics workspace discovery
+        # query added to onboarding.ingestion_service) is ARM config data with
+        # the same update cadence as network topology and image scans.
+        return "images"
+    if value in {"arg_activity_log", "resource_changes", "service_health"}:
+        # Azure Resource Graph change/activity-log evidence (see
+        # situations.materializer) tracks near-real-time resource changes,
+        # so it shares the "workloads" cadence rather than slow-moving config.
+        return "workloads"
     raise ValueError(f"Unknown Exposure freshness source family {source_family!r}")
 
 

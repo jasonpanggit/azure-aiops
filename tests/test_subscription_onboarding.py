@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import threading
 import time
@@ -31,7 +32,7 @@ from onboarding.validation import (
     ArgConnectionProbe,
     ConnectionValidator,
 )
-from ontology.subscription_connection import SyncState
+from ontology.subscription_connection import ConnectionHealth, SyncState
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 SUBSCRIPTION = "22222222-2222-2222-2222-222222222222"
@@ -932,6 +933,75 @@ def test_sync_async_returns_running_state_immediately(tmp_path: Path) -> None:
     assert service.detail("prod-core")["sync_status"] == "succeeded"
 
 
+def test_enqueue_full_sync_restarts_inventory_and_enqueues_ontology(
+    tmp_path: Path,
+) -> None:
+    """The Sync action must resync everything: real inventory ingestion,
+    not just the durable ontology refresh -- this is the fix for stale
+    connections whose one-and-only initial sync failed with no retry path.
+    """
+    service = build_service(tmp_path)
+    onboard(service)
+    connection, revision = service.registry.get_with_revision("prod-core")
+    service.registry.save(
+        dataclasses.replace(
+            connection,
+            sync_state=SyncState(status="failed", message="initial sync failed"),
+        ),
+        expected_revision=revision,
+    )
+    assert service.detail("prod-core")["sync_status"] == "failed"
+
+    result = service.enqueue_full_sync(
+        "prod-core", mode="manual", requested_by="operator@example.com"
+    )
+
+    assert "inventory_sync" in result
+    assert result["inventory_sync"]["status"] == "running"
+    assert result["durable_run"]["status"] in {"queued", "claimed", "running"}
+
+    for _ in range(50):
+        legacy = service.registry.get("prod-core").sync_state
+        if legacy is not None and legacy.status in {"succeeded", "failed"}:
+            break
+        time.sleep(0.05)
+    legacy = service.registry.get("prod-core").sync_state
+    assert legacy.status == "succeeded"
+    assert legacy.record_count > 0
+
+
+def test_enqueue_full_sync_does_not_double_start_a_live_inventory_sync(
+    tmp_path: Path,
+) -> None:
+    release = threading.Event()
+
+    class BlockingIngestion:
+        def run(self):
+            release.wait(timeout=5)
+            return {"queryVersion": "1.0.0", "datasets": {"entities/resource": {"rowCount": 1}}}
+
+    service = build_service(tmp_path, ingestion=BlockingIngestion())
+    onboard(service)
+
+    try:
+        first = service.sync_async("prod-core", mode="manual")
+        result = service.enqueue_full_sync("prod-core", mode="manual")
+
+        assert result["inventory_sync"]["status"] == "already_running"
+        assert result["inventory_sync"]["run_id"] == first["run_id"]
+        assert "durable_run" in result
+    finally:
+        release.set()
+
+    for _ in range(50):
+        legacy = service.registry.get("prod-core").sync_state
+        if legacy is not None and legacy.status in {"succeeded", "failed"}:
+            break
+        time.sleep(0.05)
+    legacy = service.registry.get("prod-core").sync_state
+    assert legacy.status == "succeeded"
+
+
 def test_sync_async_persists_failure_from_background_job(tmp_path: Path) -> None:
     service = build_service(tmp_path, ingestion=FakeIngestion(error="ARG throttled"))
     onboard(service)
@@ -1185,6 +1255,53 @@ def test_health_reconstructs_durable_publication_after_restart(tmp_path: Path) -
     }
     assert detail["sync_status"] == "succeeded"
     assert detail["durable_run"] == summary["durable_run"]
+
+
+def test_health_keeps_inventory_status_while_durable_publication_is_queued(
+    tmp_path: Path,
+) -> None:
+    service = build_service(tmp_path)
+    onboard(service)
+    connection, revision = service.registry.get_with_revision("prod-core")
+    service.registry.save(
+        dataclasses.replace(
+            connection,
+            sync_state=SyncState(
+                status="failed",
+                last_failed_at="2026-01-01T00:00:00Z",
+                run_id="inventory-run-7",
+                source_version="inventory-generation-7",
+                record_count=12605,
+                message="inventory failed",
+                stage="failed",
+                stage_message="inventory failed",
+                progress_pct=100,
+            ),
+            health=ConnectionHealth(
+                connection_id="prod-core",
+                status="failed",
+                last_failure_at="2026-01-01T00:00:00Z",
+                details="inventory failed",
+                healthy=False,
+            ),
+        ),
+        expected_revision=revision,
+    )
+    service.ontology_run_store.get_or_create_run(
+        connection_id="prod-core",
+        source_generation_id="inventory-generation-7",
+        trigger="manual",
+        requested_by="operator@example.com",
+        now=service.clock(),
+    )
+
+    summary = service.health_report("prod-core")["connections"][0]
+
+    assert summary["sync"]["status"] == "failed"
+    assert summary["sync"]["run_id"] == "inventory-run-7"
+    assert summary["sync"]["message"] == "inventory failed"
+    assert summary["sync"]["record_count"] == 12605
+    assert summary["durable_run"]["status"] == "queued"
 
 
 def test_health_reconstructs_publisher_denial_without_moving_generation(

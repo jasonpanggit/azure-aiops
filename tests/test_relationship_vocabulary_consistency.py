@@ -54,6 +54,20 @@ def test_paas_relationship_entity_types_are_registered() -> None:
     )
 
 
+def test_builder_resource_relationships_cover_paas_and_network_targets() -> None:
+    vocabulary = set(ONTOLOGY_RELATIONSHIP_TYPES)
+
+    assert {
+        ("ContainerRegistry", "member_of", "Application"),
+        ("Application", "hosted_on", "KeyVault"),
+        ("AdvisorRecommendation", "affects", "VNet"),
+        ("DefenderAssessment", "impacts", "Subnet"),
+        ("StorageAccount", "incurs_cost", "CostActual"),
+        ("PrivateEndpoint", "hasNetworkInterface", "NetworkInterface"),
+        ("Resource", "hosts", "LoadBalancer"),
+    } <= vocabulary
+
+
 def test_modules_remain_independently_importable() -> None:
     # Regression guard: importing onboarding.ontology_metadata alone must not
     # require fabric to be importable (and vice versa is exercised implicitly

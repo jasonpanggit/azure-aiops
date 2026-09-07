@@ -1,23 +1,23 @@
 {
   "schema_version": "1.0.0",
   "plan": "03.1-19",
-  "captured_at": "2026-09-07T05:18:00Z",
+  "captured_at": "2026-09-07T09:10:00Z",
   "status": "blocked",
   "sanitized": true,
   "residual_blockers": [
     {
       "code": "exact_supported_defender_digest_to_container_insights_workload_round_trip",
       "status": "blocked",
-      "summary": "No generation-bound live exact Defender digest to supported Container Insights workload traversal reached Fabric Gold and ontology. Unknown or incomplete evidence cannot satisfy the Phase 4 gate."
+      "summary": "The successful live refresh and Fabric publication produced zero exact Defender container facts and zero supported Container Insights deployment/workload edges, so the 100k certification and exact ontology round trip cannot pass."
     }
   ],
   "release": {
-    "tag": "phase031-plan19-p11-20260907-051230",
+    "tag": "phase031-plan19-vocab-20260907-082807",
     "images": {
-      "api": "sha256:180821e629eb41aa3e150e527085cfb1a2ce52113d4455ea481661b5b8d91c16",
-      "web": "sha256:743cc8ac232ab6990483c341c8772a2d5859a6d7839b4e59cdd7984587519932",
-      "mcp_server": "sha256:831907265456f6752f03028e3a719b18240cb3382c2df22633e5db8a203afbea",
-      "azure_mcp": "sha256:7f5af735a723deba87e2e4e58c021c0fac9a57a207ddfa920d0760940b9b0424"
+      "api": "sha256:99032ad63f1c8505f20feecc54e9fa72cb2441acc6d2c2868d8fd2da14550d35",
+      "web": "sha256:60322e21094336bb01bcf33c51234bfb6770c444a5e145bda69e4e5d159630f4",
+      "mcp_server": "sha256:30bbc39f4ef0b78af6934e2824841bf8f6d4009cd88c0891ada7667e5eb43b3e",
+      "azure_mcp": "sha256:0463e7b41ca0554b987dd416bb392cc6097dd288ca46dbc32b77fdd29db902fb"
     },
     "all_apps_running": true,
     "api_health": "pass",
@@ -57,7 +57,8 @@
     "fabric_sql_endpoint_metadata": "pass",
     "odbc_driver_18_and_managed_identity_connectivity": "pass",
     "live_connection_source_refresh": "pass",
-    "gold_schema_and_100k_benchmark": "blocked_by_residual",
+    "gold_schema": "pass",
+    "qualified_100k_benchmark": "blocked_by_residual",
     "exact_digest_workload_ontology_round_trip": "blocked_by_residual",
     "cursor_key_vault_refs": "pass",
     "cursor_active_previous_kids_distinct": "pass",
@@ -70,12 +71,27 @@
     "executable_action_allowlist_exact_three": "pass",
     "container_operation_calls": 0,
     "alerts_enabled_and_routed": "pass",
-    "rollout_controls": "fail_closed_off"
+    "rollout_controls": "fail_closed_off",
+    "shadow_canary_promotion": "blocked_by_exact_live_source_prerequisite",
+    "non_destructive_rollback_contract": "pass",
+    "live_rollback_transition": "not_applicable_no_promoted_candidate"
   },
   "publication_observation": {
     "source_refresh": "succeeded",
-    "gold_tables_present": false,
-    "sanitized_failure_class": "previous_ontology_snapshot_validation_failed",
+    "fabric_publication": "succeeded",
+    "published_table_count": 435,
+    "connection_count": 1,
+    "completed_connection_count": 1,
+    "gold_tables_present": true,
+    "gold_schema_ready": true,
+    "qualified_benchmark_row_count": 0,
+    "qualified_benchmark_status": "fail",
+    "exact_container_evidence_present": false,
+    "exact_container_fact_count": 0,
+    "digest_to_deployment_edge_count": 0,
+    "deployment_to_application_edge_count": 0,
+    "exact_round_trip": false,
+    "sanitized_failure_class": "live_exact_source_chain_empty",
     "provider_payload_retained": false,
     "scope_identifiers_retained": false,
     "secret_values_retained": false
@@ -90,10 +106,9 @@
     "full_web_gates": "pass",
     "post_merge_full_web_gates": "pass",
     "full_backend": {
-      "status": "pre_existing_failures",
-      "count": 3,
-      "plan19_files_touched": false,
-      "affected_area": "ontology graph validation"
+      "status": "pass",
+      "count": 0,
+      "affected_area": "all"
     }
   }
 }

@@ -240,7 +240,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.98
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 1
       shadow_reset = true
       query_op     = "<"
@@ -249,7 +249,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.95
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 1
       shadow_reset = true
       query_op     = "<"
@@ -258,7 +258,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.9
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 2
       shadow_reset = true
       query_op     = "<"
@@ -267,7 +267,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.85
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 2
       shadow_reset = true
       query_op     = "<"
@@ -276,7 +276,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.95
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 1
       shadow_reset = true
       query_op     = "<"
@@ -285,7 +285,7 @@ locals {
       tier         = "weekly"
       threshold    = 1
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 0
       shadow_reset = true
       query_op     = "<"
@@ -294,7 +294,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.98
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 1
       shadow_reset = true
       query_op     = "<"
@@ -308,7 +308,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "ontology_discovery" {
   name                 = "${local.base}-ontology-${replace(each.key, "_", "-")}"
   resource_group_name  = azurerm_resource_group.main.name
   location             = azurerm_resource_group.main.location
-  evaluation_frequency = each.value.tier == "immediate" ? "PT1M" : each.value.tier == "page" ? "PT5M" : each.value.tier == "hour" ? "PT15M" : "P1D"
+  evaluation_frequency = each.value.tier == "immediate" ? "PT5M" : each.value.tier == "page" ? "PT5M" : each.value.tier == "hour" ? "PT15M" : "P1D"
   window_duration      = each.value.window
   scopes               = [azurerm_application_insights.main.id]
   severity             = each.value.severity
@@ -316,9 +316,11 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "ontology_discovery" {
 
   criteria {
     query = <<-KQL
-      AppMetrics
+      let OntologyMetrics = datatable(Name:string, Properties:dynamic, Sum:real, Min:real, Max:real) []
+        | union isfuzzy=true AppMetrics;
+      OntologyMetrics
       | where Name == "ontology.discovery.alert.signal"
-      | where tostring(Properties.rule) == each.key
+      | where tostring(Properties.rule) == "${each.key}"
       | summarize Signal=max(Max)
       | where Signal ${each.value.query_op} ${each.value.threshold}
     KQL

@@ -2,11 +2,24 @@ import type { ScopeSelection } from "@/lib/scope";
 import * as services from "@/lib/services";
 import type {
   CanonicalCopilotRequest,
+  CollectionCoverage,
+  ComplianceDeviation,
   CopilotEntityRef,
   CopilotEvidenceSnapshotV2 as StrictCopilotEvidenceSnapshotV2,
   CopilotFreshnessStatusV2,
+  CopilotPageSnapshot,
+  CopilotSnapshotStatus,
   CopilotSnapshotEvidenceV2,
   CopilotSnapshotStatusV2,
+  DurableSituation,
+  Envelope,
+  EvidenceItem,
+  NetworkGap,
+  NetworkSummary,
+  NetworkTopology,
+  RuleFinding,
+  SubscriptionConnection,
+  VulnerabilitySummary,
 } from "@/lib/types";
 
 export type {
@@ -113,7 +126,10 @@ type InventorySnapshotEvidence = CopilotSnapshotEvidenceV2 & {
 };
 
 const PAGE_DISPOSITIONS = {
+  "/": "integrated",
+  "/compliance": "integrated",
   "/inventory": "integrated",
+  "/network": "integrated",
 } as const satisfies Record<string, CopilotPageDisposition>;
 
 const SHA256_CONSTANTS = [
@@ -439,6 +455,28 @@ function boundedSourceKey(value: string): string {
     throw new Error("source key contains an invalid control character");
   }
   return sourceKey;
+}
+
+function boundedCoreSourceKey(value: string): string {
+  const sourceKey = value.trim();
+  if (Array.from(sourceKey).length <= 160) return boundedSourceKey(sourceKey);
+  if (/[\0\r\n]/.test(sourceKey)) {
+    throw new Error("source key contains an invalid control character");
+  }
+  return `sha256:${sha256(asciiJson(sourceKey))}`;
+}
+
+function boundedFilterValue(name: string, value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(`${name} must contain between 1 and 160 characters`);
+  }
+  if (/[\0\r\n]/.test(normalized)) {
+    throw new Error(`${name} contains an invalid control character`);
+  }
+  return Array.from(normalized).length <= 160
+    ? normalized
+    : `sha256:${sha256(asciiJson(normalized))}`;
 }
 
 function boundedSelectorText(
@@ -822,3 +860,1035 @@ function buildEmptyInventoryContextEvidence(
     data,
   };
 }
+
+/** One stable, already-authorized observation supplied by a contextual page. */
+export interface CoreCopilotRecord {
+  identity: string;
+  namespace: string;
+  kind: string;
+  source: string;
+  data: Record<string, unknown>;
+  resourceId?: string;
+  resourceType?: string;
+  name?: string;
+  observedAt?: string;
+  status?: CopilotSnapshotStatus;
+  selected?: boolean;
+  priority?: number;
+}
+
+/** Visible-versus-total coverage for one collection rendered by a page. */
+export interface CoreCopilotCoverageInput {
+  key: string;
+  visibleCount: number;
+  totalCount: number;
+  truncated?: boolean;
+  available?: boolean;
+}
+
+/** Source observation used to retain freshness independently from row order. */
+export interface CoreCopilotSourceStatus {
+  source: string;
+  observedAt?: string;
+  status: CopilotFreshnessStatusV2;
+}
+
+/** Low-level input shared by the Overview, Network, and Compliance adapters. */
+export interface CoreCopilotAdapterInput {
+  scope: ScopeSelection;
+  filters: Record<string, string[]>;
+  sort?: Record<string, string>;
+  records: CoreCopilotRecord[];
+  evidence: EvidenceItem[];
+  coverage: CoreCopilotCoverageInput[];
+  sourceStatuses: CoreCopilotSourceStatus[];
+}
+
+/** Read-only starter hint submitted through the drawer's policy boundary. */
+export interface CoreCopilotStarterQuestion {
+  label: string;
+  specialistId: string;
+  tool?: string;
+  toolArguments: Record<string, unknown>;
+}
+
+/** Normalized coverage retained by a contextual page adapter. */
+export interface CoreCopilotCoverage {
+  visible_count: number;
+  total_count: number;
+  complete: boolean;
+  truncated: boolean;
+}
+
+/** Pure contextual page output consumed by the shared Copilot drawer. */
+export interface CoreCopilotContext {
+  disposition: "integrated";
+  requestedScope: ScopeSelection;
+  snapshot: CopilotPageSnapshot;
+  selectedEntities: CopilotEntityRef[];
+  coverage: Record<string, CoreCopilotCoverage>;
+  uncertainty: string[];
+  starterQuestions: CoreCopilotStarterQuestion[];
+}
+
+/** Already-loaded Overview envelopes; no adapter performs data access. */
+export interface OverviewCopilotPageInput {
+  scope: ScopeSelection;
+  situations?: Envelope<DurableSituation[]> | null;
+  visibleSituationIds?: string[];
+  network?: Envelope<NetworkSummary> | null;
+  vulnerabilities?: Envelope<VulnerabilitySummary> | null;
+  connections?: Envelope<SubscriptionConnection[]> | null;
+}
+
+type NetworkTopologyEnvelope = Envelope<{
+  topology: NetworkTopology;
+  summary: NetworkSummary;
+}>;
+
+type NetworkGapsEnvelope = Envelope<{
+  gaps: NetworkGap[];
+  intended_design_declared: boolean;
+  summary: NetworkSummary;
+  coverage?: CollectionCoverage;
+}>;
+
+type NetworkFindingsEnvelope = Envelope<{
+  findings: RuleFinding[];
+  summary: NetworkSummary;
+  coverage?: CollectionCoverage;
+}>;
+
+type NetworkBypassEnvelope = Envelope<{
+  gaps: NetworkGap[];
+  count: number;
+}>;
+
+/** Already-loaded Network envelopes and active page state. */
+export interface NetworkCopilotPageInput {
+  scope: ScopeSelection;
+  tab: "flow" | "topology" | "gaps" | "rules" | "policy";
+  gapOffset: number;
+  gapLimit: number;
+  findingOffset: number;
+  findingLimit: number;
+  topology?: NetworkTopologyEnvelope | null;
+  gaps?: NetworkGapsEnvelope | null;
+  findings?: NetworkFindingsEnvelope | null;
+  bypass?: NetworkBypassEnvelope | null;
+}
+
+/** Compliance row projected by the page before the adapter assigns identity. */
+export interface ComplianceCopilotViolation {
+  id: string;
+  type: string;
+  severity: string;
+  title: string;
+  detail: string;
+  resource: string;
+  application: string;
+  businessService: string;
+  owner: string;
+  affectedTraffic: string;
+  vulnerabilityExposure: string;
+  remediation: string;
+}
+
+/** Already-loaded Compliance observations and evaluated page state. */
+export interface ComplianceCopilotPageInput {
+  scope: ScopeSelection;
+  policyName: string;
+  selectedId: string | null;
+  violations: ComplianceCopilotViolation[];
+  governedDeviations: ComplianceDeviation[];
+  evidence: EvidenceItem[];
+  sourceEnvelopes?: Record<string, Envelope<unknown> | null | undefined>;
+}
+
+const CORE_PAGE_CONFIG = {
+  overview: {
+    pageKind: "resource",
+    pageId: "operations-overview",
+  },
+  network: {
+    pageKind: "network",
+    pageId: "network-topology",
+  },
+  compliance: {
+    pageKind: "governance",
+    pageId: "compliance-posture",
+  },
+} as const;
+
+const OVERVIEW_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "What needs attention right now?",
+    specialistId: "incident",
+    tool: "incidents",
+    toolArguments: {},
+  },
+  {
+    label: "Which services have the highest risk?",
+    specialistId: "vulnerability",
+    tool: "cve_exposure",
+    toolArguments: {},
+  },
+  {
+    label: "What should be fixed first?",
+    specialistId: "remediation",
+    tool: "remediation_opportunities",
+    toolArguments: {},
+  },
+  {
+    label: "Give me an executive summary of cross-domain risk.",
+    specialistId: "executive_summary",
+    toolArguments: {},
+  },
+];
+
+const NETWORK_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Can UAT reach PROD?",
+    specialistId: "network",
+    tool: "traffic_flow",
+    toolArguments: { source: "UAT", destination: "PROD" },
+  },
+  {
+    label: "Show inspection bypass paths.",
+    specialistId: "network",
+    tool: "firewall_nsg_gaps",
+    toolArguments: {},
+  },
+];
+
+const COMPLIANCE_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Which PROD workloads bypass the firewall?",
+    specialistId: "network",
+    tool: "firewall_nsg_gaps",
+    toolArguments: {},
+  },
+  {
+    label: "Which CVEs affect our critical services?",
+    specialistId: "vulnerability",
+    tool: "cve_exposure",
+    toolArguments: {},
+  },
+  {
+    label: "Which governance risks or exceptions need review?",
+    specialistId: "governance",
+    tool: "risk_context",
+    toolArguments: {},
+  },
+];
+
+function isCoreCopilotInput(
+  input: CoreCopilotAdapterInput | object,
+): input is CoreCopilotAdapterInput {
+  return "records" in input;
+}
+
+function isCanonicalAzureResourceId(value: string | undefined): value is string {
+  const parts = String(value ?? "").split("/").filter(Boolean);
+  const providerIndex = parts.findIndex((part) => part.toLowerCase() === "providers");
+  return (
+    String(value ?? "").startsWith("/")
+    && parts[0]?.toLowerCase() === "subscriptions"
+    && Boolean(parts[1])
+    && parts[2]?.toLowerCase() === "resourcegroups"
+    && Boolean(parts[3])
+    && providerIndex === 4
+    && parts.length > providerIndex + 2
+  );
+}
+
+function coreRecordSourceKey(record: CoreCopilotRecord): string {
+  const identity = String(record.identity ?? "").trim();
+  if (identity) return boundedCoreSourceKey(identity);
+  return `anonymous:${sha256(stableJson([
+    record.namespace,
+    record.kind,
+    record.source,
+    record.resourceId ?? "",
+    record.data,
+  ]))}`;
+}
+
+function coreRecordEntity(record: CoreCopilotRecord): CopilotEntityRef {
+  if (isCanonicalAzureResourceId(record.resourceId)) {
+    return {
+      type: "azure",
+      resource_id: canonicalResourceId(record.resourceId),
+    };
+  }
+  return {
+    type: "domain",
+    namespace: boundedString("entity namespace", record.namespace, 1, 64),
+    kind: boundedString("entity kind", record.kind, 1, 64),
+    source_key: coreRecordSourceKey(record),
+  };
+}
+
+function entityOrderingKey(entity: CopilotEntityRef): string {
+  return entity.type === "domain"
+    ? `0:${entity.namespace}:${entity.kind}:${entity.source_key}`
+    : `1:${entity.resource_id}`;
+}
+
+function normalizeFilters(
+  filters: Record<string, string[]>,
+  sort: Record<string, string> | undefined,
+): Record<string, string[]> {
+  const entries = Object.entries(filters)
+    .map(([key, values]) => [
+      boundedString("filter name", key, 1, 64),
+      Array.from(new Set(
+        values
+          .map((value) => boundedFilterValue(`filter ${key}`, value))
+          .filter(Boolean),
+      )).sort(compareCodePoints),
+    ] as const)
+    .filter(([, values]) => values.length > 0);
+  assertBound("page filters", entries.length, 16);
+  const normalized = Object.fromEntries(
+    entries.sort(([left], [right]) => compareCodePoints(left, right)),
+  );
+  const sortValues = Object.entries(sort ?? {})
+    .map(([key, direction]) =>
+      `${boundedString("sort field", key, 1, 64)}:${boundedString("sort direction", direction, 1, 16)}`)
+    .sort(compareCodePoints);
+  if (sortValues.length) normalized.sort = sortValues;
+  return normalized;
+}
+
+function normalizeCoverage(
+  inputs: CoreCopilotCoverageInput[],
+): Record<string, CoreCopilotCoverage> {
+  return Object.fromEntries(
+    inputs
+      .map((item) => {
+        if (
+          !Number.isInteger(item.visibleCount)
+          || !Number.isInteger(item.totalCount)
+          || item.visibleCount < 0
+          || item.totalCount < 0
+          || item.visibleCount > item.totalCount
+        ) {
+          throw new Error(`invalid ${item.key} coverage`);
+        }
+        const key = boundedString("coverage key", item.key, 1, 64);
+        return [key, {
+          visible_count: item.visibleCount,
+          total_count: item.totalCount,
+          complete: item.available !== false && item.visibleCount === item.totalCount,
+          truncated: item.truncated ?? item.visibleCount < item.totalCount,
+        }] as const;
+      })
+      .sort(([left], [right]) => compareCodePoints(left, right)),
+  );
+}
+
+function coreEvidenceRow(record: CoreCopilotRecord) {
+  const source = boundedString("evidence source", record.source, 1, 128);
+  const entity = coreRecordEntity(record);
+  const sourceKey = coreRecordSourceKey(record);
+  const claimType = boundedString("claim type", record.kind, 1, 64);
+  const data = {
+    ...record.data,
+    entity,
+    source_key: sourceKey,
+    claim_type: claimType,
+    selected: record.selected ?? false,
+    actionable: false,
+    mutation_authorized: false,
+  };
+  assertEvidenceRowBound(data);
+  return {
+    priority: record.priority ?? 50,
+    row: {
+      evidence_id: canonicalEvidenceStableId({
+        source,
+        sourceKey,
+        entity,
+        claimType,
+      }),
+      ...(entity.type === "azure" ? { resource_id: entity.resource_id } : {}),
+      section: source,
+      status: record.status ?? "ok",
+      observed_at: record.observedAt,
+      data,
+    },
+  };
+}
+
+function sourceEvidenceRow(item: EvidenceItem) {
+  const source = boundedString(
+    "evidence source",
+    `${item.source_engine}/${item.source_table}`,
+    1,
+    128,
+  );
+  const canonicalResource = isCanonicalAzureResourceId(item.resource_id ?? undefined)
+    ? canonicalResourceId(item.resource_id!)
+    : undefined;
+  const sourceKey = boundedCoreSourceKey(
+    canonicalResource ?? `${item.source_engine}:${item.source_table}`,
+  );
+  const entity: CopilotEntityRef = canonicalResource
+    ? { type: "azure", resource_id: canonicalResource }
+    : {
+        type: "domain",
+        namespace: "source",
+        kind: "observation",
+        source_key: sourceKey,
+      };
+  const data = {
+    entity,
+    source_key: sourceKey,
+    claim_type: "source_observation",
+    source_engine: item.source_engine,
+    source_table: item.source_table,
+    confidence: item.confidence,
+    freshness: item.freshness,
+    selected: false,
+    actionable: false,
+    mutation_authorized: false,
+  };
+  assertEvidenceRowBound(data);
+  return {
+    priority: 40,
+    row: {
+      evidence_id: canonicalEvidenceStableId({
+        source,
+        sourceKey,
+        entity,
+        claimType: "source_observation",
+      }),
+      ...(canonicalResource ? { resource_id: canonicalResource } : {}),
+      section: source,
+      status: (item.freshness === "unknown" ? "unavailable" : "ok") as CopilotSnapshotStatus,
+      observed_at: item.timestamp,
+      data,
+    },
+  };
+}
+
+function coverageEvidenceRows(coverage: Record<string, CoreCopilotCoverage>) {
+  return Object.entries(coverage).map(([key, value]) => {
+    const entity: CopilotEntityRef = {
+      type: "domain",
+      namespace: "page",
+      kind: "coverage",
+      source_key: key,
+    };
+    return {
+      evidence_id: canonicalEvidenceStableId({
+        source: "page/coverage",
+        sourceKey: key,
+        entity,
+        claimType: "coverage",
+      }),
+      section: "coverage",
+      status: (
+        !value.complete && value.visible_count === 0 && value.total_count === 0
+          ? "unavailable"
+          : "ok"
+      ) as CopilotSnapshotStatus,
+      observed_at: undefined,
+      data: {
+        entity,
+        source_key: key,
+        claim_type: "coverage",
+        coverage: value,
+        selected: false,
+        actionable: false,
+        mutation_authorized: false,
+      },
+    };
+  });
+}
+
+function normalizedFreshness(sourceStatuses: CoreCopilotSourceStatus[]) {
+  const bySource = new Map<string, CoreCopilotSourceStatus>();
+  for (const item of sourceStatuses) {
+    const source = boundedString("freshness source", item.source, 1, 128);
+    const candidate = { ...item, source };
+    const current = bySource.get(source);
+    if (
+      !current
+      || FRESHNESS_WARNING_PRIORITY[candidate.status]
+        > FRESHNESS_WARNING_PRIORITY[current.status]
+      || (
+        candidate.status === current.status
+        && (candidate.observedAt ?? "") > (current.observedAt ?? "")
+      )
+    ) {
+      bySource.set(source, candidate);
+    }
+  }
+  return Array.from(bySource.values())
+    .sort((left, right) => compareCodePoints(left.source, right.source))
+    .map((item) => ({
+      source: item.source,
+      observed_at: item.observedAt || "unknown",
+      status: item.status,
+    }));
+}
+
+function buildCoreCopilotContext(
+  config: (typeof CORE_PAGE_CONFIG)[keyof typeof CORE_PAGE_CONFIG],
+  input: CoreCopilotAdapterInput,
+  starters: CoreCopilotStarterQuestion[],
+): CoreCopilotContext {
+  const coverage = normalizeCoverage(input.coverage);
+  const selectedRecords = input.records.filter((record) => record.selected);
+  const selectedEntities = selectedRecords
+    .map(coreRecordEntity)
+    .filter((entity, index, entities) =>
+      entities.findIndex((candidate) =>
+        entityOrderingKey(candidate) === entityOrderingKey(entity)) === index)
+    .sort((left, right) =>
+      compareCodePoints(entityOrderingKey(left), entityOrderingKey(right)))
+    .slice(0, COPILOT_SNAPSHOT_LIMITS.selectedEntities);
+  const selectedResources = selectedRecords
+    .filter((record) => isCanonicalAzureResourceId(record.resourceId))
+    .map((record) => ({
+      resource_id: canonicalResourceId(record.resourceId!),
+      resource_type: record.resourceType || "Microsoft.Resources/resources",
+      ...(record.name ? { name: record.name } : {}),
+    }))
+    .filter((resource, index, resources) =>
+      resources.findIndex((candidate) =>
+        candidate.resource_id === resource.resource_id) === index)
+    .slice(0, COPILOT_SNAPSHOT_LIMITS.selectedEntities);
+
+  const coverageRows = coverageEvidenceRows(coverage);
+  const candidates = [
+    ...input.records.map(coreEvidenceRow),
+    ...input.evidence.map(sourceEvidenceRow),
+  ].sort((left, right) =>
+    left.priority - right.priority
+    || compareCodePoints(left.row.evidence_id, right.row.evidence_id));
+  const candidateEvidence = new Map<string, ReturnType<typeof coreEvidenceRow>["row"]>();
+  const retainedCandidateIds: string[] = [];
+  const candidateLimit = Math.max(
+    0,
+    COPILOT_SNAPSHOT_LIMITS.evidenceRows - coverageRows.length,
+  );
+  for (const candidate of candidates) {
+    const existing = candidateEvidence.get(candidate.row.evidence_id);
+    if (!existing || (candidate.row.observed_at ?? "") > (existing.observed_at ?? "")) {
+      candidateEvidence.set(candidate.row.evidence_id, candidate.row);
+    }
+    if (!existing && retainedCandidateIds.length < candidateLimit) {
+      retainedCandidateIds.push(candidate.row.evidence_id);
+    }
+  }
+  const freshness = normalizedFreshness(input.sourceStatuses);
+  assertBound("freshness records", freshness.length, COPILOT_SNAPSHOT_LIMITS.freshnessRecords);
+
+  const buildSnapshot = () => {
+    const evidence = [
+      ...retainedCandidateIds.flatMap((id) => {
+        const row = candidateEvidence.get(id);
+        return row ? [row] : [];
+      }),
+      ...coverageRows,
+    ].sort((left, right) => compareCodePoints(left.evidence_id, right.evidence_id));
+    return services.buildCopilotSnapshot({
+      pageKind: config.pageKind,
+      pageId: config.pageId,
+      scope: input.scope,
+      filters: normalizeFilters(input.filters, input.sort),
+      selectedResources,
+      evidence,
+      freshness,
+    });
+  };
+  let snapshot = buildSnapshot();
+  while (
+    new TextEncoder().encode(stableJson(snapshot)).length + numericValueCount(snapshot)
+      > COPILOT_SNAPSHOT_LIMITS.snapshotBytes
+    && retainedCandidateIds.length > 0
+  ) {
+    retainedCandidateIds.pop();
+    snapshot = buildSnapshot();
+  }
+  assertBound(
+    "snapshot",
+    new TextEncoder().encode(stableJson(snapshot)).length + numericValueCount(snapshot),
+    COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+  );
+
+  return {
+    disposition: "integrated",
+    requestedScope: input.scope,
+    snapshot,
+    selectedEntities,
+    coverage,
+    uncertainty: [
+      ...Object.entries(coverage)
+        .filter(([, item]) => item.truncated)
+        .map(([key]) => `${key} coverage is truncated`),
+      ...freshness
+        .filter((item) => item.status !== "fresh")
+        .map((item) => `${item.source} freshness is ${item.status}`),
+    ],
+    starterQuestions: starters,
+  };
+}
+
+function envelopeTotal(envelope: Envelope<unknown[]> | null | undefined): number {
+  return envelope?.pagination?.total ?? envelope?.data.length ?? 0;
+}
+
+function evidenceFreshness(value: EvidenceItem["freshness"]): CopilotFreshnessStatusV2 {
+  if (value === "fresh") return "fresh";
+  if (value === "aging") return "partial";
+  if (value === "stale") return "stale";
+  return "unavailable";
+}
+
+function envelopeSourceStatus(
+  source: string,
+  envelope: Envelope<unknown> | null | undefined,
+): CoreCopilotSourceStatus {
+  if (!envelope) return { source, observedAt: "unknown", status: "unavailable" };
+  const evidence = envelope.evidence ?? [];
+  const reportedStatuses = Object.values(envelope.source_status ?? {}).map(freshnessStatus);
+  const statuses = evidence.length
+    ? evidence.map((item) => evidenceFreshness(item.freshness))
+    : reportedStatuses;
+  const status = statuses.length
+    ? statuses.reduce((current, candidate) =>
+      FRESHNESS_WARNING_PRIORITY[candidate] > FRESHNESS_WARNING_PRIORITY[current]
+        ? candidate
+        : current)
+    : "unavailable";
+  const observedAt = evidence.reduce(
+    (latest, item) => item.timestamp > latest ? item.timestamp : latest,
+    envelope.live_observed_at ?? "",
+  );
+  return { source, observedAt: observedAt || "unknown", status };
+}
+
+function overviewCoreInput(input: OverviewCopilotPageInput): CoreCopilotAdapterInput {
+  const loadedSituations = input.situations?.data ?? [];
+  const situationsById = new Map(
+    loadedSituations.map((situation) => [situation.situation_id, situation]),
+  );
+  const situations = input.visibleSituationIds
+    ? input.visibleSituationIds.flatMap((id) => {
+      const situation = situationsById.get(id);
+      return situation ? [situation] : [];
+    })
+    : loadedSituations;
+  const connections = input.connections?.data ?? [];
+  const records: CoreCopilotRecord[] = [
+    ...situations.slice(0, 50).map((situation, index) => ({
+      identity: situation.situation_id,
+      namespace: "operations",
+      kind: "situation",
+      source: "situations/visible",
+      observedAt: situation.last_observed_at,
+      priority: index,
+      data: {
+        title: situation.title,
+        priority: situation.priority,
+        severity: situation.severity,
+        lifecycle_state: situation.lifecycle_state,
+        owner: situation.owner,
+        support_team: situation.support_team,
+        affected_resource_ids: situation.affected_resource_ids,
+        evidence_state: situation.evidence_state,
+      },
+    })),
+    ...(input.network ? [{
+      identity: "network-summary",
+      namespace: "operations",
+      kind: "network_summary",
+      source: "network/summary",
+      priority: 60,
+      data: { ...input.network.data },
+    }] : []),
+    ...(input.vulnerabilities ? [{
+      identity: "vulnerability-summary",
+      namespace: "operations",
+      kind: "vulnerability_summary",
+      source: "vulnerability/summary",
+      priority: 60,
+      data: {
+        cve_count: input.vulnerabilities.data.cve_count,
+        affected_server_count: input.vulnerabilities.data.affected_server_count,
+        reachable_server_count: input.vulnerabilities.data.reachable_server_count,
+        internet_exposed_count: input.vulnerabilities.data.internet_exposed_count,
+        critical_count: input.vulnerabilities.data.critical_count,
+      },
+    }] : []),
+    ...connections.slice(0, 25).map((connection) => ({
+      identity: connection.connection_id,
+      namespace: "connections",
+      kind: "subscription_connection",
+      source: "connections/visible",
+      observedAt: connection.last_successful_sync_at ?? connection.last_synced_at ?? undefined,
+      priority: 70,
+      data: {
+        name: connection.name,
+        subscription_id: connection.subscription_id,
+        business_service: connection.business_service,
+        application: connection.application,
+        environment: connection.environment,
+        owner: connection.owner,
+        support_team: connection.support_team,
+        criticality: connection.criticality,
+        health_status: connection.health_status,
+        sync_status: connection.sync_status,
+      },
+    })),
+  ];
+  return {
+    scope: input.scope,
+    filters: { view: ["overview"] },
+    sort: { situation_priority: "asc" },
+    records,
+    evidence: [
+      ...(input.situations?.evidence ?? []),
+      ...(input.network?.evidence ?? []),
+      ...(input.vulnerabilities?.evidence ?? []),
+      ...(input.connections?.evidence ?? []),
+    ],
+    coverage: [
+      {
+        key: "situations",
+        visibleCount: Math.min(situations.length, 50),
+        totalCount: envelopeTotal(input.situations),
+        truncated: situations.length > 50 || envelopeTotal(input.situations) > 50,
+        available: Boolean(input.situations),
+      },
+      {
+        key: "connections",
+        visibleCount: Math.min(connections.length, 25),
+        totalCount: envelopeTotal(input.connections),
+        truncated: connections.length > 25 || envelopeTotal(input.connections) > 25,
+        available: Boolean(input.connections),
+      },
+    ],
+    sourceStatuses: [
+      envelopeSourceStatus("connections", input.connections),
+      envelopeSourceStatus("network", input.network),
+      envelopeSourceStatus("situations", input.situations),
+      envelopeSourceStatus("vulnerabilities", input.vulnerabilities),
+    ],
+  };
+}
+
+function collectionCoverage(
+  key: string,
+  visibleCount: number,
+  totalCount: number,
+  coverage?: CollectionCoverage,
+  available = true,
+): CoreCopilotCoverageInput {
+  const total = coverage?.total ?? totalCount;
+  return {
+    key,
+    visibleCount,
+    totalCount: Math.max(visibleCount, total),
+    truncated: coverage?.truncated ?? visibleCount < total,
+    available,
+  };
+}
+
+function networkCoreInput(input: NetworkCopilotPageInput): CoreCopilotAdapterInput {
+  const topology = input.topology?.data.topology;
+  const gaps = input.gaps?.data.gaps ?? [];
+  const findings = input.findings?.data.findings ?? [];
+  const bypassGaps = input.bypass?.data.gaps ?? [];
+  const records: CoreCopilotRecord[] = [
+    ...(input.topology ? [{
+      identity: "network-summary",
+      namespace: "network",
+      kind: "topology_summary",
+      source: "network/topology",
+      priority: 0,
+      data: {
+        summary: input.topology.data.summary,
+        connection_ids: topology?.connection_ids ?? [],
+        unresolved_peer_vnet_ids: topology?.unresolved_peer_vnet_ids ?? [],
+      },
+    }] : []),
+    ...(topology?.hubs ?? []).slice(0, 50).map((hub) => ({
+      identity: hub.vnet_id,
+      namespace: "network",
+      kind: "virtual_network",
+      source: "network/topology",
+      resourceId: hub.vnet_id,
+      resourceType: "Microsoft.Network/virtualNetworks",
+      name: hub.name,
+      selected: true,
+      priority: 1,
+      data: {
+        name: hub.name,
+        role: hub.role,
+        connection_id: hub.connection_id,
+        subscription_id: hub.subscription_id,
+        peer_count: hub.peer_count,
+        signals: hub.signals,
+      },
+    })),
+    ...bypassGaps.map((gap) => networkGapRecord(gap, "network/firewall-bypass", 5)),
+    ...gaps.map((gap) => networkGapRecord(gap, "network/gaps", 10)),
+    ...findings.map((finding) => ({
+      identity: finding.finding_id,
+      namespace: "network",
+      kind: "rule_finding",
+      source: "network/rule-findings",
+      resourceId: finding.affected_resource_ids?.find(isCanonicalAzureResourceId),
+      priority: 20,
+      data: {
+        check: finding.category,
+        finding: finding.title,
+        issue: finding.detail,
+        compliant: false,
+        severity: finding.severity,
+        rule_id: finding.rule_id,
+        rule_name: finding.rule_name,
+        control: finding.control,
+        control_id: finding.control_id,
+        recommendation: finding.recommendation,
+        connection_id: finding.connection_id,
+        subscription_id: finding.subscription_id,
+        environment: finding.environment,
+        evidence: finding.evidence,
+      },
+    })),
+  ];
+  const gapTotal = input.gaps?.pagination?.total
+    ?? input.gaps?.data.coverage?.total
+    ?? input.gaps?.data.summary.gap_count
+    ?? gaps.length;
+  const findingTotal = input.findings?.pagination?.total
+    ?? input.findings?.data.coverage?.total
+    ?? input.findings?.data.summary.rule_finding_count
+    ?? findings.length;
+  return {
+    scope: input.scope,
+    filters: {
+      tab: [input.tab],
+      gap_page: [String(input.gapOffset), String(input.gapLimit)],
+      finding_page: [String(input.findingOffset), String(input.findingLimit)],
+    },
+    records,
+    evidence: [
+      ...(input.topology?.evidence ?? []),
+      ...(input.gaps?.evidence ?? []),
+      ...(input.findings?.evidence ?? []),
+      ...(input.bypass?.evidence ?? []),
+    ],
+    coverage: [
+      collectionCoverage(
+        "gaps",
+        gaps.length,
+        gapTotal,
+        input.gaps?.data.coverage,
+        Boolean(input.gaps),
+      ),
+      collectionCoverage(
+        "rule_findings",
+        findings.length,
+        findingTotal,
+        input.findings?.data.coverage,
+        Boolean(input.findings),
+      ),
+    ],
+    sourceStatuses: [
+      envelopeSourceStatus("network_bypass", input.bypass),
+      envelopeSourceStatus("network_gaps", input.gaps),
+      envelopeSourceStatus("network_rule_findings", input.findings),
+      envelopeSourceStatus("network_topology", input.topology),
+    ],
+  };
+}
+
+function networkGapRecord(
+  gap: NetworkGap,
+  source: string,
+  priority: number,
+): CoreCopilotRecord {
+  return {
+    identity: gap.gap_id,
+    namespace: "network",
+    kind: source.endsWith("firewall-bypass") ? "firewall_bypass" : "network_gap",
+    source,
+    resourceId: isCanonicalAzureResourceId(gap.resource_id) ? gap.resource_id : undefined,
+    resourceType: gap.resource_type,
+    name: gap.resource_name,
+    priority,
+    data: {
+      check: source.endsWith("firewall-bypass") ? "firewall" : gap.category,
+      finding: gap.title,
+      issue: gap.detail,
+      compliant: false,
+      severity: gap.severity,
+      resource_id: gap.resource_id,
+      resource_name: gap.resource_name,
+      resource_type: gap.resource_type,
+      recommendation: gap.recommendation,
+      basis: gap.basis,
+      connection_id: gap.connection_id,
+      subscription_id: gap.subscription_id,
+      environment: gap.environment,
+      vnet_id: gap.vnet_id,
+      evidence: gap.evidence,
+    },
+  };
+}
+
+function complianceCoreInput(
+  input: ComplianceCopilotPageInput,
+): CoreCopilotAdapterInput {
+  const violationSources = [
+    "topology",
+    "network_gaps",
+    "network_rule_findings",
+    "vulnerability_exposure",
+  ];
+  const deviationSources = ["policy_deviations", "security_deviations"];
+  const sourcesAvailable = (sources: string[]) =>
+    !input.sourceEnvelopes
+    || sources.every((source) => Boolean(input.sourceEnvelopes?.[source]));
+  const records: CoreCopilotRecord[] = [
+    ...input.violations.map((violation) => ({
+      identity: violation.id,
+      namespace: "compliance",
+      kind: "policy_violation",
+      source: "compliance/violations",
+      resourceId: isCanonicalAzureResourceId(violation.resource)
+        ? violation.resource
+        : undefined,
+      selected: violation.id === input.selectedId,
+      priority: violation.id === input.selectedId ? 0 : 10,
+      data: {
+        type: violation.type,
+        severity: violation.severity,
+        title: violation.title,
+        detail: violation.detail,
+        resource: violation.resource,
+        application: violation.application,
+        business_service: violation.businessService,
+        owner: violation.owner,
+        affected_traffic: violation.affectedTraffic,
+        vulnerability_exposure: violation.vulnerabilityExposure,
+        remediation: violation.remediation,
+      },
+    })),
+    ...input.governedDeviations.map((deviation) => ({
+      identity: deviation.deviation_id,
+      namespace: "compliance",
+      kind: "governed_deviation",
+      source: "compliance/deviations",
+      observedAt: deviation.observed_at,
+      resourceId: isCanonicalAzureResourceId(deviation.resource)
+        ? deviation.resource
+        : undefined,
+      selected: deviation.deviation_id === input.selectedId,
+      priority: deviation.deviation_id === input.selectedId ? 0 : 20,
+      data: {
+        kind: deviation.kind,
+        severity: deviation.severity,
+        control: deviation.control,
+        status: deviation.status,
+        resource: deviation.resource,
+        application: deviation.application,
+        business_service: deviation.business_service,
+        environment: deviation.environment,
+        business_criticality: deviation.business_criticality,
+        subscription: deviation.subscription,
+      },
+    })),
+  ];
+  return {
+    scope: input.scope,
+    filters: {
+      policy: [input.policyName],
+      ...(input.selectedId
+        ? { selected: [boundedCoreSourceKey(input.selectedId)] }
+        : {}),
+    },
+    sort: { severity: "desc" },
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "violations",
+        visibleCount: input.violations.length,
+        totalCount: input.violations.length,
+        available: sourcesAvailable(violationSources),
+      },
+      {
+        key: "governed_deviations",
+        visibleCount: input.governedDeviations.length,
+        totalCount: input.governedDeviations.length,
+        available: sourcesAvailable(deviationSources),
+      },
+    ],
+    sourceStatuses: Object.entries(input.sourceEnvelopes ?? {})
+      .map(([source, envelope]) => envelopeSourceStatus(source, envelope)),
+  };
+}
+
+/** Builds the typed Overview context from loaded records or loaded envelopes. */
+export function buildOverviewCopilotContext(
+  input: CoreCopilotAdapterInput | OverviewCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    CORE_PAGE_CONFIG.overview,
+    isCoreCopilotInput(input) ? input : overviewCoreInput(input),
+    OVERVIEW_STARTERS,
+  );
+}
+
+/** Builds the typed Network context from loaded records or Network envelopes. */
+export function buildNetworkCopilotContext(
+  input: CoreCopilotAdapterInput | NetworkCopilotPageInput,
+): CoreCopilotContext {
+  const context = buildCoreCopilotContext(
+    CORE_PAGE_CONFIG.network,
+    isCoreCopilotInput(input) ? input : networkCoreInput(input),
+    NETWORK_STARTERS,
+  );
+  if (isCoreCopilotInput(input)) return context;
+  const firstHub = input.topology?.data.topology.hubs[0];
+  if (!firstHub) return context;
+  return {
+    ...context,
+    starterQuestions: [
+      context.starterQuestions[0],
+      {
+        label: `What depends on ${firstHub.name}?`,
+        specialistId: "network",
+        tool: "hub_dependents",
+        toolArguments: { vnet_id: firstHub.vnet_id },
+      },
+      ...context.starterQuestions.slice(1),
+    ],
+  };
+}
+
+/** Builds the typed Compliance context from loaded records or evaluated rows. */
+export function buildComplianceCopilotContext(
+  input: CoreCopilotAdapterInput | ComplianceCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    CORE_PAGE_CONFIG.compliance,
+    isCoreCopilotInput(input) ? input : complianceCoreInput(input),
+    COMPLIANCE_STARTERS,
+  );
+}
+
+/** Registry of contextual routes migrated by Plan 11-07 Task 1. */
+export const CORE_COPILOT_PAGE_ADAPTERS = {
+  "/": buildOverviewCopilotContext,
+  "/compliance": buildComplianceCopilotContext,
+  "/network": buildNetworkCopilotContext,
+} as const;

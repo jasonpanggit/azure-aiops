@@ -12,9 +12,10 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
+import { buildComplianceCopilotContext } from "@/lib/copilot/page-adapters";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
-import { buildCopilotSnapshot, complianceApi, copilotEvidenceRows, networkApi, vulnerabilityApi } from "@/lib/services";
+import { complianceApi, networkApi, vulnerabilityApi } from "@/lib/services";
 import type { ComplianceDeviation, NetworkGap, NetworkTopology, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 
 type ViolationType =
@@ -402,6 +403,24 @@ export default function CompliancePage() {
   const governedLoading = policyDeviations.loading || securityDeviations.loading || drift.loading || summary.loading;
   const governedError = policyDeviations.error ?? securityDeviations.error ?? drift.error ?? summary.error;
   const changeSummary = summary.data?.data.summary;
+  const complianceCopilot = buildComplianceCopilotContext({
+    scope,
+    policyName: policy.name,
+    selectedId: selectedId || null,
+    violations,
+    governedDeviations: openGovernedDeviations,
+    evidence,
+    sourceEnvelopes: {
+      topology: topology.data,
+      network_gaps: gaps.data,
+      network_rule_findings: findings.data,
+      vulnerability_exposure: exposures.data,
+      policy_deviations: policyDeviations.data,
+      security_deviations: securityDeviations.data,
+      configuration_drift: drift.data,
+      compliance_summary: summary.data,
+    },
+  });
 
   function savePolicy(next: DesignPolicy) {
     setPolicy(next);
@@ -573,22 +592,9 @@ export default function CompliancePage() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Security posture"
-        snapshot={buildCopilotSnapshot({
-          pageKind: "governance",
-          pageId: "compliance-posture",
-          scope,
-          filters: { policy: [policy.name], selected: selectedId ? [selectedId] : [] },
-          evidence: copilotEvidenceRows("governance", evidence, [
-            ...violations,
-            ...(selected ? [selected] : []),
-            ...openGovernedDeviations,
-          ]),
-        })}
-        starterQuestions={[
-          { label: "Which PROD workloads bypass the firewall?", tool: "firewall_nsg_gaps", toolArguments: {} },
-          { label: "Which CVEs affect our critical services?", tool: "cve_exposure", toolArguments: {} },
-          { label: "What are our current network security gaps?", tool: "firewall_nsg_gaps", toolArguments: {} },
-        ]}
+        requestedScope={complianceCopilot.requestedScope}
+        snapshot={complianceCopilot.snapshot}
+        starterQuestions={complianceCopilot.starterQuestions}
       />
     </div>
   );

@@ -11,8 +11,9 @@ import { CoverageDonut, OperationsSignalChart } from "@/components/ui/Operations
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { buildOverviewCopilotContext } from "@/lib/copilot/page-adapters";
 import { useScope } from "@/lib/scope-context";
-import { buildCopilotSnapshot, copilotEvidenceRows, connectionsApi, networkApi, situationsApi, vulnerabilityApi } from "@/lib/services";
+import { connectionsApi, networkApi, situationsApi, vulnerabilityApi } from "@/lib/services";
 import { rankDurableSituations } from "@/lib/situations";
 import type {
   Envelope,
@@ -93,6 +94,14 @@ export default function Home() {
     scope.subscription_connection?.[0] ??
     scope.subscription?.[0] ??
     "All authorized environments";
+  const overviewCopilot = buildOverviewCopilotContext({
+    scope,
+    situations: state.situations,
+    network: state.network,
+    vulnerabilities: state.vulnerabilities,
+    connections: state.connections,
+    visibleSituationIds: situations.map((situation) => situation.id),
+  });
 
   return (
     <div className="page-container">
@@ -164,22 +173,9 @@ export default function Home() {
             open={copilotOpen}
             onClose={() => setCopilotOpen(false)}
             contextLabel="Operations overview"
-            snapshot={buildCopilotSnapshot({
-              pageKind: "resource",
-              pageId: "operations-overview",
-              scope,
-              filters: { view: ["overview"] },
-              evidence: copilotEvidenceRows("overview", evidence, [
-                ...situations.slice(0, 50),
-                ...(state.network?.data ? [state.network.data] : []),
-                ...(state.vulnerabilities?.data ? [state.vulnerabilities.data] : []),
-              ]),
-            })}
-            starterQuestions={[
-              { label: "What needs attention right now?", tool: "incidents", toolArguments: {} },
-              { label: "Which services have the highest risk?", tool: "cve_exposure", toolArguments: {} },
-              { label: "What should be fixed first?", tool: "remediation_opportunities", toolArguments: {} },
-            ]}
+            requestedScope={overviewCopilot.requestedScope}
+            snapshot={overviewCopilot.snapshot}
+            starterQuestions={overviewCopilot.starterQuestions}
           />
 
           <section className="dashboard-section">

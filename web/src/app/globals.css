@@ -2370,6 +2370,7 @@ textarea:focus-visible {
 
 .callout {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 11px 13px;
   color: var(--color-text-secondary);
@@ -2380,8 +2381,11 @@ textarea:focus-visible {
 }
 
 .callout strong {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--color-text);
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 
 .callout-warning {

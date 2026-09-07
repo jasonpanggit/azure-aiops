@@ -720,6 +720,47 @@ class SubscriptionOnboardingService:
             },
         }
 
+    def enqueue_full_sync(
+        self,
+        connection_id: str,
+        *,
+        mode: str = "manual",
+        requested_by: str = "system",
+    ) -> dict[str, Any]:
+        """Resync everything: real inventory ingestion plus the durable
+        ontology refresh.
+
+        The Sync action in the UI is expected to resync everything, but
+        ``/sync`` historically called only :meth:`enqueue_ontology_refresh`,
+        which left stale/failed inventory data with no retry path -- real
+        ingestion (:meth:`sync_async`) was only ever triggered once, at
+        connection creation. This restarts inventory ingestion too (unless
+        one is already live on this process) and always enqueues the
+        ontology refresh alongside it.
+        """
+        connection = self.registry.get(connection_id)
+        connection = self._reconcile_if_orphaned(connection)
+        state = connection.sync_state
+        with self._live_run_ids_lock:
+            inventory_already_running = bool(
+                state is not None
+                and state.status == "running"
+                and state.run_id in self._live_run_ids
+            )
+        result = self.enqueue_ontology_refresh(
+            connection_id, mode=mode, requested_by=requested_by
+        )
+        if inventory_already_running:
+            inventory_result: dict[str, Any] = {
+                "status": "already_running",
+                "run_id": state.run_id,
+                "sync_state": state.to_dict(),
+            }
+        else:
+            inventory_result = self.sync_async(connection_id, mode=mode)
+            result = {**result, "sync_state": inventory_result["sync_state"]}
+        return {**result, "inventory_sync": inventory_result}
+
     def _run_sync_job(self, connection_id: str, mode: str, run_id: str) -> None:
         """Background-thread worker for :meth:`sync_async`.
 
@@ -885,10 +926,9 @@ class SubscriptionOnboardingService:
         ):
             return legacy
         durable_status = str(durable_run["status"])
+        if durable_status in {"queued", "running", "retrying"}:
+            return legacy
         status = {
-            "queued": "running",
-            "running": "running",
-            "retrying": "running",
             "succeeded": "succeeded",
             "failed": "failed",
             "cancelled": "failed",
@@ -900,6 +940,17 @@ class SubscriptionOnboardingService:
         elif status == "failed":
             message = str(
                 durable_run.get("message") or "Ontology publication failed"
+            )
+        elif checkpoint == "queued":
+            # The scheduled coordinator claims queued runs on a fixed cadence,
+            # but governed publication may stay queued for a long time (up to
+            # the shadow-mode review window) rather than seconds/minutes.
+            # Say so explicitly instead of implying an imminent sync.
+            message = (
+                "Ontology publication queued: awaiting the scheduled "
+                "coordinator pass. Publication is governed and may remain "
+                "queued for an extended review period (up to the full "
+                "shadow-mode validation window) before it advances."
             )
         else:
             message = f"Ontology publication {checkpoint.replace('_', ' ')}"

@@ -35,6 +35,12 @@ const ACTIVE_SYNC_STATUSES = new Set([
   "in_progress",
 ]);
 
+function isActiveSyncState(state: Pick<SyncState, "status" | "stage"> | null | undefined): boolean {
+  if (!state) return false;
+  const status = state.status.toLowerCase();
+  return status === "running" || ACTIVE_SYNC_STATUSES.has(status) || ACTIVE_SYNC_STATUSES.has((state.stage ?? "").toLowerCase());
+}
+
 function readableSyncStage(stage: string | null | undefined): string {
   if (!stage) return "Sync in progress";
   return stage
@@ -134,9 +140,9 @@ export default function ConnectionsPage() {
       if (state) {
         onState?.(state);
         if (!onState) {
-          setSyncProgress({ connectionId, state });
+          setSyncProgress(isActiveSyncState(state) ? { connectionId, state } : null);
         }
-        if (["succeeded", "failed"].includes(state.status.toLowerCase())) {
+        if (!isActiveSyncState(state) || ["succeeded", "failed"].includes(state.status.toLowerCase())) {
           return state;
         }
       }
@@ -149,14 +155,17 @@ export default function ConnectionsPage() {
 
   useEffect(() => {
     const activeConnection = rows.find((connection) =>
-      ACTIVE_SYNC_STATUSES.has(connection.sync_status.toLowerCase()),
+      isActiveSyncState({ status: connection.sync_status, stage: null }),
     );
-    if (!activeConnection) return;
+    if (!activeConnection) {
+      setSyncProgress(null);
+      return;
+    }
 
     let cancelled = false;
     void pollSyncState(activeConnection.connection_id, (state) => {
       if (!cancelled) {
-        setSyncProgress({ connectionId: activeConnection.connection_id, state });
+        setSyncProgress(isActiveSyncState(state) ? { connectionId: activeConnection.connection_id, state } : null);
       }
     }).catch((reason) => {
       if (!cancelled) {
@@ -196,6 +205,7 @@ export default function ConnectionsPage() {
       } else {
         setActionMessage(`${connection.name} is up to date (${finalState.record_count ?? 0} records synced).`);
       }
+      setSyncProgress(null);
       setRefreshKey((value) => value + 1);
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : `Unable to sync ${connection.name}.`);
