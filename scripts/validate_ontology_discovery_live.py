@@ -953,6 +953,13 @@ def validate_evidence_job_record(
             or any(not _require_hash(value) for value in hashes)
         ):
             raise EvidenceError("evidence Job observation is not closed")
+    facts = sanitized.get("facts")
+    facts = facts if isinstance(facts, Mapping) else {}
+    if set(facts) != {"fixture", "registry", "epoch"} or any(
+        not isinstance(facts.get(name), Mapping)
+        for name in ("fixture", "registry", "epoch")
+    ):
+        raise EvidenceError("evidence Job lifecycle facts are incomplete")
 
     unsigned = {
         key: value

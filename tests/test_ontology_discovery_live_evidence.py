@@ -552,6 +552,11 @@ def test_evidence_job_record_is_entra_bound_closed_and_exact_identity() -> None:
         identity=record["identity"],
         observations=record["observations"],
         capabilities=record["capabilities"],
+        facts={
+            "fixture": {"active_drill_count": 0},
+            "registry": {"active_fixture_count": 0},
+            "epoch": {"active_epoch_count": 0},
+        },
     )
     result = validate_evidence_job_record(
         record,
