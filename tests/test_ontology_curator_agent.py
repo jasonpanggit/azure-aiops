@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 from api.scope import Scope
@@ -18,6 +19,7 @@ from ontology_discovery.curator import (
     MAX_TRANSPORT_RETRIES,
     NORMAL_OUTPUT_TOKENS,
     REQUEST_TIMEOUT_SECONDS,
+    AsyncFoundryResponsesTransport,
     CuratorInputTooLarge,
     CuratorInvalidOutput,
     CuratorTransportError,
@@ -39,6 +41,84 @@ CURATOR_TOOLS = (
     "get_ontology_vocabulary",
     "search_relationship_history",
 )
+
+
+class _TokenProvider:
+    def __init__(self, token: str) -> None:
+        self.value = token
+        self.closed = False
+
+    async def token(self) -> str:
+        return self.value
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def test_default_transport_sends_bearer_and_redacts_http_failure():
+    token = "secret-bearer-value"
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(401, json={"error": token})
+
+    tokens = _TokenProvider(token)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    transport = AsyncFoundryResponsesTransport(
+        project_endpoint="https://example.services.ai.azure.com/api/projects/p",
+        token_provider=tokens,
+        client=client,
+    )
+
+    with pytest.raises(CuratorTransportError) as failure:
+        asyncio.run(
+            transport(
+                {"agent_reference": {"name": "curator", "version": "7"}},
+                timeout_seconds=1,
+            )
+        )
+    asyncio.run(transport.aclose())
+    asyncio.run(client.aclose())
+
+    assert seen[0].headers["Authorization"] == f"Bearer {token}"
+    assert token not in str(failure.value)
+    assert token not in repr(failure.value)
+    assert tokens.closed is True
+
+
+def test_default_transport_success_preserves_versioned_payload():
+    token = "secret-bearer-value"
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": "response-1", "output": []})
+
+    tokens = _TokenProvider(token)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    transport = AsyncFoundryResponsesTransport(
+        project_endpoint="https://example.services.ai.azure.com/api/projects/p",
+        token_provider=tokens,
+        client=client,
+    )
+    payload = {
+        "agent_reference": {
+            "type": "agent_reference",
+            "name": "ontology-curator",
+            "version": "7",
+        },
+        "input": [{"role": "user", "content": "{}"}],
+    }
+
+    result = asyncio.run(transport(payload, timeout_seconds=1))
+    asyncio.run(transport.aclose())
+    asyncio.run(client.aclose())
+
+    assert result["id"] == "response-1"
+    assert json.loads(seen[0].content)["agent_reference"]["version"] == "7"
+    assert seen[0].headers["Authorization"] == f"Bearer {token}"
+    assert tokens.closed is True
 
 
 def _batch(

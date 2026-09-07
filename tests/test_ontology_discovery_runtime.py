@@ -284,6 +284,11 @@ def test_production_config_requires_all_roots_and_agent_version(monkeypatch):
     with pytest.raises(ValueError, match="publication"):
         ProductionRuntimeConfig.from_environ(invalid)
 
+    invalid = dict(environment)
+    invalid["FOUNDRY_PROJECT_ENDPOINT"] = "http://insecure.example.test/project"
+    with pytest.raises(ValueError, match="FOUNDRY_PROJECT_ENDPOINT"):
+        ProductionRuntimeConfig.from_environ(invalid)
+
 
 def test_cli_main_uses_production_runtime_and_closes_it(monkeypatch, capsys):
     events: list[str] = []
