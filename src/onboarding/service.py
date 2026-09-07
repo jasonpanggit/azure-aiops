@@ -866,10 +866,9 @@ class SubscriptionOnboardingService:
         ):
             return legacy
         durable_status = str(durable_run["status"])
+        if durable_status in {"queued", "running", "retrying"}:
+            return legacy
         status = {
-            "queued": "running",
-            "running": "running",
-            "retrying": "running",
             "succeeded": "succeeded",
             "failed": "failed",
             "cancelled": "failed",

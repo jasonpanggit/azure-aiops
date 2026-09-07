@@ -32,7 +32,7 @@ from onboarding.validation import (
     ArgConnectionProbe,
     ConnectionValidator,
 )
-from ontology.subscription_connection import SyncState
+from ontology.subscription_connection import ConnectionHealth, SyncState
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 SUBSCRIPTION = "22222222-2222-2222-2222-222222222222"
@@ -1255,6 +1255,53 @@ def test_health_reconstructs_durable_publication_after_restart(tmp_path: Path) -
     }
     assert detail["sync_status"] == "succeeded"
     assert detail["durable_run"] == summary["durable_run"]
+
+
+def test_health_keeps_inventory_status_while_durable_publication_is_queued(
+    tmp_path: Path,
+) -> None:
+    service = build_service(tmp_path)
+    onboard(service)
+    connection, revision = service.registry.get_with_revision("prod-core")
+    service.registry.save(
+        dataclasses.replace(
+            connection,
+            sync_state=SyncState(
+                status="failed",
+                last_failed_at="2026-01-01T00:00:00Z",
+                run_id="inventory-run-7",
+                source_version="inventory-generation-7",
+                record_count=12605,
+                message="inventory failed",
+                stage="failed",
+                stage_message="inventory failed",
+                progress_pct=100,
+            ),
+            health=ConnectionHealth(
+                connection_id="prod-core",
+                status="failed",
+                last_failure_at="2026-01-01T00:00:00Z",
+                details="inventory failed",
+                healthy=False,
+            ),
+        ),
+        expected_revision=revision,
+    )
+    service.ontology_run_store.get_or_create_run(
+        connection_id="prod-core",
+        source_generation_id="inventory-generation-7",
+        trigger="manual",
+        requested_by="operator@example.com",
+        now=service.clock(),
+    )
+
+    summary = service.health_report("prod-core")["connections"][0]
+
+    assert summary["sync"]["status"] == "failed"
+    assert summary["sync"]["run_id"] == "inventory-run-7"
+    assert summary["sync"]["message"] == "inventory failed"
+    assert summary["sync"]["record_count"] == 12605
+    assert summary["durable_run"]["status"] == "queued"
 
 
 def test_health_reconstructs_publisher_denial_without_moving_generation(
