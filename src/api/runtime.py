@@ -575,7 +575,10 @@ _snapshot_tables_cache: dict[str, tuple[float, tuple[list[dict[str, list[dict]]]
 # without a cache every page load costs a round trip. Keyed by root *and*
 # subscription set, since rows fetched for one scope must never serve another.
 _HYBRID_NETWORK_CACHE_TTL_SECONDS = 30
-_hybrid_network_cache: dict[tuple[str, tuple[str, ...]], tuple[float, list[dict]]] = {}
+_hybrid_network_cache: dict[
+    tuple[str, tuple[str, ...]],
+    tuple[float, tuple[list[dict], str, int]],
+] = {}
 _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS = 30
 _hybrid_vulnerability_cache: dict[tuple[str, tuple[str, ...]], tuple[float, Any]] = {}
 # Resolves the request-consistency half of WR-07: both the router's scope-
@@ -3543,7 +3546,10 @@ def _exposure_query_authorization(
 def _exposure_generation_window() -> Any:
     """Load the current/retained Gold pointer without exposing storage errors."""
 
-    from api.exposure_query import ExposureGenerationWindow
+    from api.exposure_query import (
+        ExposureGenerationWindow,
+        ExposureQueryUnavailableError,
+    )
     from fabric_pipelines.vulnerability_pipeline import (
         EXPOSURE_GOLD_POINTER_DOCUMENT,
     )
@@ -3582,7 +3588,9 @@ def _exposure_generation_window() -> Any:
         if len(active_generations) == 1:
             active = next(iter(active_generations))
     if not active:
-        raise RuntimeError("Exposure readable generation is unavailable")
+        raise ExposureQueryUnavailableError(
+            "Exposure readable generation is unavailable"
+        )
     return ExposureGenerationWindow(
         active_generation=active,
         retained_generations=retained,
@@ -3767,48 +3775,43 @@ def build_context() -> ApiContext:
         # Double-checked locking on a miss, matching `hybrid_vulnerability`
         # immediately below -- never a single cache-wide lock.
         cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
-        now = time.time()
-        cached = _hybrid_network_cache.get(cache_key)
-        if cached is not None and now - cached[0] < _HYBRID_NETWORK_CACHE_TTL_SECONDS:
-            rows = cached[1]
-            observed_at = max(
-                (str(row.get("observed_at") or "") for row in rows),
-                default="",
+        def load_network_rows() -> tuple[list[dict], str, int]:
+            # Private Link candidates are fetched alongside the network plane
+            # so private-endpoint coverage can be judged per resource rather
+            # than per service kind.
+            paas_types = ", ".join(
+                f"'{name}'" for name in sorted(PRIVATE_LINK_RESOURCE_TYPES)
             )
-        else:
-            with _ttl_cache_lock(_hybrid_network_cache, cache_key):
-                cached = _hybrid_network_cache.get(cache_key)
-                if cached is not None and now - cached[0] < _HYBRID_NETWORK_CACHE_TTL_SECONDS:
-                    rows = cached[1]
-                    observed_at = max(
-                        (str(row.get("observed_at") or "") for row in rows),
-                        default="",
-                    )
-                else:
-                    # Private Link candidates are fetched alongside the
-                    # network plane so private-endpoint coverage can be
-                    # judged per resource rather than per service kind.
-                    paas_types = ", ".join(
-                        f"'{name}'" for name in sorted(PRIVATE_LINK_RESOURCE_TYPES)
-                    )
-                    observation = live_resources.query(
-                        QuerySpec(
-                            name="live_network_resources",
-                            table="Resources",
-                            query=(
-                                "Resources "
-                                "| where type startswith 'microsoft.network/' "
-                                f"or tolower(type) in ({paas_types}) "
-                                "| project id, name, type, tenantId, subscriptionId, "
-                                "resourceGroup, location, tags, properties, observed_at=now()"
-                            ),
-                            incremental=False,
-                        ),
-                        subscription_ids=subscription_ids,
-                    )
-                    rows = list(observation.rows)
-                    observed_at = observation.observed_at
-                    _hybrid_network_cache[cache_key] = (now, rows)
+            started = time.perf_counter()
+            observation = live_resources.query(
+                QuerySpec(
+                    name="live_network_resources",
+                    table="Resources",
+                    query=(
+                        "Resources "
+                        "| where type startswith 'microsoft.network/' "
+                        f"or tolower(type) in ({paas_types}) "
+                        "| project id, name, type, tenantId, subscriptionId, "
+                        "resourceGroup, location, tags, properties, observed_at=now()"
+                    ),
+                    incremental=False,
+                ),
+                subscription_ids=subscription_ids,
+            )
+            return (
+                list(observation.rows),
+                observation.observed_at,
+                round(max(0.0, time.perf_counter() - started) * 1_000),
+            )
+
+        rows, observed_at, topology_build_duration_ms = _ttl_cached_value(
+            _hybrid_network_cache,
+            cache_key,
+            ttl_seconds=_HYBRID_NETWORK_CACHE_TTL_SECONDS,
+            now=time.time(),
+            build=load_network_rows,
+            completion_clock=time.time,
+        )
         policy, _revision = _network_policy_store().read_with_revision_or_raise()
         managed_network = providers.get("network", optional=True)
         flow_observations = (
@@ -3821,6 +3824,7 @@ def build_context() -> ApiContext:
             observed_at=observed_at,
             policy=policy,
             flow_observations=flow_observations,
+            topology_build_duration_ms=topology_build_duration_ms,
         )
 
     def hybrid_vulnerability(
