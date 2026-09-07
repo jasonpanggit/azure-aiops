@@ -346,6 +346,14 @@ def test_sync_writes_all_plan_defender_relationships_to_published_dataset(
 ):
     planner, plan, defender_entities = _plan_and_defender_entities()
     planner.repository.replace_generation([plan])
+    decision = planner.repository.decisions.append(
+        plan=plan,
+        decision="approved",
+        approver="operator@example.com",
+        reason="Approved for ontology publication",
+        scope={"subscription": ["sub-1"]},
+        action_version=plan["action_version"],
+    )
     source = tmp_path / "source"
     lakehouse = tmp_path / "lakehouse"
     _source_snapshot(source)
@@ -375,6 +383,7 @@ def test_sync_writes_all_plan_defender_relationships_to_published_dataset(
         delta_writer=DeltaWriter(),
         validator=DataQualityValidator(),
         mapper=MapperWithDefenderEntities(),
+        remediation_decision_reader=planner.repository.decisions.list,
         remediation_plan_reader=planner.repository.ontology_projection,
     )
 
@@ -386,6 +395,11 @@ def test_sync_writes_all_plan_defender_relationships_to_published_dataset(
         for row in rows
         if row["subject_id"] == plan["plan_id"].casefold()
     }
+    assert sum(
+        row["predicate"] == "hasApprovalDecision"
+        and row["object_id"] == decision["decision_id"].casefold()
+        for row in rows
+    ) == 1
 
 
 def test_production_runtime_shares_and_durably_reloads_plan_projection(
