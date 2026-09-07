@@ -841,6 +841,17 @@ class SubscriptionOnboardingService:
             message = str(
                 durable_run.get("message") or "Ontology publication failed"
             )
+        elif checkpoint == "queued":
+            # The scheduled coordinator claims queued runs on a fixed cadence,
+            # but governed publication may stay queued for a long time (up to
+            # the shadow-mode review window) rather than seconds/minutes.
+            # Say so explicitly instead of implying an imminent sync.
+            message = (
+                "Ontology publication queued: awaiting the scheduled "
+                "coordinator pass. Publication is governed and may remain "
+                "queued for an extended review period (up to the full "
+                "shadow-mode validation window) before it advances."
+            )
         else:
             message = f"Ontology publication {checkpoint.replace('_', ' ')}"
         return SyncState(
