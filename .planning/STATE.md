@@ -5,7 +5,7 @@ milestone_name: milestone
 current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
 stopped_at: Blocked at 03.1-19 exact live source evidence after successful Fabric publication
-last_updated: "2026-09-07T09:26:12.440Z"
+last_updated: "2026-09-07T15:02:00Z"
 progress:
   total_phases: 17
   completed_phases: 10
@@ -336,5 +336,5 @@ current_phase_name: Exposure Reliability and Scale
 
 ### Blockers
 
-- Phase 13 Plan 19 Task 2: immutable targeted deployment is blocked because this worktree has no Terraform state or protected deployment env; Azure/Fabric CLI can read live resources but cannot prove the zero-destroy exact-address plan required before apply.
+- Phase 13 Plan 19 Task 2: the exact zero-destroy validation plan was applied and all Plan 19 Jobs/Fabric roots remain live, but concurrent deployments subsequently changed API/web images. A final current-main plan was rebuilt and revalidated with zero destroys, then correctly refused before apply because shared main became dirty (`src/onboarding/query_catalog.py`, `tests/test_queries.py`, `web/src/app/connections/page.test.tsx`, `web/src/app/connections/page.tsx`, and `.planning/debug/phase031-plan19-live-oom.md`). Do not reapply until shared main is clean and the deployment lane is confirmed idle.
 - Plan 03.1-19: exact supported Defender digest to Container Insights workload round trip is unavailable; Phase 4 remains blocked.
