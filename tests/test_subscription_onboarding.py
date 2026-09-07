@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from api.routers.connections import sync_connection
 from onboarding import runtime as onboarding_runtime
 from onboarding.credentials import (
     ChainedSecretProvider,
@@ -1091,3 +1092,141 @@ def test_api_runtime_has_no_process_local_authoritative_publisher() -> None:
     assert not hasattr(onboarding_runtime, "_InventoryRefreshRunner")
     assert "publish_factory" not in source
     assert "FabricSyncService" not in source
+
+
+def _finish_durable_publication(
+    service: SubscriptionOnboardingService,
+    *,
+    denied: bool = False,
+) -> dict:
+    service.ontology_run_store.max_attempts = 1
+    accepted = service.enqueue_ontology_refresh(
+        "prod-core",
+        mode="manual",
+        source_generation_id="inventory-generation-7",
+        requested_by="operator@example.com",
+    )
+    run = service.ontology_run_store.get(accepted["run_id"])
+    claimed = service.ontology_run_store.claim(
+        run["run_id"],
+        expected_revision=run["revision"],
+        owner="coordinator-job",
+        lease_seconds=60,
+        now=service.clock(),
+    )
+    if denied:
+        checkpointed = service.ontology_run_store.checkpoint(
+            run["run_id"],
+            expected_revision=claimed["revision"],
+            owner="coordinator-job",
+            fencing_token=claimed["fencing_token"],
+            name="publication_denied",
+            payload={
+                "active_generation": "ontology-previous",
+                "pointer_etag": "etag-old",
+            },
+            now=service.clock(),
+        )
+        return service.ontology_run_store.fail(
+            run["run_id"],
+            expected_revision=checkpointed["revision"],
+            owner="coordinator-job",
+            fencing_token=claimed["fencing_token"],
+            failure_class="publisher_denied",
+            message="publisher identity denied",
+            now=service.clock(),
+        )
+    return service.ontology_run_store.succeed(
+        run["run_id"],
+        expected_revision=claimed["revision"],
+        owner="coordinator-job",
+        fencing_token=claimed["fencing_token"],
+        checkpoint="publication_succeeded",
+        payload={
+            "generation_id": "ontology-generation-7",
+            "active_generation": "ontology-generation-7",
+            "pointer_etag": "etag-new",
+            "fabric_run_id": "fabric-run-7",
+            "fabric_status": "completed",
+        },
+        now=service.clock(),
+    )
+
+
+def test_health_reconstructs_durable_publication_after_restart(tmp_path: Path) -> None:
+    service = build_service(tmp_path)
+    onboard(service)
+    terminal = _finish_durable_publication(service)
+
+    restarted = build_service(tmp_path)
+    report = restarted.health_report("prod-core")
+    summary = report["connections"][0]
+    detail = restarted.detail("prod-core")
+
+    assert terminal["status"] == "succeeded"
+    assert summary["sync"]["status"] == "succeeded"
+    assert summary["sync"]["run_id"] == terminal["run_id"]
+    assert summary["sync"]["stage"] == "publication_succeeded"
+    assert summary["durable_run"] == {
+        "run_id": terminal["run_id"],
+        "status": "succeeded",
+        "revision": terminal["revision"],
+        "source_generation_id": "inventory-generation-7",
+        "checkpoint": "publication_succeeded",
+        "generation_id": "ontology-generation-7",
+        "active_generation": "ontology-generation-7",
+        "pointer_etag": "etag-new",
+        "fabric_run_id": "fabric-run-7",
+        "fabric_status": "completed",
+    }
+    assert detail["sync_status"] == "succeeded"
+    assert detail["durable_run"] == summary["durable_run"]
+
+
+def test_health_reconstructs_publisher_denial_without_moving_generation(
+    tmp_path: Path,
+) -> None:
+    service = build_service(tmp_path)
+    onboard(service)
+    terminal = _finish_durable_publication(service, denied=True)
+
+    restarted = build_service(tmp_path)
+    summary = restarted.health_report("prod-core")["connections"][0]
+
+    assert terminal["status"] == "failed"
+    assert summary["sync"]["status"] == "failed"
+    assert summary["sync"]["stage"] == "publication_denied"
+    assert summary["durable_run"]["active_generation"] == "ontology-previous"
+    assert summary["durable_run"]["pointer_etag"] == "etag-old"
+    assert summary["durable_run"]["generation_id"] is None
+
+
+def test_health_preserves_legacy_shape_when_no_durable_run_exists(
+    tmp_path: Path,
+) -> None:
+    service = build_service(tmp_path)
+    onboard(service)
+
+    summary = service.health_report("prod-core")["connections"][0]
+
+    assert summary["sync"] == SyncState().to_dict()
+    assert summary["durable_run"] is None
+    assert summary["overall"] == "unknown"
+
+
+def test_sync_route_and_service_cannot_resolve_authoritative_storage_methods() -> None:
+    route_source = inspect.getsource(sync_connection)
+    service_source = inspect.getsource(SubscriptionOnboardingService)
+
+    for forbidden in (
+        "stage_generation",
+        "conditional_promote",
+        "active_pointer",
+        "OneLakeWriter",
+        "FabricSyncService",
+    ):
+        assert forbidden not in route_source
+        assert forbidden not in service_source
+    assert "ThreadPoolExecutor" not in inspect.getsource(
+        SubscriptionOnboardingService.enqueue_ontology_refresh
+    )
