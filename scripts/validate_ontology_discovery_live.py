@@ -2571,8 +2571,8 @@ def _deployed_stage(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
     # through the legacy ambient-credential shadow collector.
     load_plan19_deployment_contract()
     raise EvidenceError(
-        "deployed stage requires Task 2 live preconditions after isolated "
-        f"context validation ({contexts.deployer.name}, {contexts.evidence.name})"
+        "deployed stage requires the fixed evidence Job after isolated "
+        f"deployer context validation ({contexts.deployer.name})"
     )
 
 

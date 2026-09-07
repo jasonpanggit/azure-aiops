@@ -1,0 +1,10 @@
+{
+  "completed_step_count": 0,
+  "completed_step_keys": [],
+  "evidence_refs": [
+    "sha256:41512dba7a9d690251ac3d8f1bcf6c1426d56ae7fe2f55840e10897f92f53e8e",
+    "sha256:b6241ebc3227fbd577f5f8121bd89d212292a74265f6e180bba63fd81bbb1d20"
+  ],
+  "schema_version": "ontology-deployed-lifecycle-checkpoint.v1",
+  "stage": "preflight"
+}

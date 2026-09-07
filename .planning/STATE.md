@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
-stopped_at: Blocked at 03.1-19 exact live source evidence after successful Fabric publication
-last_updated: "2026-09-07T15:53:56Z"
+stopped_at: Blocked in 13-20 preflight at Fabric ManagedIdentity OneLake Read role reconciliation
+last_updated: "2026-09-07T16:54:27.851Z"
 progress:
   total_phases: 17
   completed_phases: 10
@@ -320,9 +320,9 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Session
 
-**Last session:** 2026-09-07T09:26:12.397Z
-**Stopped at:** Blocked at 03.1-19 exact live source evidence after successful Fabric publication
-**Resume file:** .planning/phases/03.1-exposure-reliability-and-scale/03.1-19-LIVE-EVIDENCE.json
+**Last session:** 2026-09-07T16:54:27.833Z
+**Stopped at:** Blocked in 13-20 preflight at Fabric ManagedIdentity OneLake Read role reconciliation
+**Resume file:** .planning/eval/ontology-deployed-lifecycle.checkpoint.json
 
 ## Accumulated Context
 
@@ -341,3 +341,4 @@ current_phase_name: Exposure Reliability and Scale
 ### Blockers
 
 - Plan 03.1-19: exact supported Defender digest to Container Insights workload round trip is unavailable; Phase 4 remains blocked.
+- Phase 13 Plan 20 blocked: Fabric provider 1.13.0 cannot round-trip OneLake Data Access Security Microsoft Entra ManagedIdentity members (object_type omitted; null fabric_item_members normalized to empty set). Evidence Job was not created; do not broaden to Contributor or continue Plan 21.

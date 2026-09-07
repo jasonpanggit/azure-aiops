@@ -15,20 +15,21 @@ at `BLOCKED/PENDING`.
 
 ### Credential boundary
 
-Create or obtain two independently authenticated Azure CLI homes:
+Use exactly one local Azure CLI home:
 
-- `AIOPS_DEPLOYER_AZURE_CONFIG_DIR`: the deployment principal. This identity
-  may read and start only the five deployed ontology Jobs.
-- `AIOPS_EVIDENCE_AZURE_CONFIG_DIR`: a genuinely read-only evidence identity.
-  It may read ARG, Fabric, and OneLake evidence, but it has no Container Apps
-  Job read/start/stop action and no data-plane mutation action.
+- `AIOPS_DEPLOYER_AZURE_CONFIG_DIR`: the deployment principal. The directory
+  must already exist with mode `0700`; this is the only local identity that may
+  read/start the named deployed ontology Jobs.
 
-Both directories must already exist with mode `0700`. Authenticate each
-identity with `AZURE_CONFIG_DIR` set to its own directory. Never copy an
-`azureProfile.json`, token cache, or complete deployer directory to create the
-evidence context. The validator removes ambient `AZURE_*` and `ARM_*`
-credential variables from every child process and records only identity and
-action-set hashes.
+Do not create `AIOPS_EVIDENCE_AZURE_CONFIG_DIR`, copy a deployer token cache, or
+reuse the deployer as read-only evidence. Distinct evidence is produced only
+by the fixed, manual-only `ontology-evidence-read` ACA Job. That Job is attached
+only to the pre-existing Azure MCP UAI, has no schedule/API token/runtime Job
+control, and receives only Fabric Viewer plus OneLake `Path=["*"]`,
+`Action=["Read"]` on the five isolated Phase 13 Lakehouse items. Its immutable
+image emits one Entra-bound sanitized JSON record containing hashes, counts,
+closed statuses, and no raw IDs, paths, correlations, prompts, bodies, or
+tokens.
 
 Before any Job execution, verify no Terraform plan/apply process owns the
 deployment lane. Terraform language servers and read-only MCP servers do not
@@ -66,10 +67,11 @@ evidence before and after every execution.
 
 ### Exact lifecycle order
 
-1. **Preflight.** Prove distinct identity hashes, mode-`0700` homes, no
-   credential bleed, deployer-only Job control, evidence-only ARG/Fabric/
-   OneLake reads, no runtime Job-start grant, exact validation root, and all
-   five unchanged saved-template hashes.
+1. **Preflight.** Prove the one local deployer context is mode `0700`, no local
+   evidence context or credential bleed exists, the fixed evidence Job has the
+   distinct Azure MCP UAI, deployer-only Job control, exact Viewer/OneLake Read
+   access, no runtime Job-start grant, exact validation roots, and all six
+   unchanged saved-template hashes.
 2. **Prepare.** Start `ontology-fixture-prepare` with the saved template. The
    `az containerapp job start` request contains only resource group, Job name,
    and output format. Accept only a server-generated active drill with one
@@ -79,7 +81,7 @@ evidence before and after every execution.
 3. **Drain.** Repeatedly start the ordinary
    `aiops-dev-ontology-discovery` template. Each pass may select at most one
    member. Read durable epoch/cursor/authorization receipts through the
-   evidence identity. A deferred retry must rotate behind a later member, all
+   fixed evidence Job. A deferred retry must rotate behind a later member, all
    three prepared members must terminate or close-exclude, and at least two
    execution hashes must share one epoch/snapshot lineage. Do not create or
    edit fixture records after the epoch is selected.
@@ -163,6 +165,20 @@ receipts. Do not hand-edit evidence, inject replacement state, or skip ahead.
 The checkpoint may contain only stage names encoded as SHA-256 step keys and
 opaque evidence hashes; raw IDs, roots, tags, prompts, commands, tokens, and
 errors are forbidden.
+
+### Current OneLake provider blocker
+
+The 2026-09-07 targeted rollout passed its exact allowlist gate (11 creates,
+five Phase 13 Job image-only updates, zero replace/destroy). Fabric provider
+1.13.0 then failed to round-trip the official Microsoft Entra
+`ManagedIdentity` member: the API response omitted `object_type` and normalized
+the absent `fabric_item_members` collection to `[]`, producing
+`Provider produced inconsistent result after apply`. The fixed evidence Job
+was therefore not created and no lifecycle Job was started. Per the security
+gate, do not change the member to `ServicePrincipal`, ignore drift, replace
+`DefaultReader`, grant Contributor/Member/Admin, or continue Plan 21. Resume
+only after the provider/API safely preserves `ManagedIdentity` with
+`Path=["*"]`, `Action=["Read"]`.
 
 ## Credentialed validation
 
