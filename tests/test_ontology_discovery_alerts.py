@@ -187,12 +187,12 @@ def test_terraform_defines_actioned_rule_for_every_catalog_entry() -> None:
         shadow_reset,
     ) in EXPECTED_RULES.items():
         expected_block = (
-            f"{rule_id} = {{\\n"
-            f'      tier         = "{tier}"\\n'
-            f"      threshold    = {threshold:g}\\n"
-            f'      operator     = "{operator}"\\n'
-            f'      window       = "{window}"\\n'
-            f"      severity     = {severity}\\n"
+            f"{rule_id} = {{\n"
+            f'      tier         = "{tier}"\n'
+            f"      threshold    = {threshold:g}\n"
+            f'      operator     = "{operator}"\n'
+            f'      window       = "{window}"\n'
+            f"      severity     = {severity}\n"
             f"      shadow_reset = {str(shadow_reset).lower()}"
         )
         assert expected_block in terraform
