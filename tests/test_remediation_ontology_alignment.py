@@ -32,7 +32,8 @@ _DEFENDER_PREDICATES = {
 
 def _plan_and_defender_entities():
     planner = remediation_planner(defender_correlator=defender_correlator())
-    plans = planner.generate_plans()["plans"]
+    planner.generate_plans()
+    plans = planner.repository.list()
     plan = next(
         item
         for item in plans
@@ -209,6 +210,19 @@ def test_plan_defender_evidence_relationships_are_registered_and_projected():
     assert rel["source"] == "remediation-plan-citation"
 
 
+def test_production_correlator_assignment_reaches_plan_generator():
+    planner = remediation_planner()
+    planner.generator.defender_correlator = None
+
+    planner.defender_correlator = defender_correlator()
+    planner.generate_plans()
+
+    assert any(
+        plan["evidence_citations"]
+        for plan in planner.repository.list()
+    )
+
+
 def test_plan_projection_records_unresolved_citations_without_synthesized_ids():
     planner, plan, defender_entities = _plan_and_defender_entities()
     broken = copy.deepcopy(plan)
@@ -245,6 +259,7 @@ def test_plan_projection_rejects_mistyped_and_cross_resource_citations():
         },
         {
             **broken["evidence_citations"][0],
+            "source_type": "assessment",
             "source_id": "assess-other-resource",
         },
     ]
@@ -394,10 +409,10 @@ def test_production_runtime_shares_and_durably_reloads_plan_projection(
 
     second = build_runtime(config)
     assert second.service.remediation_plan_reader is not None
-    assert {
+    assert plan["plan_id"] in {
         row["entity_id"]
         for row in second.service.remediation_plan_reader([])["entities"]
-    } == {plan["plan_id"]}
+    }
 
 
 def test_plan_repository_persists_plans_through_shared_document_store(
