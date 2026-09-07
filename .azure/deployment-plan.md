@@ -36,6 +36,16 @@ processes, require reinitialization after restart, reject malformed requests,
 and require APIM's gateway assertion on the public ACA backend. Keep one warm
 replica and one maximum replica because MCP session state is process-local.
 
+Current follow-up: deploy Phase 13's autonomous ontology foundation using the
+existing Terraform workflow. Add one finite scheduled ACA Job with a
+non-publisher identity, one code-defined Foundry prompt curator with exactly four
+scoped read tools, and one separate least-privilege publisher identity/role.
+Validate the four-identity denied-write matrix against the non-production Fabric
+target before enabling authoritative publication. No model-derived relationship
+may enter the authoritative ontology in this deployment; shadow mode remains
+mandatory. Do not replace APIM, the Foundry account/project, Fabric workspace,
+or existing Container Apps.
+
 ## Workspace
 
 - Mode: MODIFY existing deployed application
@@ -43,6 +53,76 @@ replica and one maximum replica because MCP session state is process-local.
 - Target: existing Azure Container Apps environment and registry
 - IaC: existing Terraform under `infra/terraform`
 - Execution: `infra/scripts/build-and-push.sh`, then Terraform/app revision update
+
+## Azure Context
+
+- Subscription: `ME-MngEnvMCAP686238-pangj-1`
+  (`a87a8e64-a52a-4aa8-a760-5e8919d23cd1`)
+- Tenant: `ffc83107-fcc0-4d2e-8798-d582da36505e`
+- Location: `australiaeast` (existing Terraform deployment default)
+- Environment: existing `aiops-dev` resources
+
+## Phase 13 Deployment Scope
+
+- Create the ontology-discovery ACA scheduled Job in the existing Container Apps
+  environment with finite execution, `parallelism = 1`, bounded timeout/retry,
+  and the existing application image.
+- Create distinct coordinator and publisher user-assigned identities plus two
+  non-production workspaces on the existing Fabric capacity. Grant coordinator
+  Contributor only in the ontology-state workspace and publisher Contributor
+  only in the separate RBAC-validation workspace. API and curator receive no
+  role in either new workspace.
+- Preserve the production `aiops-dev-ops` workspace, Lakehouse, and existing
+  API/web Contributor assignment unchanged until Plan 13-10 migrates legacy
+  writes.
+- Independently enable the code-first Foundry ontology curator without turning
+  on the complete specialist candidate-publish flow. The curator uses
+  `gpt-5.4-mini` and exactly four scoped read-only Operations MCP tools.
+- Create a manual-only, bounded ACA validation Job with only the API,
+  coordinator, and publisher UAIs attached. It has no schedule, ingress, or
+  AIOps runtime role and runs only `--write-matrix-only`; it never calls Fabric
+  role-assignment or Foundry agent-management APIs.
+- Run the separate `--control-plane-audit` locally under the existing
+  deployment principal. This read-only pass checks live validation-workspace
+  role assignments and the deployed curator model, prompt hash, and exact
+  four-tool allowlist without granting the publisher or API additional
+  management privilege.
+- Apply no API/web image rollout in this step unless Terraform proves the
+  existing image is insufficient for the scheduled Job command.
+- Run `scripts/validate_ontology_publisher_rbac.py --non-production
+  --fail-on-missing-evidence --write-matrix-only` through the manual validation
+  Job after provisioning. API and coordinator must each be denied actual stage
+  and pointer writes, and publisher must complete stage/CAS/rollback cleanup.
+  Then run `--control-plane-audit` locally under the deployment principal to
+  prove publisher exactly Contributor, all three non-publishers without a
+  validation-workspace writer role, and the curator's exact deployed read-only
+  definition.
+- Keep the live model relationship path in shadow mode. Plan 13-08 remains the
+  blocking approval gate before any authoritative publication work.
+
+## Phase 13 Constraints
+
+- Terraform plan must show no APIM, Foundry project/account, Fabric workspace,
+  lakehouse, or existing Container App replacement/destruction.
+- Managed identities and role assignments must be additive and scope-minimal.
+- Deployment and live RBAC validation are serialized with Phase 03.1; the
+  deployment lane must be explicitly released before apply.
+- The installed `azd` version cannot install the current
+  `microsoft.foundry` extension. This deployment therefore uses the repository's
+  existing Terraform and `create-foundry-agent.sh` prompt-agent path, not hosted
+  agent `azd` deployment.
+- Apply only the targets and actions recorded in
+  `.planning/phases/13-autonomous-ontology-discovery-and-fabric-synchronization/13-07-TARGETED-PLAN.md`.
+  The twelve-resource additive baseline is now present in canonical state. The
+  current source-only split-validator plan has 0 creates, 1 in-place validation
+  Job update, 0 destroys, and 0 output changes. A new immutable ontology image
+  will intentionally update both ontology Jobs through
+  `ontology_discovery_image_tag`; existing API/web resources and outputs remain
+  pinned to `azure-mcp-timeout-20260906-1454`.
+- The supplied main `terraform.tfvars` currently contains an older global image
+  tag than canonical state. Reconcile that external gitignored value, or
+  explicitly preserve `azure-mcp-timeout-20260906-1454`, before applying the
+  targeted plan. Never set the global `image_tag` to the Phase 13 Job image.
 
 ## Configuration
 
@@ -633,3 +713,62 @@ replica and one maximum replica because MCP session state is process-local.
 - Live RBAC remains least privilege: `AcrPull` on ACR, `Reader` and
   `Monitoring Reader` on the onboarded subscription; no write role added.
 - Post-apply targeted Terraform plan reports no changes.
+
+## Validation Proof (Phase 13 ontology discovery — pre-apply)
+
+- Phase 13 dependency preflight passed against completed and verified Phases 10
+  and 12.
+- `uv run python -m compileall -q src scripts` passed.
+- Plan 13-07 infrastructure, identity, and curator tests passed (26 tests).
+- `terraform -chdir=infra/terraform fmt -check` and `terraform validate`
+  passed.
+- The reviewed targeted plan contains 12 additive resources, 0 updates, and 0
+  destroys. It excludes existing Container Apps, APIM, the Foundry
+  account/project, production Fabric workspace/lakehouse/roles, Exposure jobs,
+  the legacy specialist provisioner, and later Phase 13 resources.
+- A new immutable API image is required before apply because the currently
+  deployed image predates the coordinator CLI and validator script.
+- Live authorization evidence remains a post-apply gate; no authoritative
+  ontology publication is enabled by this deployment.
+
+## Role Assignment Verification (Phase 13 ontology discovery)
+
+- Status: Verified statically; live verification remains required after apply.
+- Coordinator identity: `AcrPull` on the existing registry and Fabric
+  Contributor only in the dedicated non-production discovery-state workspace.
+- Publisher identity: Fabric Contributor only in the separate non-production
+  RBAC-validation workspace. Fabric exposes Contributor as its least broad
+  Lakehouse write/delete role; Admin and Member are not granted.
+- API/web identity: unchanged in the production workspace and receives no role
+  in either Phase 13 workspace.
+- Curator/Foundry project identity: receives no Fabric workspace role and only
+  the exact four reviewed read-only ontology MCP tools.
+- Validation runtime: manual-only ACA Job with API, coordinator, and publisher
+  identities attached solely to prove two denials and one positive
+  stage/CAS/rollback path in the isolated validation workspace.
+- Issues fixed: removed the ineffective Azure resource-group custom data role,
+  decoupled curator deployment from Phase 11 specialist-candidate publication,
+  and eliminated the premature production API Contributor-to-Viewer cutover.
+
+## Deployment Proof (Phase 13 ontology discovery — 2026-09-07)
+
+- Immutable Job image:
+  `aiopsdevacrg6ludc.azurecr.io/aiops-api:phase13-ontology-split-20260906-173930`
+  (`sha256:865bc6aed31e7eb0930962cf825b87aeac7d8526a903ab73d6bf8bc7a3fd3ba1`).
+- Targeted infrastructure apply created 12 additive Phase 13 resources in two
+  passes (the Fabric capacity was resumed after the first pass): 12 added,
+  0 existing resources changed, 0 destroyed.
+- Two later targeted applies updated only the two ontology Job images/arguments;
+  0 resources were destroyed.
+- `aiops-dev-ontology-discovery` is healthy, scheduled every 15 minutes, and its
+  five most recent executions succeeded.
+- Live write matrix execution `aiops-dev-ontology-rbac-check-yuywrdn` succeeded:
+  API and coordinator stage/pointer writes were denied; publisher
+  stage/pointer/rollback/cleanup was authorized.
+- Separate deployer audit succeeded: API, coordinator, and curator have no
+  validation-workspace writer role; publisher is Contributor; curator has
+  exactly the expected four read-only tools, model, and prompt hash.
+- Sanitized evidence is retained in Phase 13 `13-07-LIVE-RBAC.json`.
+- Existing API/web Container Apps, APIM, Foundry account/project, production
+  Fabric workspace/lakehouse/roles, and global API/web image outputs were
+  unchanged.

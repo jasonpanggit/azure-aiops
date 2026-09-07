@@ -83,9 +83,9 @@ resource "fabric_lakehouse" "context_graph" {
   # instead (bronze_/silver_/ontology_).
 }
 
-# The container apps read from the lakehouse with the same identity they use
-# elsewhere. Contributor rather than Member: they must not administer the
-# workspace or manage its access.
+# The production API/web identity retains its existing Contributor role until
+# Plan 13-10 migrates legacy writes. Plan 13-07 proves separation only in its
+# dedicated non-production state and RBAC-validation workspaces.
 resource "fabric_workspace_role_assignment" "apps" {
   count = var.enable_fabric ? 1 : 0
 

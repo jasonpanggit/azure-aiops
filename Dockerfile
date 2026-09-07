@@ -69,6 +69,7 @@ COPY --from=builder /app/.venv /app/.venv
 COPY src/ /app/src/
 COPY skills/ /app/skills/
 COPY scripts/refresh_exposure_enrichment.py /app/scripts/refresh_exposure_enrichment.py
+COPY scripts/validate_ontology_publisher_rbac.py /app/scripts/validate_ontology_publisher_rbac.py
 
 # The specialist contract is the deployment's single source of truth for agent
 # identity, grants, and versions. Fail the image build -- not a production

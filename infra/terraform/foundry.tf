@@ -310,6 +310,25 @@ locals {
     })
   })
 
+  # Ontology curation is a proposal-only prompt agent, not an interactive
+  # Operations Copilot specialist.  It therefore stays outside the runtime
+  # specialist manifest/promotion mapping while reusing the same generated
+  # MCP tool shape and versioned creation script.
+  ontology_curator_tools = [
+    "list_changed_entities",
+    "get_entity_evidence",
+    "get_ontology_vocabulary",
+    "search_relationship_history",
+  ]
+  ontology_curator_agent_name    = "${var.foundry_agent_name_prefix}ontology-curator${var.foundry_agent_name_suffix}"
+  ontology_curator_agent_version = "${var.foundry_specialist_release}.1"
+  ontology_curator_prompt        = file("${path.module}/../../src/ontology_discovery/prompts/ontology_curator.md")
+  ontology_curator_tool_config = local.foundry_mcp_tool_config == null ? [] : [
+    merge(local.foundry_mcp_tool_config, {
+      allowed_tools = local.ontology_curator_tools
+    })
+  ]
+
   # ---------------------------------------------------------------------------
   # Promotion boundary: create -> validate -> promote
   #
@@ -1047,6 +1066,52 @@ resource "terraform_data" "foundry_agent" {
     azurerm_role_assignment.foundry_project_search_service_contributor,
     terraform_data.foundry_knowledge_index,
     azurerm_container_app.api,
+  ]
+}
+
+# The curator uses the same immutable, idempotent prompt-agent creation path,
+# but is intentionally excluded from the interactive specialist activation
+# map.  The discovery coordinator refers to its separately versioned name and
+# the project identity receives no Fabric publisher role or credential.
+resource "terraform_data" "foundry_ontology_curator_agent" {
+  count = var.create_foundry_agent && var.enable_ontology_curator_agent ? 1 : 0
+
+  triggers_replace = {
+    endpoint       = local.foundry_project_endpoint
+    agent_name     = local.ontology_curator_agent_name
+    version        = local.ontology_curator_agent_version
+    model          = var.foundry_model_name
+    instructions   = sha256(local.ontology_curator_prompt)
+    tools          = sha256(jsonencode(local.ontology_curator_tool_config))
+    rollout_script = filesha256("${path.module}/../scripts/create-foundry-agent.sh")
+  }
+
+  provisioner "local-exec" {
+    command     = "${path.module}/../scripts/create-foundry-agent.sh"
+    interpreter = ["/bin/bash", "-c"]
+
+    environment = {
+      FOUNDRY_PROJECT_ENDPOINT            = local.foundry_project_endpoint
+      FOUNDRY_AGENT_NAME                  = local.ontology_curator_agent_name
+      FOUNDRY_AGENT_VERSION               = local.ontology_curator_agent_version
+      FOUNDRY_AGENT_MODEL                 = var.foundry_model_name
+      FOUNDRY_AGENT_PROMPT                = local.ontology_curator_prompt
+      FOUNDRY_AGENT_SPECIALIST_ID         = "ontology_curator"
+      FOUNDRY_AGENT_TOOLS_JSON_B64        = base64encode(jsonencode(local.ontology_curator_tool_config))
+      AZURE_TENANT_ID                     = var.tenant_id
+      AZURE_CLIENT_ID                     = var.client_id
+      AZURE_CLIENT_SECRET                 = var.client_secret
+      FOUNDRY_SPECIALISTS_JSON            = ""
+      FOUNDRY_EXPECTED_CURATOR_MODEL      = "gpt-5.4-mini"
+      FOUNDRY_EXPECTED_CURATOR_TOOL_NAMES = join(",", local.ontology_curator_tools)
+    }
+  }
+
+  depends_on = [
+    azurerm_cognitive_deployment.chat,
+    azurerm_cognitive_account_project.ops,
+    azurerm_role_assignment.deployer_foundry_manager,
+    azapi_resource.foundry_mcp_connection,
   ]
 }
 

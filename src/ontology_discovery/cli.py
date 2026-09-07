@@ -46,6 +46,13 @@ def _parser() -> argparse.ArgumentParser:
         description="Run one bounded ontology discovery coordinator pass"
     )
     parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("run-once",),
+        default="run-once",
+        help="Execute exactly one finite coordinator pass",
+    )
+    parser.add_argument(
         "--store",
         default=".aiops-local/state/ontology_discovery_runs.json",
         help="Path to the durable ontology discovery run ledger",
