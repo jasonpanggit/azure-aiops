@@ -240,7 +240,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.98
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 1
       shadow_reset = true
       query_op     = "<"
@@ -249,7 +249,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.95
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 1
       shadow_reset = true
       query_op     = "<"
@@ -258,7 +258,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.9
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 2
       shadow_reset = true
       query_op     = "<"
@@ -267,7 +267,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.85
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 2
       shadow_reset = true
       query_op     = "<"
@@ -276,7 +276,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.95
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 1
       shadow_reset = true
       query_op     = "<"
@@ -285,7 +285,7 @@ locals {
       tier         = "weekly"
       threshold    = 1
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 0
       shadow_reset = true
       query_op     = "<"
@@ -294,7 +294,7 @@ locals {
       tier         = "weekly"
       threshold    = 0.98
       operator     = "LessThan"
-      window       = "P7D"
+      window       = "P2D"
       severity     = 1
       shadow_reset = true
       query_op     = "<"
