@@ -63,7 +63,6 @@ export default function ConnectionsPage() {
   const connections = useApi(() => connectionsApi.list(scope), [scope, refreshKey]);
   const rows = useMemo(() => connections.data?.data ?? [], [connections.data]);
   const activeConnections = useMemo(() => rows.filter((connection) => connection.is_active), [rows]);
-  const scopeKey = JSON.stringify(scope);
   const { filteredRows, filters, resetFilters } = useColumnFilters(rows, [
     { id: "health", label: "Health", getValues: (connection) => connection.health_status },
     { id: "sync", label: "Sync", getValues: (connection) => connection.sync_status || "unknown" },
@@ -120,7 +119,7 @@ export default function ConnectionsPage() {
     return () => {
       cancelled = true;
     };
-  }, [ontologyRefreshKey, scopeKey, selectedOntologyConnectionId, tab]);
+  }, [ontologyRefreshKey, scope, selectedOntologyConnectionId, tab]);
 
   /** Polls connection health until the background sync reaches a terminal stage. */
   const pollSyncState = useCallback(async (
