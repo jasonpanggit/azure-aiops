@@ -1,5 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import {
+  COPILOT_THREAD_STORAGE_KEY,
+  ThreadContinuityProvider,
+} from "@/lib/copilot/thread-context";
 import { ScopeProvider } from "@/lib/scope-context";
 import { ApiError } from "@/lib/types";
 import { CopilotDrawer } from "./CopilotDrawer";
@@ -253,6 +257,178 @@ describe("CopilotDrawer", () => {
     expect(screen.getByText("inventory:azure:stable")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /execute/i })).not.toBeInTheDocument();
+  });
+
+  it("labels evidence age only from server-returned citation state", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    const result = canonicalResult(
+      "thr-44444444444444444444444444444444",
+      "server:historical",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        citations: [
+          {
+            ...result.data.citations[0],
+            citation_id: "server:historical",
+            status: "historical",
+          },
+          {
+            ...result.data.citations[0],
+            citation_id: "server:revalidated",
+            status: "revalidated",
+          },
+          {
+            ...result.data.citations[0],
+            citation_id: "server:current",
+            status: "current",
+          },
+        ],
+      },
+    });
+
+    render(
+      <ScopeProvider>
+        <ThreadContinuityProvider>
+          <CopilotDrawer
+            open
+            onClose={vi.fn()}
+            contextLabel="Inventory"
+            requestedScope={{ subscription: ["sub-a"] }}
+            snapshot={{
+              ...canonicalSnapshot("os"),
+              freshness: [{
+                source: "inventory/os_observations",
+                observed_at: "2026-08-25T10:00:00Z",
+                status: "stale" as const,
+              }],
+            }}
+            starterQuestions={[{ label: "Review carried evidence" }]}
+          />
+        </ThreadContinuityProvider>
+      </ScopeProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Review carried evidence/ }));
+
+    expect(await screen.findByText("Historical evidence")).toBeInTheDocument();
+    expect(screen.getByText("Revalidated evidence")).toBeInTheDocument();
+    expect(screen.getByText("Current evidence")).toBeInTheDocument();
+    expect(screen.getByText("server:historical")).toBeInTheDocument();
+    expect(screen.getByText("server:revalidated")).toBeInTheDocument();
+    expect(screen.getByText("server:current")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["expired", "Thread expired at 2026-09-07T00:00:00Z"],
+    ["unknown", "Unknown investigation thread"],
+    ["deleted", "Thread was deleted by operator-a"],
+    ["mismatch", "Thread belongs to a different principal"],
+  ])(
+    "uses the same non-disclosing reset UI for a server-returned %s thread",
+    async (reason, serverMessage) => {
+      investigateCanonical.mockClear();
+      window.sessionStorage.clear();
+      window.sessionStorage.setItem(COPILOT_THREAD_STORAGE_KEY, JSON.stringify({
+        thread_id: "thr-55555555555555555555555555555555",
+        thread_revision: 4,
+      }));
+      investigateCanonical.mockRejectedValueOnce(new ApiError(
+        404,
+        "not_found",
+        serverMessage,
+        { field: "thread_id", reason },
+      ));
+
+      render(
+        <ScopeProvider>
+          <ThreadContinuityProvider>
+            <CopilotDrawer
+              open
+              onClose={vi.fn()}
+              contextLabel="Inventory"
+              requestedScope={{ subscription: ["sub-a"] }}
+              snapshot={canonicalSnapshot("os")}
+              starterQuestions={[{ label: "Continue investigation" }]}
+            />
+          </ThreadContinuityProvider>
+        </ScopeProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /^Continue investigation/ }));
+
+      expect(await screen.findByText(
+        "This investigation is no longer available. Start a new investigation to continue.",
+      )).toBeInTheDocument();
+      expect(screen.queryByText(serverMessage)).not.toBeInTheDocument();
+      expect(window.sessionStorage.getItem(COPILOT_THREAD_STORAGE_KEY)).toBeNull();
+      expect(investigateCanonical).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thread_id: "thr-55555555555555555555555555555555",
+        }),
+        { subscription: ["sub-a"] },
+      );
+    },
+  );
+
+  it("keeps deterministic current-page evidence visible when optional narration is unavailable", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    const result = canonicalResult(
+      "thr-66666666666666666666666666666666",
+      "server:current-page",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        status: "partial",
+        policy_status: "fallback",
+        fallback_reason: "narration_provider_unavailable",
+        tool_results: [{
+          call_id: "0:0:inventory_data_health:inventory_resources",
+          specialist_id: "inventory_data_health",
+          tool: "inventory_resources",
+          status: "ok",
+          data: { finding: "Current deterministic finding" },
+          evidence: [],
+          warning: "",
+        }],
+        uncertainty: ["Optional narration provider unavailable; deterministic evidence retained."],
+        citations: [{
+          ...result.data.citations[0],
+          citation_id: "server:current-page",
+          status: "current",
+        }],
+      },
+    });
+
+    render(
+      <ScopeProvider>
+        <ThreadContinuityProvider>
+          <CopilotDrawer
+            open
+            onClose={vi.fn()}
+            contextLabel="Inventory"
+            requestedScope={{ subscription: ["sub-a"] }}
+            snapshot={canonicalSnapshot("azure")}
+            starterQuestions={[{ label: "Review current evidence" }]}
+          />
+        </ThreadContinuityProvider>
+      </ScopeProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Review current evidence/ }));
+
+    expect(await screen.findByText("Current deterministic finding")).toBeInTheDocument();
+    expect(screen.getByText(
+      "Optional narration provider unavailable; deterministic evidence retained.",
+    )).toBeInTheDocument();
+    expect(screen.getByText(
+      "Showing governed results directly because optional narration is unavailable.",
+    )).toBeInTheDocument();
+    expect(screen.getByText("Current evidence")).toBeInTheDocument();
+    expect(screen.getByText("server:current-page")).toBeInTheDocument();
   });
 
   it("restores only the opaque server thread ID across remount", async () => {
