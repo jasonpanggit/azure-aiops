@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0.0",
   "plan": "03.1-19",
-  "captured_at": "2026-09-07T07:15:00Z",
+  "captured_at": "2026-09-07T08:00:00Z",
   "status": "blocked",
   "sanitized": true,
   "residual_blockers": [
@@ -12,13 +12,12 @@
     }
   ],
   "release": {
-    "api_tag": "startup-fix2-20260907-160000",
-    "peer_tag": "phase031-plan19-final2-20260907-062025",
+    "tag": "phase031-final-gates-20260907-1525",
     "images": {
-      "api": "sha256:90cf710278f30f01856db3d6b2a8e849c813d3851a7d82a4c3f0ecc7b444c789",
-      "web": "sha256:4aa421f85c4b70333e89f6efe34ec29fbc4c7e0a5a01853b946871e2cfece7a3",
-      "mcp_server": "sha256:d16c0c42a917964fd2db4cab86d9f64b0b0eddfd695a60e5d68a13cfeef76720",
-      "azure_mcp": "sha256:79c270638ec1eff8e53bc1d5cfeddbcf43c39e6341a1f7e0089620120378ac64"
+      "api": "sha256:24a26f7fe98cdc60c109411d4c0f4a2b726831482f92bcdd04e44e5b7dde4f03",
+      "web": "sha256:a35c4451d18a8af346749d2d80ba225fde380849f0bbaaba909266e64976bcd9",
+      "mcp_server": "sha256:4938ad7870199a37184be237d2372a391a5aa4ceb3d07b10e1b271ca59a1df32",
+      "azure_mcp": "sha256:f2c308bc0a293041f343a98390f547b53e79d87e01c195b1e6a62bfc389ea9b1"
     },
     "all_apps_running": true,
     "api_health": "pass",
@@ -71,7 +70,10 @@
     "executable_action_allowlist_exact_three": "pass",
     "container_operation_calls": 0,
     "alerts_enabled_and_routed": "pass",
-    "rollout_controls": "fail_closed_off"
+    "rollout_controls": "fail_closed_off",
+    "shadow_canary_promotion": "blocked_by_exact_live_source_prerequisite",
+    "non_destructive_rollback_contract": "pass",
+    "live_rollback_transition": "not_applicable_no_promoted_candidate"
   },
   "publication_observation": {
     "source_refresh": "succeeded",
