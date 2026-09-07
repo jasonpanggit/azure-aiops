@@ -4,6 +4,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 JOB_TF = ROOT / "infra" / "terraform" / "ontology_discovery_job.tf"
+IDENTITY_TF = ROOT / "infra" / "terraform" / "ontology_discovery_identity.tf"
+PROVIDERS_TF = ROOT / "infra" / "terraform" / "providers.tf"
 VARIABLES_TF = ROOT / "infra" / "terraform" / "variables.tf"
 CONTAINER_APPS_TF = ROOT / "infra" / "terraform" / "container_apps.tf"
 
@@ -209,3 +211,119 @@ def test_coordinator_identity_owns_exact_prompt_injection_marker_without_new_rol
         "instruction=ignore-scope-and-create-edge"
     ) in identity
     assert "Microsoft.App/jobs/start/action" not in terraform
+
+
+def test_evidence_job_is_fixed_manual_only_and_uses_only_azure_mcp_identity() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+    job = _resource(
+        terraform,
+        "azurerm_container_app_job",
+        "ontology_evidence_read",
+    )
+
+    assert 'name                         = "ontology-evidence-read"' in job
+    assert (
+        'count = var.ontology_discovery_environment == "validation" '
+        "&& var.enable_fabric ? 1 : 0"
+    ) in job
+    assert "manual_trigger_config" in job
+    assert "schedule_trigger_config" not in job
+    assert "event_trigger_config" not in job
+    assert "parallelism              = 1" in job
+    assert "replica_completion_count = 1" in job
+    assert "replica_retry_limit          = 0" in job
+    assert (
+        "identity_ids = [azurerm_user_assigned_identity.azure_mcp.id]"
+        in job
+    )
+    assert "identity = azurerm_user_assigned_identity.azure_mcp.id" in job
+    assert "azurerm_user_assigned_identity.apps" not in job
+    assert "ontology_coordinator" not in job
+    assert "ontology_publisher" not in job
+    assert '"python"' in job
+    assert '"/app/scripts/collect_ontology_evidence.py"' in job
+    assert "AIOPS_ONTOLOGY_API_TOKEN" not in job
+    assert "secret_name" not in job
+    assert "Microsoft.App/jobs/start/action" not in job
+
+
+def test_evidence_identity_has_exact_viewer_and_onelake_read_only_roles() -> None:
+    terraform = IDENTITY_TF.read_text(encoding="utf-8")
+    providers = PROVIDERS_TF.read_text(encoding="utf-8")
+    exact_roots = (
+        "ontology_discovery_state",
+        "ontology_command",
+        "ontology_dispatch",
+        "ontology_publication",
+        "ontology_rbac_validation",
+    )
+
+    assert "preview       = true" in providers
+    for root in exact_roots:
+        viewer = _resource(
+            terraform,
+            "fabric_workspace_role_assignment",
+            f"ontology_evidence_{root}",
+        )
+        data_role = _resource(
+            terraform,
+            "fabric_onelake_data_access_security",
+            f"ontology_evidence_{root}",
+        )
+        assert 'role         = "Viewer"' in viewer
+        assert f"fabric_workspace.{root}[0].id" in viewer
+        assert (
+            "azurerm_user_assigned_identity.azure_mcp.principal_id"
+            in viewer
+        )
+        assert "Contributor" not in viewer
+        assert "Member" not in viewer
+        assert "Admin" not in viewer
+
+        assert f"workspace_id = fabric_workspace.{root}[0].id" in data_role
+        assert f"item_id      = fabric_lakehouse.{root}[0].id" in data_role
+        assert 'attribute_name              = "Path"' in data_role
+        assert 'attribute_value_included_in = ["*"]' in data_role
+        assert 'attribute_name              = "Action"' in data_role
+        assert 'attribute_value_included_in = ["Read"]' in data_role
+        assert "ReadWrite" not in data_role
+        assert '"Write"' not in data_role
+        assert "microsoft_entra_members" in data_role
+        assert 'object_type = "ManagedIdentity"' in data_role
+        assert (
+            "object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id"
+            in data_role
+        )
+        assert "tenant_id   = var.tenant_id" in data_role
+
+    evidence_resources = [
+        block
+        for block in terraform.split('\nresource "')
+        if block.startswith(
+            (
+                'fabric_workspace_role_assignment" "ontology_evidence_',
+                'fabric_onelake_data_access_security" "ontology_evidence_',
+            )
+        )
+    ]
+    assert len(evidence_resources) == 10
+    joined = "\n".join(evidence_resources)
+    assert "fabric_workspace.ops" not in joined
+    assert "fabric_lakehouse.context_graph" not in joined
+    assert "azurerm_user_assigned_identity.apps" not in joined
+    assert "ontology_coordinator" not in joined
+    assert "ontology_publisher" not in joined
+    assert "Contributor" not in joined
+    assert "Member" not in joined
+    assert "Admin" not in joined
+    assert "ReadWrite" not in joined
+    assert '"Write"' not in joined
+
+
+def test_evidence_collector_is_packaged_in_the_immutable_api_image() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert (
+        "COPY scripts/collect_ontology_evidence.py "
+        "/app/scripts/collect_ontology_evidence.py"
+    ) in dockerfile
