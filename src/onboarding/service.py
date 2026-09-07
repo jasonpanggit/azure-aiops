@@ -453,6 +453,13 @@ class SubscriptionOnboardingService:
     def detail(self, connection_id: str) -> dict[str, Any]:
         connection = self.registry.get(connection_id)
         connection = self._reconcile_if_orphaned(connection)
+        durable_run = self._durable_run_projection(connection.connection_id)
+        projected_sync = self._project_durable_sync(
+            connection.sync_state or SyncState(),
+            durable_run,
+        )
+        if projected_sync is not connection.sync_state:
+            connection = _replace(connection, sync_state=projected_sync)
         business = self.registry.metadata_for(connection)
         freshness = self.sync_coordinator.freshness(connection.sync_state)
         return {
@@ -467,6 +474,7 @@ class SubscriptionOnboardingService:
             ],
             "freshness": freshness,
             "dataset_root": str(self.sync_coordinator.connection_output_dir(connection)),
+            "durable_run": durable_run,
         }
 
     def validate(
@@ -619,6 +627,13 @@ class SubscriptionOnboardingService:
                 "revision": run["revision"],
                 "source_generation_id": run["source_generation_id"],
                 "checkpoint": run["checkpoint"]["name"],
+                "generation_id": run["checkpoint"]["payload"].get(
+                    "generation_id"
+                ),
+                "active_generation": run["checkpoint"]["payload"].get(
+                    "active_generation"
+                ),
+                "pointer_etag": run["checkpoint"]["payload"].get("pointer_etag"),
                 "created": created,
             },
         }
@@ -707,12 +722,20 @@ class SubscriptionOnboardingService:
             [self.registry.get(connection_id)] if connection_id else self.registry.list()
         )
         connections = [self._reconcile_if_orphaned(connection) for connection in connections]
-        summaries = [
-            self.health.summarize(
-                connection, self.sync_coordinator.freshness(connection.sync_state)
+        summaries = []
+        for connection in connections:
+            durable_run = self._durable_run_projection(connection.connection_id)
+            projected_sync = self._project_durable_sync(
+                connection.sync_state or SyncState(),
+                durable_run,
             )
-            for connection in connections
-        ]
+            projected = _replace(connection, sync_state=projected_sync)
+            summary = self.health.summarize(
+                projected,
+                self.sync_coordinator.freshness(projected_sync),
+            )
+            summary["durable_run"] = durable_run
+            summaries.append(summary)
         counts: dict[str, int] = {}
         for summary in summaries:
             counts[summary["overall"]] = counts.get(summary["overall"], 0) + 1
@@ -722,6 +745,107 @@ class SubscriptionOnboardingService:
             "status_counts": counts,
             "connections": summaries,
         }
+
+    def _durable_run_projection(
+        self, connection_id: str
+    ) -> dict[str, Any] | None:
+        run = self.ontology_run_store.latest_for_connection(connection_id)
+        if run is None:
+            return None
+        checkpoint = run.get("checkpoint")
+        if not isinstance(checkpoint, dict):
+            checkpoint = {}
+        payload = checkpoint.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        return {
+            "run_id": run["run_id"],
+            "status": run["status"],
+            "revision": run["revision"],
+            "source_generation_id": run["source_generation_id"],
+            "checkpoint": str(checkpoint.get("name") or run["status"]),
+            "created_at": run.get("created_at"),
+            "updated_at": run.get("updated_at"),
+            "failure_class": run.get("failure_class") or None,
+            "message": run.get("message") or None,
+            "generation_id": payload.get("generation_id"),
+            "active_generation": payload.get("active_generation"),
+            "pointer_etag": payload.get("pointer_etag"),
+            "fabric_run_id": payload.get("fabric_run_id"),
+            "fabric_status": payload.get("fabric_status"),
+        }
+
+    @staticmethod
+    def _project_durable_sync(
+        legacy: SyncState,
+        durable_run: dict[str, Any] | None,
+    ) -> SyncState:
+        if durable_run is None:
+            return legacy
+        durable_updated = _parse_optional_timestamp(durable_run.get("updated_at"))
+        legacy_updated = max(
+            (
+                value
+                for value in (
+                    _parse_optional_timestamp(legacy.last_synced_at),
+                    _parse_optional_timestamp(legacy.last_successful_sync_at),
+                    _parse_optional_timestamp(legacy.last_failed_at),
+                    _parse_optional_timestamp(legacy.started_at),
+                )
+                if value is not None
+            ),
+            default=None,
+        )
+        if (
+            legacy_updated is not None
+            and durable_updated is not None
+            and legacy_updated > durable_updated
+        ):
+            return legacy
+        durable_status = str(durable_run["status"])
+        status = {
+            "queued": "running",
+            "running": "running",
+            "retrying": "running",
+            "succeeded": "succeeded",
+            "failed": "failed",
+            "cancelled": "failed",
+        }.get(durable_status, "running")
+        terminal = status in {"succeeded", "failed"}
+        checkpoint = str(durable_run["checkpoint"])
+        if status == "succeeded":
+            message = "Ontology publication completed"
+        elif status == "failed":
+            message = str(
+                durable_run.get("message") or "Ontology publication failed"
+            )
+        else:
+            message = f"Ontology publication {checkpoint.replace('_', ' ')}"
+        return SyncState(
+            status=status,
+            last_synced_at=(
+                str(durable_run["updated_at"]) if terminal else legacy.last_synced_at
+            ),
+            last_successful_sync_at=(
+                str(durable_run["updated_at"])
+                if status == "succeeded"
+                else legacy.last_successful_sync_at
+            ),
+            last_failed_at=(
+                str(durable_run["updated_at"])
+                if status == "failed"
+                else legacy.last_failed_at
+            ),
+            run_id=str(durable_run["run_id"]),
+            started_at=str(durable_run["created_at"]),
+            source_version=str(durable_run["source_generation_id"]),
+            record_count=legacy.record_count,
+            attempts=max(legacy.attempts, 1),
+            message=message,
+            stage=checkpoint,
+            stage_message=message,
+            progress_pct=100 if terminal else (0 if durable_status == "queued" else 50),
+        )
 
     def _set_active(self, connection_id: str, active: bool) -> dict[str, Any]:
         connection = self.registry.get(connection_id)
@@ -862,6 +986,19 @@ def _ensure_addable(
 
 def _iso(value: datetime) -> str:
     return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_optional_timestamp(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 __all__ = ["OnboardingError", "SubscriptionOnboardingService"]

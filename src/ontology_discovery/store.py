@@ -217,6 +217,31 @@ class OntologyRunStore:
             None,
         )
 
+    def latest_for_connection(
+        self, connection_id: str
+    ) -> dict[str, Any] | None:
+        """Return the newest durable run for compatibility read projections."""
+
+        connection = _required(connection_id, "connection_id").casefold()
+        with self._lock:
+            rows = [
+                row
+                for row in self._read_state()["runs"]
+                if row["connection_id"] == connection
+            ]
+        if not rows:
+            return None
+        latest = max(
+            rows,
+            key=lambda row: (
+                str(row.get("updated_at") or ""),
+                str(row.get("created_at") or ""),
+                int(row.get("revision") or 0),
+                str(row.get("run_id") or ""),
+            ),
+        )
+        return copy.deepcopy(latest)
+
     def save_proposal(
         self,
         *,
