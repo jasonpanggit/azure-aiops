@@ -553,19 +553,28 @@ class InvestigationThreadStore:
         with self._lock:
             now = self._clock()
             record = self._resolve(thread_id, principal_subject, current_scope, now)
-            record.scope = current_scope
-            record.scope_fingerprint = _scope_fingerprint(current_scope)
-            record.last_seen = now
-            self._threads.move_to_end(thread_id)
-            history = self._project_history(record, current_scope)
-            try:
-                self._persist(record)
-            except ThreadRevisionConflict:
-                record = self._resolve(
-                    thread_id, principal_subject, current_scope, now
-                )
-                return self._project_history(record, current_scope)
-            return history
+            scope_fingerprint = _scope_fingerprint(current_scope)
+            for attempt in range(2):
+                if record.scope_fingerprint != scope_fingerprint:
+                    self._age_retained_turns(record)
+                record.scope = current_scope
+                record.scope_fingerprint = scope_fingerprint
+                record.last_seen = now
+                self._threads.move_to_end(thread_id)
+                history = self._project_history(record, current_scope)
+                try:
+                    self._persist(record)
+                except ThreadRevisionConflict:
+                    record = self._resolve(
+                        thread_id, principal_subject, current_scope, now
+                    )
+                    if attempt == 1:
+                        raise ThreadRevisionConflict(
+                            current_revision=record.revision
+                        ) from None
+                    continue
+                return history
+            raise AssertionError("history retry loop terminated unexpectedly")
 
     @staticmethod
     def _project_history(
