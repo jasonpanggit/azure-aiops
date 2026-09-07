@@ -124,7 +124,14 @@ class PublisherDispatchView:
             copy.deepcopy(row)
             for row in _read(self._documents)["dispatches"]
             if row["type"] == "publish"
-            and row["status"] in {"pending", "retrying"}
+            and (
+                row["status"] in {"pending", "retrying"}
+                or (
+                    row["status"] == "claimed"
+                    and row.get("lease_expires_at")
+                    and datetime.fromisoformat(row["lease_expires_at"]) <= moment
+                )
+            )
             and (
                 not row.get("next_attempt_at")
                 or datetime.fromisoformat(row["next_attempt_at"]) <= moment
@@ -148,7 +155,14 @@ class PublisherDispatchView:
             row = _locate(state, dispatch_id, "publish")
             if (
                 row["revision"] != expected_revision
-                or row["status"] not in {"pending", "retrying"}
+                or (
+                    row["status"] not in {"pending", "retrying"}
+                    and not (
+                        row["status"] == "claimed"
+                        and row.get("lease_expires_at")
+                        and datetime.fromisoformat(row["lease_expires_at"]) <= moment
+                    )
+                )
             ):
                 raise DispatchConflict("dispatch_claim_conflict")
             row["status"] = "claimed"
@@ -163,6 +177,61 @@ class PublisherDispatchView:
 
         return _mutate(self._documents, claim)
 
+    def renew_publish(
+        self,
+        dispatch_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        now: datetime,
+        lease_seconds: int = 60,
+    ) -> dict[str, Any]:
+        moment = _aware(now)
+
+        def renew(state: dict[str, Any]):
+            row = _locate(state, dispatch_id, "publish")
+            _assert_claim(row, expected_revision, owner, moment)
+            row["revision"] += 1
+            row["lease_expires_at"] = (
+                moment + timedelta(seconds=max(1, int(lease_seconds)))
+            ).isoformat()
+            row["updated_at"] = moment.isoformat()
+            return copy.deepcopy(row)
+
+        return _mutate(self._documents, renew)
+
+    def record_step_receipt(
+        self,
+        dispatch_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        step: str,
+        receipt: Mapping[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        moment = _aware(now)
+        step_name = _required(step, "step")
+
+        def record(state: dict[str, Any]):
+            row = _locate(state, dispatch_id, "publish")
+            _assert_claim(row, expected_revision, owner, moment)
+            existing = next(
+                (item for item in row["receipts"] if item.get("step") == step_name),
+                None,
+            )
+            value = {"step": step_name, **copy.deepcopy(dict(receipt))}
+            if existing is not None:
+                if existing != value:
+                    raise DispatchConflict("dispatch_receipt_conflict")
+                return copy.deepcopy(row)
+            row["receipts"].append(value)
+            row["revision"] += 1
+            row["updated_at"] = moment.isoformat()
+            return copy.deepcopy(row)
+
+        return _mutate(self._documents, record)
+
     def complete_publish(
         self,
         dispatch_id: str,
@@ -176,19 +245,42 @@ class PublisherDispatchView:
 
         def complete(state: dict[str, Any]):
             row = _locate(state, dispatch_id, "publish")
-            if (
-                row["revision"] != expected_revision
-                or row["status"] != "claimed"
-                or row["lease_owner"] != owner
-            ):
-                raise DispatchConflict("dispatch_status_conflict")
-            row["status"] = "completed"
+            _assert_claim(row, expected_revision, owner, moment)
+            row["status"] = "succeeded"
             row["revision"] += 1
-            row["receipts"].append(copy.deepcopy(dict(receipt)))
+            row["terminal_receipt"] = copy.deepcopy(dict(receipt))
             row["updated_at"] = moment.isoformat()
             return copy.deepcopy(row)
 
         return _mutate(self._documents, complete)
+
+    def fail_publish(
+        self,
+        dispatch_id: str,
+        *,
+        expected_revision: int,
+        owner: str,
+        reason_code: str,
+        retryable: bool,
+        receipt: Mapping[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        moment = _aware(now)
+
+        def fail(state: dict[str, Any]):
+            row = _locate(state, dispatch_id, "publish")
+            _assert_claim(row, expected_revision, owner, moment)
+            row["status"] = "retrying" if retryable else "failed"
+            row["reason_code"] = _required(reason_code, "reason_code")[:96]
+            row["terminal_receipt"] = copy.deepcopy(dict(receipt))
+            row["revision"] += 1
+            row["lease_owner"] = ""
+            row["lease_expires_at"] = ""
+            row["next_attempt_at"] = moment.isoformat() if retryable else ""
+            row["updated_at"] = moment.isoformat()
+            return copy.deepcopy(row)
+
+        return _mutate(self._documents, fail)
 
     def get_publish(self, dispatch_id: str) -> dict[str, Any] | None:
         return _get(self._documents, dispatch_id, "publish")
@@ -244,6 +336,22 @@ def _locate(
     if row is None:
         raise DispatchConflict("dispatch_not_found")
     return row
+
+
+def _assert_claim(
+    row: Mapping[str, Any],
+    expected_revision: int,
+    owner: str,
+    moment: datetime,
+) -> None:
+    if (
+        row["revision"] != expected_revision
+        or row["status"] != "claimed"
+        or row["lease_owner"] != owner
+        or not row.get("lease_expires_at")
+        or datetime.fromisoformat(row["lease_expires_at"]) <= moment
+    ):
+        raise DispatchConflict("dispatch_status_conflict")
 
 
 def _required(value: object, name: str) -> str:

@@ -22,6 +22,7 @@ from storage.onelake_documents import DocumentConflictError
 APPROVED_PUBLICATION_CHECKPOINTS = frozenset(
     {"approve-pointer-cutover", "approve-publisher-rbac"}
 )
+CONSUMER_FAMILIES = ("api", "fabric", "agent", "export", "semantic")
 
 
 class PublicationSafetyError(RuntimeError):
@@ -75,6 +76,19 @@ class OntologyGenerationPublisher:
         consumer_compatibility: Mapping[str, bool],
         cancellation_check: Callable[[], bool],
         lease_guard: Callable[[], None],
+        materialize_generation: Callable[
+            [OntologyGenerationCandidate], Mapping[str, Any]
+        ]
+        | None = None,
+        staged_consumer_check: Callable[
+            [str], Mapping[str, bool]
+        ]
+        | None = None,
+        post_consumer_check: Callable[
+            [str], Mapping[str, bool]
+        ]
+        | None = None,
+        step_recorder: Callable[[str, Mapping[str, Any]], None] | None = None,
     ) -> GenerationPointerSnapshot:
         self._authorize(publisher_identity, checkpoint_ids)
         self._guard_runtime(cancellation_check, lease_guard)
@@ -111,10 +125,53 @@ class OntologyGenerationPublisher:
                 validation=staged["validation"],
                 compatibility=staged["compatibility"],
             )
-        except DocumentConflictError as exc:
-            raise PublicationSafetyError(
-                f"generation {candidate.generation_id} is immutable"
-            ) from exc
+        except DocumentConflictError:
+            # Crash recovery may revisit an already-complete immutable stage,
+            # but only byte-for-byte identical content is admissible.
+            try:
+                self._verify_staged(
+                    candidate.generation_id, staged, require_audit=False
+                )
+            except PublicationSafetyError as mismatch:
+                raise PublicationSafetyError(
+                    f"generation {candidate.generation_id} is immutable"
+                ) from mismatch
+        _record(step_recorder, "immutable_stage", {
+            "generation_id": candidate.generation_id,
+            "content_hash": staged["manifest"]["content_hash"],
+            "owner_id": owner_id,
+            "fence": fence,
+        })
+        self._verify_staged(candidate.generation_id, staged, require_audit=False)
+        persisted_validation = self._validate_staged(candidate.generation_id)
+        if not persisted_validation.passed:
+            raise PublicationSafetyError("persisted generation validation failed")
+        _record(step_recorder, "persisted_validation", {
+            "generation_id": candidate.generation_id,
+            "passed": True,
+        })
+        staged_checks = _consumer_results(
+            staged_consumer_check(candidate.generation_id)
+            if staged_consumer_check is not None
+            else consumer_compatibility
+        )
+        _record(step_recorder, "staged_compatibility", {
+            "generation_id": candidate.generation_id,
+            "families": staged_checks,
+        })
+        if not all(staged_checks.values()):
+            raise PublicationSafetyError("staged consumer compatibility failed")
+        materialization = (
+            dict(materialize_generation(candidate))
+            if materialize_generation is not None
+            else {"status": "not_required"}
+        )
+        if materialization.get("status") not in {"completed", "not_required"}:
+            raise PublicationSafetyError("Fabric materialization failed")
+        _record(step_recorder, "fabric_materialization", {
+            "generation_id": candidate.generation_id,
+            "status": materialization["status"],
+        })
 
         audit_intent = {
             "event": "ontology_generation_promotion",
@@ -147,6 +204,11 @@ class OntologyGenerationPublisher:
                 "complete validation changed before promotion"
             )
         self._verify_staged(candidate.generation_id, staged)
+        _record(step_recorder, "final_preconditions", {
+            "generation_id": candidate.generation_id,
+            "expected_etag": pointer_conditions.etag or "",
+            "fence": fence,
+        })
         try:
             promoted = self._storage.conditional_promote(
                 generation_id=candidate.generation_id,
@@ -159,6 +221,22 @@ class OntologyGenerationPublisher:
             raise PublicationSafetyError(
                 "stale writer lost the active pointer CAS"
             ) from exc
+        _record(step_recorder, "pointer_cas", {
+            "generation_id": candidate.generation_id,
+            "pointer_etag": promoted.etag or "",
+            "fence": fence,
+        })
+        post_checks = _consumer_results(
+            post_consumer_check(candidate.generation_id)
+            if post_consumer_check is not None
+            else consumer_compatibility
+        )
+        _record(step_recorder, "post_check", {
+            "generation_id": candidate.generation_id,
+            "families": post_checks,
+        })
+        if not all(post_checks.values()):
+            raise PublicationSafetyError("post-CAS consumer verification failed")
         self._storage.persist_generation_receipt(
             candidate.generation_id,
             {
@@ -335,10 +413,26 @@ class OntologyGenerationPublisher:
             "compatibility": compatibility,
         }
 
+    def _validate_staged(
+        self,
+        generation_id: str,
+    ) -> OntologyPublicationValidationReport:
+        staged = self._storage.read_generation(generation_id)
+        return self._validator.validate_publication(
+            entities=staged["entities"],
+            relationships=staged["relationships"],
+            source_generation=str(staged["manifest"]["source_generation"]),
+            proposal_lineage=tuple(staged["lineage"]["proposal_ids"]),
+            decision_lineage=tuple(staged["lineage"]["decision_ids"]),
+            consumer_compatibility=staged["compatibility"]["families"],
+        )
+
     def _verify_staged(
         self,
         generation_id: str,
         expected: Mapping[str, Any],
+        *,
+        require_audit: bool = True,
     ) -> None:
         try:
             staged = self._storage.read_generation(generation_id)
@@ -356,7 +450,7 @@ class OntologyGenerationPublisher:
                 raise PublicationSafetyError(
                     f"staged generation {key} changed before promotion"
                 )
-        if not staged.get("audit"):
+        if require_audit and not staged.get("audit"):
             raise PublicationSafetyError(
                 "staged generation is unaudited and cannot be promoted"
             )
@@ -372,8 +466,26 @@ def _content_hash(value: object) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
+def _consumer_results(values: Mapping[str, bool]) -> dict[str, bool]:
+    if set(values) != set(CONSUMER_FAMILIES):
+        raise PublicationSafetyError(
+            "complete API/Fabric/agent/export/semantic compatibility is required"
+        )
+    return {family: values[family] is True for family in CONSUMER_FAMILIES}
+
+
+def _record(
+    recorder: Callable[[str, Mapping[str, Any]], None] | None,
+    step: str,
+    receipt: Mapping[str, Any],
+) -> None:
+    if recorder is not None:
+        recorder(step, receipt)
+
+
 __all__ = [
     "APPROVED_PUBLICATION_CHECKPOINTS",
+    "CONSUMER_FAMILIES",
     "OntologyGenerationCandidate",
     "OntologyGenerationPublisher",
     "PublicationSafetyError",

@@ -114,9 +114,27 @@ class DedicatedOntologyPublisherAdapter:
                 "publisher request cannot override candidate or publisher identity"
             )
         try:
+            materialization: dict[str, Any] = {}
+
+            def materialize(published: OntologyGenerationCandidate) -> Mapping[str, Any]:
+                publication = self._fabric_sync_service.sync(
+                    replay_source_run_id=published.source_generation
+                )
+                materialization.update(
+                    run_id=publication.run_id,
+                    status=publication.status,
+                    tables=list(publication.tables),
+                )
+                return {
+                    "status": publication.status,
+                    "run_id": publication.run_id,
+                    "tables": list(publication.tables),
+                }
+
             promoted = self._generation_publisher.publish(
                 candidate,
                 publisher_identity=self._publisher_identity,
+                materialize_generation=materialize,
                 **request,
             )
         except PublicationSafetyError as exc:
@@ -144,16 +162,18 @@ class DedicatedOntologyPublisherAdapter:
                 },
             )()
 
-        publication = self._fabric_sync_service.sync(
-            replay_source_run_id=candidate.source_generation
-        )
+        # Compatibility with protocol doubles that predate the ordered
+        # materialization callback. Real OntologyGenerationPublisher instances
+        # always invoke the callback before pointer CAS.
+        if not materialization:
+            materialize(candidate)
         return {
             "generation_id": candidate.generation_id,
             "active_generation": promoted.pointer.active_generation,
             "pointer_etag": promoted.etag,
-            "fabric_run_id": publication.run_id,
-            "fabric_status": publication.status,
-            "fabric_tables": list(publication.tables),
+            "fabric_run_id": materialization["run_id"],
+            "fabric_status": materialization["status"],
+            "fabric_tables": materialization["tables"],
         }
 
     async def publication_status(self, run_id: str) -> Mapping[str, Any]:

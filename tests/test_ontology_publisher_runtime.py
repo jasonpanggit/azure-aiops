@@ -12,7 +12,6 @@ from storage.datasets import DatasetStore
 from storage.locking import MonotonicFenceAllocator
 from storage.onelake_documents import OneLakeDocumentStore
 
-
 NOW = datetime(2026, 9, 7, 7, 0, tzinfo=UTC)
 CONSUMERS = ("api", "fabric", "agent", "export", "semantic")
 
