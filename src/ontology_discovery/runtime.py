@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from fabric.dataset_mapper import InventoryDatasetMapper
 from onboarding.config import ConnectorConfig
@@ -119,9 +120,8 @@ class ProductionRuntimeConfig:
         return cls(
             runtime_mode=runtime_mode,
             **roots,
-            foundry_endpoint=_required(
-                values.get("FOUNDRY_PROJECT_ENDPOINT"),
-                "FOUNDRY_PROJECT_ENDPOINT",
+            foundry_endpoint=_foundry_endpoint(
+                values.get("FOUNDRY_PROJECT_ENDPOINT")
             ),
             agent_name=_required(
                 values.get("FOUNDRY_ONTOLOGY_AGENT_NAME"),
@@ -768,6 +768,23 @@ def _required(value: object, name: str) -> str:
     if not text:
         raise ValueError(f"{name} must not be empty")
     return text
+
+
+def _foundry_endpoint(value: object) -> str:
+    endpoint = _required(value, "FOUNDRY_PROJECT_ENDPOINT").rstrip("/")
+    parsed = urlparse(endpoint)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "FOUNDRY_PROJECT_ENDPOINT must be an absolute credential-free HTTPS URL"
+        )
+    return endpoint
 
 
 __all__ = [
