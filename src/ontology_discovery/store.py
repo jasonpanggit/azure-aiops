@@ -861,6 +861,244 @@ class OntologyRunStore:
         active = next((row for row in epochs if row["status"] == "active"), None)
         return copy.deepcopy(active or epochs[-1])
 
+    def get_reconciliation_control(
+        self, connection_id: str
+    ) -> dict[str, Any] | None:
+        connection = _required(connection_id, "connection_id").casefold()
+        with self._lock:
+            controls = self._read_state()["reconciliation_controls"]
+        return next(
+            (
+                copy.deepcopy(row)
+                for row in controls
+                if row["connection_id"] == connection
+            ),
+            None,
+        )
+
+    def select_reconciliation_mode(
+        self,
+        *,
+        connection_id: str,
+        now: datetime,
+        cadence_seconds: int = 86400,
+    ) -> dict[str, Any]:
+        """Choose full/incremental solely from durable server-owned control."""
+
+        if (
+            isinstance(cadence_seconds, bool)
+            or not isinstance(cadence_seconds, int)
+            or cadence_seconds < 60
+        ):
+            raise ValueError("cadence_seconds must be an integer of at least 60")
+        moment = _aware(now)
+        connection = _required(connection_id, "connection_id").casefold()
+        with self._claim_lock():
+            state = self._read_state()
+            control = next(
+                (
+                    row
+                    for row in state["reconciliation_controls"]
+                    if row["connection_id"] == connection
+                ),
+                None,
+            )
+            if control is None:
+                control = _new_reconciliation_control(
+                    connection, cadence_seconds, moment
+                )
+                state["reconciliation_controls"].append(control)
+                reason = "first_run"
+                mode = "full"
+            elif control["force_full"]:
+                reason = "maintenance_requested"
+                mode = "full"
+            elif not _valid_watermark(control["committed_watermark"]):
+                reason = (
+                    "first_run"
+                    if not control["committed_watermark"]
+                    else "watermark_invalid"
+                )
+                mode = "full"
+            elif datetime.fromisoformat(control["next_full_due_at"]) <= moment:
+                reason = "cadence_elapsed"
+                mode = "full"
+            else:
+                reason = "watermark_current"
+                mode = "incremental"
+            control["selected_mode"] = mode
+            control["selection_reason"] = reason
+            control["predecessor_watermark"] = control["committed_watermark"]
+            control["revision"] += 1
+            control["updated_at"] = moment.isoformat()
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(control)
+
+    def mark_full_reconciliation_due(
+        self,
+        *,
+        connection_id: str,
+        command_id: str,
+        actor_hash: str,
+        reason: str,
+        cadence_seconds: int | None,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Persist an idempotent authorized maintenance request and audit."""
+
+        moment = _aware(now)
+        connection = _required(connection_id, "connection_id").casefold()
+        command = _required(command_id, "command_id")
+        cadence = None if cadence_seconds is None else int(cadence_seconds)
+        if cadence is not None and not 60 <= cadence <= 2_592_000:
+            raise ValueError("cadence_seconds must be between 60 and 2592000")
+        with self._claim_lock():
+            state = self._read_state()
+            existing_audit = next(
+                (
+                    row
+                    for row in state["reconciliation_audits"]
+                    if row["command_id"] == command
+                ),
+                None,
+            )
+            control = next(
+                (
+                    row
+                    for row in state["reconciliation_controls"]
+                    if row["connection_id"] == connection
+                ),
+                None,
+            )
+            if existing_audit is not None and control is not None:
+                return copy.deepcopy(control)
+            if control is None:
+                control = _new_reconciliation_control(
+                    connection, cadence or 86400, moment
+                )
+                state["reconciliation_controls"].append(control)
+            prior_revision = control["revision"]
+            if cadence is not None:
+                control["cadence_seconds"] = cadence
+            control["force_full"] = True
+            control["revision"] += 1
+            control["updated_at"] = moment.isoformat()
+            state["reconciliation_audits"].append(
+                {
+                    "command_id": command,
+                    "connection_hash": hashlib.sha256(
+                        connection.encode()
+                    ).hexdigest(),
+                    "actor_hash": _required(actor_hash, "actor_hash"),
+                    "prior_revision": prior_revision,
+                    "new_revision": control["revision"],
+                    "reason_hash": hashlib.sha256(
+                        str(reason or "").encode()
+                    ).hexdigest(),
+                    "timestamp": moment.isoformat(),
+                    "outcome": "full_reconciliation_due",
+                }
+            )
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(control)
+
+    def commit_reconciliation(
+        self,
+        *,
+        connection_id: str,
+        predecessor_watermark: str,
+        committed_watermark: str,
+        full_graph: Mapping[str, Any],
+        incremental_graph: Mapping[str, Any],
+        dispatch_id: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Persist parity first, then advance the watermark after dispatch."""
+
+        from .incremental import compare_graph_parity
+
+        dispatch = _required(dispatch_id, "dispatch_id")
+        watermark = _required(committed_watermark, "committed_watermark")
+        moment = _aware(now)
+        connection = _required(connection_id, "connection_id").casefold()
+        parity = compare_graph_parity(full_graph, incremental_graph)
+        result_id = "ORR-" + hashlib.sha256(
+            json.dumps(
+                {
+                    "connection_id": connection,
+                    "predecessor_watermark": predecessor_watermark,
+                    "committed_watermark": watermark,
+                    "dispatch_id": dispatch,
+                    **parity,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()[:24].upper()
+        with self._claim_lock():
+            state = self._read_state()
+            control = next(
+                (
+                    row
+                    for row in state["reconciliation_controls"]
+                    if row["connection_id"] == connection
+                ),
+                None,
+            )
+            if control is None:
+                raise RunClaimConflict("reconciliation_control_missing", {})
+            if control["committed_watermark"] != predecessor_watermark:
+                raise RunClaimConflict("reconciliation_watermark_conflict", control)
+            result = next(
+                (
+                    row
+                    for row in state["reconciliation_results"]
+                    if row["result_id"] == result_id
+                ),
+                None,
+            )
+            if result is None:
+                result = {
+                    "result_id": result_id,
+                    "connection_hash": hashlib.sha256(
+                        connection.encode()
+                    ).hexdigest(),
+                    "selected_mode": control["selected_mode"],
+                    "selection_reason": control["selection_reason"],
+                    "predecessor_watermark": predecessor_watermark,
+                    "committed_watermark": watermark,
+                    "dispatch_id": dispatch,
+                    "drift_status": parity["status"],
+                    "drift_count": parity["drift_count"],
+                    "drift_hash": parity["drift_hash"],
+                    "full_graph_hash": parity["full_graph_hash"],
+                    "incremental_graph_hash": parity[
+                        "incremental_graph_hash"
+                    ],
+                    "repair_authority": "full",
+                    "created_at": moment.isoformat(),
+                }
+                state["reconciliation_results"].append(result)
+            control["committed_watermark"] = watermark
+            control["full_graph_hash"] = parity["full_graph_hash"]
+            control["incremental_graph_hash"] = parity[
+                "incremental_graph_hash"
+            ]
+            control["drift_status"] = parity["status"]
+            control["drift_count"] = parity["drift_count"]
+            control["drift_hash"] = parity["drift_hash"]
+            control["force_full"] = False
+            control["next_full_due_at"] = (
+                moment + timedelta(seconds=control["cadence_seconds"])
+            ).isoformat()
+            control["revision"] += 1
+            control["updated_at"] = moment.isoformat()
+            self._persist_advanced(state, moment)
+            return {
+                "control": copy.deepcopy(control),
+                "result": copy.deepcopy(result),
+            }
+
     def list_pending_relationships(
         self, *, include_terminal: bool = False
     ) -> list[dict[str, Any]]:
@@ -1677,6 +1915,11 @@ class OntologyRunStore:
             not isinstance(row, dict) for row in results
         ):
             raise TypeError("Reconciliation results must be a list of objects")
+        audits = payload.get("reconciliation_audits", [])
+        if not isinstance(audits, list) or any(
+            not isinstance(row, dict) for row in audits
+        ):
+            raise TypeError("Reconciliation audits must be a list of objects")
         return {
             "revision": _nonnegative_int(payload.get("revision", 0)),
             "next_fencing_token": _nonnegative_int(
@@ -1697,8 +1940,11 @@ class OntologyRunStore:
                 _release_with_defaults(row) for row in releases
             ],
             "eligible_epochs": [_epoch_with_defaults(row) for row in epochs],
-            "reconciliation_controls": copy.deepcopy(controls),
+            "reconciliation_controls": [
+                _control_with_defaults(row) for row in controls
+            ],
             "reconciliation_results": copy.deepcopy(results),
+            "reconciliation_audits": copy.deepcopy(audits),
             "updated_at": str(payload.get("updated_at") or ""),
         }
 
@@ -1722,6 +1968,7 @@ class OntologyRunStore:
             "eligible_epochs": state["eligible_epochs"],
             "reconciliation_controls": state["reconciliation_controls"],
             "reconciliation_results": state["reconciliation_results"],
+            "reconciliation_audits": state["reconciliation_audits"],
             "updated_at": state["updated_at"],
         }
         if self._documents is not None:
@@ -1777,6 +2024,7 @@ def _initial_state() -> dict[str, Any]:
         "eligible_epochs": [],
         "reconciliation_controls": [],
         "reconciliation_results": [],
+        "reconciliation_audits": [],
         "updated_at": "",
     }
 
@@ -1809,6 +2057,57 @@ def _epoch_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
     record.setdefault("created_at", "")
     record.setdefault("updated_at", "")
     return record
+
+
+def _new_reconciliation_control(
+    connection_id: str, cadence_seconds: int, moment: datetime
+) -> dict[str, Any]:
+    return {
+        "connection_id": connection_id,
+        "cadence_seconds": cadence_seconds,
+        "next_full_due_at": moment.isoformat(),
+        "selected_mode": "full",
+        "selection_reason": "first_run",
+        "predecessor_watermark": "",
+        "committed_watermark": "",
+        "full_graph_hash": "",
+        "incremental_graph_hash": "",
+        "drift_status": "pending",
+        "drift_count": 0,
+        "drift_hash": "",
+        "force_full": False,
+        "revision": 0,
+        "created_at": moment.isoformat(),
+        "updated_at": moment.isoformat(),
+    }
+
+
+def _control_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    record = copy.deepcopy(dict(row))
+    record.setdefault("connection_id", "")
+    record.setdefault("cadence_seconds", 86400)
+    record.setdefault("next_full_due_at", "1970-01-01T00:00:00+00:00")
+    record.setdefault("selected_mode", "full")
+    record.setdefault("selection_reason", "first_run")
+    record.setdefault("predecessor_watermark", "")
+    record.setdefault("committed_watermark", "")
+    record.setdefault("full_graph_hash", "")
+    record.setdefault("incremental_graph_hash", "")
+    record.setdefault("drift_status", "pending")
+    record.setdefault("drift_count", 0)
+    record.setdefault("drift_hash", "")
+    record.setdefault("force_full", False)
+    record.setdefault("revision", 0)
+    record.setdefault("created_at", "")
+    record.setdefault("updated_at", "")
+    return record
+
+
+def _valid_watermark(value: object) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and len(text) <= 256 and all(
+        character.isalnum() or character in "-_.:" for character in text
+    )
 
 
 def _pending_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:

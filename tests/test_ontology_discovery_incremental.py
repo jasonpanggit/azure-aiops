@@ -22,8 +22,8 @@ from ontology_discovery.incremental import (
     BatchRejectionReason,
     EvidenceBatchRejected,
     canonical_graph_hash,
-    compare_graph_parity,
     classify_incremental,
+    compare_graph_parity,
     normalize_graph_state,
     split_evidence_batches,
 )

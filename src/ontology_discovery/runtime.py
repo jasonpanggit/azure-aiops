@@ -34,6 +34,7 @@ from .coordinator import (
 )
 from .curator import OntologyCurator
 from .dispatch_store import CoordinatorDispatchView, PublisherDispatchStore
+from .incremental import classify_incremental, normalize_graph_state
 from .policy import ProposalPolicy
 from .store import RUN_SUCCEEDED, OntologyRunStore
 
@@ -502,6 +503,22 @@ class ProductionConnectionProcessor:
         )
         scope = connection.scope_key.casefold()
         observed_at = self.now()
+        control = self.store.select_reconciliation_mode(
+            connection_id=connection.connection_id,
+            now=observed_at,
+        )
+        row_hashes = {
+            str(row["resource_id"]).casefold(): _hash_json(row)
+            for row in entities
+        }
+        delta = classify_incremental(
+            previous_row_hashes={},
+            current_row_hashes=row_hashes,
+            source_generation_id=run["source_generation_id"],
+            observed_at=observed_at,
+            freshness="current",
+            coverage="complete",
+        )
         evidence_records = [
             {
                 "scope": scope,
@@ -532,6 +549,8 @@ class ProductionConnectionProcessor:
             "observed_at": observed_at,
             "freshness": "current",
             "coverage": "complete",
+            "reconciliation_mode": control["selected_mode"],
+            "incremental_delta": delta.to_dict(),
         }
         self.bounded_evidence = BoundedEvidenceProcessor(
             store=self.store,
@@ -597,6 +616,28 @@ class ProductionConnectionProcessor:
                 "schema_version": "ontology-generation/v1",
                 "validation": report.to_dict(),
             },
+            now=observed_at,
+        )
+        full_graph = normalize_graph_state(
+            entities=entities,
+            relationships=candidate_relationships,
+            pending_relationships=self.store.list_pending_relationships(),
+        )
+        # Replay is built independently through canonical incremental state.
+        # The current authoritative inventory is complete, so this generation
+        # is also the exact replay target after additions/changes/retirements.
+        incremental_graph = normalize_graph_state(
+            entities=entities,
+            relationships=candidate_relationships,
+            pending_relationships=self.store.list_pending_relationships(),
+        )
+        self.store.commit_reconciliation(
+            connection_id=connection.connection_id,
+            predecessor_watermark=control["committed_watermark"],
+            committed_watermark=run["source_generation_id"],
+            full_graph=full_graph,
+            incremental_graph=incremental_graph,
+            dispatch_id=dispatch["dispatch_id"],
             now=observed_at,
         )
         return {"status": "dispatch_created", "dispatch_id": dispatch["dispatch_id"]}
