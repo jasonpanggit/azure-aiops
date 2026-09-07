@@ -5,9 +5,11 @@ import json
 import subprocess
 import sys
 import tomllib
+from argparse import Namespace
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import yaml
 
 from ontology_discovery.evaluation_store import EvaluationSnapshotStore
@@ -15,6 +17,13 @@ from scripts.evaluate_ontology_discovery import (
     call_api,
     evaluate_dataset,
     load_dataset,
+)
+from scripts.validate_ontology_discovery_live import (
+    ConfigurationError,
+    _parser as live_validation_parser,
+    evaluate_shadow_evidence,
+    resolve_deployment_targets,
+    sanitize_shadow_report,
 )
 
 ROOT = Path(__file__).parents[1]
@@ -234,3 +243,250 @@ def test_repository_evaluator_fails_closed_on_caps_tokens_latency_and_failures(
     )
     assert completed.returncode != 0
     assert "scope_disclosure" in completed.stdout
+
+
+def _complete_shadow_evidence() -> dict[str, object]:
+    return {
+        "configuration": {
+            "status": "PASS",
+            "runtime_selection": "prompt-agent",
+            "state_target_source": "explicit-environment",
+            "foundry": "PASS",
+            "fabric": "PASS",
+        },
+        "schedule": {
+            "no_click_successes": 2,
+            "run_now": "PASS",
+            "restart": "PASS",
+            "duplicate_suppression": "PASS",
+        },
+        "bounds": {
+            "changed_entities": 50,
+            "candidate_pairs": 200,
+            "evidence_records": 40,
+            "input_tokens": 8000,
+            "output_tokens": 1200,
+            "attempt_seconds": 60,
+        },
+        "security": {
+            "injection": "PASS",
+            "scope_isolation": "PASS",
+            "identity_denials": ["api", "coordinator", "curator"],
+            "publisher_deterministic_only": "PASS",
+        },
+        "authoritative_model_edges": {
+            "candidate": 0,
+            "stage": 0,
+            "active": 0,
+            "consumer": 0,
+        },
+        "generation": {
+            "promotion_order": [
+                "generation-old",
+                "generation-new",
+                "generation-old",
+            ],
+            "stale_writer_rejected": True,
+            "consumers": {
+                "api": "PASS",
+                "fabric": "PASS",
+                "agent": "PASS",
+                "export": "PASS",
+                "semantic": "PASS",
+            },
+        },
+        "evaluation": {
+            "durable": True,
+            "fresh": "PASS",
+            "stale": "PASS",
+        },
+        "tooling": {"promptfoo": "PASS", "phoenix": "PASS"},
+        "observability": {
+            "alert_smoke": "PASS",
+            "api_audit": "PASS",
+            "ui_audit": "PASS",
+            "audit_complete": True,
+        },
+        "pairs": [
+            {
+                "pair": "VirtualMachine/member_of/Application",
+                "shadow_days_observed": 0,
+                "expert_adjudicated_eligible_count": 0,
+                "critical_failures": [],
+                "thresholds": {
+                    "precision": 0.98,
+                    "recall": 0.90,
+                    "escalation_recall": 1.0,
+                    "wilson_precision_lower_bound": 0.98,
+                },
+                "approvals": [],
+                "release_status": "BLOCKED/PENDING",
+                "missing_predicates": [
+                    "30_consecutive_shadow_days",
+                    "200_expert_adjudicated_eligible_proposals",
+                ],
+            }
+        ],
+        "activation_interface_present": False,
+    }
+
+
+def test_shadow_cli_has_no_release_canary_or_allowlist_activation_interface() -> None:
+    parser = live_validation_parser()
+    destinations = {action.dest.casefold() for action in parser._actions}
+
+    assert "shadow" in destinations
+    assert not destinations.intersection(
+        {"activate", "release", "canary", "allowlist", "enable_model_edges"}
+    )
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--shadow", "--activate"])
+
+
+def test_shadow_targets_prefer_explicit_state_over_production_fabric_config(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "fabric.config.deploy.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "fabric": {
+                    "workspace_id": "production-workspace",
+                    "lakehouse_id": "production-lakehouse",
+                    "capacity": {"subscription_id": "subscription-a"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        subscription_id=None,
+        resource_group=None,
+        job_name=None,
+        workspace_id=None,
+        lakehouse_id=None,
+        rbac_workspace_id=None,
+        rbac_lakehouse_id=None,
+        foundry_project_endpoint=None,
+        foundry_agent_name=None,
+        fabric_config=config,
+    )
+    targets = resolve_deployment_targets(
+        args,
+        env={
+            "AIOPS_ONTOLOGY_STATE_WORKSPACE_ID": "phase13-workspace",
+            "AIOPS_ONTOLOGY_STATE_LAKEHOUSE_ID": "phase13-lakehouse",
+            "AIOPS_ONTOLOGY_RBAC_WORKSPACE_ID": "rbac-workspace",
+            "AIOPS_ONTOLOGY_RBAC_LAKEHOUSE_ID": "rbac-lakehouse",
+            "FOUNDRY_PROJECT_ENDPOINT": (
+                "https://example.services.ai.azure.com/api/projects/p"
+            ),
+            "FOUNDRY_ONTOLOGY_AGENT_NAME": "ontology-curator-agent",
+        },
+        terraform_outputs={},
+    )
+
+    assert targets.workspace_id == "phase13-workspace"
+    assert targets.lakehouse_id == "phase13-lakehouse"
+    assert targets.workspace_id != "production-workspace"
+    assert targets.state_target_source == "explicit-environment"
+    assert targets.subscription_id == "subscription-a"
+
+
+def test_shadow_target_resolution_fails_closed_instead_of_using_production_ids(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "fabric.config.deploy.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "fabric": {
+                    "workspace_id": "production-workspace",
+                    "lakehouse_id": "production-lakehouse",
+                    "capacity": {"subscription_id": "subscription-a"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        subscription_id=None,
+        resource_group=None,
+        job_name=None,
+        workspace_id=None,
+        lakehouse_id=None,
+        rbac_workspace_id=None,
+        rbac_lakehouse_id=None,
+        foundry_project_endpoint=None,
+        foundry_agent_name=None,
+        fabric_config=config,
+    )
+
+    with pytest.raises(ConfigurationError, match="Phase 13 state workspace"):
+        resolve_deployment_targets(args, env={}, terraform_outputs={})
+
+
+def test_shadow_report_requires_every_boundary_and_keeps_pair_release_blocked() -> None:
+    evidence = _complete_shadow_evidence()
+    report = evaluate_shadow_evidence(
+        evidence,
+        asserted_release_status="blocked-or-pending",
+        assert_authoritative_model_edge_count_zero=True,
+    )
+
+    assert report["status"] == "PASS"
+    assert report["missing_evidence"] == []
+    assert report["release_status"] == "BLOCKED/PENDING"
+    assert report["activation_interface_present"] is False
+    assert report["authoritative_model_edge_count"] == 0
+    assert report["pairs"][0]["missing_predicates"] == [
+        "30_consecutive_shadow_days",
+        "200_expert_adjudicated_eligible_proposals",
+    ]
+
+    for path, value in (
+        (("authoritative_model_edges", "consumer"), 1),
+        (("schedule", "restart"), "FAIL"),
+        (("evaluation", "stale"), "FAIL"),
+        (("tooling", "phoenix"), "FAIL"),
+        (("observability", "ui_audit"), "FAIL"),
+    ):
+        broken = json.loads(json.dumps(evidence))
+        section, field = path
+        broken[section][field] = value
+        failed = evaluate_shadow_evidence(
+            broken,
+            asserted_release_status="blocked-or-pending",
+            assert_authoritative_model_edge_count_zero=True,
+        )
+        assert failed["status"] == "FAIL"
+        assert failed["missing_evidence"]
+
+
+def test_shadow_report_rejects_pair_activation_and_sanitizes_resource_ids() -> None:
+    evidence = _complete_shadow_evidence()
+    evidence["pairs"][0]["release_status"] = "ELIGIBLE"
+    evidence["activation_interface_present"] = True
+    report = evaluate_shadow_evidence(
+        evidence,
+        asserted_release_status="blocked-or-pending",
+        assert_authoritative_model_edge_count_zero=True,
+    )
+    assert report["status"] == "FAIL"
+    assert "activation_interface_absent" in report["missing_evidence"]
+    assert "pair_release_status_blocked_or_pending" in report["missing_evidence"]
+
+    sanitized = sanitize_shadow_report(
+        {
+            "workspace_id": "phase13-workspace",
+            "lakehouse_id": "phase13-lakehouse",
+            "subscription_id": "subscription-a",
+            "nested": {"principal_id": "principal-a", "status": "PASS"},
+        }
+    )
+    rendered = json.dumps(sanitized, sort_keys=True)
+    assert "phase13-workspace" not in rendered
+    assert "phase13-lakehouse" not in rendered
+    assert "subscription-a" not in rendered
+    assert "principal-a" not in rendered
+    assert sanitized["nested"]["status"] == "PASS"
