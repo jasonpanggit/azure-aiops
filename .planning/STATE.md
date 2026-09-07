@@ -8,9 +8,9 @@ stopped_at: Completed 03.1-25-PLAN.md
 last_updated: "2026-09-06T16:35:45.198Z"
 progress:
   total_phases: 17
-  completed_phases: 10
+  completed_phases: 11
   total_plans: 158
-  completed_plans: 141
+  completed_plans: 142
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -25,6 +25,7 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-15** COMPLETE — Exact alert coverage and credentialed shadow validation with durable sanitized evidence, zero authoritative model edges, deterministic rollback, and every pair BLOCKED/PENDING
 - **13-14** COMPLETE — Proxy-locked Promptfoo/Phoenix evaluation, durable BLOCKED/PENDING snapshots, and loopback-only sanitized lifecycle trace inspection
 - **13-13** COMPLETE — Scoped `/connections` ontology automation workspace with independent durable lifecycle sections, server-owned eligibility/concurrency, and fail-closed EvaluationSnapshot freshness
 - **13-12** COMPLETE — Scope-first durable lifecycle, proposal, generation/publication, rollback, and EvaluationSnapshot APIs with server-owned eligibility and no API publisher authority
@@ -173,6 +174,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 13 P02 | 9min | 2 tasks | 10 files |
 | Phase 13 P03 | 7min | 2 tasks | 8 files |
 | Phase 13 P11 | 7min | 2 tasks | 3 files |
+| Phase 13 P15 | 38min | 2 tasks | 17 files |
 | Phase 03.1 P14 | 41 min | 3 tasks | 17 files |
 | Phase 03.1 P18 | 22min | 3 tasks | 10 files |
 | Phase 03.1 P24 | 10 min | 3 tasks | 9 files |
@@ -264,6 +266,10 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: The deterministic SQL-contract benchmark remains distinct from live Fabric certification; the live canary requires readiness and explicit benchmark scope.
 - [Phase 13]: Dependency authorization requires roadmap, requirements, complete summaries, Nyquist validation, and passed verification; STATE.md alone is never sufficient.
 - [Phase 13]: Wave 0 remains test-only and non-authoritative; reviewed model edges are excluded in shadow mode and pointer changes require fresh fences.
+- [Phase 13]: Phase 13 state and RBAC targets must be explicit or come from canonical Terraform state; production Fabric connection IDs are never shadow-state defaults.
+- [Phase 13]: A passing shadow gate deliberately leaves every predicate/type pair BLOCKED/PENDING until 30 consecutive days and 200 expert-adjudicated eligible proposals are durably proven.
+- [Phase 13]: Credentialed evidence reports retain only statuses, bounded counts, timestamps, hashes, and closed reason codes; raw IDs, prompts, scope values, credentials, and errors are excluded.
+- [Phase 13]: Initial OneLake documents use guarded DFS create/append/flush; subsequent mutable pointers retain ETag conditional replacement.
 - [Phase 03.1]: Use a nested versioned Exposure semantic contract while retaining legacy response aliases during shadow rollout.
 - [Phase 03.1]: Derive Fabric SQL tenant and connection authorization only from authenticated principal scope and active connection metadata.
 - [Phase 03.1]: Container findings may create only evidence-qualified non-executable review handoffs or no_safe_action outcomes.
