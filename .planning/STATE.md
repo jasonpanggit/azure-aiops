@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
-stopped_at: Completed 03.1-25-PLAN.md
-last_updated: "2026-09-07T06:45:47.396Z"
+stopped_at: Completed 13-17-PLAN.md
+last_updated: "2026-09-07T07:04:04.122Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 165
-  completed_plans: 141
+  completed_plans: 142
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -185,6 +185,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P22 | 10min | 2 tasks | 9 files |
 | Phase 03.1 P25 | 25 min | 3 tasks | 13 files |
 | Phase 13 P16 | 15min | 3 tasks | 9 files |
+| Phase 13 P17 | 16min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -305,11 +306,14 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 13]: Coordinator authority uses only explicit distinct connection, command, state, and dispatch roots; publication authority is structurally absent.
 - [Phase 13]: Eligible-set membership is immutable within an epoch and advances by durable round-robin cursor across retries, duplicates, and exclusions.
 - [Phase 13]: Reconciliation watermarks advance only after durable dispatch; full reconstruction is authoritative when parity detects drift.
+- [Phase 13]: Plan 13-17: Fabric materialization completes before publisher pointer CAS, with five-family staged and post-CAS checks.
+- [Phase 13]: Plan 13-17: rollback intake is reauthorized under publisher identity and post-check failures restore the predecessor under a newer fence.
+- [Phase 13]: Plan 13-17: publisher Fabric auth always replaces shared YAML identity with AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID.
 
 ## Session
 
-**Last session:** 2026-09-06T16:35:45.182Z
-**Stopped at:** Completed 03.1-25-PLAN.md
+**Last session:** 2026-09-07T07:04:04.103Z
+**Stopped at:** Completed 13-17-PLAN.md
 **Resume file:** None
 
 ## Accumulated Context
