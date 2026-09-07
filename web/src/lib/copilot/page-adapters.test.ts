@@ -187,10 +187,14 @@ describe("inventory Copilot page adapter", () => {
           }),
           expect.objectContaining({
             specialistId: "executive_summary",
-            tool: undefined,
           }),
         ]),
       );
+      expect(
+        context.starterQuestions.find(
+          (starter) => starter.specialistId === "executive_summary",
+        ),
+      ).not.toHaveProperty("tool");
       expect(
         context.starterQuestions.filter(
           (starter) => starter.specialistId === "executive_summary",

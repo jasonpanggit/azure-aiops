@@ -152,7 +152,7 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
       expect.objectContaining({
         scope: {},
         policyName: "Approved hub-spoke landing-zone baseline",
-        selectedId: "",
+        selectedId: "gap-1",
         violations: expect.arrayContaining([
           expect.objectContaining({ id: "gap-1" }),
           expect.objectContaining({ id: "rule-1" }),

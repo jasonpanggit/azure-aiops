@@ -14,11 +14,12 @@ import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
 import { presentVerdict } from "@/lib/flow-verdict";
+import { buildNetworkCopilotContext } from "@/lib/copilot/page-adapters";
 import { scopeToSearchParams } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
-import { buildCopilotSnapshot, copilotEvidenceRows, networkApi } from "@/lib/services";
+import { networkApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
-import type { CopilotEvidenceRow, FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
+import type { FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
 
 type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
 const NETWORK_PAGE_SIZE = 100;
@@ -188,23 +189,18 @@ export default function NetworkPage() {
     ...(findings.data?.warnings ?? []),
     ...(bypass.data?.warnings ?? []),
   ]));
-  const bypassGaps = bypass.data?.data.gaps ?? [];
-  const networkCopilotRecords = [
-    {
-      check: "topology",
-      compliant: true,
-      summary,
-      connection_ids: topology.data?.data.topology.connection_ids ?? [],
-      unresolved_peer_vnet_ids: topology.data?.data.topology.unresolved_peer_vnet_ids ?? [],
-    },
-    ...(gaps.data?.data.gaps ?? []).map(networkGapEvidence),
-    ...(findings.data?.data.findings ?? []).map(ruleFindingEvidence),
-  ];
-  const networkCopilotEvidence = [
-    ...copilotEvidenceRows("source", evidence),
-    ...copilotEvidenceRows("network", [], networkCopilotRecords),
-    ...bypassGaps.map(firewallBypassEvidence),
-  ];
+  const networkCopilot = buildNetworkCopilotContext({
+    scope,
+    tab,
+    gapOffset: activeGapPage * activeGapPageSize,
+    gapLimit: activeGapPageSize,
+    findingOffset: activeFindingPage * activeFindingPageSize,
+    findingLimit: activeFindingPageSize,
+    topology: topology.data,
+    gaps: gaps.data,
+    findings: findings.data,
+    bypass: bypass.data,
+  });
 
   return (
     <div className="page-container">
@@ -411,35 +407,9 @@ export default function NetworkPage() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Network topology"
-        snapshot={buildCopilotSnapshot({
-          pageKind: "network",
-          pageId: "network-topology",
-          scope,
-          filters: { tab: [tab] },
-          selectedResources: topology.data?.data.topology.hubs.slice(0, 50).map((hub) => ({
-            resource_id: hub.vnet_id,
-            resource_type: "Microsoft.Network/virtualNetworks",
-            name: hub.name,
-          })) ?? [],
-          evidence: networkCopilotEvidence,
-        })}
-        starterQuestions={[
-          {
-            label: "Can UAT reach PROD?",
-            tool: "traffic_flow",
-            toolArguments: { source: "UAT", destination: "PROD" },
-          },
-          ...(topology.data?.data.topology.hubs[0]
-            ? [
-                {
-                  label: `What depends on ${topology.data.data.topology.hubs[0].name}?`,
-                  tool: "hub_dependents",
-                  toolArguments: { vnet_id: topology.data.data.topology.hubs[0].vnet_id },
-                },
-              ]
-            : []),
-          { label: "Show inspection bypass paths.", tool: "firewall_nsg_gaps", toolArguments: {} },
-        ]}
+        requestedScope={networkCopilot.requestedScope}
+        snapshot={networkCopilot.snapshot}
+        starterQuestions={networkCopilot.starterQuestions}
       />
     </div>
   );
@@ -813,60 +783,6 @@ function ruleListItem(finding: RuleFinding): FindingListItem {
     detail: finding.detail,
     recommendation: finding.recommendation,
     basis: "Observed Azure control configuration",
-  };
-}
-
-function networkGapEvidence(gap: NetworkGap): Record<string, unknown> {
-  return {
-    check: gap.category,
-    finding: gap.title,
-    issue: gap.detail,
-    compliant: false,
-    severity: gap.severity,
-    resource_id: gap.resource_id,
-    resource_name: gap.resource_name,
-    resource_type: gap.resource_type,
-    recommendation: gap.recommendation,
-    basis: gap.basis,
-    connection_id: gap.connection_id,
-    subscription_id: gap.subscription_id,
-    environment: gap.environment,
-    vnet_id: gap.vnet_id,
-    evidence: gap.evidence,
-  };
-}
-
-function ruleFindingEvidence(finding: RuleFinding): Record<string, unknown> {
-  return {
-    check: finding.category,
-    finding: finding.title,
-    issue: finding.detail,
-    compliant: false,
-    severity: finding.severity,
-    rule_id: finding.rule_id,
-    rule_name: finding.rule_name,
-    control: finding.control,
-    control_id: finding.control_id,
-    recommendation: finding.recommendation,
-    connection_id: finding.connection_id,
-    subscription_id: finding.subscription_id,
-    environment: finding.environment,
-    evidence: finding.evidence,
-  };
-}
-
-function firewallBypassEvidence(gap: NetworkGap, index: number): CopilotEvidenceRow {
-  return {
-    evidence_id: `network:firewall-bypass:${gap.gap_id || index}`,
-    resource_id: gap.resource_id,
-    section: "firewall",
-    status: "ok",
-    data: {
-      ...networkGapEvidence(gap),
-      check: "firewall",
-      finding: gap.title || "Firewall inspection bypass path",
-      issue: gap.detail || "Spoke traffic can bypass the hub firewall inspection path.",
-    },
   };
 }
 
