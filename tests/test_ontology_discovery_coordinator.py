@@ -12,7 +12,11 @@ from api.routers.connections import sync_connection
 from onboarding.service import SubscriptionOnboardingService
 from ontology_discovery.cli import run_once as run_cli_once
 from ontology_discovery.contracts import CheckpointResult
-from ontology_discovery.coordinator import OntologyDiscoveryCoordinator
+from ontology_discovery.coordinator import (
+    OntologyDiscoveryCoordinator,
+    PublisherDispatchProcessor,
+)
+from ontology_discovery.publisher import OntologyGenerationCandidate
 from ontology_discovery.store import OntologyRunStore
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
@@ -258,3 +262,126 @@ def test_sync_run_once_cli_delegates_one_finite_bounded_pass():
 
     assert result == {"selected": 0, "processed": 0}
     assert coordinator.calls == [(NOW, 7)]
+
+
+class _CandidateProvider:
+    async def validated_candidate(self, run):
+        return OntologyGenerationCandidate(
+            generation_id=f"ontology-{run['source_generation_id']}",
+            source_generation=run["source_generation_id"],
+            entities=(),
+            relationships=(),
+            proposal_lineage=(),
+            decision_lineage=(),
+            policy_version="policy-v1",
+            schema_version="schema-v1",
+        )
+
+
+class _DedicatedPublisher:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[str, str]] = []
+
+    async def publish(self, *, run, candidate):
+        self.calls.append((run["run_id"], candidate.generation_id))
+        if self.error is not None:
+            raise self.error
+        return {
+            "generation_id": candidate.generation_id,
+            "active_generation": candidate.generation_id,
+            "pointer_etag": "etag-new",
+        }
+
+    async def publication_status(self, run_id):
+        return {
+            "run_id": run_id,
+            "active_generation": "ontology-previous",
+            "pointer_etag": "etag-old",
+        }
+
+
+def test_manual_and_scheduled_origins_share_publisher_dispatch_and_idempotency(
+    tmp_path,
+):
+    store = OntologyRunStore(tmp_path / "ontology-runs.json")
+    manual, created = store.get_or_create_run(
+        connection_id="prod-core",
+        source_generation_id="inventory-generation-7",
+        trigger="manual",
+        requested_by="operator@example.com",
+        now=NOW,
+    )
+    scheduled, duplicate = store.get_or_create_run(
+        connection_id="prod-core",
+        source_generation_id="inventory-generation-7",
+        trigger="scheduled",
+        requested_by="scheduler",
+        now=NOW,
+    )
+    publisher = _DedicatedPublisher()
+    coordinator = OntologyDiscoveryCoordinator(
+        store=store,
+        processor=PublisherDispatchProcessor(
+            candidate_provider=_CandidateProvider(),
+            publisher=publisher,
+        ),
+        owner="coordinator-job",
+        now=lambda: NOW,
+    )
+
+    result = asyncio.run(coordinator.run_once(now=NOW, limit=10))
+
+    assert created is True
+    assert duplicate is False
+    assert scheduled["run_id"] == manual["run_id"]
+    assert result["processed"] == 1
+    assert publisher.calls == [
+        (manual["run_id"], "ontology-inventory-generation-7")
+    ]
+    durable = store.get(manual["run_id"])
+    assert durable["checkpoint"]["name"] == "publication_succeeded"
+    assert durable["checkpoint"]["payload"]["active_generation"] == (
+        "ontology-inventory-generation-7"
+    )
+
+
+def test_publisher_denial_is_durable_and_preserves_active_generation(tmp_path):
+    store = OntologyRunStore(tmp_path / "ontology-runs.json", max_attempts=1)
+    run = _enqueue(store)
+    publisher = _DedicatedPublisher(error=PermissionError("publisher identity denied"))
+    coordinator = OntologyDiscoveryCoordinator(
+        store=store,
+        processor=PublisherDispatchProcessor(
+            candidate_provider=_CandidateProvider(),
+            publisher=publisher,
+        ),
+        owner="coordinator-job",
+        now=lambda: NOW,
+    )
+
+    result = asyncio.run(coordinator.run_once(now=NOW, limit=1))
+
+    assert result["failed"] == 1
+    durable = store.get(run["run_id"])
+    assert durable["status"] == "failed"
+    assert durable["failure_class"] == "publisher_denied"
+    assert durable["checkpoint"] == {
+        "name": "publication_denied",
+        "payload": {
+            "active_generation": "ontology-previous",
+            "pointer_etag": "etag-old",
+            "run_id": run["run_id"],
+        },
+    }
+
+
+def test_coordinator_publisher_boundary_exposes_no_storage_or_identity_override():
+    source = inspect.getsource(PublisherDispatchProcessor)
+    signature = inspect.signature(PublisherDispatchProcessor)
+
+    assert set(signature.parameters) == {"candidate_provider", "publisher"}
+    assert "publisher_identity" not in source
+    assert "stage_generation" not in source
+    assert "conditional_promote" not in source
+    assert "active_pointer" not in source
