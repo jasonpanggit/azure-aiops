@@ -10,7 +10,10 @@ import pytest
 
 from ontology.ontology_validator import OntologyValidator
 from ontology_discovery.contracts import CheckpointResult, EvidenceBatch
-from ontology_discovery.coordinator import OntologyDiscoveryCoordinator
+from ontology_discovery.coordinator import (
+    BoundedEvidenceProcessor,
+    OntologyDiscoveryCoordinator,
+)
 from ontology_discovery.curator import (
     MAX_INPUT_TOKENS,
     NORMAL_OUTPUT_TOKENS,
@@ -146,7 +149,7 @@ def _candidate(
     )
 
 
-def test_one_run_splits_exact_record_bounds_and_rejects_budget_overages():
+def test_one_run_splits_exact_record_bounds_and_rejects_budget_overages(tmp_path):
     entities = [
         {
             "scope": "tenant-1/sub-1",
@@ -188,6 +191,65 @@ def test_one_run_splits_exact_record_bounds_and_rejects_budget_overages():
     assert max(len(batch.changed_entities) for batch in batches) == 50
     assert max(len(batch.candidate_pairs) for batch in batches) == 200
     assert max(len(batch.evidence_records) for batch in batches) == 40
+
+    class _EvidenceProvider:
+        async def collect(self, _run):
+            return {
+                "changed_entities": entities,
+                "candidate_pairs": pairs,
+                "evidence_records": evidence,
+                "source_generation_id": "source-1",
+                "observed_at": NOW,
+                "freshness": "current",
+                "coverage": "complete",
+            }
+
+    class _Curator:
+        def __init__(self) -> None:
+            self.counts: list[tuple[int, int, int]] = []
+
+        async def propose(self, _run, batch):
+            self.counts.append(
+                (
+                    len(batch["changed_entities"]),
+                    len(batch["candidate_pairs"]),
+                    len(batch["evidence_records"]),
+                )
+            )
+            return {
+                "batch_id": batch["batch_id"],
+                "status": "insufficient_evidence",
+                "proposals": [],
+                "missing_evidence": ["synthetic-e2e"],
+            }
+
+    run_store = OntologyRunStore(tmp_path / "bounded-run.json")
+    run_store.get_or_create_run(
+        connection_id="connection-bounds",
+        source_generation_id="source-1",
+        trigger="scheduled",
+        requested_by="scheduler",
+        now=NOW,
+    )
+    curator = _Curator()
+    result = asyncio.run(
+        OntologyDiscoveryCoordinator(
+            store=run_store,
+            processor=BoundedEvidenceProcessor(
+                store=run_store,
+                evidence_provider=_EvidenceProvider(),
+                curator=curator,
+                now=lambda: NOW,
+            ),
+            owner="bounded-writer",
+            now=lambda: NOW,
+        ).run_once(now=NOW, limit=1)
+    )
+    assert result["processed"] == 1
+    assert curator.counts
+    assert max(count[0] for count in curator.counts) == 50
+    assert max(count[1] for count in curator.counts) == 200
+    assert max(count[2] for count in curator.counts) == 40
 
 
 class _BudgetTransport:
