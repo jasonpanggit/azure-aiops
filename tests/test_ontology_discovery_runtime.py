@@ -305,3 +305,97 @@ def test_cli_main_uses_production_runtime_and_closes_it(monkeypatch, capsys):
     assert cli.main(["run-once", "--limit", "1", "--owner", "test-worker"]) == 0
     assert events == ["run:1", "closed"]
     assert capsys.readouterr().out == '{"processed": 1, "selected": 1}\n'
+
+
+def test_reconciliation_cadence_watermark_and_drift_survive_restart(tmp_path):
+    state_path = tmp_path / "state" / "runs.json"
+    store = OntologyRunStore(state_path)
+
+    mode = store.select_reconciliation_mode(
+        connection_id="connection-a",
+        now=NOW,
+        cadence_seconds=3600,
+    )
+    assert mode["selected_mode"] == "full"
+    assert mode["selection_reason"] == "first_run"
+
+    committed = store.commit_reconciliation(
+        connection_id="connection-a",
+        predecessor_watermark="",
+        committed_watermark="watermark-1",
+        full_graph={"entities": [{"resource_id": "a"}], "relationships": [], "pending": []},
+        incremental_graph={"entities": [{"resource_id": "a"}], "relationships": [], "pending": []},
+        dispatch_id="ODP-1",
+        now=NOW,
+    )
+    assert committed["result"]["drift_status"] == "in_sync"
+    assert committed["control"]["committed_watermark"] == "watermark-1"
+
+    reconstructed = OntologyRunStore(state_path)
+    mode = reconstructed.select_reconciliation_mode(
+        connection_id="connection-a",
+        now=NOW + timedelta(minutes=1),
+        cadence_seconds=3600,
+    )
+    assert mode["selected_mode"] == "incremental"
+
+    marked = reconstructed.mark_full_reconciliation_due(
+        connection_id="connection-a",
+        command_id="ODC-maintenance",
+        actor_hash="actor-hash",
+        reason="recover drift",
+        cadence_seconds=7200,
+        now=NOW + timedelta(minutes=2),
+    )
+    assert marked["force_full"] is True
+    due = OntologyRunStore(state_path).select_reconciliation_mode(
+        connection_id="connection-a",
+        now=NOW + timedelta(minutes=3),
+        cadence_seconds=3600,
+    )
+    assert due["selected_mode"] == "full"
+    assert due["selection_reason"] == "maintenance_requested"
+
+    repaired = OntologyRunStore(state_path).commit_reconciliation(
+        connection_id="connection-a",
+        predecessor_watermark="watermark-1",
+        committed_watermark="watermark-2",
+        full_graph={"entities": [{"resource_id": "authoritative"}], "relationships": [], "pending": []},
+        incremental_graph={"entities": [{"resource_id": "drift"}], "relationships": [], "pending": []},
+        dispatch_id="ODP-2",
+        now=NOW + timedelta(minutes=4),
+    )
+    assert repaired["result"]["drift_status"] == "drift_detected"
+    assert repaired["result"]["repair_authority"] == "full"
+    assert repaired["control"]["force_full"] is False
+
+    following = OntologyRunStore(state_path).select_reconciliation_mode(
+        connection_id="connection-a",
+        now=NOW + timedelta(minutes=5),
+        cadence_seconds=3600,
+    )
+    assert following["selected_mode"] == "incremental"
+
+
+def test_watermark_cannot_advance_before_durable_dispatch(tmp_path):
+    store = OntologyRunStore(tmp_path / "state.json")
+    store.select_reconciliation_mode(
+        connection_id="connection-a",
+        now=NOW,
+        cadence_seconds=3600,
+    )
+
+    with pytest.raises(ValueError, match="dispatch"):
+        store.commit_reconciliation(
+            connection_id="connection-a",
+            predecessor_watermark="",
+            committed_watermark="watermark-1",
+            full_graph={"entities": [], "relationships": [], "pending": []},
+            incremental_graph={"entities": [], "relationships": [], "pending": []},
+            dispatch_id="",
+            now=NOW,
+        )
+
+    assert store.get_reconciliation_control("connection-a")[
+        "committed_watermark"
+    ] == ""

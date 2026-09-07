@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 from datetime import UTC, datetime
 
 import pytest
@@ -20,12 +21,68 @@ from ontology_discovery.coordinator import (
 from ontology_discovery.incremental import (
     BatchRejectionReason,
     EvidenceBatchRejected,
+    canonical_graph_hash,
+    compare_graph_parity,
     classify_incremental,
+    normalize_graph_state,
     split_evidence_batches,
 )
 from ontology_discovery.store import OntologyRunStore
 
 OBSERVED_AT = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("seed", range(100))
+def test_deterministic_trials_survive_duplicates_reordering_and_restart(seed):
+    randomizer = random.Random(seed)
+    entities = [
+        {"resource_id": f"/subscriptions/s/resourceGroups/g/providers/T/vm-{index}"}
+        for index in range(8)
+    ]
+    relationships = [
+        {
+            "resource_id": f"relationship://{index}",
+            "subject_id": entities[index]["resource_id"],
+            "predicate": "member_of",
+            "object_id": entities[(index + 1) % len(entities)]["resource_id"],
+        }
+        for index in range(8)
+    ]
+    pending = [
+        {
+            "pending_id": "pending-1",
+            "subject_id": entities[0]["resource_id"],
+            "predicate": "routes_to",
+            "object_id": "/subscriptions/s/resourceGroups/g/providers/T/missing",
+        }
+    ]
+    expected = normalize_graph_state(
+        entities=entities,
+        relationships=relationships,
+        pending_relationships=pending,
+    )
+    duplicate_entities = [*entities, *randomizer.sample(entities, 3)]
+    duplicate_relationships = [
+        *relationships,
+        *randomizer.sample(relationships, 2),
+    ]
+    randomizer.shuffle(duplicate_entities)
+    randomizer.shuffle(duplicate_relationships)
+
+    recovered = normalize_graph_state(
+        entities=duplicate_entities,
+        relationships=duplicate_relationships,
+        pending_relationships=[*pending, *pending],
+    )
+    parity = compare_graph_parity(expected, recovered)
+
+    assert parity["status"] == "in_sync", (
+        f"seed={seed} scenario=duplicate-reordered mode=incremental "
+        f"checkpoint=parity"
+    )
+    assert canonical_graph_hash(expected) == canonical_graph_hash(recovered), (
+        f"seed={seed} scenario=restart-replay mode=full checkpoint=hash"
+    )
 
 
 def _resource(resource_id: str, **extra: object) -> dict[str, object]:
