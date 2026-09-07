@@ -438,12 +438,12 @@ resource "azurerm_container_app" "api" {
       # script updates these values when it creates a new revision.
       env {
         name  = "EXPOSURE_CURSOR_ACTIVE_KID"
-        value = "unprovisioned"
+        value = var.exposure_cursor_active_kid
       }
 
       env {
         name  = "EXPOSURE_CURSOR_PREVIOUS_KID"
-        value = "unprovisioned"
+        value = var.exposure_cursor_previous_kid
       }
 
       env {

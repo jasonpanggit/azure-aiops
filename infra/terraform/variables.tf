@@ -706,6 +706,23 @@ variable "alert_email_addresses" {
   default     = []
 }
 
+variable "existing_alert_action_group_id" {
+  description = "Optional existing Azure Monitor action-group resource ID. When set, alerts reuse it and Terraform does not create an email-backed action group."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.existing_alert_action_group_id == "" ||
+      can(regex(
+        "(?i)^/subscriptions/[0-9a-f-]{36}/resourcegroups/[^/]+/providers/microsoft\\.insights/actiongroups/[^/]+$",
+        var.existing_alert_action_group_id,
+      ))
+    )
+    error_message = "existing_alert_action_group_id must be empty or a complete Microsoft.Insights/actionGroups resource ID."
+  }
+}
+
 variable "alert_provider_stale_threshold_hours" {
   description = "Hours a required provider may stay stale before the freshness alert fires."
   type        = number
@@ -913,6 +930,45 @@ variable "exposure_rollback_generation_id" {
   description = "Retained prior generation selected by non-destructive rollback."
   type        = string
   default     = ""
+}
+
+variable "exposure_cursor_active_kid" {
+  description = "Non-secret identifier for the active Exposure cursor signing-key version."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.exposure_cursor_active_kid == "" ||
+      can(regex("^[0-9A-Za-z][0-9A-Za-z._-]{2,127}$", var.exposure_cursor_active_kid))
+    )
+    error_message = "exposure_cursor_active_kid must be empty or a 3-128 character non-secret identifier."
+  }
+}
+
+variable "exposure_cursor_previous_kid" {
+  description = "Non-secret identifier for the previous Exposure cursor signing-key version retained during overlap."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.exposure_cursor_previous_kid == "" ||
+      can(regex("^[0-9A-Za-z][0-9A-Za-z._-]{2,127}$", var.exposure_cursor_previous_kid))
+    )
+    error_message = "exposure_cursor_previous_kid must be empty or a 3-128 character non-secret identifier."
+  }
+}
+
+check "exposure_cursor_kids_distinct" {
+  assert {
+    condition = (
+      var.exposure_cursor_active_kid == "" ||
+      var.exposure_cursor_previous_kid == "" ||
+      var.exposure_cursor_active_kid != var.exposure_cursor_previous_kid
+    )
+    error_message = "Active and previous Exposure cursor kid values must be distinct."
+  }
 }
 
 variable "onboarded_subscriptions" {
