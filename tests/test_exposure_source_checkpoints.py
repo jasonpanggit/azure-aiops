@@ -312,6 +312,15 @@ def test_query_catalog_declares_semantic_families_independently_of_tables() -> N
     assert by_name["defender_assessments"].source_family == (
         "defender_recommendation"
     )
+    assert "monitor" not in by_name
+    assert (
+        "extend resourceId=tostring(properties.resourceDetails.Id)"
+        in by_name["defender"].query
+    )
+    assert (
+        "extend resourceId=tostring(properties.resourceId)"
+        in by_name["policy"].query
+    )
     assert by_name["defender_subassessments"].source_family == (
         "defender_subassessment"
     )
@@ -816,6 +825,32 @@ def test_network_topology_families_map_to_the_images_freshness_bucket() -> None:
     for family_name in NETWORK_RESOURCE_TYPES:
         assert freshness_source_family(family_name) == "images"
         assert SourceFreshnessThresholds().threshold_for(family_name) == 86400
+
+
+def test_other_hardcoded_source_families_map_to_a_governed_freshness_bucket() -> None:
+    """Regression: several call sites set an explicit ``source_family`` that
+    was never added to the governed Exposure buckets, so any sync or evidence
+    path touching them raised ``ValueError`` in ``freshness_source_family``
+    (e.g. the ``ingestion_service`` Log Analytics workspace discovery query,
+    which crashed with "Unknown Exposure freshness source family
+    'log_analytics_workspace_discovery'" right after the network-family fix
+    cleared the first crash). Cover every other hardcoded literal found via
+    ``grep -rn 'source_family=' src/`` so a future addition doesn't repeat
+    this crash-one-family-at-a-time pattern.
+    """
+
+    from fabric.config import SourceFreshnessThresholds, freshness_source_family
+
+    expected = {
+        "azure_resource": "images",
+        "log_analytics_workspace_discovery": "images",
+        "arg_activity_log": "workloads",
+    }
+    for family_name, bucket in expected.items():
+        assert freshness_source_family(family_name) == bucket
+        assert SourceFreshnessThresholds().threshold_for(family_name) == (
+            SourceFreshnessThresholds().to_dict()[bucket]
+        )
 
 
 def test_fabric_source_freshness_defaults_and_positive_overrides(tmp_path) -> None:
