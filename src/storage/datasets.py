@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import uuid
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -14,6 +15,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .fs import is_onelake_uri
+from .onelake_documents import (
+    DocumentConflictError,
+    OneLakeDocumentStore,
+)
 
 _VOLATILE_KEYS = {
     "createdTimestamp",
@@ -27,10 +32,179 @@ _VOLATILE_KEYS = {
 }
 
 _POINTER_NAME = "current.json"
+_COMPATIBILITY_ALIAS_VERSION = "ontology-generation-alias/v1"
 
 
 def _is_remote_root(root: object) -> bool:
     return is_onelake_uri(root)
+
+
+@dataclass(frozen=True)
+class GenerationPointer:
+    """Authoritative pointer metadata guarded by one storage ETag."""
+
+    active_generation: str
+    prior_generation: str | None
+    source_generation: str
+    owner_id: str
+    fence: int
+    compatibility_alias_version: str = _COMPATIBILITY_ALIAS_VERSION
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> GenerationPointer:
+        active = str(
+            payload.get("active_generation") or payload.get("generation") or ""
+        ).strip()
+        source = str(
+            payload.get("source_generation")
+            or payload.get("sourceGeneration")
+            or ""
+        ).strip()
+        owner = str(payload.get("owner_id") or "").strip()
+        fence = int(payload.get("fence") or 0)
+        if not active or not source or not owner or fence < 1:
+            raise ValueError("generation pointer is incomplete")
+        prior = str(
+            payload.get("prior_generation")
+            or payload.get("previous_generation")
+            or ""
+        ).strip()
+        alias_version = str(
+            payload.get("compatibility_alias_version")
+            or _COMPATIBILITY_ALIAS_VERSION
+        ).strip()
+        if alias_version != _COMPATIBILITY_ALIAS_VERSION:
+            raise ValueError("generation pointer compatibility alias is unsupported")
+        return cls(
+            active_generation=active,
+            prior_generation=prior or None,
+            source_generation=source,
+            owner_id=owner,
+            fence=fence,
+            compatibility_alias_version=alias_version,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        # ``generation`` and ``previous_generation`` are compatibility aliases
+        # consumed by the existing DatasetStore and GenerationResolver paths.
+        return {
+            "generation": self.active_generation,
+            "active_generation": self.active_generation,
+            "previous_generation": self.prior_generation,
+            "prior_generation": self.prior_generation,
+            "source_generation": self.source_generation,
+            "owner_id": self.owner_id,
+            "fence": self.fence,
+            "compatibility_alias_version": self.compatibility_alias_version,
+        }
+
+
+@dataclass(frozen=True)
+class GenerationPointerSnapshot:
+    pointer: GenerationPointer | None
+    etag: str | None
+
+
+@dataclass(frozen=True)
+class GenerationPointerConditions:
+    """Every predecessor fact a conditional pointer transition must match."""
+
+    etag: str | None
+    owner_id: str | None
+    fence: int
+    source_generation: str | None
+    active_generation: str | None
+
+    @classmethod
+    def initial(cls) -> GenerationPointerConditions:
+        return cls(
+            etag=None,
+            owner_id=None,
+            fence=0,
+            source_generation=None,
+            active_generation=None,
+        )
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: GenerationPointerSnapshot,
+    ) -> GenerationPointerConditions:
+        if snapshot.pointer is None:
+            return cls.initial()
+        return cls(
+            etag=snapshot.etag,
+            owner_id=snapshot.pointer.owner_id,
+            fence=snapshot.pointer.fence,
+            source_generation=snapshot.pointer.source_generation,
+            active_generation=snapshot.pointer.active_generation,
+        )
+
+
+class AuthoritativeDatasetPublisher:
+    """Publisher-identity-only access to consequential generation primitives."""
+
+    def __init__(
+        self,
+        store: DatasetStore,
+        documents: OneLakeDocumentStore,
+        *,
+        publisher_identity: str,
+    ) -> None:
+        self._store = store
+        self._documents = documents
+        self.publisher_identity = publisher_identity
+
+    def read_pointer(self) -> GenerationPointerSnapshot:
+        snapshot = self._documents.read_snapshot(_POINTER_NAME)
+        pointer = (
+            GenerationPointer.from_payload(snapshot.payload)
+            if snapshot.etag is not None
+            else None
+        )
+        return GenerationPointerSnapshot(pointer=pointer, etag=snapshot.etag)
+
+    def conditional_promote(
+        self,
+        *,
+        generation_id: str,
+        source_generation: str,
+        owner_id: str,
+        fence: int,
+        conditions: GenerationPointerConditions,
+    ) -> GenerationPointerSnapshot:
+        generation = _safe_generation_id(generation_id)
+        source = str(source_generation).strip()
+        owner = str(owner_id).strip()
+        if not source or not owner or fence < 1:
+            raise ValueError("source generation, owner, and positive fence are required")
+
+        current = self.read_pointer()
+        if not _pointer_matches(current, conditions):
+            raise DocumentConflictError(
+                "active pointer owner, fence, source, generation, or ETag changed"
+            )
+        if current.pointer is not None and fence <= current.pointer.fence:
+            raise DocumentConflictError("promotion fence is not monotonic")
+
+        pointer = GenerationPointer(
+            active_generation=generation,
+            prior_generation=(
+                current.pointer.active_generation if current.pointer else None
+            ),
+            source_generation=source,
+            owner_id=owner,
+            fence=fence,
+        )
+        if current.etag is None:
+            written = self._documents.create_only(_POINTER_NAME, pointer.to_payload())
+        else:
+            written = self._documents.replace_if_match(
+                _POINTER_NAME,
+                pointer.to_payload(),
+                expected_etag=current.etag,
+            )
+        return GenerationPointerSnapshot(pointer=pointer, etag=written.etag)
 
 
 class DatasetStore:
@@ -46,6 +220,7 @@ class DatasetStore:
 
     def __init__(self, root: Path | str, retain_raw_queries: bool = False) -> None:
         self.retain_raw_queries = retain_raw_queries
+        self._document_root = root
         self.is_remote = _is_remote_root(root)
         if self.is_remote:
             from .fs import resolve_fs
@@ -69,7 +244,26 @@ class DatasetStore:
         self.generations = self.root / "generations"
         _secure_mkdir(self.generations)
         self.current = self.root / "current"
+        self.pointer_path = self.root / _POINTER_NAME
         self.hash_path = self.root / "state" / "dataset_hashes.json"
+
+    def authoritative_publisher(
+        self,
+        *,
+        publisher_identity: str,
+        approved_publisher_identity: str,
+    ) -> AuthoritativeDatasetPublisher:
+        """Open ontology publication controls for the approved identity only."""
+
+        identity = str(publisher_identity).strip()
+        approved = str(approved_publisher_identity).strip()
+        if not identity or not approved or identity != approved:
+            raise PermissionError("only the approved publisher identity may publish")
+        return AuthoritativeDatasetPublisher(
+            self,
+            OneLakeDocumentStore(self._document_root),
+            publisher_identity=identity,
+        )
 
     def publish(
         self,
@@ -400,6 +594,36 @@ def _atomic_text(path: Path, content: str) -> None:
 def atomic_text(path: Path, content: str) -> None:
     """Write text atomically with restrictive file permissions."""
     _secure_text(Path(path), content)
+
+
+def _safe_generation_id(value: object) -> str:
+    text = str(value).strip()
+    path = PurePosixPath(text)
+    if (
+        not text
+        or path.is_absolute()
+        or len(path.parts) != 1
+        or path.name in {".", ".."}
+        or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for character in text)
+    ):
+        raise ValueError("generation ID must be one safe path segment")
+    return text
+
+
+def _pointer_matches(
+    snapshot: GenerationPointerSnapshot,
+    conditions: GenerationPointerConditions,
+) -> bool:
+    pointer = snapshot.pointer
+    if pointer is None:
+        return conditions == GenerationPointerConditions.initial()
+    return (
+        snapshot.etag == conditions.etag
+        and pointer.owner_id == conditions.owner_id
+        and pointer.fence == conditions.fence
+        and pointer.source_generation == conditions.source_generation
+        and pointer.active_generation == conditions.active_generation
+    )
 
 
 def _validate_dataset_names(datasets: dict[str, list[dict]]) -> None:

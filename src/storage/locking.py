@@ -6,14 +6,20 @@ every piece of runtime state in Fabric.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Self
 from urllib.parse import urlparse
 
 from storage.fs import is_onelake_uri
+from storage.onelake_documents import (
+    DocumentConflictError,
+    OneLakeDocumentStore,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,6 +28,71 @@ _LOGGER = logging.getLogger(__name__)
 # its release, and an infinite lease would then block ingestion permanently
 # with no way to recover short of manual intervention.
 LEASE_DURATION_SECONDS = 60
+
+
+class LeaseLostError(RuntimeError):
+    """Raised once a finite service lease can no longer be renewed."""
+
+
+@dataclass(frozen=True)
+class FenceToken:
+    """Monotonic token proving one writer is newer than its predecessors."""
+
+    scope: str
+    owner_id: str
+    value: int
+    etag: str
+
+
+class MonotonicFenceAllocator:
+    """Allocate per-scope fences through storage-service CAS."""
+
+    def __init__(
+        self,
+        documents: OneLakeDocumentStore,
+        *,
+        max_attempts: int = 16,
+    ) -> None:
+        self._documents = documents
+        self._max_attempts = max_attempts
+
+    def allocate(self, *, scope: str, owner_id: str) -> FenceToken:
+        normalized_scope = str(scope).strip().casefold()
+        normalized_owner = str(owner_id).strip()
+        if not normalized_scope or not normalized_owner:
+            raise ValueError("fence scope and owner_id are required")
+        key = hashlib.sha256(normalized_scope.encode()).hexdigest()
+        name = f"state/fences/{key}.json"
+        for _attempt in range(self._max_attempts):
+            snapshot = self._documents.read_snapshot(name)
+            value = int(snapshot.payload.get("fence") or 0) + 1
+            payload = {
+                "scope": normalized_scope,
+                "owner_id": normalized_owner,
+                "fence": value,
+            }
+            try:
+                if snapshot.etag is None:
+                    written = self._documents.create_only(name, payload)
+                else:
+                    written = self._documents.replace_if_match(
+                        name,
+                        payload,
+                        expected_etag=snapshot.etag,
+                    )
+            except DocumentConflictError:
+                continue
+            if written.etag is None:  # pragma: no cover - storage contract guard
+                raise RuntimeError("fence write returned no ETag")
+            return FenceToken(
+                scope=normalized_scope,
+                owner_id=normalized_owner,
+                value=value,
+                etag=written.etag,
+            )
+        raise DocumentConflictError(
+            f"Could not allocate a fence for {normalized_scope}; retry later"
+        )
 
 
 class RunLock:
@@ -55,6 +126,7 @@ class RunLock:
         self.is_remote = is_onelake_uri(root_str)
         self._service_client = service_client
         self._lease = None
+        self._lease_lost = False
         if self.is_remote:
             self.root = root_str.rstrip("/")
             self.path = f"{self.root}/{self.lock_document}"
@@ -108,11 +180,26 @@ class RunLock:
         except Exception as exc:
             raise self._busy() from exc
         self._lease = lease
+        self._lease_lost = False
 
     def renew(self) -> None:
         """Extend the lease. Long ingestions must call this periodically."""
         if self._lease is not None:
-            self._lease.renew()
+            try:
+                self._lease.renew()
+            except Exception as exc:
+                self._lease_lost = True
+                raise LeaseLostError(f"run lock lease lost for {self.root}") from exc
+
+    @property
+    def lease_lost(self) -> bool:
+        return self._lease_lost
+
+    def assert_held(self) -> None:
+        """Fail a consequential write after renewal reports lease loss."""
+
+        if self._lease_lost:
+            raise LeaseLostError(f"run lock lease lost for {self.root}")
 
     def __enter__(self) -> Self:
         if self.is_remote:
@@ -141,12 +228,17 @@ class RunLock:
     def __exit__(self, *_args) -> None:
         if self.is_remote:
             if self._lease is not None:
-                try:
-                    self._lease.release()
-                except Exception:
-                    # A release failure is not actionable: the lease expires
-                    # on its own, so the lock recovers either way.
-                    _LOGGER.debug("run_lock_release_failed root=%s", self.root, exc_info=True)
+                if not self._lease_lost:
+                    try:
+                        self._lease.release()
+                    except Exception:
+                        # A release failure is not actionable: the lease expires
+                        # on its own, so the lock recovers either way.
+                        _LOGGER.debug(
+                            "run_lock_release_failed root=%s",
+                            self.root,
+                            exc_info=True,
+                        )
                 self._lease = None
             return
         if self._handle is None:
