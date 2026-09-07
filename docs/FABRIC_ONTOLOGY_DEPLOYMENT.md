@@ -74,6 +74,12 @@ spans; no production endpoint, prompt, evidence/tool body, credential, raw
 resource metadata, tenant/subscription/resource identifier, or unauthorized ID
 may enter the trace store.
 
+Promptfoo is a development-only dependency. Its exact `0.122.2` lock currently
+reports nine transitive npm advisories (eight high, one moderate), while
+`npm audit --omit=dev` reports zero production vulnerabilities. Keep this gate
+synthetic-only and credential-free; do not add its dependency tree to a
+production image.
+
 In Fabric:
 
 1. Open the target workspace and confirm `Operational_Context_Graph` exists.

@@ -111,6 +111,14 @@ pydantic-ai/OpenAI dependency line cannot coexist with the Agent Framework
 OpenAI line. This preserves a single committed universal lock while making an
 accidental combined production/evaluation install fail explicitly.
 
+**Promptfoo audit note (2026-09-07):** The required exact Promptfoo `0.122.2`
+development tree reports nine npm advisories (eight high, one moderate) through
+transitive optional tooling such as Transformers, Codex Security, archive, and
+image packages. `npm audit --omit=dev` reports zero production vulnerabilities.
+The approved exact pin is retained, used only against checked-in synthetic data
+with telemetry/sharing disabled, and receives no production secrets or
+endpoints; changing the pin is outside this plan's locked decision.
+
 ## Current Manual Sync Trace
 
 1. The UI submits `"manual"` Sync, then polls health every 1.5 seconds and stops after 20 minutes. The literal values are `SYNC_POLL_INTERVAL_MS = 1_500` and `SYNC_POLL_TIMEOUT_MS = 20 * 60 * 1_000`. [VERIFIED: web/src/app/connections/page.tsx:18-32,70-94,131-151]
