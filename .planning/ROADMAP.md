@@ -830,12 +830,12 @@ Targeted review artifact (not a numbered executable plan):
 - [x] 13-13-PLAN.md — Approved `/connections` ontology automation and evaluation UI
 - [x] 13-14-PLAN.md — Pinned Promptfoo evaluation and sanitized self-hosted Phoenix trace inspection
 - [x] 13-15-PLAN.md — Exact alerts, durable shadow metrics, authoritative exclusion, and blocked release evidence
-- [ ] 13-16-PLAN.md — Production coordinator, durable full reconciliation, and corrected versioned Foundry bearer transport
-- [ ] 13-17-PLAN.md — Ordered publisher worker, publisher-bound Fabric credential, five-consumer checks, and automatic fenced rollback
-- [ ] 13-18-PLAN.md — Shared read-only API runtime and isolated enqueue-only manual-run/rollback command service
-- [ ] 13-19-PLAN.md — Command/state/publication identity topology, TDD infrastructure, and targeted immutable deployment
-- [ ] 13-20-PLAN.md — Deployed reconciliation, process replacement, curator injection, ordered publication, and rollback evidence
-- [ ] 13-21-PLAN.md — Dedicated live Playwright/API/RBAC audit and deployed-only final shadow report
+- [ ] 13-16-PLAN.md — Reauthorizing coordinator intake, dedicated publish-dispatch storage, durable full reconciliation, and corrected Foundry transport
+- [ ] 13-17-PLAN.md — Publish-dispatch consumer, reauthorizing rollback intake, publisher-bound Fabric credential, ordered publication, and fenced rollback
+- [ ] 13-18-PLAN.md — Three-root read-only API, guarded maintenance intake, and reconstructed manual/publish/rollback topology tests
+- [ ] 13-19-PLAN.md — API root deployment, command/dispatch/state/publication RBAC, exact worker identities, and immutable targeted rollout
+- [ ] 13-20-PLAN.md — Bounded live maintenance, full-then-incremental, real ARG fixture/inventory/curator, command topology, publication, rollback, and cleanup drill
+- [ ] 13-21-PLAN.md — Dedicated live Playwright/API/RBAC audit and deployed-only C-14/C-15/C-16 shadow closeout
 
 **Success Criteria** (what must be TRUE):
 
