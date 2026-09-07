@@ -142,7 +142,20 @@ variable "ontology_discovery_image_tag" {
     )
     error_message = "ontology_discovery_image_tag must be empty or a valid 1-128 character OCI/Docker tag."
   }
+}
 
+variable "ontology_discovery_image_digest" {
+  description = "Optional immutable aiops-api digest used only by Phase 13 Jobs; leaves the shared API/web/MCP images unchanged."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.ontology_discovery_image_digest == ""
+      || can(regex("^sha256:[0-9a-f]{64}$", var.ontology_discovery_image_digest))
+    )
+    error_message = "ontology_discovery_image_digest must be empty or an immutable sha256 digest."
+  }
 }
 
 variable "ontology_discovery_environment" {

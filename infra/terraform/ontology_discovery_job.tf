@@ -18,7 +18,7 @@ variable "ontology_discovery_schedule" {
 }
 
 locals {
-  ontology_discovery_image = var.api_image_digest != "" ? local.api_image : (var.ontology_discovery_image_tag != "" ? "${local.registry_server}/${var.api_image_repository}:${var.ontology_discovery_image_tag}" : local.api_image)
+  ontology_discovery_image = var.ontology_discovery_image_digest != "" ? "${local.registry_server}/${var.api_image_repository}@${var.ontology_discovery_image_digest}" : (var.api_image_digest != "" ? local.api_image : (var.ontology_discovery_image_tag != "" ? "${local.registry_server}/${var.api_image_repository}:${var.ontology_discovery_image_tag}" : local.api_image))
 
   ontology_connection_home            = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/connections" : "/tmp/aiops/connections"
   ontology_command_home               = var.enable_fabric ? "abfss://${fabric_workspace.ontology_command[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.ontology_command[0].id}/Files/aiops/ontology/commands" : "/tmp/aiops/ontology/commands"
