@@ -19,6 +19,8 @@ from .contracts import (
     EvidenceBatch,
 )
 
+_GRAPH_SECTIONS = ("entities", "relationships", "pending")
+
 
 class BatchRejectionReason(str, Enum):
     """Stable failure classes for inputs that cannot become safe batches."""
@@ -144,6 +146,77 @@ def classify_incremental(
     )
 
 
+def normalize_graph_state(
+    *,
+    entities: Iterable[Mapping[str, Any]],
+    relationships: Iterable[Mapping[str, Any]],
+    pending_relationships: Iterable[Mapping[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Canonicalize a graph so full rebuild and replay have one parity contract."""
+
+    return {
+        "entities": _canonical_records(entities, ("resource_id", "entity_id", "id")),
+        "relationships": _canonical_records(
+            relationships, ("resource_id", "relationship_id", "pair_id")
+        ),
+        "pending": _canonical_records(
+            pending_relationships, ("pending_id", "resource_id", "relationship_id")
+        ),
+    }
+
+
+def canonical_graph_hash(graph: Mapping[str, Any]) -> str:
+    """Hash a normalized graph independent of input order and duplicate delivery."""
+
+    normalized = normalize_graph_state(
+        entities=_graph_rows(graph, "entities"),
+        relationships=_graph_rows(graph, "relationships"),
+        pending_relationships=_graph_rows(graph, "pending"),
+    )
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def compare_graph_parity(
+    full_graph: Mapping[str, Any],
+    incremental_graph: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return opaque parity evidence; the full graph is always repair authority."""
+
+    normalized_full = normalize_graph_state(
+        entities=_graph_rows(full_graph, "entities"),
+        relationships=_graph_rows(full_graph, "relationships"),
+        pending_relationships=_graph_rows(full_graph, "pending"),
+    )
+    normalized_incremental = normalize_graph_state(
+        entities=_graph_rows(incremental_graph, "entities"),
+        relationships=_graph_rows(incremental_graph, "relationships"),
+        pending_relationships=_graph_rows(incremental_graph, "pending"),
+    )
+    full_hash = canonical_graph_hash(normalized_full)
+    incremental_hash = canonical_graph_hash(normalized_incremental)
+    counts = {
+        section: abs(
+            len(normalized_full[section]) - len(normalized_incremental[section])
+        )
+        for section in _GRAPH_SECTIONS
+    }
+    drift_count = sum(counts.values())
+    if full_hash != incremental_hash and drift_count == 0:
+        drift_count = 1
+    drift_hash = hashlib.sha256(
+        f"{full_hash}|{incremental_hash}|{drift_count}".encode()
+    ).hexdigest()
+    return {
+        "status": "in_sync" if full_hash == incremental_hash else "drift_detected",
+        "full_graph_hash": full_hash,
+        "incremental_graph_hash": incremental_hash,
+        "drift_count": drift_count,
+        "drift_hash": drift_hash,
+        "repair_authority": "full",
+    }
+
+
 def split_evidence_batches(
     *,
     changed_entities: Iterable[Mapping[str, Any]],
@@ -239,6 +312,49 @@ def _normalized_hashes(values: Mapping[str, str]) -> dict[str, str]:
             raise ValueError("row hash identifiers collide after normalization")
         normalized[resource_id] = value
     return normalized
+
+
+def _graph_rows(graph: Mapping[str, Any], section: str) -> list[Mapping[str, Any]]:
+    value = graph.get(section, ())
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(row, Mapping) for row in value
+    ):
+        raise TypeError(f"graph {section} must be a list of records")
+    return list(value)
+
+
+def _canonical_records(
+    values: Iterable[Mapping[str, Any]],
+    identity_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    for value in values:
+        record = copy.deepcopy(dict(value))
+        identity = next(
+            (
+                _identifier(record.get(field))
+                for field in identity_fields
+                if _identifier(record.get(field))
+            ),
+            "",
+        )
+        if not identity:
+            raise ValueError("canonical graph record has no stable identity")
+        for key in (
+            "resource_id",
+            "entity_id",
+            "relationship_id",
+            "pending_id",
+            "subject_id",
+            "object_id",
+        ):
+            if key in record:
+                record[key] = _identifier(record[key])
+        existing = records.get(identity)
+        if existing is not None and existing != record:
+            raise ValueError("canonical graph identity has conflicting content")
+        records[identity] = record
+    return [records[key] for key in sorted(records)]
 
 
 def _identifier(value: object) -> str:

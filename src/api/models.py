@@ -171,6 +171,37 @@ class SoftwareMappingPathDecisionRequest(ApiModel):
     reason: str = Field("", max_length=1024)
 
 
+class OntologyRunNowRequest(ApiModel):
+    """Request one idempotent durable manual discovery run."""
+
+    idempotency_key: str = Field(min_length=1, max_length=160)
+    reason: str = Field("", max_length=1024)
+
+
+class OntologyRunMutationRequest(ApiModel):
+    """CAS-protected retry or cancellation of one durable run."""
+
+    expected_revision: int = Field(ge=0)
+    reason: str = Field("", max_length=1024)
+    idempotency_key: str = Field("", max_length=160)
+
+
+class OntologyProposalReviewRequest(ApiModel):
+    """Record one steward decision against the observed review revision."""
+
+    action: Literal["accept", "reject", "reverse"]
+    expected_revision: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=1024)
+
+
+class OntologyRollbackRequest(ApiModel):
+    """Request publisher-owned rollback using the observed pointer ETag."""
+
+    expected_etag: str = Field(min_length=1, max_length=256)
+    reason: str = Field(min_length=1, max_length=1024)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+
+
 class ScopeModel(ApiModel):
     """Cross-subscription scope selector."""
 

@@ -7,7 +7,6 @@ same object graph through :func:`build_onboarding_service`.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
 from typing import Any
 
 from onboarding.config import ConnectorConfig
@@ -42,18 +41,11 @@ def build_onboarding_service(
 ) -> SubscriptionOnboardingService:
     """Build the onboarding service, wired for connection-scoped sync.
 
-    ``fabric_config_path``, when set, attaches a ``publish_factory`` to the
-    sync coordinator so that a successful connection sync is immediately
-    followed by the same merge + ontology + Fabric-publish step
-    ``aiops-inventory inventory-refresh`` runs from the CLI/cron path -- i.e. an
-    interactive "Sync" click on one connection produces Fabric tables for
-    that connection only.
-    Leaving it empty keeps this call ingestion-only (used by the CLI, and by
-    tests that don't want a Fabric publish attempted). ``config_path`` is the
-    on-disk connector config path used to re-load a fresh
-    :class:`ConnectorConfig` inside the refresh run (mirrors how the CLI and
-    `/inventory/refresh` invoke `run_inventory_refresh_all_connections`); it
-    is only required alongside `fabric_config_path`.
+    ``config_path`` and ``fabric_config_path`` remain accepted for call-site
+    compatibility, but this runtime no longer constructs an API-owned Fabric
+    publisher. Manual ontology refresh is durable intake only; the scheduled
+    coordinator dispatches through the separately authorized publisher.
+    Connection ingestion remains available through ``sync``/``sync_async``.
     """
     credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
     arg_factory = (
@@ -83,10 +75,6 @@ def build_onboarding_service(
         resolver=credential_resolver,
         secret_writer=secret_writer,
     )
-    if fabric_config_path:
-        coordinator.publish_factory = lambda connection: _InventoryRefreshRunner(
-            config_path, fabric_config_path, service, connection.connection_id
-        )
     return service
 
 
@@ -270,74 +258,6 @@ def connection_context(connection: SubscriptionConnection) -> dict[str, str]:
 
 def _slug(value: str) -> str:
     return "".join(char if char.isalnum() or char in "-_" else "-" for char in str(value)).strip("-")
-
-
-class _InventoryRefreshRunner:
-    """Adapts `run_inventory_refresh_all_connections` to the coordinator's
-    `publish_factory` contract (an object with a no-arg ``run()``).
-
-    A small class rather than a bare closure so the config paths are
-    captured once at service-build time; the underlying function re-reads
-    the connector config and registry itself on every call.
-    """
-
-    def __init__(
-        self,
-        config_path: str,
-        fabric_config_path: str,
-        service: SubscriptionOnboardingService,
-        connection_id: str,
-    ) -> None:
-        self._config_path = config_path
-        self._fabric_config_path = fabric_config_path
-        self._service = service
-        self._connection_id = connection_id
-
-    def run(
-        self,
-        progress_callback: Callable[[Any], None] | None = None,
-    ) -> dict[str, Any]:
-        from api.inventory_orchestration import (
-            run_inventory_refresh_all_connections,
-        )
-
-        inventory = run_inventory_refresh_all_connections(
-            self._config_path,
-            # Publish only after the ontology merge below has completed.
-            fabric_config_path="",
-            connection_id=self._connection_id,
-        )
-        if inventory.get("status") == "failed":
-            raise RuntimeError(
-                f"Inventory refresh failed for connection '{self._connection_id}'"
-            )
-
-        from fabric.config import FabricRuntimeConfig
-        from fabric.runtime import build_runtime
-        from onboarding.activation import publish_combined_snapshot
-
-        fabric_config = FabricRuntimeConfig.load(self._fabric_config_path)
-        combined = publish_combined_snapshot(
-            self._service,
-            [self._connection_id],
-            fabric_config.source_data_root,
-        )
-        if progress_callback is None:
-            publication = build_runtime(fabric_config).service.sync()
-        else:
-            publication = build_runtime(fabric_config).service.sync(
-                progress_callback=progress_callback
-            )
-        return {
-            "inventory": inventory,
-            "combined_snapshot": combined,
-            "fabric_publication": {
-                "run_id": publication.run_id,
-                "source_run_id": publication.source_run_id,
-                "status": publication.status,
-                "tables": list(publication.tables),
-            },
-        }
 
 
 __all__ = [

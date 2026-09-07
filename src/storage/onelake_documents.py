@@ -29,11 +29,13 @@ client avoids that fallback entirely.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -58,6 +60,54 @@ except ImportError:  # pragma: no cover - local-disk-only environments
 
 class DocumentConflictError(RuntimeError):
     """Raised when a concurrent writer advanced the revision mid-update."""
+
+
+@dataclass(frozen=True)
+class DocumentSnapshot:
+    """One JSON document read together with its storage concurrency token."""
+
+    payload: dict[str, Any]
+    etag: str | None
+
+    @property
+    def exists(self) -> bool:
+        return self.etag is not None
+
+
+def _document_body(payload: dict[str, Any]) -> bytes:
+    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _local_etag(body: bytes) -> str:
+    return f'"sha256:{hashlib.sha256(body).hexdigest()}"'
+
+
+def _create_remote_bytes(file_client: Any, body: bytes, *, name: str) -> str:
+    """Create one OneLake file without the SDK's unsupported upload shortcut.
+
+    On OneLake, ``upload_data(overwrite=False)`` creates the path and then
+    receives ``PathNotFound`` from its append request.  Explicit DFS
+    create/append/flush calls work and preserve create-only semantics through
+    ``If-None-Match: *``.
+    """
+
+    try:
+        created = file_client.create_file(if_none_match="*")
+    except (ResourceExistsError, ResourceModifiedError) as exc:
+        raise DocumentConflictError(f"Document {name} already exists") from exc
+    try:
+        file_client.append_data(body, offset=0, length=len(body))
+        flushed = file_client.flush_data(len(body))
+    except Exception:
+        # The guarded create belongs to this writer. Remove an incomplete file
+        # so a retry cannot mistake a zero-byte artifact for durable state.
+        with suppress(Exception):
+            file_client.delete_file()
+        raise
+    etag = str((flushed or {}).get("etag") or (created or {}).get("etag") or "")
+    if not etag:
+        etag = str(file_client.get_file_properties().etag)
+    return etag
 
 
 @contextmanager
@@ -157,6 +207,161 @@ class OneLakeDocumentStore:
         with self._lock:
             return self._read_locked(name, suppress_errors=False)
 
+    def read_snapshot(self, name: str) -> DocumentSnapshot:
+        """Read a JSON object and the exact ETag that guarded that read.
+
+        Unlike :meth:`read`, this consequential-write primitive fails closed
+        on malformed or unavailable content.  Remote reads pin the download to
+        the properties ETag, so callers never pair one payload with another
+        version's token.
+        """
+
+        with self._lock:
+            path = self._path(name)
+            if self.is_remote:
+                file_client = self._client().get_file_client(path)
+                try:
+                    properties = file_client.get_file_properties()
+                    etag = str(properties.etag)
+                    downloaded = file_client.download_file(
+                        etag=etag,
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                    body = downloaded.readall()
+                except ResourceNotFoundError:
+                    return DocumentSnapshot(payload={}, etag=None)
+                except ResourceModifiedError as exc:
+                    raise DocumentConflictError(
+                        f"Document {name} changed while it was read; reload and retry"
+                    ) from exc
+            else:
+                local_path = Path(path)
+                with _interprocess_lock(local_path):
+                    try:
+                        body = local_path.read_bytes()
+                    except FileNotFoundError:
+                        return DocumentSnapshot(payload={}, etag=None)
+                    etag = _local_etag(body)
+            try:
+                payload = json.loads(body)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"Document {name} contains invalid JSON") from exc
+            if not isinstance(payload, dict):
+                raise TypeError(f"Document {name} must contain a JSON object")
+            return DocumentSnapshot(payload=payload, etag=etag)
+
+    def create_only(
+        self,
+        name: str,
+        payload: dict[str, Any],
+    ) -> DocumentSnapshot:
+        """Create an immutable JSON record, failing if it already exists."""
+
+        body = _document_body(payload)
+        etag = self._create_bytes_only(name, body)
+        return DocumentSnapshot(payload=dict(payload), etag=etag)
+
+    def create_text_only(self, name: str, content: str) -> str:
+        """Create immutable UTF-8 text and return its service concurrency token."""
+
+        if not isinstance(content, str):
+            raise TypeError("immutable text content must be a string")
+        return self._create_bytes_only(name, content.encode("utf-8"))
+
+    def _create_bytes_only(self, name: str, body: bytes) -> str:
+        with self._lock:
+            path = self._path(name)
+            if self.is_remote:
+                file_client = self._client().get_file_client(path)
+                etag = _create_remote_bytes(file_client, body, name=name)
+            else:
+                local_path = Path(path)
+                with _interprocess_lock(local_path):
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        descriptor = os.open(
+                            local_path,
+                            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                            0o600,
+                        )
+                    except FileExistsError as exc:
+                        raise DocumentConflictError(
+                            f"Document {name} already exists"
+                        ) from exc
+                    with os.fdopen(descriptor, "wb") as handle:
+                        handle.write(body)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    etag = _local_etag(body)
+        return etag
+
+    def replace_if_match(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        expected_etag: str | None,
+    ) -> DocumentSnapshot:
+        """Replace a document only when storage still has ``expected_etag``."""
+
+        if not expected_etag:
+            raise DocumentConflictError(
+                f"Document {name} has no predecessor ETag; use create_only"
+            )
+        body = _document_body(payload)
+        with self._lock:
+            path = self._path(name)
+            if self.is_remote:
+                file_client = self._client().get_file_client(path)
+                try:
+                    result = file_client.upload_data(
+                        body,
+                        overwrite=True,
+                        length=len(body),
+                        etag=expected_etag,
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                except (ResourceNotFoundError, ResourceModifiedError) as exc:
+                    raise DocumentConflictError(
+                        f"Document {name} ETag changed; reload and retry"
+                    ) from exc
+                etag = str((result or {}).get("etag") or "")
+                if not etag:
+                    etag = str(file_client.get_file_properties().etag)
+            else:
+                local_path = Path(path)
+                with _interprocess_lock(local_path):
+                    try:
+                        current_body = local_path.read_bytes()
+                    except FileNotFoundError as exc:
+                        raise DocumentConflictError(
+                            f"Document {name} ETag changed; reload and retry"
+                        ) from exc
+                    if _local_etag(current_body) != expected_etag:
+                        raise DocumentConflictError(
+                            f"Document {name} ETag changed; reload and retry"
+                        )
+                    temporary_path = ""
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb",
+                            dir=local_path.parent,
+                            prefix=f".{local_path.name}.",
+                            suffix=".tmp",
+                            delete=False,
+                        ) as temporary:
+                            temporary.write(body)
+                            temporary.flush()
+                            os.fsync(temporary.fileno())
+                            temporary_path = temporary.name
+                        os.chmod(temporary_path, 0o600)
+                        os.replace(temporary_path, local_path)
+                    finally:
+                        if temporary_path:
+                            Path(temporary_path).unlink(missing_ok=True)
+                    etag = _local_etag(body)
+        return DocumentSnapshot(payload=dict(payload), etag=etag)
+
     def _read_locked(
         self,
         name: str,
@@ -238,11 +443,7 @@ class OneLakeDocumentStore:
                             match_condition=MatchConditions.IfNotModified,
                         )
                     else:
-                        file_client.upload_data(
-                            data,
-                            overwrite=False,
-                            length=len(data),
-                        )
+                        _create_remote_bytes(file_client, data, name=name)
                 except (ResourceExistsError, ResourceModifiedError) as exc:
                     raise DocumentConflictError(
                         f"Document {name} changed during update; reload and retry"
@@ -410,4 +611,8 @@ class OneLakeDocumentStore:
             return
 
 
-__all__ = ["DocumentConflictError", "OneLakeDocumentStore"]
+__all__ = [
+    "DocumentConflictError",
+    "DocumentSnapshot",
+    "OneLakeDocumentStore",
+]

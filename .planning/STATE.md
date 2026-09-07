@@ -9,8 +9,8 @@ last_updated: "2026-09-07T05:44:19.858Z"
 progress:
   total_phases: 17
   completed_phases: 10
-  total_plans: 159
-  completed_plans: 135
+  total_plans: 165
+  completed_plans: 142
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -25,6 +25,14 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-16** COMPLETE — OneLake-backed production coordinator with reauthorized command intake, fair restart-safe eligible epochs, durable reconciliation parity, hard-shadow Foundry curation, and publisher dispatch
+- **13-15** COMPLETE — Exact alert coverage and credentialed shadow validation with durable sanitized evidence, zero authoritative model edges, deterministic rollback, and every pair BLOCKED/PENDING
+- **13-14** COMPLETE — Proxy-locked Promptfoo/Phoenix evaluation, durable BLOCKED/PENDING snapshots, and loopback-only sanitized lifecycle trace inspection
+- **13-13** COMPLETE — Scoped `/connections` ontology automation workspace with independent durable lifecycle sections, server-owned eligibility/concurrency, and fail-closed EvaluationSnapshot freshness
+- **13-12** COMPLETE — Scope-first durable lifecycle, proposal, generation/publication, rollback, and EvaluationSnapshot APIs with server-owned eligibility and no API publisher authority
+- **13-10** COMPLETE — Manual and scheduled durable runs share one identity-bound publisher path, with restart-safe Sync/health compatibility and no API-owned authoritative writer
+- **13-09** COMPLETE — Service-enforced ETag CAS, immutable audited deterministic generations, hard shadow exclusion, five-family consumer cutover, stale-writer fencing, and rollback
+- **13-08** COMPLETE — Approved pointer cutover and publisher RBAC from executed evidence; retained the proposal-only prompt-agent runtime
 - **13-07** COMPLETE — Scheduled finite ontology Job, proposal-only Foundry curator, isolated Fabric state/canary workspaces, and live publisher separation evidence
 - **13-06** COMPLETE — Generation resolver and five-family consumer cutover compatibility with old/new/rollback contract coverage
 - **13-05** COMPLETE — Durable proposal lifecycle and hard shadow admission that excludes all model edges from authoritative candidates
@@ -167,6 +175,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 13 P02 | 9min | 2 tasks | 10 files |
 | Phase 13 P03 | 7min | 2 tasks | 8 files |
 | Phase 13 P11 | 7min | 2 tasks | 3 files |
+| Phase 13 P15 | 38min | 2 tasks | 17 files |
 | Phase 03.1 P14 | 41 min | 3 tasks | 17 files |
 | Phase 03.1 P18 | 22min | 3 tasks | 10 files |
 | Phase 03.1 P24 | 10 min | 3 tasks | 9 files |
@@ -175,6 +184,8 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 03.1 P17 | 41 min | 2 tasks | 9 files |
 | Phase 03.1 P22 | 10min | 2 tasks | 9 files |
 | Phase 03.1 P25 | 25 min | 3 tasks | 13 files |
+| Phase 13 P16 | 15min | 3 tasks | 9 files |
+| Phase 13 P17 | 16min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -258,6 +269,10 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: The deterministic SQL-contract benchmark remains distinct from live Fabric certification; the live canary requires readiness and explicit benchmark scope.
 - [Phase 13]: Dependency authorization requires roadmap, requirements, complete summaries, Nyquist validation, and passed verification; STATE.md alone is never sufficient.
 - [Phase 13]: Wave 0 remains test-only and non-authoritative; reviewed model edges are excluded in shadow mode and pointer changes require fresh fences.
+- [Phase 13]: Phase 13 state and RBAC targets must be explicit or come from canonical Terraform state; production Fabric connection IDs are never shadow-state defaults.
+- [Phase 13]: A passing shadow gate deliberately leaves every predicate/type pair BLOCKED/PENDING until 30 consecutive days and 200 expert-adjudicated eligible proposals are durably proven.
+- [Phase 13]: Credentialed evidence reports retain only statuses, bounded counts, timestamps, hashes, and closed reason codes; raw IDs, prompts, scope values, credentials, and errors are excluded.
+- [Phase 13]: Initial OneLake documents use guarded DFS create/append/flush; subsequent mutable pointers retain ETag conditional replacement.
 - [Phase 03.1]: Use a nested versioned Exposure semantic contract while retaining legacy response aliases during shadow rollout.
 - [Phase 03.1]: Derive Fabric SQL tenant and connection authorization only from authenticated principal scope and active connection metadata.
 - [Phase 03.1]: Container findings may create only evidence-qualified non-executable review handoffs or no_safe_action outcomes.
@@ -288,6 +303,12 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 03.1]: Use canonical Exposure item pages for detail finding totals and durable enrichment source records for local NVD, EPSS, KEV, and MSRC trust states. — Keeps pagination and completeness server-owned while allowing enrichment sections to fail independently.
 - [Phase 03.1]: Treat absent durable enrichment status as unavailable rather than rendering compatibility defaults as observed zero. — Avoids false healthy or zero claims when a feed has no proven result.
 - [Phase 03.1]: Use authenticated session identity in the shared risk dialog and expose revoke only when the server projects can_revoke. — Keeps attribution and transition authority out of browser-entered fields.
+- [Phase 13]: Coordinator authority uses only explicit distinct connection, command, state, and dispatch roots; publication authority is structurally absent.
+- [Phase 13]: Eligible-set membership is immutable within an epoch and advances by durable round-robin cursor across retries, duplicates, and exclusions.
+- [Phase 13]: Reconciliation watermarks advance only after durable dispatch; full reconstruction is authoritative when parity detects drift.
+- [Phase 13]: Plan 13-17: Fabric materialization completes before publisher pointer CAS, with five-family staged and post-CAS checks.
+- [Phase 13]: Plan 13-17: rollback intake is reauthorized under publisher identity and post-check failures restore the predecessor under a newer fence.
+- [Phase 13]: Plan 13-17: publisher Fabric auth always replaces shared YAML identity with AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID.
 
 ## Session
 

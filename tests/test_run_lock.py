@@ -18,7 +18,13 @@ from typing import ClassVar
 
 import pytest
 
-from storage.locking import LEASE_DURATION_SECONDS, RunLock
+from storage.locking import (
+    LEASE_DURATION_SECONDS,
+    LeaseLostError,
+    MonotonicFenceAllocator,
+    RunLock,
+)
+from storage.onelake_documents import OneLakeDocumentStore
 
 ROOT = "abfss://ws-aiops@onelake.dfs.fabric.microsoft.com/lakehouse/Files/aiops"
 
@@ -153,3 +159,48 @@ def test_renew_is_a_no_op_for_local_roots(tmp_path):
 def test_unusable_onelake_roots_are_rejected(root):
     with pytest.raises(ValueError), RunLock(root, service_client=_FakeService()):
         pass
+
+
+def test_failed_renewal_marks_finite_lease_lost_and_does_not_release_peer():
+    service = _FakeService()
+    lock = RunLock(ROOT, service_client=service)
+    lock.__enter__()
+    lease = lock._lease
+    releases: list[str] = []
+
+    def fail_renew():
+        raise RuntimeError("LeaseLost")
+
+    def record_release():
+        releases.append("released")
+
+    lease.renew = fail_renew
+    lease.release = record_release
+
+    with pytest.raises(LeaseLostError, match="lease lost"):
+        lock.renew()
+    assert lock.lease_lost is True
+    with pytest.raises(LeaseLostError, match="lease lost"):
+        lock.assert_held()
+
+    lock.__exit__(None, None, None)
+    assert releases == []
+
+
+def test_fence_allocation_is_monotonic_across_allocator_instances(tmp_path):
+    documents = OneLakeDocumentStore(tmp_path)
+
+    first = MonotonicFenceAllocator(documents).allocate(
+        scope="tenant-1/subscription-1",
+        owner_id="writer-1",
+    )
+    second = MonotonicFenceAllocator(
+        OneLakeDocumentStore(tmp_path)
+    ).allocate(
+        scope="tenant-1/subscription-1",
+        owner_id="writer-2",
+    )
+
+    assert first.value == 1
+    assert second.value == 2
+    assert second.owner_id == "writer-2"

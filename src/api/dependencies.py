@@ -83,6 +83,9 @@ class ApiContext:
     # projections of the same ontology snapshot, so they follow the per-request
     # resolution rule above rather than being pinned at startup.
     governance_provider: Callable[[], Any] | None = None
+    # Request-scoped governance reader for a selected connection. It captures
+    # one immutable ontology generation before reading any export rows.
+    governance_generation_provider: Callable[[Scope], Any] | None = None
     # Enterprise settings are a user-submitted mutation rather than a snapshot
     # projection, so like risk exceptions they use a direct store handle.
     settings_store: Any | None = None
@@ -136,6 +139,9 @@ class ApiContext:
     # context built without this provider simply never starts that thread
     # (mirrors provider_runtime's own optional-thread-start guard).
     verification_coordinator_provider: Callable[[], Any] | None = None
+    # Scope-enforced durable ontology lifecycle facade. The API-facing value
+    # intentionally has no DatasetStore publisher adapter or credential.
+    ontology_discovery_provider: Callable[[], Any] | None = None
 
     def resolve_provider(self, name: str, *, optional: bool = False) -> Any:
         """Resolve a provider through the managed runtime or legacy callable."""

@@ -1383,6 +1383,284 @@ export interface SubscriptionConnection {
   dataset_root?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Ontology automation (src/api/routers/ontology_discovery.py)
+// ---------------------------------------------------------------------------
+
+export type OntologyRunStatus =
+  | "queued"
+  | "running"
+  | "retrying"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export type OntologyProposalReviewStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "superseded"
+  | "auto_accepted"
+  | "blocked";
+
+export type OntologyGenerationStatus =
+  | "unavailable"
+  | "staged"
+  | "valid"
+  | "active"
+  | "rejected"
+  | "rolled_back"
+  | "superseded";
+
+export type OntologyEvaluationStatus = "fresh" | "stale" | "missing" | "invalid";
+export type OntologyAgentMode = "shadow" | "allowlisted";
+
+export interface OntologyCheckpointPayload {
+  generation_id?: string | null;
+  active_generation?: string | null;
+  source_generation?: string | null;
+  pointer_etag?: string | null;
+  fabric_run_id?: string | null;
+  fabric_status?: string | null;
+  proposal_count?: number | null;
+  accepted_count?: number | null;
+  published_count?: number | null;
+}
+
+export interface OntologyRun {
+  run_id: string;
+  connection_id: string;
+  source_generation_id: string | null;
+  trigger: string;
+  status: OntologyRunStatus;
+  revision: number;
+  attempt_count: number;
+  max_attempts: number;
+  created_at: string;
+  updated_at: string;
+  deadline_at: string | null;
+  next_attempt_at: string | null;
+  lease_expires_at: string | null;
+  fencing_token: number | null;
+  cancel_requested: boolean;
+  checkpoint: {
+    name: string;
+    payload: OntologyCheckpointPayload;
+  };
+  failure_class: string | null;
+  message: string;
+  can_cancel: boolean;
+  can_retry: boolean;
+  disabled_reasons: {
+    cancel: string;
+    retry: string;
+  };
+}
+
+export interface OntologyPendingRelationship {
+  pending_id: string;
+  subject_id: string;
+  predicate: string;
+  object_id: string;
+  missing_endpoint_ids: string[];
+  attempts: number;
+  freshness: string;
+  terminal_state: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OntologyProposalReviewEvent {
+  revision: number;
+  action: string;
+  status: OntologyProposalReviewStatus;
+  reason: string;
+  recorded_at: string;
+}
+
+export interface OntologyProposalReview {
+  proposal_id: string;
+  status: OntologyProposalReviewStatus;
+  revision: number;
+  events: OntologyProposalReviewEvent[];
+}
+
+export interface OntologyProposal {
+  proposal_id: string;
+  proposal: {
+    subject_id?: string;
+    subject_type?: string;
+    predicate?: string;
+    object_id?: string;
+    object_type?: string;
+    rationale?: string;
+    confidence?: number;
+    freshness?: string;
+  };
+  source_generation_id: string;
+  schema_version: string;
+  policy_version: string;
+  supersedes_proposal_id: string;
+  created_at: string;
+  review: OntologyProposalReview;
+}
+
+export interface OntologyGeneration {
+  status: OntologyGenerationStatus;
+  active_generation: string;
+  prior_generation: string;
+  source_generation: string;
+  pointer_etag: string;
+  fence: number;
+  complete: boolean;
+  validation: {
+    passed: boolean;
+    errors: string[];
+    model_derived_relationships: number;
+  };
+  compatibility: {
+    all_consumers_compatible: boolean;
+  };
+  publication: {
+    intent: string;
+    result: string;
+  };
+  can_rollback: boolean;
+  rollback_disabled_reason: string;
+}
+
+export interface OntologyEvaluationLineage {
+  dataset_version: string;
+  dataset_hash: string;
+  prompt_version: string;
+  prompt_hash: string;
+  schema_version: string;
+  schema_hash: string;
+  model_version: string;
+  model_hash: string;
+  agent_version: string;
+  agent_hash: string;
+  policy_version: string;
+  policy_hash: string;
+}
+
+export interface OntologyEvaluationSourceExpiry {
+  source: string;
+  observed_at: string;
+  expires_at: string;
+}
+
+export interface OntologyEvaluationSliceMetric {
+  metric: string;
+  slice_key: string;
+  numerator: number;
+  denominator: number;
+  value: number;
+  critical: boolean;
+}
+
+export interface OntologyEvaluationThreshold {
+  metric: string;
+  slice_key: string;
+  minimum: number;
+  critical: boolean;
+}
+
+export interface OntologyEvaluationArtifactReference {
+  kind: "dataset" | "report" | "trace" | "manifest";
+  reference: string;
+  sha256: string;
+}
+
+export interface OntologyEvaluationSnapshot {
+  contract_version: "1.0.0";
+  snapshot_id: string;
+  scope_key: string;
+  scope_hash: string;
+  observed_at: string;
+  evaluated_at: string;
+  expires_at: string;
+  lineage: OntologyEvaluationLineage;
+  source_expiries: OntologyEvaluationSourceExpiry[];
+  slice_metrics: OntologyEvaluationSliceMetric[];
+  thresholds: OntologyEvaluationThreshold[];
+  critical_failures: string[];
+  release_eligible: boolean;
+  artifact_references: OntologyEvaluationArtifactReference[];
+}
+
+export interface OntologyEvaluation {
+  status: OntologyEvaluationStatus;
+  reason: string;
+  pointer_revision: number | null;
+  snapshot: OntologyEvaluationSnapshot | null;
+  release_eligible: boolean;
+  release_disabled_reason: string;
+  agent_mode?: OntologyAgentMode;
+  agent_status?: "available" | "degraded" | "unavailable";
+}
+
+export interface OntologySchedulerStatus {
+  owner: "external_job";
+  api_owned: false;
+  state: string;
+  can_run_now: boolean;
+  run_now_disabled_reason: string;
+  enabled?: boolean;
+  cadence?: string;
+  next_due_at?: string | null;
+  last_trigger_at?: string | null;
+}
+
+export interface OntologyIncrementalStatus {
+  checkpoint: string;
+  pending_relationships: OntologyPendingRelationship[];
+  pending_count: number;
+  added_count?: number;
+  changed_count?: number;
+  retired_count?: number;
+  unresolved_count?: number;
+  stale_count?: number;
+  last_reconciliation_at?: string | null;
+  last_reconciliation_result?: string;
+}
+
+export interface OntologyAutomationStatus {
+  scheduler: OntologySchedulerStatus;
+  current_run: OntologyRun | null;
+  incremental: OntologyIncrementalStatus;
+  proposals: {
+    pending_count: number;
+    total: number;
+  };
+  generation: OntologyGeneration;
+  evaluation: OntologyEvaluation;
+}
+
+export interface OntologyRunNowRequest {
+  idempotency_key: string;
+  reason: string;
+}
+
+export interface OntologyRunMutationRequest {
+  expected_revision: number;
+  reason: string;
+  idempotency_key?: string;
+}
+
+export interface OntologyProposalReviewRequest {
+  action: "accept" | "reject" | "reverse";
+  expected_revision: number;
+  reason: string;
+}
+
+export interface OntologyRollbackRequest {
+  expected_etag: string;
+  reason: string;
+  idempotency_key: string;
+}
+
 export interface ConnectionHealthDetail {
   connection_id: string;
   status: ConnectionHealthStatus;

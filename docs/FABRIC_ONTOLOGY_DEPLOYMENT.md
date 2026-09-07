@@ -46,6 +46,40 @@ uv run aiops-inventory fabric "Show ontology health" --config /secure/fabric.con
 uv run aiops-inventory ontology "Find resources with missing ownership" --config /secure/fabric.config.yaml
 ```
 
+### Optional local evaluation and trace inspection
+
+The evaluation stack is not installed with production dependencies. The
+production `api` and local `eval` extras are intentionally mutually exclusive
+because their OpenAI dependency lines differ. Select the locked `eval` extra
+explicitly and use the approved Microsoft package proxy:
+
+```bash
+UV_INDEX_URL=https://packagefeedproxy.microsoft.io/pypi/simple \
+  uv sync --extra eval --locked
+npm ci --prefix evals/ontology-discovery
+export PATH="$PWD/evals/ontology-discovery/node_modules/.bin:$PATH"
+export PROMPTFOO_DISABLE_TELEMETRY=1
+promptfoo eval -c evals/ontology-discovery/promptfooconfig.yaml --no-cache
+uv run --extra eval python scripts/inspect_ontology_traces.py \
+  --launch-local \
+  --dataset tests/fixtures/ontology_discovery/reference.jsonl \
+  --fail-on-redaction
+```
+
+The lock uses `arize-phoenix==20.4.0`, the newest Phoenix release mirrored by
+the trusted proxy as of 2026-09-07. Canonical PyPI confirms `20.7.0`, but this
+environment cannot reach its `files.pythonhosted.org` artifacts. Phoenix is
+still self-hosted, loopback-only, and receives only sanitized synthetic replay
+spans; no production endpoint, prompt, evidence/tool body, credential, raw
+resource metadata, tenant/subscription/resource identifier, or unauthorized ID
+may enter the trace store.
+
+Promptfoo is a development-only dependency. Its exact `0.122.2` lock currently
+reports nine transitive npm advisories (eight high, one moderate), while
+`npm audit --omit=dev` reports zero production vulnerabilities. Keep this gate
+synthetic-only and credential-free; do not add its dependency tree to a
+production image.
+
 In Fabric:
 
 1. Open the target workspace and confirm `Operational_Context_Graph` exists.

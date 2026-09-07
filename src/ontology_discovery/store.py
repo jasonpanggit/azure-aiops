@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from storage.locking import RunLock
+from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
 RUN_QUEUED = "queued"
 RUN_RUNNING = "running"
@@ -98,7 +99,7 @@ class PairReleaseConflict(RuntimeError):
 class OntologyRunStore:
     """Versioned run records with deterministic identity and fenced ownership."""
 
-    SCHEMA_VERSION = "1.2.0"
+    SCHEMA_VERSION = "1.3.0"
 
     def __init__(
         self,
@@ -110,6 +111,8 @@ class OntologyRunStore:
         retry_max_seconds: int = 300,
         default_deadline_seconds: int = 1800,
         allow_pair_release_testing: bool = False,
+        document_store: OneLakeDocumentStore | None = None,
+        document_name: str = "ontology/coordinator-state.json",
     ) -> None:
         for name, value in {
             "max_runs": max_runs,
@@ -121,6 +124,10 @@ class OntologyRunStore:
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
         self.path = Path(path)
+        self._documents = document_store
+        self._document_name = str(document_name or "").strip()
+        if self._documents is not None and not self._document_name:
+            raise ValueError("document_name must not be empty")
         self.max_runs = max_runs
         self.max_attempts = max_attempts
         self.retry_base_seconds = retry_base_seconds
@@ -217,6 +224,58 @@ class OntologyRunStore:
             None,
         )
 
+    def latest_for_connection(
+        self, connection_id: str
+    ) -> dict[str, Any] | None:
+        """Return the newest durable run for compatibility read projections."""
+
+        connection = _required(connection_id, "connection_id").casefold()
+        with self._lock:
+            rows = [
+                row
+                for row in self._read_state()["runs"]
+                if row["connection_id"] == connection
+            ]
+        if not rows:
+            return None
+        latest = max(
+            rows,
+            key=lambda row: (
+                str(row.get("updated_at") or ""),
+                str(row.get("created_at") or ""),
+                int(row.get("revision") or 0),
+                str(row.get("run_id") or ""),
+            ),
+        )
+        return copy.deepcopy(latest)
+
+    def list_runs(self, *, connection_id: str | None = None) -> list[dict[str, Any]]:
+        """Return newest-first durable runs, optionally for one connection."""
+
+        connection = (
+            _required(connection_id, "connection_id").casefold()
+            if connection_id is not None
+            else None
+        )
+        with self._lock:
+            rows = self._read_state()["runs"]
+        selected = (
+            rows
+            if connection is None
+            else [row for row in rows if row["connection_id"] == connection]
+        )
+        return copy.deepcopy(
+            sorted(
+                selected,
+                key=lambda row: (
+                    str(row.get("updated_at") or ""),
+                    str(row.get("created_at") or ""),
+                    str(row.get("run_id") or ""),
+                ),
+                reverse=True,
+            )
+        )
+
     def save_proposal(
         self,
         *,
@@ -286,6 +345,45 @@ class OntologyRunStore:
             ),
             None,
         )
+
+    def list_proposals(self, *, scope: str | None = None) -> list[dict[str, Any]]:
+        """Return immutable proposals with their current durable review."""
+
+        normalized_scope = str(scope or "").strip().casefold()
+        with self._lock:
+            state = self._read_state()
+        reviews = {
+            row["proposal_id"]: row for row in state["proposal_reviews"]
+        }
+        rows = [
+            row
+            for row in state["proposals"]
+            if not normalized_scope
+            or str(row.get("scope") or "").casefold() == normalized_scope
+        ]
+        result = []
+        for row in sorted(
+            rows,
+            key=lambda item: (
+                str(item.get("created_at") or ""),
+                str(item.get("proposal_id") or ""),
+            ),
+            reverse=True,
+        ):
+            proposal = copy.deepcopy(row)
+            proposal["review"] = copy.deepcopy(
+                reviews.get(
+                    row["proposal_id"],
+                    {
+                        "proposal_id": row["proposal_id"],
+                        "status": "pending",
+                        "revision": 0,
+                        "events": [],
+                    },
+                )
+            )
+            result.append(proposal)
+        return result
 
     def get_review(self, proposal_id: str) -> dict[str, Any]:
         with self._lock:
@@ -592,6 +690,414 @@ class OntologyRunStore:
             )
         )
         return copy.deepcopy(due[:limit])
+
+    def ensure_eligible_epoch(
+        self,
+        *,
+        member_ids: list[str],
+        registry_revision: int,
+        registry_hash: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Create one immutable eligible-set snapshot or return the active epoch."""
+
+        moment = _aware(now)
+        normalized = sorted(
+            {
+                _required(value, "connection_id").casefold()
+                for value in member_ids
+            }
+        )
+        identity_payload = json.dumps(
+            {
+                "members": normalized,
+                "registry_revision": int(registry_revision),
+                "registry_hash": _required(registry_hash, "registry_hash"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        epoch_id = "ODE-" + hashlib.sha256(
+            identity_payload.encode()
+        ).hexdigest()[:20].upper()
+        with self._claim_lock():
+            state = self._read_state()
+            active = next(
+                (
+                    row
+                    for row in state["eligible_epochs"]
+                    if row["status"] == "active"
+                ),
+                None,
+            )
+            if active is not None:
+                return copy.deepcopy(active)
+            record = {
+                "epoch_id": epoch_id,
+                "registry_revision": int(registry_revision),
+                "registry_hash": registry_hash,
+                "member_order": normalized,
+                "cursor": 0,
+                "status": "active" if normalized else "drained",
+                "revision": 0,
+                "created_at": moment.isoformat(),
+                "updated_at": moment.isoformat(),
+                "members": {
+                    connection_id: {
+                        "connection_id": connection_id,
+                        "outcome": "pending",
+                        "reason_code": "",
+                        "attempt_count": 0,
+                        "next_attempt_at": moment.isoformat(),
+                        "updated_at": moment.isoformat(),
+                    }
+                    for connection_id in normalized
+                },
+            }
+            state["eligible_epochs"].append(record)
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(record)
+
+    def claim_next_epoch_member(
+        self,
+        epoch_id: str,
+        *,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        """Advance the durable cursor and return one due non-terminal member."""
+
+        moment = _aware(now)
+        with self._claim_lock():
+            state = self._read_state()
+            epoch = next(
+                (
+                    row
+                    for row in state["eligible_epochs"]
+                    if row["epoch_id"] == epoch_id
+                ),
+                None,
+            )
+            if epoch is None or epoch["status"] != "active":
+                return None
+            order = epoch["member_order"]
+            for _ in range(len(order)):
+                index = int(epoch["cursor"]) % len(order)
+                connection_id = order[index]
+                epoch["cursor"] = (index + 1) % len(order)
+                member = epoch["members"][connection_id]
+                if member["outcome"] != "pending":
+                    continue
+                next_attempt = datetime.fromisoformat(member["next_attempt_at"])
+                if next_attempt > moment:
+                    continue
+                epoch["revision"] += 1
+                epoch["updated_at"] = moment.isoformat()
+                self._persist_advanced(state, moment)
+                return copy.deepcopy(member)
+            return None
+
+    def record_epoch_outcome(
+        self,
+        epoch_id: str,
+        connection_id: str,
+        *,
+        outcome: str,
+        reason_code: str = "",
+        next_attempt_at: datetime | None = None,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Persist one exact terminal/exclusion result or a rotated retry."""
+
+        allowed = {
+            "pending",
+            "succeeded",
+            "duplicate",
+            "exhausted_failure",
+            "excluded",
+        }
+        if outcome not in allowed:
+            raise ValueError("unsupported eligible-set member outcome")
+        moment = _aware(now)
+        connection = _required(connection_id, "connection_id").casefold()
+        with self._claim_lock():
+            state = self._read_state()
+            epoch = next(
+                (
+                    row
+                    for row in state["eligible_epochs"]
+                    if row["epoch_id"] == epoch_id
+                ),
+                None,
+            )
+            if epoch is None or connection not in epoch["members"]:
+                raise RunClaimConflict("eligible_epoch_member_missing", {})
+            member = epoch["members"][connection]
+            if member["outcome"] != "pending":
+                return copy.deepcopy(epoch)
+            member["attempt_count"] += 1
+            member["outcome"] = outcome
+            member["reason_code"] = str(reason_code or "")[:96]
+            member["next_attempt_at"] = (
+                _aware(next_attempt_at).isoformat()
+                if next_attempt_at is not None
+                else moment.isoformat()
+            )
+            member["updated_at"] = moment.isoformat()
+            if all(
+                value["outcome"] != "pending"
+                for value in epoch["members"].values()
+            ):
+                epoch["status"] = "drained"
+            epoch["revision"] += 1
+            epoch["updated_at"] = moment.isoformat()
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(epoch)
+
+    def active_or_latest_epoch(self) -> dict[str, Any] | None:
+        with self._lock:
+            epochs = self._read_state()["eligible_epochs"]
+        if not epochs:
+            return None
+        active = next((row for row in epochs if row["status"] == "active"), None)
+        return copy.deepcopy(active or epochs[-1])
+
+    def get_reconciliation_control(
+        self, connection_id: str
+    ) -> dict[str, Any] | None:
+        connection = _required(connection_id, "connection_id").casefold()
+        with self._lock:
+            controls = self._read_state()["reconciliation_controls"]
+        return next(
+            (
+                copy.deepcopy(row)
+                for row in controls
+                if row["connection_id"] == connection
+            ),
+            None,
+        )
+
+    def select_reconciliation_mode(
+        self,
+        *,
+        connection_id: str,
+        now: datetime,
+        cadence_seconds: int = 86400,
+    ) -> dict[str, Any]:
+        """Choose full/incremental solely from durable server-owned control."""
+
+        if (
+            isinstance(cadence_seconds, bool)
+            or not isinstance(cadence_seconds, int)
+            or cadence_seconds < 60
+        ):
+            raise ValueError("cadence_seconds must be an integer of at least 60")
+        moment = _aware(now)
+        connection = _required(connection_id, "connection_id").casefold()
+        with self._claim_lock():
+            state = self._read_state()
+            control = next(
+                (
+                    row
+                    for row in state["reconciliation_controls"]
+                    if row["connection_id"] == connection
+                ),
+                None,
+            )
+            if control is None:
+                control = _new_reconciliation_control(
+                    connection, cadence_seconds, moment
+                )
+                state["reconciliation_controls"].append(control)
+                reason = "first_run"
+                mode = "full"
+            elif control["force_full"]:
+                reason = "maintenance_requested"
+                mode = "full"
+            elif not _valid_watermark(control["committed_watermark"]):
+                reason = (
+                    "first_run"
+                    if not control["committed_watermark"]
+                    else "watermark_invalid"
+                )
+                mode = "full"
+            elif datetime.fromisoformat(control["next_full_due_at"]) <= moment:
+                reason = "cadence_elapsed"
+                mode = "full"
+            else:
+                reason = "watermark_current"
+                mode = "incremental"
+            control["selected_mode"] = mode
+            control["selection_reason"] = reason
+            control["predecessor_watermark"] = control["committed_watermark"]
+            control["revision"] += 1
+            control["updated_at"] = moment.isoformat()
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(control)
+
+    def mark_full_reconciliation_due(
+        self,
+        *,
+        connection_id: str,
+        command_id: str,
+        actor_hash: str,
+        reason: str,
+        cadence_seconds: int | None,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Persist an idempotent authorized maintenance request and audit."""
+
+        moment = _aware(now)
+        connection = _required(connection_id, "connection_id").casefold()
+        command = _required(command_id, "command_id")
+        cadence = None if cadence_seconds is None else int(cadence_seconds)
+        if cadence is not None and not 60 <= cadence <= 2_592_000:
+            raise ValueError("cadence_seconds must be between 60 and 2592000")
+        with self._claim_lock():
+            state = self._read_state()
+            existing_audit = next(
+                (
+                    row
+                    for row in state["reconciliation_audits"]
+                    if row["command_id"] == command
+                ),
+                None,
+            )
+            control = next(
+                (
+                    row
+                    for row in state["reconciliation_controls"]
+                    if row["connection_id"] == connection
+                ),
+                None,
+            )
+            if existing_audit is not None and control is not None:
+                return copy.deepcopy(control)
+            if control is None:
+                control = _new_reconciliation_control(
+                    connection, cadence or 86400, moment
+                )
+                state["reconciliation_controls"].append(control)
+            prior_revision = control["revision"]
+            if cadence is not None:
+                control["cadence_seconds"] = cadence
+            control["force_full"] = True
+            control["revision"] += 1
+            control["updated_at"] = moment.isoformat()
+            state["reconciliation_audits"].append(
+                {
+                    "command_id": command,
+                    "connection_hash": hashlib.sha256(
+                        connection.encode()
+                    ).hexdigest(),
+                    "actor_hash": _required(actor_hash, "actor_hash"),
+                    "prior_revision": prior_revision,
+                    "new_revision": control["revision"],
+                    "reason_hash": hashlib.sha256(
+                        str(reason or "").encode()
+                    ).hexdigest(),
+                    "timestamp": moment.isoformat(),
+                    "outcome": "full_reconciliation_due",
+                }
+            )
+            self._persist_advanced(state, moment)
+            return copy.deepcopy(control)
+
+    def commit_reconciliation(
+        self,
+        *,
+        connection_id: str,
+        predecessor_watermark: str,
+        committed_watermark: str,
+        full_graph: Mapping[str, Any],
+        incremental_graph: Mapping[str, Any],
+        dispatch_id: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Persist parity first, then advance the watermark after dispatch."""
+
+        from .incremental import compare_graph_parity
+
+        dispatch = _required(dispatch_id, "dispatch_id")
+        watermark = _required(committed_watermark, "committed_watermark")
+        moment = _aware(now)
+        connection = _required(connection_id, "connection_id").casefold()
+        parity = compare_graph_parity(full_graph, incremental_graph)
+        result_id = "ORR-" + hashlib.sha256(
+            json.dumps(
+                {
+                    "connection_id": connection,
+                    "predecessor_watermark": predecessor_watermark,
+                    "committed_watermark": watermark,
+                    "dispatch_id": dispatch,
+                    **parity,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()[:24].upper()
+        with self._claim_lock():
+            state = self._read_state()
+            control = next(
+                (
+                    row
+                    for row in state["reconciliation_controls"]
+                    if row["connection_id"] == connection
+                ),
+                None,
+            )
+            if control is None:
+                raise RunClaimConflict("reconciliation_control_missing", {})
+            if control["committed_watermark"] != predecessor_watermark:
+                raise RunClaimConflict("reconciliation_watermark_conflict", control)
+            result = next(
+                (
+                    row
+                    for row in state["reconciliation_results"]
+                    if row["result_id"] == result_id
+                ),
+                None,
+            )
+            if result is None:
+                result = {
+                    "result_id": result_id,
+                    "connection_hash": hashlib.sha256(
+                        connection.encode()
+                    ).hexdigest(),
+                    "selected_mode": control["selected_mode"],
+                    "selection_reason": control["selection_reason"],
+                    "predecessor_watermark": predecessor_watermark,
+                    "committed_watermark": watermark,
+                    "dispatch_id": dispatch,
+                    "drift_status": parity["status"],
+                    "drift_count": parity["drift_count"],
+                    "drift_hash": parity["drift_hash"],
+                    "full_graph_hash": parity["full_graph_hash"],
+                    "incremental_graph_hash": parity[
+                        "incremental_graph_hash"
+                    ],
+                    "repair_authority": "full",
+                    "created_at": moment.isoformat(),
+                }
+                state["reconciliation_results"].append(result)
+            control["committed_watermark"] = watermark
+            control["full_graph_hash"] = parity["full_graph_hash"]
+            control["incremental_graph_hash"] = parity[
+                "incremental_graph_hash"
+            ]
+            control["drift_status"] = parity["status"]
+            control["drift_count"] = parity["drift_count"]
+            control["drift_hash"] = parity["drift_hash"]
+            control["force_full"] = False
+            control["next_full_due_at"] = (
+                moment + timedelta(seconds=control["cadence_seconds"])
+            ).isoformat()
+            control["revision"] += 1
+            control["updated_at"] = moment.isoformat()
+            self._persist_advanced(state, moment)
+            return {
+                "control": copy.deepcopy(control),
+                "result": copy.deepcopy(result),
+            }
 
     def list_pending_relationships(
         self, *, include_terminal: bool = False
@@ -1173,6 +1679,43 @@ class OntologyRunStore:
             )
             return copy.deepcopy(record)
 
+    def request_retry(
+        self,
+        run_id: str,
+        *,
+        expected_revision: int,
+        actor: str,
+        reason: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """CAS a terminal failed/cancelled run back to its durable checkpoint."""
+
+        moment = _aware(now)
+        with self._claim_lock():
+            state, index, record = self._locate(run_id)
+            if (
+                record["revision"] != expected_revision
+                or record["status"] not in {RUN_FAILED, RUN_CANCELLED}
+                or record["attempt_count"] >= record["max_attempts"]
+            ):
+                raise RunClaimConflict("run_retry_conflict", record)
+            record["cancel_requested"] = False
+            record["failure_class"] = ""
+            record["message"] = _bounded(reason or "Run retry requested", 1024)
+            record["next_attempt_at"] = moment.isoformat()
+            _clear_lease(record)
+            self._replace_record(
+                state,
+                index,
+                record,
+                status=RUN_RETRYING,
+                actor=actor,
+                moment=moment,
+                checkpoint=record["checkpoint"]["name"],
+                message=record["message"],
+            )
+            return copy.deepcopy(record)
+
     def _assert_owned(
         self,
         state: dict[str, Any],
@@ -1293,6 +1836,9 @@ class OntologyRunStore:
     @contextmanager
     def _claim_lock(self) -> Iterator[None]:
         with self._lock:
+            if self._documents is not None:
+                yield
+                return
             deadline = time.monotonic() + 5.0
             while True:
                 lock = RunLock(
@@ -1313,12 +1859,17 @@ class OntologyRunStore:
                 return
 
     def _read_state(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return _initial_state()
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError("Ontology discovery run state is not valid JSON") from exc
+        if self._documents is not None:
+            payload = self._documents.read_or_raise(self._document_name)
+            if not payload:
+                return _initial_state()
+        else:
+            if not self.path.exists():
+                return _initial_state()
+            try:
+                payload = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("Ontology discovery run state is not valid JSON") from exc
         if not isinstance(payload, dict):
             raise TypeError("Ontology discovery run state must be an object")
         rows = payload.get("runs", [])
@@ -1349,6 +1900,26 @@ class OntologyRunStore:
             not isinstance(row, dict) for row in releases
         ):
             raise TypeError("Admission releases must be a list of objects")
+        epochs = payload.get("eligible_epochs", [])
+        if not isinstance(epochs, list) or any(
+            not isinstance(row, dict) for row in epochs
+        ):
+            raise TypeError("Eligible-set epochs must be a list of objects")
+        controls = payload.get("reconciliation_controls", [])
+        if not isinstance(controls, list) or any(
+            not isinstance(row, dict) for row in controls
+        ):
+            raise TypeError("Reconciliation controls must be a list of objects")
+        results = payload.get("reconciliation_results", [])
+        if not isinstance(results, list) or any(
+            not isinstance(row, dict) for row in results
+        ):
+            raise TypeError("Reconciliation results must be a list of objects")
+        audits = payload.get("reconciliation_audits", [])
+        if not isinstance(audits, list) or any(
+            not isinstance(row, dict) for row in audits
+        ):
+            raise TypeError("Reconciliation audits must be a list of objects")
         return {
             "revision": _nonnegative_int(payload.get("revision", 0)),
             "next_fencing_token": _nonnegative_int(
@@ -1368,6 +1939,12 @@ class OntologyRunStore:
             "admission_releases": [
                 _release_with_defaults(row) for row in releases
             ],
+            "eligible_epochs": [_epoch_with_defaults(row) for row in epochs],
+            "reconciliation_controls": [
+                _control_with_defaults(row) for row in controls
+            ],
+            "reconciliation_results": copy.deepcopy(results),
+            "reconciliation_audits": copy.deepcopy(audits),
             "updated_at": str(payload.get("updated_at") or ""),
         }
 
@@ -1378,16 +1955,6 @@ class OntologyRunStore:
         self._write_state(state, expected_revision=expected_revision)
 
     def _write_state(self, state: dict[str, Any], *, expected_revision: int) -> None:
-        if self.path.exists():
-            try:
-                current = json.loads(self.path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise ValueError("Ontology discovery run state is not valid JSON") from exc
-            observed_revision = _nonnegative_int(current.get("revision", 0))
-            if observed_revision != expected_revision:
-                raise RunClaimConflict("run_store_revision_conflict", {})
-        elif expected_revision != 0:
-            raise RunClaimConflict("run_store_revision_conflict", {})
         payload = {
             "schema_version": self.SCHEMA_VERSION,
             "revision": state["revision"],
@@ -1398,8 +1965,34 @@ class OntologyRunStore:
             "proposals": state["proposals"],
             "proposal_reviews": state["proposal_reviews"],
             "admission_releases": state["admission_releases"],
+            "eligible_epochs": state["eligible_epochs"],
+            "reconciliation_controls": state["reconciliation_controls"],
+            "reconciliation_results": state["reconciliation_results"],
+            "reconciliation_audits": state["reconciliation_audits"],
             "updated_at": state["updated_at"],
         }
+        if self._documents is not None:
+            try:
+                self._documents.write(
+                    self._document_name,
+                    payload,
+                    expected_revision=expected_revision,
+                )
+            except DocumentConflictError as exc:
+                raise RunClaimConflict(
+                    "run_store_revision_conflict", {}
+                ) from exc
+            return
+        if self.path.exists():
+            try:
+                current = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("Ontology discovery run state is not valid JSON") from exc
+            observed_revision = _nonnegative_int(current.get("revision", 0))
+            if observed_revision != expected_revision:
+                raise RunClaimConflict("run_store_revision_conflict", {})
+        elif expected_revision != 0:
+            raise RunClaimConflict("run_store_revision_conflict", {})
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(
             dir=self.path.parent,
@@ -1428,8 +2021,93 @@ def _initial_state() -> dict[str, Any]:
         "proposals": [],
         "proposal_reviews": [],
         "admission_releases": [],
+        "eligible_epochs": [],
+        "reconciliation_controls": [],
+        "reconciliation_results": [],
+        "reconciliation_audits": [],
         "updated_at": "",
     }
+
+
+def _epoch_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    record = copy.deepcopy(dict(row))
+    record.setdefault("epoch_id", "")
+    record.setdefault("registry_revision", 0)
+    record.setdefault("registry_hash", "")
+    record["member_order"] = [
+        str(value).casefold() for value in record.get("member_order", ())
+    ]
+    members = record.get("members", {})
+    if not isinstance(members, Mapping):
+        raise TypeError("Eligible-set epoch members must be an object")
+    normalized: dict[str, dict[str, Any]] = {}
+    for connection_id in record["member_order"]:
+        member = copy.deepcopy(dict(members.get(connection_id) or {}))
+        member.setdefault("connection_id", connection_id)
+        member.setdefault("outcome", "pending")
+        member.setdefault("reason_code", "")
+        member.setdefault("attempt_count", 0)
+        member.setdefault("next_attempt_at", record.get("created_at") or "")
+        member.setdefault("updated_at", record.get("updated_at") or "")
+        normalized[connection_id] = member
+    record["members"] = normalized
+    record.setdefault("cursor", 0)
+    record.setdefault("status", "active")
+    record.setdefault("revision", 0)
+    record.setdefault("created_at", "")
+    record.setdefault("updated_at", "")
+    return record
+
+
+def _new_reconciliation_control(
+    connection_id: str, cadence_seconds: int, moment: datetime
+) -> dict[str, Any]:
+    return {
+        "connection_id": connection_id,
+        "cadence_seconds": cadence_seconds,
+        "next_full_due_at": moment.isoformat(),
+        "selected_mode": "full",
+        "selection_reason": "first_run",
+        "predecessor_watermark": "",
+        "committed_watermark": "",
+        "full_graph_hash": "",
+        "incremental_graph_hash": "",
+        "drift_status": "pending",
+        "drift_count": 0,
+        "drift_hash": "",
+        "force_full": False,
+        "revision": 0,
+        "created_at": moment.isoformat(),
+        "updated_at": moment.isoformat(),
+    }
+
+
+def _control_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    record = copy.deepcopy(dict(row))
+    record.setdefault("connection_id", "")
+    record.setdefault("cadence_seconds", 86400)
+    record.setdefault("next_full_due_at", "1970-01-01T00:00:00+00:00")
+    record.setdefault("selected_mode", "full")
+    record.setdefault("selection_reason", "first_run")
+    record.setdefault("predecessor_watermark", "")
+    record.setdefault("committed_watermark", "")
+    record.setdefault("full_graph_hash", "")
+    record.setdefault("incremental_graph_hash", "")
+    record.setdefault("drift_status", "pending")
+    record.setdefault("drift_count", 0)
+    record.setdefault("drift_hash", "")
+    record.setdefault("force_full", False)
+    record.setdefault("revision", 0)
+    record.setdefault("created_at", "")
+    record.setdefault("updated_at", "")
+    return record
+
+
+def _valid_watermark(value: object) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and len(text) <= 256 and all(
+        character.isalnum() or character in "-_.:" for character in text
+    )
 
 
 def _pending_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:

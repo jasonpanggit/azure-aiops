@@ -1,0 +1,583 @@
+{
+  "authoritative_model_edge_count": 0,
+  "critical_failures": [],
+  "dataset_hash": "5b4be81915a2a80bbbd22829726689a6d8b8c94820a612b01fa6e5e6b5792f40",
+  "metrics": {
+    "audit_completeness": 1.0,
+    "citation_validity": 1.0,
+    "cost_budget": 1.0,
+    "deterministic_replay": 1.0,
+    "escalation_recall": 1.0,
+    "freshness_handling": 1.0,
+    "latency_budget": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "recovery": 1.0
+  },
+  "passed": true,
+  "release_status": "BLOCKED/PENDING",
+  "scenario_count": 35,
+  "scenarios": [
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "normal-addition"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "normal-change"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "normal-retirement"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "normal-containment"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "normal-operational"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "normal-topology"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "normal-connection"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "normal-approved-tag"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "hard-name-similarity"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "hard-region-colocation"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "hard-timing-correlation"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "hard-unapproved-tag"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "stale-observation"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "partial-scan"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "contradictory-evidence"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "unresolved-endpoint"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "collision-case-variant"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "collision-alias"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "collision-display-name"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "collision-unauthorized-citation"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "injection-resource-name"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "injection-tag"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "injection-description"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "injection-tool-result"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "duplicate-delivery"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "duplicate-restart"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "stale-fence"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "rollback-failure"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "review-novel-predicate"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "cancellation-during-stage"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "promotion-success"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "boundary-maximum-batch"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "over-limit-entities"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "over-limit-pairs"
+    },
+    {
+      "checks": {
+        "audit_completeness": true,
+        "citation_validity": true,
+        "cost_budget": true,
+        "deterministic_replay": true,
+        "escalation_recall": true,
+        "freshness_handling": true,
+        "latency_budget": true,
+        "precision": true,
+        "recall": true,
+        "recovery": true
+      },
+      "critical_failures": [],
+      "scenario_id": "over-limit-evidence"
+    }
+  ],
+  "schema_version": "ontology-discovery-evaluation.v1"
+}

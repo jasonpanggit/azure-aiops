@@ -1,0 +1,186 @@
+{
+  "revision": 1,
+  "snapshot": {
+    "artifact_references": [
+      {
+        "kind": "dataset",
+        "reference": "artifact:ontology-wave0-reference-v1",
+        "sha256": "5b4be81915a2a80bbbd22829726689a6d8b8c94820a612b01fa6e5e6b5792f40"
+      }
+    ],
+    "contract_version": "1.0.0",
+    "critical_failures": [],
+    "evaluated_at": "2026-09-07T04:09:23.673334Z",
+    "expires_at": "2026-09-08T04:09:23.673334Z",
+    "lineage": {
+      "agent_hash": "d76f968e7ab50a36b2c4108561c8235610ff8ea86e0471c20c168a4468341e44",
+      "agent_version": "ontology-curator-v1",
+      "dataset_hash": "5b4be81915a2a80bbbd22829726689a6d8b8c94820a612b01fa6e5e6b5792f40",
+      "dataset_version": "ontology-discovery-wave0.v1",
+      "model_hash": "d063b0305bfedace8b9351b412c7d7c9f6cf6bcff487aa3a711eacbad4433973",
+      "model_version": "recorded-synthetic-v1",
+      "policy_hash": "ee5843e73878ed94bf40865070c6e83ea0d4a478944847e45d978ba8c792a229",
+      "policy_version": "proposal-policy-v1",
+      "prompt_hash": "a288acec0a1c1180377fc1bc10fa9ac36f70edc5599e514918c07c324400af9e",
+      "prompt_version": "ontology-curator-v1",
+      "schema_hash": "95592dcf005f211056c242b8fcd57c67d18e3ef41e007263e35e8c7ae81b0408",
+      "schema_version": "proposal-batch-v1"
+    },
+    "observed_at": "2026-09-07T04:04:23.673334Z",
+    "release_eligible": false,
+    "scope_hash": "e8a54663a188bc6ba12adec0750864ad",
+    "scope_key": "scope-e8a54663a188bc6ba12adec0750864ad",
+    "slice_metrics": [
+      {
+        "critical": true,
+        "denominator": 35,
+        "metric": "precision",
+        "numerator": 35,
+        "slice_key": "overall",
+        "value": 1.0
+      },
+      {
+        "critical": false,
+        "denominator": 35,
+        "metric": "recall",
+        "numerator": 35,
+        "slice_key": "overall",
+        "value": 1.0
+      },
+      {
+        "critical": true,
+        "denominator": 35,
+        "metric": "citation_validity",
+        "numerator": 35,
+        "slice_key": "overall",
+        "value": 1.0
+      },
+      {
+        "critical": false,
+        "denominator": 35,
+        "metric": "freshness_handling",
+        "numerator": 35,
+        "slice_key": "overall",
+        "value": 1.0
+      },
+      {
+        "critical": true,
+        "denominator": 35,
+        "metric": "escalation_recall",
+        "numerator": 35,
+        "slice_key": "overall",
+        "value": 1.0
+      },
+      {
+        "critical": true,
+        "denominator": 35,
+        "metric": "deterministic_replay",
+        "numerator": 35,
+        "slice_key": "overall",
+        "value": 1.0
+      },
+      {
+        "critical": false,
+        "denominator": 35,
+        "metric": "recovery",
+        "numerator": 35,
+        "slice_key": "overall",
+        "value": 1.0
+      },
+      {
+        "critical": true,
+        "denominator": 35,
+        "metric": "audit_completeness",
+        "numerator": 35,
+        "slice_key": "overall",
+        "value": 1.0
+      },
+      {
+        "critical": false,
+        "denominator": 35,
+        "metric": "cost_budget",
+        "numerator": 35,
+        "slice_key": "overall",
+        "value": 1.0
+      },
+      {
+        "critical": false,
+        "denominator": 35,
+        "metric": "latency_budget",
+        "numerator": 35,
+        "slice_key": "overall",
+        "value": 1.0
+      }
+    ],
+    "snapshot_id": "EVS-0595F07009E08ADF7C4B3F76C93189AEDB346378521C8D172E4A51E516335B85",
+    "source_expiries": [
+      {
+        "expires_at": "2026-09-08T04:09:23.673334Z",
+        "observed_at": "2026-09-07T04:04:23.673334Z",
+        "source": "synthetic-replay"
+      }
+    ],
+    "thresholds": [
+      {
+        "critical": true,
+        "metric": "precision",
+        "minimum": 0.98,
+        "slice_key": "overall"
+      },
+      {
+        "critical": false,
+        "metric": "recall",
+        "minimum": 0.9,
+        "slice_key": "overall"
+      },
+      {
+        "critical": true,
+        "metric": "citation_validity",
+        "minimum": 1.0,
+        "slice_key": "overall"
+      },
+      {
+        "critical": false,
+        "metric": "freshness_handling",
+        "minimum": 1.0,
+        "slice_key": "overall"
+      },
+      {
+        "critical": true,
+        "metric": "escalation_recall",
+        "minimum": 0.95,
+        "slice_key": "overall"
+      },
+      {
+        "critical": true,
+        "metric": "deterministic_replay",
+        "minimum": 1.0,
+        "slice_key": "overall"
+      },
+      {
+        "critical": false,
+        "metric": "recovery",
+        "minimum": 1.0,
+        "slice_key": "overall"
+      },
+      {
+        "critical": true,
+        "metric": "audit_completeness",
+        "minimum": 1.0,
+        "slice_key": "overall"
+      },
+      {
+        "critical": false,
+        "metric": "cost_budget",
+        "minimum": 1.0,
+        "slice_key": "overall"
+      },
+      {
+        "critical": false,
+        "metric": "latency_budget",
+        "minimum": 1.0,
+        "slice_key": "overall"
+      }
+    ]
+  }
+}

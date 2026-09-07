@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from .contracts import (
     CheckpointResult,
@@ -16,6 +16,7 @@ from .contracts import (
 )
 from .incremental import EvidenceBatchRejected, split_evidence_batches
 from .policy import ProposalPolicy
+from .publisher import OntologyGenerationCandidate
 from .store import (
     RUN_RETRYING,
     OntologyRunStore,
@@ -25,6 +26,89 @@ from .store import (
 )
 
 _LOGGER = logging.getLogger("aiops.ontology_discovery.coordinator")
+
+
+class ValidatedCandidateProvider(Protocol):
+    """Build a complete candidate without receiving publication authority."""
+
+    async def validated_candidate(
+        self, run: Mapping[str, Any]
+    ) -> OntologyGenerationCandidate: ...
+
+
+class DedicatedPublisher(Protocol):
+    """Narrow dispatch seam implemented by the separately authorized worker."""
+
+    async def publish(
+        self,
+        *,
+        run: Mapping[str, Any],
+        candidate: OntologyGenerationCandidate,
+    ) -> Mapping[str, Any]: ...
+
+    async def publication_status(self, run_id: str) -> Mapping[str, Any]: ...
+
+
+class PublisherDispatchProcessor:
+    """Submit a validated candidate without exposing writer identity or storage.
+
+    The coordinator owns leases and durable run transitions.  This processor
+    can only ask the dedicated publisher to publish and read its resulting
+    status; it cannot stage generations, mutate pointers, or choose the
+    publisher identity.
+    """
+
+    def __init__(
+        self,
+        *,
+        candidate_provider: ValidatedCandidateProvider,
+        publisher: DedicatedPublisher,
+    ) -> None:
+        self._candidate_provider = candidate_provider
+        self._publisher = publisher
+
+    async def advance(self, run: Mapping[str, Any]) -> CheckpointResult:
+        candidate = await self._candidate_provider.validated_candidate(run)
+        if not isinstance(candidate, OntologyGenerationCandidate):
+            raise RunProcessingFailure(
+                failure_class="candidate_invalid",
+                checkpoint="candidate_rejected",
+                message="validated candidate provider returned an invalid candidate",
+            )
+        try:
+            publication = await self._publisher.publish(
+                run=run,
+                candidate=candidate,
+            )
+        except Exception as exc:
+            try:
+                status = await self._publisher.publication_status(
+                    str(run.get("run_id") or "")
+                )
+            except Exception:  # noqa: BLE001 - denial must survive status-reader failure
+                status = {}
+            safe_status = {
+                key: status[key]
+                for key in (
+                    "run_id",
+                    "generation_id",
+                    "active_generation",
+                    "pointer_etag",
+                    "status",
+                )
+                if key in status
+            }
+            raise RunProcessingFailure(
+                failure_class="publisher_denied",
+                checkpoint="publication_denied",
+                payload=safe_status,
+                message=str(exc) or exc.__class__.__name__,
+            ) from exc
+        return CheckpointResult(
+            checkpoint="publication_succeeded",
+            payload=dict(publication),
+            complete=True,
+        )
 
 
 class ProposalPolicyCoordinator:
@@ -355,6 +439,9 @@ def _observed_at(value: object) -> datetime:
 
 __all__ = [
     "BoundedEvidenceProcessor",
+    "DedicatedPublisher",
     "OntologyDiscoveryCoordinator",
     "ProposalPolicyCoordinator",
+    "PublisherDispatchProcessor",
+    "ValidatedCandidateProvider",
 ]

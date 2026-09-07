@@ -41,6 +41,305 @@ resource "azurerm_monitor_action_group" "ops" {
   tags = local.tags
 }
 
+# Ontology discovery metrics use one closed `rule` enum and never attach
+# prompts, evidence/tool bodies, IDs, scope values, principals, credentials, or
+# raw errors. The rules below are deliberately data-driven so the smoke
+# validator can prove a one-to-one metric -> query -> action-group chain.
+locals {
+  ontology_discovery_alert_rules = {
+    scope_disclosure = {
+      tier         = "immediate"
+      threshold    = 0
+      operator     = "GreaterThan"
+      window       = "PT5M"
+      severity     = 0
+      shadow_reset = true
+      query_op     = ">"
+    }
+    unauthorized_mutation = {
+      tier         = "immediate"
+      threshold    = 0
+      operator     = "GreaterThan"
+      window       = "PT5M"
+      severity     = 0
+      shadow_reset = true
+      query_op     = ">"
+    }
+    successful_injection = {
+      tier         = "immediate"
+      threshold    = 0
+      operator     = "GreaterThan"
+      window       = "PT5M"
+      severity     = 0
+      shadow_reset = true
+      query_op     = ">"
+    }
+    invalid_edge_promotion = {
+      tier         = "immediate"
+      threshold    = 0
+      operator     = "GreaterThan"
+      window       = "PT5M"
+      severity     = 0
+      shadow_reset = true
+      query_op     = ">"
+    }
+    stale_writer_promotion = {
+      tier         = "immediate"
+      threshold    = 0
+      operator     = "GreaterThan"
+      window       = "PT5M"
+      severity     = 0
+      shadow_reset = true
+      query_op     = ">"
+    }
+    partial_active_generation = {
+      tier         = "immediate"
+      threshold    = 0
+      operator     = "GreaterThan"
+      window       = "PT5M"
+      severity     = 0
+      shadow_reset = true
+      query_op     = ">"
+    }
+    missing_audit = {
+      tier         = "immediate"
+      threshold    = 0
+      operator     = "GreaterThan"
+      window       = "PT5M"
+      severity     = 0
+      shadow_reset = true
+      query_op     = ">"
+    }
+    active_generation_unrecoverable = {
+      tier         = "immediate"
+      threshold    = 0
+      operator     = "GreaterThan"
+      window       = "PT5M"
+      severity     = 0
+      shadow_reset = true
+      query_op     = ">"
+    }
+    successful_run_gap = {
+      tier         = "page"
+      threshold    = 30
+      operator     = "GreaterThan"
+      window       = "PT30M"
+      severity     = 1
+      shadow_reset = false
+      query_op     = ">"
+    }
+    active_generation_age = {
+      tier         = "page"
+      threshold    = 21600
+      operator     = "GreaterThan"
+      window       = "PT15M"
+      severity     = 1
+      shadow_reset = false
+      query_op     = ">"
+    }
+    fenced_publication_failures = {
+      tier         = "page"
+      threshold    = 2
+      operator     = "GreaterThanOrEqual"
+      window       = "PT15M"
+      severity     = 1
+      shadow_reset = false
+      query_op     = ">="
+    }
+    critical_pending_edge_age = {
+      tier         = "page"
+      threshold    = 86400
+      operator     = "GreaterThan"
+      window       = "PT15M"
+      severity     = 1
+      shadow_reset = false
+      query_op     = ">"
+    }
+    nonterminal_run_age = {
+      tier         = "page"
+      threshold    = 2700
+      operator     = "GreaterThan"
+      window       = "PT15M"
+      severity     = 1
+      shadow_reset = false
+      query_op     = ">"
+    }
+    citation_validity = {
+      tier         = "hour"
+      threshold    = 1
+      operator     = "LessThan"
+      window       = "PT1H"
+      severity     = 2
+      shadow_reset = false
+      query_op     = "<"
+    }
+    citation_freshness = {
+      tier         = "hour"
+      threshold    = 0.99
+      operator     = "LessThan"
+      window       = "PT1H"
+      severity     = 2
+      shadow_reset = false
+      query_op     = "<"
+    }
+    post_repair_schema_validity = {
+      tier         = "hour"
+      threshold    = 1
+      operator     = "LessThan"
+      window       = "PT1H"
+      severity     = 1
+      shadow_reset = false
+      query_op     = "<"
+    }
+    repair_rate = {
+      tier         = "hour"
+      threshold    = 0.05
+      operator     = "GreaterThan"
+      window       = "PT1H"
+      severity     = 2
+      shadow_reset = false
+      query_op     = ">"
+    }
+    timeout_rate = {
+      tier         = "hour"
+      threshold    = 0.01
+      operator     = "GreaterThan"
+      window       = "PT1H"
+      severity     = 2
+      shadow_reset = false
+      query_op     = ">"
+    }
+    model_latency_p95 = {
+      tier         = "hour"
+      threshold    = 30
+      operator     = "GreaterThan"
+      window       = "PT15M"
+      severity     = 2
+      shadow_reset = false
+      query_op     = ">"
+    }
+    attempt_duration_max = {
+      tier         = "hour"
+      threshold    = 60
+      operator     = "GreaterThan"
+      window       = "PT1H"
+      severity     = 1
+      shadow_reset = false
+      query_op     = ">"
+    }
+    cap_violation = {
+      tier         = "hour"
+      threshold    = 0
+      operator     = "GreaterThan"
+      window       = "PT1H"
+      severity     = 1
+      shadow_reset = false
+      query_op     = ">"
+    }
+    overall_precision = {
+      tier         = "weekly"
+      threshold    = 0.98
+      operator     = "LessThan"
+      window       = "P7D"
+      severity     = 1
+      shadow_reset = true
+      query_op     = "<"
+    }
+    critical_precision = {
+      tier         = "weekly"
+      threshold    = 0.95
+      operator     = "LessThan"
+      window       = "P7D"
+      severity     = 1
+      shadow_reset = true
+      query_op     = "<"
+    }
+    overall_recall = {
+      tier         = "weekly"
+      threshold    = 0.9
+      operator     = "LessThan"
+      window       = "P7D"
+      severity     = 2
+      shadow_reset = true
+      query_op     = "<"
+    }
+    critical_recall = {
+      tier         = "weekly"
+      threshold    = 0.85
+      operator     = "LessThan"
+      window       = "P7D"
+      severity     = 2
+      shadow_reset = true
+      query_op     = "<"
+    }
+    escalation_f1 = {
+      tier         = "weekly"
+      threshold    = 0.95
+      operator     = "LessThan"
+      window       = "P7D"
+      severity     = 1
+      shadow_reset = true
+      query_op     = "<"
+    }
+    mandatory_review_recall = {
+      tier         = "weekly"
+      threshold    = 1
+      operator     = "LessThan"
+      window       = "P7D"
+      severity     = 0
+      shadow_reset = true
+      query_op     = "<"
+    }
+    pair_precision_wilson_lower_bound = {
+      tier         = "weekly"
+      threshold    = 0.98
+      operator     = "LessThan"
+      window       = "P7D"
+      severity     = 1
+      shadow_reset = true
+      query_op     = "<"
+    }
+  }
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "ontology_discovery" {
+  for_each = local.alerting_enabled ? local.ontology_discovery_alert_rules : {}
+
+  name                 = "${local.base}-ontology-${replace(each.key, "_", "-")}"
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  evaluation_frequency = each.value.tier == "immediate" ? "PT1M" : each.value.tier == "page" ? "PT5M" : each.value.tier == "hour" ? "PT15M" : "P1D"
+  window_duration      = each.value.window
+  scopes               = [azurerm_application_insights.main.id]
+  severity             = each.value.severity
+  description          = "Ontology discovery ${each.key}; action=ontology-operations; reset=${each.value.shadow_reset ? "affected-pair-shadow" : "none"}."
+
+  criteria {
+    query = <<-KQL
+      AppMetrics
+      | where Name == "ontology.discovery.alert.signal"
+      | where tostring(Properties.rule) == each.key
+      | summarize Signal=max(Max)
+      | where Signal ${each.value.query_op} ${each.value.threshold}
+    KQL
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [local.alert_action_group_id]
+  }
+
+  tags = local.tags
+}
+
 # API availability: any non-2xx/3xx response rate sustained over the
 # evaluation window. Container Apps emits `Requests` with a `StatusCodeCategory`
 # dimension through the Log Analytics-backed diagnostic settings on the

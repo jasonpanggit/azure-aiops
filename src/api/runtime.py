@@ -95,6 +95,7 @@ from onboarding.runtime import (
 )
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
+from ontology_discovery.evaluation_store import EvaluationSnapshotStore
 from ontology_discovery.generation_resolver import (
     GenerationResolver,
     GenerationSelection,
@@ -179,6 +180,95 @@ ENV_EXPOSURE_HANDOFF_STAGE = "AIOPS_EXPOSURE_HANDOFF_STAGE"
 ENV_EXPOSURE_WRITE_GENERATION_ID = "AIOPS_EXPOSURE_WRITE_GENERATION_ID"
 ENV_EXPOSURE_READ_GENERATION_ID = "AIOPS_EXPOSURE_READ_GENERATION_ID"
 ENV_EXPOSURE_ROLLBACK_GENERATION_ID = "AIOPS_EXPOSURE_ROLLBACK_GENERATION_ID"
+
+
+def _load_governance_generation_snapshot(
+    scope: Scope,
+) -> GovernanceSnapshot | None:
+    """Resolve one selected connection generation for a governance request.
+
+Existing unscoped and multi-connection behavior remains on the established
+aggregate provider. A request selecting exactly one connection instead
+captures its pointer once and reads every governance row from that same
+immutable generation, so a concurrent promotion or rollback cannot mix
+before/after rows in one export.
+    """
+
+    connections = [
+        row
+        for row in _governance_connections()
+        if scope.matches(
+            {
+                "subscription": row.get("subscription_id", ""),
+                "subscription_connection": row.get("connection_id", ""),
+                "business_service": row.get("business_service", ""),
+                "environment": row.get("environment", ""),
+            }
+        )
+    ]
+    selected_ids = scope.values("subscription_connection")
+    if len(connections) != 1 or not selected_ids:
+        return _load_governance_snapshot()
+    connection = connections[0]
+    from storage.datasets import DatasetStore
+
+    store = DatasetStore(
+        _connection_dataset_dir(
+            str(aiops_home()),
+            str(connection.get("connection_id") or ""),
+        )
+    )
+    resolver = GenerationResolver(store)
+    try:
+        selection = resolver.resolve()
+        entities = resolver.read_dataset(
+            "ontology_entities",
+            selection=selection,
+        )
+        manifest = resolver.read_metadata(
+            "manifest.json",
+            selection=selection,
+        )
+    except (LookupError, OSError, TypeError, ValueError):
+        return None
+    return GovernanceSnapshot(
+        entities,
+        observed_at=str(
+            manifest.get("startedAt")
+            or manifest.get("observed_at")
+            or manifest.get("created_at")
+            or ""
+        ),
+        connections=[connection],
+    )
+
+
+def _load_ontology_discovery_api(
+    onboarding: SubscriptionOnboardingService,
+) -> Any:
+    """Build a restart-safe API facade with no publisher credential."""
+
+    from api.routers.ontology_discovery import OntologyDiscoveryApi
+    from storage.datasets import DatasetStore
+
+    root = aiops_home()
+
+    def generation_resolver(connection_id: str) -> GenerationResolver:
+        return GenerationResolver(
+            DatasetStore(
+                _connection_dataset_dir(str(root), connection_id)
+            )
+        )
+
+    return OntologyDiscoveryApi(
+        onboarding=onboarding,
+        run_store=onboarding.ontology_run_store,
+        evaluation_store=EvaluationSnapshotStore(root),
+        generation_resolver_factory=generation_resolver,
+        # Rollback remains a narrow publisher-service action. The API process
+        # intentionally has no credential or direct pointer/stage capability.
+        rollback_action=None,
+    )
 
 AUTH_GATEWAY = "gateway"
 AUTH_ENTRA = "entra"
@@ -4062,6 +4152,7 @@ def build_context() -> ApiContext:
         patching_provider=lambda: providers.get("patching", optional=True),
         change_provider=lambda: providers.get("change", optional=True),
         governance_provider=_load_governance_snapshot,
+        governance_generation_provider=_load_governance_generation_snapshot,
         settings_store=_settings_store(),
         network_policy_store=_network_policy_store(),
         vulnerability_live_lookup=_lookup_live_cve,
@@ -4083,4 +4174,5 @@ def build_context() -> ApiContext:
         exposure_remediation_provider=exposure_remediation,
         fabric_iq_provider=lambda: providers.get("fabric_iq", optional=True),
         verification_coordinator_provider=_verification_coordinator,
+        ontology_discovery_provider=lambda: _load_ontology_discovery_api(onboarding),
     )

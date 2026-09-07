@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -17,6 +18,11 @@ from fabric_pipelines.topology_pipeline import derive_edges, to_topology_edge_ro
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator
 from ontology.publication_manifest import PublicationManifestStore
+from ontology_discovery.publisher import (
+    OntologyGenerationCandidate,
+    OntologyGenerationPublisher,
+    PublicationSafetyError,
+)
 from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
 from storage.onelake_writer import OneLakeWriter
 from storage.partitioning import PartitioningPolicy
@@ -61,6 +67,122 @@ class FabricTableWriteProgress:
     total_tables: int
     table_name: str
     result: DeltaWriteResult
+
+
+class DedicatedOntologyPublisherAdapter:
+    """Keep generation and Fabric writes behind one publisher-only boundary.
+
+    The request factory supplies fencing and pointer preconditions but is
+    forbidden from supplying either the candidate or publisher identity.
+    Those values are bound by this adapter, so API/coordinator input cannot
+    substitute a broader credential.
+    """
+
+    def __init__(
+        self,
+        *,
+        generation_publisher: OntologyGenerationPublisher,
+        fabric_sync_service: FabricSyncService,
+        publisher_identity: str,
+        request_factory: Callable[
+            [Mapping[str, Any], OntologyGenerationCandidate],
+            Mapping[str, Any],
+        ],
+        status_reader: Callable[[str], Mapping[str, Any]],
+    ) -> None:
+        identity = str(publisher_identity or "").strip()
+        if not identity:
+            raise ValueError("publisher_identity must not be empty")
+        self._generation_publisher = generation_publisher
+        self._fabric_sync_service = fabric_sync_service
+        self._publisher_identity = identity
+        self._request_factory = request_factory
+        self._status_reader = status_reader
+
+    async def publish(
+        self,
+        *,
+        run: Mapping[str, Any],
+        candidate: OntologyGenerationCandidate,
+    ) -> Mapping[str, Any]:
+        if not isinstance(candidate, OntologyGenerationCandidate):
+            raise TypeError("candidate must be an OntologyGenerationCandidate")
+        request = dict(self._request_factory(run, candidate))
+        forbidden = {"candidate", "publisher_identity"} & request.keys()
+        if forbidden:
+            raise PermissionError(
+                "publisher request cannot override candidate or publisher identity"
+            )
+        try:
+            materialization: dict[str, Any] = {}
+
+            def materialize(published: OntologyGenerationCandidate) -> Mapping[str, Any]:
+                publication = self._fabric_sync_service.sync(
+                    replay_source_run_id=published.source_generation
+                )
+                materialization.update(
+                    run_id=publication.run_id,
+                    status=publication.status,
+                    tables=list(publication.tables),
+                )
+                return {
+                    "status": publication.status,
+                    "run_id": publication.run_id,
+                    "tables": list(publication.tables),
+                }
+
+            promoted = self._generation_publisher.publish(
+                candidate,
+                publisher_identity=self._publisher_identity,
+                materialize_generation=materialize,
+                **request,
+            )
+        except PublicationSafetyError as exc:
+            # If the publisher committed and the coordinator died before its
+            # own success checkpoint, immutable restaging is an expected
+            # retry.  Only that precise condition may be treated as complete.
+            if "immutable" not in str(exc).casefold():
+                raise
+            durable = await self.publication_status(str(run.get("run_id") or ""))
+            if (
+                durable.get("run_id") != run.get("run_id")
+                or durable.get("active_generation") != candidate.generation_id
+            ):
+                raise
+            promoted = type(
+                "_RecoveredPointer",
+                (),
+                {
+                    "pointer": type(
+                        "_RecoveredGeneration",
+                        (),
+                        {"active_generation": candidate.generation_id},
+                    )(),
+                    "etag": durable.get("pointer_etag"),
+                },
+            )()
+
+        # Compatibility with protocol doubles that predate the ordered
+        # materialization callback. Real OntologyGenerationPublisher instances
+        # always invoke the callback before pointer CAS.
+        if not materialization:
+            materialize(candidate)
+        return {
+            "generation_id": candidate.generation_id,
+            "active_generation": promoted.pointer.active_generation,
+            "pointer_etag": promoted.etag,
+            "fabric_run_id": materialization["run_id"],
+            "fabric_status": materialization["status"],
+            "fabric_tables": materialization["tables"],
+        }
+
+    async def publication_status(self, run_id: str) -> Mapping[str, Any]:
+        status = self._status_reader(run_id)
+        if inspect.isawaitable(status):
+            status = await status
+        if not isinstance(status, Mapping):
+            raise TypeError("publisher status reader must return a mapping")
+        return dict(status)
 
 
 class FabricSyncService:
