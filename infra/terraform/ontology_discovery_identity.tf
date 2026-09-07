@@ -202,3 +202,200 @@ resource "fabric_workspace_role_assignment" "ontology_publication_publisher" {
     type = "ServicePrincipal"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Plan 20 read-only deployed evidence identity
+#
+# The pre-existing Azure MCP UAI already has subscription Reader, Monitoring
+# Reader, and ACR pull. It is reused here only because those are the exact
+# read capabilities the fixed evidence collector requires. These assignments
+# add Viewer metadata access and OneLake Data Access Security Read to the five
+# isolated Phase 13 Lakehouse items. They deliberately do not touch the
+# production ops workspace, replace any existing data-access role, or grant
+# Contributor/Member/Admin.
+# ---------------------------------------------------------------------------
+
+resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_discovery_state" {
+  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_discovery_state[0].id
+  role         = "Viewer"
+  principal = {
+    id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_command" {
+  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_command[0].id
+  role         = "Viewer"
+  principal = {
+    id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_dispatch" {
+  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_dispatch[0].id
+  role         = "Viewer"
+  principal = {
+    id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_publication" {
+  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_publication[0].id
+  role         = "Viewer"
+  principal = {
+    id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_rbac_validation" {
+  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_rbac_validation[0].id
+  role         = "Viewer"
+  principal = {
+    id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_onelake_data_access_security" "ontology_evidence_ontology_discovery_state" {
+  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_discovery_state[0].id
+  item_id      = fabric_lakehouse.ontology_discovery_state[0].id
+  role_name    = "Phase13EvidenceRead"
+  decision_rules = [{
+    effect = "Permit"
+    permission = [
+      {
+        attribute_name              = "Path"
+        attribute_value_included_in = ["*"]
+      },
+      {
+        attribute_name              = "Action"
+        attribute_value_included_in = ["Read"]
+      },
+    ]
+  }]
+  members = {
+    microsoft_entra_members = [{
+      object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+      object_type = "ManagedIdentity"
+      tenant_id   = var.tenant_id
+    }]
+  }
+}
+
+resource "fabric_onelake_data_access_security" "ontology_evidence_ontology_command" {
+  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_command[0].id
+  item_id      = fabric_lakehouse.ontology_command[0].id
+  role_name    = "Phase13EvidenceRead"
+  decision_rules = [{
+    effect = "Permit"
+    permission = [
+      {
+        attribute_name              = "Path"
+        attribute_value_included_in = ["*"]
+      },
+      {
+        attribute_name              = "Action"
+        attribute_value_included_in = ["Read"]
+      },
+    ]
+  }]
+  members = {
+    microsoft_entra_members = [{
+      object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+      object_type = "ManagedIdentity"
+      tenant_id   = var.tenant_id
+    }]
+  }
+}
+
+resource "fabric_onelake_data_access_security" "ontology_evidence_ontology_dispatch" {
+  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_dispatch[0].id
+  item_id      = fabric_lakehouse.ontology_dispatch[0].id
+  role_name    = "Phase13EvidenceRead"
+  decision_rules = [{
+    effect = "Permit"
+    permission = [
+      {
+        attribute_name              = "Path"
+        attribute_value_included_in = ["*"]
+      },
+      {
+        attribute_name              = "Action"
+        attribute_value_included_in = ["Read"]
+      },
+    ]
+  }]
+  members = {
+    microsoft_entra_members = [{
+      object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+      object_type = "ManagedIdentity"
+      tenant_id   = var.tenant_id
+    }]
+  }
+}
+
+resource "fabric_onelake_data_access_security" "ontology_evidence_ontology_publication" {
+  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_publication[0].id
+  item_id      = fabric_lakehouse.ontology_publication[0].id
+  role_name    = "Phase13EvidenceRead"
+  decision_rules = [{
+    effect = "Permit"
+    permission = [
+      {
+        attribute_name              = "Path"
+        attribute_value_included_in = ["*"]
+      },
+      {
+        attribute_name              = "Action"
+        attribute_value_included_in = ["Read"]
+      },
+    ]
+  }]
+  members = {
+    microsoft_entra_members = [{
+      object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+      object_type = "ManagedIdentity"
+      tenant_id   = var.tenant_id
+    }]
+  }
+}
+
+resource "fabric_onelake_data_access_security" "ontology_evidence_ontology_rbac_validation" {
+  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_rbac_validation[0].id
+  item_id      = fabric_lakehouse.ontology_rbac_validation[0].id
+  role_name    = "Phase13EvidenceRead"
+  decision_rules = [{
+    effect = "Permit"
+    permission = [
+      {
+        attribute_name              = "Path"
+        attribute_value_included_in = ["*"]
+      },
+      {
+        attribute_name              = "Action"
+        attribute_value_included_in = ["Read"]
+      },
+    ]
+  }]
+  members = {
+    microsoft_entra_members = [{
+      object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+      object_type = "ManagedIdentity"
+      tenant_id   = var.tenant_id
+    }]
+  }
+}

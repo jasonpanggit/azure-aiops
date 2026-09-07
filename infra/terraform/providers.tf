@@ -67,4 +67,8 @@ provider "fabric" {
   tenant_id     = var.tenant_id
   client_id     = var.client_id
   client_secret = var.client_secret
+  # OneLake data-access roles are still a provider preview surface. This is
+  # enabled only so the five explicit Phase 13 read roles below can be
+  # managed; it does not opt any existing resource into broader access.
+  preview = true
 }
