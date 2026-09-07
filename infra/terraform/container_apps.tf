@@ -9,8 +9,8 @@ locals {
     random_password.apim_gateway_assertion.result,
   )
 
-  api_image = "${local.registry_server}/${var.api_image_repository}:${var.image_tag}"
-  web_image = "${local.registry_server}/${var.web_image_repository}:${var.image_tag}"
+  api_image = var.api_image_digest != "" ? "${local.registry_server}/${var.api_image_repository}@${var.api_image_digest}" : "${local.registry_server}/${var.api_image_repository}:${var.image_tag}"
+  web_image = var.web_image_digest != "" ? "${local.registry_server}/${var.web_image_repository}@${var.web_image_digest}" : "${local.registry_server}/${var.web_image_repository}:${var.image_tag}"
 
   # Placeholder used before the real images exist in the registry. Container
   # Apps requires an image at creation time, and a first apply necessarily
@@ -163,6 +163,29 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "AIOPS_HOME"
         value = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops" : "/tmp/aiops"
+      }
+
+      # The API receives exactly four ontology roots. It may read connection,
+      # state, and publication data and create immutable command intake, but
+      # it receives neither dispatch nor publisher credentials.
+      env {
+        name  = "AIOPS_CONNECTION_HOME"
+        value = local.ontology_connection_home
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_COMMAND_HOME"
+        value = local.ontology_command_home
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_STATE_HOME"
+        value = local.ontology_state_home
+      }
+
+      env {
+        name  = "AIOPS_ONTOLOGY_PUBLICATION_HOME"
+        value = local.ontology_publication_home
       }
 
       env {

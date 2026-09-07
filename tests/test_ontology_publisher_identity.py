@@ -178,6 +178,95 @@ def test_publisher_has_no_model_or_app_runtime_grant() -> None:
     assert "AIOPS_RUNTIME_MODE" not in validator
 
 
+def test_authoritative_capability_matrix_and_job_start_denials_are_exact() -> None:
+    identity = IDENTITY_TF.read_text(encoding="utf-8")
+    jobs = JOB_TF.read_text(encoding="utf-8")
+    api = _resource(
+        CONTAINER_APPS_TF.read_text(encoding="utf-8"),
+        "azurerm_container_app",
+        "api",
+    )
+    coordinator = _resource(
+        jobs, "azurerm_container_app_job", "ontology_discovery"
+    )
+    publisher = _resource(
+        jobs, "azurerm_container_app_job", "ontology_publisher"
+    )
+    curator = _resource(
+        FOUNDRY_TF.read_text(encoding="utf-8"),
+        "terraform_data",
+        "foundry_ontology_curator_agent",
+    )
+
+    assert {
+        "AIOPS_CONNECTION_HOME",
+        "AIOPS_ONTOLOGY_COMMAND_HOME",
+        "AIOPS_ONTOLOGY_STATE_HOME",
+        "AIOPS_ONTOLOGY_PUBLICATION_HOME",
+    } <= {
+        line.split('"')[1]
+        for line in api.splitlines()
+        if 'name  = "AIOPS_' in line
+    }
+    assert "AIOPS_ONTOLOGY_DISPATCH_HOME" not in api
+    assert "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID" not in api
+
+    for name in (
+        "AIOPS_CONNECTION_HOME",
+        "AIOPS_ONTOLOGY_COMMAND_HOME",
+        "AIOPS_ONTOLOGY_STATE_HOME",
+        "AIOPS_ONTOLOGY_DISPATCH_HOME",
+    ):
+        assert name in coordinator
+    assert "AIOPS_ONTOLOGY_PUBLICATION_HOME" not in coordinator
+    assert "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID" not in coordinator
+
+    for name in (
+        "AIOPS_CONNECTION_HOME",
+        "AIOPS_ONTOLOGY_COMMAND_HOME",
+        "AIOPS_ONTOLOGY_DISPATCH_HOME",
+        "AIOPS_ONTOLOGY_PUBLICATION_HOME",
+        "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID",
+    ):
+        assert name in publisher
+    assert "AIOPS_ONTOLOGY_STATE_HOME" not in publisher
+    assert "AIOPS_IDENTITY_CLASS" in publisher
+    assert 'value = "publisher"' in publisher
+
+    assert "Microsoft.App/jobs/start/action" not in jobs
+    assert "Microsoft.App/jobs/start/action" not in identity
+    assert 'role         = "Viewer"' in _resource(
+        identity,
+        "fabric_workspace_role_assignment",
+        "ontology_publication_api",
+    )
+    assert "Contributor" not in _resource(
+        identity,
+        "fabric_workspace_role_assignment",
+        "ontology_publication_api",
+    )
+    assert "role_definition_name" not in curator
+
+
+def test_dispatch_store_is_constructed_only_from_dispatch_root() -> None:
+    publisher_cli = (
+        ROOT / "src" / "ontology_discovery" / "publisher_cli.py"
+    ).read_text(encoding="utf-8")
+    runtime = (
+        ROOT / "src" / "ontology_discovery" / "runtime.py"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        'PublisherDispatchStore(config.roots["dispatch"]).publisher()'
+        in publisher_cli
+    )
+    assert (
+        "PublisherDispatchStore(config.dispatch_home).coordinator()" in runtime
+    )
+    assert "PublisherDispatchStore(config.state_home)" not in runtime
+    assert "PublisherDispatchStore(config.roots[\"publication\"])" not in publisher_cli
+
+
 def _token(client_id: str, object_id: str) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"none"}').decode().rstrip("=")
     claims = base64.urlsafe_b64encode(

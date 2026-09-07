@@ -81,3 +81,124 @@ resource "fabric_workspace_role_assignment" "ontology_publisher" {
     type = "ServicePrincipal"
   }
 }
+
+# Production command, dispatch, and publication roots are isolated from one
+# another so process composition cannot accidentally widen authority by
+# aliasing paths in the shared operational lakehouse.
+resource "fabric_workspace" "ontology_command" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name = "${local.base}-ontology-command"
+  description  = "Immutable ontology command intake for API, coordinator, and publisher reauthorization."
+  capacity_id  = data.fabric_capacity.main[0].id
+}
+
+resource "fabric_lakehouse" "ontology_command" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name = "ontology_command"
+  description  = "Create-only command envelopes and worker-owned status transitions."
+  workspace_id = fabric_workspace.ontology_command[0].id
+}
+
+resource "fabric_workspace" "ontology_dispatch" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name = "${local.base}-ontology-dispatch"
+  description  = "Publisher dispatch boundary shared only by coordinator and publisher."
+  capacity_id  = data.fabric_capacity.main[0].id
+}
+
+resource "fabric_lakehouse" "ontology_dispatch" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name = "ontology_dispatch"
+  description  = "Immutable publish and rollback dispatches with fenced worker receipts."
+  workspace_id = fabric_workspace.ontology_dispatch[0].id
+}
+
+resource "fabric_workspace" "ontology_publication" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name = "${local.base}-ontology-publication"
+  description  = "Authoritative staged ontology generations and active pointer."
+  capacity_id  = data.fabric_capacity.main[0].id
+}
+
+resource "fabric_lakehouse" "ontology_publication" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name = "ontology_publication"
+  description  = "Publisher-owned immutable generations and fenced active pointer."
+  workspace_id = fabric_workspace.ontology_publication[0].id
+}
+
+resource "fabric_workspace_role_assignment" "ontology_command_api" {
+  count        = var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_command[0].id
+  role         = "Contributor"
+  principal = {
+    id   = azurerm_user_assigned_identity.apps.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_command_coordinator" {
+  count        = var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_command[0].id
+  role         = "Contributor"
+  principal = {
+    id   = azurerm_user_assigned_identity.ontology_coordinator.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_command_publisher" {
+  count        = var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_command[0].id
+  role         = "Contributor"
+  principal = {
+    id   = azurerm_user_assigned_identity.ontology_publisher.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_dispatch_coordinator" {
+  count        = var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_dispatch[0].id
+  role         = "Contributor"
+  principal = {
+    id   = azurerm_user_assigned_identity.ontology_coordinator.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_dispatch_publisher" {
+  count        = var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_dispatch[0].id
+  role         = "Contributor"
+  principal = {
+    id   = azurerm_user_assigned_identity.ontology_publisher.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_publication_api" {
+  count        = var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_publication[0].id
+  role         = "Viewer"
+  principal = {
+    id   = azurerm_user_assigned_identity.apps.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_publication_publisher" {
+  count        = var.enable_fabric ? 1 : 0
+  workspace_id = fabric_workspace.ontology_publication[0].id
+  role         = "Contributor"
+  principal = {
+    id   = azurerm_user_assigned_identity.ontology_publisher.principal_id
+    type = "ServicePrincipal"
+  }
+}

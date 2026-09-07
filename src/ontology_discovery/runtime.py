@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import os
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -20,7 +22,7 @@ from onboarding.runtime import build_connection_inventory_pipeline
 from ontology.ontology_validator import OntologyValidator
 from ontology.subscription_connection import SubscriptionConnection
 from storage.fs import is_onelake_uri
-from storage.onelake_documents import OneLakeDocumentStore
+from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
 from .command_intake import (
     MANUAL_RUN,
@@ -47,6 +49,8 @@ _FORBIDDEN_COORDINATOR_ENV = frozenset(
         "AIOPS_PUBLISHER_CREDENTIAL",
     }
 )
+_FIXTURE_DOCUMENT = "ontology/validation-fixtures.json"
+_FIXTURE_ROLES = ("head-change", "retry-rotation", "later-restart")
 
 
 def validate_capability_roots(
@@ -90,11 +94,13 @@ class ProductionRuntimeConfig:
     ) -> ProductionRuntimeConfig:
         values = dict(os.environ if environ is None else environ)
         runtime_mode = _required(
-            values.get("AIOPS_RUNTIME_MODE"), "AIOPS_RUNTIME_MODE"
+            values.get("AIOPS_ONTOLOGY_ENVIRONMENT")
+            or values.get("AIOPS_RUNTIME_MODE"),
+            "AIOPS_ONTOLOGY_ENVIRONMENT",
         ).casefold()
         if runtime_mode not in _ALLOWED_RUNTIME_MODES:
             raise ValueError(
-                "AIOPS_RUNTIME_MODE must be production or validation"
+                "AIOPS_ONTOLOGY_ENVIRONMENT must be production or validation"
             )
         for forbidden in _FORBIDDEN_COORDINATOR_ENV:
             if str(values.get(forbidden) or "").strip():
@@ -209,6 +215,9 @@ class CoordinatorIntakeAdapter:
                     actor_hash=claimed["actor_hash"],
                     reason=claimed["reason"],
                     cadence_seconds=claimed.get("cadence_seconds"),
+                    expected_revision=int(
+                        claimed["expected_cadence_revision"]
+                    ),
                     now=moment,
                 )
             else:  # Defensive: the typed consumer should never return rollback.
@@ -724,6 +733,241 @@ class ProductionCoordinatorRuntime:
         await self.processor.curator.aclose()
 
 
+class ValidationFixtureLifecycle:
+    """Server-owned three-record validation fixture lifecycle."""
+
+    def __init__(
+        self,
+        *,
+        connection_home: str,
+        fixture_home: str,
+        state_home: str,
+        environment: str,
+        owner_id: str,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        if environment.strip().casefold() != "validation":
+            raise PermissionError("validation fixture lifecycle requires validation")
+        roots = {
+            value.rstrip("/").casefold()
+            for value in (connection_home, fixture_home, state_home)
+        }
+        if len(roots) != 3:
+            raise ValueError("fixture capability roots must be pairwise distinct")
+        self.registry = ConnectionRegistry(connection_home)
+        self.documents = OneLakeDocumentStore(fixture_home)
+        self.state = OntologyRunStore(
+            state_home,
+            document_store=OneLakeDocumentStore(state_home),
+        )
+        self.owner_hash = hashlib.sha256(
+            _required(owner_id, "owner_id").encode()
+        ).hexdigest()
+        self.now = now or (lambda: datetime.now(UTC))
+
+    def prepare(self) -> dict[str, Any]:
+        moment = self.now()
+        control = self._read_control()
+        active = [row for row in control["drills"] if row["status"] == "prepared"]
+        if active:
+            raise RuntimeError("exactly zero active fixture drills are required")
+        existing = [
+            row
+            for row in self.registry.list()
+            if row.connection_id.startswith("ontology-fixture-")
+        ]
+        if existing:
+            raise RuntimeError("fixture namespace must be empty")
+        drill_id = uuid.uuid4().hex
+        fence = int(control.get("last_fence") or 0) + 1
+        prefix = f"ontology-fixture-{drill_id[:12]}"
+        connection_ids = [f"{prefix}-{role}" for role in _FIXTURE_ROLES]
+        for index, (connection_id, role) in enumerate(
+            zip(connection_ids, _FIXTURE_ROLES, strict=True), start=1
+        ):
+            self.registry.add(
+                SubscriptionConnection(
+                    connection_id=connection_id,
+                    name=f"Ontology validation fixture {index}",
+                    tenant_id=str(
+                        uuid.uuid5(uuid.NAMESPACE_URL, f"{drill_id}:tenant")
+                    ),
+                    subscription_id=str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL, f"{drill_id}:subscription:{index}"
+                        )
+                    ),
+                    metadata={
+                        "environment": "validation",
+                        "ontology_discovery_enabled": True,
+                        "fixture_drill_hash": hashlib.sha256(
+                            drill_id.encode()
+                        ).hexdigest(),
+                        "fixture_role": role,
+                        "fixture_owner_hash": self.owner_hash,
+                        "fixture_fence": fence,
+                    },
+                )
+            )
+        revision = self.registry.revision()
+        epoch = self.state.ensure_eligible_epoch(
+            member_ids=connection_ids,
+            registry_revision=revision,
+            registry_hash=_hash_json(connection_ids),
+            now=moment,
+        )
+        record = {
+            "drill_id": drill_id,
+            "drill_hash": hashlib.sha256(drill_id.encode()).hexdigest(),
+            "owner_hash": self.owner_hash,
+            "fence": fence,
+            "status": "prepared",
+            "connection_ids": connection_ids,
+            "connection_set_hash": _hash_json(connection_ids),
+            "epoch_id": epoch["epoch_id"],
+            "prepared_at": moment.isoformat(),
+            "expires_at": (moment + timedelta(hours=2)).isoformat(),
+            "template_hash": _hash_json(
+                {"roles": _FIXTURE_ROLES, "count": 3, "version": 1}
+            ),
+            "receipts": [{"event": "prepared", "at": moment.isoformat()}],
+        }
+        control["drills"].append(record)
+        control["last_fence"] = fence
+        self._write_control(control)
+        return copy.deepcopy(record)
+
+    def cleanup(self) -> dict[str, Any]:
+        return self._cleanup(expired_only=False)
+
+    def sweep_expired(self) -> dict[str, int]:
+        control = self._read_control()
+        moment = self.now()
+        expired = [
+            row
+            for row in control["drills"]
+            if row["status"] == "prepared"
+            and datetime.fromisoformat(row["expires_at"]) <= moment
+        ]
+        swept = 0
+        for _row in expired:
+            self._cleanup(expired_only=True)
+            swept += 1
+        return {"swept": swept}
+
+    def _cleanup(self, *, expired_only: bool) -> dict[str, Any]:
+        moment = self.now()
+        control = self._read_control()
+        active = [row for row in control["drills"] if row["status"] == "prepared"]
+        if len(active) != 1:
+            raise RuntimeError("exactly one active fixture drill is required")
+        record = active[0]
+        expired = datetime.fromisoformat(record["expires_at"]) <= moment
+        if expired_only and not expired:
+            raise RuntimeError("active fixture drill has not expired")
+        if record["owner_hash"] != self.owner_hash:
+            raise PermissionError("fixture owner changed")
+        if int(record["fence"]) != int(control["last_fence"]):
+            raise RuntimeError("fixture fence changed")
+        for connection_id in record["connection_ids"]:
+            connection = self.registry.get(connection_id)
+            metadata = connection.metadata
+            if (
+                metadata.get("fixture_owner_hash") != self.owner_hash
+                or int(metadata.get("fixture_fence") or 0) != record["fence"]
+            ):
+                raise PermissionError("fixture connection ownership changed")
+        for connection_id in record["connection_ids"]:
+            self.registry.delete(connection_id)
+        self.state.remove_fixture_epoch(
+            record["epoch_id"],
+            expected_member_ids=record["connection_ids"],
+            now=moment,
+        )
+        record["status"] = "swept" if expired_only else "cleaned"
+        record["receipts"].append(
+            {"event": record["status"], "at": moment.isoformat()}
+        )
+        self._write_control(control)
+        return copy.deepcopy(record)
+
+    def _read_control(self) -> dict[str, Any]:
+        payload = self.documents.read_or_raise(_FIXTURE_DOCUMENT)
+        return {
+            "revision": int(payload.get("revision") or 0),
+            "last_fence": int(payload.get("last_fence") or 0),
+            "drills": copy.deepcopy(list(payload.get("drills") or [])),
+        }
+
+    def _write_control(self, control: dict[str, Any]) -> None:
+        expected = int(control["revision"])
+        control["revision"] = expected + 1
+        try:
+            self.documents.write(
+                _FIXTURE_DOCUMENT,
+                control,
+                expected_revision=expected,
+            )
+        except DocumentConflictError as exc:
+            raise RuntimeError("fixture control changed") from exc
+
+
+def _fixture_lifecycle_from_env() -> ValidationFixtureLifecycle:
+    return ValidationFixtureLifecycle(
+        connection_home=_required(
+            os.environ.get("AIOPS_CONNECTION_HOME"), "AIOPS_CONNECTION_HOME"
+        ),
+        fixture_home=_required(
+            os.environ.get("AIOPS_ONTOLOGY_FIXTURE_HOME"),
+            "AIOPS_ONTOLOGY_FIXTURE_HOME",
+        ),
+        state_home=_required(
+            os.environ.get("AIOPS_ONTOLOGY_STATE_HOME"),
+            "AIOPS_ONTOLOGY_STATE_HOME",
+        ),
+        environment=_required(
+            os.environ.get("AIOPS_ONTOLOGY_ENVIRONMENT"),
+            "AIOPS_ONTOLOGY_ENVIRONMENT",
+        ),
+        owner_id=_required(os.environ.get("AZURE_CLIENT_ID"), "AZURE_CLIENT_ID"),
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run one fixed validation fixture lifecycle command."""
+
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "command",
+        choices=("fixture-prepare", "fixture-cleanup", "fixture-sweep"),
+    )
+    args = parser.parse_args(argv)
+    lifecycle = _fixture_lifecycle_from_env()
+    result = (
+        lifecycle.prepare()
+        if args.command == "fixture-prepare"
+        else (
+            lifecycle.cleanup()
+            if args.command == "fixture-cleanup"
+            else lifecycle.sweep_expired()
+        )
+    )
+    print(
+        json.dumps(
+            {
+                "status": result.get("status", "completed"),
+                "count": len(result.get("connection_ids", [])),
+                "swept": int(result.get("swept", 0)),
+                "drill_hash": result.get("drill_hash", ""),
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def build_production_runtime(
     *,
     environ: Mapping[str, str] | None = None,
@@ -840,6 +1084,12 @@ __all__ = [
     "ProductionConnectionProcessor",
     "ProductionCoordinatorRuntime",
     "ProductionRuntimeConfig",
+    "ValidationFixtureLifecycle",
     "build_production_runtime",
+    "main",
     "validate_capability_roots",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

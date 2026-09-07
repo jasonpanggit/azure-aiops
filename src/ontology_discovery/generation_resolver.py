@@ -253,7 +253,7 @@ class GenerationResolver:
                     body = Path(pointer_path).read_bytes()
                 except OSError:
                     return ""
-                return hashlib.sha256(body).hexdigest()
+                return f'"sha256:{hashlib.sha256(body).hexdigest()}"'
         return str(pointer.get("etag") or pointer.get("pointer_etag") or "")
 
     def _generation_path(self, name: str) -> str:

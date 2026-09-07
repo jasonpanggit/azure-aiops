@@ -172,6 +172,10 @@ ENV_GATEWAY_ASSERTION = "AIOPS_GATEWAY_ASSERTION"
 ENV_REMEDIATION_VERIFICATION_DEADLINE_SECONDS = (
     "AIOPS_REMEDIATION_VERIFICATION_DEADLINE_SECONDS"
 )
+ENV_CONNECTION_HOME = "AIOPS_CONNECTION_HOME"
+ENV_ONTOLOGY_STATE_HOME = "AIOPS_ONTOLOGY_STATE_HOME"
+ENV_ONTOLOGY_PUBLICATION_HOME = "AIOPS_ONTOLOGY_PUBLICATION_HOME"
+ENV_ONTOLOGY_COMMAND_HOME = "AIOPS_ONTOLOGY_COMMAND_HOME"
 ENV_EXPOSURE_ROLLOUT_AUTHORIZED = "AIOPS_EXPOSURE_ROLLOUT_AUTHORIZED"
 ENV_EXPOSURE_WRITE_STAGE = "AIOPS_EXPOSURE_WRITE_STAGE"
 ENV_EXPOSURE_READ_STAGE = "AIOPS_EXPOSURE_READ_STAGE"
@@ -245,30 +249,85 @@ before/after rows in one export.
 
 def _load_ontology_discovery_api(
     onboarding: SubscriptionOnboardingService,
+    roots: Mapping[str, str],
 ) -> Any:
     """Build a restart-safe API facade with no publisher credential."""
 
     from api.routers.ontology_discovery import OntologyDiscoveryApi
+    from ontology_discovery.command_intake import CommandIntakeService
+    from ontology_discovery.store import OntologyRunStore
     from storage.datasets import DatasetStore
 
-    root = aiops_home()
-
     def generation_resolver(connection_id: str) -> GenerationResolver:
-        return GenerationResolver(
-            DatasetStore(
-                _connection_dataset_dir(str(root), connection_id)
-            )
-        )
+        del connection_id
+        return GenerationResolver(DatasetStore(roots["publication"]))
 
     return OntologyDiscoveryApi(
         onboarding=onboarding,
-        run_store=onboarding.ontology_run_store,
-        evaluation_store=EvaluationSnapshotStore(root),
+        run_store=OntologyRunStore(
+            Path("."),
+            document_store=OneLakeDocumentStore(roots["state"]),
+        ),
+        evaluation_store=EvaluationSnapshotStore(
+            document_store=OneLakeDocumentStore(roots["state"])
+        ),
         generation_resolver_factory=generation_resolver,
-        # Rollback remains a narrow publisher-service action. The API process
-        # intentionally has no credential or direct pointer/stage capability.
+        command_intake=CommandIntakeService(roots["command"]),
+        connection_reader=ConnectionRegistry(roots["connection"]).get,
         rollback_action=None,
     )
+
+
+def _ontology_api_roots(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Resolve the API's exact read/read/read/create capability roots."""
+
+    from storage.fs import join_root
+
+    values = dict(os.environ if environ is None else environ)
+    mode = str(values.get(ENV_RUNTIME_MODE) or "validation").strip().casefold()
+    base = str(values.get(ENV_HOME) or str(Path.home() / ".aiops")).strip()
+    env_names = {
+        "connection": ENV_CONNECTION_HOME,
+        "state": ENV_ONTOLOGY_STATE_HOME,
+        "publication": ENV_ONTOLOGY_PUBLICATION_HOME,
+        "command": ENV_ONTOLOGY_COMMAND_HOME,
+    }
+    if mode == "production":
+        roots = {
+            name: str(values.get(env_name) or "").strip()
+            for name, env_name in env_names.items()
+        }
+        for name, value in roots.items():
+            if not value:
+                raise ValueError(f"{env_names[name]} must not be empty")
+            if not is_onelake_uri(value):
+                raise ValueError(
+                    f"{env_names[name]} must be an explicit OneLake URI"
+                )
+    else:
+        roots = {
+            "connection": str(
+                values.get(ENV_CONNECTION_HOME) or base
+            ).strip(),
+            "state": str(
+                values.get(ENV_ONTOLOGY_STATE_HOME)
+                or join_root(base, "ontology-api-state")
+            ).strip(),
+            "publication": str(
+                values.get(ENV_ONTOLOGY_PUBLICATION_HOME)
+                or join_root(base, "ontology-publication")
+            ).strip(),
+            "command": str(
+                values.get(ENV_ONTOLOGY_COMMAND_HOME)
+                or join_root(base, "ontology-command-intake")
+            ).strip(),
+        }
+    normalized = {value.rstrip("/").casefold() for value in roots.values()}
+    if len(normalized) != len(roots):
+        raise ValueError("Ontology API capability roots must be pairwise distinct")
+    return roots
 
 AUTH_GATEWAY = "gateway"
 AUTH_ENTRA = "entra"
@@ -426,7 +485,10 @@ def build_authenticator():
     )
 
 
-def _onboarding_service() -> SubscriptionOnboardingService:
+def _onboarding_service(
+    output_dir: str | Path | None = None,
+    command_home: str | None = None,
+) -> SubscriptionOnboardingService:
     """Build the onboarding service with a real ingestion factory wired in.
 
     Without this, `SubscriptionOnboardingService` falls back to no
@@ -441,15 +503,24 @@ def _onboarding_service() -> SubscriptionOnboardingService:
     config = (
         ConnectorConfig.load(config_path)
         if config_path
-        else ConnectorConfig(output_dir=aiops_home())
+        else ConnectorConfig(output_dir=output_dir or aiops_home())
     )
+    if output_dir is not None and str(config.output_dir) != str(output_dir):
+        import dataclasses
+
+        config = dataclasses.replace(config, output_dir=output_dir)
     vault = os.environ.get(ENV_CONNECTION_KEY_VAULT, "").strip()
-    return build_onboarding_service(
+    service = build_onboarding_service(
         config,
         secret_writer=KeyVaultSecretWriter(vault) if vault else None,
         config_path=config_path,
         fabric_config_path=os.environ.get(ENV_FABRIC_CONFIG, "").strip(),
     )
+    if command_home is not None:
+        from ontology_discovery.command_intake import CommandIntakeService
+
+        service.ontology_command_intake = CommandIntakeService(command_home)
+    return service
 
 
 def _connection_dataset_dir(root: str, connection_id: str) -> str:
@@ -3588,7 +3659,11 @@ def _load_eol_review_service() -> Any:
 
 def build_context() -> ApiContext:
     """Assemble the default context from the environment."""
-    onboarding = _onboarding_service()
+    ontology_roots = _ontology_api_roots()
+    onboarding = _onboarding_service(
+        ontology_roots["connection"],
+        command_home=ontology_roots["command"],
+    )
     providers = _build_provider_runtime(onboarding)
     # Investigation ledgers are the audit trail for operator decisions, so they
     # are written through to OneLake and survive replica restarts. A local
@@ -4174,5 +4249,7 @@ def build_context() -> ApiContext:
         exposure_remediation_provider=exposure_remediation,
         fabric_iq_provider=lambda: providers.get("fabric_iq", optional=True),
         verification_coordinator_provider=_verification_coordinator,
-        ontology_discovery_provider=lambda: _load_ontology_discovery_api(onboarding),
+        ontology_discovery_provider=lambda: _load_ontology_discovery_api(
+            onboarding, ontology_roots
+        ),
     )

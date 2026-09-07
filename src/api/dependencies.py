@@ -330,6 +330,16 @@ def require_write(principal: CurrentPrincipal, context: Context) -> Principal:
     return principal
 
 
+def require_maintain_ontology(
+    principal: CurrentPrincipal, context: Context
+) -> Principal:
+    context.authorizer.require(principal, "maintain_ontology")
+    return principal
+
+
 OperatePrincipal = Annotated[Principal, Depends(require_operate)]
 ApprovePrincipal = Annotated[Principal, Depends(require_approve)]
 WritePrincipal = Annotated[Principal, Depends(require_write)]
+MaintainOntologyPrincipal = Annotated[
+    Principal, Depends(require_maintain_ontology)
+]
