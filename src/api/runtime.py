@@ -3182,7 +3182,11 @@ def _remediation_decision_store() -> RemediationDecisionStore:
     if _REMEDIATION_DECISION_STORE is None:
         root = aiops_home()
         documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
-        path = None if documents is not None else root / "state" / "remediation_decisions.json"
+        path = (
+            None
+            if documents is not None
+            else Path(str(root)) / "state" / "remediation_decisions.json"
+        )
         _REMEDIATION_DECISION_STORE = RemediationDecisionStore(
             path=path,
             document_store=documents,
@@ -3198,7 +3202,11 @@ def _remediation_execution_store() -> RemediationExecutionStore:
     if _REMEDIATION_EXECUTION_STORE is None:
         root = aiops_home()
         documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
-        path = None if documents is not None else root / "state" / "remediation_executions.json"
+        path = (
+            None
+            if documents is not None
+            else Path(str(root)) / "state" / "remediation_executions.json"
+        )
         _REMEDIATION_EXECUTION_STORE = RemediationExecutionStore(
             path=path,
             document_store=documents,
