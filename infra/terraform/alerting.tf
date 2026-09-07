@@ -308,7 +308,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "ontology_discovery" {
   name                 = "${local.base}-ontology-${replace(each.key, "_", "-")}"
   resource_group_name  = azurerm_resource_group.main.name
   location             = azurerm_resource_group.main.location
-  evaluation_frequency = each.value.tier == "immediate" ? "PT1M" : each.value.tier == "page" ? "PT5M" : each.value.tier == "hour" ? "PT15M" : "P1D"
+  evaluation_frequency = each.value.tier == "immediate" ? "PT5M" : each.value.tier == "page" ? "PT5M" : each.value.tier == "hour" ? "PT15M" : "P1D"
   window_duration      = each.value.window
   scopes               = [azurerm_application_insights.main.id]
   severity             = each.value.severity

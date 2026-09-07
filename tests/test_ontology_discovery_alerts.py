@@ -178,6 +178,7 @@ def test_terraform_defines_actioned_rule_for_every_catalog_entry() -> None:
     assert 'Name == "ontology.discovery.alert.signal"' in terraform
     assert 'tostring(Properties.rule) == "${each.key}"' in terraform
     assert "== each.key" not in terraform
+    assert 'each.value.tier == "immediate" ? "PT5M"' in terraform
     assert "ontology-operations" in terraform
     for rule_id, (
         tier,
