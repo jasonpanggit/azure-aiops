@@ -1,9 +1,11 @@
 {
   "generated_at": "2026-09-07T14:56:57.341884+00:00",
+  "superseded_at": "2026-09-07T15:02:00+00:00",
+  "superseded_reason_code": "concurrent_shared_deployment",
   "live": {
     "api_apps_identity": true,
     "api_has_no_publisher_credential": true,
-    "applied": true,
+    "applied": false,
     "coordinator_role_set_hash": "sha256:559a20bd88f0d8b2d336e6136003f8f7e6090b3bbcd2bc4bab7700cd9e22bf03",
     "coordinator_tag_hash": "sha256:ca63068060c6d594f1e954df68421a69c313c389aec73231fd98456c0bfed8d5",
     "deployment_action_set_hash": "sha256:73f10b247704d2147a01fb495c0d33b693cc59056515c7244e83c17832a4b87f",
@@ -186,5 +188,5 @@
     }
   },
   "schema_version": "1.0.0",
-  "status": "applied"
+  "status": "superseded"
 }

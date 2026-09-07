@@ -527,8 +527,19 @@ def validate_deployment_evidence(
     _reject_sensitive_evidence(evidence)
     if evidence.get("schema_version") != "1.0.0":
         raise PlanValidationError("deployment evidence schema changed")
-    if require_applied and evidence.get("status") != "applied":
+    status = evidence.get("status")
+    if status not in {"applied", "superseded"}:
+        raise PlanValidationError("deployment evidence status changed")
+    if require_applied and status != "applied":
         raise PlanValidationError("deployment evidence is not applied")
+    if status == "superseded" and (
+        not isinstance(evidence.get("superseded_at"), str)
+        or evidence.get("superseded_reason_code")
+        != "concurrent_shared_deployment"
+    ):
+        raise PlanValidationError(
+            "superseded deployment evidence lacks closed checkpoint metadata"
+        )
     plans = evidence.get("plans")
     if not isinstance(plans, Mapping) or set(plans) != {
         "production",
@@ -557,6 +568,10 @@ def validate_deployment_evidence(
         raise PlanValidationError("live evidence missing")
     if require_applied and live.get("applied") is not True:
         raise PlanValidationError("live apply evidence missing")
+    if status == "superseded" and live.get("applied") is not False:
+        raise PlanValidationError(
+            "superseded deployment evidence cannot claim current live apply"
+        )
     required_true = (
         "no_runtime_job_start_grants",
         "deployment_principal_fixture_access",
