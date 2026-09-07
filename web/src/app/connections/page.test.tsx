@@ -28,6 +28,17 @@ const {
   health,
   list,
   mapMetadata,
+  ontologyCancelRun,
+  ontologyEvaluation,
+  ontologyEvaluations,
+  ontologyGeneration,
+  ontologyProposals,
+  ontologyPublications,
+  ontologyRetryRun,
+  ontologyReviewProposal,
+  ontologyRunNow,
+  ontologyRuns,
+  ontologyStatus,
   sync,
   updateConnection,
 } = vi.hoisted(() => ({
@@ -42,6 +53,17 @@ const {
   health: vi.fn(),
   list: vi.fn(),
   mapMetadata: vi.fn(),
+  ontologyCancelRun: vi.fn(),
+  ontologyEvaluation: vi.fn(),
+  ontologyEvaluations: vi.fn(),
+  ontologyGeneration: vi.fn(),
+  ontologyProposals: vi.fn(),
+  ontologyPublications: vi.fn(),
+  ontologyRetryRun: vi.fn(),
+  ontologyReviewProposal: vi.fn(),
+  ontologyRunNow: vi.fn(),
+  ontologyRuns: vi.fn(),
+  ontologyStatus: vi.fn(),
   sync: vi.fn(),
   updateConnection: vi.fn(),
 }));
@@ -64,6 +86,22 @@ vi.mock("@/lib/services", () => ({
     governance: fabricGovernance,
     ingestionHistory: fabricIngestionHistory,
     capabilities: fabricCapabilities,
+  },
+  ontologyAutomationApi: {
+    status: ontologyStatus,
+    runs: ontologyRuns,
+    run: vi.fn(),
+    runNow: ontologyRunNow,
+    cancelRun: ontologyCancelRun,
+    retryRun: ontologyRetryRun,
+    proposals: ontologyProposals,
+    proposal: vi.fn(),
+    reviewProposal: ontologyReviewProposal,
+    generation: ontologyGeneration,
+    publications: ontologyPublications,
+    rollbackGeneration: vi.fn(),
+    evaluation: ontologyEvaluation,
+    evaluations: ontologyEvaluations,
   },
 }));
 
@@ -171,6 +209,150 @@ function mockFabricHealth(tableNames: string[] = ["bronze_resources", "silver_in
   fabricDataset.mockImplementation((tableName: string) => Promise.resolve(envelope(dataset(tableName, "healthy", 12))));
 }
 
+const ontologyRun = {
+  run_id: "ODR-001",
+  connection_id: connection.connection_id,
+  source_generation_id: "generation-1",
+  trigger: "manual",
+  status: "running",
+  revision: 4,
+  attempt_count: 1,
+  max_attempts: 3,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:05:00Z",
+  deadline_at: "2026-01-01T01:00:00Z",
+  next_attempt_at: null,
+  lease_expires_at: "2026-01-01T00:10:00Z",
+  fencing_token: 8,
+  cancel_requested: false,
+  checkpoint: {
+    name: "discovering",
+    payload: { proposal_count: 3, accepted_count: 1, published_count: 0 },
+  },
+  failure_class: null,
+  message: "",
+  can_cancel: true,
+  can_retry: false,
+  disabled_reasons: { cancel: "", retry: "run_not_terminal" },
+} as const;
+
+const ontologyGenerationData = {
+  status: "active",
+  active_generation: "generation-2",
+  prior_generation: "generation-1",
+  source_generation: "generation-1",
+  pointer_etag: "etag-2",
+  fence: 8,
+  complete: true,
+  validation: { passed: true, errors: [], model_derived_relationships: 0 },
+  compatibility: { all_consumers_compatible: true },
+  publication: { intent: "validated", result: "published" },
+  can_rollback: true,
+  rollback_disabled_reason: "",
+} as const;
+
+const ontologySnapshot = {
+  contract_version: "1.0.0",
+  snapshot_id: `EVS-${"A".repeat(64)}`,
+  scope_key: `scope-${"a".repeat(32)}`,
+  scope_hash: "a".repeat(32),
+  observed_at: "2026-01-01T00:00:00Z",
+  evaluated_at: "2026-01-01T00:05:00Z",
+  expires_at: "2026-01-01T01:05:00Z",
+  lineage: {
+    dataset_version: "wave0-v1",
+    dataset_hash: "1".repeat(64),
+    prompt_version: "curator-v3",
+    prompt_hash: "2".repeat(64),
+    schema_version: "proposal-v2",
+    schema_hash: "3".repeat(64),
+    model_version: "gpt-5.4-mini",
+    model_hash: "4".repeat(64),
+    agent_version: "ontology-curator-v5",
+    agent_hash: "5".repeat(64),
+    policy_version: "ontology-policy-v7",
+    policy_hash: "6".repeat(64),
+  },
+  source_expiries: [
+    {
+      source: "azure-resource-graph",
+      observed_at: "2026-01-01T00:00:00Z",
+      expires_at: "2026-01-01T01:05:00Z",
+    },
+  ],
+  slice_metrics: [
+    {
+      metric: "precision",
+      slice_key: "overall",
+      numerator: 99,
+      denominator: 100,
+      value: 0.99,
+      critical: true,
+    },
+  ],
+  thresholds: [
+    { metric: "precision", slice_key: "overall", minimum: 0.98, critical: true },
+  ],
+  critical_failures: [],
+  release_eligible: true,
+  artifact_references: [],
+} as const;
+
+function ontologyStatusData(currentRun: typeof ontologyRun | null = ontologyRun) {
+  return {
+    scheduler: {
+      owner: "external_job",
+      api_owned: false,
+      state: "available",
+      can_run_now: currentRun === null,
+      run_now_disabled_reason: currentRun === null ? "" : "active_run_exists",
+      enabled: true,
+      cadence: "Every 6 hours",
+      next_due_at: "2026-01-01T06:00:00Z",
+      last_trigger_at: "2026-01-01T00:00:00Z",
+    },
+    current_run: currentRun,
+    incremental: {
+      checkpoint: currentRun?.checkpoint.name ?? "",
+      pending_relationships: [],
+      pending_count: 0,
+      added_count: 4,
+      changed_count: 2,
+      retired_count: 1,
+      unresolved_count: 0,
+      stale_count: 0,
+      last_reconciliation_at: "2026-01-01T00:05:00Z",
+      last_reconciliation_result: "succeeded",
+    },
+    proposals: { pending_count: 0, total: 0 },
+    generation: ontologyGenerationData,
+    evaluation: {
+      status: "fresh",
+      reason: "evaluation_snapshot_fresh",
+      pointer_revision: 2,
+      snapshot: ontologySnapshot,
+      release_eligible: true,
+      release_disabled_reason: "",
+    },
+  };
+}
+
+function mockOntologyAutomation() {
+  ontologyStatus.mockResolvedValue(envelope(ontologyStatusData()));
+  ontologyRuns.mockResolvedValue(envelope([ontologyRun]));
+  ontologyProposals.mockResolvedValue(envelope([]));
+  ontologyGeneration.mockResolvedValue(envelope(ontologyGenerationData));
+  ontologyPublications.mockResolvedValue(envelope([ontologyRun]));
+  ontologyEvaluation.mockResolvedValue(envelope(ontologyStatusData().evaluation));
+  ontologyEvaluations.mockResolvedValue(envelope([ontologySnapshot]));
+  ontologyRunNow.mockResolvedValue(envelope({ ...ontologyRun, status: "queued" }));
+  ontologyCancelRun.mockResolvedValue(envelope({ ...ontologyRun, status: "cancelled" }));
+  ontologyRetryRun.mockResolvedValue(envelope({ ...ontologyRun, status: "retrying" }));
+  ontologyReviewProposal.mockResolvedValue(
+    envelope({ proposal_id: "OPR-1", status: "accepted", revision: 2, events: [] }),
+  );
+}
+
 describe("Ontology automation typed client contract", () => {
   it("requires a selected connection and effective scope for every durable read", () => {
     type OntologyApi = typeof import("@/lib/services").ontologyAutomationApi;
@@ -230,6 +412,170 @@ describe("Ontology automation typed client contract", () => {
     expectTypeOf<ReturnType<OntologyApi["reviewProposal"]>>().toEqualTypeOf<
       Promise<Envelope<OntologyProposal["review"]>>
     >();
+  });
+});
+
+describe("Connections page Ontology automation tab", () => {
+  beforeEach(() => {
+    list.mockReset();
+    ontologyStatus.mockReset();
+    ontologyRuns.mockReset();
+    ontologyProposals.mockReset();
+    ontologyGeneration.mockReset();
+    ontologyPublications.mockReset();
+    ontologyEvaluation.mockReset();
+    ontologyEvaluations.mockReset();
+    ontologyRunNow.mockReset();
+    ontologyCancelRun.mockReset();
+    ontologyRetryRun.mockReset();
+    ontologyReviewProposal.mockReset();
+    list.mockResolvedValue({ ...emptyEnvelope, data: [connection] });
+    mockOntologyAutomation();
+  });
+
+  it("adds the approved tab and binds every durable section to the selected in-scope connection", async () => {
+    renderConnectionsPageWithScope(connection.subscription_id);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+
+    expect(await screen.findByRole("heading", { name: "Ontology automation" })).toBeInTheDocument();
+    expect(screen.getByText("Monitor scheduled discovery, review proposed relationships, and manage validated Fabric ontology generations for one onboarded connection.")).toBeInTheDocument();
+    expect(screen.getByRole("tabpanel", { name: "Ontology automation" })).toHaveAttribute("id", "ontology-automation-panel");
+    expect(screen.getByRole("combobox", { name: "Connection" })).toHaveValue(connection.connection_id);
+
+    await waitFor(() => {
+      const expectedScope = { subscription: [connection.subscription_id] };
+      expect(ontologyStatus).toHaveBeenCalledWith(connection.connection_id, expectedScope);
+      expect(ontologyRuns).toHaveBeenCalledWith(connection.connection_id, expectedScope);
+      expect(ontologyProposals).toHaveBeenCalledWith(connection.connection_id, expectedScope);
+      expect(ontologyGeneration).toHaveBeenCalledWith(connection.connection_id, expectedScope);
+      expect(ontologyPublications).toHaveBeenCalledWith(connection.connection_id, expectedScope);
+      expect(ontologyEvaluation).toHaveBeenCalledWith(connection.connection_id, expectedScope);
+      expect(ontologyEvaluations).toHaveBeenCalledWith(connection.connection_id, expectedScope);
+    });
+  });
+
+  it("uses only server eligibility and preserves stale evaluation evidence with the disabled reason", async () => {
+    ontologyStatus.mockResolvedValue(envelope({
+      ...ontologyStatusData(),
+      scheduler: {
+        ...ontologyStatusData().scheduler,
+        can_run_now: false,
+        run_now_disabled_reason: "active_run_exists",
+      },
+      current_run: {
+        ...ontologyRun,
+        can_cancel: false,
+        disabled_reasons: { cancel: "lease_lost", retry: "run_not_terminal" },
+      },
+    }));
+    ontologyGeneration.mockResolvedValue(envelope({
+      ...ontologyGenerationData,
+      can_rollback: false,
+      rollback_disabled_reason: "publisher_action_unavailable",
+    }));
+    ontologyEvaluation.mockResolvedValue(envelope({
+      status: "stale",
+      reason: "evaluation_snapshot_expired",
+      pointer_revision: 2,
+      snapshot: ontologySnapshot,
+      release_eligible: false,
+      release_disabled_reason: "evaluation_snapshot_expired",
+    }));
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+
+    expect(await screen.findByText(ontologySnapshot.snapshot_id)).toBeInTheDocument();
+    expect(screen.getByText("Evaluation snapshot is stale. Release remains disabled until fresh evaluation evidence is restored.")).toBeInTheDocument();
+    expect(screen.getByText(/evaluation_snapshot_expired/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run discovery now" })).toBeDisabled();
+    expect(screen.getByText("active_run_exists")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel run" })).toBeDisabled();
+    expect(screen.getByText("lease_lost")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Roll back generation" })).toBeDisabled();
+    expect(screen.getByText("publisher_action_unavailable")).toBeInTheDocument();
+  });
+
+  it("keeps successful sections visible when sibling ontology sources fail", async () => {
+    ontologyProposals.mockRejectedValue(new Error("proposal provider offline"));
+    ontologyGeneration.mockRejectedValue(new Error("generation pointer offline"));
+    ontologyRuns.mockRejectedValue(new Error("run history offline"));
+    ontologyPublications.mockRejectedValue(new Error("publication history offline"));
+    ontologyEvaluation.mockRejectedValue(new Error("evaluation store offline"));
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+
+    expect(await screen.findByText("Relationship proposals are unavailable. No review decision was changed. Refresh proposals before acting.")).toBeInTheDocument();
+    expect(screen.getByText("Ontology generation status is unavailable. Do not assume publication completed. Refresh generation status.")).toBeInTheDocument();
+    expect(screen.getByText("Discovery run history is unavailable. Current run state was not changed. Refresh run history.")).toBeInTheDocument();
+    expect(screen.getByText("Publication attempt history is unavailable. The active generation was not changed. Refresh publication history.")).toBeInTheDocument();
+    expect(screen.getByText("Agent evaluation status is unavailable. Auto-accept remains disabled until evaluation evidence is restored.")).toBeInTheDocument();
+    expect(screen.getByText("Scheduler state")).toBeInTheDocument();
+    expect(screen.getByText("Incremental discovery")).toBeInTheDocument();
+  });
+
+  it("renders exact empty and degraded copy without conflating agent and deterministic discovery", async () => {
+    ontologyStatus.mockResolvedValue(envelope({
+      ...ontologyStatusData(null),
+      evaluation: {
+        status: "missing",
+        reason: "evaluation_pointer_missing",
+        pointer_revision: null,
+        snapshot: null,
+        release_eligible: false,
+        release_disabled_reason: "evaluation_pointer_missing",
+      },
+    }));
+    ontologyRuns.mockResolvedValue(envelope([]));
+    ontologyProposals.mockResolvedValue(envelope([]));
+    ontologyPublications.mockResolvedValue(envelope([]));
+    ontologyEvaluation.mockResolvedValue(envelope({
+      status: "missing",
+      reason: "evaluation_pointer_missing",
+      pointer_revision: null,
+      snapshot: null,
+      release_eligible: false,
+      release_disabled_reason: "evaluation_pointer_missing",
+    }));
+    ontologyEvaluations.mockResolvedValue(envelope([]));
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+
+    expect(await screen.findByText("Ontology discovery has not run for this connection")).toBeInTheDocument();
+    expect(screen.getByText("No relationship proposals need review")).toBeInTheDocument();
+    expect(screen.getByText("No discovery run history is available for this connection.")).toBeInTheDocument();
+    expect(screen.getByText("No ontology publication attempts are available. Existing Fabric data is unchanged.")).toBeInTheDocument();
+    expect(screen.getByText("No relationships are waiting for unresolved endpoints.")).toBeInTheDocument();
+    expect(screen.getByText("Relationship proposal agent is unavailable. Deterministic discovery can continue; no model proposals will be promoted.")).toBeInTheDocument();
+  });
+
+  it("uses exact destructive confirmations and observed concurrency values", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+    expect(confirm).toHaveBeenCalledWith(
+      "Cancel run ODR-001? Work stops at the next safe checkpoint. The active ontology generation will not change.",
+    );
+    await waitFor(() => {
+      expect(ontologyCancelRun).toHaveBeenCalledWith(
+        connection.connection_id,
+        ontologyRun.run_id,
+        {},
+        expect.objectContaining({ expected_revision: 4 }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Roll back generation" }));
+    expect(confirm).toHaveBeenCalledWith(
+      "Roll back to generation generation-1? This changes the active pointer and preserves both generations and the audit history.",
+    );
+    confirm.mockRestore();
   });
 });
 
