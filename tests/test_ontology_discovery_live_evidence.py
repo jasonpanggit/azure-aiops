@@ -25,6 +25,7 @@ from scripts.validate_ontology_discovery_live import (
     load_resume_checkpoint,
     main,
     sanitize_deployed_evidence,
+    validate_evidence_job_record,
     validate_azure_contexts,
     write_resume_checkpoint,
 )
@@ -67,13 +68,14 @@ def _complete_lifecycle() -> dict[str, object]:
         "sequence": list(DEPLOYED_LIFECYCLE_SEQUENCE),
         "environment": "validation",
         "credentials": {
-            "contexts_distinct": True,
-            "modes": {"deployer": "0700", "evidence": "0700"},
+            "local_context_count": 1,
+            "modes": {"deployer": "0700"},
             "ambient_credentials_removed": True,
             "identity_hashes": {
                 "deployer": "sha256:" + "8" * 64,
                 "evidence": "sha256:" + "9" * 64,
             },
+            "evidence_source": "fixed_job",
             "deployer_actions": ["job_read", "job_start", "job_execution_read"],
             "evidence_actions": ["arg_read", "fabric_read", "onelake_read"],
             "evidence_denied_actions": [
@@ -84,6 +86,24 @@ def _complete_lifecycle() -> dict[str, object]:
                 "mutation",
             ],
             "runtime_job_start_grants": [],
+        },
+        "evidence_job": {
+            "identity_hash": "sha256:" + "9" * 64,
+            "expected_identity_hash": "sha256:" + "9" * 64,
+            "template_hash": "sha256:" + "a" * 64,
+            "expected_template_hash": "sha256:" + "a" * 64,
+            "template_unchanged": True,
+            "attached_identity_count": 1,
+            "trigger": "Manual",
+            "overrides": [],
+            "workspace_roles": ["Viewer"] * 5,
+            "onelake_actions": ["Read"] * 5,
+            "onelake_paths": ["*"] * 5,
+            "job_control_actions": [],
+            "mutation_actions": [],
+            "production_workspace_access": False,
+            "record_hash": "sha256:" + "b" * 64,
+            "entra_bound_record_hash": "sha256:" + "c" * 64,
         },
         "templates": {
             name: {
@@ -290,6 +310,7 @@ def test_fixed_job_registry_matches_deployed_plan19_templates() -> None:
         "rbac_validator": "aiops-dev-ontology-rbac-check",
         "ontology_fixture_prepare": "ontology-fixture-prepare",
         "ontology_fixture_cleanup": "ontology-fixture-cleanup",
+        "evidence": "ontology-evidence-read",
     }
 
 
@@ -299,6 +320,7 @@ def test_plan19_contract_requires_applied_stable_hashes_and_exact_roots(
     hashes = {
         logical: f"sha256:{index:064x}"
         for index, logical in enumerate(FIXED_JOB_NAMES, start=1)
+        if logical != "evidence"
     }
     deployment = {
         "schema_version": "ontology-gap-deployment.v1",
@@ -340,20 +362,15 @@ def test_credential_contexts_are_distinct_private_and_non_bleeding(
     tmp_path: Path,
 ) -> None:
     deployer = tmp_path / "deployer"
-    evidence = tmp_path / "evidence"
     deployer.mkdir(mode=0o700)
-    evidence.mkdir(mode=0o700)
     os.chmod(deployer, 0o700)
-    os.chmod(evidence, 0o700)
     env = {
         "AIOPS_DEPLOYER_AZURE_CONFIG_DIR": str(deployer),
-        "AIOPS_EVIDENCE_AZURE_CONFIG_DIR": str(evidence),
         "PATH": "/usr/bin",
     }
 
     contexts = validate_azure_contexts(env)
     assert contexts.deployer == deployer.resolve()
-    assert contexts.evidence == evidence.resolve()
 
     isolated = isolated_azure_environment(
         contexts.deployer,
@@ -372,9 +389,14 @@ def test_credential_contexts_are_distinct_private_and_non_bleeding(
     assert "AZURE_CLIENT_SECRET" not in isolated
     assert "ARM_CLIENT_SECRET" not in isolated
 
-    os.chmod(evidence, 0o755)
+    os.chmod(deployer, 0o755)
     with pytest.raises(EvidenceError, match="0700"):
         validate_azure_contexts(env)
+
+    duplicate_context = dict(env)
+    duplicate_context["AIOPS_EVIDENCE_AZURE_CONFIG_DIR"] = str(deployer)
+    with pytest.raises(EvidenceError, match="must not be configured"):
+        validate_azure_contexts(duplicate_context)
 
 
 def test_validation_registry_eligible_set_restart_and_no_injection_contracts() -> None:
@@ -486,6 +508,63 @@ def test_job_start_authority_and_maintenance_are_fail_closed() -> None:
     )
     report = evaluate_lifecycle_evidence(evidence_can_start)
     assert "evidence_has_no_job_authority" in report["missing_evidence"]
+
+    widened = _complete_lifecycle()
+    widened["evidence_job"]["onelake_actions"][0] = "ReadWrite"
+    widened["evidence_job"]["workspace_roles"][0] = "Contributor"
+    widened["evidence_job"]["production_workspace_access"] = True
+    report = evaluate_lifecycle_evidence(widened)
+    assert "evidence_job_read_only_roles" in report["missing_evidence"]
+    assert "evidence_job_no_production_workspace" in report["missing_evidence"]
+
+
+def test_evidence_job_record_is_entra_bound_closed_and_exact_identity() -> None:
+    identity_hash = "sha256:" + "1" * 64
+    record = {
+        "schema_version": "ontology-evidence-read.v1",
+        "mode": "fixed-read-only",
+        "sanitized": True,
+        "identity": {
+            "client_id_hash": "sha256:" + "2" * 64,
+            "object_id_hash": identity_hash,
+            "managed_identity_resource_hash": "sha256:" + "3" * 64,
+            "entra_signature_hash": "sha256:" + "4" * 64,
+        },
+        "capabilities": {
+            "azure": ["read"],
+            "fabric": ["Viewer"],
+            "onelake": ["Read"],
+            "denied": ["job_start", "mutation"],
+        },
+        "observations": {
+            name: {"count": 1, "hashes": ["sha256:" + char * 64]}
+            for name, char in zip(
+                ("arg", "fabric", "onelake", "api"),
+                ("5", "6", "7", "8"),
+                strict=True,
+            )
+        },
+    }
+    from scripts.collect_ontology_evidence import build_closed_record
+
+    record = build_closed_record(
+        identity=record["identity"],
+        observations=record["observations"],
+        capabilities=record["capabilities"],
+    )
+    result = validate_evidence_job_record(
+        record,
+        expected_object_id_hash=identity_hash,
+    )
+    assert result["record_hash"] == record["record_hash"]
+
+    wrong = json.loads(json.dumps(record))
+    wrong["identity"]["object_id_hash"] = "sha256:" + "9" * 64
+    with pytest.raises(EvidenceError, match="identity"):
+        validate_evidence_job_record(
+            wrong,
+            expected_object_id_hash=identity_hash,
+        )
 
 
 def test_resume_checkpoint_has_finite_stages_and_opaque_step_keys(
